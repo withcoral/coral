@@ -1,0 +1,19 @@
+[package]
+name = "coral-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+arrow.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tonic.workspace = true
+
+coral-api.workspace = true
+coral-app.workspace = true

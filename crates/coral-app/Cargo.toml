@@ -1,0 +1,37 @@
+[package]
+name = "coral-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+arrow.workspace = true
+directories.workspace = true
+fs2.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-stream = { workspace = true, features = ["net"] }
+toml.workspace = true
+toml_edit.workspace = true
+tonic.workspace = true
+tracing.workspace = true
+
+coral-api.workspace = true
+coral-spec.workspace = true
+coral-engine.workspace = true
+
+[dev-dependencies]
+coral-client.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
+
+[build-dependencies]
+serde_yaml.workspace = true

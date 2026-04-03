@@ -1,0 +1,184 @@
+syntax = "proto3";
+
+package coral.v1;
+
+import "coral/v1/catalog.proto";
+import "coral/v1/resources.proto";
+import "google/protobuf/empty.proto";
+
+// How one installed source entered Coral ownership.
+enum SourceOrigin {
+  SOURCE_ORIGIN_UNSPECIFIED = 0;
+  SOURCE_ORIGIN_BUNDLED = 1;
+  SOURCE_ORIGIN_IMPORTED = 2;
+}
+
+// One configured non-secret source variable.
+message SourceVariable {
+  // Logical variable key expected by the source manifest.
+  string key = 1;
+  // Visible configured value for that key.
+  string value = 2;
+}
+
+// A secret value supplied during source installation or import.
+message SourceSecret {
+  // Logical secret key expected by the source manifest.
+  string key = 1;
+  // Secret value to persist for that key.
+  string value = 2;
+}
+
+// Registered source resource managed by the local Coral app.
+message Source {
+  // Owning workspace resource.
+  Workspace workspace = 1;
+  // Canonical installed source identifier, such as `slack`.
+  //
+  // This is also the SQL schema name used to qualify the source's tables.
+  string name = 2;
+  // Source manifest version string.
+  string version = 3;
+  // Source-owned secret bindings.
+  //
+  // On create/import requests, callers provide `key` and `value`.
+  // On read responses, the server returns keys with empty values.
+  repeated SourceSecret secrets = 4;
+  // Configured non-secret source variables.
+  repeated SourceVariable variables = 5;
+  // Where this installed source came from.
+  SourceOrigin origin = 6;
+}
+
+// Input kinds that Coral prompts for while installing or importing a source.
+enum SourceInputKind {
+  SOURCE_INPUT_KIND_UNSPECIFIED = 0;
+  SOURCE_INPUT_KIND_VARIABLE = 1;
+  SOURCE_INPUT_KIND_SECRET = 2;
+}
+
+// One manifest-declared source input prompt.
+message SourceInputSpec {
+  // Logical variable or secret key.
+  string key = 1;
+  // How Coral should prompt for and persist the value.
+  SourceInputKind kind = 2;
+  // Whether the input must be supplied explicitly.
+  bool required = 3;
+  // Optional manifest-declared default value.
+  string default_value = 4;
+}
+
+// One bundled or imported source available for installation.
+message AvailableSource {
+  // Canonical source name.
+  string name = 1;
+  // Human-readable description.
+  string description = 2;
+  // Manifest version string.
+  string version = 3;
+  // Prompted source inputs in stable manifest order.
+  repeated SourceInputSpec inputs = 4;
+  // Whether a source with this name is already configured in the workspace.
+  bool installed = 5;
+  // Where this available source came from.
+  SourceOrigin origin = 6;
+}
+
+// Lists all bundled sources available for one workspace.
+message DiscoverSourcesRequest {
+  // Workspace used to mark which bundled sources are already installed.
+  Workspace workspace = 1;
+}
+
+// Returns all bundled available sources.
+message DiscoverSourcesResponse {
+  // Bundled sources compiled into this Coral build.
+  repeated AvailableSource sources = 1;
+}
+
+// Installs one bundled source by name.
+message CreateBundledSourceRequest {
+  // Owning workspace resource.
+  Workspace workspace = 1;
+  // Canonical bundled source name.
+  string name = 2;
+  // Visible configured non-secret variables.
+  repeated SourceVariable variables = 3;
+  // Source-owned secret values.
+  repeated SourceSecret secrets = 4;
+}
+
+// Imports one user-supplied source manifest into Coral ownership.
+message ImportSourceRequest {
+  // Owning workspace resource.
+  Workspace workspace = 1;
+  // Raw source manifest YAML to validate and install.
+  string manifest_yaml = 2;
+  // Visible configured non-secret variables.
+  repeated SourceVariable variables = 3;
+  // Source-owned secret values.
+  repeated SourceSecret secrets = 4;
+}
+
+// Lists all registered sources in one workspace.
+message ListSourcesRequest {
+  // Workspace whose sources should be listed.
+  Workspace workspace = 1;
+}
+
+// Returns the registered source summaries.
+message ListSourcesResponse {
+  // Registered source summaries.
+  repeated Source sources = 1;
+}
+
+// Fetches one registered source by identifier.
+message GetSourceRequest {
+  // Owning workspace resource.
+  Workspace workspace = 1;
+  // Bare source name to fetch.
+  string name = 2;
+}
+
+// Deletes one registered source and its managed artifacts.
+message DeleteSourceRequest {
+  // Owning workspace resource.
+  Workspace workspace = 1;
+  // Bare source name to remove.
+  string name = 2;
+}
+
+// Validates that a registered source is queryable.
+message ValidateSourceRequest {
+  // Owning workspace resource.
+  Workspace workspace = 1;
+  // Bare source name to validate.
+  string name = 2;
+}
+
+// Returns source details plus the tables exposed during validation.
+message ValidateSourceResponse {
+  // The validated source resource.
+  Source source = 1;
+  // Tables exposed by the validated source.
+  repeated Table tables = 2;
+}
+
+// Source registration and validation APIs.
+service SourceService {
+  // Lists bundled sources available for installation.
+  rpc DiscoverSources(DiscoverSourcesRequest) returns (DiscoverSourcesResponse);
+  // Lists all registered sources.
+  rpc ListSources(ListSourcesRequest) returns (ListSourcesResponse);
+  // Fetches one registered source.
+  rpc GetSource(GetSourceRequest) returns (Source);
+  // Installs one bundled source.
+  rpc CreateBundledSource(CreateBundledSourceRequest) returns (Source);
+  // Imports one user-provided source manifest.
+  rpc ImportSource(ImportSourceRequest) returns (Source);
+  // Deletes a registered source.
+  rpc DeleteSource(DeleteSourceRequest) returns (google.protobuf.Empty);
+  // Validates that a registered source is queryable.
+  rpc ValidateSource(ValidateSourceRequest) returns (ValidateSourceResponse);
+}

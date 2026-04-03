@@ -1,0 +1,1265 @@
+name: linear
+version: 2.0.0
+dsl_version: 3
+backend: http
+description: Manage issues, projects, cycles, and initiatives across teams
+base_url: https://api.linear.app
+auth:
+  headers:
+    - name: Authorization
+      from: template
+      template: "{{secret.LINEAR_API_KEY}}"
+
+tables:
+  - name: teams
+    description: Teams in the Linear workspace
+    request:
+      method: POST
+      path: /graphql
+      query: []
+      body:
+        - path:
+            - query
+          from: literal
+          value: |
+            query Teams($first: Int!, $after: String) {
+              teams(first: $first, after: $after) {
+                nodes {
+                  id
+                  key
+                  name
+                  description
+                  private
+                  createdAt
+                  updatedAt
+                }
+                pageInfo {
+                  endCursor
+                }
+              }
+            }
+        - path:
+            - variables
+            - first
+          from: literal
+          value: 100
+    response:
+      rows_path:
+        - data
+        - teams
+        - nodes
+    pagination:
+      mode: cursor_body
+      cursor_body_path:
+        - variables
+        - after
+      response_cursor_path:
+        - data
+        - teams
+        - pageInfo
+        - endCursor
+      page_size:
+        default: 100
+        max: 250
+        body_path:
+          - variables
+          - first
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Team ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: key
+        type: Utf8
+        nullable: false
+        description: Team key
+        expr:
+          kind: path
+          path:
+            - key
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Team name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Team description
+        expr:
+          kind: path
+          path:
+            - description
+      - name: private
+        type: Boolean
+        nullable: true
+        description: Whether the team is private
+        expr:
+          kind: path
+          path:
+            - private
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Creation timestamp
+        expr:
+          kind: path
+          path:
+            - createdAt
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: Updated timestamp
+        expr:
+          kind: path
+          path:
+            - updatedAt
+  - name: users
+    description: Users in the Linear workspace
+    request:
+      method: POST
+      path: /graphql
+      query: []
+      body:
+        - path:
+            - query
+          from: literal
+          value: |
+            query Users($first: Int!, $after: String) {
+              users(first: $first, after: $after) {
+                nodes {
+                  id
+                  name
+                  displayName
+                  email
+                  active
+                  admin
+                  createdAt
+                  updatedAt
+                }
+                pageInfo {
+                  endCursor
+                }
+              }
+            }
+        - path:
+            - variables
+            - first
+          from: literal
+          value: 100
+    response:
+      rows_path:
+        - data
+        - users
+        - nodes
+    pagination:
+      mode: cursor_body
+      cursor_body_path:
+        - variables
+        - after
+      response_cursor_path:
+        - data
+        - users
+        - pageInfo
+        - endCursor
+      page_size:
+        default: 100
+        max: 250
+        body_path:
+          - variables
+          - first
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: User ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: User full name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: User display name
+        expr:
+          kind: path
+          path:
+            - displayName
+      - name: email
+        type: Utf8
+        nullable: true
+        description: User email address
+        expr:
+          kind: path
+          path:
+            - email
+      - name: active
+        type: Boolean
+        nullable: true
+        description: Whether the user is active
+        expr:
+          kind: path
+          path:
+            - active
+      - name: admin
+        type: Boolean
+        nullable: true
+        description: Whether the user is an admin
+        expr:
+          kind: path
+          path:
+            - admin
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Creation timestamp
+        expr:
+          kind: path
+          path:
+            - createdAt
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: Updated timestamp
+        expr:
+          kind: path
+          path:
+            - updatedAt
+  - name: projects
+    description: Projects in the Linear workspace
+    request:
+      method: POST
+      path: /graphql
+      query: []
+      body:
+        - path:
+            - query
+          from: literal
+          value: |
+            query Projects($first: Int!, $after: String) {
+              projects(first: $first, after: $after) {
+                nodes {
+                  id
+                  name
+                  slugId
+                  state
+                  progress
+                  targetDate
+                  createdAt
+                  updatedAt
+                  teams {
+                    nodes {
+                      id
+                      key
+                      name
+                    }
+                  }
+                }
+                pageInfo {
+                  endCursor
+                }
+              }
+            }
+        - path:
+            - variables
+            - first
+          from: literal
+          value: 50
+    response:
+      rows_path:
+        - data
+        - projects
+        - nodes
+    pagination:
+      mode: cursor_body
+      cursor_body_path:
+        - variables
+        - after
+      response_cursor_path:
+        - data
+        - projects
+        - pageInfo
+        - endCursor
+      page_size:
+        default: 50
+        max: 50
+        body_path:
+          - variables
+          - first
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Project ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Project name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: slug_id
+        type: Utf8
+        nullable: true
+        description: Project short slug identifier
+        expr:
+          kind: path
+          path:
+            - slugId
+      - name: state
+        type: Utf8
+        nullable: true
+        description: Project state
+        expr:
+          kind: path
+          path:
+            - state
+      - name: progress
+        type: Float64
+        nullable: true
+        description: Project progress fraction
+        expr:
+          kind: path
+          path:
+            - progress
+      - name: target_date
+        type: Utf8
+        nullable: true
+        description: Project target date
+        expr:
+          kind: path
+          path:
+            - targetDate
+      - name: team_id
+        type: Utf8
+        nullable: true
+        description: Owning team ID
+        expr:
+          kind: first_array_item_path
+          path:
+            - teams
+            - nodes
+          item_path:
+            - id
+      - name: team_key
+        type: Utf8
+        nullable: true
+        description: Owning team key
+        expr:
+          kind: first_array_item_path
+          path:
+            - teams
+            - nodes
+          item_path:
+            - key
+      - name: team_name
+        type: Utf8
+        nullable: true
+        description: Owning team name
+        expr:
+          kind: first_array_item_path
+          path:
+            - teams
+            - nodes
+          item_path:
+            - name
+  - name: cycles
+    description: Cycles in the Linear workspace
+    request:
+      method: POST
+      path: /graphql
+      query: []
+      body:
+        - path:
+            - query
+          from: literal
+          value: |
+            query Cycles($first: Int!, $after: String) {
+              cycles(first: $first, after: $after) {
+                nodes {
+                  id
+                  number
+                  name
+                  startsAt
+                  endsAt
+                  completedAt
+                  team {
+                    id
+                    key
+                  }
+                }
+                pageInfo {
+                  endCursor
+                }
+              }
+            }
+        - path:
+            - variables
+            - first
+          from: literal
+          value: 100
+    response:
+      rows_path:
+        - data
+        - cycles
+        - nodes
+    pagination:
+      mode: cursor_body
+      cursor_body_path:
+        - variables
+        - after
+      response_cursor_path:
+        - data
+        - cycles
+        - pageInfo
+        - endCursor
+      page_size:
+        default: 100
+        max: 250
+        body_path:
+          - variables
+          - first
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Cycle ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: number
+        type: Int64
+        nullable: true
+        description: Cycle number
+        expr:
+          kind: path
+          path:
+            - number
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Cycle name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: starts_at
+        type: Utf8
+        nullable: true
+        description: Cycle start timestamp
+        expr:
+          kind: path
+          path:
+            - startsAt
+      - name: ends_at
+        type: Utf8
+        nullable: true
+        description: Cycle end timestamp
+        expr:
+          kind: path
+          path:
+            - endsAt
+      - name: completed_at
+        type: Utf8
+        nullable: true
+        description: Cycle completion timestamp
+        expr:
+          kind: path
+          path:
+            - completedAt
+      - name: team_id
+        type: Utf8
+        nullable: true
+        description: Team ID
+        expr:
+          kind: path
+          path:
+            - team
+            - id
+      - name: team_key
+        type: Utf8
+        nullable: true
+        description: Team key
+        expr:
+          kind: path
+          path:
+            - team
+            - key
+    filters:
+      - name: team_id
+        required: false
+  - name: initiatives
+    description: Initiatives in the Linear workspace
+    request:
+      method: POST
+      path: /graphql
+      query: []
+      body:
+        - path:
+            - query
+          from: literal
+          value: |
+            query Initiatives($first: Int!, $after: String) {
+              initiatives(first: $first, after: $after) {
+                nodes {
+                  id
+                  name
+                  description
+                  createdAt
+                  updatedAt
+                }
+                pageInfo {
+                  endCursor
+                }
+              }
+            }
+        - path:
+            - variables
+            - first
+          from: literal
+          value: 100
+    response:
+      rows_path:
+        - data
+        - initiatives
+        - nodes
+    pagination:
+      mode: cursor_body
+      cursor_body_path:
+        - variables
+        - after
+      response_cursor_path:
+        - data
+        - initiatives
+        - pageInfo
+        - endCursor
+      page_size:
+        default: 100
+        max: 250
+        body_path:
+          - variables
+          - first
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Initiative ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Initiative name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Initiative description
+        expr:
+          kind: path
+          path:
+            - description
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Creation timestamp
+        expr:
+          kind: path
+          path:
+            - createdAt
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: Updated timestamp
+        expr:
+          kind: path
+          path:
+            - updatedAt
+  - name: project_updates
+    description: Updates for a specific Linear project
+    request:
+      method: POST
+      path: /graphql
+      query: []
+      body:
+        - path:
+            - query
+          from: literal
+          value: |
+            query ProjectUpdates($projectId: String!, $first: Int!, $after: String) {
+              project(id: $projectId) {
+                id
+                projectUpdates(first: $first, after: $after) {
+                  nodes {
+                    id
+                    body
+                    createdAt
+                    updatedAt
+                  }
+                  pageInfo {
+                    endCursor
+                  }
+                }
+              }
+            }
+        - path:
+            - variables
+            - projectId
+          from: filter
+          key: project_id
+        - path:
+            - variables
+            - first
+          from: literal
+          value: 100
+    response:
+      rows_path:
+        - data
+        - project
+        - projectUpdates
+        - nodes
+    pagination:
+      mode: cursor_body
+      cursor_body_path:
+        - variables
+        - after
+      response_cursor_path:
+        - data
+        - project
+        - projectUpdates
+        - pageInfo
+        - endCursor
+      page_size:
+        default: 100
+        max: 250
+        body_path:
+          - variables
+          - first
+    columns:
+      - name: project_id
+        type: Utf8
+        nullable: false
+        description: Project ID filter
+        expr:
+          kind: from_filter
+          key: project_id
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Project update ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: body
+        type: Utf8
+        nullable: true
+        description: Project update body
+        expr:
+          kind: path
+          path:
+            - body
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Creation timestamp
+        expr:
+          kind: path
+          path:
+            - createdAt
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: Updated timestamp
+        expr:
+          kind: path
+          path:
+            - updatedAt
+    filters:
+      - name: project_id
+        required: true
+  - name: issue_labels
+    description: Issue labels in the Linear workspace
+    request:
+      method: POST
+      path: /graphql
+      query: []
+      body:
+        - path:
+            - query
+          from: literal
+          value: |
+            query IssueLabels($first: Int!, $after: String) {
+              issueLabels(first: $first, after: $after) {
+                nodes {
+                  id
+                  name
+                  color
+                  description
+                  isGroup
+                  createdAt
+                  updatedAt
+                }
+                pageInfo {
+                  endCursor
+                }
+              }
+            }
+        - path:
+            - variables
+            - first
+          from: literal
+          value: 100
+    response:
+      rows_path:
+        - data
+        - issueLabels
+        - nodes
+    pagination:
+      mode: cursor_body
+      cursor_body_path:
+        - variables
+        - after
+      response_cursor_path:
+        - data
+        - issueLabels
+        - pageInfo
+        - endCursor
+      page_size:
+        default: 100
+        max: 250
+        body_path:
+          - variables
+          - first
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Label ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Label name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: color
+        type: Utf8
+        nullable: true
+        description: Label color
+        expr:
+          kind: path
+          path:
+            - color
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Label description
+        expr:
+          kind: path
+          path:
+            - description
+      - name: is_group
+        type: Boolean
+        nullable: true
+        description: Whether the label is a group
+        expr:
+          kind: path
+          path:
+            - isGroup
+  - name: issues
+    description: Issues in the Linear workspace
+    request:
+      method: POST
+      path: /graphql
+      query: []
+      body:
+        - path:
+            - query
+          from: literal
+          value: |
+            query Issues($first: Int!, $after: String) {
+              issues(first: $first, after: $after) {
+                nodes {
+                  id
+                  identifier
+                  title
+                  description
+                  priority
+                  estimate
+                  createdAt
+                  updatedAt
+                  completedAt
+                  url
+                  team {
+                    id
+                    key
+                  }
+                  state {
+                    id
+                    name
+                  }
+                  assignee {
+                    id
+                    name
+                    email
+                  }
+                }
+                pageInfo {
+                  endCursor
+                }
+              }
+            }
+        - path:
+            - variables
+            - first
+          from: literal
+          value: 100
+    response:
+      rows_path:
+        - data
+        - issues
+        - nodes
+    pagination:
+      mode: cursor_body
+      cursor_body_path:
+        - variables
+        - after
+      response_cursor_path:
+        - data
+        - issues
+        - pageInfo
+        - endCursor
+      page_size:
+        default: 100
+        max: 250
+        body_path:
+          - variables
+          - first
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Issue ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: identifier
+        type: Utf8
+        nullable: false
+        description: Issue identifier (for example ENG-123)
+        expr:
+          kind: path
+          path:
+            - identifier
+      - name: title
+        type: Utf8
+        nullable: false
+        description: Issue title
+        expr:
+          kind: path
+          path:
+            - title
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Issue description
+        expr:
+          kind: path
+          path:
+            - description
+      - name: priority
+        type: Int64
+        nullable: true
+        description: Issue priority
+        expr:
+          kind: path
+          path:
+            - priority
+      - name: estimate
+        type: Int64
+        nullable: true
+        description: Issue estimate points
+        expr:
+          kind: path
+          path:
+            - estimate
+      - name: team_id
+        type: Utf8
+        nullable: true
+        description: Team ID
+        expr:
+          kind: path
+          path:
+            - team
+            - id
+      - name: team_key
+        type: Utf8
+        nullable: true
+        description: Team key
+        expr:
+          kind: path
+          path:
+            - team
+            - key
+      - name: state_id
+        type: Utf8
+        nullable: true
+        description: Workflow state ID
+        expr:
+          kind: path
+          path:
+            - state
+            - id
+      - name: state_name
+        type: Utf8
+        nullable: true
+        description: Workflow state name
+        expr:
+          kind: path
+          path:
+            - state
+            - name
+      - name: assignee_id
+        type: Utf8
+        nullable: true
+        description: Assignee user ID
+        expr:
+          kind: path
+          path:
+            - assignee
+            - id
+      - name: assignee_name
+        type: Utf8
+        nullable: true
+        description: Assignee name
+        expr:
+          kind: path
+          path:
+            - assignee
+            - name
+      - name: assignee_email
+        type: Utf8
+        nullable: true
+        description: Assignee email
+        expr:
+          kind: path
+          path:
+            - assignee
+            - email
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Creation timestamp
+        expr:
+          kind: path
+          path:
+            - createdAt
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: Updated timestamp
+        expr:
+          kind: path
+          path:
+            - updatedAt
+      - name: completed_at
+        type: Utf8
+        nullable: true
+        description: Completion timestamp
+        expr:
+          kind: path
+          path:
+            - completedAt
+  - name: issue_comments
+    description: Comments for a specific Linear issue
+    request:
+      method: POST
+      path: /graphql
+      query: []
+      body:
+        - path:
+            - query
+          from: literal
+          value: |
+            query IssueComments($issueId: String!, $first: Int!, $after: String) {
+              issue(id: $issueId) {
+                id
+                comments(first: $first, after: $after) {
+                  nodes {
+                    id
+                    body
+                    createdAt
+                    updatedAt
+                  }
+                  pageInfo {
+                    endCursor
+                  }
+                }
+              }
+            }
+        - path:
+            - variables
+            - issueId
+          from: filter
+          key: issue_id
+        - path:
+            - variables
+            - first
+          from: literal
+          value: 100
+    response:
+      rows_path:
+        - data
+        - issue
+        - comments
+        - nodes
+    pagination:
+      mode: cursor_body
+      cursor_body_path:
+        - variables
+        - after
+      response_cursor_path:
+        - data
+        - issue
+        - comments
+        - pageInfo
+        - endCursor
+      page_size:
+        default: 100
+        max: 250
+        body_path:
+          - variables
+          - first
+    columns:
+      - name: issue_id
+        type: Utf8
+        nullable: false
+        description: Issue ID filter
+        expr:
+          kind: from_filter
+          key: issue_id
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Comment ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: body
+        type: Utf8
+        nullable: true
+        description: Comment body
+        expr:
+          kind: path
+          path:
+            - body
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Creation timestamp
+        expr:
+          kind: path
+          path:
+            - createdAt
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: Updated timestamp
+        expr:
+          kind: path
+          path:
+            - updatedAt
+    filters:
+      - name: issue_id
+        required: true
+  - name: team_issues
+    description: Issues for a specific Linear team
+    request:
+      method: POST
+      path: /graphql
+      query: []
+      body:
+        - path:
+            - query
+          from: literal
+          value: |
+            query TeamIssues($teamId: String!, $first: Int!, $after: String) {
+              team(id: $teamId) {
+                id
+                issues(first: $first, after: $after) {
+                  nodes {
+                    id
+                    identifier
+                    title
+                    priority
+                    createdAt
+                    updatedAt
+                    state {
+                      id
+                      name
+                    }
+                    assignee {
+                      id
+                      name
+                      email
+                    }
+                  }
+                  pageInfo {
+                    endCursor
+                  }
+                }
+              }
+            }
+        - path:
+            - variables
+            - teamId
+          from: filter
+          key: team_id
+        - path:
+            - variables
+            - first
+          from: literal
+          value: 100
+    response:
+      rows_path:
+        - data
+        - team
+        - issues
+        - nodes
+    pagination:
+      mode: cursor_body
+      cursor_body_path:
+        - variables
+        - after
+      response_cursor_path:
+        - data
+        - team
+        - issues
+        - pageInfo
+        - endCursor
+      page_size:
+        default: 100
+        max: 250
+        body_path:
+          - variables
+          - first
+    columns:
+      - name: team_id
+        type: Utf8
+        nullable: false
+        description: Team ID filter
+        expr:
+          kind: from_filter
+          key: team_id
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Issue ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: identifier
+        type: Utf8
+        nullable: false
+        description: Issue identifier
+        expr:
+          kind: path
+          path:
+            - identifier
+      - name: title
+        type: Utf8
+        nullable: false
+        description: Issue title
+        expr:
+          kind: path
+          path:
+            - title
+      - name: priority
+        type: Int64
+        nullable: true
+        description: Issue priority
+        expr:
+          kind: path
+          path:
+            - priority
+      - name: state_name
+        type: Utf8
+        nullable: true
+        description: Workflow state name
+        expr:
+          kind: path
+          path:
+            - state
+            - name
+      - name: assignee_name
+        type: Utf8
+        nullable: true
+        description: Assignee name
+        expr:
+          kind: path
+          path:
+            - assignee
+            - name
+      - name: assignee_email
+        type: Utf8
+        nullable: true
+        description: Assignee email
+        expr:
+          kind: path
+          path:
+            - assignee
+            - email
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Creation timestamp
+        expr:
+          kind: path
+          path:
+            - createdAt
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: Updated timestamp
+        expr:
+          kind: path
+          path:
+            - updatedAt
+    filters:
+      - name: team_id
+        required: true

@@ -1,0 +1,992 @@
+name: statusgator
+version: 1.0.0
+dsl_version: 3
+backend: http
+description: Monitor service status boards, incidents, and uptime history
+base_url: "https://statusgator.com/api/v3"
+auth:
+  headers:
+    - name: Authorization
+      from: template
+      template: "Bearer {{secret.STATUSGATOR_API_TOKEN}}"
+    - name: Accept
+      from: literal
+      value: application/json
+
+tables:
+  - name: boards
+    description: StatusGator monitoring boards
+    request:
+      method: GET
+      path: /boards
+      query: []
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_size:
+        default: 25
+        max: 100
+        query_param: per_page
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Board ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Board name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: public_token
+        type: Utf8
+        nullable: false
+        description: Public access token for the board
+        expr:
+          kind: path
+          path:
+            - public_token
+      - name: created_at
+        type: Utf8
+        nullable: false
+        description: Creation timestamp
+        expr:
+          kind: path
+          path:
+            - created_at
+      - name: updated_at
+        type: Utf8
+        nullable: false
+        description: Last update timestamp
+        expr:
+          kind: path
+          path:
+            - updated_at
+
+  - name: monitors
+    description: Service monitors on a board
+    request:
+      method: GET
+      path: /boards/{{filter.board_id}}/monitors
+      query: []
+    response:
+      rows_path:
+        - data
+    columns:
+      - name: board_id
+        type: Utf8
+        nullable: false
+        description: Board ID
+        expr:
+          kind: from_filter
+          key: board_id
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Monitor ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: Monitor display name
+        expr:
+          kind: path
+          path:
+            - display_name
+      - name: monitor_type
+        type: Utf8
+        nullable: true
+        description: Type of monitor
+        expr:
+          kind: path
+          path:
+            - monitor_type
+      - name: filtered_status
+        type: Utf8
+        nullable: true
+        description: Filtered status of the monitor
+        expr:
+          kind: path
+          path:
+            - filtered_status
+      - name: unfiltered_status
+        type: Utf8
+        nullable: true
+        description: Unfiltered status of the monitor
+        expr:
+          kind: path
+          path:
+            - unfiltered_status
+      - name: last_message
+        type: Utf8
+        nullable: true
+        description: Last status message
+        expr:
+          kind: path
+          path:
+            - last_message
+      - name: icon_url
+        type: Utf8
+        nullable: true
+        description: Monitor icon URL
+        expr:
+          kind: path
+          path:
+            - icon_url
+      - name: position
+        type: Int64
+        nullable: true
+        description: Display position
+        expr:
+          kind: path
+          path:
+            - position
+      - name: early_warning_signal
+        type: Boolean
+        nullable: true
+        description: Whether early warning signal is enabled
+        expr:
+          kind: path
+          path:
+            - early_warning_signal
+      - name: paused_at
+        type: Utf8
+        nullable: true
+        description: Timestamp when monitor was paused
+        expr:
+          kind: path
+          path:
+            - paused_at
+      - name: checked_at
+        type: Utf8
+        nullable: true
+        description: Last check timestamp
+        expr:
+          kind: path
+          path:
+            - checked_at
+      - name: created_at
+        type: Utf8
+        nullable: false
+        description: Creation timestamp
+        expr:
+          kind: path
+          path:
+            - created_at
+      - name: updated_at
+        type: Utf8
+        nullable: false
+        description: Last update timestamp
+        expr:
+          kind: path
+          path:
+            - updated_at
+      - name: service_name
+        type: Utf8
+        nullable: true
+        description: Name of the monitored service
+        expr:
+          kind: path
+          path:
+            - service
+            - name
+      - name: service_slug
+        type: Utf8
+        nullable: true
+        description: Slug of the monitored service
+        expr:
+          kind: path
+          path:
+            - service
+            - slug
+      - name: group_name
+        type: Utf8
+        nullable: true
+        description: Name of the monitor group
+        expr:
+          kind: path
+          path:
+            - group
+            - name
+    filters:
+      - name: board_id
+        required: true
+
+  - name: history
+    description: Status history for a board
+    request:
+      method: GET
+      path: /boards/{{filter.board_id}}/history
+      query:
+        - name: start_date
+          from: filter
+          key: start_date
+        - name: end_date
+          from: filter
+          key: end_date
+    response:
+      rows_path:
+        - data
+    columns:
+      - name: board_id
+        type: Utf8
+        nullable: false
+        description: Board ID
+        expr:
+          kind: from_filter
+          key: board_id
+      - name: monitor_id
+        type: Utf8
+        nullable: false
+        description: Monitor ID
+        expr:
+          kind: path
+          path:
+            - monitor_id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Monitor name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: icon_url
+        type: Utf8
+        nullable: true
+        description: Monitor icon URL
+        expr:
+          kind: path
+          path:
+            - icon_url
+      - name: status
+        type: Utf8
+        nullable: false
+        description: Status value
+        expr:
+          kind: path
+          path:
+            - status
+      - name: started_at
+        type: Utf8
+        nullable: false
+        description: Status period start timestamp
+        expr:
+          kind: path
+          path:
+            - started_at
+      - name: ended_at
+        type: Utf8
+        nullable: true
+        description: Status period end timestamp
+        expr:
+          kind: path
+          path:
+            - ended_at
+      - name: duration
+        type: Float64
+        nullable: true
+        description: Duration of the status period
+        expr:
+          kind: path
+          path:
+            - duration
+      - name: message
+        type: Utf8
+        nullable: true
+        description: Status message
+        expr:
+          kind: path
+          path:
+            - message
+      - name: details
+        type: Utf8
+        nullable: true
+        description: Status details
+        expr:
+          kind: path
+          path:
+            - details
+      - name: early_warning_signal
+        type: Boolean
+        nullable: true
+        description: Whether this was an early warning signal
+        expr:
+          kind: path
+          path:
+            - early_warning_signal
+    filters:
+      - name: board_id
+        required: true
+      - name: start_date
+      - name: end_date
+
+  - name: incidents
+    description: Incidents for a board
+    request:
+      method: GET
+      path: /boards/{{filter.board_id}}/incidents
+      query: []
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_size:
+        default: 25
+        max: 100
+        query_param: per_page
+    columns:
+      - name: board_id
+        type: Utf8
+        nullable: false
+        description: Board ID
+        expr:
+          kind: from_filter
+          key: board_id
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Incident ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Incident name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: details
+        type: Utf8
+        nullable: true
+        description: Incident details
+        expr:
+          kind: path
+          path:
+            - details
+      - name: phase
+        type: Utf8
+        nullable: true
+        description: Incident phase
+        expr:
+          kind: path
+          path:
+            - phase
+      - name: severity
+        type: Utf8
+        nullable: true
+        description: Incident severity
+        expr:
+          kind: path
+          path:
+            - severity
+      - name: started_at
+        type: Utf8
+        nullable: true
+        description: Incident start timestamp
+        expr:
+          kind: path
+          path:
+            - started_at
+      - name: resolved_at
+        type: Utf8
+        nullable: true
+        description: Incident resolution timestamp
+        expr:
+          kind: path
+          path:
+            - resolved_at
+      - name: scheduled_maintenance
+        type: Boolean
+        nullable: true
+        description: Whether this is scheduled maintenance
+        expr:
+          kind: path
+          path:
+            - scheduled_maintenance
+      - name: resolved_or_completed
+        type: Boolean
+        nullable: true
+        description: Whether the incident is resolved or completed
+        expr:
+          kind: path
+          path:
+            - resolved_or_completed
+      - name: created_at
+        type: Utf8
+        nullable: false
+        description: Creation timestamp
+        expr:
+          kind: path
+          path:
+            - created_at
+      - name: updated_at
+        type: Utf8
+        nullable: false
+        description: Last update timestamp
+        expr:
+          kind: path
+          path:
+            - updated_at
+    filters:
+      - name: board_id
+        required: true
+
+  - name: monitor_components
+    description: Components for a specific monitor
+    request:
+      method: GET
+      path: /boards/{{filter.board_id}}/monitors/{{filter.monitor_id}}/components
+      query: []
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_size:
+        default: 25
+        max: 100
+        query_param: per_page
+    columns:
+      - name: board_id
+        type: Utf8
+        nullable: false
+        description: Board ID
+        expr:
+          kind: from_filter
+          key: board_id
+      - name: monitor_id
+        type: Utf8
+        nullable: false
+        description: Monitor ID
+        expr:
+          kind: from_filter
+          key: monitor_id
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Component ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Component name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: group_name
+        type: Utf8
+        nullable: true
+        description: Component group name
+        expr:
+          kind: path
+          path:
+            - group_name
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Component status
+        expr:
+          kind: path
+          path:
+            - status
+      - name: created_at
+        type: Utf8
+        nullable: false
+        description: Creation timestamp
+        expr:
+          kind: path
+          path:
+            - created_at
+      - name: updated_at
+        type: Utf8
+        nullable: false
+        description: Last update timestamp
+        expr:
+          kind: path
+          path:
+            - updated_at
+    filters:
+      - name: board_id
+        required: true
+      - name: monitor_id
+        required: true
+
+  - name: service_search
+    description: Search for services by name
+    request:
+      method: GET
+      path: /services/search
+      query:
+        - name: q
+          from: filter
+          key: q
+    response:
+      rows_path:
+        - data
+    columns:
+      - name: q
+        type: Utf8
+        nullable: false
+        description: Search query
+        expr:
+          kind: from_filter
+          key: q
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Service ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Service name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: home_page_url
+        type: Utf8
+        nullable: false
+        description: Service home page URL
+        expr:
+          kind: path
+          path:
+            - home_page_url
+      - name: icon_url
+        type: Utf8
+        nullable: false
+        description: Service icon URL
+        expr:
+          kind: path
+          path:
+            - icon_url
+      - name: official
+        type: Boolean
+        nullable: false
+        description: Whether this is an official service
+        expr:
+          kind: path
+          path:
+            - official
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Service description
+        expr:
+          kind: path
+          path:
+            - description
+    filters:
+      - name: q
+        required: true
+
+  - name: service_components
+    description: Components for a service
+    request:
+      method: GET
+      path: /services/{{filter.service_id}}/components
+      query: []
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_size:
+        default: 25
+        max: 100
+        query_param: per_page
+    columns:
+      - name: service_id
+        type: Utf8
+        nullable: false
+        description: Service ID
+        expr:
+          kind: from_filter
+          key: service_id
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Component ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Component name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: group_name
+        type: Utf8
+        nullable: true
+        description: Component group name
+        expr:
+          kind: path
+          path:
+            - group_name
+      - name: created_at
+        type: Utf8
+        nullable: false
+        description: Creation timestamp
+        expr:
+          kind: path
+          path:
+            - created_at
+      - name: updated_at
+        type: Utf8
+        nullable: false
+        description: Last update timestamp
+        expr:
+          kind: path
+          path:
+            - updated_at
+    filters:
+      - name: service_id
+        required: true
+
+  - name: status_page_subscribers
+    description: Subscribers to a board's status page
+    request:
+      method: GET
+      path: /boards/{{filter.board_id}}/status_page_subscribers
+      query: []
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_size:
+        default: 25
+        max: 100
+        query_param: per_page
+    columns:
+      - name: board_id
+        type: Utf8
+        nullable: false
+        description: Board ID
+        expr:
+          kind: from_filter
+          key: board_id
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Subscriber ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: email
+        type: Utf8
+        nullable: false
+        description: Subscriber email
+        expr:
+          kind: path
+          path:
+            - email
+      - name: confirmed
+        type: Boolean
+        nullable: false
+        description: Whether the subscription is confirmed
+        expr:
+          kind: path
+          path:
+            - confirmed
+      - name: confirmed_at
+        type: Utf8
+        nullable: true
+        description: Confirmation timestamp
+        expr:
+          kind: path
+          path:
+            - confirmed_at
+      - name: created_at
+        type: Utf8
+        nullable: false
+        description: Creation timestamp
+        expr:
+          kind: path
+          path:
+            - created_at
+      - name: updated_at
+        type: Utf8
+        nullable: false
+        description: Last update timestamp
+        expr:
+          kind: path
+          path:
+            - updated_at
+    filters:
+      - name: board_id
+        required: true
+
+  - name: users
+    description: Users in the StatusGator account
+    request:
+      method: GET
+      path: /users
+      query: []
+    response:
+      rows_path:
+        - data
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: User ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: email
+        type: Utf8
+        nullable: false
+        description: User email
+        expr:
+          kind: path
+          path:
+            - email
+      - name: first_name
+        type: Utf8
+        nullable: false
+        description: User first name
+        expr:
+          kind: path
+          path:
+            - first_name
+      - name: last_name
+        type: Utf8
+        nullable: false
+        description: User last name
+        expr:
+          kind: path
+          path:
+            - last_name
+      - name: role
+        type: Utf8
+        nullable: false
+        description: User role
+        expr:
+          kind: path
+          path:
+            - role
+      - name: confirmed
+        type: Boolean
+        nullable: false
+        description: Whether the user is confirmed
+        expr:
+          kind: path
+          path:
+            - confirmed
+      - name: two_factor_enabled
+        type: Boolean
+        nullable: false
+        description: Whether two-factor auth is enabled
+        expr:
+          kind: path
+          path:
+            - two_factor_enabled
+      - name: created_at
+        type: Utf8
+        nullable: false
+        description: Creation timestamp
+        expr:
+          kind: path
+          path:
+            - created_at
+      - name: last_sign_in_at
+        type: Utf8
+        nullable: true
+        description: Last sign-in timestamp
+        expr:
+          kind: path
+          path:
+            - last_sign_in_at
+
+  - name: monitoring_regions
+    description: Available monitoring regions
+    request:
+      method: GET
+      path: /monitoring_regions
+      query: []
+    response:
+      rows_path:
+        - data
+    columns:
+      - name: region_id
+        type: Utf8
+        nullable: false
+        description: Region ID
+        expr:
+          kind: path
+          path:
+            - region_id
+      - name: dns_name
+        type: Utf8
+        nullable: false
+        description: DNS name of the region
+        expr:
+          kind: path
+          path:
+            - dns_name
+      - name: ip_address
+        type: Utf8
+        nullable: false
+        description: IP address of the region
+        expr:
+          kind: path
+          path:
+            - ip_address
+      - name: provider
+        type: Utf8
+        nullable: false
+        description: Cloud provider
+        expr:
+          kind: path
+          path:
+            - provider
+      - name: code
+        type: Utf8
+        nullable: false
+        description: Region code
+        expr:
+          kind: path
+          path:
+            - code
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Region name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: desc
+        type: Utf8
+        nullable: false
+        description: Region description
+        expr:
+          kind: path
+          path:
+            - desc
+  - name: board_detail
+    description: Detailed information about a single board
+    request:
+      method: GET
+      path: /boards/{{filter.board_id}}
+      query: []
+    response:
+      rows_path:
+        - data
+    columns:
+      - name: board_id
+        type: Utf8
+        nullable: false
+        description: Board ID
+        expr:
+          kind: from_filter
+          key: board_id
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Board ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Board name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: public_token
+        type: Utf8
+        nullable: false
+        description: Public access token for the board
+        expr:
+          kind: path
+          path:
+            - public_token
+      - name: created_at
+        type: Utf8
+        nullable: false
+        description: Creation timestamp
+        expr:
+          kind: path
+          path:
+            - created_at
+      - name: updated_at
+        type: Utf8
+        nullable: false
+        description: Last update timestamp
+        expr:
+          kind: path
+          path:
+            - updated_at
+    filters:
+      - name: board_id
+        required: true
+
+  - name: ping
+    description: Health check endpoint
+    request:
+      method: GET
+      path: /ping
+      query: []
+    response: {}
+    columns:
+      - name: success
+        type: Boolean
+        nullable: false
+        description: Whether the API is reachable
+        expr:
+          kind: path
+          path:
+            - success
+      - name: message
+        type: Utf8
+        nullable: true
+        description: Response message from the API
+        expr:
+          kind: path
+          path:
+            - data
+            - message

@@ -1,0 +1,70 @@
+[workspace]
+members = ["crates/*"]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+license = "Apache-2.0"
+rust-version = "1.94"
+
+[workspace.lints.rust]
+missing_docs = "warn"
+unreachable_pub = "warn"
+unsafe_code = "forbid"
+unused_crate_dependencies = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -2 }
+allow_attributes_without_reason = "warn"
+disallowed_methods = "deny"
+print_stderr = "warn"
+print_stdout = "warn"
+
+[workspace.dependencies]
+anyhow = "1"
+arrow = "57.3.0"
+async-trait = "0.1"
+bytes = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
+clap = { version = "4.5", features = ["derive", "env"] }
+datafusion = "52"
+dialoguer = "0.12"
+directories = "6"
+fs2 = "0.4"
+futures = "0.3"
+glob = "0.3"
+httpdate = "1.0.3"
+jsonschema = { version = "0.18", default-features = false }
+object_store = { version = "0.12", features = ["aws"] }
+parquet = { version = "57.3.0", features = ["arrow"] }
+prost = "0.14.1"
+reqwest = { version = "0.12", default-features = false, features = ["charset", "http2", "json", "rustls-tls-native-roots", "system-proxy"] }
+rmcp = { version = "1.3.0", features = ["client"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+sqlparser = "0.59.0"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+toml = "0.9"
+toml_edit = "0.25.10"
+tonic = "0.14.2"
+tonic-prost = "0.14.2"
+tower = "0.5"
+tracing = "0.1.44"
+tempfile = "3"
+url = "2"
+urlencoding = "2"
+uuid = { version = "1", features = ["serde", "v4"] }
+
+coral-api = { path = "crates/coral-api" }
+coral-app = { path = "crates/coral-app" }
+coral-cli = { path = "crates/coral-cli" }
+coral-client = { path = "crates/coral-client" }
+coral-engine = { path = "crates/coral-engine" }
+coral-mcp = { path = "crates/coral-mcp" }
+coral-spec = { path = "crates/coral-spec" }

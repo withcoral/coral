@@ -1,0 +1,9 @@
+syntax = "proto3";
+
+package coral.v1;
+
+// Workspace resource managed by the local Coral app.
+message Workspace {
+  // Bare workspace name, such as `default`.
+  string name = 1;
+}

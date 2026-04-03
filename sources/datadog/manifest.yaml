@@ -1,0 +1,1713 @@
+name: datadog
+version: 2.0.0
+dsl_version: 3
+backend: http
+description: Monitor infrastructure, track incidents, and analyze logs and APM traces
+base_url: https://api.{{variable.DD_SITE|datadoghq.com}}
+auth:
+  headers:
+    - name: DD-API-KEY
+      from: secret
+      key: DD_API_KEY
+    - name: DD-APPLICATION-KEY
+      from: secret
+      key: DD_APPLICATION_KEY
+
+tables:
+  - name: monitors
+    description: Datadog monitors with status and alert configuration.
+    guide: >
+      No required filters — returns all monitors. Filter by status or type in SQL.
+      Status values: Alert, Warn, No Data, OK, Ignored, Skipped.
+    request:
+      method: GET
+      path: /api/v1/monitor
+      query: []
+    response: {}
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 0
+      page_step: 1
+      page_size:
+        default: 100
+        max: 100
+        query_param: page_size
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Monitor ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Monitor name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Monitor type
+        expr:
+          kind: path
+          path:
+            - type
+      - name: query
+        type: Utf8
+        nullable: true
+        description: Monitor query
+        expr:
+          kind: path
+          path:
+            - query
+      - name: status
+        type: Utf8
+        nullable: true
+        description: "Monitor status. Values: Alert, Warn, No Data, OK, Ignored, Skipped."
+        expr:
+          kind: path
+          path:
+            - overall_state
+      - name: message
+        type: Utf8
+        nullable: true
+        description: Notification message
+        expr:
+          kind: path
+          path:
+            - message
+      - name: created
+        type: Utf8
+        nullable: true
+        description: Created timestamp
+        expr:
+          kind: path
+          path:
+            - created
+      - name: modified
+        type: Utf8
+        nullable: true
+        description: Modified timestamp
+        expr:
+          kind: path
+          path:
+            - modified
+      - name: tags
+        type: Utf8
+        nullable: true
+        description: Comma-separated tags
+        expr:
+          kind: join_array
+          path:
+            - tags
+  - name: monitor_search
+    description: Datadog monitor search results
+    request:
+      method: GET
+      path: /api/v1/monitor/search
+      query:
+        - name: query
+          from: filter
+          key: query
+    response:
+      rows_path:
+        - monitors
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 0
+      page_step: 1
+      page_size:
+        default: 100
+        max: 100
+        query_param: per_page
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Monitor ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Monitor name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Monitor type
+        expr:
+          kind: path
+          path:
+            - type
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Monitor status
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path:
+                - overall_state
+            - kind: path
+              path:
+                - status
+      - name: monitor_query
+        type: Utf8
+        nullable: true
+        description: Monitor query
+        expr:
+          kind: path
+          path:
+            - query
+      - name: tags
+        type: Utf8
+        nullable: true
+        description: Comma-separated tags
+        expr:
+          kind: join_array
+          path:
+            - tags
+      - name: query
+        type: Utf8
+        nullable: true
+        description: Monitor search query virtual filter
+        expr:
+          kind: 'null'
+        virtual: true
+    filters:
+      - name: query
+        required: true
+  - name: events
+    description: Datadog events within a time range.
+    guide: >
+      Requires start and end filters in ISO 8601 format (e.g. '2024-01-15T00:00:00Z').
+      date_happened is Unix epoch seconds. Priority values: normal, low.
+    request:
+      method: GET
+      path: /api/v1/events
+      query:
+        - name: start
+          from: filter
+          key: start
+        - name: end
+          from: filter
+          key: end
+    response:
+      rows_path:
+        - events
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 0
+      page_step: 1
+      page_size:
+        default: 100
+        max: 100
+        query_param: page_size
+    columns:
+      - name: id
+        type: Int64
+        nullable: true
+        description: Event ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Event title
+        expr:
+          kind: path
+          path:
+            - title
+      - name: text
+        type: Utf8
+        nullable: true
+        description: Event body
+        expr:
+          kind: path
+          path:
+            - text
+      - name: date_happened
+        type: Int64
+        nullable: true
+        description: "Event timestamp as Unix epoch seconds. Divide by 1 for seconds, no conversion
+          needed."
+        expr:
+          kind: path
+          path:
+            - date_happened
+      - name: host
+        type: Utf8
+        nullable: true
+        description: Host
+        expr:
+          kind: path
+          path:
+            - host
+      - name: source
+        type: Utf8
+        nullable: true
+        description: Source
+        expr:
+          kind: path
+          path:
+            - source
+      - name: priority
+        type: Utf8
+        nullable: true
+        description: "Event priority. Values: normal, low."
+        expr:
+          kind: path
+          path:
+            - priority
+      - name: tags
+        type: Utf8
+        nullable: true
+        description: Comma-separated tags
+        expr:
+          kind: join_array
+          path:
+            - tags
+      - name: start
+        type: Utf8
+        nullable: true
+        description: Start time virtual filter
+        expr:
+          kind: 'null'
+        virtual: true
+      - name: end
+        type: Utf8
+        nullable: true
+        description: End time virtual filter
+        expr:
+          kind: 'null'
+        virtual: true
+    filters:
+      - name: start
+        required: true
+      - name: end
+        required: true
+  - name: incidents
+    description: Datadog incidents
+    request:
+      method: GET
+      path: /api/v2/incidents
+      query: []
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: offset
+      offset_param: page[offset]
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 100
+        query_param: page[size]
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Incident ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Incident title
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path:
+                - attributes
+                - title
+            - kind: path
+              path:
+                - title
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Status
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path:
+                - attributes
+                - status
+            - kind: path
+              path:
+                - status
+      - name: severity
+        type: Utf8
+        nullable: true
+        description: Severity
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path:
+                - attributes
+                - severity
+            - kind: path
+              path:
+                - severity
+      - name: created
+        type: Utf8
+        nullable: true
+        description: Created timestamp
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path:
+                - attributes
+                - created
+            - kind: path
+              path:
+                - created
+      - name: modified
+        type: Utf8
+        nullable: true
+        description: Modified timestamp
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path:
+                - attributes
+                - modified
+            - kind: path
+              path:
+                - modified
+      - name: resolved_at
+        type: Utf8
+        nullable: true
+        description: Resolved timestamp
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path:
+                - attributes
+                - resolved
+            - kind: path
+              path:
+                - resolved_at
+      - name: customer_impacted
+        type: Boolean
+        nullable: true
+        description: Customer impacted
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path:
+                - attributes
+                - customer_impacted
+            - kind: path
+              path:
+                - customer_impacted
+            - kind: literal
+              value: false
+  - name: dashboards
+    description: Datadog dashboards
+    request:
+      method: GET
+      path: /api/v1/dashboard
+      query: []
+    response:
+      rows_path:
+        - dashboards
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Dashboard ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Dashboard title
+        expr:
+          kind: path
+          path:
+            - title
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Description
+        expr:
+          kind: path
+          path:
+            - description
+      - name: author_handle
+        type: Utf8
+        nullable: true
+        description: Author handle
+        expr:
+          kind: path
+          path:
+            - author_handle
+      - name: layout_type
+        type: Utf8
+        nullable: true
+        description: Layout type
+        expr:
+          kind: path
+          path:
+            - layout_type
+      - name: url
+        type: Utf8
+        nullable: true
+        description: URL
+        expr:
+          kind: path
+          path:
+            - url
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Created timestamp
+        expr:
+          kind: path
+          path:
+            - created_at
+      - name: modified_at
+        type: Utf8
+        nullable: true
+        description: Modified timestamp
+        expr:
+          kind: path
+          path:
+            - modified_at
+  - name: hosts
+    description: Datadog infrastructure hosts.
+    guide: >
+      No required filters — returns all hosts. Use up = true to filter for live hosts.
+      last_reported_time is Unix epoch seconds.
+    request:
+      method: GET
+      path: /api/v1/hosts
+      query: []
+    response:
+      rows_path:
+        - host_list
+    pagination:
+      mode: offset
+      offset_param: start
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 1000
+        query_param: count
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Host name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: id
+        type: Int64
+        nullable: true
+        description: Host ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: up
+        type: Boolean
+        nullable: true
+        description: Host up status
+        expr:
+          kind: path
+          path:
+            - up
+      - name: is_muted
+        type: Boolean
+        nullable: true
+        description: Host muted flag
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path:
+                - is_muted
+            - kind: path
+              path:
+                - is_muting
+      - name: apps
+        type: Utf8
+        nullable: true
+        description: Comma-separated apps
+        expr:
+          kind: join_array
+          path:
+            - apps
+      - name: sources
+        type: Utf8
+        nullable: true
+        description: Comma-separated sources
+        expr:
+          kind: join_array
+          path:
+            - sources
+      - name: host_name
+        type: Utf8
+        nullable: true
+        description: Canonical host name
+        expr:
+          kind: path
+          path:
+            - host_name
+      - name: last_reported_time
+        type: Int64
+        nullable: true
+        description: "Last reported time as Unix epoch seconds."
+        expr:
+          kind: path
+          path:
+            - last_reported_time
+  - name: services
+    description: Datadog service catalog definitions
+    request:
+      method: GET
+      path: /api/v2/services/definitions
+      query: []
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: page
+      page_param: page[number]
+      page_start: 0
+      page_step: 1
+      page_size:
+        default: 100
+        max: 100
+        query_param: page[size]
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Service definition ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Service name
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path:
+                - attributes
+                - schema
+                - dd-service
+            - kind: path
+              path:
+                - attributes
+                - schema
+                - dd_service
+            - kind: path
+              path:
+                - attributes
+                - schema
+                - service
+            - kind: path
+              path:
+                - attributes
+                - schema
+                - name
+            - kind: path
+              path:
+                - id
+      - name: schema_version
+        type: Utf8
+        nullable: true
+        description: Service definition schema version
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path:
+                - attributes
+                - schema
+                - schema-version
+            - kind: path
+              path:
+                - attributes
+                - schema
+                - schema_version
+      - name: team
+        type: Utf8
+        nullable: true
+        description: Owning team
+        expr:
+          kind: path
+          path:
+            - attributes
+            - schema
+            - team
+  - name: apm_dependencies
+    description: Datadog APM service dependencies for a focal service
+    request:
+      method: GET
+      path: /api/v1/service_dependencies/{{filter.service}}
+      query:
+        - name: env
+          from: filter
+          key: env
+          default: '*'
+        - name: start
+          from: filter
+          key: start
+        - name: end
+          from: filter
+          key: end
+        - name: primary_tag
+          from: filter
+          key: primary_tag
+    response: {}
+    pagination:
+      mode: none
+    columns:
+      - name: service
+        type: Utf8
+        nullable: true
+        description: Focal service name
+        expr:
+          kind: from_filter
+          key: service
+      - name: env
+        type: Utf8
+        nullable: true
+        description: Environment
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path:
+                - env
+            - kind: path
+              path:
+                - data
+                - env
+            - kind: path
+              path:
+                - attributes
+                - env
+            - kind: path
+              path:
+                - data
+                - attributes
+                - env
+      - name: start
+        type: Int64
+        nullable: true
+        description: Start unix timestamp
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path:
+                - start
+            - kind: path
+              path:
+                - data
+                - start
+            - kind: path
+              path:
+                - attributes
+                - start
+            - kind: path
+              path:
+                - data
+                - attributes
+                - start
+      - name: end
+        type: Int64
+        nullable: true
+        description: End unix timestamp
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path:
+                - end
+            - kind: path
+              path:
+                - data
+                - end
+            - kind: path
+              path:
+                - attributes
+                - end
+            - kind: path
+              path:
+                - data
+                - attributes
+                - end
+      - name: called_by
+        type: Utf8
+        nullable: true
+        description: Comma-separated upstream services
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: join_array
+              path:
+                - called_by
+            - kind: join_array
+              path:
+                - data
+                - called_by
+            - kind: join_array
+              path:
+                - attributes
+                - called_by
+            - kind: join_array
+              path:
+                - data
+                - attributes
+                - called_by
+      - name: calls
+        type: Utf8
+        nullable: true
+        description: Comma-separated downstream services
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: join_array
+              path:
+                - calls
+            - kind: join_array
+              path:
+                - data
+                - calls
+            - kind: join_array
+              path:
+                - attributes
+                - calls
+            - kind: join_array
+              path:
+                - data
+                - attributes
+                - calls
+      - name: primary_tag
+        type: Utf8
+        nullable: true
+        description: Primary tag virtual filter
+        expr:
+          kind: 'null'
+        virtual: true
+    filters:
+      - name: service
+        required: true
+      - name: env
+      - name: start
+      - name: end
+      - name: primary_tag
+  - name: downtimes
+    description: Datadog scheduled downtimes
+    request:
+      method: GET
+      path: /api/v2/downtime
+      query: []
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: offset
+      offset_param: page[offset]
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 100
+        query_param: page[limit]
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Downtime ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: message
+        type: Utf8
+        nullable: true
+        description: Message
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path:
+                - attributes
+                - message
+            - kind: path
+              path:
+                - message
+      - name: scope
+        type: Utf8
+        nullable: true
+        description: Scope
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path:
+                - attributes
+                - scope
+            - kind: path
+              path:
+                - scope
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Status
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path:
+                - attributes
+                - status
+            - kind: path
+              path:
+                - status
+      - name: monitor_identifier
+        type: Utf8
+        nullable: true
+        description: Monitor identifier
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path:
+                - attributes
+                - monitor_identifier
+                - monitor_id
+            - kind: path
+              path:
+                - attributes
+                - monitor_identifier
+            - kind: path
+              path:
+                - monitor_identifier
+      - name: created
+        type: Utf8
+        nullable: true
+        description: Created timestamp
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path:
+                - attributes
+                - created
+            - kind: path
+              path:
+                - created
+      - name: modified
+        type: Utf8
+        nullable: true
+        description: Modified timestamp
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path:
+                - attributes
+                - modified
+            - kind: path
+              path:
+                - modified
+      - name: canceled
+        type: Utf8
+        nullable: true
+        description: Canceled timestamp
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path:
+                - attributes
+                - canceled
+            - kind: path
+              path:
+                - canceled
+  - name: slos
+    description: Datadog SLO definitions
+    request:
+      method: GET
+      path: /api/v1/slo
+      query:
+        - name: limit
+          from: literal
+          value: '1000'
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: SLO ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Type
+        expr:
+          kind: path
+          path:
+            - type
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Description
+        expr:
+          kind: path
+          path:
+            - description
+      - name: target_threshold
+        type: Float64
+        nullable: true
+        description: Target threshold
+        expr:
+          kind: first_array_item_path
+          path:
+            - thresholds
+          item_path:
+            - target
+      - name: timeframe
+        type: Utf8
+        nullable: true
+        description: Timeframe
+        expr:
+          kind: first_array_item_path
+          path:
+            - thresholds
+          item_path:
+            - timeframe
+      - name: tags
+        type: Utf8
+        nullable: true
+        description: Comma-separated tags
+        expr:
+          kind: join_array
+          path:
+            - tags
+      - name: created_at
+        type: Int64
+        nullable: true
+        description: Created unix timestamp
+        expr:
+          kind: path
+          path:
+            - created_at
+      - name: modified_at
+        type: Int64
+        nullable: true
+        description: Modified unix timestamp
+        expr:
+          kind: path
+          path:
+            - modified_at
+  - name: synthetics_tests
+    description: Datadog synthetics tests
+    request:
+      method: GET
+      path: /api/v1/synthetics/tests
+      query: []
+    response:
+      rows_path:
+        - tests
+    pagination:
+      mode: none
+    columns:
+      - name: public_id
+        type: Utf8
+        nullable: false
+        description: Public test ID
+        expr:
+          kind: path
+          path:
+            - public_id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Test name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Test type
+        expr:
+          kind: path
+          path:
+            - type
+      - name: subtype
+        type: Utf8
+        nullable: true
+        description: Test subtype
+        expr:
+          kind: path
+          path:
+            - subtype
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Test status
+        expr:
+          kind: path
+          path:
+            - status
+      - name: message
+        type: Utf8
+        nullable: true
+        description: Message
+        expr:
+          kind: path
+          path:
+            - message
+      - name: locations
+        type: Utf8
+        nullable: true
+        description: Comma-separated locations
+        expr:
+          kind: join_array
+          path:
+            - locations
+      - name: tags
+        type: Utf8
+        nullable: true
+        description: Comma-separated tags
+        expr:
+          kind: join_array
+          path:
+            - tags
+  - name: users
+    description: Datadog organization users
+    request:
+      method: GET
+      path: /api/v2/users
+      query: []
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: page
+      page_param: page[number]
+      page_start: 0
+      page_step: 1
+      page_size:
+        default: 100
+        max: 100
+        query_param: page[size]
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: User ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Name
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path:
+                - attributes
+                - name
+            - kind: path
+              path:
+                - name
+      - name: email
+        type: Utf8
+        nullable: true
+        description: Email
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path:
+                - attributes
+                - email
+            - kind: path
+              path:
+                - email
+      - name: handle
+        type: Utf8
+        nullable: true
+        description: Handle
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path:
+                - attributes
+                - handle
+            - kind: path
+              path:
+                - handle
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Status
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path:
+                - attributes
+                - status
+            - kind: path
+              path:
+                - status
+      - name: disabled
+        type: Boolean
+        nullable: true
+        description: Disabled flag
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path:
+                - attributes
+                - disabled
+            - kind: path
+              path:
+                - disabled
+            - kind: literal
+              value: false
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Created timestamp
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path:
+                - attributes
+                - created_at
+            - kind: path
+              path:
+                - created_at
+  - name: logs
+    description: Datadog logs within a time range.
+    guide: >
+      Requires start and end filters in ISO 8601 format (e.g. '2024-01-15T00:00:00Z').
+      Optional query filter uses Datadog log search syntax (e.g. 'service:web status:error').
+      Severity levels: emergency, alert, critical, error, warn, info, debug, trace.
+      Timestamps are ISO 8601.
+    fetch_limit_default: 1000
+    request:
+      method: POST
+      path: /api/v2/logs/events/search
+      query: []
+      body:
+        - path:
+            - filter
+            - query
+          from: filter
+          key: query
+          default: '*'
+        - path:
+            - filter
+            - from
+          from: filter
+          key: start
+        - path:
+            - filter
+            - to
+          from: filter
+          key: end
+        - path:
+            - sort
+          from: literal
+          value: -timestamp
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: cursor_body
+      cursor_body_path:
+        - page
+        - cursor
+      response_cursor_path:
+        - meta
+        - page
+        - after
+      page_size:
+        default: 1000
+        max: 1000
+        body_path:
+          - page
+          - limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Log ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: message
+        type: Utf8
+        nullable: true
+        description: "Log message body. The primary text content of the log entry."
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path:
+                - attributes
+                - message
+            - kind: path
+              path:
+                - message
+      - name: service
+        type: Utf8
+        nullable: true
+        description: Service name
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path:
+                - attributes
+                - service
+            - kind: path
+              path:
+                - service
+      - name: host
+        type: Utf8
+        nullable: true
+        description: Host name
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path:
+                - attributes
+                - host
+            - kind: path
+              path:
+                - host
+      - name: status
+        type: Utf8
+        nullable: true
+        description: "Log severity level. Values: emergency, alert, critical, error, warn,
+          info, debug, trace."
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path:
+                - attributes
+                - status
+            - kind: path
+              path:
+                - status
+      - name: timestamp
+        type: Utf8
+        nullable: true
+        description: "Log timestamp in ISO 8601 format."
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path:
+                - attributes
+                - timestamp
+            - kind: path
+              path:
+                - timestamp
+      - name: tags
+        type: Utf8
+        nullable: true
+        description: Comma-separated tags
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: join_array
+              path:
+                - attributes
+                - tags
+            - kind: join_array
+              path:
+                - tags
+      - name: start
+        type: Utf8
+        nullable: true
+        description: Start time virtual filter
+        expr:
+          kind: 'null'
+        virtual: true
+      - name: end
+        type: Utf8
+        nullable: true
+        description: End time virtual filter
+        expr:
+          kind: 'null'
+        virtual: true
+      - name: query
+        type: Utf8
+        nullable: true
+        description: Query virtual filter
+        expr:
+          kind: 'null'
+        virtual: true
+    filters:
+      - name: start
+        required: true
+      - name: end
+        required: true
+      - name: query
+  - name: spans
+    description: Datadog APM distributed tracing spans within a time range.
+    guide: >
+      Requires start and end filters in ISO 8601 format (e.g. '2024-01-15T00:00:00Z').
+      Optional query filter uses Datadog trace search syntax (e.g. 'service:web resource_name:/api/v1').
+      Duration is in nanoseconds (/1e6 for ms, /1e9 for seconds).
+      Resource is typically the endpoint path or DB query — use for grouping by operation.
+    fetch_limit_default: 1000
+    request:
+      method: GET
+      path: /api/v2/spans/events
+      query:
+        - name: filter[query]
+          from: filter
+          key: query
+          default: '*'
+        - name: filter[from]
+          from: filter
+          key: start
+        - name: filter[to]
+          from: filter
+          key: end
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: cursor_query
+      cursor_param: page[cursor]
+      response_cursor_path:
+        - meta
+        - page
+        - after
+      page_size:
+        default: 1000
+        max: 1000
+        query_param: page[limit]
+    columns:
+      - name: span_id
+        type: Utf8
+        nullable: true
+        description: Span ID
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path:
+                - attributes
+                - span_id
+            - kind: path
+              path:
+                - span_id
+      - name: trace_id
+        type: Utf8
+        nullable: true
+        description: "Distributed trace ID."
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path:
+                - attributes
+                - trace_id
+            - kind: path
+              path:
+                - trace_id
+      - name: service
+        type: Utf8
+        nullable: true
+        description: Service name
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path:
+                - attributes
+                - service
+            - kind: path
+              path:
+                - service
+      - name: resource
+        type: Utf8
+        nullable: true
+        description: "Resource name — typically the endpoint path or database query. Use for
+          grouping spans by operation."
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path:
+                - attributes
+                - resource_name
+            - kind: path
+              path:
+                - resource_name
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Operation name
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path:
+                - attributes
+                - operation_name
+            - kind: path
+              path:
+                - operation_name
+      - name: duration
+        type: Int64
+        nullable: true
+        description: "Span duration in nanoseconds. /1e6 for milliseconds, /1e9 for seconds."
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path:
+                - attributes
+                - custom
+                - duration
+            - kind: path
+              path:
+                - attributes
+                - duration
+      - name: start
+        type: Utf8
+        nullable: true
+        description: "Span start timestamp in ISO 8601 format."
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path:
+                - attributes
+                - start_timestamp
+            - kind: path
+              path:
+                - start_timestamp
+      - name: tags
+        type: Utf8
+        nullable: true
+        description: Comma-separated tags
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: join_array
+              path:
+                - attributes
+                - tags
+            - kind: join_array
+              path:
+                - tags
+      - name: end
+        type: Utf8
+        nullable: true
+        description: End time virtual filter
+        expr:
+          kind: 'null'
+        virtual: true
+      - name: query
+        type: Utf8
+        nullable: true
+        description: Query virtual filter
+        expr:
+          kind: 'null'
+        virtual: true
+    filters:
+      - name: start
+        required: true
+      - name: end
+        required: true
+      - name: query
+  - name: metrics
+    description: Datadog metrics timeseries data.
+    guide: >
+      Requires query, start, and end filters. The query filter uses Datadog metrics query
+      syntax
+      (e.g. 'avg:system.cpu.user{*}', 'sum:trace.servlet.request.hits{service:web}.as_count()').
+      Timestamp is Unix epoch milliseconds (/1000 for seconds). Scope is the tag group (e.g.
+      'host:web-01').
+    request:
+      method: GET
+      path: /api/v1/query
+      query:
+        - name: query
+          from: filter
+          key: query
+        - name: from
+          from: filter
+          key: start
+        - name: to
+          from: filter
+          key: end
+    response:
+      row_strategy: series_point_list
+    pagination:
+      mode: none
+    columns:
+      - name: metric
+        type: Utf8
+        nullable: true
+        description: Metric name
+        expr:
+          kind: path
+          path:
+            - metric
+      - name: scope
+        type: Utf8
+        nullable: true
+        description: "Metric scope — the tag group for this series (e.g. 'host:web-01')."
+        expr:
+          kind: path
+          path:
+            - scope
+      - name: timestamp
+        type: Int64
+        nullable: true
+        description: "Data point timestamp as Unix epoch milliseconds. /1000 for seconds."
+        expr:
+          kind: path
+          path:
+            - timestamp
+      - name: value
+        type: Float64
+        nullable: true
+        description: Metric value
+        expr:
+          kind: path
+          path:
+            - value
+      - name: start
+        type: Utf8
+        nullable: true
+        description: Start time virtual filter
+        expr:
+          kind: 'null'
+        virtual: true
+      - name: end
+        type: Utf8
+        nullable: true
+        description: End time virtual filter
+        expr:
+          kind: 'null'
+        virtual: true
+      - name: query
+        type: Utf8
+        nullable: true
+        description: Query virtual filter
+        expr:
+          kind: 'null'
+        virtual: true
+    filters:
+      - name: query
+        required: true
+      - name: start
+        required: true
+      - name: end
+        required: true
+  - name: metric_names
+    description: Datadog metric names
+    request:
+      method: GET
+      path: /api/v1/metrics
+      query:
+        - name: q
+          from: filter
+          key: query
+          default: ''
+        - name: from
+          from: now_epoch_minus_seconds
+          seconds: 3600
+    response:
+      rows_path:
+        - metrics
+    pagination:
+      mode: none
+    columns:
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Metric name
+        expr:
+          kind: current_row
+      - name: query
+        type: Utf8
+        nullable: true
+        description: Optional prefix query virtual filter
+        expr:
+          kind: 'null'
+        virtual: true
+    filters:
+      - name: query

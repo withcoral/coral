@@ -1,0 +1,31 @@
+syntax = "proto3";
+
+package coral.v1;
+
+import "coral/v1/resources.proto";
+
+// A column exposed by a discoverable query table.
+message Column {
+  // The column name as exposed by the query engine.
+  string name = 1;
+  // The DataFusion/Arrow data type rendered as text.
+  string data_type = 2;
+  // Whether the column can contain null values.
+  bool nullable = 3;
+}
+
+// A query-visible table in one workspace.
+message Table {
+  // Workspace whose source set makes this table visible.
+  Workspace workspace = 1;
+  // The schema name used for SQL qualification.
+  string schema_name = 2;
+  // The bare table name within the schema.
+  string name = 3;
+  // The user-facing table description.
+  string description = 4;
+  // The columns exposed by the table.
+  repeated Column columns = 5;
+  // Required filter names, if any.
+  repeated string required_filters = 6;
+}

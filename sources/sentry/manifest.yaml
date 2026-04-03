@@ -1,0 +1,987 @@
+name: sentry
+version: 2.0.0
+dsl_version: 3
+backend: http
+description: Track errors, manage releases, and monitor deployments across projects
+base_url: https://sentry.io
+auth:
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{secret.SENTRY_TOKEN}}
+
+tables:
+  - name: projects
+    description: Sentry projects in the organization
+    request:
+      method: GET
+      path: /api/0/organizations/{{variable.SENTRY_ORG}}/projects/
+      query: []
+    response: {}
+    pagination:
+      mode: link_header
+      link_header_require_results: true
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Project ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: slug
+        type: Utf8
+        nullable: false
+        description: Project slug
+        expr:
+          kind: path
+          path:
+            - slug
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Project name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: platform
+        type: Utf8
+        nullable: true
+        description: Platform
+        expr:
+          kind: path
+          path:
+            - platform
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Project status
+        expr:
+          kind: path
+          path:
+            - status
+      - name: date_created
+        type: Utf8
+        nullable: true
+        description: Creation timestamp
+        expr:
+          kind: path
+          path:
+            - dateCreated
+  - name: issues
+    description: Sentry issues across projects
+    request:
+      method: GET
+      path: /api/0/organizations/{{variable.SENTRY_ORG}}/issues/
+      query:
+        - name: project
+          from: filter
+          key: project
+    response: {}
+    pagination:
+      mode: link_header
+      link_header_require_results: true
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Issue ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: title
+        type: Utf8
+        nullable: false
+        description: Issue title
+        expr:
+          kind: path
+          path:
+            - title
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Issue status
+        expr:
+          kind: path
+          path:
+            - status
+      - name: level
+        type: Utf8
+        nullable: true
+        description: Severity level
+        expr:
+          kind: path
+          path:
+            - level
+      - name: count
+        type: Int64
+        nullable: true
+        description: Event count
+        expr:
+          kind: path
+          path:
+            - count
+      - name: user_count
+        type: Int64
+        nullable: true
+        description: User count
+        expr:
+          kind: path
+          path:
+            - userCount
+      - name: first_seen
+        type: Utf8
+        nullable: true
+        description: First seen
+        expr:
+          kind: path
+          path:
+            - firstSeen
+      - name: last_seen
+        type: Utf8
+        nullable: true
+        description: Last seen
+        expr:
+          kind: path
+          path:
+            - lastSeen
+      - name: project
+        type: Utf8
+        nullable: true
+        description: Project slug
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path:
+                - project
+                - slug
+            - kind: path
+              path:
+                - project
+    filters:
+      - name: project
+  - name: events
+    description: Individual events for a specific issue
+    request:
+      method: GET
+      path: 
+        /api/0/organizations/{{variable.SENTRY_ORG}}/issues/{{filter.issue_id}}/events/
+      query: []
+    response: {}
+    pagination:
+      mode: link_header
+      link_header_require_results: true
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Event ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: event_id
+        type: Utf8
+        nullable: true
+        description: Event UUID
+        expr:
+          kind: path
+          path:
+            - eventID
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Event title
+        expr:
+          kind: path
+          path:
+            - title
+      - name: message
+        type: Utf8
+        nullable: true
+        description: Event message
+        expr:
+          kind: path
+          path:
+            - message
+      - name: timestamp
+        type: Utf8
+        nullable: true
+        description: Event timestamp
+        expr:
+          kind: path
+          path:
+            - dateCreated
+      - name: platform
+        type: Utf8
+        nullable: true
+        description: Platform
+        expr:
+          kind: path
+          path:
+            - platform
+      - name: environment
+        type: Utf8
+        nullable: true
+        description: Environment
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: tag_value
+              path:
+                - tags
+              key: environment
+            - kind: path
+              path:
+                - environment
+      - name: release
+        type: Utf8
+        nullable: true
+        description: Release
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: tag_value
+              path:
+                - tags
+              key: release
+            - kind: path
+              path:
+                - release
+      - name: issue_id
+        type: Utf8
+        nullable: true
+        description: Required issue filter
+        expr:
+          kind: 'null'
+        virtual: true
+    filters:
+      - name: issue_id
+        required: true
+  - name: issue_tags
+    description: Tags for a specific issue
+    request:
+      method: GET
+      path: /api/0/issues/{{filter.issue_id}}/tags/
+      query: []
+    response: {}
+    pagination:
+      mode: link_header
+      link_header_require_results: true
+    columns:
+      - name: key
+        type: Utf8
+        nullable: true
+        description: Tag key
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path:
+                - key
+            - kind: path
+              path:
+                - name
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Tag name
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path:
+                - name
+            - kind: path
+              path:
+                - key
+      - name: issue_id
+        type: Utf8
+        nullable: true
+        description: Required issue filter
+        expr:
+          kind: from_filter
+          key: issue_id
+    filters:
+      - name: issue_id
+        required: true
+  - name: issue_participants
+    description: Participants for a specific issue
+    request:
+      method: GET
+      path: /api/0/issues/{{filter.issue_id}}/participants/
+      query: []
+    response: {}
+    pagination:
+      mode: link_header
+      link_header_require_results: true
+    columns:
+      - name: id
+        type: Utf8
+        nullable: true
+        description: Participant ID
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path:
+                - id
+            - kind: path
+              path:
+                - user
+                - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Participant name
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path:
+                - name
+            - kind: path
+              path:
+                - user
+                - name
+      - name: email
+        type: Utf8
+        nullable: true
+        description: Participant email
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path:
+                - email
+            - kind: path
+              path:
+                - user
+                - email
+      - name: issue_id
+        type: Utf8
+        nullable: true
+        description: Required issue filter
+        expr:
+          kind: from_filter
+          key: issue_id
+    filters:
+      - name: issue_id
+        required: true
+  - name: teams
+    description: Teams in the organization
+    request:
+      method: GET
+      path: /api/0/organizations/{{variable.SENTRY_ORG}}/teams/
+      query: []
+    response: {}
+    pagination:
+      mode: link_header
+      link_header_require_results: true
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Team ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: slug
+        type: Utf8
+        nullable: false
+        description: Team slug
+        expr:
+          kind: path
+          path:
+            - slug
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Team name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: date_created
+        type: Utf8
+        nullable: true
+        description: Creation timestamp
+        expr:
+          kind: path
+          path:
+            - dateCreated
+      - name: is_member
+        type: Boolean
+        nullable: true
+        description: Is member
+        expr:
+          kind: path
+          path:
+            - isMember
+      - name: member_count
+        type: Int64
+        nullable: true
+        description: Member count
+        expr:
+          kind: path
+          path:
+            - memberCount
+      - name: has_access
+        type: Boolean
+        nullable: true
+        description: Has access
+        expr:
+          kind: path
+          path:
+            - hasAccess
+  - name: members
+    description: Organization members
+    request:
+      method: GET
+      path: /api/0/organizations/{{variable.SENTRY_ORG}}/members/
+      query: []
+    response: {}
+    pagination:
+      mode: link_header
+      link_header_require_results: true
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Member ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: email
+        type: Utf8
+        nullable: true
+        description: Email
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path:
+                - email
+            - kind: path
+              path:
+                - user
+                - email
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Name
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path:
+                - name
+            - kind: path
+              path:
+                - user
+                - name
+      - name: role
+        type: Utf8
+        nullable: true
+        description: Role
+        expr:
+          kind: path
+          path:
+            - orgRole
+      - name: pending
+        type: Boolean
+        nullable: true
+        description: Pending invite
+        expr:
+          kind: path
+          path:
+            - pending
+      - name: expired
+        type: Boolean
+        nullable: true
+        description: Expired invite
+        expr:
+          kind: path
+          path:
+            - expired
+      - name: date_created
+        type: Utf8
+        nullable: true
+        description: Creation timestamp
+        expr:
+          kind: path
+          path:
+            - dateCreated
+      - name: invite_status
+        type: Utf8
+        nullable: true
+        description: Invite status
+        expr:
+          kind: path
+          path:
+            - inviteStatus
+  - name: releases
+    description: Organization releases
+    request:
+      method: GET
+      path: /api/0/organizations/{{variable.SENTRY_ORG}}/releases/
+      query: []
+    response: {}
+    pagination:
+      mode: link_header
+      link_header_require_results: true
+    columns:
+      - name: version
+        type: Utf8
+        nullable: false
+        description: Release version
+        expr:
+          kind: path
+          path:
+            - version
+      - name: short_version
+        type: Utf8
+        nullable: true
+        description: Short version
+        expr:
+          kind: path
+          path:
+            - shortVersion
+      - name: date_created
+        type: Utf8
+        nullable: true
+        description: Created timestamp
+        expr:
+          kind: path
+          path:
+            - dateCreated
+      - name: date_released
+        type: Utf8
+        nullable: true
+        description: Released timestamp
+        expr:
+          kind: path
+          path:
+            - dateReleased
+      - name: new_groups
+        type: Int64
+        nullable: true
+        description: New groups
+        expr:
+          kind: path
+          path:
+            - newGroups
+      - name: commit_count
+        type: Int64
+        nullable: true
+        description: Commit count
+        expr:
+          kind: path
+          path:
+            - commitCount
+      - name: deploy_count
+        type: Int64
+        nullable: true
+        description: Deploy count
+        expr:
+          kind: path
+          path:
+            - deployCount
+      - name: first_event
+        type: Utf8
+        nullable: true
+        description: First event timestamp
+        expr:
+          kind: path
+          path:
+            - firstEvent
+      - name: last_event
+        type: Utf8
+        nullable: true
+        description: Last event timestamp
+        expr:
+          kind: path
+          path:
+            - lastEvent
+  - name: deployments
+    description: Deployments for a release version
+    request:
+      method: GET
+      path: 
+        /api/0/organizations/{{variable.SENTRY_ORG}}/releases/{{filter.version}}/deploys/
+      query: []
+    response: {}
+    pagination:
+      mode: link_header
+      link_header_require_results: true
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Deployment ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: version
+        type: Utf8
+        nullable: true
+        description: Required release version filter
+        expr:
+          kind: from_filter
+          key: version
+      - name: environment
+        type: Utf8
+        nullable: true
+        description: Environment
+        expr:
+          kind: path
+          path:
+            - environment
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Deployment name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: date_started
+        type: Utf8
+        nullable: true
+        description: Start timestamp
+        expr:
+          kind: path
+          path:
+            - dateStarted
+      - name: date_finished
+        type: Utf8
+        nullable: true
+        description: End timestamp
+        expr:
+          kind: path
+          path:
+            - dateFinished
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Deployment URL
+        expr:
+          kind: path
+          path:
+            - url
+    filters:
+      - name: version
+        required: true
+  - name: release_files
+    description: Files for a release version
+    request:
+      method: GET
+      path: 
+        /api/0/organizations/{{variable.SENTRY_ORG}}/releases/{{filter.version}}/files/
+      query: []
+    response: {}
+    pagination:
+      mode: link_header
+      link_header_require_results: true
+    columns:
+      - name: id
+        type: Utf8
+        nullable: true
+        description: File ID
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path:
+                - id
+            - kind: path
+              path:
+                - ident
+      - name: version
+        type: Utf8
+        nullable: true
+        description: Required release version filter
+        expr:
+          kind: from_filter
+          key: version
+      - name: name
+        type: Utf8
+        nullable: true
+        description: File name
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path:
+                - name
+            - kind: path
+              path:
+                - fileName
+            - kind: path
+              path:
+                - filename
+    filters:
+      - name: version
+        required: true
+  - name: project_events
+    description: Recent events for a specific project
+    request:
+      method: GET
+      path: /api/0/projects/{{variable.SENTRY_ORG}}/{{filter.project}}/events/
+      query: []
+    response: {}
+    pagination:
+      mode: link_header
+      link_header_require_results: true
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Event ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: event_id
+        type: Utf8
+        nullable: true
+        description: Event UUID
+        expr:
+          kind: path
+          path:
+            - eventID
+      - name: project_id
+        type: Utf8
+        nullable: true
+        description: Project ID
+        expr:
+          kind: path
+          path:
+            - projectID
+      - name: group_id
+        type: Utf8
+        nullable: true
+        description: Group ID
+        expr:
+          kind: path
+          path:
+            - groupID
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Title
+        expr:
+          kind: path
+          path:
+            - title
+      - name: message
+        type: Utf8
+        nullable: true
+        description: Message
+        expr:
+          kind: path
+          path:
+            - message
+      - name: timestamp
+        type: Utf8
+        nullable: true
+        description: Timestamp
+        expr:
+          kind: path
+          path:
+            - dateCreated
+      - name: platform
+        type: Utf8
+        nullable: true
+        description: Platform
+        expr:
+          kind: path
+          path:
+            - platform
+      - name: location
+        type: Utf8
+        nullable: true
+        description: Location
+        expr:
+          kind: path
+          path:
+            - location
+      - name: culprit
+        type: Utf8
+        nullable: true
+        description: Culprit
+        expr:
+          kind: path
+          path:
+            - culprit
+      - name: project
+        type: Utf8
+        nullable: true
+        description: Required project filter
+        expr:
+          kind: from_filter
+          key: project
+    filters:
+      - name: project
+        required: true
+  - name: discover
+    description: Sentry discover query interface
+    fetch_limit_default: 1000
+    request:
+      method: GET
+      path: /api/0/organizations/{{variable.SENTRY_ORG}}/events/
+      query:
+        - name: referrer
+          from: literal
+          value: coral
+        - name: field
+          from: literal
+          value: id
+        - name: field
+          from: literal
+          value: title
+        - name: field
+          from: literal
+          value: event.type
+        - name: field
+          from: literal
+          value: project
+        - name: field
+          from: literal
+          value: platform
+        - name: field
+          from: literal
+          value: timestamp
+        - name: field
+          from: literal
+          value: message
+        - name: field
+          from: literal
+          value: transaction
+        - name: field
+          from: literal
+          value: level
+        - name: query
+          from: filter
+          key: query
+        - name: start
+          from: filter
+          key: start
+        - name: end
+          from: filter
+          key: end
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: link_header
+      link_header_require_results: true
+      page_size:
+        default: 100
+        max: 100
+        query_param: per_page
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Event ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Event title
+        expr:
+          kind: path
+          path:
+            - title
+      - name: event_type
+        type: Utf8
+        nullable: true
+        description: Event type
+        expr:
+          kind: path
+          path:
+            - event.type
+      - name: project
+        type: Utf8
+        nullable: true
+        description: Project
+        expr:
+          kind: path
+          path:
+            - project
+      - name: platform
+        type: Utf8
+        nullable: true
+        description: Platform
+        expr:
+          kind: path
+          path:
+            - platform
+      - name: timestamp
+        type: Utf8
+        nullable: true
+        description: Timestamp
+        expr:
+          kind: path
+          path:
+            - timestamp
+      - name: message
+        type: Utf8
+        nullable: true
+        description: Message
+        expr:
+          kind: path
+          path:
+            - message
+      - name: transaction
+        type: Utf8
+        nullable: true
+        description: Transaction
+        expr:
+          kind: path
+          path:
+            - transaction
+      - name: level
+        type: Utf8
+        nullable: true
+        description: Level
+        expr:
+          kind: path
+          path:
+            - level
+      - name: query
+        type: Utf8
+        nullable: true
+        description: Discover query filter
+        expr:
+          kind: 'null'
+        virtual: true
+      - name: start
+        type: Utf8
+        nullable: true
+        description: Discover start filter
+        expr:
+          kind: 'null'
+        virtual: true
+      - name: end
+        type: Utf8
+        nullable: true
+        description: Discover end filter
+        expr:
+          kind: 'null'
+        virtual: true
+    filters:
+      - name: query
+      - name: start
+      - name: end
