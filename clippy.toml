@@ -1,0 +1,4 @@
+disallowed-methods = [
+  { path = "std::env::var", reason = "Use config accessors in coral_app." },
+  { path = "std::env::var_os", reason = "Use config accessors in coral_app." },
+]

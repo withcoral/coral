@@ -1,0 +1,7031 @@
+dsl_version: 3
+name: clickup
+version: '2.0'
+description: Manage tasks, spaces, folders, lists, goals, and time tracking
+backend: http
+base_url: https://api.clickup.com/api
+auth:
+  headers:
+  - name: Authorization
+    from: secret
+    key: CLICKUP_API_TOKEN
+tables:
+- name: current
+  description: Get running time entry
+  filters:
+  - name: team_id
+    required: true
+  - name: assignee
+    required: false
+  request:
+    method: GET
+    path: /v2/team/{{filter.team_id}}/time_entries/current
+    query:
+    - name: assignee
+      explode: true
+      from: filter
+      key: assignee
+  response:
+    allow_404_empty: false
+    row_strategy: direct
+  pagination:
+    mode: auto
+    page_start: 0
+    page_step: 1
+    offset_start: 0
+    link_header_require_results: false
+  columns:
+  - name: assignee
+    type: Float64
+    nullable: true
+    virtual: true
+    description: user id
+    expr:
+      kind: from_filter
+      key: assignee
+  - name: data
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - data
+  - name: data__at
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - data
+      - at
+  - name: data__billable
+    type: Boolean
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - data
+      - billable
+  - name: data__description
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - data
+      - description
+  - name: data__duration
+    type: Int64
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - data
+      - duration
+  - name: data__id
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - data
+      - id
+  - name: data__start
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - data
+      - start
+  - name: data__tags
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - data
+      - tags
+  - name: data__task
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - data
+      - task
+  - name: data__task__id
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - data
+      - task
+      - id
+  - name: data__task__name
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - data
+      - task
+      - name
+  - name: data__task__status
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - data
+      - task
+      - status
+  - name: data__user
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - data
+      - user
+  - name: data__wid
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - data
+      - wid
+  - name: team_id
+    type: Float64
+    nullable: true
+    virtual: true
+    description: Workspace ID
+    expr:
+      kind: from_filter
+      key: team_id
+- name: custom_item
+  description: Get Custom Task Types
+  filters:
+  - name: team_id
+    required: true
+  request:
+    method: GET
+    path: /v2/team/{{filter.team_id}}/custom_item
+  response:
+    rows_path:
+    - custom_items
+    allow_404_empty: false
+    row_strategy: direct
+  pagination:
+    mode: auto
+    page_start: 0
+    page_step: 1
+    offset_start: 0
+    link_header_require_results: false
+  columns:
+  - name: description
+    type: Utf8
+    nullable: true
+    virtual: false
+    description: Custom task type description.
+    expr:
+      kind: path
+      path:
+      - description
+  - name: id
+    type: Int64
+    nullable: true
+    virtual: false
+    description: Custom task type ID.
+    expr:
+      kind: path
+      path:
+      - id
+  - name: name
+    type: Utf8
+    nullable: true
+    virtual: false
+    description: Custom task type name.
+    expr:
+      kind: path
+      path:
+      - name
+  - name: name_plural
+    type: Utf8
+    nullable: true
+    virtual: false
+    description: Custom task type plural name.
+    expr:
+      kind: path
+      path:
+      - name_plural
+  - name: team_id
+    type: Float64
+    nullable: true
+    virtual: true
+    description: Workspace ID
+    expr:
+      kind: from_filter
+      key: team_id
+- name: customroles
+  description: Get Custom Roles
+  filters:
+  - name: team_id
+    required: true
+  - name: include_members
+    required: false
+  request:
+    method: GET
+    path: /v2/team/{{filter.team_id}}/customroles
+    query:
+    - name: include_members
+      explode: true
+      from: filter
+      key: include_members
+  response:
+    rows_path:
+    - custom_roles
+    allow_404_empty: false
+    row_strategy: direct
+  pagination:
+    mode: auto
+    page_start: 0
+    page_step: 1
+    offset_start: 0
+    link_header_require_results: false
+  columns:
+  - name: date_created
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - date_created
+  - name: id
+    type: Int64
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - id
+  - name: include_members
+    type: Boolean
+    nullable: true
+    virtual: true
+    expr:
+      kind: from_filter
+      key: include_members
+  - name: inherited_role
+    type: Int64
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - inherited_role
+  - name: members
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - members
+  - name: name
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - name
+  - name: team_id
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - team_id
+- name: field
+  description: Get Folder Custom Fields
+  filters:
+  - name: folder_id
+    required: true
+  - name: space_id
+    required: false
+  - name: team_id
+    required: false
+  request:
+    method: GET
+    path: /v2/folder/{{filter.folder_id}}/field
+  requests:
+  - when_filters:
+    - space_id
+    method: GET
+    path: /v2/space/{{filter.space_id}}/field
+  - when_filters:
+    - team_id
+    method: GET
+    path: /v2/team/{{filter.team_id}}/field
+  response:
+    allow_404_empty: false
+    row_strategy: direct
+  pagination:
+    mode: auto
+    page_start: 0
+    page_step: 1
+    offset_start: 0
+    link_header_require_results: false
+  columns:
+  - name: fields
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - fields
+  - name: folder_id
+    type: Float64
+    nullable: true
+    virtual: true
+    expr:
+      kind: from_filter
+      key: folder_id
+  - name: space_id
+    type: Utf8
+    nullable: true
+    virtual: true
+    expr:
+      kind: from_filter
+      key: space_id
+  - name: team_id
+    type: Utf8
+    nullable: true
+    virtual: true
+    description: Workspace ID
+    expr:
+      kind: from_filter
+      key: team_id
+- name: folder
+  description: Get Folder
+  filters:
+  - name: folder_id
+    required: true
+  request:
+    method: GET
+    path: /v2/folder/{{filter.folder_id}}
+  response:
+    allow_404_empty: false
+    row_strategy: direct
+  pagination:
+    mode: auto
+    page_start: 0
+    page_step: 1
+    offset_start: 0
+    link_header_require_results: false
+  columns:
+  - name: folder_id
+    type: Float64
+    nullable: true
+    virtual: true
+    expr:
+      kind: from_filter
+      key: folder_id
+  - name: hidden
+    type: Boolean
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - hidden
+  - name: id
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - id
+  - name: lists
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - lists
+  - name: name
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - name
+  - name: orderindex
+    type: Int64
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - orderindex
+  - name: override_statuses
+    type: Boolean
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - override_statuses
+  - name: space
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - space
+  - name: task_count
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - task_count
+- name: folder_list
+  description: Get Lists
+  filters:
+  - name: folder_id
+    required: true
+  - name: archived
+    required: false
+  request:
+    method: GET
+    path: /v2/folder/{{filter.folder_id}}/list
+    query:
+    - name: archived
+      explode: true
+      from: filter
+      key: archived
+  response:
+    allow_404_empty: false
+    row_strategy: direct
+  pagination:
+    mode: auto
+    page_start: 0
+    page_step: 1
+    offset_start: 0
+    link_header_require_results: false
+  columns:
+  - name: archived
+    type: Boolean
+    nullable: true
+    virtual: true
+    expr:
+      kind: from_filter
+      key: archived
+  - name: folder_id
+    type: Float64
+    nullable: true
+    virtual: true
+    expr:
+      kind: from_filter
+      key: folder_id
+  - name: lists
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - lists
+- name: folder_template
+  description: Get Folder Templates
+  filters:
+  - name: team_id
+    required: true
+  request:
+    method: GET
+    path: /v2/team/{{filter.team_id}}/folder_template
+  response:
+    allow_404_empty: false
+    row_strategy: direct
+  pagination:
+    mode: page
+    page_param: page
+    page_start: 0
+    page_step: 1
+    offset_start: 0
+    link_header_require_results: false
+  columns:
+  - name: team_id
+    type: Float64
+    nullable: true
+    virtual: true
+    description: Workspace ID
+    expr:
+      kind: from_filter
+      key: team_id
+  - name: templates
+    type: Utf8
+    nullable: true
+    virtual: false
+    description: Array of Folder templates available in the Workspace.
+    expr:
+      kind: path
+      path:
+      - templates
+- name: get_view
+  description: Get View
+  filters:
+  - name: view_id
+    required: true
+  request:
+    method: GET
+    path: /v2/view/{{filter.view_id}}
+  response:
+    allow_404_empty: false
+    row_strategy: direct
+  pagination:
+    mode: auto
+    page_start: 0
+    page_step: 1
+    offset_start: 0
+    link_header_require_results: false
+  columns:
+  - name: view
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - view
+  - name: view__creator
+    type: Int64
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - view
+      - creator
+  - name: view__date_created
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - view
+      - date_created
+  - name: view__date_protected
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - view
+      - date_protected
+  - name: view__id
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - view
+      - id
+  - name: view__name
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - view
+      - name
+  - name: view__orderindex
+    type: Int64
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - view
+      - orderindex
+  - name: view__parent
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - view
+      - parent
+  - name: view__parent__id
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - view
+      - parent
+      - id
+  - name: view__parent__type
+    type: Int64
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - view
+      - parent
+      - type
+  - name: view__protected
+    type: Boolean
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - view
+      - protected
+  - name: view__protected_by
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - view
+      - protected_by
+  - name: view__protected_note
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - view
+      - protected_note
+  - name: view__public
+    type: Boolean
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - view
+      - public
+  - name: view__public_url
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - view
+      - public_url
+  - name: view__type
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - view
+      - type
+  - name: view__visibility
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - view
+      - visibility
+  - name: view_id
+    type: Utf8
+    nullable: true
+    virtual: true
+    expr:
+      kind: from_filter
+      key: view_id
+- name: goal
+  description: Get Goal
+  filters:
+  - name: goal_id
+    required: true
+  request:
+    method: GET
+    path: /v2/goal/{{filter.goal_id}}
+  response:
+    allow_404_empty: false
+    row_strategy: direct
+  pagination:
+    mode: auto
+    page_start: 0
+    page_step: 1
+    offset_start: 0
+    link_header_require_results: false
+  columns:
+  - name: goal
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - goal
+  - name: goal__archived
+    type: Boolean
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - goal
+      - archived
+  - name: goal__color
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - goal
+      - color
+  - name: goal__creator
+    type: Int64
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - goal
+      - creator
+  - name: goal__date_created
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - goal
+      - date_created
+  - name: goal__description
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - goal
+      - description
+  - name: goal__due_date
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - goal
+      - due_date
+  - name: goal__folder_id
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - goal
+      - folder_id
+  - name: goal__history
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - goal
+      - history
+  - name: goal__id
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - goal
+      - id
+  - name: goal__key_results
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - goal
+      - key_results
+  - name: goal__members
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - goal
+      - members
+  - name: goal__multiple_owners
+    type: Boolean
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - goal
+      - multiple_owners
+  - name: goal__name
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - goal
+      - name
+  - name: goal__owners
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - goal
+      - owners
+  - name: goal__percent_completed
+    type: Int64
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - goal
+      - percent_completed
+  - name: goal__pretty_id
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - goal
+      - pretty_id
+  - name: goal__pretty_url
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - goal
+      - pretty_url
+  - name: goal__private
+    type: Boolean
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - goal
+      - private
+  - name: goal__start_date
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - goal
+      - start_date
+  - name: goal__team_id
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - goal
+      - team_id
+  - name: goal_id
+    type: Utf8
+    nullable: true
+    virtual: true
+    description: 900e-462d-a849-4a216b06d930 (uuid)
+    expr:
+      kind: from_filter
+      key: goal_id
+- name: group
+  description: Get Groups
+  filters:
+  - name: team_id
+    required: true
+  - name: group_ids
+    required: false
+  request:
+    method: GET
+    path: /v2/group
+    query:
+    - name: team_id
+      explode: true
+      from: filter
+      key: team_id
+    - name: group_ids
+      explode: true
+      from: filter
+      key: group_ids
+  response:
+    rows_path:
+    - groups
+    allow_404_empty: false
+    row_strategy: direct
+  pagination:
+    mode: auto
+    page_start: 0
+    page_step: 1
+    offset_start: 0
+    link_header_require_results: false
+  columns:
+  - name: avatar
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - avatar
+  - name: date_created
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - date_created
+  - name: group_ids
+    type: Utf8
+    nullable: true
+    virtual: true
+    description: |-
+      Enter one or more User Group IDs to retrieve information about specific User Group(s).\
+       \
+      For example: \
+       \
+      `?team_id=12456&group_ids=ABC12345&group_ids=DEF98765`
+    expr:
+      kind: from_filter
+      key: group_ids
+  - name: handle
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - handle
+  - name: id
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - id
+  - name: initials
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - initials
+  - name: members
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - members
+  - name: name
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - name
+  - name: team_id
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - team_id
+  - name: userid
+    type: Int64
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - userid
+- name: guest
+  description: Get Guest
+  filters:
+  - name: team_id
+    required: true
+  - name: guest_id
+    required: true
+  request:
+    method: GET
+    path: /v2/team/{{filter.team_id}}/guest/{{filter.guest_id}}
+  response:
+    allow_404_empty: false
+    row_strategy: direct
+  pagination:
+    mode: auto
+    page_start: 0
+    page_step: 1
+    offset_start: 0
+    link_header_require_results: false
+  columns:
+  - name: guest_id
+    type: Float64
+    nullable: true
+    virtual: true
+    expr:
+      kind: from_filter
+      key: guest_id
+  - name: json
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: current_row
+  - name: team_id
+    type: Float64
+    nullable: true
+    virtual: true
+    description: Workspace ID
+    expr:
+      kind: from_filter
+      key: team_id
+- name: history
+  description: Get time entry history
+  filters:
+  - name: team_id
+    required: true
+  - name: timer_id
+    required: true
+  request:
+    method: GET
+    path: /v2/team/{{filter.team_id}}/time_entries/{{filter.timer_id}}/history
+  response:
+    allow_404_empty: false
+    row_strategy: direct
+  pagination:
+    mode: auto
+    page_start: 0
+    page_step: 1
+    offset_start: 0
+    link_header_require_results: false
+  columns:
+  - name: json
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: current_row
+  - name: team_id
+    type: Float64
+    nullable: true
+    virtual: true
+    description: Workspace ID
+    expr:
+      kind: from_filter
+      key: team_id
+  - name: timer_id
+    type: Utf8
+    nullable: true
+    virtual: true
+    description: |-
+      The ID of a time entry. \
+       \
+      This can be found using the [Get Time Entries Within a Date Range](ref:gettimeentrieswithinadaterange) endpoint.
+    expr:
+      kind: from_filter
+      key: timer_id
+- name: list
+  description: Get List
+  filters:
+  - name: list_id
+    required: true
+  request:
+    method: GET
+    path: /v2/list/{{filter.list_id}}
+  response:
+    allow_404_empty: false
+    row_strategy: direct
+  pagination:
+    mode: auto
+    page_start: 0
+    page_step: 1
+    offset_start: 0
+    link_header_require_results: false
+  columns:
+  - name: archived
+    type: Boolean
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - archived
+  - name: assignee
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - assignee
+  - name: content
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - content
+  - name: due_date
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - due_date
+  - name: due_date_time
+    type: Boolean
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - due_date_time
+  - name: folder
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - folder
+  - name: folder__access
+    type: Boolean
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - folder
+      - access
+  - name: folder__hidden
+    type: Boolean
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - folder
+      - hidden
+  - name: folder__id
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - folder
+      - id
+  - name: folder__name
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - folder
+      - name
+  - name: id
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - id
+  - name: inbound_address
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - inbound_address
+  - name: list_id
+    type: Float64
+    nullable: true
+    virtual: true
+    description: The List ID. To find the List ID, right-click the List in your Sidebar, select Copy link, and paste the link in your URL. The last string in the URL is your List ID.
+    expr:
+      kind: from_filter
+      key: list_id
+  - name: name
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - name
+  - name: orderindex
+    type: Int64
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - orderindex
+  - name: override_statuses
+    type: Boolean
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - override_statuses
+  - name: permission_level
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - permission_level
+  - name: priority
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - priority
+  - name: priority__color
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - priority
+      - color
+  - name: priority__priority
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - priority
+      - priority
+  - name: space
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - space
+  - name: space__access
+    type: Boolean
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - space
+      - access
+  - name: space__id
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - space
+      - id
+  - name: space__name
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - space
+      - name
+  - name: start_date
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - start_date
+  - name: start_date_time
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - start_date_time
+  - name: status
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - status
+  - name: status__color
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - status
+      - color
+  - name: status__hide_label
+    type: Boolean
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - status
+      - hide_label
+  - name: status__status
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - status
+      - status
+  - name: statuses
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - statuses
+  - name: task_count
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - task_count
+- name: list_comment
+  description: Get List Comments
+  filters:
+  - name: list_id
+    required: true
+  - name: start
+    required: false
+  - name: start_id
+    required: false
+  request:
+    method: GET
+    path: /v2/list/{{filter.list_id}}/comment
+    query:
+    - name: start
+      explode: true
+      from: filter
+      key: start
+    - name: start_id
+      explode: true
+      from: filter
+      key: start_id
+  response:
+    allow_404_empty: false
+    row_strategy: direct
+  pagination:
+    mode: auto
+    page_start: 0
+    page_step: 1
+    offset_start: 0
+    link_header_require_results: false
+  columns:
+  - name: comments
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - comments
+  - name: list_id
+    type: Float64
+    nullable: true
+    virtual: true
+    expr:
+      kind: from_filter
+      key: list_id
+  - name: start
+    type: Int64
+    nullable: true
+    virtual: true
+    description: Enter the `date` of a List info comment using Unix time in milliseconds.
+    expr:
+      kind: from_filter
+      key: start
+  - name: start_id
+    type: Utf8
+    nullable: true
+    virtual: true
+    description: Enter the Comment `id` of a List info comment.
+    expr:
+      kind: from_filter
+      key: start_id
+- name: list_field
+  description: Get List Custom Fields
+  filters:
+  - name: list_id
+    required: true
+  request:
+    method: GET
+    path: /v2/list/{{filter.list_id}}/field
+  response:
+    rows_path:
+    - fields
+    allow_404_empty: false
+    row_strategy: direct
+  pagination:
+    mode: auto
+    page_start: 0
+    page_step: 1
+    offset_start: 0
+    link_header_require_results: false
+  columns:
+  - name: date_created
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - date_created
+  - name: hide_from_guests
+    type: Boolean
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - hide_from_guests
+  - name: id
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - id
+  - name: list_id
+    type: Float64
+    nullable: true
+    virtual: true
+    expr:
+      kind: from_filter
+      key: list_id
+  - name: name
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - name
+  - name: type
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - type
+  - name: type_config
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - type_config
+  - name: type_config__code_point
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - type_config
+      - code_point
+  - name: type_config__complete_on
+    type: Int64
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - type_config
+      - complete_on
+  - name: type_config__count
+    type: Int64
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - type_config
+      - count
+  - name: type_config__currency_type
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - type_config
+      - currency_type
+  - name: type_config__default
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - type_config
+      - default
+  - name: type_config__end
+    type: Int64
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - type_config
+      - end
+  - name: type_config__options
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - type_config
+      - options
+  - name: type_config__placeholder
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - type_config
+      - placeholder
+  - name: type_config__precision
+    type: Int64
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - type_config
+      - precision
+  - name: type_config__start
+    type: Int64
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - type_config
+      - start
+  - name: type_config__tracking
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - type_config
+      - tracking
+  - name: type_config__tracking__assigned_comments
+    type: Boolean
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - type_config
+      - tracking
+      - assigned_comments
+  - name: type_config__tracking__checklists
+    type: Boolean
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - type_config
+      - tracking
+      - checklists
+  - name: type_config__tracking__subtasks
+    type: Boolean
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - type_config
+      - tracking
+      - subtasks
+- name: list_member
+  description: Get List Members
+  filters:
+  - name: list_id
+    required: true
+  request:
+    method: GET
+    path: /v2/list/{{filter.list_id}}/member
+  response:
+    rows_path:
+    - members
+    allow_404_empty: false
+    row_strategy: direct
+  pagination:
+    mode: auto
+    page_start: 0
+    page_step: 1
+    offset_start: 0
+    link_header_require_results: false
+  columns:
+  - name: json
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: current_row
+  - name: list_id
+    type: Float64
+    nullable: true
+    virtual: true
+    expr:
+      kind: from_filter
+      key: list_id
+- name: list_task
+  description: Get Tasks
+  filters:
+  - name: list_id
+    required: true
+  - name: archived
+    required: false
+  - name: include_markdown_description
+    required: false
+  - name: order_by
+    required: false
+  - name: reverse
+    required: false
+  - name: subtasks
+    required: false
+  - name: statuses
+    required: false
+  - name: include_closed
+    required: false
+  - name: include_timl
+    required: false
+  - name: assignees
+    required: false
+  - name: watchers
+    required: false
+  - name: tags
+    required: false
+  - name: due_date_gt
+    required: false
+  - name: due_date_lt
+    required: false
+  - name: date_created_gt
+    required: false
+  - name: date_created_lt
+    required: false
+  - name: date_updated_gt
+    required: false
+  - name: date_updated_lt
+    required: false
+  - name: date_done_gt
+    required: false
+  - name: date_done_lt
+    required: false
+  - name: custom_fields
+    required: false
+  - name: custom_field
+    required: false
+  - name: custom_items
+    required: false
+  request:
+    method: GET
+    path: /v2/list/{{filter.list_id}}/task
+    query:
+    - name: archived
+      explode: true
+      from: filter
+      key: archived
+    - name: include_markdown_description
+      explode: true
+      from: filter
+      key: include_markdown_description
+    - name: order_by
+      explode: true
+      from: filter
+      key: order_by
+    - name: reverse
+      explode: true
+      from: filter
+      key: reverse
+    - name: subtasks
+      explode: true
+      from: filter
+      key: subtasks
+    - name: statuses
+      explode: true
+      from: filter
+      key: statuses
+    - name: include_closed
+      explode: true
+      from: filter
+      key: include_closed
+    - name: include_timl
+      explode: true
+      from: filter
+      key: include_timl
+    - name: assignees
+      explode: true
+      from: filter
+      key: assignees
+    - name: watchers
+      explode: true
+      from: filter
+      key: watchers
+    - name: tags
+      explode: true
+      from: filter
+      key: tags
+    - name: due_date_gt
+      explode: true
+      from: filter
+      key: due_date_gt
+    - name: due_date_lt
+      explode: true
+      from: filter
+      key: due_date_lt
+    - name: date_created_gt
+      explode: true
+      from: filter
+      key: date_created_gt
+    - name: date_created_lt
+      explode: true
+      from: filter
+      key: date_created_lt
+    - name: date_updated_gt
+      explode: true
+      from: filter
+      key: date_updated_gt
+    - name: date_updated_lt
+      explode: true
+      from: filter
+      key: date_updated_lt
+    - name: date_done_gt
+      explode: true
+      from: filter
+      key: date_done_gt
+    - name: date_done_lt
+      explode: true
+      from: filter
+      key: date_done_lt
+    - name: custom_fields
+      explode: true
+      from: filter
+      key: custom_fields
+    - name: custom_field
+      explode: true
+      from: filter
+      key: custom_field
+    - name: custom_items
+      explode: true
+      from: filter
+      key: custom_items
+  response:
+    rows_path:
+    - tasks
+    allow_404_empty: false
+    row_strategy: direct
+  pagination:
+    mode: page
+    page_param: page
+    page_start: 0
+    page_step: 1
+    offset_start: 0
+    link_header_require_results: false
+  columns:
+  - name: archived
+    type: Boolean
+    nullable: true
+    virtual: true
+    expr:
+      kind: from_filter
+      key: archived
+  - name: assignees
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - assignees
+  - name: checklists
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - checklists
+  - name: creator
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - creator
+  - name: custom_field
+    type: Utf8
+    nullable: true
+    virtual: true
+    description: Include tasks with specific values in only one Custom Field. This Custom Field can be a Custom Relationship.
+    expr:
+      kind: from_filter
+      key: custom_field
+  - name: custom_fields
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - custom_fields
+  - name: custom_item_id
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - custom_item_id
+  - name: custom_items
+    type: Utf8
+    nullable: true
+    virtual: true
+    description: |-
+      Filter by custom task types. For example: \
+       \
+      `?custom_items[]=0&custom_items[]=1300` \
+       \
+      Including `0` returns tasks. Including `1` returns Milestones. Including any other number returns the custom task type as defined in your Workspace.
+    expr:
+      kind: from_filter
+      key: custom_items
+  - name: date_closed
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - date_closed
+  - name: date_created
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - date_created
+  - name: date_created_gt
+    type: Int64
+    nullable: true
+    virtual: true
+    description: Filter by date created greater than Unix time in milliseconds.
+    expr:
+      kind: from_filter
+      key: date_created_gt
+  - name: date_created_lt
+    type: Int64
+    nullable: true
+    virtual: true
+    description: Filter by date created less than Unix time in milliseconds.
+    expr:
+      kind: from_filter
+      key: date_created_lt
+  - name: date_done
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - date_done
+  - name: date_done_gt
+    type: Int64
+    nullable: true
+    virtual: true
+    description: Filter by date done greater than Unix time in milliseconds.
+    expr:
+      kind: from_filter
+      key: date_done_gt
+  - name: date_done_lt
+    type: Int64
+    nullable: true
+    virtual: true
+    description: Filter by date done less than Unix time in milliseconds.
+    expr:
+      kind: from_filter
+      key: date_done_lt
+  - name: date_updated
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - date_updated
+  - name: date_updated_gt
+    type: Int64
+    nullable: true
+    virtual: true
+    description: Filter by date updated greater than Unix time in milliseconds.
+    expr:
+      kind: from_filter
+      key: date_updated_gt
+  - name: date_updated_lt
+    type: Int64
+    nullable: true
+    virtual: true
+    description: Filter by date updated less than Unix time in milliseconds.
+    expr:
+      kind: from_filter
+      key: date_updated_lt
+  - name: due_date
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - due_date
+  - name: due_date_gt
+    type: Int64
+    nullable: true
+    virtual: true
+    description: Filter by due date greater than Unix time in milliseconds.
+    expr:
+      kind: from_filter
+      key: due_date_gt
+  - name: due_date_lt
+    type: Int64
+    nullable: true
+    virtual: true
+    description: Filter by due date less than Unix time in milliseconds.
+    expr:
+      kind: from_filter
+      key: due_date_lt
+  - name: folder
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - folder
+  - name: id
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - id
+  - name: include_closed
+    type: Boolean
+    nullable: true
+    virtual: true
+    description: |-
+      Include or excluse closed tasks. By default, they are excluded.\
+       \
+      To include closed tasks, use `include_closed: true`.
+    expr:
+      kind: from_filter
+      key: include_closed
+  - name: include_markdown_description
+    type: Boolean
+    nullable: true
+    virtual: true
+    description: To return task descriptions in Markdown format, use `?include_markdown_description=true`.
+    expr:
+      kind: from_filter
+      key: include_markdown_description
+  - name: include_timl
+    type: Boolean
+    nullable: true
+    virtual: true
+    description: |-
+      Include Tasks in Multiple Lists. By default, tasks that exist in multiple lists are excluded from the response.\
+       \
+      To include tasks that exist in multiple lists, use `include_timl: true`.
+    expr:
+      kind: from_filter
+      key: include_timl
+  - name: list
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - list
+  - name: list_id
+    type: Float64
+    nullable: true
+    virtual: true
+    description: 'To find the list_id: \ 1. In the Sidebar, hover over the List and click the **ellipsis ...** menu. \ 2. Select **Copy link.** \ 3. Use the copied URL to find the list_id. The list_id is the number that follows /li in the URL.'
+    expr:
+      kind: from_filter
+      key: list_id
+  - name: locations
+    type: Utf8
+    nullable: true
+    virtual: false
+    description: Array of Lists where the task has been added.
+    expr:
+      kind: path
+      path:
+      - locations
+  - name: markdown_description
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - markdown_description
+  - name: name
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - name
+  - name: order_by
+    type: Utf8
+    nullable: true
+    virtual: true
+    description: |-
+      Order by a particular field. By default, tasks are ordered by `created`.\
+       \
+      Options include: `id`, `created`, `updated`, and `due_date`.
+    expr:
+      kind: from_filter
+      key: order_by
+  - name: orderindex
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - orderindex
+  - name: parent
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - parent
+  - name: points
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - points
+  - name: priority
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - priority
+  - name: reverse
+    type: Boolean
+    nullable: true
+    virtual: true
+    description: Tasks are displayed in reverse order.
+    expr:
+      kind: from_filter
+      key: reverse
+  - name: space
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - space
+  - name: start_date
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - start_date
+  - name: status
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - status
+  - name: statuses
+    type: Utf8
+    nullable: true
+    virtual: true
+    description: |-
+      Filter by statuses. To include closed tasks, use the `include_closed` parameter. \
+       \
+      For example: \
+       \
+      `?statuses[]=to%20do&statuses[]=in%20progress`
+    expr:
+      kind: from_filter
+      key: statuses
+  - name: subtasks
+    type: Boolean
+    nullable: true
+    virtual: true
+    description: Include or exclude subtasks. By default, subtasks are excluded.
+    expr:
+      kind: from_filter
+      key: subtasks
+  - name: tags
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - tags
+  - name: time_estimate
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - time_estimate
+  - name: time_spent
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - time_spent
+  - name: url
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - url
+  - name: watchers
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - watchers
+- name: list_template
+  description: Get List Templates
+  filters:
+  - name: team_id
+    required: true
+  request:
+    method: GET
+    path: /v2/team/{{filter.team_id}}/list_template
+  response:
+    allow_404_empty: false
+    row_strategy: direct
+  pagination:
+    mode: page
+    page_param: page
+    page_start: 0
+    page_step: 1
+    offset_start: 0
+    link_header_require_results: false
+  columns:
+  - name: team_id
+    type: Float64
+    nullable: true
+    virtual: true
+    description: Workspace ID
+    expr:
+      kind: from_filter
+      key: team_id
+  - name: templates
+    type: Utf8
+    nullable: true
+    virtual: false
+    description: Array of List templates available in the Workspace.
+    expr:
+      kind: path
+      path:
+      - templates
+- name: plan
+  description: Get Workspace Plan
+  filters:
+  - name: team_id
+    required: true
+  request:
+    method: GET
+    path: /v2/team/{{filter.team_id}}/plan
+  response:
+    allow_404_empty: false
+    row_strategy: direct
+  pagination:
+    mode: auto
+    page_start: 0
+    page_step: 1
+    offset_start: 0
+    link_header_require_results: false
+  columns:
+  - name: plan_id
+    type: Int64
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - plan_id
+  - name: plan_name
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - plan_name
+  - name: team_id
+    type: Utf8
+    nullable: true
+    virtual: true
+    description: Workspace ID
+    expr:
+      kind: from_filter
+      key: team_id
+- name: reply
+  description: Get Threaded Comments
+  filters:
+  - name: comment_id
+    required: true
+  request:
+    method: GET
+    path: /v2/comment/{{filter.comment_id}}/reply
+  response:
+    allow_404_empty: false
+    row_strategy: direct
+  pagination:
+    mode: auto
+    page_start: 0
+    page_step: 1
+    offset_start: 0
+    link_header_require_results: false
+  columns:
+  - name: comment_id
+    type: Float64
+    nullable: true
+    virtual: true
+    expr:
+      kind: from_filter
+      key: comment_id
+  - name: json
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: current_row
+- name: seats
+  description: Get Workspace seats
+  filters:
+  - name: team_id
+    required: true
+  request:
+    method: GET
+    path: /v2/team/{{filter.team_id}}/seats
+  response:
+    allow_404_empty: false
+    row_strategy: direct
+  pagination:
+    mode: auto
+    page_start: 0
+    page_step: 1
+    offset_start: 0
+    link_header_require_results: false
+  columns:
+  - name: guests
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - guests
+  - name: guests__empty_guest_seats
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - guests
+      - empty_guest_seats
+  - name: guests__filled_guest_seats
+    type: Int64
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - guests
+      - filled_guest_seats
+  - name: guests__total_guest_seats
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - guests
+      - total_guest_seats
+  - name: members
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - members
+  - name: members__empty_member_seats
+    type: Int64
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - members
+      - empty_member_seats
+  - name: members__filled_members_seats
+    type: Int64
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - members
+      - filled_members_seats
+  - name: members__total_member_seats
+    type: Int64
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - members
+      - total_member_seats
+  - name: team_id
+    type: Utf8
+    nullable: true
+    virtual: true
+    description: Workspace ID
+    expr:
+      kind: from_filter
+      key: team_id
+- name: shared
+  description: Shared Hierarchy
+  filters:
+  - name: team_id
+    required: true
+  request:
+    method: GET
+    path: /v2/team/{{filter.team_id}}/shared
+  response:
+    allow_404_empty: false
+    row_strategy: direct
+  pagination:
+    mode: auto
+    page_start: 0
+    page_step: 1
+    offset_start: 0
+    link_header_require_results: false
+  columns:
+  - name: shared
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - shared
+  - name: shared__folders
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - shared
+      - folders
+  - name: shared__lists
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - shared
+      - lists
+  - name: shared__tasks
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - shared
+      - tasks
+  - name: team_id
+    type: Float64
+    nullable: true
+    virtual: true
+    description: Workspace ID
+    expr:
+      kind: from_filter
+      key: team_id
+- name: space
+  description: Get Space
+  filters:
+  - name: space_id
+    required: true
+  request:
+    method: GET
+    path: /v2/space/{{filter.space_id}}
+  response:
+    allow_404_empty: false
+    row_strategy: direct
+  pagination:
+    mode: auto
+    page_start: 0
+    page_step: 1
+    offset_start: 0
+    link_header_require_results: false
+  columns:
+  - name: features
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - features
+  - name: id
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - id
+  - name: multiple_assignees
+    type: Boolean
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - multiple_assignees
+  - name: name
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - name
+  - name: private
+    type: Boolean
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - private
+  - name: space_id
+    type: Float64
+    nullable: true
+    virtual: true
+    expr:
+      kind: from_filter
+      key: space_id
+  - name: statuses
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - statuses
+- name: space_folder
+  description: Get Folders
+  filters:
+  - name: space_id
+    required: true
+  - name: archived
+    required: false
+  request:
+    method: GET
+    path: /v2/space/{{filter.space_id}}/folder
+    query:
+    - name: archived
+      explode: true
+      from: filter
+      key: archived
+  response:
+    allow_404_empty: false
+    row_strategy: direct
+  pagination:
+    mode: auto
+    page_start: 0
+    page_step: 1
+    offset_start: 0
+    link_header_require_results: false
+  columns:
+  - name: archived
+    type: Boolean
+    nullable: true
+    virtual: true
+    expr:
+      kind: from_filter
+      key: archived
+  - name: folders
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - folders
+  - name: folders__hidden
+    type: Boolean
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - folders
+      - hidden
+  - name: folders__id
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - folders
+      - id
+  - name: folders__lists
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - folders
+      - lists
+  - name: folders__name
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - folders
+      - name
+  - name: folders__orderindex
+    type: Int64
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - folders
+      - orderindex
+  - name: folders__override_statuses
+    type: Boolean
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - folders
+      - override_statuses
+  - name: folders__space
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - folders
+      - space
+  - name: folders__task_count
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - folders
+      - task_count
+  - name: space_id
+    type: Float64
+    nullable: true
+    virtual: true
+    expr:
+      kind: from_filter
+      key: space_id
+- name: space_list
+  description: Get Folderless Lists
+  filters:
+  - name: space_id
+    required: true
+  - name: archived
+    required: false
+  request:
+    method: GET
+    path: /v2/space/{{filter.space_id}}/list
+    query:
+    - name: archived
+      explode: true
+      from: filter
+      key: archived
+  response:
+    rows_path:
+    - lists
+    allow_404_empty: false
+    row_strategy: direct
+  pagination:
+    mode: auto
+    page_start: 0
+    page_step: 1
+    offset_start: 0
+    link_header_require_results: false
+  columns:
+  - name: archived
+    type: Boolean
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - archived
+  - name: assignee
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - assignee
+  - name: content
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - content
+  - name: due_date
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - due_date
+  - name: folder
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - folder
+  - name: id
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - id
+  - name: name
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - name
+  - name: orderindex
+    type: Int64
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - orderindex
+  - name: override_statuses
+    type: Boolean
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - override_statuses
+  - name: permission_level
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - permission_level
+  - name: priority
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - priority
+  - name: priority__color
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - priority
+      - color
+  - name: priority__priority
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - priority
+      - priority
+  - name: space
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - space
+  - name: space_id
+    type: Float64
+    nullable: true
+    virtual: true
+    expr:
+      kind: from_filter
+      key: space_id
+  - name: start_date
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - start_date
+  - name: status
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - status
+  - name: status__color
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - status
+      - color
+  - name: status__hide_label
+    type: Boolean
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - status
+      - hide_label
+  - name: status__status
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - status
+      - status
+  - name: task_count
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - task_count
+- name: tag
+  description: Get Space Tags
+  filters:
+  - name: space_id
+    required: true
+  request:
+    method: GET
+    path: /v2/space/{{filter.space_id}}/tag
+  response:
+    rows_path:
+    - tags
+    allow_404_empty: false
+    row_strategy: direct
+  pagination:
+    mode: auto
+    page_start: 0
+    page_step: 1
+    offset_start: 0
+    link_header_require_results: false
+  columns:
+  - name: space_id
+    type: Float64
+    nullable: true
+    virtual: true
+    expr:
+      kind: from_filter
+      key: space_id
+  - name: name
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - name
+  - name: tag_fg
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - tag_fg
+  - name: tag_bg
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - tag_bg
+  - name: creator
+    type: Int64
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - creator
+- name: tags
+  description: Get all tags from time entries
+  filters:
+  - name: team_id
+    required: true
+  request:
+    method: GET
+    path: /v2/team/{{filter.team_id}}/time_entries/tags
+  response:
+    rows_path:
+    - data
+    allow_404_empty: false
+    row_strategy: direct
+  pagination:
+    mode: auto
+    page_start: 0
+    page_step: 1
+    offset_start: 0
+    link_header_require_results: false
+  columns:
+  - name: creator
+    type: Int64
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - creator
+  - name: name
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - name
+  - name: tag_bg
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - tag_bg
+  - name: tag_fg
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - tag_fg
+  - name: team_id
+    type: Float64
+    nullable: true
+    virtual: true
+    description: Workspace ID
+    expr:
+      kind: from_filter
+      key: team_id
+- name: task
+  description: Get Task
+  filters:
+  - name: task_id
+    required: true
+  - name: custom_task_ids
+    required: false
+  - name: team_id
+    required: false
+  - name: include_subtasks
+    required: false
+  - name: include_markdown_description
+    required: false
+  - name: custom_fields
+    required: false
+  request:
+    method: GET
+    path: /v2/task/{{filter.task_id}}
+    query:
+    - name: custom_task_ids
+      explode: true
+      from: filter
+      key: custom_task_ids
+    - name: team_id
+      explode: true
+      from: filter
+      key: team_id
+    - name: include_subtasks
+      explode: true
+      from: filter
+      key: include_subtasks
+    - name: include_markdown_description
+      explode: true
+      from: filter
+      key: include_markdown_description
+    - name: custom_fields
+      explode: true
+      from: filter
+      key: custom_fields
+  response:
+    allow_404_empty: false
+    row_strategy: direct
+  pagination:
+    mode: auto
+    page_start: 0
+    page_step: 1
+    offset_start: 0
+    link_header_require_results: false
+  columns:
+  - name: assignees
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - assignees
+  - name: attachments
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - attachments
+  - name: checklists
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - checklists
+  - name: creator
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - creator
+  - name: creator__color
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - creator
+      - color
+  - name: creator__id
+    type: Int64
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - creator
+      - id
+  - name: creator__profilePicture
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - creator
+      - profilePicture
+  - name: creator__username
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - creator
+      - username
+  - name: custom_fields
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - custom_fields
+  - name: custom_id
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - custom_id
+  - name: custom_item_id
+    type: Utf8
+    nullable: true
+    virtual: false
+    description: |-
+      The custom task type ID for this task. A value of `null` represents task type "Task".\
+       \
+      To get a list of available custom task type IDs for your Workspace, use the [Get Custom Task Types endpoint](ref:getcustomitems).
+    expr:
+      kind: path
+      path:
+      - custom_item_id
+  - name: custom_task_ids
+    type: Boolean
+    nullable: true
+    virtual: true
+    description: If you want to reference a task by its custom task id, this value must be `true`.
+    expr:
+      kind: from_filter
+      key: custom_task_ids
+  - name: date_closed
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - date_closed
+  - name: date_created
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - date_created
+  - name: date_updated
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - date_updated
+  - name: description
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - description
+  - name: due_date
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - due_date
+  - name: folder
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - folder
+  - name: folder__id
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - folder
+      - id
+  - name: id
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - id
+  - name: include_markdown_description
+    type: Boolean
+    nullable: true
+    virtual: true
+    description: To return task descriptions in Markdown format, use `?include_markdown_description=true`.
+    expr:
+      kind: from_filter
+      key: include_markdown_description
+  - name: include_subtasks
+    type: Boolean
+    nullable: true
+    virtual: true
+    description: Include subtasks, default false
+    expr:
+      kind: from_filter
+      key: include_subtasks
+  - name: list
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - list
+  - name: list__id
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - list
+      - id
+  - name: locations
+    type: Utf8
+    nullable: true
+    virtual: false
+    description: Array of Lists where the task has been added.
+    expr:
+      kind: path
+      path:
+      - locations
+  - name: markdown_description
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - markdown_description
+  - name: name
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - name
+  - name: orderindex
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - orderindex
+  - name: parent
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - parent
+  - name: points
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - points
+  - name: priority
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - priority
+  - name: priority__color
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - priority
+      - color
+  - name: priority__id
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - priority
+      - id
+  - name: priority__orderindex
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - priority
+      - orderindex
+  - name: priority__priority
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - priority
+      - priority
+  - name: space
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - space
+  - name: space__id
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - space
+      - id
+  - name: start_date
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - start_date
+  - name: status
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - status
+  - name: status__color
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - status
+      - color
+  - name: status__id
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - status
+      - id
+  - name: status__orderindex
+    type: Int64
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - status
+      - orderindex
+  - name: status__status
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - status
+      - status
+  - name: status__type
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - status
+      - type
+  - name: tags
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - tags
+  - name: task_id
+    type: Utf8
+    nullable: true
+    virtual: true
+    expr:
+      kind: from_filter
+      key: task_id
+  - name: team_id
+    type: Float64
+    nullable: true
+    virtual: true
+    description: |-
+      When the `custom_task_ids` parameter is set to `true`, the Workspace ID must be provided using the `team_id` parameter.
+       \
+      For example: `custom_task_ids=true&team_id=123`.
+    expr:
+      kind: from_filter
+      key: team_id
+  - name: text_content
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - text_content
+  - name: time_estimate
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - time_estimate
+  - name: time_spent
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - time_spent
+  - name: url
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - url
+  - name: watchers
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - watchers
+- name: task_comment
+  description: Get Task Comments
+  filters:
+  - name: task_id
+    required: true
+  - name: custom_task_ids
+    required: false
+  - name: team_id
+    required: false
+  - name: start
+    required: false
+  - name: start_id
+    required: false
+  request:
+    method: GET
+    path: /v2/task/{{filter.task_id}}/comment
+    query:
+    - name: custom_task_ids
+      explode: true
+      from: filter
+      key: custom_task_ids
+    - name: team_id
+      explode: true
+      from: filter
+      key: team_id
+    - name: start
+      explode: true
+      from: filter
+      key: start
+    - name: start_id
+      explode: true
+      from: filter
+      key: start_id
+  response:
+    rows_path:
+    - comments
+    allow_404_empty: false
+    row_strategy: direct
+  pagination:
+    mode: auto
+    page_start: 0
+    page_step: 1
+    offset_start: 0
+    link_header_require_results: false
+  columns:
+  - name: assigned_by
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - assigned_by
+  - name: assigned_by__color
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - assigned_by
+      - color
+  - name: assigned_by__email
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - assigned_by
+      - email
+  - name: assigned_by__id
+    type: Int64
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - assigned_by
+      - id
+  - name: assigned_by__initials
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - assigned_by
+      - initials
+  - name: assigned_by__profilePicture
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - assigned_by
+      - profilePicture
+  - name: assigned_by__username
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - assigned_by
+      - username
+  - name: assignee
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - assignee
+  - name: assignee__color
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - assignee
+      - color
+  - name: assignee__email
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - assignee
+      - email
+  - name: assignee__id
+    type: Int64
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - assignee
+      - id
+  - name: assignee__initials
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - assignee
+      - initials
+  - name: assignee__profilePicture
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - assignee
+      - profilePicture
+  - name: assignee__username
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - assignee
+      - username
+  - name: comment
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - comment
+  - name: comment_text
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - comment_text
+  - name: custom_task_ids
+    type: Boolean
+    nullable: true
+    virtual: true
+    description: If you want to reference a task by it's custom task id, this value must be `true`.
+    expr:
+      kind: from_filter
+      key: custom_task_ids
+  - name: date
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - date
+  - name: id
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - id
+  - name: reactions
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - reactions
+  - name: reply_count
+    type: Utf8
+    nullable: true
+    virtual: false
+    description: For threaded comments, `reply_count` is always 0.
+    expr:
+      kind: path
+      path:
+      - reply_count
+  - name: resolved
+    type: Boolean
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - resolved
+  - name: start
+    type: Int64
+    nullable: true
+    virtual: true
+    description: |-
+      The Unix timestamp (in milliseconds) of the reference comment. Required for pagination. Must be used in combination with `start_id`.
+      \
+       Value should be the `date` of the last comment from the previous response.
+    expr:
+      kind: from_filter
+      key: start
+  - name: start_id
+    type: Utf8
+    nullable: true
+    virtual: true
+    description: "The unique ID of the reference comment. Required for pagination. Must be used in combination with `start`. \n\\\n Value should be the `id` of the last comment from the previous response."
+    expr:
+      kind: from_filter
+      key: start_id
+  - name: task_id
+    type: Utf8
+    nullable: true
+    virtual: true
+    expr:
+      kind: from_filter
+      key: task_id
+  - name: team_id
+    type: Float64
+    nullable: true
+    virtual: true
+    description: |-
+      When the `custom_task_ids` parameter is set to `true`, the Workspace ID must be provided using the `team_id` parameter.
+       \
+      For example: `custom_task_ids=true&team_id=123`.
+    expr:
+      kind: from_filter
+      key: team_id
+  - name: user
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - user
+- name: task_ids
+  description: Get Bulk Tasks' Time in Status
+  filters:
+  - name: task_ids
+    required: true
+  - name: custom_task_ids
+    required: false
+  - name: team_id
+    required: false
+  request:
+    method: GET
+    path: /v2/task/bulk_time_in_status/task_ids
+    query:
+    - name: task_ids
+      explode: true
+      from: filter
+      key: task_ids
+    - name: custom_task_ids
+      explode: true
+      from: filter
+      key: custom_task_ids
+    - name: team_id
+      explode: true
+      from: filter
+      key: team_id
+  response:
+    allow_404_empty: false
+    row_strategy: direct
+  pagination:
+    mode: auto
+    page_start: 0
+    page_step: 1
+    offset_start: 0
+    link_header_require_results: false
+  columns:
+  - name: 20bbn28
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - 20bbn28
+  - name: 20bbn28__current_status
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - 20bbn28
+      - current_status
+  - name: 20bbn28__status_history
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - 20bbn28
+      - status_history
+  - name: 27075wz
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - 27075wz
+  - name: 27075wz__current_status
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - 27075wz
+      - current_status
+  - name: 27075wz__status_history
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - 27075wz
+      - status_history
+  - name: custom_task_ids
+    type: Boolean
+    nullable: true
+    virtual: true
+    description: If you want to reference a task by it's custom task id, this value must be `true`.
+    expr:
+      kind: from_filter
+      key: custom_task_ids
+  - name: task_ids
+    type: Utf8
+    nullable: true
+    virtual: true
+    description: |-
+      Include this paramater once per `task_id`.
+      You can include up to 100 task ids per request.
+      For example: `task_ids=3cuh&task_ids=g4fs`
+    expr:
+      kind: from_filter
+      key: task_ids
+  - name: team_id
+    type: Float64
+    nullable: true
+    virtual: true
+    description: |-
+      When the `custom_task_ids` parameter is set to `true`, the Workspace ID must be provided using the `team_id` parameter.
+       \
+      For example: `custom_task_ids=true&team_id=123`.
+    expr:
+      kind: from_filter
+      key: team_id
+- name: task_member
+  description: Get Task Members
+  filters:
+  - name: task_id
+    required: true
+  request:
+    method: GET
+    path: /v2/task/{{filter.task_id}}/member
+  response:
+    rows_path:
+    - members
+    allow_404_empty: false
+    row_strategy: direct
+  pagination:
+    mode: auto
+    page_start: 0
+    page_step: 1
+    offset_start: 0
+    link_header_require_results: false
+  columns:
+  - name: color
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - color
+  - name: email
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - email
+  - name: id
+    type: Int64
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - id
+  - name: initials
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - initials
+  - name: profileInfo
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - profileInfo
+  - name: profileInfo__display_profile
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - profileInfo
+      - display_profile
+  - name: profileInfo__top_tier_user
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - profileInfo
+      - top_tier_user
+  - name: profileInfo__verified_ambassador
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - profileInfo
+      - verified_ambassador
+  - name: profileInfo__verified_consultant
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - profileInfo
+      - verified_consultant
+  - name: profileInfo__viewed_top_tier_user
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - profileInfo
+      - viewed_top_tier_user
+  - name: profileInfo__viewed_verified_ambassador
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - profileInfo
+      - viewed_verified_ambassador
+  - name: profileInfo__viewed_verified_consultant
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - profileInfo
+      - viewed_verified_consultant
+  - name: profilePicture
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - profilePicture
+  - name: task_id
+    type: Utf8
+    nullable: true
+    virtual: true
+    expr:
+      kind: from_filter
+      key: task_id
+  - name: username
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - username
+- name: task_template
+  description: Get Task Templates
+  filters:
+  - name: team_id
+    required: true
+  request:
+    method: GET
+    path: /v2/team/{{filter.team_id}}/taskTemplate
+  response:
+    allow_404_empty: false
+    row_strategy: direct
+  pagination:
+    mode: page
+    page_param: page
+    page_start: 0
+    page_step: 1
+    offset_start: 0
+    link_header_require_results: false
+  columns:
+  - name: team_id
+    type: Float64
+    nullable: true
+    virtual: true
+    description: Workspace ID
+    expr:
+      kind: from_filter
+      key: team_id
+  - name: templates
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - templates
+- name: team
+  description: Get Authorized Workspaces
+  request:
+    method: GET
+    path: /v2/team
+  response:
+    rows_path:
+    - teams
+    allow_404_empty: false
+    row_strategy: direct
+  pagination:
+    mode: auto
+    page_start: 0
+    page_step: 1
+    offset_start: 0
+    link_header_require_results: false
+  columns:
+  - name: avatar
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - avatar
+  - name: color
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - color
+  - name: id
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - id
+  - name: members
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - members
+  - name: name
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - name
+- name: team_goal
+  description: Get Goals
+  filters:
+  - name: team_id
+    required: true
+  - name: include_completed
+    required: false
+  request:
+    method: GET
+    path: /v2/team/{{filter.team_id}}/goal
+    query:
+    - name: include_completed
+      explode: true
+      from: filter
+      key: include_completed
+  response:
+    allow_404_empty: false
+    row_strategy: direct
+  pagination:
+    mode: auto
+    page_start: 0
+    page_step: 1
+    offset_start: 0
+    link_header_require_results: false
+  columns:
+  - name: folders
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - folders
+  - name: goals
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - goals
+  - name: include_completed
+    type: Boolean
+    nullable: true
+    virtual: true
+    expr:
+      kind: from_filter
+      key: include_completed
+  - name: team_id
+    type: Float64
+    nullable: true
+    virtual: true
+    description: Workspace ID
+    expr:
+      kind: from_filter
+      key: team_id
+- name: team_space
+  description: Get Spaces
+  filters:
+  - name: team_id
+    required: true
+  - name: archived
+    required: false
+  request:
+    method: GET
+    path: /v2/team/{{filter.team_id}}/space
+    query:
+    - name: archived
+      explode: true
+      from: filter
+      key: archived
+  response:
+    rows_path:
+    - spaces
+    allow_404_empty: false
+    row_strategy: direct
+  pagination:
+    mode: auto
+    page_start: 0
+    page_step: 1
+    offset_start: 0
+    link_header_require_results: false
+  columns:
+  - name: admin_can_manage
+    type: Boolean
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - admin_can_manage
+  - name: archived
+    type: Boolean
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - archived
+  - name: avatar
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - avatar
+  - name: color
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - color
+  - name: features
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - features
+  - name: features__checklists
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - features
+      - checklists
+  - name: features__custom_fields
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - features
+      - custom_fields
+  - name: features__dependency_warning
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - features
+      - dependency_warning
+  - name: features__due_dates
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - features
+      - due_dates
+  - name: features__portfolios
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - features
+      - portfolios
+  - name: features__remap_dependencies
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - features
+      - remap_dependencies
+  - name: features__tags
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - features
+      - tags
+  - name: features__time_estimates
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - features
+      - time_estimates
+  - name: features__time_tracking
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - features
+      - time_tracking
+  - name: id
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - id
+  - name: members
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - members
+  - name: multiple_assignees
+    type: Boolean
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - multiple_assignees
+  - name: name
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - name
+  - name: private
+    type: Boolean
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - private
+  - name: statuses
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - statuses
+  - name: team_id
+    type: Float64
+    nullable: true
+    virtual: true
+    description: Workspace ID
+    expr:
+      kind: from_filter
+      key: team_id
+- name: team_task
+  description: Get Filtered Team Tasks
+  filters:
+  - name: team_Id
+    required: true
+  - name: order_by
+    required: false
+  - name: reverse
+    required: false
+  - name: subtasks
+    required: false
+  - name: space_ids[]
+    required: false
+  - name: project_ids[]
+    required: false
+  - name: list_ids[]
+    required: false
+  - name: statuses[]
+    required: false
+  - name: include_closed
+    required: false
+  - name: assignees[]
+    required: false
+  - name: tags[]
+    required: false
+  - name: due_date_gt
+    required: false
+  - name: due_date_lt
+    required: false
+  - name: date_created_gt
+    required: false
+  - name: date_created_lt
+    required: false
+  - name: date_updated_gt
+    required: false
+  - name: date_updated_lt
+    required: false
+  - name: date_done_gt
+    required: false
+  - name: date_done_lt
+    required: false
+  - name: custom_fields
+    required: false
+  - name: parent
+    required: false
+  - name: include_markdown_description
+    required: false
+  - name: custom_items[]
+    required: false
+  request:
+    method: GET
+    path: /v2/team/{{filter.team_Id}}/task
+    query:
+    - name: order_by
+      explode: true
+      from: filter
+      key: order_by
+    - name: reverse
+      explode: true
+      from: filter
+      key: reverse
+    - name: subtasks
+      explode: true
+      from: filter
+      key: subtasks
+    - name: space_ids[]
+      explode: true
+      from: filter
+      key: space_ids[]
+    - name: project_ids[]
+      explode: true
+      from: filter
+      key: project_ids[]
+    - name: list_ids[]
+      explode: true
+      from: filter
+      key: list_ids[]
+    - name: statuses[]
+      explode: true
+      from: filter
+      key: statuses[]
+    - name: include_closed
+      explode: true
+      from: filter
+      key: include_closed
+    - name: assignees[]
+      explode: true
+      from: filter
+      key: assignees[]
+    - name: tags[]
+      explode: true
+      from: filter
+      key: tags[]
+    - name: due_date_gt
+      explode: true
+      from: filter
+      key: due_date_gt
+    - name: due_date_lt
+      explode: true
+      from: filter
+      key: due_date_lt
+    - name: date_created_gt
+      explode: true
+      from: filter
+      key: date_created_gt
+    - name: date_created_lt
+      explode: true
+      from: filter
+      key: date_created_lt
+    - name: date_updated_gt
+      explode: true
+      from: filter
+      key: date_updated_gt
+    - name: date_updated_lt
+      explode: true
+      from: filter
+      key: date_updated_lt
+    - name: date_done_gt
+      explode: true
+      from: filter
+      key: date_done_gt
+    - name: date_done_lt
+      explode: true
+      from: filter
+      key: date_done_lt
+    - name: custom_fields
+      explode: true
+      from: filter
+      key: custom_fields
+    - name: parent
+      explode: true
+      from: filter
+      key: parent
+    - name: include_markdown_description
+      explode: true
+      from: filter
+      key: include_markdown_description
+    - name: custom_items[]
+      explode: true
+      from: filter
+      key: custom_items[]
+  response:
+    rows_path:
+    - tasks
+    allow_404_empty: false
+    row_strategy: direct
+  pagination:
+    mode: page
+    page_param: page
+    page_start: 0
+    page_step: 1
+    offset_start: 0
+    link_header_require_results: false
+  columns:
+  - name: assignees
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - assignees
+  - name: assignees[]
+    type: Utf8
+    nullable: true
+    virtual: true
+    description: |-
+      Filter by Assignees using people's ClickUp user id. For example: \
+       \
+      `?assignees[]=1234&assignees[]=5678`
+    expr:
+      kind: from_filter
+      key: assignees[]
+  - name: checklists
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - checklists
+  - name: creator
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - creator
+  - name: creator__color
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - creator
+      - color
+  - name: creator__email
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - creator
+      - email
+  - name: creator__id
+    type: Int64
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - creator
+      - id
+  - name: creator__profilePicture
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - creator
+      - profilePicture
+  - name: creator__username
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - creator
+      - username
+  - name: custom_fields
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - custom_fields
+  - name: custom_id
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - custom_id
+  - name: custom_items[]
+    type: Utf8
+    nullable: true
+    virtual: true
+    description: |-
+      Filter by custom task types. For example: \
+       \
+      `?custom_items[]=0&custom_items[]=1300` \
+       \
+      Including `0` returns tasks. Including `1` returns Milestones. Including any other number returns the custom task type as defined in your Workspace.
+    expr:
+      kind: from_filter
+      key: custom_items[]
+  - name: date_closed
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - date_closed
+  - name: date_created
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - date_created
+  - name: date_created_gt
+    type: Int64
+    nullable: true
+    virtual: true
+    description: Filter by date created greater than Unix time in milliseconds.
+    expr:
+      kind: from_filter
+      key: date_created_gt
+  - name: date_created_lt
+    type: Int64
+    nullable: true
+    virtual: true
+    description: Filter by date created less than Unix time in milliseconds.
+    expr:
+      kind: from_filter
+      key: date_created_lt
+  - name: date_done
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - date_done
+  - name: date_done_gt
+    type: Int64
+    nullable: true
+    virtual: true
+    description: Filter by date done greater than Unix time in milliseconds.
+    expr:
+      kind: from_filter
+      key: date_done_gt
+  - name: date_done_lt
+    type: Int64
+    nullable: true
+    virtual: true
+    description: Filter by date done less than Unix time in milliseconds.
+    expr:
+      kind: from_filter
+      key: date_done_lt
+  - name: date_updated
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - date_updated
+  - name: date_updated_gt
+    type: Int64
+    nullable: true
+    virtual: true
+    description: Filter by date updated greater than Unix time in milliseconds.
+    expr:
+      kind: from_filter
+      key: date_updated_gt
+  - name: date_updated_lt
+    type: Int64
+    nullable: true
+    virtual: true
+    description: Filter by date updated less than Unix time in milliseconds.
+    expr:
+      kind: from_filter
+      key: date_updated_lt
+  - name: dependencies
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - dependencies
+  - name: description
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - description
+  - name: due_date
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - due_date
+  - name: due_date_gt
+    type: Int64
+    nullable: true
+    virtual: true
+    description: Filter by due date greater than Unix time in milliseconds.
+    expr:
+      kind: from_filter
+      key: due_date_gt
+  - name: due_date_lt
+    type: Int64
+    nullable: true
+    virtual: true
+    description: Filter by due date less than Unix time in milliseconds.
+    expr:
+      kind: from_filter
+      key: due_date_lt
+  - name: folder
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - folder
+  - name: id
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - id
+  - name: include_closed
+    type: Boolean
+    nullable: true
+    virtual: true
+    description: |-
+      Include or excluse closed tasks. By default, they are excluded.\
+       \
+      To include closed tasks, use `include_closed: true`.
+    expr:
+      kind: from_filter
+      key: include_closed
+  - name: include_markdown_description
+    type: Boolean
+    nullable: true
+    virtual: true
+    description: To return task descriptions in Markdown format, use `?include_markdown_description=true`.
+    expr:
+      kind: from_filter
+      key: include_markdown_description
+  - name: linked_tasks
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - linked_tasks
+  - name: list
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - list
+  - name: list__access
+    type: Boolean
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - list
+      - access
+  - name: list__id
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - list
+      - id
+  - name: list__name
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - list
+      - name
+  - name: list_ids[]
+    type: Utf8
+    nullable: true
+    virtual: true
+    description: "Filter by Lists. For example: \\\n \\\n`?list_ids[]=1234&list_ids[]=6789` "
+    expr:
+      kind: from_filter
+      key: list_ids[]
+  - name: locations
+    type: Utf8
+    nullable: true
+    virtual: false
+    description: Array of Lists where the task has been added.
+    expr:
+      kind: path
+      path:
+      - locations
+  - name: markdown_description
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - markdown_description
+  - name: name
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - name
+  - name: order_by
+    type: Utf8
+    nullable: true
+    virtual: true
+    description: |-
+      Order by a particular field. By default, tasks are ordered by `created`.\
+       \
+      Options include: `id`, `created`, `updated`, and `due_date`.
+    expr:
+      kind: from_filter
+      key: order_by
+  - name: orderindex
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - orderindex
+  - name: parent
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - parent
+  - name: permission_level
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - permission_level
+  - name: points
+    type: Float64
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - points
+  - name: priority
+    type: Int64
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - priority
+  - name: project
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - project
+  - name: project__access
+    type: Boolean
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - project
+      - access
+  - name: project__hidden
+    type: Boolean
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - project
+      - hidden
+  - name: project__id
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - project
+      - id
+  - name: project__name
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - project
+      - name
+  - name: project_ids[]
+    type: Utf8
+    nullable: true
+    virtual: true
+    description: |-
+      Filter by Folders. For example: \
+       \
+      `?project_ids[]=1234&project_ids[]=6789`
+    expr:
+      kind: from_filter
+      key: project_ids[]
+  - name: reverse
+    type: Boolean
+    nullable: true
+    virtual: true
+    description: Tasks are displayed in reverse order.
+    expr:
+      kind: from_filter
+      key: reverse
+  - name: space
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - space
+  - name: space_ids[]
+    type: Utf8
+    nullable: true
+    virtual: true
+    description: |-
+      Filter by Spaces. For example: \
+       \
+      `?space_ids[]=1234&space_ids[]=6789`
+    expr:
+      kind: from_filter
+      key: space_ids[]
+  - name: start_date
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - start_date
+  - name: status
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - status
+  - name: statuses[]
+    type: Utf8
+    nullable: true
+    virtual: true
+    description: |-
+      Filter by statuses. Use `%20` to represent a space character. To include closed tasks, use the `include_closed` parameter. \
+       \
+      For example: \
+       \
+      `?statuses[]=to%20do&statuses[]=in%20progress`
+    expr:
+      kind: from_filter
+      key: statuses[]
+  - name: subtasks
+    type: Boolean
+    nullable: true
+    virtual: true
+    description: Include or exclude subtasks. By default, subtasks are excluded.
+    expr:
+      kind: from_filter
+      key: subtasks
+  - name: tags
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - tags
+  - name: tags[]
+    type: Utf8
+    nullable: true
+    virtual: true
+    description: |-
+      Filter by tags. User `%20` to represent a space character. For example: \
+       \
+      `?tags[]=tag1&tags[]=this%20tag`
+    expr:
+      kind: from_filter
+      key: tags[]
+  - name: team_Id
+    type: Float64
+    nullable: true
+    virtual: true
+    description: Workspace ID
+    expr:
+      kind: from_filter
+      key: team_Id
+  - name: team_id
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - team_id
+  - name: text_content
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - text_content
+  - name: time_estimate
+    type: Float64
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - time_estimate
+  - name: url
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - url
+  - name: watchers
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - watchers
+- name: team_time_entries
+  description: Get time entries within a date range
+  filters:
+  - name: team_Id
+    required: true
+  - name: start_date
+    required: false
+  - name: end_date
+    required: false
+  - name: assignee
+    required: false
+  - name: include_task_tags
+    required: false
+  - name: include_location_names
+    required: false
+  - name: include_approval_history
+    required: false
+  - name: include_approval_details
+    required: false
+  - name: space_id
+    required: false
+  - name: folder_id
+    required: false
+  - name: list_id
+    required: false
+  - name: task_id
+    required: false
+  - name: custom_task_ids
+    required: false
+  - name: team_id
+    required: false
+  - name: is_billable
+    required: false
+  request:
+    method: GET
+    path: /v2/team/{{filter.team_Id}}/time_entries
+    query:
+    - name: start_date
+      explode: true
+      from: filter
+      key: start_date
+    - name: end_date
+      explode: true
+      from: filter
+      key: end_date
+    - name: assignee
+      explode: true
+      from: filter
+      key: assignee
+    - name: include_task_tags
+      explode: true
+      from: filter
+      key: include_task_tags
+    - name: include_location_names
+      explode: true
+      from: filter
+      key: include_location_names
+    - name: include_approval_history
+      explode: true
+      from: filter
+      key: include_approval_history
+    - name: include_approval_details
+      explode: true
+      from: filter
+      key: include_approval_details
+    - name: space_id
+      explode: true
+      from: filter
+      key: space_id
+    - name: folder_id
+      explode: true
+      from: filter
+      key: folder_id
+    - name: list_id
+      explode: true
+      from: filter
+      key: list_id
+    - name: task_id
+      explode: true
+      from: filter
+      key: task_id
+    - name: custom_task_ids
+      explode: true
+      from: filter
+      key: custom_task_ids
+    - name: team_id
+      explode: true
+      from: filter
+      key: team_id
+    - name: is_billable
+      explode: true
+      from: filter
+      key: is_billable
+  response:
+    rows_path:
+    - data
+    allow_404_empty: false
+    row_strategy: direct
+  pagination:
+    mode: auto
+    page_start: 0
+    page_step: 1
+    offset_start: 0
+    link_header_require_results: false
+  columns:
+  - name: approval
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - approval
+  - name: approval_id
+    type: Utf8
+    nullable: true
+    virtual: false
+    description: ID of the associated approval
+    expr:
+      kind: path
+      path:
+      - approval_id
+  - name: assignee
+    type: Float64
+    nullable: true
+    virtual: true
+    description: |-
+      Filter by `user_id`. For multiple assignees, separate `user_id` using commas.\
+       \
+       **Example:** `assignee=1234,9876`\
+       \
+      ***Note:** Only Workspace Owners/Admins have access to do this.*
+    expr:
+      kind: from_filter
+      key: assignee
+  - name: at
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - at
+  - name: billable
+    type: Boolean
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - billable
+  - name: custom_task_ids
+    type: Boolean
+    nullable: true
+    virtual: true
+    description: If you want to reference a task by it's custom task id, this value must be `true`.
+    expr:
+      kind: from_filter
+      key: custom_task_ids
+  - name: description
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - description
+  - name: duration
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - duration
+  - name: end
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - end
+  - name: end_date
+    type: Float64
+    nullable: true
+    virtual: true
+    description: Unix time in milliseconds
+    expr:
+      kind: from_filter
+      key: end_date
+  - name: folder_id
+    type: Float64
+    nullable: true
+    virtual: true
+    description: Only include time entries associated with tasks in a specific Folder.
+    expr:
+      kind: from_filter
+      key: folder_id
+  - name: id
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - id
+  - name: include_approval_details
+    type: Boolean
+    nullable: true
+    virtual: true
+    description: Include the details of the approval for each time entry. Adds Approver ID, Approved Time, List of Approvers, and Approval Status.
+    expr:
+      kind: from_filter
+      key: include_approval_details
+  - name: include_approval_history
+    type: Boolean
+    nullable: true
+    virtual: true
+    description: Include the history of the approval for each time entry. Adds status changes, notes, and approvers.
+    expr:
+      kind: from_filter
+      key: include_approval_history
+  - name: include_location_names
+    type: Boolean
+    nullable: true
+    virtual: true
+    description: Include the names of the List, Folder, and Space along with the `list_id`,`folder_id`, and `space_id`.
+    expr:
+      kind: from_filter
+      key: include_location_names
+  - name: include_task_tags
+    type: Boolean
+    nullable: true
+    virtual: true
+    description: Include task tags in the response for time entries associated with tasks.
+    expr:
+      kind: from_filter
+      key: include_task_tags
+  - name: is_billable
+    type: Boolean
+    nullable: true
+    virtual: true
+    description: |-
+      Include only billable time entries by using a value of `true` or only non-billable time entries by using a value of `false`.\
+       \
+      For example: `?is_billable=true`.
+    expr:
+      kind: from_filter
+      key: is_billable
+  - name: list_id
+    type: Float64
+    nullable: true
+    virtual: true
+    description: Only include time entries associated with tasks in a specific List.
+    expr:
+      kind: from_filter
+      key: list_id
+  - name: source
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - source
+  - name: space_id
+    type: Float64
+    nullable: true
+    virtual: true
+    description: Only include time entries associated with tasks in a specific Space.
+    expr:
+      kind: from_filter
+      key: space_id
+  - name: start
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - start
+  - name: start_date
+    type: Float64
+    nullable: true
+    virtual: true
+    description: Unix time in milliseconds
+    expr:
+      kind: from_filter
+      key: start_date
+  - name: tags
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - tags
+  - name: task
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - task
+  - name: task__custom_id
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - task
+      - custom_id
+  - name: task__custom_type
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - task
+      - custom_type
+  - name: task__id
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - task
+      - id
+  - name: task__name
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - task
+      - name
+  - name: task__status
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - task
+      - status
+  - name: task_id
+    type: Utf8
+    nullable: true
+    virtual: true
+    description: Only include time entries associated with a specific task.
+    expr:
+      kind: from_filter
+      key: task_id
+  - name: task_location
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - task_location
+  - name: task_tags
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - task_tags
+  - name: task_url
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - task_url
+  - name: team_Id
+    type: Float64
+    nullable: true
+    virtual: true
+    description: Workspace ID
+    expr:
+      kind: from_filter
+      key: team_Id
+  - name: team_id
+    type: Float64
+    nullable: true
+    virtual: true
+    description: |-
+      When the `custom_task_ids` parameter is set to `true`, the Workspace ID must be provided using the `team_id` parameter.
+       \
+      For example: `custom_task_ids=true&team_id=123`.
+    expr:
+      kind: from_filter
+      key: team_id
+  - name: user
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - user
+  - name: wid
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - wid
+- name: team_time_entry
+  description: Get singular time entry
+  filters:
+  - name: team_id
+    required: true
+  - name: timer_id
+    required: true
+  - name: include_task_tags
+    required: false
+  - name: include_location_names
+    required: false
+  - name: include_approval_history
+    required: false
+  - name: include_approval_details
+    required: false
+  request:
+    method: GET
+    path: /v2/team/{{filter.team_id}}/time_entries/{{filter.timer_id}}
+    query:
+    - name: include_task_tags
+      explode: true
+      from: filter
+      key: include_task_tags
+    - name: include_location_names
+      explode: true
+      from: filter
+      key: include_location_names
+    - name: include_approval_history
+      explode: true
+      from: filter
+      key: include_approval_history
+    - name: include_approval_details
+      explode: true
+      from: filter
+      key: include_approval_details
+  response:
+    allow_404_empty: false
+    row_strategy: direct
+  pagination:
+    mode: auto
+    page_start: 0
+    page_step: 1
+    offset_start: 0
+    link_header_require_results: false
+  columns:
+  - name: data
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - data
+  - name: data__approval
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - data
+      - approval
+  - name: data__approval_id
+    type: Utf8
+    nullable: true
+    virtual: false
+    description: ID of the associated approval
+    expr:
+      kind: path
+      path:
+      - data
+      - approval_id
+  - name: data__at
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - data
+      - at
+  - name: data__billable
+    type: Boolean
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - data
+      - billable
+  - name: data__description
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - data
+      - description
+  - name: data__duration
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - data
+      - duration
+  - name: data__end
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - data
+      - end
+  - name: data__id
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - data
+      - id
+  - name: data__source
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - data
+      - source
+  - name: data__start
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - data
+      - start
+  - name: data__tags
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - data
+      - tags
+  - name: data__task_location
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - data
+      - task_location
+  - name: data__task_location__folder_id
+    type: Int64
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - data
+      - task_location
+      - folder_id
+  - name: data__task_location__folder_name
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - data
+      - task_location
+      - folder_name
+  - name: data__task_location__list_id
+    type: Int64
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - data
+      - task_location
+      - list_id
+  - name: data__task_location__list_name
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - data
+      - task_location
+      - list_name
+  - name: data__task_location__space_id
+    type: Int64
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - data
+      - task_location
+      - space_id
+  - name: data__task_location__space_name
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - data
+      - task_location
+      - space_name
+  - name: data__task_tags
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - data
+      - task_tags
+  - name: data__task_url
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - data
+      - task_url
+  - name: data__user
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - data
+      - user
+  - name: data__wid
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - data
+      - wid
+  - name: include_approval_details
+    type: Boolean
+    nullable: true
+    virtual: true
+    description: Include the details of the approval for the time entry.
+    expr:
+      kind: from_filter
+      key: include_approval_details
+  - name: include_approval_history
+    type: Boolean
+    nullable: true
+    virtual: true
+    description: Include the history of the approval for the time entry.
+    expr:
+      kind: from_filter
+      key: include_approval_history
+  - name: include_location_names
+    type: Boolean
+    nullable: true
+    virtual: true
+    description: Include the names of the List, Folder, and Space along with `list_id`,`folder_id`, and `space_id`.
+    expr:
+      kind: from_filter
+      key: include_location_names
+  - name: include_task_tags
+    type: Boolean
+    nullable: true
+    virtual: true
+    description: Include task tags in the response for time entries associated with tasks.
+    expr:
+      kind: from_filter
+      key: include_task_tags
+  - name: team_id
+    type: Float64
+    nullable: true
+    virtual: true
+    description: Workspace ID
+    expr:
+      kind: from_filter
+      key: team_id
+  - name: timer_id
+    type: Utf8
+    nullable: true
+    virtual: true
+    description: |-
+      The ID of a time entry. \
+       \
+      This can be found using the [Get Time Entries Within a Date Range](ref:gettimeentrieswithinadaterange) endpoint.
+    expr:
+      kind: from_filter
+      key: timer_id
+- name: team_user
+  description: Get User
+  filters:
+  - name: team_id
+    required: true
+  - name: user_id
+    required: true
+  - name: include_shared
+    required: false
+  request:
+    method: GET
+    path: /v2/team/{{filter.team_id}}/user/{{filter.user_id}}
+    query:
+    - name: include_shared
+      explode: true
+      from: filter
+      key: include_shared
+  response:
+    allow_404_empty: false
+    row_strategy: direct
+  pagination:
+    mode: auto
+    page_start: 0
+    page_step: 1
+    offset_start: 0
+    link_header_require_results: false
+  columns:
+  - name: include_shared
+    type: Boolean
+    nullable: true
+    virtual: true
+    description: Exclude details of items shared with the guest by setting this parameter to `false`. By default this parameter is set to `true`.
+    expr:
+      kind: from_filter
+      key: include_shared
+  - name: member
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - member
+  - name: member__invited_by
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - member
+      - invited_by
+  - name: member__invited_by__color
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - member
+      - invited_by
+      - color
+  - name: member__invited_by__email
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - member
+      - invited_by
+      - email
+  - name: member__invited_by__id
+    type: Int64
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - member
+      - invited_by
+      - id
+  - name: member__invited_by__initials
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - member
+      - invited_by
+      - initials
+  - name: member__invited_by__profilePicture
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - member
+      - invited_by
+      - profilePicture
+  - name: member__invited_by__username
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - member
+      - invited_by
+      - username
+  - name: member__shared
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - member
+      - shared
+  - name: member__shared__folders
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - member
+      - shared
+      - folders
+  - name: member__shared__lists
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - member
+      - shared
+      - lists
+  - name: member__shared__tasks
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - member
+      - shared
+      - tasks
+  - name: member__user
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - member
+      - user
+  - name: member__user__color
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - member
+      - user
+      - color
+  - name: member__user__custom_role
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - member
+      - user
+      - custom_role
+  - name: member__user__date_invited
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - member
+      - user
+      - date_invited
+  - name: member__user__date_joined
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - member
+      - user
+      - date_joined
+  - name: member__user__email
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - member
+      - user
+      - email
+  - name: member__user__id
+    type: Int64
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - member
+      - user
+      - id
+  - name: member__user__initials
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - member
+      - user
+      - initials
+  - name: member__user__last_active
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - member
+      - user
+      - last_active
+  - name: member__user__profilePicture
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - member
+      - user
+      - profilePicture
+  - name: member__user__role
+    type: Int64
+    nullable: true
+    virtual: false
+    description: Owner = 1, Admin = 2, Member = 3, Guest = 4
+    expr:
+      kind: path
+      path:
+      - member
+      - user
+      - role
+  - name: member__user__username
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - member
+      - user
+      - username
+  - name: team_id
+    type: Float64
+    nullable: true
+    virtual: true
+    description: Workspace ID
+    expr:
+      kind: from_filter
+      key: team_id
+  - name: user_id
+    type: Float64
+    nullable: true
+    virtual: true
+    expr:
+      kind: from_filter
+      key: user_id
+- name: time
+  description: Get tracked time
+  filters:
+  - name: task_id
+    required: true
+  - name: custom_task_ids
+    required: false
+  - name: team_id
+    required: false
+  request:
+    method: GET
+    path: /v2/task/{{filter.task_id}}/time
+    query:
+    - name: custom_task_ids
+      explode: true
+      from: filter
+      key: custom_task_ids
+    - name: team_id
+      explode: true
+      from: filter
+      key: team_id
+  response:
+    rows_path:
+    - data
+    allow_404_empty: false
+    row_strategy: direct
+  pagination:
+    mode: auto
+    page_start: 0
+    page_step: 1
+    offset_start: 0
+    link_header_require_results: false
+  columns:
+  - name: custom_task_ids
+    type: Boolean
+    nullable: true
+    virtual: true
+    description: If you want to reference a task by it's custom task id, this value must be `true`.
+    expr:
+      kind: from_filter
+      key: custom_task_ids
+  - name: intervals
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - intervals
+  - name: task_id
+    type: Utf8
+    nullable: true
+    virtual: true
+    expr:
+      kind: from_filter
+      key: task_id
+  - name: team_id
+    type: Float64
+    nullable: true
+    virtual: true
+    description: |-
+      When the `custom_task_ids` parameter is set to `true`, the Workspace ID must be provided using the `team_id` parameter.
+       \
+      For example: `custom_task_ids=true&team_id=123`.
+    expr:
+      kind: from_filter
+      key: team_id
+  - name: time
+    type: Int64
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - time
+  - name: user
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - user
+  - name: user__color
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - user
+      - color
+  - name: user__email
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - user
+      - email
+  - name: user__id
+    type: Int64
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - user
+      - id
+  - name: user__initials
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - user
+      - initials
+  - name: user__profilePicture
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - user
+      - profilePicture
+  - name: user__username
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - user
+      - username
+- name: time_in_status
+  description: Get Task's Time in Status
+  filters:
+  - name: task_id
+    required: true
+  - name: custom_task_ids
+    required: false
+  - name: team_id
+    required: false
+  request:
+    method: GET
+    path: /v2/task/{{filter.task_id}}/time_in_status
+    query:
+    - name: custom_task_ids
+      explode: true
+      from: filter
+      key: custom_task_ids
+    - name: team_id
+      explode: true
+      from: filter
+      key: team_id
+  response:
+    rows_path:
+    - status_history
+    allow_404_empty: false
+    row_strategy: direct
+  pagination:
+    mode: auto
+    page_start: 0
+    page_step: 1
+    offset_start: 0
+    link_header_require_results: false
+  columns:
+  - name: color
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - color
+  - name: custom_task_ids
+    type: Boolean
+    nullable: true
+    virtual: true
+    description: If you want to reference a task by it's custom task id, this value must be `true`.
+    expr:
+      kind: from_filter
+      key: custom_task_ids
+  - name: orderindex
+    type: Int64
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - orderindex
+  - name: status
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - status
+  - name: task_id
+    type: Utf8
+    nullable: true
+    virtual: true
+    expr:
+      kind: from_filter
+      key: task_id
+  - name: team_id
+    type: Float64
+    nullable: true
+    virtual: true
+    description: |-
+      When the `custom_task_ids` parameter is set to `true`, the Workspace ID must be provided using the `team_id` parameter.
+       \
+      For example: `custom_task_ids=true&team_id=123`.
+    expr:
+      kind: from_filter
+      key: team_id
+  - name: total_time
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - total_time
+  - name: type
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - type
+- name: user
+  description: Get Authorized User
+  request:
+    method: GET
+    path: /v2/user
+  response:
+    allow_404_empty: false
+    row_strategy: direct
+  pagination:
+    mode: auto
+    page_start: 0
+    page_step: 1
+    offset_start: 0
+    link_header_require_results: false
+  columns:
+  - name: user
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - user
+  - name: user__color
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - user
+      - color
+  - name: user__email
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - user
+      - email
+  - name: user__global_font_support
+    type: Boolean
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - user
+      - global_font_support
+  - name: user__id
+    type: Int64
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - user
+      - id
+  - name: user__initials
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - user
+      - initials
+  - name: user__profilePicture
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - user
+      - profilePicture
+  - name: user__timezeone
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - user
+      - timezeone
+  - name: user__username
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - user
+      - username
+  - name: user__week_start_day
+    type: Int64
+    nullable: true
+    virtual: false
+    description: The user's preferred start of the calendar week setting. \ `0` is Sunday. \ `1` is Monday.
+    expr:
+      kind: path
+      path:
+      - user
+      - week_start_day
+- name: view
+  description: Get Workspace (Everything level) Views
+  filters:
+  - name: team_id
+    required: true
+  - name: space_id
+    required: false
+  - name: folder_id
+    required: false
+  - name: list_id
+    required: false
+  request:
+    method: GET
+    path: /v2/team/{{filter.team_id}}/view
+  requests:
+  - when_filters:
+    - space_id
+    method: GET
+    path: /v2/space/{{filter.space_id}}/view
+  - when_filters:
+    - folder_id
+    method: GET
+    path: /v2/folder/{{filter.folder_id}}/view
+  - when_filters:
+    - list_id
+    method: GET
+    path: /v2/list/{{filter.list_id}}/view
+  response:
+    allow_404_empty: false
+    row_strategy: direct
+  pagination:
+    mode: auto
+    page_start: 0
+    page_step: 1
+    offset_start: 0
+    link_header_require_results: false
+  columns:
+  - name: team_id
+    type: Float64
+    nullable: true
+    virtual: true
+    description: Workspace ID
+    expr:
+      kind: from_filter
+      key: team_id
+  - name: views
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - views
+  - name: space_id
+    type: Utf8
+    nullable: true
+    virtual: true
+    expr:
+      kind: from_filter
+      key: space_id
+  - name: folder_id
+    type: Utf8
+    nullable: true
+    virtual: true
+    expr:
+      kind: from_filter
+      key: folder_id
+  - name: list_id
+    type: Utf8
+    nullable: true
+    virtual: true
+    expr:
+      kind: from_filter
+      key: list_id
+- name: view_comment
+  description: Get Chat View Comments
+  filters:
+  - name: view_id
+    required: true
+  - name: start
+    required: false
+  - name: start_id
+    required: false
+  request:
+    method: GET
+    path: /v2/view/{{filter.view_id}}/comment
+    query:
+    - name: start
+      explode: true
+      from: filter
+      key: start
+    - name: start_id
+      explode: true
+      from: filter
+      key: start_id
+  response:
+    rows_path:
+    - comments
+    allow_404_empty: false
+    row_strategy: direct
+  pagination:
+    mode: auto
+    page_start: 0
+    page_step: 1
+    offset_start: 0
+    link_header_require_results: false
+  columns:
+  - name: assigned_by
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - assigned_by
+  - name: assignee
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - assignee
+  - name: comment
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - comment
+  - name: comment_text
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - comment_text
+  - name: date
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - date
+  - name: id
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - id
+  - name: reactions
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - reactions
+  - name: reply_count
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - reply_count
+  - name: resolved
+    type: Boolean
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - resolved
+  - name: start
+    type: Int64
+    nullable: true
+    virtual: true
+    description: Enter the `date` of a Chat view comment using Unix time in milliseconds.
+    expr:
+      kind: from_filter
+      key: start
+  - name: start_id
+    type: Utf8
+    nullable: true
+    virtual: true
+    description: Enter the Comment `id` of a Chat view comment.
+    expr:
+      kind: from_filter
+      key: start_id
+  - name: user
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - user
+  - name: view_id
+    type: Utf8
+    nullable: true
+    virtual: true
+    description: 105 (string)
+    expr:
+      kind: from_filter
+      key: view_id
+- name: view_task
+  description: Get View Tasks
+  filters:
+  - name: view_id
+    required: true
+  request:
+    method: GET
+    path: /v2/view/{{filter.view_id}}/task
+  response:
+    rows_path:
+    - tasks
+    allow_404_empty: false
+    row_strategy: direct
+  pagination:
+    mode: page
+    page_param: page
+    page_start: 0
+    page_step: 1
+    offset_start: 0
+    link_header_require_results: false
+  columns:
+  - name: assignees
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - assignees
+  - name: checklists
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - checklists
+  - name: creator
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - creator
+  - name: custom_fields
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - custom_fields
+  - name: custom_item_id
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - custom_item_id
+  - name: date_closed
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - date_closed
+  - name: date_created
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - date_created
+  - name: date_done
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - date_done
+  - name: date_updated
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - date_updated
+  - name: due_date
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - due_date
+  - name: folder
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - folder
+  - name: id
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - id
+  - name: list
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - list
+  - name: locations
+    type: Utf8
+    nullable: true
+    virtual: false
+    description: Array of Lists where the task has been added.
+    expr:
+      kind: path
+      path:
+      - locations
+  - name: markdown_description
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - markdown_description
+  - name: name
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - name
+  - name: orderindex
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - orderindex
+  - name: parent
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - parent
+  - name: points
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - points
+  - name: priority
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - priority
+  - name: space
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - space
+  - name: start_date
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - start_date
+  - name: status
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - status
+  - name: tags
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - tags
+  - name: time_estimate
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - time_estimate
+  - name: time_spent
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - time_spent
+  - name: url
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - url
+  - name: view_id
+    type: Utf8
+    nullable: true
+    virtual: true
+    description: 105 (string)
+    expr:
+      kind: from_filter
+      key: view_id
+  - name: watchers
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - watchers
+- name: webhook
+  description: Get Webhooks
+  filters:
+  - name: team_id
+    required: true
+  request:
+    method: GET
+    path: /v2/team/{{filter.team_id}}/webhook
+  response:
+    allow_404_empty: false
+    row_strategy: direct
+  pagination:
+    mode: auto
+    page_start: 0
+    page_step: 1
+    offset_start: 0
+    link_header_require_results: false
+  columns:
+  - name: team_id
+    type: Float64
+    nullable: true
+    virtual: true
+    description: Workspace ID
+    expr:
+      kind: from_filter
+      key: team_id
+  - name: webhooks
+    type: Utf8
+    nullable: true
+    virtual: false
+    expr:
+      kind: path
+      path:
+      - webhooks

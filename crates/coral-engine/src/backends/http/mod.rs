@@ -1,0 +1,172 @@
+//! HTTP-backed source runtime pieces: request client, provider, and
+//! backend-specific query errors.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use datafusion::datasource::TableProvider;
+use datafusion::error::Result;
+use datafusion::prelude::SessionContext;
+
+use crate::backends::{
+    BackendCompileRequest, BackendRegistration, CompiledBackendSource, RegisteredSource,
+    RegisteredTable, build_registered_table, registered_columns_from_specs, required_filter_names,
+};
+use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec};
+pub(crate) mod client;
+pub(crate) mod error;
+pub(crate) mod provider;
+
+pub(crate) use client::HttpSourceClient;
+pub(crate) use error::ProviderQueryError;
+pub(crate) use provider::HttpSourceTableProvider;
+
+#[derive(Debug, Clone)]
+struct HttpCompiledSource {
+    manifest: HttpSourceManifest,
+    source_secrets: std::collections::BTreeMap<String, String>,
+    source_variables: std::collections::BTreeMap<String, String>,
+}
+
+pub(crate) fn compile_source(
+    manifest: HttpSourceManifest,
+    source_secrets: std::collections::BTreeMap<String, String>,
+    source_variables: std::collections::BTreeMap<String, String>,
+) -> Box<dyn CompiledBackendSource> {
+    Box::new(HttpCompiledSource {
+        manifest,
+        source_secrets,
+        source_variables,
+    })
+}
+
+pub(crate) fn compile_manifest(
+    manifest: &HttpSourceManifest,
+    request: &BackendCompileRequest<'_>,
+) -> Box<dyn CompiledBackendSource> {
+    let _ = request.runtime_context;
+    compile_source(
+        manifest.clone(),
+        request.source_secrets.clone(),
+        request.source_variables.clone(),
+    )
+}
+
+#[async_trait]
+impl CompiledBackendSource for HttpCompiledSource {
+    fn schema_name(&self) -> &str {
+        &self.manifest.common.name
+    }
+
+    fn source_name(&self) -> &str {
+        &self.manifest.common.name
+    }
+
+    async fn register(&self, _ctx: &SessionContext) -> Result<BackendRegistration> {
+        let backend = HttpSourceClient::from_manifest(
+            &self.manifest,
+            self.source_secrets.clone(),
+            self.source_variables.clone(),
+        )?;
+        let mut tables: HashMap<String, Arc<dyn TableProvider>> = HashMap::new();
+        let mut table_infos = Vec::with_capacity(self.manifest.tables.len());
+
+        for table in &self.manifest.tables {
+            let provider: Arc<dyn TableProvider> = Arc::new(HttpSourceTableProvider::new(
+                backend.clone(),
+                self.manifest.common.name.clone(),
+                table.clone(),
+            )?);
+            tables.insert(table.name().to_string(), provider);
+            table_infos.push(registered_table(table));
+        }
+
+        Ok(BackendRegistration {
+            tables,
+            source: RegisteredSource {
+                schema_name: self.manifest.common.name.clone(),
+                tables: table_infos,
+            },
+        })
+    }
+}
+
+fn registered_table(table: &HttpTableSpec) -> RegisteredTable {
+    let required_filters = required_filter_names(table.filters());
+    let columns = registered_columns_from_specs(table.columns(), &required_filters);
+    build_registered_table(&table.common, columns, required_filters)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use coral_spec::parse_source_manifest_value;
+    use serde_json::json;
+
+    #[test]
+    fn required_secret_names_include_template_secret_tokens_without_defaults() {
+        let manifest = parse_source_manifest_value(json!({
+            "dsl_version": 3,
+            "name": "github",
+            "version": "1.0.0",
+            "backend": "http",
+            "base_url": "https://api.github.com",
+            "auth": {
+                "headers": [{
+                    "name": "Authorization",
+                    "from": "template",
+                    "template": "Bearer {{secret.GITHUB_TOKEN}}"
+                }]
+            },
+            "tables": [{
+                "name": "repos",
+                "description": "Repositories",
+                "request": { "path": "/user/repos" },
+                "columns": [{ "name": "id", "type": "Int64" }]
+            }]
+        }))
+        .expect("manifest should deserialize");
+
+        assert_eq!(
+            manifest.required_secret_names(),
+            BTreeSet::from(["GITHUB_TOKEN".to_string()])
+        );
+    }
+
+    #[test]
+    fn required_secret_names_skip_template_and_explicit_defaults() {
+        let manifest = parse_source_manifest_value(json!({
+            "dsl_version": 3,
+            "name": "alpha",
+            "version": "0.1.0",
+            "backend": "http",
+            "base_url": "https://api.example.com",
+            "auth": {
+                "headers": [{
+                    "name": "Authorization",
+                    "from": "template",
+                    "template": "Bearer {{secret.API_TOKEN|default-token}}"
+                }]
+            },
+            "tables": [{
+                "name": "items",
+                "description": "Items",
+                "request": {
+                    "path": "/items",
+                    "headers": [{
+                        "name": "X-Api-Key",
+                        "from": "secret",
+                        "key": "API_KEY",
+                        "default": "default-key"
+                    }]
+                },
+                "columns": [{ "name": "id", "type": "Utf8" }]
+            }]
+        }))
+        .expect("manifest should deserialize");
+
+        assert!(manifest.required_secret_names().is_empty());
+    }
+}

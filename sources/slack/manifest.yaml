@@ -1,0 +1,296 @@
+name: slack
+version: 2.0.0
+dsl_version: 3
+backend: http
+description: Search channels, messages, and users in your workspace
+base_url: https://slack.com
+auth:
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{secret.SLACK_TOKEN}}
+
+tables:
+  - name: channels
+    description: Slack channels with topic, purpose, and member count
+    request:
+      method: GET
+      path: /api/conversations.list
+      query:
+        - name: types
+          from: literal
+          value: public_channel,private_channel
+    response:
+      ok_path:
+        - ok
+      error_path:
+        - error
+      rows_path:
+        - channels
+    pagination:
+      mode: cursor_query
+      page_size:
+        default: 200
+        max: 200
+        query_param: limit
+      cursor_param: cursor
+      response_cursor_path:
+        - response_metadata
+        - next_cursor
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Channel ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Channel name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: topic
+        type: Utf8
+        nullable: true
+        description: Channel topic text
+        expr:
+          kind: path
+          path:
+            - topic
+            - value
+      - name: purpose
+        type: Utf8
+        nullable: true
+        description: Channel purpose text
+        expr:
+          kind: path
+          path:
+            - purpose
+            - value
+      - name: num_members
+        type: Int64
+        nullable: true
+        description: Number of members in the channel
+        expr:
+          kind: path
+          path:
+            - num_members
+      - name: is_archived
+        type: Boolean
+        nullable: false
+        description: Whether the channel is archived
+        expr:
+          kind: path
+          path:
+            - is_archived
+      - name: created
+        type: Int64
+        nullable: false
+        description: Unix timestamp when the channel was created
+        expr:
+          kind: path
+          path:
+            - created
+  - name: messages
+    description: Messages in a Slack channel (requires channel filter)
+    request:
+      method: GET
+      path: /api/conversations.history
+      query:
+        - name: channel
+          from: filter
+          key: channel
+        - name: oldest
+          from: filter
+          key: oldest
+        - name: latest
+          from: filter
+          key: latest
+    response:
+      ok_path:
+        - ok
+      error_path:
+        - error
+      rows_path:
+        - messages
+    pagination:
+      mode: cursor_query
+      page_size:
+        default: 200
+        max: 200
+        query_param: limit
+      cursor_param: cursor
+      response_cursor_path:
+        - response_metadata
+        - next_cursor
+    columns:
+      - name: channel
+        type: Utf8
+        nullable: false
+        description: Channel ID (required filter to specify which channel)
+        expr:
+          kind: from_filter
+          key: channel
+      - name: user_id
+        type: Utf8
+        nullable: true
+        description: User ID of the message author
+        expr:
+          kind: path
+          path:
+            - user
+      - name: text
+        type: Utf8
+        nullable: true
+        description: Message text content
+        expr:
+          kind: path
+          path:
+            - text
+      - name: ts
+        type: Utf8
+        nullable: false
+        description: Message timestamp (Slack ts format)
+        expr:
+          kind: path
+          path:
+            - ts
+      - name: thread_ts
+        type: Utf8
+        nullable: true
+        description: Thread parent timestamp (null if not in a thread)
+        expr:
+          kind: path
+          path:
+            - thread_ts
+      - name: reply_count
+        type: Int64
+        nullable: true
+        description: Number of replies in thread
+        expr:
+          kind: path
+          path:
+            - reply_count
+      - name: subtype
+        type: Utf8
+        nullable: true
+        description: Message subtype
+        expr:
+          kind: path
+          path:
+            - subtype
+      - name: oldest
+        type: Utf8
+        nullable: true
+        description: Oldest timestamp filter (virtual)
+        expr:
+          kind: 'null'
+        virtual: true
+      - name: latest
+        type: Utf8
+        nullable: true
+        description: Latest timestamp filter (virtual)
+        expr:
+          kind: 'null'
+        virtual: true
+    filters:
+      - name: channel
+        required: true
+      - name: oldest
+      - name: latest
+  - name: users
+    description: Slack workspace users with profile info (email requires 
+      users:read.email scope)
+    request:
+      method: GET
+      path: /api/users.list
+      query: []
+    response:
+      ok_path:
+        - ok
+      error_path:
+        - error
+      rows_path:
+        - members
+    pagination:
+      mode: cursor_query
+      page_size:
+        default: 200
+        max: 200
+        query_param: limit
+      cursor_param: cursor
+      response_cursor_path:
+        - response_metadata
+        - next_cursor
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: User ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Username
+        expr:
+          kind: path
+          path:
+            - name
+      - name: real_name
+        type: Utf8
+        nullable: true
+        description: User real name
+        expr:
+          kind: path
+          path:
+            - real_name
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: User display name in Slack
+        expr:
+          kind: path
+          path:
+            - profile
+            - display_name
+      - name: email
+        type: Utf8
+        nullable: true
+        description: User email address (requires users:read.email scope)
+        expr:
+          kind: path
+          path:
+            - profile
+            - email
+      - name: is_bot
+        type: Boolean
+        nullable: false
+        description: Whether the user is a bot
+        expr:
+          kind: path
+          path:
+            - is_bot
+      - name: is_admin
+        type: Boolean
+        nullable: true
+        description: Whether the user is a workspace admin
+        expr:
+          kind: path
+          path:
+            - is_admin
+      - name: deleted
+        type: Boolean
+        nullable: true
+        description: Whether the user account is deactivated
+        expr:
+          kind: path
+          path:
+            - deleted

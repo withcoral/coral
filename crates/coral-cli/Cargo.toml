@@ -1,0 +1,26 @@
+[package]
+name = "coral-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "coral"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+arrow.workspace = true
+clap.workspace = true
+dialoguer.workspace = true
+tokio.workspace = true
+tonic.workspace = true
+
+coral-api.workspace = true
+coral-client.workspace = true
+coral-spec.workspace = true
+coral-mcp.workspace = true

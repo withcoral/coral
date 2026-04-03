@@ -1,0 +1,42 @@
+syntax = "proto3";
+
+package coral.v1;
+
+import "coral/v1/catalog.proto";
+import "coral/v1/resources.proto";
+
+// Executes one SQL statement against the sources registered in one workspace.
+message ExecuteSqlRequest {
+  // Workspace that scopes the queryable source set.
+  Workspace workspace = 1;
+  // One read-only SQL statement.
+  string sql = 2;
+}
+
+// Fully materialized query result encoded as Arrow IPC bytes.
+message ExecuteSqlResponse {
+  // Arrow IPC stream bytes containing zero or more record batches plus schema.
+  bytes arrow_ipc_stream = 1;
+  // Total row count returned by the query.
+  int64 row_count = 2;
+}
+
+// Lists all query-visible tables in one workspace.
+message ListTablesRequest {
+  // Workspace whose current query-visible tables should be listed.
+  Workspace workspace = 1;
+}
+
+// Returns the query-visible tables in one workspace.
+message ListTablesResponse {
+  // Query-visible tables for the workspace.
+  repeated Table tables = 1;
+}
+
+// SQL query execution APIs.
+service QueryService {
+  // Lists query-visible tables for one workspace.
+  rpc ListTables(ListTablesRequest) returns (ListTablesResponse);
+  // Executes one read-only SQL statement and returns the full result set.
+  rpc ExecuteSql(ExecuteSqlRequest) returns (ExecuteSqlResponse);
+}

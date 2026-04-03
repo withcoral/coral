@@ -1,0 +1,130 @@
+name: otel
+version: 0.1.0
+dsl_version: 3
+backend: parquet
+description: OTel logs and metrics exported as parquet via OTel Arrow
+
+tables:
+  - name: logs
+    description: OTel log records
+    guide: >
+      Each row is one log record. The body column is a struct with typed value
+      fields (str, int, double, bool). Join to log_attrs on id = parent_id to
+      access structured attributes. severity_number follows OTel conventions
+      (1-4 TRACE, 5-8 DEBUG, 9-12 INFO, 13-16 WARN, 17-20 ERROR, 21-24 FATAL).
+    source:
+      location: "file:///tmp/coral-otel/logs/"
+      glob: "**/*.parquet"
+      partitions:
+        - name: _part_id
+          type: Utf8
+    columns: []
+
+  - name: log_attrs
+    description: OTel log record attributes (key-value pairs, one row per attribute)
+    guide: >
+      Each row is one attribute on a log record. Join to logs on parent_id = logs.id.
+      The value union columns: use str for string values, double for numeric values,
+      int for integer values, bool for booleans. The type column indicates which value
+      column is populated (0=str, 1=int, 2=double, 3=bool, 4=bytes).
+      Never CAST(str AS DOUBLE) — use the double column directly for numeric attributes.
+      Example: AVG(double) WHERE key = 'duration_ms'.
+    source:
+      location: "file:///tmp/coral-otel/log_attrs/"
+      glob: "**/*.parquet"
+      partitions:
+        - name: _part_id
+          type: Utf8
+    columns: []
+
+  - name: resource_attrs
+    description: OTel resource attributes (key-value pairs, one row per attribute)
+    guide: >
+      Each row is one resource attribute. The value union columns: use str for string
+      values, double for numeric, int for integer, bool for boolean. The type column
+      indicates which value column is populated (0=str, 1=int, 2=double, 3=bool, 4=bytes).
+      Never CAST(str AS DOUBLE) — use the double column directly for numeric attributes.
+    source:
+      location: "file:///tmp/coral-otel/resource_attrs/"
+      glob: "**/*.parquet"
+      partitions:
+        - name: _part_id
+          type: Utf8
+    columns: []
+
+  - name: number_data_points
+    description: OTel metric number data points
+    guide: >
+      Each row is one data point for a univariate metric. Join to univariate_metrics
+      on parent_id = univariate_metrics.id. For gauge and sum metrics, use double_value
+      or int_value depending on the metric. Join to number_dp_attrs on id = parent_id
+      to access data point attributes.
+    source:
+      location: "file:///tmp/coral-otel/number_data_points/"
+      glob: "**/*.parquet"
+      partitions:
+        - name: _part_id
+          type: Utf8
+    columns: []
+
+  - name: number_dp_attrs
+    description: OTel number data point attributes (key-value pairs, one row per 
+      attribute)
+    guide: >
+      Each row is one attribute on a number data point. Join to number_data_points
+      on parent_id = number_data_points.id. The value union columns: use str for string
+      values, double for numeric, int for integer, bool for boolean. The type column
+      indicates which value column is populated (0=str, 1=int, 2=double, 3=bool, 4=bytes).
+      Never CAST(str AS DOUBLE) — use the double column directly for numeric attributes.
+    source:
+      location: "file:///tmp/coral-otel/number_dp_attrs/"
+      glob: "**/*.parquet"
+      partitions:
+        - name: _part_id
+          type: Utf8
+    columns: []
+
+  - name: univariate_metrics
+    description: OTel univariate metric definitions (one row per metric per 
+      resource/scope)
+    guide: >
+      Each row defines one metric. Join to number_data_points on id = parent_id to
+      get the actual data points. The metric_type column encodes the OTel metric kind
+      (1=Gauge, 2=Sum, 3=Histogram, 5=ExponentialHistogram, 10=Summary).
+      Filter by name to target a specific metric before joining data points.
+    source:
+      location: "file:///tmp/coral-otel/univariate_metrics/"
+      glob: "**/*.parquet"
+      partitions:
+        - name: _part_id
+          type: Utf8
+    columns: []
+
+  - name: spans
+    description: OTel trace spans
+    guide: >
+      Each row is one trace span. Join to span_attrs on id = parent_id to access
+      structured attributes for a span. The trace_id groups spans into traces and
+      parent_span_id can be used to reconstruct the span tree.
+    source:
+      location: "file:///tmp/coral-otel/spans/"
+      glob: "**/*.parquet"
+      partitions:
+        - name: _part_id
+          type: Utf8
+    columns: []
+
+  - name: span_attrs
+    description: OTel span attributes (key-value pairs, one row per attribute)
+    guide: >
+      Each row is one attribute on a span. Join to spans on parent_id = spans.id.
+      The value union columns: use str for string values, double for numeric values,
+      int for integer values, bool for booleans. The type column indicates which
+      value column is populated (0=str, 1=int, 2=double, 3=bool, 4=bytes).
+    source:
+      location: "file:///tmp/coral-otel/span_attrs/"
+      glob: "**/*.parquet"
+      partitions:
+        - name: _part_id
+          type: Utf8
+    columns: []

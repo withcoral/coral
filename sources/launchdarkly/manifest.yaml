@@ -1,0 +1,703 @@
+name: launchdarkly
+version: 2.0.0
+dsl_version: 3
+backend: http
+description: Manage feature flags, environments, segments, and audit logs
+base_url: "{{variable.LAUNCHDARKLY_API_BASE|https://app.launchdarkly.com}}"
+auth:
+  headers:
+    - name: Authorization
+      from: secret
+      key: LAUNCHDARKLY_TOKEN
+    - name: Content-Type
+      from: literal
+      value: application/json
+
+tables:
+  - name: projects
+    description: LaunchDarkly projects visible to the authenticated token
+    request:
+      method: GET
+      path: /api/v2/projects
+      query: []
+    response:
+      rows_path:
+        - items
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 20
+        max: 20
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Project identifier
+        expr:
+          kind: path
+          path:
+            - _id
+      - name: key
+        type: Utf8
+        nullable: false
+        description: Project key
+        expr:
+          kind: path
+          path:
+            - key
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Project name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: include_in_snippet_by_default
+        type: Boolean
+        nullable: true
+        description: Whether client-side SDK snippets include this project by default
+        expr:
+          kind: path
+          path:
+            - includeInSnippetByDefault
+      - name: tags
+        type: Utf8
+        nullable: true
+        description: Comma-separated project tags
+        expr:
+          kind: join_array
+          path:
+            - tags
+  - name: environments
+    description: Environments for a LaunchDarkly project
+    request:
+      method: GET
+      path: /api/v2/projects/{{filter.project_key}}/environments
+      query: []
+    response:
+      rows_path:
+        - items
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 20
+        max: 20
+        query_param: limit
+    columns:
+      - name: project_key
+        type: Utf8
+        nullable: false
+        description: Project key from required filter
+        expr:
+          kind: from_filter
+          key: project_key
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Environment identifier
+        expr:
+          kind: path
+          path:
+            - _id
+      - name: key
+        type: Utf8
+        nullable: false
+        description: Environment key
+        expr:
+          kind: path
+          path:
+            - key
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Environment name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: color
+        type: Utf8
+        nullable: true
+        description: Environment display color
+        expr:
+          kind: path
+          path:
+            - color
+      - name: default_ttl
+        type: Int64
+        nullable: true
+        description: Default time-to-live for temporary targets
+        expr:
+          kind: path
+          path:
+            - defaultTtl
+      - name: secure_mode
+        type: Boolean
+        nullable: true
+        description: Whether secure mode is enabled
+        expr:
+          kind: path
+          path:
+            - secureMode
+    filters:
+      - name: project_key
+        required: true
+  - name: feature_flags
+    description: Feature flags for a LaunchDarkly project
+    request:
+      method: GET
+      path: /api/v2/flags/{{filter.project_key}}
+      query: []
+    response:
+      rows_path:
+        - items
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 20
+        max: 20
+        query_param: limit
+    columns:
+      - name: project_key
+        type: Utf8
+        nullable: false
+        description: Project key from required filter
+        expr:
+          kind: from_filter
+          key: project_key
+      - name: id
+        type: Utf8
+        nullable: true
+        description: Flag identifier
+        expr:
+          kind: path
+          path:
+            - _id
+      - name: key
+        type: Utf8
+        nullable: false
+        description: Flag key
+        expr:
+          kind: path
+          path:
+            - key
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Flag name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: kind
+        type: Utf8
+        nullable: true
+        description: Flag kind
+        expr:
+          kind: path
+          path:
+            - kind
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Flag description
+        expr:
+          kind: path
+          path:
+            - description
+      - name: temporary
+        type: Boolean
+        nullable: true
+        description: Whether this flag is temporary
+        expr:
+          kind: path
+          path:
+            - temporary
+      - name: archived
+        type: Boolean
+        nullable: true
+        description: Whether this flag is archived
+        expr:
+          kind: path
+          path:
+            - archived
+      - name: creation_date
+        type: Int64
+        nullable: true
+        description: Flag creation timestamp in milliseconds
+        expr:
+          kind: path
+          path:
+            - creationDate
+      - name: tags
+        type: Utf8
+        nullable: true
+        description: Comma-separated flag tags
+        expr:
+          kind: join_array
+          path:
+            - tags
+    filters:
+      - name: project_key
+        required: true
+  - name: segments
+    description: Segments for a LaunchDarkly project and environment
+    request:
+      method: GET
+      path: /api/v2/segments/{{filter.project_key}}/{{filter.environment_key}}
+      query: []
+    response:
+      rows_path:
+        - items
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 20
+        max: 20
+        query_param: limit
+    columns:
+      - name: project_key
+        type: Utf8
+        nullable: false
+        description: Project key from required filter
+        expr:
+          kind: from_filter
+          key: project_key
+      - name: environment_key
+        type: Utf8
+        nullable: false
+        description: Environment key from required filter
+        expr:
+          kind: from_filter
+          key: environment_key
+      - name: key
+        type: Utf8
+        nullable: false
+        description: Segment key
+        expr:
+          kind: path
+          path:
+            - key
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Segment name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Segment description
+        expr:
+          kind: path
+          path:
+            - description
+      - name: creation_date
+        type: Int64
+        nullable: true
+        description: Segment creation timestamp in milliseconds
+        expr:
+          kind: path
+          path:
+            - creationDate
+      - name: last_modified_date
+        type: Int64
+        nullable: true
+        description: Segment last modification timestamp in milliseconds
+        expr:
+          kind: path
+          path:
+            - lastModifiedDate
+      - name: tags
+        type: Utf8
+        nullable: true
+        description: Comma-separated segment tags
+        expr:
+          kind: join_array
+          path:
+            - tags
+    filters:
+      - name: project_key
+        required: true
+      - name: environment_key
+        required: true
+  - name: flag_environments
+    description: Environment-scoped feature flag status and targeting configuration
+    request:
+      method: GET
+      path: /api/v2/flags/{{filter.project_key}}
+      query:
+        - name: env
+          from: filter
+          key: environment_key
+        - name: summary
+          from: literal
+          value: 0
+    response:
+      rows_path:
+        - items
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 20
+        max: 20
+        query_param: limit
+    columns:
+      - name: project_key
+        type: Utf8
+        nullable: false
+        description: Project key from required filter
+        expr:
+          kind: from_filter
+          key: project_key
+      - name: environment_key
+        type: Utf8
+        nullable: false
+        description: Environment key from required filter
+        expr:
+          kind: from_filter
+          key: environment_key
+      - name: flag_key
+        type: Utf8
+        nullable: false
+        description: Feature flag key
+        expr:
+          kind: path
+          path:
+            - key
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Feature flag name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: kind
+        type: Utf8
+        nullable: true
+        description: Feature flag kind
+        expr:
+          kind: path
+          path:
+            - kind
+      - name: enabled
+        type: Boolean
+        nullable: true
+        description: Whether the flag is on in the selected environment
+        expr:
+          kind: object_filter_path
+          path:
+            - environments
+          filter_key: environment_key
+          item_path:
+            - "on"
+      - name: archived
+        type: Boolean
+        nullable: true
+        description: Whether the environment-level flag config is archived
+        expr:
+          kind: object_filter_path
+          path:
+            - environments
+          filter_key: environment_key
+          item_path:
+            - archived
+      - name: off_variation
+        type: Int64
+        nullable: true
+        description: Variation served when flag is off
+        expr:
+          kind: object_filter_path
+          path:
+            - environments
+          filter_key: environment_key
+          item_path:
+            - offVariation
+      - name: fallthrough_variation
+        type: Int64
+        nullable: true
+        description: Default variation index when no rule or target matches
+        expr:
+          kind: object_filter_path
+          path:
+            - environments
+          filter_key: environment_key
+          item_path:
+            - fallthrough
+            - variation
+      - name: rules
+        type: Utf8
+        nullable: true
+        description: JSON-serialized rule list for the selected environment
+        expr:
+          kind: object_filter_path
+          path:
+            - environments
+          filter_key: environment_key
+          item_path:
+            - rules
+      - name: targets
+        type: Utf8
+        nullable: true
+        description: JSON-serialized individual target list for the selected environment
+        expr:
+          kind: object_filter_path
+          path:
+            - environments
+          filter_key: environment_key
+          item_path:
+            - targets
+      - name: context_targets
+        type: Utf8
+        nullable: true
+        description: JSON-serialized context target list for the selected environment
+        expr:
+          kind: object_filter_path
+          path:
+            - environments
+          filter_key: environment_key
+          item_path:
+            - contextTargets
+      - name: prerequisites
+        type: Utf8
+        nullable: true
+        description: JSON-serialized prerequisite flags for the selected environment
+        expr:
+          kind: object_filter_path
+          path:
+            - environments
+          filter_key: environment_key
+          item_path:
+            - prerequisites
+      - name: last_modified
+        type: Int64
+        nullable: true
+        description: Last modified timestamp in milliseconds
+        expr:
+          kind: object_filter_path
+          path:
+            - environments
+          filter_key: environment_key
+          item_path:
+            - lastModified
+      - name: tags
+        type: Utf8
+        nullable: true
+        description: Comma-separated flag tags
+        expr:
+          kind: join_array
+          path:
+            - tags
+    filters:
+      - name: project_key
+        required: true
+      - name: environment_key
+        required: true
+  - name: members
+    description: Account members visible to the authenticated token
+    request:
+      method: GET
+      path: /api/v2/members
+      query: []
+    response:
+      rows_path:
+        - items
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 20
+        max: 20
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Member identifier
+        expr:
+          kind: path
+          path:
+            - _id
+      - name: email
+        type: Utf8
+        nullable: true
+        description: Member email
+        expr:
+          kind: path
+          path:
+            - email
+      - name: role
+        type: Utf8
+        nullable: true
+        description: Member role
+        expr:
+          kind: path
+          path:
+            - role
+      - name: first_name
+        type: Utf8
+        nullable: true
+        description: Member first name
+        expr:
+          kind: path
+          path:
+            - firstName
+      - name: last_name
+        type: Utf8
+        nullable: true
+        description: Member last name
+        expr:
+          kind: path
+          path:
+            - lastName
+      - name: pending_invite
+        type: Boolean
+        nullable: true
+        description: Whether the member has a pending invite
+        expr:
+          kind: path
+          path:
+            - _pendingInvite
+  - name: roles
+    description: Custom roles
+    request:
+      method: GET
+      path: /api/v2/roles
+      query: []
+    response:
+      rows_path:
+        - items
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 20
+        max: 20
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Role identifier
+        expr:
+          kind: path
+          path:
+            - _id
+      - name: key
+        type: Utf8
+        nullable: false
+        description: Role key
+        expr:
+          kind: path
+          path:
+            - key
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Role name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Role description
+        expr:
+          kind: path
+          path:
+            - description
+  - name: audit_log
+    description: Audit log entries in a time window
+    request:
+      method: GET
+      path: /api/v2/auditlog
+      query:
+        - name: after
+          from: filter
+          key: from
+        - name: before
+          from: filter
+          key: to
+    response:
+      rows_path:
+        - items
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Audit entry identifier
+        expr:
+          kind: path
+          path:
+            - _id
+      - name: date
+        type: Int64
+        nullable: true
+        description: Audit entry timestamp in milliseconds
+        expr:
+          kind: path
+          path:
+            - date
+      - name: kind
+        type: Utf8
+        nullable: true
+        description: Audit entry kind
+        expr:
+          kind: path
+          path:
+            - kind
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Actor or subject name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Human-readable audit description
+        expr:
+          kind: path
+          path:
+            - description
+      - name: from
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Audit start time filter in milliseconds since epoch
+        expr:
+          kind: "null"
+      - name: to
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Audit end time filter in milliseconds since epoch
+        expr:
+          kind: "null"
+    filters:
+      - name: from
+        required: true
+      - name: to
+        required: true

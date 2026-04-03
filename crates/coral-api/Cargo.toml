@@ -1,0 +1,20 @@
+[package]
+name = "coral-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+prost.workspace = true
+serde.workspace = true
+tonic.workspace = true
+tonic-prost.workspace = true
+
+[build-dependencies]
+protoc-bin-vendored = "3"
+tonic-prost-build = "0.14.2"
