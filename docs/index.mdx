@@ -1,0 +1,47 @@
+---
+title: "Coral documentation"
+description: "One local-first SQL interface over APIs, files, and other live sources — with bundled sources to start and a spec format to connect anything."
+---
+
+Coral gives agents and developers one local-first SQL interface over APIs, files, and other live sources. It ships with bundled sources for systems like GitHub, Slack, Stripe, and Sentry — and a source spec format that lets you connect any API or dataset yourself.
+
+Install sources into a local workspace, inspect schemas through system catalog tables, run SQL from the CLI or through MCP, and write custom source specs when you need something that isn't bundled yet.
+
+## Get started
+
+<Steps titleSize="h3">
+  <Step title="Install Coral">
+    Get the CLI on your machine.
+
+    [Installation guide](/getting-started/installation)
+  </Step>
+
+  <Step title="Run the quickstart">
+    Add a bundled source, inspect its schema, and run your first query.
+
+    [Quickstart](/getting-started/quickstart)
+  </Step>
+
+  <Step title="Connect your own system">
+    Write a source spec for any API or local dataset and query it the same way.
+
+    [Write a custom source](/guides/write-a-custom-source)
+  </Step>
+</Steps>
+
+## Quick links
+
+<CardGroup cols={2}>
+  <Card title="Use Coral over MCP" href="/guides/use-coral-over-mcp">
+    Connect Coral to Claude Code, Cursor, VS Code, and other agents
+  </Card>
+  <Card title="Write a custom source" href="/guides/write-a-custom-source">
+    Connect any API or dataset to Coral
+  </Card>
+  <Card title="Bundled sources" href="/reference/bundled-sources">
+    GitHub, Slack, Stripe, and more
+  </Card>
+  <Card title="Source spec reference" href="/reference/source-spec-reference">
+    Full YAML field reference for source specs
+  </Card>
+</CardGroup>

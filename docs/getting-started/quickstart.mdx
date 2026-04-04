@@ -1,0 +1,79 @@
+---
+title: "Quickstart"
+description: "Install Coral, add a bundled source, inspect available tables, and run your first query."
+---
+
+This tutorial gets you to a working Coral query flow with a bundled source. It assumes you already installed Coral and have `coral` on your `PATH`.
+
+## Prerequisites
+
+Before you start:
+
+- install Coral and verify `coral --help` works
+- have credentials ready for at least one bundled source such as GitHub
+- expect `coral source add <NAME>` to prompt interactively for required inputs
+
+## 1. Discover bundled sources
+
+```shellscript
+coral source discover
+```
+
+This lists the bundled sources available in your build.
+
+## 2. Add a source
+
+For example, add GitHub:
+
+```shellscript
+coral source add github
+```
+
+Coral prompts interactively for any required variables or secrets so they do not need to be passed on the command line.
+
+## 3. Validate the source
+
+```shellscript
+coral source test github
+```
+
+If validation succeeds, Coral shows the tables the source exposes.
+
+## 4. Inspect available tables
+
+Use the system catalog to see what Coral can query:
+
+```shellscript
+coral sql "SELECT schema_name, table_name FROM coral.tables ORDER BY 1, 2"
+```
+
+For the full discovery workflow, including `coral.columns`, see [System catalog](/concepts/system-catalog).
+
+## 5. Run a query
+
+```shellscript
+coral sql "
+  SELECT name, draft, prerelease, published_at
+  FROM github.releases
+  WHERE owner = 'withcoral' AND repo = 'coral'
+  ORDER BY published_at DESC
+  LIMIT 10
+"
+```
+
+## 6. Expose Coral over MCP
+
+Once you have a working local workspace, you can expose the same runtime to an MCP client (such as Claude Code, Cursor, or VS Code). 
+
+Because MCP servers are typically configured to be launched automatically by the client rather than run directly in your terminal, see [Use Coral over MCP](/guides/use-coral-over-mcp) for setup instructions.
+
+<Tip>
+  The exact schemas and tables depend on the sources you have installed. When in
+  doubt, inspect `coral.tables` first.
+</Tip>
+
+## Next step
+
+The bundled sources are a starting point. If the system you need isn't bundled yet, you can write a source spec for any HTTP API or local dataset and query it the same way.
+
+[Write a custom source](/guides/write-a-custom-source)

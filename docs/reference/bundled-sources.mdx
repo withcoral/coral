@@ -1,0 +1,70 @@
+---
+title: "Bundled sources"
+description: "Reference for the bundled Coral source set and how to explore it safely."
+---
+
+Coral ships with bundled source specs for common systems. If the system you need is not listed here, you can [write a custom source](/guides/write-a-custom-source) for any HTTP API or local dataset.
+
+To see the bundled sources available in your build:
+
+```shellscript
+coral source discover
+```
+
+To install one:
+
+```shellscript
+coral source add github
+```
+
+To validate an installed source:
+
+```shellscript
+coral source test github
+```
+
+## Bundled sources in this repo
+
+| Source | Backend | Typical use |
+| --- | --- | --- |
+| `clickup` | `http` | Tasks, spaces, folders, lists, goals, and time tracking |
+| `datadog` | `http` | Monitors, incidents, logs, and APM-adjacent API data |
+| `github` | `http` | Repositories, issues, pull requests, Actions, releases, and more |
+| `incident_io` | `http` | Incidents, alerts, schedules, catalog, and status data |
+| `launchdarkly` | `http` | Projects, flags, environments, segments, and audit surfaces |
+| `linear` | `http` | Teams, issues, projects, cycles, and initiatives |
+| `otel` | `parquet` | OpenTelemetry logs and metrics exported as Parquet |
+| `sentry` | `http` | Projects, releases, deployments, and error monitoring data |
+| `slack` | `http` | Channels, messages, and workspace users |
+| `statusgator` | `http` | Status boards, incidents, and uptime history |
+| `stripe` | `http` | Account, payments, customers, and broader Stripe API data |
+
+## Setup expectations
+
+Most bundled sources fall into one of two categories.
+
+### API sources
+
+These usually require:
+
+- one or more API tokens or credentials
+- sometimes additional variables such as base URLs, sites, or organization IDs
+
+When you run `coral source add <NAME>`, Coral prompts for the required values interactively.
+
+### File-backed sources
+
+These point at local files or object-store locations instead of calling an API.
+
+Examples:
+
+- `otel` reads Parquet exports
+- custom `jsonl` or `parquet` source specs can point at local files
+
+## Querying sources safely
+
+Use [Quickstart](/getting-started/quickstart) for the basic flow, then use [System catalog](/concepts/system-catalog) when you need to inspect schemas, columns, descriptions, and required filters before writing larger queries.
+
+## Don't see what you need?
+
+The bundled set is growing. If your system is not listed, [write a custom source](/guides/write-a-custom-source) — source specs can connect to any HTTP API or read local files in JSONL or Parquet format.

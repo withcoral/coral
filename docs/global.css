@@ -1,0 +1,33 @@
+/* Gustan */
+@font-face { font-family: "Gustan"; font-weight: 400; font-style: normal; font-display: swap; src: url("/fonts/gustan/Gustan-Book.woff2") format("woff2"); }
+@font-face { font-family: "Gustan"; font-weight: 400; font-style: italic; font-display: swap; src: url("/fonts/gustan/Gustan-BookItalic.woff2") format("woff2"); }
+@font-face { font-family: "Gustan"; font-weight: 500; font-style: normal; font-display: swap; src: url("/fonts/gustan/Gustan-Medium.woff2") format("woff2"); }
+@font-face { font-family: "Gustan"; font-weight: 700; font-style: normal; font-display: swap; src: url("/fonts/gustan/Gustan-Bold.woff2") format("woff2"); }
+@font-face { font-family: "Gustan"; font-weight: 700; font-style: italic; font-display: swap; src: url("/fonts/gustan/Gustan-BoldItalic.woff2") format("woff2"); }
+
+/* Gustan Mono */
+@font-face { font-family: "Gustan Mono"; font-weight: 400; font-style: normal; font-display: swap; src: url("/fonts/gustan-mono/GustanMono-Book.woff2") format("woff2"); }
+@font-face { font-family: "Gustan Mono"; font-weight: 500; font-style: normal; font-display: swap; src: url("/fonts/gustan-mono/GustanMono-Medium.woff2") format("woff2"); }
+@font-face { font-family: "Gustan Mono"; font-weight: 700; font-style: normal; font-display: swap; src: url("/fonts/gustan-mono/GustanMono-Bold.woff2") format("woff2"); }
+
+:root,
+[data-theme="light"] {
+  --text-color: rgba(0, 0, 0, 0.87);
+  --background-color: #f0f0f0;
+}
+
+[data-theme="dark"] {
+  --text-color: rgba(255, 255, 255, 0.93);
+  --background-color: #191919;
+}
+
+code,
+pre {
+  font-family: "Gustan Mono", ui-monospace, monospace;
+}
+
+/* Keep only the icon for GitHub and Discord navbar links. */
+a[href="https://github.com/withcoral/coral"] span,
+a[href="https://discord.gg/h9aun8KpFF"] span {
+  display: none !important;
+}
