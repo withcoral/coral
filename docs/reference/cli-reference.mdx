@@ -1,0 +1,108 @@
+---
+title: "CLI reference"
+description: "Reference for the current Coral CLI commands and options."
+---
+
+Coral is currently a CLI-first product. The main command surface is:
+
+```shellscript
+coral <COMMAND>
+```
+
+Top-level commands:
+
+- `sql`
+- `source`
+- `mcp-stdio`
+
+## `coral sql`
+
+Run one SQL query and exit.
+
+```shellscript
+coral sql [--format table|json] "<SQL>"
+```
+
+### Options
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--format` | `table` \| `json` | `table` | Output format |
+
+### Examples
+
+```shellscript
+coral sql "SELECT * FROM coral.tables LIMIT 10"
+coral sql --format json "SELECT * FROM coral.tables LIMIT 10"
+coral sql --format table "SELECT * FROM slack.messages LIMIT 10"
+```
+
+## `coral source`
+
+Manage bundled and imported sources in the local workspace.
+
+### `coral source discover`
+
+List bundled sources available in your build.
+
+```shellscript
+coral source discover
+```
+
+### `coral source list`
+
+List sources currently installed in the workspace.
+
+```shellscript
+coral source list
+```
+
+### `coral source add <NAME>`
+
+Install a bundled source by name.
+
+```shellscript
+coral source add github
+```
+
+Coral prompts for required variables or secrets interactively.
+
+### `coral source import <PATH>`
+
+Import a custom source spec from a YAML file.
+
+```shellscript
+coral source import ./local-messages.yaml
+```
+
+### `coral source test <NAME>`
+
+Validate that an installed source can initialize and expose tables.
+
+```shellscript
+coral source test github
+coral source test local_messages
+```
+
+### `coral source remove <NAME>`
+
+Remove an installed source from the local workspace.
+
+```shellscript
+coral source remove github
+```
+
+## `coral mcp-stdio`
+
+Expose the local Coral runtime as an MCP stdio server.
+
+```shellscript
+coral mcp-stdio
+```
+
+This command is intended to be launched by an MCP-capable client rather than used directly in an interactive shell.
+
+The current MCP surface is intentionally small:
+
+- tools: `sql`, `list_tables`
+- resources: `coral://guide`, `coral://tables`

@@ -1,0 +1,103 @@
+---
+title: "Installation"
+description: "Install Coral with Homebrew, the install script, or from source."
+---
+
+Coral ships as a single local CLI. Once installed, the same binary is used for source management, SQL queries, and the MCP stdio server.
+
+## Prerequisites
+
+Before you install Coral, make sure you have:
+
+- macOS or Linux
+- a shell with permission to place `coral` on your `PATH`
+- Homebrew, if you want the Homebrew install path
+- Rust and Cargo, if you want to build Coral from source
+
+## Install Coral
+
+<Tabs>
+  <Tab title="Homebrew">
+    ```shellscript
+    brew install withcoral/tap/coral
+    ```
+  </Tab>
+
+  <Tab title="Install script">
+    ```shellscript
+    curl -fsSL https://withcoral.com/install.sh | sh
+    ```
+  </Tab>
+
+  <Tab title="Build from source">
+    ```shellscript
+    cargo build -p coral-cli --release
+    ./target/release/coral --help
+    ```
+  </Tab>
+</Tabs>
+
+Use Homebrew for a standard install. Build from source if you are contributing to Coral or need to test the current repo state directly.
+
+## Verify the install
+
+Run:
+
+```shellscript
+coral --help
+```
+
+The rest of the documentation assumes `coral` is available on your `PATH`.
+
+## Upgrade
+
+<Tabs>
+  <Tab title="Homebrew">
+    ```shellscript
+    brew upgrade withcoral/tap/coral
+    ```
+  </Tab>
+
+  <Tab title="Install script">
+    Re-run the installer:
+
+    ```shellscript
+    curl -fsSL https://withcoral.com/install.sh | sh
+    ```
+  </Tab>
+</Tabs>
+
+## Uninstall
+
+<Tabs>
+  <Tab title="Homebrew">
+    ```shellscript
+    brew uninstall withcoral/tap/coral
+    ```
+  </Tab>
+
+  <Tab title="Install script">
+    ```shellscript
+    rm -f ~/.local/bin/coral
+    rm -rf ~/.config/coral
+    ```
+  </Tab>
+</Tabs>
+
+## Local state
+
+Coral stores local state in its platform-specific configuration directory. You can override that location with:
+
+```shellscript
+export CORAL_CONFIG_DIR=/path/to/coral-config
+```
+
+Important files include:
+
+- `config.toml` for installed-source metadata and non-secret variables
+- installed source specs under `workspaces/<workspace>/sources/...`
+- source secrets stored separately within the same local trust boundary
+
+## Next step
+
+Continue to [Quickstart](/getting-started/quickstart) to add a source and run your first query.

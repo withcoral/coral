@@ -5074,27 +5074,3 @@ dependencies = [
  "cc",
  "pkg-config",
 ]
-
-[[patch.unused]]
-name = "coral-auth"
-version = "0.1.12"
-
-[[patch.unused]]
-name = "coral-config"
-version = "0.1.12"
-
-[[patch.unused]]
-name = "coral-connectors"
-version = "0.1.12"
-
-[[patch.unused]]
-name = "coral-otel"
-version = "0.1.12"
-
-[[patch.unused]]
-name = "coral-protocol"
-version = "0.1.12"
-
-[[patch.unused]]
-name = "coral-server"
-version = "0.1.12"

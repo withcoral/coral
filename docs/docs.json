@@ -1,0 +1,139 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "linden",
+  "name": "Coral Docs",
+  "description": "Install Coral, connect sources, query them through SQL, and expose the same local runtime over MCP.",
+  "logo": {
+    "dark": "/images/coral-wordmark-dark.svg",
+    "light": "/images/coral-wordmark-light.svg"
+  },
+  "favicon": {
+    "dark": "/images/coralMark-dark.png",
+    "light": "/images/coralMark-light.png"
+  },
+  "icons": {
+    "library": "lucide"
+  },
+  "appearance": {
+    "default": "system",
+    "strict": true
+  },
+  "colors": {
+    "primary": "#B2EAA5",
+    "dark": "#B2EAA5",
+    "light": "#B2EAA5"
+  },
+  "fonts": {
+    "heading": {
+      "family": "Gustan",
+      "weight": 700,
+      "source": "/fonts/gustan/Gustan-Bold.woff2",
+      "format": "woff2"
+    },
+    "body": {
+      "family": "Gustan",
+      "weight": 400,
+      "source": "/fonts/gustan/Gustan-Book.woff2",
+      "format": "woff2"
+    }
+  },
+  "styling": {
+    "codeblocks": {
+      "theme": {
+        "light": "github-light",
+        "dark": "github-dark"
+      }
+    }
+  },
+  "css": "/global.css",
+  "navbar": {
+    "links": [
+      {
+        "label": "Quickstart",
+        "href": "/getting-started/quickstart",
+        "icon": "rocket"
+      },
+      {
+        "label": "Install Coral",
+        "href": "/getting-started/installation",
+        "icon": "download"
+      },
+      {
+        "type": "github",
+        "href": "https://github.com/withcoral/coral"
+      },
+      {
+        "type": "discord",
+        "href": "https://discord.gg/h9aun8KpFF"
+      }
+    ]
+  },
+  "navigation": {
+    "groups": [
+      {
+        "group": "Get started",
+        "pages": [
+          "index",
+          "getting-started/installation",
+          "getting-started/quickstart"
+        ]
+      },
+      {
+        "group": "Guides",
+        "pages": [
+          "guides/manage-sources",
+          "guides/write-a-custom-source",
+          "guides/advanced-cli-queries",
+          "guides/use-coral-over-mcp"
+        ]
+      },
+      {
+        "group": "Concepts",
+        "pages": [
+          "concepts/sources-and-workspaces",
+          "concepts/runtime-and-mcp",
+          "concepts/system-catalog"
+        ]
+      },
+      {
+        "group": "Reference",
+        "pages": [
+          "reference/cli-reference",
+          "reference/bundled-sources",
+          "reference/source-spec-reference"
+        ]
+      },
+      {
+        "group": "Contributors",
+        "pages": [
+          "contributors/architecture"
+        ]
+      }
+    ]
+  },
+  "errors": {
+    "404": {
+      "title": "Looks like this page got lost at sea",
+      "description": "The route you tried does not exist. Swim back to the [docs home](/) and pick a guide from there."
+    }
+  },
+  "integrations": {
+    "posthog": {
+      "apiKey": "phc_vgjDFiUbVgKPsKQL3wKPwsG3z7KnH4hgLi6n57PX7HEs",
+      "apiHost": "https://eu.posthog.com",
+      "sessionRecording": false
+    }
+  },
+  "seo": {
+    "metatags": {
+      "canonical": "https://docs.withcoral.com"
+    }
+  },
+  "search": {
+    "prompt": "Search Coral docs..."
+  },
+  "contextual": {
+    "options": ["copy", "view", "claude", "chatgpt", "cursor", "vscode", "mcp", "add-mcp"],
+    "display": "header"
+  }
+}
