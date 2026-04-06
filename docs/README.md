@@ -1,6 +1,6 @@
 # Coral Documentation
 
-This directory contains the Mintlify documentation for Coral.
+This directory contains the Mintlify documentation for Coral hosted at [withcoral.com/docs](https://withcoral.com/docs).
 
 ## Local Development
 

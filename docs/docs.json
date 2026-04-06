@@ -105,9 +105,7 @@
       },
       {
         "group": "Contributors",
-        "pages": [
-          "contributors/architecture"
-        ]
+        "pages": ["contributors/architecture"]
       }
     ]
   },
@@ -126,14 +124,23 @@
   },
   "seo": {
     "metatags": {
-      "canonical": "https://docs.withcoral.com"
+      "canonical": "https://withcoral.com/docs"
     }
   },
   "search": {
     "prompt": "Search Coral docs..."
   },
   "contextual": {
-    "options": ["copy", "view", "claude", "chatgpt", "cursor", "vscode", "mcp", "add-mcp"],
+    "options": [
+      "copy",
+      "view",
+      "claude",
+      "chatgpt",
+      "cursor",
+      "vscode",
+      "mcp",
+      "add-mcp"
+    ],
     "display": "header"
   }
 }

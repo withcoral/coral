@@ -193,7 +193,7 @@ make validate
 ## Documentation
 
 For setup guides, reference docs, and examples, visit
-[docs.withcoral.com](https://docs.withcoral.com).
+[withcoral.com/docs](https://withcoral.com/docs).
 
 ## Contributing
 

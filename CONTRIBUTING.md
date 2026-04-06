@@ -141,5 +141,3 @@ This project follows the rules in [`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md).
 
 By contributing to Coral, you agree that your contributions will be licensed
 under the project licence.
-
-That revised section is intentionally more generic and should age better if your terminology shifts.
