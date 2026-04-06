@@ -1,0 +1,58 @@
+name: Build Timings
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 6 * * *'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-timings:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        run: rustup show
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2.9.1
+        with:
+          shared-key: coral-build-${{ runner.os }}
+          cache-on-failure: true
+          save-if: true
+
+      - name: Build with timings
+        run: |
+          cargo build --bin coral --timings 2>&1 | tee build-output.txt
+          echo ""
+          echo "=== Cache effectiveness ==="
+          compiled=$(grep -c "^   Compiling" build-output.txt || true)
+          echo "Crates compiled: $compiled"
+          if [ "$compiled" -eq 0 ]; then
+            echo "Full cache hit — no crates recompiled"
+          else
+            echo "Partial or cold cache — $compiled crates recompiled"
+            echo ""
+            echo "Top recompiled crates:"
+            grep "^   Compiling" build-output.txt || true
+          fi
+
+      - name: Upload timings HTML report
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: cargo-timings-${{ github.sha }}
+          path: target/cargo-timings/cargo-timing.html
+          retention-days: 30
+
+      - name: Upload build output
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: build-output-${{ github.sha }}
+          path: build-output.txt
+          retention-days: 30
