@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 use serde_yaml::{Mapping, Value};
 
-use crate::{ManifestError, Result};
+use crate::{ManifestError, ParsedTemplate, Result, TemplateNamespace};
 
 /// The kind of interactive input required by one validated source spec.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -148,30 +148,35 @@ fn collect_from_template(
     ordered: &mut Vec<ManifestInputSpec>,
     seen: &mut BTreeMap<String, InputState>,
 ) -> Result<()> {
-    let mut rest = template;
-    while let Some(start) = rest.find("{{") {
-        let token_start = start + 2;
-        let Some(end_rel) = rest[token_start..].find("}}") else {
-            return Err(ManifestError::validation(format!(
-                "unclosed template token in '{template}'"
-            )));
-        };
-        let end = token_start + end_rel;
-        let token = rest[token_start..end].trim();
-        let (raw_key, default_value) = match token.split_once('|') {
-            Some((key, default)) => (key.trim(), Some(default.to_string())),
-            None => (token, None),
-        };
-        if let Some(key) = raw_key.strip_prefix("secret.") {
-            register_input(key, InputKind::Secret, default_value, ordered, seen)?;
-        } else if let Some(key) = raw_key.strip_prefix("variable.") {
-            register_input(key, InputKind::Variable, default_value, ordered, seen)?;
-        } else if raw_key.starts_with("env.") {
-            return Err(ManifestError::validation(format!(
-                "unsupported template namespace '{raw_key}'"
-            )));
+    let template = ParsedTemplate::parse(template)?;
+    for token in template.tokens() {
+        match token.namespace() {
+            TemplateNamespace::Secret => {
+                register_input(
+                    token.key(),
+                    InputKind::Secret,
+                    token.default_value().map(ToString::to_string),
+                    ordered,
+                    seen,
+                )?;
+            }
+            TemplateNamespace::Variable => {
+                register_input(
+                    token.key(),
+                    InputKind::Variable,
+                    token.default_value().map(ToString::to_string),
+                    ordered,
+                    seen,
+                )?;
+            }
+            TemplateNamespace::Env => {
+                return Err(ManifestError::validation(format!(
+                    "unsupported template namespace '{}'",
+                    token.raw_key()
+                )));
+            }
+            TemplateNamespace::Filter | TemplateNamespace::State | TemplateNamespace::Other(_) => {}
         }
-        rest = &rest[end + 2..];
     }
     Ok(())
 }
