@@ -5,6 +5,10 @@ on:
   schedule:
     - cron: '0 6 * * *'
 
+permissions:
+  actions: write
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -56,3 +60,20 @@ jobs:
           name: build-output-${{ github.sha }}
           path: build-output.txt
           retention-days: 30
+
+      - name: Check cache quota usage
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          usage=$(gh api "repos/$GITHUB_REPOSITORY/actions/cache/usage" \
+            --jq '.active_caches_size_in_bytes')
+          limit=$((10 * 1024 * 1024 * 1024))  # 10 GiB
+          pct=$((usage * 100 / limit))
+          usage_mb=$((usage / 1024 / 1024))
+          echo "Cache usage: ${usage_mb} MiB / 10240 MiB (${pct}%)"
+          if [ "$pct" -ge 80 ]; then
+            echo "::error::Cache usage is at ${pct}% (${usage_mb} MiB / 10 GiB)"
+            exit 1
+          fi
