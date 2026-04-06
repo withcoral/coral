@@ -1,0 +1,1267 @@
+dsl_version: 3
+name: intercom
+version: 0.1.0
+description: Customer messaging platform for support, engagement, and marketing
+backend: http
+base_url: https://api.intercom.io
+auth:
+  required_secrets:
+    - INTERCOM_ACCESS_TOKEN
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{secret.INTERCOM_ACCESS_TOKEN}}
+    - name: Intercom-Version
+      from: literal
+      value: "2.11"
+    - name: Accept
+      from: literal
+      value: application/json
+tables:
+  - name: contacts
+    description: Contacts (users and leads) in the workspace
+    request:
+      method: GET
+      path: /contacts
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: cursor_query
+      cursor_param: starting_after
+      response_cursor_path:
+        - pages
+        - next
+        - starting_after
+      page_size:
+        default: 50
+        max: 50
+        query_param: per_page
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Contact ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: external_id
+        type: Utf8
+        nullable: true
+        description: External ID from your system
+        expr:
+          kind: path
+          path:
+            - external_id
+      - name: role
+        type: Utf8
+        nullable: true
+        description: Contact role (user or lead)
+        expr:
+          kind: path
+          path:
+            - role
+      - name: email
+        type: Utf8
+        nullable: true
+        description: Email address
+        expr:
+          kind: path
+          path:
+            - email
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Full name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: phone
+        type: Utf8
+        nullable: true
+        description: Phone number
+        expr:
+          kind: path
+          path:
+            - phone
+      - name: owner_id
+        type: Int64
+        nullable: true
+        description: ID of the admin that owns the contact
+        expr:
+          kind: path
+          path:
+            - owner_id
+      - name: has_hard_bounced
+        type: Boolean
+        nullable: true
+        description: Whether the contact has hard bounced
+        expr:
+          kind: path
+          path:
+            - has_hard_bounced
+      - name: marked_email_as_spam
+        type: Boolean
+        nullable: true
+        description: Whether the contact marked email as spam
+        expr:
+          kind: path
+          path:
+            - marked_email_as_spam
+      - name: unsubscribed_from_emails
+        type: Boolean
+        nullable: true
+        description: Whether the contact unsubscribed from emails
+        expr:
+          kind: path
+          path:
+            - unsubscribed_from_emails
+      - name: created_at
+        type: Int64
+        nullable: true
+        description: Creation timestamp (Unix)
+        expr:
+          kind: path
+          path:
+            - created_at
+      - name: updated_at
+        type: Int64
+        nullable: true
+        description: Last updated timestamp (Unix)
+        expr:
+          kind: path
+          path:
+            - updated_at
+      - name: signed_up_at
+        type: Int64
+        nullable: true
+        description: Sign-up timestamp (Unix)
+        expr:
+          kind: path
+          path:
+            - signed_up_at
+      - name: last_seen_at
+        type: Int64
+        nullable: true
+        description: Last seen timestamp (Unix)
+        expr:
+          kind: path
+          path:
+            - last_seen_at
+      - name: last_replied_at
+        type: Int64
+        nullable: true
+        description: Last replied timestamp (Unix)
+        expr:
+          kind: path
+          path:
+            - last_replied_at
+      - name: last_contacted_at
+        type: Int64
+        nullable: true
+        description: Last contacted timestamp (Unix)
+        expr:
+          kind: path
+          path:
+            - last_contacted_at
+      - name: last_email_opened_at
+        type: Int64
+        nullable: true
+        description: Last email opened timestamp (Unix)
+        expr:
+          kind: path
+          path:
+            - last_email_opened_at
+      - name: last_email_clicked_at
+        type: Int64
+        nullable: true
+        description: Last email clicked timestamp (Unix)
+        expr:
+          kind: path
+          path:
+            - last_email_clicked_at
+      - name: language_override
+        type: Utf8
+        nullable: true
+        description: Language override
+        expr:
+          kind: path
+          path:
+            - language_override
+      - name: browser
+        type: Utf8
+        nullable: true
+        description: Browser name
+        expr:
+          kind: path
+          path:
+            - browser
+      - name: browser_language
+        type: Utf8
+        nullable: true
+        description: Browser language
+        expr:
+          kind: path
+          path:
+            - browser_language
+      - name: os
+        type: Utf8
+        nullable: true
+        description: Operating system
+        expr:
+          kind: path
+          path:
+            - os
+      - name: location_country
+        type: Utf8
+        nullable: true
+        description: Country
+        expr:
+          kind: path
+          path:
+            - location
+            - country
+      - name: location_region
+        type: Utf8
+        nullable: true
+        description: Region
+        expr:
+          kind: path
+          path:
+            - location
+            - region
+      - name: location_city
+        type: Utf8
+        nullable: true
+        description: City
+        expr:
+          kind: path
+          path:
+            - location
+            - city
+      - name: avatar_url
+        type: Utf8
+        nullable: true
+        description: Avatar image URL
+        expr:
+          kind: path
+          path:
+            - avatar
+            - image_url
+
+  - name: companies
+    description: Companies in the workspace
+    request:
+      method: POST
+      path: /companies/list
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      page_size:
+        default: 50
+        max: 50
+        query_param: per_page
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Company ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: company_id
+        type: Utf8
+        nullable: true
+        description: External company ID
+        expr:
+          kind: path
+          path:
+            - company_id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Company name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: website
+        type: Utf8
+        nullable: true
+        description: Company website
+        expr:
+          kind: path
+          path:
+            - website
+      - name: industry
+        type: Utf8
+        nullable: true
+        description: Industry
+        expr:
+          kind: path
+          path:
+            - industry
+      - name: size
+        type: Int64
+        nullable: true
+        description: Company size
+        expr:
+          kind: path
+          path:
+            - size
+      - name: user_count
+        type: Int64
+        nullable: true
+        description: Number of users
+        expr:
+          kind: path
+          path:
+            - user_count
+      - name: session_count
+        type: Int64
+        nullable: true
+        description: Number of sessions
+        expr:
+          kind: path
+          path:
+            - session_count
+      - name: monthly_spend
+        type: Float64
+        nullable: true
+        description: Monthly spend
+        expr:
+          kind: path
+          path:
+            - monthly_spend
+      - name: plan_name
+        type: Utf8
+        nullable: true
+        description: Plan name
+        expr:
+          kind: path
+          path:
+            - plan
+            - name
+      - name: created_at
+        type: Int64
+        nullable: true
+        description: Creation timestamp (Unix)
+        expr:
+          kind: path
+          path:
+            - created_at
+      - name: updated_at
+        type: Int64
+        nullable: true
+        description: Last updated timestamp (Unix)
+        expr:
+          kind: path
+          path:
+            - updated_at
+      - name: remote_created_at
+        type: Int64
+        nullable: true
+        description: Remote creation timestamp (Unix)
+        expr:
+          kind: path
+          path:
+            - remote_created_at
+      - name: last_request_at
+        type: Int64
+        nullable: true
+        description: Last request timestamp (Unix)
+        expr:
+          kind: path
+          path:
+            - last_request_at
+
+  - name: conversations
+    description: Conversations in the workspace
+    request:
+      method: GET
+      path: /conversations
+    response:
+      rows_path:
+        - conversations
+    pagination:
+      mode: cursor_query
+      cursor_param: starting_after
+      response_cursor_path:
+        - pages
+        - next
+        - starting_after
+      page_size:
+        default: 50
+        max: 50
+        query_param: per_page
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Conversation ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Conversation title
+        expr:
+          kind: path
+          path:
+            - title
+      - name: state
+        type: Utf8
+        nullable: true
+        description: State (open, closed, snoozed)
+        expr:
+          kind: path
+          path:
+            - state
+      - name: open
+        type: Boolean
+        nullable: true
+        description: Whether the conversation is open
+        expr:
+          kind: path
+          path:
+            - open
+      - name: read
+        type: Boolean
+        nullable: true
+        description: Whether the conversation has been read
+        expr:
+          kind: path
+          path:
+            - read
+      - name: priority
+        type: Utf8
+        nullable: true
+        description: Conversation priority
+        expr:
+          kind: path
+          path:
+            - priority
+      - name: admin_assignee_id
+        type: Int64
+        nullable: true
+        description: Assigned admin ID
+        expr:
+          kind: path
+          path:
+            - admin_assignee_id
+      - name: team_assignee_id
+        type: Utf8
+        nullable: true
+        description: Assigned team ID
+        expr:
+          kind: path
+          path:
+            - team_assignee_id
+      - name: created_at
+        type: Int64
+        nullable: true
+        description: Creation timestamp (Unix)
+        expr:
+          kind: path
+          path:
+            - created_at
+      - name: updated_at
+        type: Int64
+        nullable: true
+        description: Last updated timestamp (Unix)
+        expr:
+          kind: path
+          path:
+            - updated_at
+      - name: waiting_since
+        type: Int64
+        nullable: true
+        description: Waiting since timestamp (Unix)
+        expr:
+          kind: path
+          path:
+            - waiting_since
+      - name: snoozed_until
+        type: Int64
+        nullable: true
+        description: Snoozed until timestamp (Unix)
+        expr:
+          kind: path
+          path:
+            - snoozed_until
+      - name: source_type
+        type: Utf8
+        nullable: true
+        description: Source type
+        expr:
+          kind: path
+          path:
+            - source
+            - type
+      - name: source_delivered_as
+        type: Utf8
+        nullable: true
+        description: How the source was delivered
+        expr:
+          kind: path
+          path:
+            - source
+            - delivered_as
+      - name: source_subject
+        type: Utf8
+        nullable: true
+        description: Source subject
+        expr:
+          kind: path
+          path:
+            - source
+            - subject
+      - name: source_author_type
+        type: Utf8
+        nullable: true
+        description: Source author type
+        expr:
+          kind: path
+          path:
+            - source
+            - author
+            - type
+      - name: source_author_id
+        type: Utf8
+        nullable: true
+        description: Source author ID
+        expr:
+          kind: path
+          path:
+            - source
+            - author
+            - id
+      - name: source_author_name
+        type: Utf8
+        nullable: true
+        description: Source author name
+        expr:
+          kind: path
+          path:
+            - source
+            - author
+            - name
+      - name: source_author_email
+        type: Utf8
+        nullable: true
+        description: Source author email
+        expr:
+          kind: path
+          path:
+            - source
+            - author
+            - email
+      - name: conversation_rating
+        type: Int64
+        nullable: true
+        description: Conversation rating
+        expr:
+          kind: path
+          path:
+            - conversation_rating
+            - rating
+      - name: conversation_rating_remark
+        type: Utf8
+        nullable: true
+        description: Conversation rating remark
+        expr:
+          kind: path
+          path:
+            - conversation_rating
+            - remark
+      - name: ai_agent_participated
+        type: Boolean
+        nullable: true
+        description: Whether AI agent participated
+        expr:
+          kind: path
+          path:
+            - ai_agent_participated
+      - name: statistics_time_to_assignment
+        type: Int64
+        nullable: true
+        description: Time to assignment (seconds)
+        expr:
+          kind: path
+          path:
+            - statistics
+            - time_to_assignment
+      - name: statistics_time_to_admin_reply
+        type: Int64
+        nullable: true
+        description: Time to admin reply (seconds)
+        expr:
+          kind: path
+          path:
+            - statistics
+            - time_to_admin_reply
+      - name: statistics_time_to_first_close
+        type: Int64
+        nullable: true
+        description: Time to first close (seconds)
+        expr:
+          kind: path
+          path:
+            - statistics
+            - time_to_first_close
+      - name: statistics_first_admin_reply_at
+        type: Int64
+        nullable: true
+        description: First admin reply timestamp (Unix)
+        expr:
+          kind: path
+          path:
+            - statistics
+            - first_admin_reply_at
+      - name: statistics_last_close_at
+        type: Int64
+        nullable: true
+        description: Last close timestamp (Unix)
+        expr:
+          kind: path
+          path:
+            - statistics
+            - last_close_at
+      - name: statistics_count_reopens
+        type: Int64
+        nullable: true
+        description: Number of reopens
+        expr:
+          kind: path
+          path:
+            - statistics
+            - count_reopens
+      - name: statistics_count_assignments
+        type: Int64
+        nullable: true
+        description: Number of assignments
+        expr:
+          kind: path
+          path:
+            - statistics
+            - count_assignments
+
+  - name: admins
+    description: Admins and team members in the workspace
+    request:
+      method: GET
+      path: /admins
+    response:
+      rows_path:
+        - admins
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Admin ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Admin type
+        expr:
+          kind: path
+          path:
+            - type
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Admin name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: email
+        type: Utf8
+        nullable: true
+        description: Admin email
+        expr:
+          kind: path
+          path:
+            - email
+      - name: job_title
+        type: Utf8
+        nullable: true
+        description: Job title
+        expr:
+          kind: path
+          path:
+            - job_title
+      - name: away_mode_enabled
+        type: Boolean
+        nullable: true
+        description: Whether away mode is enabled
+        expr:
+          kind: path
+          path:
+            - away_mode_enabled
+      - name: away_mode_reassign
+        type: Boolean
+        nullable: true
+        description: Whether conversations are reassigned during away mode
+        expr:
+          kind: path
+          path:
+            - away_mode_reassign
+      - name: has_inbox_seat
+        type: Boolean
+        nullable: true
+        description: Whether the admin has an inbox seat
+        expr:
+          kind: path
+          path:
+            - has_inbox_seat
+      - name: team_ids
+        type: Utf8
+        nullable: true
+        description: Team IDs (comma-separated)
+        expr:
+          kind: join_array
+          path:
+            - team_ids
+          separator: ", "
+      - name: avatar
+        type: Utf8
+        nullable: true
+        description: Avatar URL
+        expr:
+          kind: path
+          path:
+            - avatar
+
+  - name: tags
+    description: Tags in the workspace
+    request:
+      method: GET
+      path: /tags
+    response:
+      rows_path:
+        - data
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Tag ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Tag name
+        expr:
+          kind: path
+          path:
+            - name
+
+  - name: teams
+    description: Teams in the workspace
+    request:
+      method: GET
+      path: /teams
+    response:
+      rows_path:
+        - teams
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Team ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Team name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: admin_ids
+        type: Utf8
+        nullable: true
+        description: Admin IDs (comma-separated)
+        expr:
+          kind: join_array
+          path:
+            - admin_ids
+          separator: ", "
+
+  - name: segments
+    description: Segments in the workspace
+    request:
+      method: GET
+      path: /segments
+      query:
+        - name: include_count
+          from: literal
+          value: "true"
+    response:
+      rows_path:
+        - segments
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Segment ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Segment name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: person_type
+        type: Utf8
+        nullable: true
+        description: Person type (contact or user)
+        expr:
+          kind: path
+          path:
+            - person_type
+      - name: count
+        type: Int64
+        nullable: true
+        description: Number of people in the segment
+        expr:
+          kind: path
+          path:
+            - count
+      - name: created_at
+        type: Int64
+        nullable: true
+        description: Creation timestamp (Unix)
+        expr:
+          kind: path
+          path:
+            - created_at
+      - name: updated_at
+        type: Int64
+        nullable: true
+        description: Last updated timestamp (Unix)
+        expr:
+          kind: path
+          path:
+            - updated_at
+
+  - name: data_attributes
+    description: Data attributes for contacts, companies, and conversations
+    filters:
+      - name: model
+        required: false
+    request:
+      method: GET
+      path: /data_attributes
+      query:
+        - name: model
+          from: filter
+          key: model
+        - name: include_archived
+          from: literal
+          value: "false"
+    response:
+      rows_path:
+        - data
+    columns:
+      - name: id
+        type: Int64
+        nullable: true
+        description: Data attribute ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Attribute name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: full_name
+        type: Utf8
+        nullable: true
+        description: Full attribute name
+        expr:
+          kind: path
+          path:
+            - full_name
+      - name: label
+        type: Utf8
+        nullable: true
+        description: Attribute label
+        expr:
+          kind: path
+          path:
+            - label
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Attribute description
+        expr:
+          kind: path
+          path:
+            - description
+      - name: model
+        type: Utf8
+        nullable: true
+        description: Model (contact, company, or conversation)
+        expr:
+          kind: path
+          path:
+            - model
+      - name: data_type
+        type: Utf8
+        nullable: true
+        description: Data type (string, integer, boolean, float, date, list)
+        expr:
+          kind: path
+          path:
+            - data_type
+      - name: api_writable
+        type: Boolean
+        nullable: true
+        description: Whether writable via API
+        expr:
+          kind: path
+          path:
+            - api_writable
+      - name: custom
+        type: Boolean
+        nullable: true
+        description: Whether this is a custom attribute
+        expr:
+          kind: path
+          path:
+            - custom
+      - name: archived
+        type: Boolean
+        nullable: true
+        description: Whether archived
+        expr:
+          kind: path
+          path:
+            - archived
+      - name: created_at
+        type: Int64
+        nullable: true
+        description: Creation timestamp (Unix)
+        expr:
+          kind: path
+          path:
+            - created_at
+      - name: updated_at
+        type: Int64
+        nullable: true
+        description: Last updated timestamp (Unix)
+        expr:
+          kind: path
+          path:
+            - updated_at
+
+  - name: collections
+    description: Help Center collections
+    request:
+      method: GET
+      path: /help_center/collections
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      page_size:
+        default: 20
+        max: 20
+        query_param: per_page
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Collection ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Collection name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Collection description
+        expr:
+          kind: path
+          path:
+            - description
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Collection URL
+        expr:
+          kind: path
+          path:
+            - url
+      - name: order
+        type: Int64
+        nullable: true
+        description: Display order
+        expr:
+          kind: path
+          path:
+            - order
+      - name: default_locale
+        type: Utf8
+        nullable: true
+        description: Default locale
+        expr:
+          kind: path
+          path:
+            - default_locale
+      - name: parent_id
+        type: Utf8
+        nullable: true
+        description: Parent collection ID (null for top-level)
+        expr:
+          kind: path
+          path:
+            - parent_id
+      - name: help_center_id
+        type: Int64
+        nullable: true
+        description: Help Center ID
+        expr:
+          kind: path
+          path:
+            - help_center_id
+      - name: created_at
+        type: Int64
+        nullable: true
+        description: Creation timestamp (Unix)
+        expr:
+          kind: path
+          path:
+            - created_at
+      - name: updated_at
+        type: Int64
+        nullable: true
+        description: Last updated timestamp (Unix)
+        expr:
+          kind: path
+          path:
+            - updated_at
+
+  - name: articles
+    description: Help Center articles
+    request:
+      method: GET
+      path: /articles
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      page_size:
+        default: 25
+        max: 25
+        query_param: per_page
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Article ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Article title
+        expr:
+          kind: path
+          path:
+            - title
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Article description
+        expr:
+          kind: path
+          path:
+            - description
+      - name: state
+        type: Utf8
+        nullable: true
+        description: State (published or draft)
+        expr:
+          kind: path
+          path:
+            - state
+      - name: author_id
+        type: Int64
+        nullable: true
+        description: Author admin ID
+        expr:
+          kind: path
+          path:
+            - author_id
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Article URL
+        expr:
+          kind: path
+          path:
+            - url
+      - name: parent_id
+        type: Int64
+        nullable: true
+        description: Parent collection or section ID
+        expr:
+          kind: path
+          path:
+            - parent_id
+      - name: parent_type
+        type: Utf8
+        nullable: true
+        description: Parent type (collection or section)
+        expr:
+          kind: path
+          path:
+            - parent_type
+      - name: default_locale
+        type: Utf8
+        nullable: true
+        description: Default locale
+        expr:
+          kind: path
+          path:
+            - default_locale
+      - name: created_at
+        type: Int64
+        nullable: true
+        description: Creation timestamp (Unix)
+        expr:
+          kind: path
+          path:
+            - created_at
+      - name: updated_at
+        type: Int64
+        nullable: true
+        description: Last updated timestamp (Unix)
+        expr:
+          kind: path
+          path:
+            - updated_at
+
+  - name: ticket_types
+    description: Ticket types in the workspace
+    request:
+      method: GET
+      path: /ticket_types
+    response:
+      rows_path:
+        - data
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Ticket type ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Ticket type name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Ticket type description
+        expr:
+          kind: path
+          path:
+            - description
+      - name: category
+        type: Utf8
+        nullable: true
+        description: Ticket type category
+        expr:
+          kind: path
+          path:
+            - category
+      - name: icon
+        type: Utf8
+        nullable: true
+        description: Icon
+        expr:
+          kind: path
+          path:
+            - icon
+      - name: archived
+        type: Boolean
+        nullable: true
+        description: Whether archived
+        expr:
+          kind: path
+          path:
+            - archived
+      - name: created_at
+        type: Int64
+        nullable: true
+        description: Creation timestamp (Unix)
+        expr:
+          kind: path
+          path:
+            - created_at
+      - name: updated_at
+        type: Int64
+        nullable: true
+        description: Last updated timestamp (Unix)
+        expr:
+          kind: path
+          path:
+            - updated_at
