@@ -1,9 +1,9 @@
 ---
-title: "Coral documentation"
-description: "One local-first SQL interface over APIs, files, and other live sources — with bundled sources to start and a spec format to connect anything."
+title: "Introduction to Coral"
+description: "Coral is a local-first SQL interface for APIs, files, and other live sources."
 ---
 
-Coral gives agents and developers one local-first SQL interface over APIs, files, and other live sources. It ships with bundled sources for systems like GitHub, Slack, Stripe, and Sentry — and a source spec format that lets you connect any API or dataset yourself.
+Coral gives agents and developers one local-first SQL interface over APIs, files, and other live sources. It ships with bundled sources for systems like GitHub, Slack, Stripe, and Sentry, and a source spec format that lets you connect any API or dataset yourself.
 
 Install sources into a local workspace, inspect schemas through system catalog tables, run SQL from the CLI or through MCP, and write custom source specs when you need something that isn't bundled yet.
 
@@ -11,21 +11,36 @@ Install sources into a local workspace, inspect schemas through system catalog t
 
 <Steps titleSize="h3">
   <Step title="Install Coral">
-    Get the CLI on your machine.
+    Install the Coral CLI to get started.
 
-    [Installation guide](/getting-started/installation)
+    ```shellscript
+    brew install withcoral/tap/coral
+    ```
+
+    [See all installation options](/getting-started/installation)
+
   </Step>
 
-  <Step title="Run the quickstart">
-    Prefer the guided path with `coral onboard`, or follow the manual quickstart flow.
+  <Step title="Add your sources">
+   Connect GitHub, Slack, Datadog, and other [bundled sources](/reference/bundled-sources) to your workspace. For example:
 
-    [Quickstart](/getting-started/quickstart)
+    ```shellscript
+    coral source add github
+    ```
+
+    [Go to the quickstart](/getting-started/quickstart)
+
   </Step>
 
-  <Step title="Connect your own system">
-    Write a source spec for any API or local dataset and query it the same way.
+  <Step title="Start querying">
+    Write SQL directly or let your AI agent query on your behalf.
 
-    [Write a custom source](/guides/write-a-custom-source)
+    ```shellscript
+    coral sql "SELECT name, stargazers_count FROM github.repos WHERE owner = 'withcoral' ORDER BY stargazers_count DESC"
+    ```
+
+    [Or use Coral over MCP](/guides/use-coral-over-mcp)
+
   </Step>
 </Steps>
 
