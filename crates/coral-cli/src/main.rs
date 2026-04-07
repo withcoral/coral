@@ -7,9 +7,9 @@
 )]
 
 use std::io::{IsTerminal, stdin, stdout};
-use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::Parser;
+use coral_cli::{Cli, Command, OutputFormat, SourceCommand};
 use coral_api::v1::{
     CreateBundledSourceRequest, DeleteSourceRequest, DiscoverSourcesRequest, ExecuteSqlRequest,
     ImportSourceRequest, ListSourcesRequest, SourceInputKind, SourceInputSpec, SourceOrigin,
@@ -23,74 +23,6 @@ use coral_spec::{ManifestInputKind, ManifestInputSpec, collect_source_inputs_yam
 use dialoguer::{Input, Password};
 use tonic::Request;
 
-#[derive(Debug, Parser)]
-#[command(name = "coral", version)]
-/// Query and manage local data sources
-struct Cli {
-    #[command(subcommand)]
-    command: Command,
-}
-
-#[derive(Debug, Subcommand)]
-enum Command {
-    /// Execute a SQL query
-    Sql(SqlArgs),
-    /// Manage data sources
-    Source(SourceArgs),
-    /// Start the MCP server over stdio
-    McpStdio,
-}
-
-#[derive(Debug, Args)]
-/// Execute a SQL query
-struct SqlArgs {
-    /// Output format for query results
-    #[arg(long, value_enum, default_value = "table")]
-    format: OutputFormat,
-    /// SQL query to execute
-    sql: String,
-}
-
-#[derive(Debug, Args)]
-/// Manage data sources
-struct SourceArgs {
-    #[command(subcommand)]
-    command: SourceCommand,
-}
-
-#[derive(Debug, Subcommand)]
-enum SourceCommand {
-    /// Discover available sources
-    Discover,
-    /// List configured sources
-    List,
-    /// Add a new source
-    Add {
-        /// Name for the new source
-        name: String,
-    },
-    /// Import a source from a manifest file
-    Import {
-        /// Path to the source manifest file
-        path: PathBuf,
-    },
-    /// Test connectivity for a source
-    Test {
-        /// Name of the source to test
-        name: String,
-    },
-    /// Remove a source
-    Remove {
-        /// Name of the source to remove
-        name: String,
-    },
-}
-
-#[derive(Debug, Clone, Copy, ValueEnum)]
-enum OutputFormat {
-    Table,
-    Json,
-}
 
 #[tokio::main]
 #[allow(

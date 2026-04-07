@@ -15,19 +15,19 @@ Top-level commands:
 - `source`
 - `mcp-stdio`
 
-## `coral sql`
+## `coral sql <SQL>`
 
-Run one SQL query and exit.
+Execute a SQL query.
 
 ```shellscript
-coral sql [--format table|json] "<SQL>"
+coral sql [--format table|json] <SQL>
 ```
 
 ### Options
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--format` | `table` \| `json` | `table` | Output format |
+| `--format` | `table` \| `json` | `table` | Output format for query results |
 
 ### Examples
 
@@ -62,14 +62,26 @@ coral source list
 Install a bundled source by name.
 
 ```shellscript
-coral source add github
+coral source add <NAME>
 ```
 
 Coral prompts for required variables or secrets interactively.
 
+#### Examples
+
+```shellscript
+coral source add github
+```
+
 ### `coral source import <PATH>`
 
-Import a custom source spec from a YAML file.
+Import a custom source from a manifest file.
+
+```shellscript
+coral source import <PATH>
+```
+
+#### Examples
 
 ```shellscript
 coral source import ./local-messages.yaml
@@ -80,6 +92,12 @@ coral source import ./local-messages.yaml
 Validate that an installed source can initialize and expose tables.
 
 ```shellscript
+coral source test <NAME>
+```
+
+#### Examples
+
+```shellscript
 coral source test github
 coral source test local_messages
 ```
@@ -87,6 +105,12 @@ coral source test local_messages
 ### `coral source remove <NAME>`
 
 Remove an installed source from the local workspace.
+
+```shellscript
+coral source remove <NAME>
+```
+
+#### Examples
 
 ```shellscript
 coral source remove github
