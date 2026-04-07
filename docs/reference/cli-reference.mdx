@@ -13,6 +13,7 @@ Top-level commands:
 
 - `sql`
 - `source`
+- `onboard`
 - `mcp-stdio`
 
 ## `coral sql`
@@ -91,6 +92,21 @@ Remove an installed source from the local workspace.
 ```shellscript
 coral source remove github
 ```
+
+## `coral onboard`
+
+Run the guided source setup flow.
+
+```shellscript
+coral onboard
+```
+
+This interactive command helps you:
+
+- add a bundled source
+- import a custom source manifest
+- validate an installed source
+- see the next recommended commands after setup
 
 ## `coral mcp-stdio`
 
