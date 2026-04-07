@@ -10,6 +10,7 @@ concurrency:
 permissions:
   contents: read
   issues: write
+  pull-requests: write
 
 jobs:
   coverage:
@@ -34,7 +35,8 @@ jobs:
         run: cat .context/coverage/summary.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Update sticky PR comment
-        if: github.event.pull_request.head.repo.fork == false
+        if: github.event.pull_request.head.repo.fork == false && github.event.pull_request.user.type != 'Bot'
+        continue-on-error: true
         uses: actions/github-script@v8
         with:
           script: |
