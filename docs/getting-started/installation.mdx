@@ -1,6 +1,6 @@
 ---
 title: "Installation"
-description: "Install Coral with Homebrew, the install script, or from source."
+description: "Install Coral with Homebrew, the install script, or from source, then continue to onboarding."
 ---
 
 Coral ships as a single local CLI. Once installed, the same binary is used for source management, SQL queries, and the MCP stdio server.
@@ -37,7 +37,7 @@ Before you install Coral, make sure you have:
   </Tab>
 </Tabs>
 
-Use Homebrew for a standard install. Build from source if you are contributing to Coral or need to test the current repo state directly.
+Homebrew is the preferred managed install path. Use the install script when you want a direct bootstrap path instead. Build from source if you are contributing to Coral or need to test the current repo state directly.
 
 ## Verify the install
 
@@ -49,6 +49,16 @@ coral --help
 
 The rest of the documentation assumes `coral` is available on your `PATH`.
 
+## Next step
+
+Once Coral is installed, run:
+
+```shellscript
+coral onboard
+```
+
+This guided flow helps you add or import a source, validate it, and get ready to query real data.
+
 ## Upgrade
 
 <Tabs>
@@ -59,7 +69,7 @@ The rest of the documentation assumes `coral` is available on your `PATH`.
   </Tab>
 
   <Tab title="Install script">
-    Re-run the installer:
+    Re-run the installer to upgrade a direct install:
 
     ```shellscript
     curl -fsSL https://withcoral.com/install.sh | sh
@@ -98,6 +108,7 @@ Important files include:
 - installed source specs under `workspaces/<workspace>/sources/...`
 - source secrets stored separately within the same local trust boundary
 
-## Next step
+## Continue
 
-Continue to [Quickstart](/getting-started/quickstart) to add a source and run your first query.
+- Use [Quickstart](/getting-started/quickstart) for the manual source setup and first-query flow
+- Use [Agent usage](/guides/agent-usage) when you want Claude Code, Codex, Cursor, or another agent to call Coral
