@@ -1,6 +1,6 @@
 //! Query-time loading, validation, and execution over installed sources.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use coral_api::v1::Workspace;
 use coral_engine::{
@@ -131,17 +131,28 @@ impl QueryManager {
                 source_spec.source_version()
             )));
         }
+        let stored_secrets = self
+            .secret_store
+            .read_source_secrets_for(&source.workspace, &source.name)?;
+        let mut resolved_secrets = BTreeMap::new();
+        for secret_name in source_spec.required_secret_names() {
+            let Some(value) = stored_secrets.get(&secret_name).cloned() else {
+                return Err(AppError::FailedPrecondition(format!(
+                    "source '{}' is missing secret '{}'",
+                    source.name, secret_name
+                )));
+            };
+            resolved_secrets.insert(secret_name, value);
+        }
         Ok(QuerySource::new(
-            source.workspace.name.clone(),
             source_spec,
             source.variables.clone(),
+            resolved_secrets,
         ))
     }
 
     fn runtime_provider(&self) -> RuntimeProvider {
         RuntimeProvider {
-            config_store: self.config_store.clone(),
-            secret_store: self.secret_store.clone(),
             runtime_context: self.runtime_context.clone(),
         }
     }
@@ -149,69 +160,11 @@ impl QueryManager {
 
 #[derive(Clone)]
 struct RuntimeProvider {
-    config_store: ConfigStore,
-    secret_store: SecretStore,
     runtime_context: QueryRuntimeContext,
 }
 
 impl QueryRuntimeProvider for RuntimeProvider {
-    fn resolve_source_secrets(
-        &self,
-        query_source: &QuerySource,
-        secret_names: &BTreeSet<String>,
-    ) -> Result<BTreeMap<String, String>, CoreError> {
-        let source = self
-            .config_store
-            .get_source(
-                &Workspace {
-                    name: query_source.workspace_name().to_string(),
-                },
-                query_source.source_name(),
-            )
-            .map_err(app_error_to_core)?;
-        let values = self
-            .secret_store
-            .read_source_secrets_for(&source.workspace, &source.name)
-            .map_err(app_error_to_core)?;
-        let mut entries = BTreeMap::new();
-        for key in secret_names {
-            let Some(value) = values.get(key).cloned() else {
-                return Err(CoreError::FailedPrecondition(format!(
-                    "source '{}' is missing secret '{}'",
-                    query_source.source_name(),
-                    key
-                )));
-            };
-            entries.insert(key.clone(), value);
-        }
-        Ok(entries)
-    }
-
     fn runtime_context(&self) -> QueryRuntimeContext {
         self.runtime_context.clone()
-    }
-}
-
-fn app_error_to_core(error: AppError) -> CoreError {
-    match error {
-        AppError::SourceNotFound(source_name) => {
-            CoreError::NotFound(format!("source '{source_name}'"))
-        }
-        AppError::InvalidInput(detail) => CoreError::InvalidInput(detail),
-        AppError::FailedPrecondition(detail) => CoreError::FailedPrecondition(detail),
-        AppError::Io(inner) => CoreError::internal(inner.to_string()),
-        AppError::Yaml(inner) => CoreError::internal(inner.to_string()),
-        AppError::TomlDecode(inner) => CoreError::internal(inner.to_string()),
-        AppError::TomlEncode(inner) => CoreError::internal(inner.to_string()),
-        AppError::Json(inner) => CoreError::internal(inner.to_string()),
-        AppError::Transport(inner) => CoreError::internal(inner.to_string()),
-        AppError::TaskJoin(inner) => CoreError::internal(inner.to_string()),
-        AppError::Credentials(crate::state::CredentialsError::Parse(detail)) => {
-            CoreError::FailedPrecondition(detail)
-        }
-        AppError::Credentials(inner) => CoreError::internal(inner.to_string()),
-        AppError::MissingConfigDir => {
-            CoreError::FailedPrecondition("failed to determine Coral config directory".into())
-        }
     }
 }

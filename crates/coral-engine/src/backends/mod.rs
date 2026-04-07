@@ -1,6 +1,6 @@
 //! Backend-specific source implementations and compilation into runtime sources.
 
-use crate::{CoreError, QueryRuntimeProvider, QuerySource};
+use crate::{CoreError, QuerySource};
 use coral_spec::ValidatedSourceManifest;
 
 pub(crate) mod common;
@@ -18,16 +18,13 @@ pub(crate) mod shared;
 
 pub(crate) fn compile_query_source(
     source: &QuerySource,
-    runtime: &dyn QueryRuntimeProvider,
     runtime_context: &crate::QueryRuntimeContext,
 ) -> Result<Box<dyn CompiledBackendSource>, CoreError> {
-    let source_secrets =
-        runtime.resolve_source_secrets(source, &source.source_spec().required_secret_names())?;
     compile_validated_manifest(
         source.source_spec(),
         &BackendCompileRequest {
             runtime_context,
-            source_secrets,
+            source_secrets: source.secrets().clone(),
             source_variables: source.variables().clone(),
         },
     )

@@ -122,6 +122,10 @@
       "sessionRecording": false
     }
   },
+  "thumbnails": {
+    "background": "/images/og-image-dark.png",
+    "appearance": "dark"
+  },
   "seo": {
     "metatags": {
       "canonical": "https://withcoral.com/docs"

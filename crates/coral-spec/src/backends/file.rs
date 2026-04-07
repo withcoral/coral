@@ -16,7 +16,7 @@ use url::Url;
 
 use crate::common::{build_source_manifest_common, parse_manifest_data_type};
 use crate::{
-    ColumnSpec, FilterSpec, ManifestDataType, ManifestError, Result, SourceBackend,
+    ColumnSpec, FilterSpec, ManifestDataType, ManifestError, ParsedTemplate, Result, SourceBackend,
     SourceManifestCommon, TableCommon, validate_columns, validate_filters_and_column_exprs,
     validate_manifest_top_level,
 };
@@ -270,6 +270,7 @@ impl RawFileTableSpec {
 
 impl ParquetSourceManifest {
     pub(crate) fn parse_manifest_value(value: Value) -> Result<Self> {
+        let empty_base_url = ParsedTemplate::default();
         let raw: RawFileSourceManifest =
             serde_json::from_value(value).map_err(ManifestError::deserialize)?;
         let RawFileSourceManifest {
@@ -290,7 +291,7 @@ impl ParquetSourceManifest {
             &common.name,
             &common.name,
             SourceBackend::Parquet,
-            "",
+            &empty_base_url,
             tables.len(),
         )?;
         Ok(Self { common, tables })
@@ -299,6 +300,7 @@ impl ParquetSourceManifest {
 
 impl JsonlSourceManifest {
     pub(crate) fn parse_manifest_value(value: Value) -> Result<Self> {
+        let empty_base_url = ParsedTemplate::default();
         let raw: RawFileSourceManifest =
             serde_json::from_value(value).map_err(ManifestError::deserialize)?;
         let RawFileSourceManifest {
@@ -319,7 +321,7 @@ impl JsonlSourceManifest {
             &common.name,
             &common.name,
             SourceBackend::Jsonl,
-            "",
+            &empty_base_url,
             tables.len(),
         )?;
         Ok(Self { common, tables })
