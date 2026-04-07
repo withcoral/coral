@@ -39,7 +39,3 @@ coral sql "
   LIMIT 10
 "
 ```
-
-## Local runtime model
-
-The default CLI bootstraps an internal local gRPC server through `coral-client`, connects to it, and keeps it alive for the lifetime of the client handle. You do not need to start a separate long-running daemon before running normal `coral sql` commands.
