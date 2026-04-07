@@ -1,4 +1,4 @@
-name: PR Title
+name: Lint PR Title
 
 on:
   pull_request:
@@ -9,39 +9,29 @@ on:
       - synchronize
 
 permissions:
-  contents: read
+  pull-requests: read
 
 jobs:
-  conventional-pr-title:
-    name: Conventional PR title
+  lint:
+    name: Validate PR title
     runs-on: ubuntu-latest
     steps:
-      - name: Validate PR title
+      - id: lint_pr_title
+        name: Validate PR title
+        uses: amannn/action-semantic-pull-request@48f256284bd46cdaab1048c3721360e808335d50 # v6.1.1
         env:
-          PR_TITLE: ${{ github.event.pull_request.title }}
-        run: |
-          pattern='^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\([a-z0-9][a-z0-9._/-]*\))?!?: .+$'
-
-          if [[ "$PR_TITLE" =~ $pattern ]]; then
-            exit 0
-          fi
-
-          {
-            echo "Invalid title: $PR_TITLE"
-            echo
-            echo "Expected Conventional Commits format:"
-            echo "  type(scope?): summary"
-            echo
-            echo "See:"
-            echo "  https://www.conventionalcommits.org/"
-            echo
-            echo "Allowed types:"
-            echo "  build, chore, ci, docs, feat, fix, perf, refactor, revert, style, test"
-            echo
-            echo "Scope guidance for this repo:"
-            echo "  Prefer a scope that matches the primary area changed,"
-            echo "  usually the crate name minus the coral- prefix,"
-            echo "  docs, or sources/<name>."
-          } >&2
-
-          exit 1
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          types: |
+            feat
+            fix
+            docs
+            style
+            refactor
+            perf
+            test
+            build
+            ci
+            chore
+            revert
+          requireScope: false

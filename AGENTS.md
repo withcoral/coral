@@ -34,8 +34,9 @@
 - Keep the PR title up to date as the branch evolves. If the change shifts in
   scope or intent, update the title to match the current final shape of the
   branch.
-- Use `!` only for breaking changes. Local WIP commit messages can stay
-  pragmatic unless the user explicitly asks for polished commit history.
+- Use `!` only for breaking changes, placing it immediately before the colon:
+  `type!: summary` or `type(scope)!: summary`. Local WIP commit messages can
+  stay pragmatic unless the user explicitly asks for polished commit history.
 
 ## What Counts As a Breaking Change for a CLI?
 

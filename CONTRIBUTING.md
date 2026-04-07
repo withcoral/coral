@@ -144,8 +144,9 @@ PR titles must use the Conventional Commits format:
 type(scope): summary
 ```
 
-Scope is optional, `!` is reserved for breaking changes, and PR titles are
-validated in CI.
+Scope is optional. For breaking changes, place `!` immediately before the
+colon: `type!: summary` or `type(scope)!: summary`. PR titles are validated in
+CI.
 
 When you use a scope, prefer one that matches the primary area changed,
 usually the crate name minus the `coral-` prefix, `docs`, or `sources/<name>`.
