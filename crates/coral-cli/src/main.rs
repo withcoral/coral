@@ -25,6 +25,7 @@ use tonic::Request;
 
 #[derive(Debug, Parser)]
 #[command(name = "coral", version)]
+/// Query and manage local data sources
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -32,19 +33,26 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Execute a SQL query
     Sql(SqlArgs),
+    /// Manage data sources
     Source(SourceArgs),
+    /// Start the MCP server over stdio
     McpStdio,
 }
 
 #[derive(Debug, Args)]
+/// Execute a SQL query
 struct SqlArgs {
+    /// Output format for query results
     #[arg(long, value_enum, default_value = "table")]
     format: OutputFormat,
+    /// SQL query to execute
     sql: String,
 }
 
 #[derive(Debug, Args)]
+/// Manage data sources
 struct SourceArgs {
     #[command(subcommand)]
     command: SourceCommand,
@@ -52,12 +60,30 @@ struct SourceArgs {
 
 #[derive(Debug, Subcommand)]
 enum SourceCommand {
+    /// Discover available sources
     Discover,
+    /// List configured sources
     List,
-    Add { name: String },
-    Import { path: PathBuf },
-    Test { name: String },
-    Remove { name: String },
+    /// Add a new source
+    Add {
+        /// Name for the new source
+        name: String,
+    },
+    /// Import a source from a manifest file
+    Import {
+        /// Path to the source manifest file
+        path: PathBuf,
+    },
+    /// Test connectivity for a source
+    Test {
+        /// Name of the source to test
+        name: String,
+    },
+    /// Remove a source
+    Remove {
+        /// Name of the source to remove
+        name: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
