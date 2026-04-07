@@ -413,6 +413,11 @@ async fn infer_schema_expand_dicts(
 ) -> Result<SchemaRef> {
     // Fast path: standard inference works when all files share identical encoding.
     if let Ok(inferred) = listing_options.infer_schema(&ctx.state(), table_path).await {
+        if inferred.fields().is_empty() {
+            return Err(DataFusionError::Execution(format!(
+                "no parquet files found at {table_path}"
+            )));
+        }
         let expanded = expand_dictionary_types(&inferred);
         // Strip schema-level metadata for the same reason as the slow path below.
         return Ok(Arc::new(Schema::new_with_metadata(

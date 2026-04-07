@@ -1,0 +1,468 @@
+use coral_engine::{CoralQuery, CoreError, StatusCode};
+use serde_json::json;
+use wiremock::matchers::{header, method, path, query_param, query_param_is_missing};
+use wiremock::{Mock, MockServer, ResponseTemplate};
+
+use crate::harness::{
+    TestRuntime, build_source, build_source_with_secrets, execution_to_rows, users_rows,
+};
+
+fn base_http_manifest(
+    name: &str,
+    base_url: &str,
+    extra_table_yaml: &str,
+    extra_source_yaml: &str,
+) -> String {
+    format!(
+        r#"
+name: {name}
+version: 0.1.0
+dsl_version: 3
+backend: http
+base_url: "{base_url}"
+{extra_source_yaml}tables:
+  - name: users
+    description: HTTP users
+    request:
+      method: GET
+      path: /api/users
+    response:
+      rows_path: [data]
+{extra_table_yaml}    columns:
+      - name: id
+        type: Int64
+      - name: name
+        type: Utf8
+      - name: email
+        type: Utf8
+"#
+    )
+}
+
+#[tokio::test]
+async fn select_all_from_http_source() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": users_rows() })))
+        .mount(&server)
+        .await;
+
+    let source = build_source(&base_http_manifest("http_users", &server.uri(), "", ""));
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            &TestRuntime,
+            "SELECT id, name, email FROM http_users.users ORDER BY id",
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(rows, users_rows());
+}
+
+#[tokio::test]
+async fn select_with_column_projection() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": users_rows() })))
+        .mount(&server)
+        .await;
+
+    let source = build_source(&base_http_manifest(
+        "http_projection",
+        &server.uri(),
+        "",
+        "",
+    ));
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            &TestRuntime,
+            "SELECT name, email FROM http_projection.users ORDER BY name",
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(
+        rows,
+        vec![
+            json!({"name": "Ada", "email": "ada@example.com"}),
+            json!({"name": "Grace", "email": "grace@example.com"}),
+            json!({"name": "Linus", "email": "linus@example.com"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn select_with_order_by() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": users_rows() })))
+        .mount(&server)
+        .await;
+
+    let source = build_source(&base_http_manifest("http_order", &server.uri(), "", ""));
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            &TestRuntime,
+            "SELECT name FROM http_order.users ORDER BY name DESC",
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(
+        rows,
+        vec![
+            json!({"name": "Linus"}),
+            json!({"name": "Grace"}),
+            json!({"name": "Ada"})
+        ]
+    );
+}
+
+#[tokio::test]
+async fn select_with_limit() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": users_rows() })))
+        .mount(&server)
+        .await;
+
+    let source = build_source(&base_http_manifest("http_limit", &server.uri(), "", ""));
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            &TestRuntime,
+            "SELECT * FROM http_limit.users LIMIT 2",
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["id"], 1);
+    assert_eq!(rows[1]["id"], 2);
+}
+
+#[tokio::test]
+async fn select_with_where_filter_pushdown() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .and(query_param("id", "2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            json!({ "data": [json!({"id": 2, "name": "Grace", "email": "grace@example.com"})] }),
+        ))
+        .mount(&server)
+        .await;
+
+    let source = build_source(&base_http_manifest(
+        "http_filter",
+        &server.uri(),
+        r"    filters:
+      - name: id
+    request:
+      method: GET
+      path: /api/users
+      query:
+        - name: id
+          from: filter
+          key: id
+",
+        "",
+    ));
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            &TestRuntime,
+            "SELECT id, name FROM http_filter.users WHERE id = 2",
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(rows, vec![json!({"id": 2, "name": "Grace"})]);
+}
+
+#[tokio::test]
+async fn select_count_aggregation() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": users_rows() })))
+        .mount(&server)
+        .await;
+
+    let source = build_source(&base_http_manifest("http_count", &server.uri(), "", ""));
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            &TestRuntime,
+            "SELECT COUNT(*) AS n FROM http_count.users",
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(rows, vec![json!({"n": 3})]);
+}
+
+#[tokio::test]
+async fn pagination_page_mode() {
+    let server = MockServer::start().await;
+    let rows = users_rows();
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .and(query_param("page", "1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": &rows[..2] })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .and(query_param("page", "2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": &rows[2..] })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .and(query_param("page", "3"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": [] })))
+        .mount(&server)
+        .await;
+
+    let source = build_source(&base_http_manifest(
+        "http_page",
+        &server.uri(),
+        r"    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+",
+        "",
+    ));
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            &TestRuntime,
+            "SELECT id, name, email FROM http_page.users ORDER BY id",
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(rows, users_rows());
+}
+
+#[tokio::test]
+async fn pagination_offset_mode() {
+    let server = MockServer::start().await;
+    let rows = users_rows();
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .and(query_param("offset", "0"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": &rows[..2] })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .and(query_param("offset", "2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": &rows[2..] })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .and(query_param("offset", "4"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": [] })))
+        .mount(&server)
+        .await;
+
+    let source = build_source(&base_http_manifest(
+        "http_offset",
+        &server.uri(),
+        r"    pagination:
+      mode: offset
+      offset_param: offset
+      offset_step: 2
+",
+        "",
+    ));
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            &TestRuntime,
+            "SELECT id, name, email FROM http_offset.users ORDER BY id",
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(rows, users_rows());
+}
+
+#[tokio::test]
+async fn pagination_link_header() {
+    let server = MockServer::start().await;
+    let rows = users_rows();
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .and(query_param_is_missing("page"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .append_header("Link", "</api/users?page=2>; rel=\"next\"")
+                .set_body_json(json!({ "data": &rows[..2] })),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .and(query_param("page", "2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": &rows[2..] })))
+        .mount(&server)
+        .await;
+
+    let source = build_source(&base_http_manifest(
+        "http_link",
+        &server.uri(),
+        r"    pagination:
+      mode: link_header
+",
+        "",
+    ));
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            &TestRuntime,
+            "SELECT id, name, email FROM http_link.users ORDER BY id",
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(rows, users_rows());
+}
+
+#[tokio::test]
+async fn auth_headers_sent_correctly() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .and(header("authorization", "Bearer secret-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": users_rows() })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let source = build_source_with_secrets(
+        &base_http_manifest(
+            "http_auth",
+            &server.uri(),
+            "",
+            r"auth:
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{secret.API_TOKEN}}
+",
+        ),
+        [("API_TOKEN", "secret-token")],
+    );
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            &TestRuntime,
+            "SELECT COUNT(*) AS n FROM http_auth.users",
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(rows, vec![json!({"n": 3})]);
+}
+
+#[tokio::test]
+async fn api_returns_500() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
+        .expect(3)
+        .mount(&server)
+        .await;
+
+    let source = build_source(&base_http_manifest("http_500", &server.uri(), "", ""));
+
+    let error = CoralQuery::execute_sql(&[source], &TestRuntime, "SELECT * FROM http_500.users")
+        .await
+        .expect_err("500 should fail");
+
+    assert_eq!(error.status_code(), StatusCode::Unavailable);
+    match error {
+        CoreError::Unavailable(detail) => assert!(detail.contains("boom")),
+        other => panic!("unexpected 500 error variant: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn api_returns_401() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .respond_with(ResponseTemplate::new(401).set_body_string("unauthorized"))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let source = build_source(&base_http_manifest("http_401", &server.uri(), "", ""));
+
+    let error = CoralQuery::execute_sql(&[source], &TestRuntime, "SELECT * FROM http_401.users")
+        .await
+        .expect_err("401 should fail");
+
+    assert_eq!(error.status_code(), StatusCode::FailedPrecondition);
+    match error {
+        CoreError::FailedPrecondition(detail) => assert!(detail.contains("unauthorized")),
+        other => panic!("unexpected 401 error variant: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn api_returns_malformed_json() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("not-json"))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let source = build_source(&base_http_manifest("http_bad_json", &server.uri(), "", ""));
+
+    let error =
+        CoralQuery::execute_sql(&[source], &TestRuntime, "SELECT * FROM http_bad_json.users")
+            .await
+            .expect_err("malformed json should fail");
+
+    assert_eq!(error.status_code(), StatusCode::Internal);
+    match error {
+        CoreError::Internal(detail) => assert!(detail.contains("response decoding failed")),
+        other => panic!("unexpected malformed-json error variant: {other:?}"),
+    }
+}
