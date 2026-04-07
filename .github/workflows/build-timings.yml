@@ -1,0 +1,79 @@
+name: Build Timings
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 6 * * *'
+
+permissions:
+  actions: write
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-timings:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        run: rustup show
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2.9.1
+        with:
+          shared-key: coral-build-${{ runner.os }}
+          cache-on-failure: true
+          save-if: true
+
+      - name: Build with timings
+        run: |
+          cargo build --bin coral --timings 2>&1 | tee build-output.txt
+          echo ""
+          echo "=== Cache effectiveness ==="
+          compiled=$(grep -c "^   Compiling" build-output.txt || true)
+          echo "Crates compiled: $compiled"
+          if [ "$compiled" -eq 0 ]; then
+            echo "Full cache hit — no crates recompiled"
+          else
+            echo "Partial or cold cache — $compiled crates recompiled"
+            echo ""
+            echo "Top recompiled crates:"
+            grep "^   Compiling" build-output.txt || true
+          fi
+
+      - name: Upload timings HTML report
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: cargo-timings-${{ github.sha }}
+          path: target/cargo-timings/cargo-timing.html
+          retention-days: 30
+
+      - name: Upload build output
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: build-output-${{ github.sha }}
+          path: build-output.txt
+          retention-days: 30
+
+      - name: Check cache quota usage
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          usage=$(gh api "repos/$GITHUB_REPOSITORY/actions/cache/usage" \
+            --jq '.active_caches_size_in_bytes')
+          limit=$((10 * 1024 * 1024 * 1024))  # 10 GiB
+          pct=$((usage * 100 / limit))
+          usage_mb=$((usage / 1024 / 1024))
+          echo "Cache usage: ${usage_mb} MiB / 10240 MiB (${pct}%)"
+          if [ "$pct" -ge 80 ]; then
+            echo "::error::Cache usage is at ${pct}% (${usage_mb} MiB / 10 GiB)"
+            exit 1
+          fi

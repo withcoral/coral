@@ -14,7 +14,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 
 /// Query and manage local data sources
 #[derive(Debug, Parser)]
-#[command(name = "coral", version)]
+#[command(name = "coral", version, arg_required_else_help = true)]
 pub struct Cli {
     /// Subcommand to run
     #[command(subcommand)]
@@ -34,6 +34,16 @@ Examples:
 
     /// Manage bundled and imported sources in the local workspace
     Source(SourceArgs),
+
+    /// Run the guided source setup flow
+    #[command(after_long_help = "\
+This interactive command helps you:
+
+- add a bundled source
+- import a custom source manifest
+- validate an installed source
+- see the next recommended commands after setup")]
+    Onboard,
 
     /// Expose the local Coral runtime as an MCP stdio server
     #[command(after_long_help = "\
