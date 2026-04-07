@@ -5,13 +5,6 @@ on:
     paths: [Cargo.toml]
   workflow_dispatch:
     inputs:
-      release_type:
-        description: "Release mode"
-        required: true
-        type: choice
-        options:
-          - version
-          - trunk
       target_ref:
         description: "Optional commit SHA or ref from main history to release"
         required: false
@@ -24,12 +17,9 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       should_release: ${{ steps.meta.outputs.should_release }}
-      release_type: ${{ steps.meta.outputs.release_type }}
       build_ref: ${{ steps.meta.outputs.build_ref }}
       tag_name: ${{ steps.meta.outputs.tag_name }}
       release_name: ${{ steps.meta.outputs.release_name }}
-      release_body: ${{ steps.meta.outputs.release_body }}
-      prerelease: ${{ steps.meta.outputs.prerelease }}
       artifact_prefix: ${{ steps.meta.outputs.artifact_prefix }}
     steps:
       - uses: actions/checkout@v6
@@ -77,7 +67,6 @@ jobs:
             exit 1
           fi
 
-          # Determine release type
           if [ "${{ github.event_name }}" = "push" ]; then
             parent_version="$(git show "${resolved_sha}^:Cargo.toml" | read_version)" || true
             if [ "$current_version" = "$parent_version" ]; then
@@ -85,60 +74,39 @@ jobs:
               echo "should_release=false" >> "$GITHUB_OUTPUT"
               exit 0
             fi
-            echo "Version changed: $parent_version → $current_version"
-            release_type="version"
-          else
-            release_type="${{ inputs.release_type }}"
+            echo "Version changed: $parent_version -> $current_version"
           fi
 
           echo "should_release=true" >> "$GITHUB_OUTPUT"
-          echo "release_type=${release_type}" >> "$GITHUB_OUTPUT"
 
-          if [ "$release_type" = "version" ]; then
-            version="v${current_version}"
-            if ! [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.]+)?$ ]]; then
-              echo "::error::version must look like v0.2.0, got $version"
+          version="v${current_version}"
+          if ! [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::version must look like v0.2.0, got $version"
+            exit 1
+          fi
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            if git rev-parse -q --verify "refs/tags/${version}" >/dev/null; then
+              echo "::error::Tag ${version} already exists."
               exit 1
             fi
 
-            if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-              if git rev-parse -q --verify "refs/tags/${version}" >/dev/null; then
-                echo "::error::Tag ${version} already exists."
+            latest_tag="$(git tag --list 'v*' --sort=-version:refname | head -n1 || true)"
+            if [ -n "$latest_tag" ]; then
+              highest_version="$(printf '%s\n%s\n' "$latest_tag" "$version" | sort -V | tail -n1)"
+              if [ "$highest_version" != "$version" ] || [ "$latest_tag" = "$version" ]; then
+                echo "::error::Version ${version} is not newer than latest tag ${latest_tag}."
                 exit 1
               fi
-
-              latest_tag="$(git tag --list 'v*' --sort=-version:refname | head -n1 || true)"
-              if [ -n "$latest_tag" ]; then
-                highest_version="$(printf '%s\n%s\n' "$latest_tag" "$version" | sort -V | tail -n1)"
-                if [ "$highest_version" != "$version" ] || [ "$latest_tag" = "$version" ]; then
-                  echo "::error::Version ${version} is not newer than latest tag ${latest_tag}."
-                  exit 1
-                fi
-              fi
             fi
-
-            {
-              echo "build_ref=${resolved_sha}"
-              echo "tag_name=$version"
-              echo "release_name=$version"
-              echo "prerelease=false"
-              echo "artifact_prefix=coral"
-              echo "release_body=Automated release for $version"
-            } >> "$GITHUB_OUTPUT"
-          else
-            {
-              echo "build_ref=${resolved_sha}"
-              echo "tag_name=trunk"
-              echo "release_name=Trunk (manual main build)"
-              echo "prerelease=true"
-              echo "artifact_prefix=coral-main"
-              echo "release_body<<EOF"
-              echo "Rolling binaries from main."
-              echo "Commit: ${resolved_sha}"
-              echo "Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-              echo "EOF"
-            } >> "$GITHUB_OUTPUT"
           fi
+
+          {
+            echo "build_ref=${resolved_sha}"
+            echo "tag_name=$version"
+            echo "release_name=$version"
+            echo "artifact_prefix=coral"
+          } >> "$GITHUB_OUTPUT"
 
   smoke-test:
     needs: prepare
@@ -210,6 +178,7 @@ jobs:
           path: ${{ needs.prepare.outputs.artifact_prefix }}-${{ matrix.target }}.tar.gz
   checksums:
     needs: [prepare, build, smoke-test]
+    if: needs.prepare.outputs.should_release == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Download artifacts
@@ -229,6 +198,7 @@ jobs:
           path: artifacts/checksums.sha256
   release-notes:
     needs: [prepare]
+    if: needs.prepare.outputs.should_release == 'true'
     runs-on: ubuntu-latest
     outputs:
       release_body: ${{ steps.compose.outputs.release_body }}
@@ -237,33 +207,24 @@ jobs:
         id: compose
         uses: actions/github-script@v7
         env:
-          RELEASE_TYPE: ${{ needs.prepare.outputs.release_type }}
-          BASE_RELEASE_BODY: ${{ needs.prepare.outputs.release_body }}
           TAG_NAME: ${{ needs.prepare.outputs.tag_name }}
           BUILD_REF: ${{ needs.prepare.outputs.build_ref }}
         with:
           script: |
-            const releaseType = process.env.RELEASE_TYPE;
-            const baseBody = (process.env.BASE_RELEASE_BODY || "").trim();
+            const response = await github.rest.repos.generateReleaseNotes({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: process.env.TAG_NAME,
+              // Keep release notes anchored to the resolved build commit.
+              // This matters for workflow_dispatch runs that release an older
+              // commit from main via target_ref.
+              target_commitish: process.env.BUILD_REF,
+            });
 
-            let releaseBody = baseBody;
-            if (releaseType === "version") {
-              const response = await github.rest.repos.generateReleaseNotes({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                tag_name: process.env.TAG_NAME,
-                // Keep release notes anchored to the resolved build commit.
-                // This matters for workflow_dispatch runs that release an older
-                // commit from main via target_ref.
-                target_commitish: process.env.BUILD_REF,
-              });
-              releaseBody = response.data.body.trim();
-            }
-
-            core.setOutput("release_body", releaseBody);
+            core.setOutput("release_body", response.data.body.trim());
   publish-version:
-    if: needs.prepare.outputs.release_type == 'version'
     needs: [prepare, checksums, release-notes]
+    if: needs.prepare.outputs.should_release == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Download artifacts
@@ -291,29 +252,6 @@ jobs:
           token: ${{ steps.github-app-token.outputs.token }}
           name: ${{ needs.prepare.outputs.release_name }}
           body: ${{ needs.release-notes.outputs.release_body }}
-          files: |
-            artifacts/${{ needs.prepare.outputs.artifact_prefix }}-*.tar.gz
-            artifacts/checksums.sha256
-
-  publish-trunk:
-    if: needs.prepare.outputs.release_type == 'trunk'
-    needs: [prepare, checksums, release-notes]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@v8
-        with:
-          pattern: ${{ needs.prepare.outputs.artifact_prefix }}-*
-          path: artifacts
-          merge-multiple: true
-      - name: Create or update rolling trunk release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ needs.prepare.outputs.tag_name }}
-          name: ${{ needs.prepare.outputs.release_name }}
-          prerelease: true
-          body: ${{ needs.release-notes.outputs.release_body }}
-          overwrite_files: true
           files: |
             artifacts/${{ needs.prepare.outputs.artifact_prefix }}-*.tar.gz
             artifacts/checksums.sha256
