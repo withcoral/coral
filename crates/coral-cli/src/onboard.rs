@@ -1,5 +1,7 @@
 use coral_api::v1::{AvailableSource, ExecuteSqlRequest, Source};
-use coral_client::{AppClient, decode_execute_sql_response, default_workspace, format_batches_table};
+use coral_client::{
+    AppClient, decode_execute_sql_response, default_workspace, format_batches_table,
+};
 use dialoguer::console::{measure_text_width, style};
 use dialoguer::{Confirm, Select, theme::ColorfulTheme};
 use tonic::Request;
@@ -44,10 +46,7 @@ pub(crate) async fn run(app: &AppClient) -> Result<(), anyhow::Error> {
         let bundled_sources = source_ops::discover_sources(app).await?;
 
         println!();
-        println!(
-            "{}",
-            style("To start, connect at least one source:").bold()
-        );
+        println!("{}", style("To start, connect at least one source:").bold());
         println!();
 
         match select_top_level(&theme, &bundled_sources)? {
@@ -63,12 +62,10 @@ pub(crate) async fn run(app: &AppClient) -> Result<(), anyhow::Error> {
                     }
                 }
             }
-            TopLevelChoice::Finish => {
-                match run_next_steps(app, &theme).await? {
-                    NextStepChoice::AddMoreSources => {}
-                    NextStepChoice::Exit => return Ok(()),
-                }
-            }
+            TopLevelChoice::Finish => match run_next_steps(app, &theme).await? {
+                NextStepChoice::AddMoreSources => {}
+                NextStepChoice::Exit => return Ok(()),
+            },
             TopLevelChoice::Exit => return Ok(()),
         }
     }
