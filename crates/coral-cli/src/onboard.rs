@@ -73,7 +73,7 @@ fn select_top_level(
     let first_uninstalled = bundled_sources
         .iter()
         .position(|s| !s.installed)
-        .unwrap_or(0);
+        .unwrap_or(bundled_sources.len());
 
     let selection = Select::with_theme(theme)
         .with_prompt("Choose a source")
