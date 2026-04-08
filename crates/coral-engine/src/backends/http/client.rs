@@ -305,13 +305,13 @@ impl HttpSourceClient {
                     }
                 }
                 ValidatedPaginationMode::Page => {
-                    if rows_on_page == 0 {
+                    if page_is_exhausted(rows_on_page, page_size) {
                         break;
                     }
                     state.page = state.page.saturating_add(table.pagination.page_step);
                 }
                 ValidatedPaginationMode::Offset(offset) => {
-                    if rows_on_page == 0 {
+                    if page_is_exhausted(rows_on_page, page_size) {
                         break;
                     }
                     let step = offset
@@ -650,6 +650,10 @@ fn resolve_page_size(spec: Option<&PageSizeSpec>, sql_limit: Option<usize>) -> O
     let spec = spec?;
     let base = sql_limit.unwrap_or(spec.default);
     Some(base.min(spec.max).max(1))
+}
+
+fn page_is_exhausted(rows_on_page: usize, page_size: Option<usize>) -> bool {
+    rows_on_page == 0 || page_size.is_some_and(|requested| rows_on_page < requested)
 }
 
 fn resolve_value_source(
@@ -1007,7 +1011,7 @@ mod tests {
 
     use super::{
         HttpSourceClient, PageState, apply_pagination_query_pairs, extract_next_link_url,
-        extract_rows, join_url, normalize_base_url, resolve_value_source,
+        extract_rows, join_url, normalize_base_url, page_is_exhausted, resolve_value_source,
     };
     use coral_spec::PaginationMode;
     use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec};
@@ -1269,6 +1273,15 @@ mod tests {
             pagination.mode,
             ValidatedPaginationMode::Offset(_)
         ));
+    }
+
+    #[test]
+    fn page_is_exhausted_handles_empty_short_and_full_pages() {
+        for (rows_on_page, page_size, expected) in
+            [(0, Some(50), true), (24, Some(25), true), (24, None, false)]
+        {
+            assert_eq!(page_is_exhausted(rows_on_page, page_size), expected);
+        }
     }
 
     fn make_table_with_row_strategy(
