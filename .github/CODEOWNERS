@@ -2,6 +2,7 @@ AGENTS.md @jsummerfield
 Cargo.toml @jsummerfield
 README.md @jsummerfield
 
+/docs/ @simonwhitaker @AlbertQM
 /crates/coral-api/ @jsummerfield
 /crates/coral-app/ @jsummerfield
 /crates/coral-cli/ @jsummerfield

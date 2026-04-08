@@ -1,0 +1,80 @@
+---
+title: "Agent usage"
+description: "Use Coral from MCP-capable coding agents and install the Coral skill with `npx skills add`."
+---
+
+Coral is built for agent workflows. Once you have Coral installed and at least one source configured locally, you can use it from coding agents in two complementary ways:
+
+- configure an MCP client to launch Coral with `coral mcp-stdio`
+- install the Coral skill with `npx skills add ...`
+
+## Prerequisites
+
+Before setting up an agent:
+
+- install Coral and verify `coral --help` works
+- configure at least one source locally with `coral onboard` or the lower-level `coral source ...` commands
+- validate source setup with `coral source test <NAME>` if something looks wrong
+
+## Option 1: Use Coral over MCP
+
+Coral ships an MCP stdio server. Configure your MCP client to launch:
+
+```shellscript
+coral mcp-stdio
+```
+
+That gives an MCP-capable client direct access to Coral's SQL and schema discovery surface. Treat this as client configuration, not a standalone interactive shell command.
+
+Use the detailed MCP guide for client-specific configuration examples:
+
+[Use Coral over MCP](/guides/use-coral-over-mcp)
+
+## Option 2: Install the Coral skill
+
+Coral also ships a reusable skill for agent workflows:
+
+```shellscript
+npx skills add withcoral/skills
+```
+
+The skill helps an agent use the Coral CLI effectively for:
+
+- first-time setup with `coral onboard`
+- source inspection with `coral source list`
+- schema discovery with `coral.tables` and `coral.columns`
+- source validation with `coral source test <NAME>`
+- SQL execution with `coral sql`
+
+Use the skill when you want the agent to follow Coral-specific CLI workflows even when it is not calling Coral directly through MCP.
+
+## Which option should you use?
+
+- Use **MCP** when you want the agent to call Coral directly as a tool and resource surface.
+- Use the **skill** when you want the agent to follow Coral-specific CLI workflows and best practices.
+- You can use both together: the skill can guide the workflow, and MCP can provide the direct runtime surface.
+
+## Verify the setup
+
+After configuring MCP or installing the skill, ask the agent to:
+
+- list the tables available in Coral
+- run a simple query against `coral.tables`
+- validate a source if there is any setup uncertainty
+
+Examples:
+
+> "List the tables available in Coral."
+
+> "Run a small Coral query against `coral.tables`."
+
+## Troubleshooting
+
+- **`coral` not found:** Make sure Coral is on your `PATH`, or use the full path from `which coral` in your MCP client config.
+- **No sources visible:** Run `coral source list`. If empty, run `coral onboard`.
+- **Source setup seems wrong:** Run `coral source test <NAME>` before changing SQL or MCP config.
+- **Agent is guessing schemas:** Start from `coral.tables` and `coral.columns` instead of assuming source-owned table names.
+
+<Tip>
+  Coral is local-first. Set up sources once in your local workspace, then reuse the same runtime from the CLI, MCP clients, and agent skills.
+</Tip>

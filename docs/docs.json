@@ -19,8 +19,8 @@
     "strict": true
   },
   "colors": {
-    "primary": "#B2EAA5",
-    "dark": "#B2EAA5",
+    "primary": "#398125",
+    "dark": "#398125",
     "light": "#B2EAA5"
   },
   "fonts": {
@@ -54,6 +54,11 @@
         "icon": "rocket"
       },
       {
+        "label": "Agent Usage",
+        "href": "/guides/agent-usage",
+        "icon": "bot"
+      },
+      {
         "label": "Install Coral",
         "href": "/getting-started/installation",
         "icon": "download"
@@ -81,6 +86,7 @@
       {
         "group": "Guides",
         "pages": [
+          "guides/agent-usage",
           "guides/manage-sources",
           "guides/write-a-custom-source",
           "guides/advanced-cli-queries",
