@@ -175,6 +175,8 @@ jobs:
             artifacts/${{ needs.prepare.outputs.artifact_prefix }}-*.tar.gz
             artifacts/checksums.sha256
 
+      # Dispatch the tap workflow after publishing the release:
+      # https://octokit.github.io/rest.js/v22/#repos-create-dispatch-event
       - name: Trigger Homebrew tap bump
         uses: actions/github-script@v8
         env:
