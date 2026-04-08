@@ -7,9 +7,7 @@ use datafusion::error::{DataFusionError, Result};
 use datafusion::prelude::SessionContext;
 
 use crate::backends::{BackendRegistration, CompiledBackendSource, RegisteredSource};
-use crate::needles::error::NeedleError;
-use crate::needles::loader::{self, NeedleGroups};
-use crate::needles::provider::{NeedleTableProvider, build_needle_batches};
+use crate::needles::NeedleState;
 use crate::runtime::schema_provider::StaticSchemaProvider;
 
 const RESERVED_SCHEMA_NAMES: &[&str] = &["coral", "coral_admin"];
@@ -54,7 +52,7 @@ pub(crate) async fn register_sources(
         .catalog("datafusion")
         .ok_or_else(|| DataFusionError::Plan("catalog 'datafusion' not found".to_string()))?;
 
-    let mut needle_groups = load_needle_groups(needles_file)?;
+    let mut needles = NeedleState::from_path(needles_file)?;
 
     let mut result = SourceRegistrationResult::default();
     let mut seen_schemas = std::collections::HashSet::new();
@@ -62,28 +60,23 @@ pub(crate) async fn register_sources(
     for source in sources {
         let schema_name = source.schema_name().to_string();
         let source_name = source.source_name().to_string();
-        let targeted_tables = needle_groups.table_names_for_schema(source.schema_name());
 
         match register_source(ctx, &mut seen_schemas, source.as_ref()).await {
             Ok(registration) => {
-                let tables = wrap_tables_with_needles(
-                    registration.tables,
-                    source.schema_name(),
-                    &mut needle_groups,
-                )?;
+                let BackendRegistration {
+                    tables,
+                    source: registered_source,
+                } = needles.decorate(source.schema_name(), registration)?;
                 match catalog.register_schema(
                     source.schema_name(),
                     Arc::new(StaticSchemaProvider::new(tables)),
                 ) {
-                    Ok(_) => result.active_sources.push(registration.source),
+                    Ok(_) => result.active_sources.push(registered_source),
                     Err(error) => {
-                        if !targeted_tables.is_empty() {
-                            return Err(NeedleError::SourceRegistrationFailed {
-                                schema: schema_name,
-                                tables: targeted_tables.join(", "),
-                                detail: error.to_string(),
-                            }
-                            .into());
+                        if let Some(error) =
+                            needles.source_registration_error(source.schema_name(), &error)
+                        {
+                            return Err(error);
                         }
                         tracing::warn!(source = %source_name, error = %error, "skipping source");
                         result.failures.push(SourceRegistrationFailure {
@@ -94,13 +87,9 @@ pub(crate) async fn register_sources(
                 }
             }
             Err(error) => {
-                if !targeted_tables.is_empty() {
-                    return Err(NeedleError::SourceRegistrationFailed {
-                        schema: schema_name,
-                        tables: targeted_tables.join(", "),
-                        detail: error.to_string(),
-                    }
-                    .into());
+                if let Some(error) = needles.source_registration_error(source.schema_name(), &error)
+                {
+                    return Err(error);
                 }
                 tracing::warn!(source = %source_name, error = %error, "skipping source");
                 result.failures.push(SourceRegistrationFailure {
@@ -111,16 +100,9 @@ pub(crate) async fn register_sources(
         }
     }
 
-    needle_groups.ensure_all_consumed()?;
+    needles.finish()?;
 
     Ok(result)
-}
-
-fn load_needle_groups(path: Option<&Path>) -> Result<NeedleGroups> {
-    match path {
-        Some(path) => loader::load_needle_groups(path).map_err(Into::into),
-        None => Ok(NeedleGroups::default()),
-    }
 }
 
 #[cfg(test)]
@@ -146,37 +128,6 @@ async fn register_source(
     }
 
     source.register(ctx).await
-}
-
-/// Wraps each table provider with [`NeedleTableProvider`] if there are matching
-/// needle entries. Tables without needles are returned unchanged.
-///
-/// Returns an error if any matching needle group fails to convert to Arrow
-/// batches — a silent skip would cause benchmark results to be silently wrong.
-fn wrap_tables_with_needles(
-    mut tables: std::collections::HashMap<String, Arc<dyn datafusion::datasource::TableProvider>>,
-    schema_name: &str,
-    needle_groups: &mut NeedleGroups,
-) -> Result<std::collections::HashMap<String, Arc<dyn datafusion::datasource::TableProvider>>> {
-    if needle_groups.is_empty() {
-        return Ok(tables);
-    }
-
-    for (name, provider) in &mut tables {
-        let Some(rows) = needle_groups.take(schema_name, name) else {
-            continue;
-        };
-        let batches = build_needle_batches(&rows, &provider.schema()).map_err(|error| {
-            DataFusionError::Plan(format!(
-                "failed to build needle batches for {schema_name}.{name}: {error}"
-            ))
-        })?;
-        if !batches.is_empty() {
-            *provider = Arc::new(NeedleTableProvider::new(Arc::clone(provider), batches));
-        }
-    }
-
-    Ok(tables)
 }
 
 #[cfg(test)]
@@ -291,14 +242,14 @@ mod tests {
             r#"
 - schema: test_jsonl
   table: events
-  role: goal
+
   data:
     id: "needle-1"
     text: "matching needle row"
     score: 99
 - schema: test_jsonl
   table: events
-  role: distractor
+
   data:
     id: "needle-2"
     text: "filtered needle row"
@@ -358,7 +309,7 @@ mod tests {
             r#"
 - schema: test_jsonl
   table: events
-  role: goal
+
   data:
     id: "needle-1"
     text: "missing required score"
@@ -397,7 +348,7 @@ mod tests {
             r#"
 - schema: test_jsonl
   table: missing_table
-  role: goal
+
   data:
     id: "needle-1"
     text: "orphan needle row"
@@ -428,7 +379,7 @@ mod tests {
             r#"
 - schema: test_jsonl
   table: events
-  role: goal
+
   data:
     id: "needle-1"
     text: "blocked by source registration failure"

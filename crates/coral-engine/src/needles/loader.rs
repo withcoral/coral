@@ -10,14 +10,6 @@ use super::error::NeedleError;
 struct NeedleEntry {
     schema: String,
     table: String,
-    /// Part of the benchmark harness YAML schema. The harness uses this to
-    /// distinguish needle roles (e.g., "goal" vs "distractor") but the engine
-    /// does not act on it.
-    #[allow(
-        dead_code,
-        reason = "Accepted from the harness YAML schema for validation; not consumed by the engine."
-    )]
-    role: Option<String>,
     data: serde_json::Map<String, serde_json::Value>,
 }
 
@@ -202,27 +194,6 @@ mod tests {
         .unwrap();
         let result = load_needle_groups(&path);
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn role_field_is_accepted_and_ignored() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let path = dir.path().join("needles.yaml");
-        std::fs::write(
-            &path,
-            r#"
-- schema: linear
-  table: issues
-  role: goal
-  data:
-    id: "needle-1"
-    title: "root cause"
-"#,
-        )
-        .unwrap();
-
-        let groups = load_needle_groups(&path).unwrap();
-        assert_eq!(groups.get("linear", "issues").unwrap().len(), 1);
     }
 
     #[test]
