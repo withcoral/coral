@@ -53,7 +53,11 @@ async fn select_all_from_jsonl_source() {
 async fn select_with_column_projection() {
     let temp = TempDir::new().expect("temp dir");
     write_jsonl_file(temp.path(), "users.jsonl", &users_rows());
-    let source = build_source(jsonl_manifest("jsonl_projection", temp.path(), "**/*.jsonl"));
+    let source = build_source(jsonl_manifest(
+        "jsonl_projection",
+        temp.path(),
+        "**/*.jsonl",
+    ));
 
     let rows = execution_to_rows(
         &CoralQuery::execute_sql(
