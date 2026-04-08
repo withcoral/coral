@@ -249,12 +249,12 @@ async fn show_next_steps_screen(
     println!(
         "  {} {}",
         style("•").dim(),
-        style("Set up MCP for your agent       docs.withcoral.com/guides/use-coral-over-mcp").dim()
+        style("Set up MCP for your agent       withcoral.com/docs/guides/use-coral-over-mcp").dim()
     );
     println!();
     println!(
         "{}",
-        style("Learn more about Coral at docs.withcoral.com").dim()
+        style("Learn more about Coral at withcoral.com/docs").dim()
     );
 
     // --- Interactive menu ---
@@ -296,7 +296,7 @@ async fn show_next_steps_screen(
             }
             Some(NextStepAction::AddMoreSources) => return Ok(NextStepChoice::AddMoreSources),
             Some(NextStepAction::OpenDocs) => {
-                open_url("https://docs.withcoral.com");
+                open_url("https://withcoral.com/docs");
             }
             Some(NextStepAction::Exit) | None => return Ok(NextStepChoice::Exit),
         }
