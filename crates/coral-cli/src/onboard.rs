@@ -1,7 +1,10 @@
-use coral_api::v1::{AvailableSource, Source};
-use coral_client::AppClient;
+use coral_api::v1::{AvailableSource, ExecuteSqlRequest, Source};
+use coral_client::{
+    AppClient, decode_execute_sql_response, default_workspace, format_batches_table,
+};
 use dialoguer::console::{measure_text_width, style};
 use dialoguer::{Confirm, Select, theme::ColorfulTheme};
+use tonic::Request;
 
 use crate::source_ops;
 
@@ -10,6 +13,20 @@ const SOURCE_DESCRIPTION_PREVIEW_LIMIT: usize = 88;
 enum TopLevelChoice {
     BundledSource(usize),
     Finish,
+    Exit,
+}
+
+enum NextStepChoice {
+    AddMoreSources,
+    Exit,
+}
+
+#[derive(Clone, Copy)]
+enum NextStepAction {
+    RunExampleQuery,
+    AddMoreSources,
+    OpenDocs,
+    Exit,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,14 +43,10 @@ pub(crate) async fn run(app: &AppClient) -> Result<(), anyhow::Error> {
     crate::branding::print_welcome_header();
 
     loop {
-        let installed_sources = source_ops::list_sources(app).await?;
         let bundled_sources = source_ops::discover_sources(app).await?;
 
         println!();
-        println!(
-            "{}",
-            style("To start, we recommend connecting as many sources as possible:").bold()
-        );
+        println!("{}", style("To start, connect at least one source:").bold());
         println!();
 
         match select_top_level(&theme, &bundled_sources)? {
@@ -43,12 +56,17 @@ pub(crate) async fn run(app: &AppClient) -> Result<(), anyhow::Error> {
                     run_installed_source_menu(app, &theme, source).await?;
                 } else {
                     run_add_bundled_source(app, &theme, source).await?;
+                    match run_next_steps(app, &theme).await? {
+                        NextStepChoice::AddMoreSources => {}
+                        NextStepChoice::Exit => return Ok(()),
+                    }
                 }
             }
-            TopLevelChoice::Finish => {
-                print_next_steps(&installed_sources);
-                return Ok(());
-            }
+            TopLevelChoice::Finish => match run_next_steps(app, &theme).await? {
+                NextStepChoice::AddMoreSources => {}
+                NextStepChoice::Exit => return Ok(()),
+            },
+            TopLevelChoice::Exit => return Ok(()),
         }
     }
 }
@@ -68,7 +86,7 @@ fn select_top_level(
         .map(|source| format_source_list_item(source, name_width))
         .collect();
 
-    labels.push("Finish onboarding".to_string());
+    labels.push("I have connected enough sources".to_string());
 
     let first_uninstalled = bundled_sources
         .iter()
@@ -84,7 +102,7 @@ fn select_top_level(
     match selection {
         Some(idx) if idx < bundled_sources.len() => Ok(TopLevelChoice::BundledSource(idx)),
         Some(idx) if idx == bundled_sources.len() => Ok(TopLevelChoice::Finish),
-        _ => Ok(TopLevelChoice::Finish),
+        _ => Ok(TopLevelChoice::Exit),
     }
 }
 
@@ -174,16 +192,143 @@ async fn maybe_validate_after_install(
     Ok(())
 }
 
-fn print_next_steps(installed_sources: &[Source]) {
+async fn run_next_steps(
+    app: &AppClient,
+    theme: &ColorfulTheme,
+) -> Result<NextStepChoice, anyhow::Error> {
+    let installed_sources = source_ops::list_sources(app).await?;
+    show_next_steps_screen(app, theme, &installed_sources).await
+}
+
+async fn show_next_steps_screen(
+    app: &AppClient,
+    theme: &ColorfulTheme,
+    installed_sources: &[Source],
+) -> Result<NextStepChoice, anyhow::Error> {
+    // --- Static summary ---
     println!();
-    println!("Next steps:");
     if installed_sources.is_empty() {
-        println!("  coral source discover");
-        println!("  coral source list");
+        println!(
+            "No sources connected yet — you can add them anytime with {}.",
+            style("coral source add").bold()
+        );
     } else {
-        println!("  coral source list");
-        println!("  coral sql \"SELECT schema_name, table_name FROM coral.tables ORDER BY 1, 2\"");
-        println!("  npx skills add withcoral/skills");
+        let n = installed_sources.len();
+        println!(
+            "{}",
+            style(format!(
+                "You've connected {} {}.",
+                n,
+                if n == 1 { "source" } else { "sources" }
+            ))
+            .bold()
+        );
+        println!();
+        for s in installed_sources {
+            println!("  {} {}", style("✓").green(), s.name);
+        }
+    }
+
+    println!();
+    println!("{}", style("What's next:").bold());
+    if !installed_sources.is_empty() {
+        println!(
+            "  {} {}",
+            style("•").dim(),
+            style("coral sql \"SELECT ...\"            Run a one-off query").dim()
+        );
+    }
+    println!(
+        "  {} {}",
+        style("•").dim(),
+        style("npx skills add withcoral/skills     Add Coral skills to your agent").dim()
+    );
+    println!(
+        "  {} {}",
+        style("•").dim(),
+        style("Set up MCP for your agent       withcoral.com/docs/guides/use-coral-over-mcp").dim()
+    );
+    println!();
+    println!(
+        "{}",
+        style("Learn more about Coral at withcoral.com/docs").dim()
+    );
+
+    // --- Interactive menu ---
+    let has_sources = !installed_sources.is_empty();
+
+    loop {
+        println!();
+        let mut items: Vec<(&str, NextStepAction)> = Vec::new();
+        if has_sources {
+            items.push(("Run an example query", NextStepAction::RunExampleQuery));
+        }
+        items.push(("Add more sources", NextStepAction::AddMoreSources));
+        items.push(("Open docs in browser", NextStepAction::OpenDocs));
+        items.push(("Exit", NextStepAction::Exit));
+
+        let labels: Vec<&str> = items.iter().map(|(label, _)| *label).collect();
+
+        let selection = Select::with_theme(theme)
+            .with_prompt("What would you like to do?")
+            .items(&labels)
+            .default(0)
+            .interact_opt()?;
+
+        let action = selection.map(|i| items[i].1);
+        match action {
+            Some(NextStepAction::RunExampleQuery) => {
+                let sql = "SELECT schema_name, COUNT(*) AS table_count FROM coral.tables GROUP BY schema_name ORDER BY 1";
+                match run_first_query(app, sql).await {
+                    Ok(output) => {
+                        println!();
+                        println!("{}", style(sql).dim());
+                        println!("{output}");
+                    }
+                    Err(err) => {
+                        println!();
+                        println!("{}", style(format!("Could not run query: {err}")).red());
+                    }
+                }
+            }
+            Some(NextStepAction::AddMoreSources) => return Ok(NextStepChoice::AddMoreSources),
+            Some(NextStepAction::OpenDocs) => {
+                open_url("https://withcoral.com/docs");
+            }
+            Some(NextStepAction::Exit) | None => return Ok(NextStepChoice::Exit),
+        }
+    }
+}
+
+async fn run_first_query(app: &AppClient, sql: &str) -> Result<String, anyhow::Error> {
+    let response = app
+        .query_client()
+        .execute_sql(Request::new(ExecuteSqlRequest {
+            workspace: Some(default_workspace()),
+            sql: sql.to_string(),
+        }))
+        .await?
+        .into_inner();
+    let result = decode_execute_sql_response(&response)?;
+    Ok(format_batches_table(result.batches())?)
+}
+
+fn open_url(url: &str) {
+    let result = if cfg!(target_os = "macos") {
+        std::process::Command::new("open").arg(url).status()
+    } else if cfg!(target_os = "linux") {
+        std::process::Command::new("xdg-open").arg(url).status()
+    } else if cfg!(target_os = "windows") {
+        std::process::Command::new("cmd")
+            .args(["/c", "start", url])
+            .status()
+    } else {
+        return;
+    };
+    match result {
+        Ok(status) if status.success() => {}
+        Ok(status) => println!("{}", style(format!("Browser exited with {status}")).dim()),
+        Err(err) => println!("{}", style(format!("Could not open browser: {err}")).dim()),
     }
 }
 
