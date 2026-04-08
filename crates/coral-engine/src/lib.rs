@@ -57,6 +57,13 @@
 //! # Ok(())
 //! # }
 //! ```
+#![cfg_attr(
+    test,
+    allow(
+        unused_crate_dependencies,
+        reason = "wiremock is only used by the integration test target in this crate's dev-dependencies."
+    )
+)]
 
 mod backends;
 pub mod contracts;
