@@ -3,103 +3,193 @@ title: "CLI reference"
 description: "Reference for the current Coral CLI commands and options."
 ---
 
-Coral is currently a CLI-first product. The main command surface is:
+This reference is generated from the current clap command tree.
 
-```shellscript
-coral <COMMAND>
+```text
+Query and manage local data sources
+
+Usage: coral <COMMAND>
+
+Commands:
+  sql        Execute a SQL query
+  source     Manage bundled and imported sources in the local workspace
+  onboard    Run the guided source setup flow
+  mcp-stdio  Expose the local Coral runtime as an MCP stdio server
+  help       Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help
+          Print help
+
+  -V, --version
+          Print version
 ```
 
-Top-level commands:
-
-- `sql`
-- `source`
-- `onboard`
-- `mcp-stdio`
 
 ## `coral sql`
 
-Run one SQL query and exit.
+```text
+Execute a SQL query
 
-```shellscript
-coral sql [--format table|json] "<SQL>"
-```
+Usage: coral sql [OPTIONS] <SQL>
 
-### Options
+Arguments:
+  <SQL>
+          SQL query to execute
 
-| Option | Type | Default | Description |
-| --- | --- | --- | --- |
-| `--format` | `table` \| `json` | `table` | Output format |
+Options:
+      --format <FORMAT>
+          Output format for query results
 
-### Examples
+          Possible values:
+          - table: ASCII table
+          - json:  JSON
+          
+          [default: table]
 
-```shellscript
-coral sql "SELECT * FROM coral.tables LIMIT 10"
-coral sql --format json "SELECT * FROM coral.tables LIMIT 10"
-coral sql --format table "SELECT * FROM slack.messages LIMIT 10"
+  -h, --help
+          Print help (see a summary with '-h')
+
+Examples:
+  coral sql "SELECT * FROM coral.tables LIMIT 10"
+  coral sql --format json "SELECT * FROM coral.tables LIMIT 10"
+  coral sql --format table "SELECT * FROM slack.messages LIMIT 10"
 ```
 
 ## `coral source`
 
-Manage bundled and imported sources in the local workspace.
+```text
+Manage bundled and imported sources in the local workspace
+
+Usage: coral source <COMMAND>
+
+Commands:
+  discover  List bundled sources available in your build
+  list      List sources currently installed in the workspace
+  add       Install a bundled source by name
+  import    Import a custom source from a manifest file
+  test      Validate that an installed source can initialize and expose tables
+  remove    Remove an installed source from the local workspace
+  help      Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help
+          Print help
+```
 
 ### `coral source discover`
 
-List bundled sources available in your build.
+```text
+List bundled sources available in your build
 
-```shellscript
-coral source discover
+Usage: coral source discover
+
+Options:
+  -h, --help
+          Print help
 ```
 
 ### `coral source list`
 
-List sources currently installed in the workspace.
+```text
+List sources currently installed in the workspace
 
-```shellscript
-coral source list
+Usage: coral source list
+
+Options:
+  -h, --help
+          Print help
 ```
 
-### `coral source add <NAME>`
+### `coral source add`
 
-Install a bundled source by name.
+```text
+Install a bundled source by name
 
-```shellscript
-coral source add github
-```
+Usage: coral source add <NAME>
+
+Arguments:
+  <NAME>
+          Name of the bundled source to install
+
+Options:
+  -h, --help
+          Print help (see a summary with '-h')
 
 Coral prompts for required variables or secrets interactively.
 
-### `coral source import <PATH>`
-
-Import a custom source spec from a YAML file.
-
-```shellscript
-coral source import ./local-messages.yaml
+Examples:
+  coral source add github
 ```
 
-### `coral source test <NAME>`
+### `coral source import`
 
-Validate that an installed source can initialize and expose tables.
+```text
+Import a custom source from a manifest file
 
-```shellscript
-coral source test github
-coral source test local_messages
+Usage: coral source import <PATH>
+
+Arguments:
+  <PATH>
+          Path to the source manifest file
+
+Options:
+  -h, --help
+          Print help (see a summary with '-h')
+
+Examples:
+  coral source import ./local-messages.yaml
 ```
 
-### `coral source remove <NAME>`
+### `coral source test`
 
-Remove an installed source from the local workspace.
+```text
+Validate that an installed source can initialize and expose tables
 
-```shellscript
-coral source remove github
+Usage: coral source test <NAME>
+
+Arguments:
+  <NAME>
+          Name of the source to test
+
+Options:
+  -h, --help
+          Print help (see a summary with '-h')
+
+Examples:
+  coral source test github
+  coral source test local_messages
+```
+
+### `coral source remove`
+
+```text
+Remove an installed source from the local workspace
+
+Usage: coral source remove <NAME>
+
+Arguments:
+  <NAME>
+          Name of the source to remove
+
+Options:
+  -h, --help
+          Print help (see a summary with '-h')
+
+Examples:
+  coral source remove github
 ```
 
 ## `coral onboard`
 
-Run the guided source setup flow.
+```text
+Run the guided source setup flow
 
-```shellscript
-coral onboard
-```
+Usage: coral onboard
+
+Options:
+  -h, --help
+          Print help (see a summary with '-h')
 
 This interactive command helps you:
 
@@ -107,14 +197,18 @@ This interactive command helps you:
 - import a custom source manifest
 - validate an installed source
 - see the next recommended commands after setup
+```
 
 ## `coral mcp-stdio`
 
-Expose the local Coral runtime as an MCP stdio server.
+```text
+Expose the local Coral runtime as an MCP stdio server
 
-```shellscript
-coral mcp-stdio
-```
+Usage: coral mcp-stdio
+
+Options:
+  -h, --help
+          Print help (see a summary with '-h')
 
 This command is intended to be launched by an MCP-capable client rather than used directly in an interactive shell.
 
@@ -122,3 +216,4 @@ The current MCP surface is intentionally small:
 
 - tools: `sql`, `list_tables`
 - resources: `coral://guide`, `coral://tables`
+```
