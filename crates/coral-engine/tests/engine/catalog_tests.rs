@@ -1,8 +1,10 @@
-use coral_engine::{ColumnInfo, CoralQuery, CoreError, QuerySource, TableInfo};
+use coral_engine::{ColumnInfo, CoralQuery, QuerySource, TableInfo};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
-use crate::harness::{TestRuntime, build_source, dir_url, execution_to_rows, write_jsonl_file};
+use crate::harness::{
+    TestRuntime, assert_internal, build_source, dir_url, execution_to_rows, write_jsonl_file,
+};
 
 fn users_manifest(dir: &std::path::Path) -> Value {
     json!({
@@ -204,17 +206,10 @@ async fn query_nonexistent_schema_returns_error() {
         .await
         .expect_err("missing schema should fail");
 
-    match error {
-        CoreError::InvalidInput(detail)
-        | CoreError::NotFound(detail)
-        | CoreError::Internal(detail) => {
-            assert!(
-                detail.contains("missing") || detail.contains("users"),
-                "error should mention missing relation: {detail}"
-            );
-        }
-        other => panic!("unexpected error for missing schema: {other:?}"),
-    }
+    assert_internal(
+        error,
+        "Error during planning: table 'datafusion.missing.users' not found",
+    );
 }
 
 fn table_summary(table: &TableInfo) -> (String, String, String) {

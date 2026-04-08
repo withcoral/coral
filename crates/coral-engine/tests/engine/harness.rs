@@ -6,7 +6,9 @@ use std::sync::Arc;
 use arrow::array::{Int64Array, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
-use coral_engine::{QueryExecution, QueryRuntimeContext, QueryRuntimeProvider, QuerySource};
+use coral_engine::{
+    CoreError, QueryExecution, QueryRuntimeContext, QueryRuntimeProvider, QuerySource, StatusCode,
+};
 use coral_spec::parse_source_manifest_value;
 use parquet::arrow::ArrowWriter;
 use serde_json::{Value, json};
@@ -54,6 +56,22 @@ pub(crate) fn execution_to_rows(execution: &QueryExecution) -> Vec<Value> {
 pub(crate) fn assert_row_count(execution: &QueryExecution, expected: usize) {
     assert_eq!(execution.row_count(), expected);
     assert_eq!(execution_to_rows(execution).len(), expected);
+}
+
+pub(crate) fn assert_internal(error: CoreError, expected_detail: &str) {
+    assert_eq!(error.status_code(), StatusCode::Internal);
+    match error {
+        CoreError::Internal(detail) => assert_eq!(detail, expected_detail),
+        other => panic!("expected CoreError::Internal, got {other:?}"),
+    }
+}
+
+pub(crate) fn assert_invalid_input(error: CoreError, expected_detail: &str) {
+    assert_eq!(error.status_code(), StatusCode::InvalidArgument);
+    match error {
+        CoreError::InvalidInput(detail) => assert_eq!(detail, expected_detail),
+        other => panic!("expected CoreError::InvalidInput, got {other:?}"),
+    }
 }
 
 pub(crate) fn write_jsonl_file(dir: &Path, filename: &str, rows: &[Value]) {

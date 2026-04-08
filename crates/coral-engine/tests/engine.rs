@@ -15,3 +15,5 @@ mod http_tests;
 mod jsonl_tests;
 #[path = "engine/parquet_tests.rs"]
 mod parquet_tests;
+#[path = "engine/test_source_tests.rs"]
+mod test_source_tests;

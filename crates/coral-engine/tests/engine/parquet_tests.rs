@@ -1,11 +1,12 @@
 use std::path::Path;
 
-use coral_engine::{CoralQuery, CoreError};
+use coral_engine::CoralQuery;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
 use crate::harness::{
-    TestRuntime, build_source, dir_url, execution_to_rows, users_batch, write_parquet_file,
+    TestRuntime, assert_internal, build_source, dir_url, execution_to_rows, users_batch,
+    write_parquet_file,
 };
 
 fn parquet_manifest(name: &str, dir: &Path) -> Value {
@@ -155,15 +156,8 @@ async fn missing_file_returns_error() {
     .await
     .expect_err("missing parquet source should fail");
 
-    match error {
-        CoreError::InvalidInput(detail)
-        | CoreError::NotFound(detail)
-        | CoreError::Internal(detail) => {
-            assert!(
-                detail.contains("parquet_missing"),
-                "error should mention missing source: {detail}"
-            );
-        }
-        other => panic!("unexpected error for missing parquet source: {other:?}"),
-    }
+    assert_internal(
+        error,
+        "Error during planning: table 'datafusion.parquet_missing.users' not found",
+    );
 }

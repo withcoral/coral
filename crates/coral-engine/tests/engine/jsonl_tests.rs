@@ -1,12 +1,12 @@
 use std::path::Path;
 
-use coral_engine::{CoralQuery, CoreError};
+use coral_engine::CoralQuery;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
 use crate::harness::{
-    TestRuntime, assert_row_count, build_source, dir_url, execution_to_rows, users_rows,
-    write_jsonl_file,
+    TestRuntime, assert_internal, assert_row_count, build_source, dir_url, execution_to_rows,
+    users_rows, write_jsonl_file,
 };
 
 fn jsonl_manifest(name: &str, dir: &Path, glob: &str) -> Value {
@@ -169,19 +169,8 @@ async fn missing_file_returns_error() {
             .await
             .expect_err("missing jsonl source should fail");
 
-    assert_nonexistent_schema_error(error, "jsonl_missing");
-}
-
-fn assert_nonexistent_schema_error(error: CoreError, schema_name: &str) {
-    match error {
-        CoreError::InvalidInput(detail)
-        | CoreError::NotFound(detail)
-        | CoreError::Internal(detail) => {
-            assert!(
-                detail.contains(schema_name),
-                "error should mention missing schema {schema_name}: {detail}"
-            );
-        }
-        other => panic!("unexpected error for missing schema: {other:?}"),
-    }
+    assert_internal(
+        error,
+        "Error during planning: table 'datafusion.jsonl_missing.users' not found",
+    );
 }
