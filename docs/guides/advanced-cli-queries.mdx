@@ -15,7 +15,8 @@ By default, Coral formats results as a human-readable table. You can change this
 ### Return JSON
 
 ```shellscript
-coral sql --format json "SELECT * FROM coral.tables LIMIT 10"
+coral sql --format json \
+  "SELECT * FROM coral.tables LIMIT 10"
 ```
 
 ## Scripting and piping
@@ -23,7 +24,9 @@ coral sql --format json "SELECT * FROM coral.tables LIMIT 10"
 Because Coral can output JSON, you can pipe its results directly into tools like `jq` for further processing:
 
 ```shellscript
-coral sql --format json "SELECT schema_name, table_name FROM coral.tables LIMIT 10" | jq '.[].table_name'
+coral sql --format json \
+  "SELECT * FROM coral.tables LIMIT 10" \
+  | jq '.[].table_name'
 ```
 
 ## Multiline queries

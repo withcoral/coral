@@ -70,9 +70,9 @@ coral source test local_messages
 
 ```shellscript
 coral sql "
-  SELECT type, \"sessionId\", text
+  SELECT type, sessionId, text
   FROM local_messages.messages
-  ORDER BY \"sessionId\", type
+  ORDER BY sessionId, type
 "
 ```
 
