@@ -79,6 +79,9 @@ pub fn collect_source_inputs_yaml(raw: &str) -> Result<Vec<InputSpec>> {
     collect_source_inputs_value(&root)
 }
 
+/// Keys containing metadata that should not be walked for input discovery.
+const METADATA_KEYS: &[&str] = &["onboarding"];
+
 fn collect_from_value(
     value: &Value,
     ordered: &mut Vec<InputSpec>,
@@ -87,8 +90,13 @@ fn collect_from_value(
     match value {
         Value::Mapping(map) => {
             collect_from_mapping(map, ordered, seen)?;
-            for nested in map.values() {
-                collect_from_value(nested, ordered, seen)?;
+            for (key, nested) in map {
+                let skip = key
+                    .as_str()
+                    .is_some_and(|k| METADATA_KEYS.contains(&k));
+                if !skip {
+                    collect_from_value(nested, ordered, seen)?;
+                }
             }
         }
         Value::Sequence(items) => {
@@ -286,6 +294,35 @@ tables: []
         assert_eq!(
             inputs[1].help.as_deref(),
             Some("Create a token at https://example.com/settings/tokens")
+        );
+    }
+
+    #[test]
+    fn onboarding_template_syntax_does_not_register_phantom_inputs() {
+        let manifest = r#"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+base_url: "{{variable.API_BASE|https://example.com}}"
+onboarding:
+  input_help:
+    API_BASE: "Use {{secret.PHANTOM}} to authenticate"
+auth:
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{secret.API_TOKEN}}
+tables: []
+"#;
+
+        let inputs = collect_source_inputs_yaml(manifest).expect("inputs");
+        assert_eq!(inputs.len(), 2);
+        assert_eq!(inputs[0].key, "API_BASE");
+        assert_eq!(inputs[1].key, "API_TOKEN");
+        assert!(
+            !inputs.iter().any(|i| i.key == "PHANTOM"),
+            "onboarding metadata should not register inputs"
         );
     }
 
