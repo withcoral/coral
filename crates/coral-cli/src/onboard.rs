@@ -1,9 +1,11 @@
-use coral_api::v1::{AvailableSource, ExecuteSqlRequest, Source};
+use std::collections::BTreeMap;
+
+use coral_api::v1::{AvailableSource, ExecuteSqlRequest, Source, ValidateSourceResponse};
 use coral_client::{
     AppClient, decode_execute_sql_response, default_workspace, format_batches_table,
 };
 use dialoguer::console::{measure_text_width, style};
-use dialoguer::{Confirm, Select, theme::ColorfulTheme};
+use dialoguer::{Select, theme::ColorfulTheme};
 use tonic::Request;
 
 use crate::source_ops;
@@ -55,7 +57,7 @@ pub(crate) async fn run(app: &AppClient) -> Result<(), anyhow::Error> {
                 if source.installed {
                     run_installed_source_menu(app, &theme, source).await?;
                 } else {
-                    run_add_bundled_source(app, &theme, source).await?;
+                    run_add_bundled_source(app, source).await?;
                     match run_next_steps(app, &theme).await? {
                         NextStepChoice::AddMoreSources => {}
                         NextStepChoice::Exit => return Ok(()),
@@ -124,10 +126,10 @@ async fn run_installed_source_menu(
     theme: &ColorfulTheme,
     source: &AvailableSource,
 ) -> Result<(), anyhow::Error> {
-    let items = ["Validate", "Reconfigure", "Back"];
+    let items = ["Update credentials", "Validate", "Back"];
     let actions = [
-        InstalledSourceAction::Validate,
         InstalledSourceAction::Reconfigure,
+        InstalledSourceAction::Validate,
         InstalledSourceAction::Back,
     ];
 
@@ -139,8 +141,7 @@ async fn run_installed_source_menu(
 
     match selection.map(|i| actions[i]) {
         Some(InstalledSourceAction::Validate) => {
-            let response = source_ops::validate_source(app, &source.name).await?;
-            source_ops::print_validation_success(&response)?;
+            validate_after_install(app, &source.name).await?;
         }
         Some(InstalledSourceAction::Reconfigure) => {
             let inputs = source
@@ -152,7 +153,7 @@ async fn run_installed_source_menu(
             let result =
                 source_ops::add_bundled_source(app, &source.name, variables, secrets).await?;
             println!("Reconfigured source {}", result.name);
-            maybe_validate_after_install(app, theme, &result.name).await?;
+            validate_after_install(app, &result.name).await?;
         }
         Some(InstalledSourceAction::Back) | None => {}
     }
@@ -162,7 +163,6 @@ async fn run_installed_source_menu(
 
 async fn run_add_bundled_source(
     app: &AppClient,
-    theme: &ColorfulTheme,
     source: &AvailableSource,
 ) -> Result<(), anyhow::Error> {
     let inputs = source
@@ -173,22 +173,72 @@ async fn run_add_bundled_source(
     let (variables, secrets) = source_ops::prompt_for_inputs(&inputs)?;
     let result = source_ops::add_bundled_source(app, &source.name, variables, secrets).await?;
     println!("Added source {}", result.name);
-    maybe_validate_after_install(app, theme, &result.name).await
+    validate_after_install(app, &result.name).await
 }
 
-async fn maybe_validate_after_install(
-    app: &AppClient,
-    theme: &ColorfulTheme,
-    source_name: &str,
-) -> Result<(), anyhow::Error> {
-    let should_validate = Confirm::with_theme(theme)
-        .with_prompt(format!("Validate {source_name} now?"))
-        .default(true)
-        .interact()?;
-    if should_validate {
-        let response = source_ops::validate_source(app, source_name).await?;
-        source_ops::print_validation_success(&response)?;
+async fn validate_after_install(app: &AppClient, source_name: &str) -> Result<(), anyhow::Error> {
+    let response = source_ops::validate_source(app, source_name).await?;
+    print_validation_pretty(&response)
+}
+
+const MAX_TABLES_PER_SCHEMA: usize = 9;
+
+fn print_validation_pretty(response: &ValidateSourceResponse) -> Result<(), anyhow::Error> {
+    let source = response
+        .source
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("validate response missing source metadata"))?;
+
+    println!();
+    println!(
+        "  {} {}",
+        style("✓").green(),
+        style(format!("{} connected successfully", source.name)).bold()
+    );
+
+    // Group tables by schema, sorted.
+    let mut by_schema: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for table in &response.tables {
+        by_schema
+            .entry(&table.schema_name)
+            .or_default()
+            .push(&table.name);
     }
+    for tables in by_schema.values_mut() {
+        tables.sort_unstable();
+    }
+
+    for (schema, tables) in &by_schema {
+        let count = tables.len();
+        println!();
+        println!(
+            "    {}",
+            style(format!(
+                "{schema} ({count} {})",
+                if count == 1 { "table" } else { "tables" }
+            ))
+            .bold()
+        );
+
+        let show_count = tables.len().min(MAX_TABLES_PER_SCHEMA);
+        let remaining = tables.len() - show_count;
+
+        for (i, table) in tables.iter().take(show_count).enumerate() {
+            let is_last = i == show_count - 1 && remaining == 0;
+            let branch = if is_last { "└─" } else { "├─" };
+            println!("    {} {}", style(branch).dim(), table);
+        }
+
+        if remaining > 0 {
+            println!(
+                "    {} {}",
+                style("└─").dim(),
+                style(format!("... and {remaining} more")).dim()
+            );
+        }
+    }
+    println!();
+
     Ok(())
 }
 
