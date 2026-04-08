@@ -143,9 +143,7 @@ pub(crate) fn prompt_for_inputs(
     Ok((variables, secrets))
 }
 
-pub(crate) fn input_from_proto(
-    input: &SourceInputSpec,
-) -> Result<InputSpec, anyhow::Error> {
+pub(crate) fn input_from_proto(input: &SourceInputSpec) -> Result<InputSpec, anyhow::Error> {
     let kind = match SourceInputKind::try_from(input.kind) {
         Ok(SourceInputKind::Variable) => InputKind::Variable,
         Ok(SourceInputKind::Secret) => InputKind::Secret,
@@ -166,9 +164,7 @@ pub(crate) fn input_from_proto(
     })
 }
 
-pub(crate) fn load_manifest_inputs(
-    path: &Path,
-) -> Result<(String, Vec<InputSpec>), anyhow::Error> {
+pub(crate) fn load_manifest_inputs(path: &Path) -> Result<(String, Vec<InputSpec>), anyhow::Error> {
     let manifest_yaml = std::fs::read_to_string(path)?;
     let manifest = parse_source_manifest_yaml(&manifest_yaml)?;
     let inputs = collect_inputs(&manifest)?;

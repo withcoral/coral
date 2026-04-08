@@ -294,12 +294,13 @@ tables:
 
     #[test]
     fn collects_input_help_from_onboarding() {
-        let inputs = collect_source_inputs_yaml(
+        let manifest = parse_source_manifest_yaml(
             r#"
 name: demo
 version: 1.0.0
 dsl_version: 3
 backend: http
+base_url: "https://example.com"
 onboarding:
   input_help:
     API_TOKEN: "Create a token at https://example.com/settings/tokens"
@@ -308,10 +309,20 @@ auth:
     - name: Authorization
       from: template
       template: Bearer {{secret.API_TOKEN}}
-tables: []
+tables:
+  - name: items
+    description: Demo items
+    request:
+      method: GET
+      path: /items
+    columns:
+      - name: id
+        type: Utf8
 "#,
         )
-        .expect("inputs");
+        .expect("parse");
+
+        let inputs = collect_inputs(&manifest).expect("collect");
         assert_eq!(inputs.len(), 1);
         assert_eq!(inputs[0].kind, InputKind::Secret);
         assert_eq!(
