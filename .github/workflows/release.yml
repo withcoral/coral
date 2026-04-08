@@ -120,7 +120,7 @@ jobs:
     steps:
       - name: Compose release notes
         id: compose
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         env:
           TAG_NAME: ${{ needs.prepare.outputs.tag_name }}
           BUILD_REF: ${{ needs.prepare.outputs.build_ref }}
