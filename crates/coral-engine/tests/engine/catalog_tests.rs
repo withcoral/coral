@@ -1,55 +1,50 @@
 use coral_engine::{ColumnInfo, CoralQuery, CoreError, QuerySource, TableInfo};
-use serde_json::json;
+use serde_json::{Value, json};
 use tempfile::TempDir;
 
 use crate::harness::{TestRuntime, build_source, dir_url, execution_to_rows, write_jsonl_file};
 
-fn users_manifest(dir: &std::path::Path) -> String {
-    format!(
-        r#"
-name: alpha
-version: 0.1.0
-dsl_version: 3
-backend: jsonl
-tables:
-  - name: users
-    description: Alpha users
-    source:
-      location: {location}
-      glob: "**/*.jsonl"
-    columns:
-      - name: id
-        type: Int64
-      - name: team_id
-        type: Int64
-      - name: name
-        type: Utf8
-"#,
-        location = dir_url(dir),
-    )
+fn users_manifest(dir: &std::path::Path) -> Value {
+    json!({
+        "name": "alpha",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "jsonl",
+        "tables": [{
+            "name": "users",
+            "description": "Alpha users",
+            "source": {
+                "location": dir_url(dir),
+                "glob": "**/*.jsonl"
+            },
+            "columns": [
+                { "name": "id", "type": "Int64" },
+                { "name": "team_id", "type": "Int64" },
+                { "name": "name", "type": "Utf8" }
+            ]
+        }]
+    })
 }
 
-fn teams_manifest(dir: &std::path::Path) -> String {
-    format!(
-        r#"
-name: beta
-version: 0.1.0
-dsl_version: 3
-backend: jsonl
-tables:
-  - name: teams
-    description: Beta teams
-    source:
-      location: {location}
-      glob: "**/*.jsonl"
-    columns:
-      - name: id
-        type: Int64
-      - name: team_name
-        type: Utf8
-"#,
-        location = dir_url(dir),
-    )
+fn teams_manifest(dir: &std::path::Path) -> Value {
+    json!({
+        "name": "beta",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "jsonl",
+        "tables": [{
+            "name": "teams",
+            "description": "Beta teams",
+            "source": {
+                "location": dir_url(dir),
+                "glob": "**/*.jsonl"
+            },
+            "columns": [
+                { "name": "id", "type": "Int64" },
+                { "name": "team_name", "type": "Utf8" }
+            ]
+        }]
+    })
 }
 
 fn build_catalog_sources() -> (TempDir, Vec<QuerySource>) {
@@ -75,8 +70,8 @@ fn build_catalog_sources() -> (TempDir, Vec<QuerySource>) {
     );
 
     let sources = vec![
-        build_source(&users_manifest(&alpha_dir)),
-        build_source(&teams_manifest(&beta_dir)),
+        build_source(users_manifest(&alpha_dir)),
+        build_source(teams_manifest(&beta_dir)),
     ];
     (temp, sources)
 }

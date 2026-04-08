@@ -1,37 +1,36 @@
 use std::path::Path;
 
 use coral_engine::{CoralQuery, CoreError};
-use serde_json::json;
+use serde_json::{Value, json};
 use tempfile::TempDir;
 
 use crate::harness::{
     TestRuntime, build_source, dir_url, execution_to_rows, users_batch, write_parquet_file,
 };
 
-fn parquet_manifest(name: &str, dir: &Path) -> String {
-    format!(
-        r#"
-name: {name}
-version: 0.1.0
-dsl_version: 3
-backend: parquet
-tables:
-  - name: users
-    description: Users fixture
-    source:
-      location: {location}
-      glob: "**/*.parquet"
-    columns: []
-"#,
-        location = dir_url(dir),
-    )
+fn parquet_manifest(name: &str, dir: &Path) -> Value {
+    json!({
+        "name": name,
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "parquet",
+        "tables": [{
+            "name": "users",
+            "description": "Users fixture",
+            "source": {
+                "location": dir_url(dir),
+                "glob": "**/*.parquet"
+            },
+            "columns": []
+        }]
+    })
 }
 
 #[tokio::test]
 async fn select_all_from_parquet_source() {
     let temp = TempDir::new().expect("temp dir");
     write_parquet_file(temp.path(), "users.parquet", &users_batch());
-    let source = build_source(&parquet_manifest("parquet_users", temp.path()));
+    let source = build_source(parquet_manifest("parquet_users", temp.path()));
 
     let rows = execution_to_rows(
         &CoralQuery::execute_sql(
@@ -57,7 +56,7 @@ async fn select_all_from_parquet_source() {
 async fn select_with_column_projection() {
     let temp = TempDir::new().expect("temp dir");
     write_parquet_file(temp.path(), "users.parquet", &users_batch());
-    let source = build_source(&parquet_manifest("parquet_projection", temp.path()));
+    let source = build_source(parquet_manifest("parquet_projection", temp.path()));
 
     let rows = execution_to_rows(
         &CoralQuery::execute_sql(
@@ -83,7 +82,7 @@ async fn select_with_column_projection() {
 async fn select_with_where_filter() {
     let temp = TempDir::new().expect("temp dir");
     write_parquet_file(temp.path(), "users.parquet", &users_batch());
-    let source = build_source(&parquet_manifest("parquet_filter", temp.path()));
+    let source = build_source(parquet_manifest("parquet_filter", temp.path()));
 
     let rows = execution_to_rows(
         &CoralQuery::execute_sql(
@@ -102,7 +101,7 @@ async fn select_with_where_filter() {
 async fn select_with_order_by_and_limit() {
     let temp = TempDir::new().expect("temp dir");
     write_parquet_file(temp.path(), "users.parquet", &users_batch());
-    let source = build_source(&parquet_manifest("parquet_order", temp.path()));
+    let source = build_source(parquet_manifest("parquet_order", temp.path()));
 
     let rows = execution_to_rows(
         &CoralQuery::execute_sql(
@@ -127,7 +126,7 @@ async fn select_with_order_by_and_limit() {
 async fn select_count_aggregation() {
     let temp = TempDir::new().expect("temp dir");
     write_parquet_file(temp.path(), "users.parquet", &users_batch());
-    let source = build_source(&parquet_manifest("parquet_count", temp.path()));
+    let source = build_source(parquet_manifest("parquet_count", temp.path()));
 
     let rows = execution_to_rows(
         &CoralQuery::execute_sql(
@@ -146,7 +145,7 @@ async fn select_count_aggregation() {
 async fn missing_file_returns_error() {
     let temp = TempDir::new().expect("temp dir");
     let missing_dir = temp.path().join("missing");
-    let source = build_source(&parquet_manifest("parquet_missing", &missing_dir));
+    let source = build_source(parquet_manifest("parquet_missing", &missing_dir));
 
     let error = CoralQuery::execute_sql(
         &[source],

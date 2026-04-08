@@ -7,7 +7,7 @@ use arrow::array::{Int64Array, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use coral_engine::{QueryExecution, QueryRuntimeContext, QueryRuntimeProvider, QuerySource};
-use coral_spec::parse_source_manifest_yaml;
+use coral_spec::parse_source_manifest_value;
 use parquet::arrow::ArrowWriter;
 use serde_json::{Value, json};
 
@@ -19,23 +19,23 @@ impl QueryRuntimeProvider for TestRuntime {
     }
 }
 
-pub(crate) fn build_source(yaml: &str) -> QuerySource {
-    build_source_with_inputs(yaml, BTreeMap::new(), BTreeMap::new())
+pub(crate) fn build_source(value: Value) -> QuerySource {
+    build_source_with_inputs(value, BTreeMap::new(), BTreeMap::new())
 }
 
 pub(crate) fn build_source_with_secrets(
-    yaml: &str,
+    value: Value,
     secrets: impl IntoIterator<Item = (&'static str, &'static str)>,
 ) -> QuerySource {
-    build_source_with_inputs(yaml, BTreeMap::new(), string_map(secrets))
+    build_source_with_inputs(value, BTreeMap::new(), string_map(secrets))
 }
 
 pub(crate) fn build_source_with_inputs(
-    yaml: &str,
+    value: Value,
     variables: BTreeMap<String, String>,
     secrets: BTreeMap<String, String>,
 ) -> QuerySource {
-    let manifest = parse_source_manifest_yaml(yaml).expect("manifest should parse");
+    let manifest = parse_source_manifest_value(value).expect("manifest should parse");
     QuerySource::new(manifest, variables, secrets)
 }
 

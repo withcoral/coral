@@ -1,5 +1,5 @@
 use coral_engine::{CoralQuery, CoreError, StatusCode};
-use serde_json::json;
+use serde_json::{Value, json};
 use wiremock::matchers::{header, method, path, query_param, query_param_is_missing};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -7,36 +7,30 @@ use crate::harness::{
     TestRuntime, build_source, build_source_with_secrets, execution_to_rows, users_rows,
 };
 
-fn base_http_manifest(
-    name: &str,
-    base_url: &str,
-    extra_table_yaml: &str,
-    extra_source_yaml: &str,
-) -> String {
-    format!(
-        r#"
-name: {name}
-version: 0.1.0
-dsl_version: 3
-backend: http
-base_url: "{base_url}"
-{extra_source_yaml}tables:
-  - name: users
-    description: HTTP users
-    request:
-      method: GET
-      path: /api/users
-    response:
-      rows_path: [data]
-{extra_table_yaml}    columns:
-      - name: id
-        type: Int64
-      - name: name
-        type: Utf8
-      - name: email
-        type: Utf8
-"#
-    )
+fn base_http_manifest(name: &str, base_url: &str) -> Value {
+    json!({
+        "name": name,
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": base_url,
+        "tables": [{
+            "name": "users",
+            "description": "HTTP users",
+            "request": {
+                "method": "GET",
+                "path": "/api/users"
+            },
+            "response": {
+                "rows_path": ["data"]
+            },
+            "columns": [
+                { "name": "id", "type": "Int64" },
+                { "name": "name", "type": "Utf8" },
+                { "name": "email", "type": "Utf8" }
+            ]
+        }]
+    })
 }
 
 #[tokio::test]
@@ -48,7 +42,7 @@ async fn select_all_from_http_source() {
         .mount(&server)
         .await;
 
-    let source = build_source(&base_http_manifest("http_users", &server.uri(), "", ""));
+    let source = build_source(base_http_manifest("http_users", &server.uri()));
 
     let rows = execution_to_rows(
         &CoralQuery::execute_sql(
@@ -72,12 +66,7 @@ async fn select_with_column_projection() {
         .mount(&server)
         .await;
 
-    let source = build_source(&base_http_manifest(
-        "http_projection",
-        &server.uri(),
-        "",
-        "",
-    ));
+    let source = build_source(base_http_manifest("http_projection", &server.uri()));
 
     let rows = execution_to_rows(
         &CoralQuery::execute_sql(
@@ -108,7 +97,7 @@ async fn select_with_order_by() {
         .mount(&server)
         .await;
 
-    let source = build_source(&base_http_manifest("http_order", &server.uri(), "", ""));
+    let source = build_source(base_http_manifest("http_order", &server.uri()));
 
     let rows = execution_to_rows(
         &CoralQuery::execute_sql(
@@ -139,7 +128,7 @@ async fn select_with_limit() {
         .mount(&server)
         .await;
 
-    let source = build_source(&base_http_manifest("http_limit", &server.uri(), "", ""));
+    let source = build_source(base_http_manifest("http_limit", &server.uri()));
 
     let rows = execution_to_rows(
         &CoralQuery::execute_sql(
@@ -168,21 +157,13 @@ async fn select_with_where_filter_pushdown() {
         .mount(&server)
         .await;
 
-    let source = build_source(&base_http_manifest(
-        "http_filter",
-        &server.uri(),
-        r"    filters:
-      - name: id
-    request:
-      method: GET
-      path: /api/users
-      query:
-        - name: id
-          from: filter
-          key: id
-",
-        "",
-    ));
+    let mut manifest = base_http_manifest("http_filter", &server.uri());
+    let table = &mut manifest["tables"][0];
+    table["filters"] = json!([{ "name": "id" }]);
+    table["request"]["query"] = json!([
+        { "name": "id", "from": "filter", "key": "id" }
+    ]);
+    let source = build_source(manifest);
 
     let rows = execution_to_rows(
         &CoralQuery::execute_sql(
@@ -206,7 +187,7 @@ async fn select_count_aggregation() {
         .mount(&server)
         .await;
 
-    let source = build_source(&base_http_manifest("http_count", &server.uri(), "", ""));
+    let source = build_source(base_http_manifest("http_count", &server.uri()));
 
     let rows = execution_to_rows(
         &CoralQuery::execute_sql(
@@ -244,16 +225,13 @@ async fn pagination_page_mode() {
         .mount(&server)
         .await;
 
-    let source = build_source(&base_http_manifest(
-        "http_page",
-        &server.uri(),
-        r"    pagination:
-      mode: page
-      page_param: page
-      page_start: 1
-",
-        "",
-    ));
+    let mut manifest = base_http_manifest("http_page", &server.uri());
+    manifest["tables"][0]["pagination"] = json!({
+        "mode": "page",
+        "page_param": "page",
+        "page_start": 1
+    });
+    let source = build_source(manifest);
 
     let rows = execution_to_rows(
         &CoralQuery::execute_sql(
@@ -291,16 +269,13 @@ async fn pagination_offset_mode() {
         .mount(&server)
         .await;
 
-    let source = build_source(&base_http_manifest(
-        "http_offset",
-        &server.uri(),
-        r"    pagination:
-      mode: offset
-      offset_param: offset
-      offset_step: 2
-",
-        "",
-    ));
+    let mut manifest = base_http_manifest("http_offset", &server.uri());
+    manifest["tables"][0]["pagination"] = json!({
+        "mode": "offset",
+        "offset_param": "offset",
+        "offset_step": 2
+    });
+    let source = build_source(manifest);
 
     let rows = execution_to_rows(
         &CoralQuery::execute_sql(
@@ -336,14 +311,11 @@ async fn pagination_link_header() {
         .mount(&server)
         .await;
 
-    let source = build_source(&base_http_manifest(
-        "http_link",
-        &server.uri(),
-        r"    pagination:
-      mode: link_header
-",
-        "",
-    ));
+    let mut manifest = base_http_manifest("http_link", &server.uri());
+    manifest["tables"][0]["pagination"] = json!({
+        "mode": "link_header"
+    });
+    let source = build_source(manifest);
 
     let rows = execution_to_rows(
         &CoralQuery::execute_sql(
@@ -369,20 +341,15 @@ async fn auth_headers_sent_correctly() {
         .mount(&server)
         .await;
 
-    let source = build_source_with_secrets(
-        &base_http_manifest(
-            "http_auth",
-            &server.uri(),
-            "",
-            r"auth:
-  headers:
-    - name: Authorization
-      from: template
-      template: Bearer {{secret.API_TOKEN}}
-",
-        ),
-        [("API_TOKEN", "secret-token")],
-    );
+    let mut manifest = base_http_manifest("http_auth", &server.uri());
+    manifest["auth"] = json!({
+        "headers": [{
+            "name": "Authorization",
+            "from": "template",
+            "template": "Bearer {{secret.API_TOKEN}}"
+        }]
+    });
+    let source = build_source_with_secrets(manifest, [("API_TOKEN", "secret-token")]);
 
     let rows = execution_to_rows(
         &CoralQuery::execute_sql(
@@ -407,7 +374,7 @@ async fn api_returns_500() {
         .mount(&server)
         .await;
 
-    let source = build_source(&base_http_manifest("http_500", &server.uri(), "", ""));
+    let source = build_source(base_http_manifest("http_500", &server.uri()));
 
     let error = CoralQuery::execute_sql(&[source], &TestRuntime, "SELECT * FROM http_500.users")
         .await
@@ -430,7 +397,7 @@ async fn api_returns_401() {
         .mount(&server)
         .await;
 
-    let source = build_source(&base_http_manifest("http_401", &server.uri(), "", ""));
+    let source = build_source(base_http_manifest("http_401", &server.uri()));
 
     let error = CoralQuery::execute_sql(&[source], &TestRuntime, "SELECT * FROM http_401.users")
         .await
@@ -453,7 +420,7 @@ async fn api_returns_malformed_json() {
         .mount(&server)
         .await;
 
-    let source = build_source(&base_http_manifest("http_bad_json", &server.uri(), "", ""));
+    let source = build_source(base_http_manifest("http_bad_json", &server.uri()));
 
     let error =
         CoralQuery::execute_sql(&[source], &TestRuntime, "SELECT * FROM http_bad_json.users")
