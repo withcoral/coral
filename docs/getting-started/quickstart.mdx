@@ -1,25 +1,14 @@
 ---
 title: "Quickstart"
-description: "Install Coral, add a bundled source, inspect available tables, and run your first query."
+description: "Set up Coral in minutes: run the onboarding flow, connect your first sources, and start querying your data."
 ---
 
-This tutorial gets you to a working Coral query flow with a bundled source. It assumes you already installed Coral and have `coral` on your `PATH`.
+This tutorial gets you from a fresh [install](/getting-started/installation) of Coral, to your first SQL query.
 
-Prefer the guided path? Run:
-
-```shellscript
-coral onboard
-```
-
-The rest of this page shows the equivalent manual flow so you can see each step explicitly.
-
-## Prerequisites
-
-Before you start:
-
-- install Coral and verify `coral --help` works
-- have credentials ready for at least one bundled source such as GitHub
-- expect `coral source add <NAME>` to prompt interactively for required inputs
+<Tip>
+  Prefer the CLI experience? Run `coral onboard` for an interactive wizard that
+  walks you through the whole setup described in this page.
+</Tip>
 
 ## 1. Discover bundled sources
 
@@ -27,7 +16,7 @@ Before you start:
 coral source discover
 ```
 
-This lists the bundled sources available in your build.
+This lists the bundled sources available in your build. Coral comes with [bundled sources](/reference/bundled-sources) for GitHub, Slack, Datadog, Linear, Sentry, and more.
 
 ## 2. Add a source
 
@@ -37,51 +26,36 @@ For example, add GitHub:
 coral source add github
 ```
 
-Coral prompts interactively for any required variables or secrets so they do not need to be passed on the command line.
+Coral prompts for any required variables or secrets. Once connected, the source's data is available as SQL tables.
 
-## 3. Validate the source
+<Tip>
+  Run `coral source test github` to validate the connection and see the tables
+  the source exposes.
+</Tip>
 
-```shellscript
-coral source test github
-```
+## 3. Query your data
 
-If validation succeeds, Coral shows the tables the source exposes.
+You can now query any connected source using SQL.
 
-## 4. Inspect available tables
-
-Use the system catalog to see what Coral can query:
+Use the [system catalog](/concepts/system-catalog) to see all available tables:
 
 ```shellscript
 coral sql "SELECT schema_name, table_name FROM coral.tables ORDER BY 1, 2"
 ```
 
-For the full discovery workflow, including `coral.columns`, see [System catalog](/concepts/system-catalog).
-
-## 5. Run a query
+Assuming you've connected GitHub, try listing open issues for a repo:
 
 ```shellscript
 coral sql "
-  SELECT name, draft, prerelease, published_at
-  FROM github.releases
-  WHERE owner = 'withcoral' AND repo = 'coral'
-  ORDER BY published_at DESC
+  SELECT number, title, state, created_at
+  FROM github.issues
+  WHERE owner = 'withcoral' AND repo = 'coral' AND state = 'open'
+  ORDER BY created_at DESC
   LIMIT 10
 "
 ```
 
-## 6. Use Coral with an agent
+## Next steps
 
-Once you have a working local workspace, you can expose the same runtime to an MCP client (such as Claude Code, Cursor, or VS Code). 
-
-Because MCP servers are typically configured to be launched automatically by the client rather than run directly in your terminal, see [Agent usage](/guides/agent-usage) for the broader setup flow and [Use Coral over MCP](/guides/use-coral-over-mcp) for MCP-specific configuration examples.
-
-<Tip>
-  The exact schemas and tables depend on the sources you have installed. When in
-  doubt, inspect `coral.tables` first.
-</Tip>
-
-## Next step
-
-The bundled sources are a starting point. If the system you need isn't bundled yet, you can write a source spec for any HTTP API or local dataset and query it the same way.
-
-[Write a custom source](/guides/write-a-custom-source)
+- **[Use Coral with an agent](/guides/agent-usage)** — expose Coral to Claude Code, Cursor, or VS Code over MCP so your agent can query sources directly
+- **[Write a custom source spec](/guides/write-a-custom-source)** — connect any HTTP API or local dataset that isn't bundled yet

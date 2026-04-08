@@ -5,9 +5,12 @@ description: "Connect your AI coding tools to Coral using the Model Context Prot
 
 Coral exposes its local runtime over MCP stdio, giving coding agents access to SQL queries and schema discovery across all your installed sources.
 
+<Note>
 Before setting up a client, make sure you have [installed Coral](/getting-started/installation) and configured at least one source with `coral onboard` or the lower-level `coral source add`.
 
 If you also want reusable workflow guidance for CLI-based agent interactions, see [Agent usage](/guides/agent-usage).
+
+</Note>
 
 ## What MCP clients get
 
@@ -44,6 +47,7 @@ Coral uses stdio transport. Clients that accept a command can point directly at 
     ```
 
     If `coral` is not on Cursor's `PATH`, use the full path from `which coral`.
+
   </Tab>
 
   <Tab title="VS Code / Copilot">
@@ -60,6 +64,7 @@ Coral uses stdio transport. Clients that accept a command can point directly at 
       }
     }
     ```
+
   </Tab>
 
   <Tab title="Claude Desktop">
@@ -77,6 +82,7 @@ Coral uses stdio transport. Clients that accept a command can point directly at 
     ```
 
     Use the full path to `coral`. On macOS, open this file from Claude Desktop → Settings → Developer → Edit Config.
+
   </Tab>
 
   <Tab title="Windsurf">
@@ -92,13 +98,12 @@ Coral uses stdio transport. Clients that accept a command can point directly at 
       }
     }
     ```
+
   </Tab>
 
-  <Tab title="Codex">
-    ```shellscript
-    codex mcp add coral -- coral mcp-stdio
-    ```
-  </Tab>
+<Tab title="Codex">
+  ```shellscript codex mcp add coral -- coral mcp-stdio ```
+</Tab>
 
   <Tab title="Amp">
     **VS Code extension** — add to `settings.json`:
@@ -117,6 +122,7 @@ Coral uses stdio transport. Clients that accept a command can point directly at 
     ```shellscript
     amp mcp add coral -- coral mcp-stdio
     ```
+
   </Tab>
 
   <Tab title="Other clients">
@@ -128,6 +134,7 @@ Coral uses stdio transport. Clients that accept a command can point directly at 
     ```
 
     Consult your client's documentation for the exact config format.
+
   </Tab>
 </Tabs>
 
