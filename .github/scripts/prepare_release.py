@@ -11,7 +11,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
-
 SEMVER_RE = re.compile(
     r"^v?"
     r"(0|[1-9]\d*)\."
@@ -45,7 +44,9 @@ class Version:
             prerelease_parts = ()
             is_stable = True
         else:
-            prerelease_parts = tuple(parse_prerelease_identifier(part) for part in prerelease.split("."))
+            prerelease_parts = tuple(
+                parse_prerelease_identifier(part) for part in prerelease.split(".")
+            )
             is_stable = False
         return cls(
             major=int(major),

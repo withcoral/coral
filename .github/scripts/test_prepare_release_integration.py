@@ -11,7 +11,6 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-
 SCRIPT_PATH = Path(__file__).with_name("prepare_release.py")
 SPEC = importlib.util.spec_from_file_location("prepare_release", SCRIPT_PATH)
 assert SPEC is not None
@@ -44,12 +43,7 @@ class PrepareReleaseIntegrationTests(unittest.TestCase):
         return result.stdout.strip()
 
     def write_workspace_version(self, version: str) -> None:
-        cargo_toml = (
-            "[workspace]\n"
-            "members = []\n\n"
-            "[workspace.package]\n"
-            f'version = "{version}"\n'
-        )
+        cargo_toml = f'[workspace]\nmembers = []\n\n[workspace.package]\nversion = "{version}"\n'
         (self.repo / "Cargo.toml").write_text(cargo_toml, encoding="utf-8")
 
     def commit(self, message: str) -> str:
@@ -119,7 +113,9 @@ class PrepareReleaseIntegrationTests(unittest.TestCase):
         feature_sha = self.commit("feature only release")
         self.git("checkout", "main")
 
-        with self.assertRaisesRegex(prepare_release.ReleaseError, r"target_ref must point to a commit on main\."):
+        with self.assertRaisesRegex(
+            prepare_release.ReleaseError, r"target_ref must point to a commit on main\."
+        ):
             self.call_prepare_outputs(
                 GITHUB_EVENT_NAME="workflow_dispatch",
                 GITHUB_REF="refs/heads/main",

@@ -33,6 +33,18 @@ jobs:
         with:
           python-version-file: .github/scripts/.python-version
 
+      - name: Set up uv
+        if: steps.release-script-changes.outputs.release_python == 'true'
+        uses: astral-sh/setup-uv@v5
+
+      - name: Ruff format check
+        if: steps.release-script-changes.outputs.release_python == 'true'
+        run: uvx ruff format --check .github/scripts
+
+      - name: Ruff lint
+        if: steps.release-script-changes.outputs.release_python == 'true'
+        run: uvx ruff check .github/scripts
+
       - name: Run release script integration tests
         if: steps.release-script-changes.outputs.release_python == 'true'
         run: python3 -m unittest discover -s .github/scripts -p 'test_prepare_release_integration.py'

@@ -5,7 +5,6 @@ import sys
 import unittest
 from pathlib import Path
 
-
 SCRIPT_PATH = Path(__file__).with_name("prepare_release.py")
 SPEC = importlib.util.spec_from_file_location("prepare_release", SCRIPT_PATH)
 assert SPEC is not None
