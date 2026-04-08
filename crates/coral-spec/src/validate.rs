@@ -45,7 +45,6 @@ pub(crate) fn validate_http_table(
     requests: &[RequestRouteSpec],
     pagination: &PaginationSpec,
 ) -> Result<()> {
-    // Empty request.path is rejected by the JSON Schema (minLength: 1).
     validate_columns(columns, schema, table_name)?;
     let known_filters = validate_filters_and_column_exprs(filters, columns, schema, table_name)?;
 
@@ -121,7 +120,6 @@ pub(crate) fn validate_filters_and_column_exprs(
 ) -> Result<HashSet<String>> {
     let mut known_filters = HashSet::new();
     for filter in filters {
-        // Empty filter names are rejected by the JSON Schema (minLength: 1).
         if !known_filters.insert(filter.name.clone()) {
             return Err(ManifestError::validation(format!(
                 "{schema}.{table} has duplicate filter '{}'",
