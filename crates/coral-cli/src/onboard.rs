@@ -1,9 +1,7 @@
-use std::path::PathBuf;
-
 use coral_api::v1::{AvailableSource, Source};
 use coral_client::AppClient;
 use dialoguer::console::{measure_text_width, style};
-use dialoguer::{Confirm, Input, Select, theme::ColorfulTheme};
+use dialoguer::{Confirm, Select, theme::ColorfulTheme};
 
 use crate::source_ops;
 
@@ -11,7 +9,6 @@ const SOURCE_DESCRIPTION_PREVIEW_LIMIT: usize = 88;
 
 enum TopLevelChoice {
     BundledSource(usize),
-    ImportManifest,
     Finish,
 }
 
@@ -48,9 +45,6 @@ pub(crate) async fn run(app: &AppClient) -> Result<(), anyhow::Error> {
                     run_add_bundled_source(app, &theme, source).await?;
                 }
             }
-            TopLevelChoice::ImportManifest => {
-                run_import_source(app, &theme).await?;
-            }
             TopLevelChoice::Finish => {
                 print_next_steps(&installed_sources);
                 return Ok(());
@@ -74,7 +68,6 @@ fn select_top_level(
         .map(|source| format_source_list_item(source, name_width))
         .collect();
 
-    labels.push("  Import a source manifest".to_string());
     labels.push("Finish onboarding".to_string());
 
     let first_uninstalled = bundled_sources
@@ -90,7 +83,7 @@ fn select_top_level(
 
     match selection {
         Some(idx) if idx < bundled_sources.len() => Ok(TopLevelChoice::BundledSource(idx)),
-        Some(idx) if idx == bundled_sources.len() => Ok(TopLevelChoice::ImportManifest),
+        Some(idx) if idx == bundled_sources.len() => Ok(TopLevelChoice::Finish),
         _ => Ok(TopLevelChoice::Finish),
     }
 }
@@ -163,18 +156,6 @@ async fn run_add_bundled_source(
     let result = source_ops::add_bundled_source(app, &source.name, variables, secrets).await?;
     println!("Added source {}", result.name);
     maybe_validate_after_install(app, theme, &result.name).await
-}
-
-async fn run_import_source(app: &AppClient, theme: &ColorfulTheme) -> Result<(), anyhow::Error> {
-    let path = Input::<String>::with_theme(theme)
-        .with_prompt("Path to a source manifest YAML file")
-        .interact_text()?;
-    let path = PathBuf::from(path);
-    let (manifest_yaml, inputs) = source_ops::load_manifest_inputs(&path)?;
-    let (variables, secrets) = source_ops::prompt_for_inputs(&inputs)?;
-    let source = source_ops::import_source(app, manifest_yaml, variables, secrets).await?;
-    println!("Imported source {}", source.name);
-    maybe_validate_after_install(app, theme, &source.name).await
 }
 
 async fn maybe_validate_after_install(
