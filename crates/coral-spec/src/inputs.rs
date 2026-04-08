@@ -1,35 +1,25 @@
-//! Extracts interactive source inputs from source-spec documents.
+//! Extracts interactive source inputs from validated source-spec models.
 //!
-//! These helpers walk the source-spec DSL and collect install-time inputs in
-//! declaration order. They stay close to the authored file format so callers
-//! can use them before any app- or transport-level mapping.
+//! Walks the parsed, typed source-spec model and collects install-time inputs
+//! in declaration order. Input help is sourced from the parsed `Onboarding`
+//! metadata — no raw YAML re-scraping.
 
 use std::collections::BTreeMap;
 
-use serde_yaml::{Mapping, Value};
-
-use crate::{ManifestError, ParsedTemplate, Result, TemplateNamespace};
+use crate::{
+    HeaderSpec, ManifestError, ParsedTemplate, RequestRouteSpec, RequestSpec, Result,
+    TemplateNamespace, ValidatedSourceManifest, ValueSourceSpec,
+};
 
 /// The kind of interactive input required by one validated source spec.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum InputKind {
+pub enum InputKind {
+    /// A non-secret input persisted in source variables.
     Variable,
+    /// A secret input persisted separately from source variables.
     Secret,
 }
-
-impl InputKind {
-    fn as_manifest_kind(self) -> InputKind {
-        match self {
-            Self::Variable => InputKind::Variable,
-            Self::Secret => InputKind::Secret,
-        }
-    }
-}
-
 /// One install-time input extracted from a validated source spec.
-///
-/// The app and CLI can map this into prompts, persisted variables, or secret
-/// collection flows without depending on protobuf-specific types.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InputSpec {
     /// The source-spec-declared input key.
@@ -44,221 +34,148 @@ pub struct InputSpec {
     pub help: Option<String>,
 }
 
-#[derive(Debug, Clone)]
-struct InputState {
-    kind: InputKind,
-    default_value: Option<String>,
-}
-
-/// Collect interactive source inputs from structured source-spec data.
+/// Collect interactive source inputs from a validated source manifest.
 ///
 /// # Errors
 ///
-/// Returns a [`ManifestError`] when the source spec contains unsupported legacy
-/// source-input forms or malformed template tokens.
-pub fn collect_source_inputs_value(root: &Value) -> Result<Vec<InputSpec>> {
-    let input_help = collect_input_help(root)?;
-    let mut ordered = Vec::new();
-    let mut seen = BTreeMap::<String, InputState>::new();
-    collect_from_value(root, &mut ordered, &mut seen)?;
-    for input in &mut ordered {
-        input.help = input_help.get(&input.key).cloned();
+/// Returns a [`ManifestError`] if the same input key is declared with
+/// inconsistent kind or default value.
+pub fn collect_inputs(manifest: &ValidatedSourceManifest) -> Result<Vec<InputSpec>> {
+    InputCollector::new().collect(manifest)
+}
+
+struct InputCollector {
+    ordered: Vec<InputSpec>,
+    seen: BTreeMap<String, (InputKind, Option<String>)>,
+}
+
+impl InputCollector {
+    fn new() -> Self {
+        Self {
+            ordered: Vec::new(),
+            seen: BTreeMap::new(),
+        }
     }
-    Ok(ordered)
-}
 
-/// Collect interactive source inputs from raw source-spec YAML.
-///
-/// # Errors
-///
-/// Returns a [`ManifestError`] when the YAML cannot be parsed or when the
-/// source spec contains unsupported legacy source-input forms or malformed
-/// template tokens.
-pub fn collect_source_inputs_yaml(raw: &str) -> Result<Vec<InputSpec>> {
-    let root: Value = serde_yaml::from_str(raw).map_err(ManifestError::parse_yaml)?;
-    collect_source_inputs_value(&root)
-}
+    fn collect(mut self, manifest: &ValidatedSourceManifest) -> Result<Vec<InputSpec>> {
+        if let Some(http) = manifest.as_http() {
+            self.visit_template(&http.base_url)?;
 
-/// Keys containing metadata that should not be walked for input discovery.
-const METADATA_KEYS: &[&str] = &["onboarding"];
+            for header in &http.auth.headers {
+                self.visit_value_source(&header.value)?;
+            }
 
-fn collect_from_value(
-    value: &Value,
-    ordered: &mut Vec<InputSpec>,
-    seen: &mut BTreeMap<String, InputState>,
-) -> Result<()> {
-    match value {
-        Value::Mapping(map) => {
-            collect_from_mapping(map, ordered, seen)?;
-            for (key, nested) in map {
-                let skip = key
-                    .as_str()
-                    .is_some_and(|k| METADATA_KEYS.contains(&k));
-                if !skip {
-                    collect_from_value(nested, ordered, seen)?;
+            for table in &http.tables {
+                self.visit_request(&table.request)?;
+                for route in &table.requests {
+                    self.visit_route(route)?;
                 }
             }
         }
-        Value::Sequence(items) => {
-            for item in items {
-                collect_from_value(item, ordered, seen)?;
+
+        if let Some(onboarding) = manifest.common().onboarding.as_ref() {
+            for input in &mut self.ordered {
+                input.help = onboarding.help_for_input(&input.key).map(str::to_string);
             }
         }
-        Value::String(raw) => collect_from_template(raw, ordered, seen)?,
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::Tagged(_) => {}
+
+        Ok(self.ordered)
     }
-    Ok(())
-}
 
-fn collect_input_help(root: &Value) -> Result<BTreeMap<String, String>> {
-    let Some(root) = root.as_mapping() else {
-        return Ok(BTreeMap::new());
-    };
-    let Some(onboarding) = root
-        .get(Value::String("onboarding".to_string()))
-        .and_then(Value::as_mapping)
-    else {
-        return Ok(BTreeMap::new());
-    };
-    let Some(input_help) = onboarding
-        .get(Value::String("input_help".to_string()))
-        .and_then(Value::as_mapping)
-    else {
-        return Ok(BTreeMap::new());
-    };
-
-    let mut help = BTreeMap::new();
-    for (key, value) in input_help {
-        let key = key.as_str().ok_or_else(|| {
-            ManifestError::validation("onboarding.input_help key must be a string")
-        })?;
-        let value = value.as_str().ok_or_else(|| {
-            ManifestError::validation(format!(
-                "onboarding.input_help.{key} value must be a string"
-            ))
-        })?;
-        help.insert(key.to_string(), value.to_string());
-    }
-    Ok(help)
-}
-
-fn collect_from_mapping(
-    map: &Mapping,
-    ordered: &mut Vec<InputSpec>,
-    seen: &mut BTreeMap<String, InputState>,
-) -> Result<()> {
-    let Some(from) = map
-        .get(Value::String("from".to_string()))
-        .and_then(Value::as_str)
-    else {
-        return Ok(());
-    };
-
-    let kind = match from {
-        "secret" => Some(InputKind::Secret),
-        "variable" => Some(InputKind::Variable),
-        "env" | "env_any" | "secret_any" | "variable_any" => {
-            return Err(ManifestError::validation(format!(
-                "unsupported manifest input source '{from}'"
-            )));
-        }
-        _ => None,
-    };
-    let Some(kind) = kind else {
-        return Ok(());
-    };
-
-    let key = map
-        .get(Value::String("key".to_string()))
-        .and_then(Value::as_str)
-        .ok_or_else(|| {
-            ManifestError::validation(format!("manifest '{from}' input is missing key"))
-        })?;
-    let default_value = map
-        .get(Value::String("default".to_string()))
-        .and_then(Value::as_str)
-        .map(ToString::to_string);
-    register_input(key, kind, default_value, ordered, seen)
-}
-
-fn collect_from_template(
-    template: &str,
-    ordered: &mut Vec<InputSpec>,
-    seen: &mut BTreeMap<String, InputState>,
-) -> Result<()> {
-    let template = ParsedTemplate::parse(template)?;
-    for token in template.tokens() {
-        match token.namespace() {
-            TemplateNamespace::Secret => {
-                register_input(
-                    token.key(),
-                    InputKind::Secret,
-                    token.default_value().map(ToString::to_string),
-                    ordered,
-                    seen,
-                )?;
-            }
-            TemplateNamespace::Variable => {
-                register_input(
-                    token.key(),
-                    InputKind::Variable,
-                    token.default_value().map(ToString::to_string),
-                    ordered,
-                    seen,
-                )?;
-            }
-            TemplateNamespace::Env => {
+    fn register(&mut self, key: &str, kind: InputKind, default_value: Option<String>) -> Result<()> {
+        if let Some(existing) = self.seen.get(key) {
+            if existing.0 != kind || existing.1 != default_value {
                 return Err(ManifestError::validation(format!(
-                    "unsupported template namespace '{}'",
-                    token.raw_key()
+                    "manifest input '{key}' is declared inconsistently"
                 )));
             }
-            TemplateNamespace::Filter | TemplateNamespace::State | TemplateNamespace::Other(_) => {}
+            return Ok(());
         }
-    }
-    Ok(())
-}
 
-fn register_input(
-    key: &str,
-    kind: InputKind,
-    default_value: Option<String>,
-    ordered: &mut Vec<InputSpec>,
-    seen: &mut BTreeMap<String, InputState>,
-) -> Result<()> {
-    if let Some(existing) = seen.get(key) {
-        if existing.kind != kind || existing.default_value != default_value {
-            return Err(ManifestError::validation(format!(
-                "manifest input '{key}' is declared inconsistently"
-            )));
-        }
-        return Ok(());
-    }
-
-    ordered.push(InputSpec {
-        key: key.to_string(),
-        kind: kind.as_manifest_kind(),
-        required: default_value.is_none(),
-        default_value: default_value.clone().unwrap_or_default(),
-        help: None,
-    });
-    seen.insert(
-        key.to_string(),
-        InputState {
+        self.ordered.push(InputSpec {
+            key: key.to_string(),
             kind,
-            default_value,
-        },
-    );
-    Ok(())
+            required: default_value.is_none(),
+            default_value: default_value.clone().unwrap_or_default(),
+            help: None,
+        });
+        self.seen.insert(key.to_string(), (kind, default_value));
+        Ok(())
+    }
+
+    fn visit_template(&mut self, template: &ParsedTemplate) -> Result<()> {
+        for token in template.tokens() {
+            match token.namespace() {
+                TemplateNamespace::Secret => {
+                    self.register(
+                        token.key(),
+                        InputKind::Secret,
+                        token.default_value().map(str::to_string),
+                    )?;
+                }
+                TemplateNamespace::Variable => {
+                    self.register(
+                        token.key(),
+                        InputKind::Variable,
+                        token.default_value().map(str::to_string),
+                    )?;
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn visit_value_source(&mut self, source: &ValueSourceSpec) -> Result<()> {
+        match source {
+            ValueSourceSpec::Secret { key, default } => {
+                self.register(key, InputKind::Secret, default.clone())?;
+            }
+            ValueSourceSpec::Variable { key, default } => {
+                self.register(key, InputKind::Variable, default.clone())?;
+            }
+            ValueSourceSpec::Template { template } => {
+                self.visit_template(template)?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn visit_headers(&mut self, headers: &[HeaderSpec]) -> Result<()> {
+        for header in headers {
+            self.visit_value_source(&header.value)?;
+        }
+        Ok(())
+    }
+
+    fn visit_request(&mut self, request: &RequestSpec) -> Result<()> {
+        self.visit_template(&request.path)?;
+        for param in &request.query {
+            self.visit_value_source(&param.value)?;
+        }
+        for field in &request.body {
+            self.visit_value_source(&field.value)?;
+        }
+        self.visit_headers(&request.headers)?;
+        Ok(())
+    }
+
+    fn visit_route(&mut self, route: &RequestRouteSpec) -> Result<()> {
+        self.visit_request(&route.request)
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{InputKind, collect_source_inputs_yaml};
+    use crate::parse_source_manifest_yaml;
+
+    use super::{InputKind, collect_inputs};
 
     #[test]
     fn extracts_variables_and_secrets_in_manifest_order() {
-        let manifest = r#"
+        let manifest = parse_source_manifest_yaml(
+            r#"
 name: demo
 version: 1.0.0
 dsl_version: 3
@@ -273,10 +190,20 @@ auth:
     - name: Authorization
       from: template
       template: Bearer {{secret.API_TOKEN}}
-tables: []
-"#;
+tables:
+  - name: messages
+    description: Demo messages
+    request:
+      method: GET
+      path: /messages
+    columns:
+      - name: id
+        type: Utf8
+"#,
+        )
+        .expect("parse");
 
-        let inputs = collect_source_inputs_yaml(manifest).expect("inputs");
+        let inputs = collect_inputs(&manifest).expect("collect");
         assert_eq!(inputs.len(), 2);
 
         assert_eq!(inputs[0].key, "API_BASE");
@@ -298,8 +225,9 @@ tables: []
     }
 
     #[test]
-    fn onboarding_template_syntax_does_not_register_phantom_inputs() {
-        let manifest = r#"
+    fn onboarding_metadata_does_not_register_phantom_inputs() {
+        let manifest = parse_source_manifest_yaml(
+            r#"
 name: demo
 version: 1.0.0
 dsl_version: 3
@@ -313,10 +241,20 @@ auth:
     - name: Authorization
       from: template
       template: Bearer {{secret.API_TOKEN}}
-tables: []
-"#;
+tables:
+  - name: messages
+    description: Demo messages
+    request:
+      method: GET
+      path: /messages
+    columns:
+      - name: id
+        type: Utf8
+"#,
+        )
+        .expect("parse");
 
-        let inputs = collect_source_inputs_yaml(manifest).expect("inputs");
+        let inputs = collect_inputs(&manifest).expect("collect");
         assert_eq!(inputs.len(), 2);
         assert_eq!(inputs[0].key, "API_BASE");
         assert_eq!(inputs[1].key, "API_TOKEN");
@@ -327,17 +265,26 @@ tables: []
     }
 
     #[test]
-    fn rejects_legacy_env_inputs() {
-        let manifest = r#"
+    fn file_backend_returns_empty_inputs() {
+        let manifest = parse_source_manifest_yaml(
+            r#"
 name: demo
 version: 1.0.0
 dsl_version: 3
-backend: http
-base_url: "{{env.API_BASE}}"
-tables: []
-"#;
-        let error = collect_source_inputs_yaml(manifest).expect_err("legacy env unsupported");
-        assert!(error.to_string().contains("unsupported"));
+backend: parquet
+tables:
+  - name: data
+    description: Some data
+    source:
+      location: file:///tmp/demo/
+      glob: "**/*.parquet"
+    columns: []
+"#,
+        )
+        .expect("parse");
+
+        let inputs = collect_inputs(&manifest).expect("collect");
+        assert!(inputs.is_empty());
     }
 
     #[test]
@@ -367,3 +314,4 @@ tables: []
             Some("Create a token at https://example.com/settings/tokens")
         );
     }
+}

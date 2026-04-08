@@ -7,7 +7,8 @@ use coral_api::v1::{
     SourceOrigin, SourceSecret, SourceVariable, ValidateSourceRequest, ValidateSourceResponse,
 };
 use coral_client::{AppClient, default_workspace};
-use coral_spec::{InputKind, InputSpec, collect_source_inputs_yaml};
+use coral_spec::{InputKind, InputSpec, collect_inputs, parse_source_manifest_yaml};
+use dialoguer::console::Style;
 use dialoguer::{Input, Password, theme::ColorfulTheme};
 use tonic::Request;
 
@@ -119,7 +120,7 @@ pub(crate) fn source_name_arg(name: Option<&str>) -> Result<String, anyhow::Erro
 }
 
 pub(crate) fn prompt_for_inputs(
-    inputs: &[ManifestInputSpec],
+    inputs: &[InputSpec],
 ) -> Result<(Vec<SourceVariable>, Vec<SourceSecret>), anyhow::Error> {
     let mut variables = Vec::new();
     let mut secrets = Vec::new();
@@ -144,7 +145,7 @@ pub(crate) fn prompt_for_inputs(
 
 pub(crate) fn input_from_proto(
     input: &SourceInputSpec,
-) -> Result<ManifestInputSpec, anyhow::Error> {
+) -> Result<InputSpec, anyhow::Error> {
     let kind = match SourceInputKind::try_from(input.kind) {
         Ok(SourceInputKind::Variable) => InputKind::Variable,
         Ok(SourceInputKind::Secret) => InputKind::Secret,
@@ -167,9 +168,10 @@ pub(crate) fn input_from_proto(
 
 pub(crate) fn load_manifest_inputs(
     path: &Path,
-) -> Result<(String, Vec<ManifestInputSpec>), anyhow::Error> {
+) -> Result<(String, Vec<InputSpec>), anyhow::Error> {
     let manifest_yaml = std::fs::read_to_string(path)?;
-    let inputs = collect_source_inputs_yaml(&manifest_yaml)?;
+    let manifest = parse_source_manifest_yaml(&manifest_yaml)?;
+    let inputs = collect_inputs(&manifest)?;
     Ok((manifest_yaml, inputs))
 }
 
@@ -195,7 +197,11 @@ pub(crate) fn print_validation_success(
     Ok(())
 }
 
-fn prompt_variable(input: &ManifestInputSpec) -> Result<Option<SourceVariable>, anyhow::Error> {
+fn prompt_variable(input: &InputSpec) -> Result<Option<SourceVariable>, anyhow::Error> {
+    if let Some(help) = &input.help {
+        let dim = Style::new().dim();
+        eprintln!("{}", dim.apply_to(help));
+    }
     let theme = ColorfulTheme::default();
     let prompt = if input.default_value.is_empty() {
         input.key.clone()
@@ -215,7 +221,11 @@ fn prompt_variable(input: &ManifestInputSpec) -> Result<Option<SourceVariable>, 
     }))
 }
 
-fn prompt_secret(input: &ManifestInputSpec) -> Result<Option<SourceSecret>, anyhow::Error> {
+fn prompt_secret(input: &InputSpec) -> Result<Option<SourceSecret>, anyhow::Error> {
+    if let Some(help) = &input.help {
+        let dim = Style::new().dim();
+        eprintln!("{}", dim.apply_to(help));
+    }
     let theme = ColorfulTheme::default();
     let prompt = if input.default_value.is_empty() {
         input.key.clone()
@@ -236,7 +246,7 @@ fn prompt_secret(input: &ManifestInputSpec) -> Result<Option<SourceSecret>, anyh
 }
 
 pub(crate) fn finalize_input_value(
-    input: &ManifestInputSpec,
+    input: &InputSpec,
     value: String,
     kind_label: &str,
 ) -> Result<Option<String>, anyhow::Error> {
@@ -257,17 +267,18 @@ pub(crate) fn finalize_input_value(
 
 #[cfg(test)]
 mod tests {
-    use coral_spec::{InputKind, ManifestInputSpec};
+    use coral_spec::{InputKind, InputSpec};
 
     use super::finalize_input_value;
 
     #[test]
     fn empty_input_uses_default_value() {
-        let input = ManifestInputSpec {
+        let input = InputSpec {
             key: "API_BASE".to_string(),
             kind: InputKind::Variable,
             required: false,
             default_value: "https://example.com".to_string(),
+            help: None,
         };
         assert_eq!(
             finalize_input_value(&input, String::new(), "source variable")
@@ -278,11 +289,12 @@ mod tests {
 
     #[test]
     fn empty_required_input_without_default_is_rejected() {
-        let input = ManifestInputSpec {
+        let input = InputSpec {
             key: "API_TOKEN".to_string(),
             kind: InputKind::Secret,
             required: true,
             default_value: String::new(),
+            help: None,
         };
         let error = finalize_input_value(&input, String::new(), "source secret")
             .expect_err("required empty input should fail");
