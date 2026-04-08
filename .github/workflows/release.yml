@@ -35,6 +35,7 @@ jobs:
       - name: Prepare release metadata
         id: meta
         env:
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
           TARGET_REF: ${{ inputs.target_ref }}
         run: python3 .github/scripts/prepare_release.py
 

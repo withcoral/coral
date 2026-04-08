@@ -128,6 +128,7 @@ def prepare_outputs() -> dict[str, str]:
     github_ref = require_env("GITHUB_REF")
     github_sha = require_env("GITHUB_SHA")
     target_ref = os.environ.get("TARGET_REF", "")
+    push_before_sha = os.environ.get("PUSH_BEFORE_SHA", "")
 
     if event_name == "workflow_dispatch" and github_ref != "refs/heads/main":
         raise ReleaseError("Run this workflow from main.")
@@ -152,11 +153,16 @@ def prepare_outputs() -> dict[str, str]:
         raise ReleaseError("Could not read [workspace.package].version from Cargo.toml")
 
     if event_name == "push":
-        parent_version = maybe_read_workspace_version(f"{resolved_sha}^")
-        if current_version == parent_version:
+        previous_ref = (
+            push_before_sha
+            if push_before_sha and set(push_before_sha) != {"0"}
+            else f"{resolved_sha}^"
+        )
+        previous_version = maybe_read_workspace_version(previous_ref)
+        if current_version == previous_version:
             print(f"Version unchanged ({current_version}), skipping release.")
             return {"should_release": "false"}
-        print(f"Version changed: {parent_version} -> {current_version}")
+        print(f"Version changed: {previous_version} -> {current_version}")
 
     tag_name = f"v{current_version}"
     parsed_version = Version.parse(tag_name)

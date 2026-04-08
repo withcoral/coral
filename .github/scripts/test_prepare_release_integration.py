@@ -58,7 +58,7 @@ class PrepareReleaseIntegrationTests(unittest.TestCase):
 
     def test_push_with_unchanged_version_skips_release(self) -> None:
         self.write_workspace_version("0.1.0")
-        self.commit("initial release version")
+        previous_sha = self.commit("initial release version")
 
         (self.repo / "README.md").write_text("docs update\n", encoding="utf-8")
         head_sha = self.commit("docs only change")
@@ -67,9 +67,31 @@ class PrepareReleaseIntegrationTests(unittest.TestCase):
             GITHUB_EVENT_NAME="push",
             GITHUB_REF="refs/heads/main",
             GITHUB_SHA=head_sha,
+            PUSH_BEFORE_SHA=previous_sha,
         )
 
         self.assertEqual(outputs, {"should_release": "false"})
+
+    def test_push_with_version_bump_in_earlier_commit_still_releases(self) -> None:
+        self.write_workspace_version("0.1.0")
+        previous_sha = self.commit("initial release version")
+
+        self.write_workspace_version("0.2.0")
+        self.commit("bump version")
+
+        (self.repo / "README.md").write_text("follow-up change\n", encoding="utf-8")
+        head_sha = self.commit("follow-up commit")
+
+        outputs = self.call_prepare_outputs(
+            GITHUB_EVENT_NAME="push",
+            GITHUB_REF="refs/heads/main",
+            GITHUB_SHA=head_sha,
+            PUSH_BEFORE_SHA=previous_sha,
+        )
+
+        self.assertEqual(outputs["should_release"], "true")
+        self.assertEqual(outputs["build_ref"], head_sha)
+        self.assertEqual(outputs["tag_name"], "v0.2.0")
 
     def test_manual_release_accepts_stable_after_prerelease_tag(self) -> None:
         self.write_workspace_version("1.0.0-rc1")
