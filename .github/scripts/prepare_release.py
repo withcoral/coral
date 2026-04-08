@@ -188,6 +188,7 @@ def prepare_outputs() -> dict[str, str]:
 
     return {
         "should_release": "true",
+        "version": current_version,
         "build_ref": resolved_sha,
         "tag_name": tag_name,
         "release_name": tag_name,

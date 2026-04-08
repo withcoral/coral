@@ -20,6 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       should_release: ${{ steps.meta.outputs.should_release }}
+      version: ${{ steps.meta.outputs.version }}
       build_ref: ${{ steps.meta.outputs.build_ref }}
       tag_name: ${{ steps.meta.outputs.tag_name }}
       release_name: ${{ steps.meta.outputs.release_name }}
@@ -155,6 +156,9 @@ jobs:
         with:
           app-id: ${{ vars.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          repositories: |
+            coral
+            homebrew-tap
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
@@ -170,3 +174,17 @@ jobs:
           files: |
             artifacts/${{ needs.prepare.outputs.artifact_prefix }}-*.tar.gz
             artifacts/checksums.sha256
+
+      - name: Trigger Homebrew tap bump
+        uses: actions/github-script@v8
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+        with:
+          github-token: ${{ steps.github-app-token.outputs.token }}
+          script: |
+            await github.rest.repos.createDispatchEvent({
+              owner: "withcoral",
+              repo: "homebrew-tap",
+              event_type: "coral-release",
+              client_payload: { version: process.env.RELEASE_VERSION },
+            });
