@@ -202,12 +202,7 @@ impl HttpSourceManifest {
             .into_iter()
             .map(|table| table.into_validated(&common.name))
             .collect::<Result<Vec<_>>>()?;
-        validate_manifest_top_level(
-            &common.name,
-            &common.name,
-            SourceBackend::Http,
-            &base_url,
-        )?;
+        validate_manifest_top_level(&common.name, &common.name, SourceBackend::Http, &base_url)?;
         Ok(Self {
             common,
             base_url,
