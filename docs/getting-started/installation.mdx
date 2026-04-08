@@ -1,18 +1,13 @@
 ---
 title: "Installation"
-description: "Install Coral with Homebrew, the install script, or from source, then continue to onboarding."
+description: "Install the Coral CLI"
 ---
 
 Coral ships as a single local CLI. Once installed, the same binary is used for source management, SQL queries, and the MCP stdio server.
 
-## Prerequisites
-
-Before you install Coral, make sure you have:
-
-- macOS or Linux
-- a shell with permission to place `coral` on your `PATH`
-- Homebrew, if you want the Homebrew install path
-- Rust and Cargo, if you want to build Coral from source
+<Note>
+  Coral currently supports macOS and Linux only.
+</Note>
 
 ## Install Coral
 
@@ -30,6 +25,8 @@ Before you install Coral, make sure you have:
   </Tab>
 
   <Tab title="Build from source">
+    Requires [Rust and Cargo](https://www.rust-lang.org/tools/install) installed.
+
     ```shellscript
     cargo build -p coral-cli --release
     ./target/release/coral --help
@@ -37,27 +34,9 @@ Before you install Coral, make sure you have:
   </Tab>
 </Tabs>
 
-Homebrew is the preferred managed install path. Use the install script when you want a direct bootstrap path instead. Build from source if you are contributing to Coral or need to test the current repo state directly.
-
-## Verify the install
-
-Run:
-
-```shellscript
-coral --help
-```
-
-The rest of the documentation assumes `coral` is available on your `PATH`.
-
-## Next step
-
-Once Coral is installed, run:
-
-```shellscript
-coral onboard
-```
-
-This guided flow helps you add or import a source, validate it, and get ready to query real data.
+<Tip>
+  Once installed, run `coral onboard` to start the interactive wizard to complete the setup.
+</Tip>
 
 ## Upgrade
 
@@ -107,8 +86,3 @@ Important files include:
 - `config.toml` for installed-source metadata and non-secret variables
 - installed source specs under `workspaces/<workspace>/sources/...`
 - source secrets stored separately within the same local trust boundary
-
-## Continue
-
-- Use [Quickstart](/getting-started/quickstart) for the manual source setup and first-query flow
-- Use [Agent usage](/guides/agent-usage) when you want Claude Code, Codex, Cursor, or another agent to call Coral
