@@ -1,6 +1,6 @@
 //! Typed query inputs and results.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -8,16 +8,14 @@ use arrow::datatypes::Schema;
 use arrow::record_batch::RecordBatch;
 use coral_spec::ValidatedSourceManifest;
 
-use crate::CoreError;
-
 use super::ColumnInfo;
 
 /// One managed source selected into the current query runtime.
 #[derive(Debug, Clone)]
 pub struct QuerySource {
-    workspace_name: String,
     source_spec: ValidatedSourceManifest,
     variables: BTreeMap<String, String>,
+    secrets: BTreeMap<String, String>,
 }
 
 impl QuerySource {
@@ -25,21 +23,15 @@ impl QuerySource {
     /// Builds one app-to-query source selection from installed metadata and a
     /// validated declarative source spec.
     pub fn new(
-        workspace_name: impl Into<String>,
         source_spec: ValidatedSourceManifest,
         variables: BTreeMap<String, String>,
+        secrets: BTreeMap<String, String>,
     ) -> Self {
         Self {
-            workspace_name: workspace_name.into(),
             source_spec,
             variables,
+            secrets,
         }
-    }
-
-    #[must_use]
-    /// Returns the owning workspace name.
-    pub fn workspace_name(&self) -> &str {
-        &self.workspace_name
     }
 
     #[must_use]
@@ -65,6 +57,12 @@ impl QuerySource {
     pub fn variables(&self) -> &BTreeMap<String, String> {
         &self.variables
     }
+
+    #[must_use]
+    /// Returns resolved source secrets required by the manifest.
+    pub fn secrets(&self) -> &BTreeMap<String, String> {
+        &self.secrets
+    }
 }
 
 /// App-owned non-secret runtime inputs needed while compiling sources.
@@ -76,18 +74,6 @@ pub struct QueryRuntimeContext {
 
 /// Resolves app-owned runtime inputs at query time.
 pub trait QueryRuntimeProvider: Send + Sync {
-    /// Resolves named source-owned secrets for one selected source.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CoreError`] if the source's credentials cannot be loaded from
-    /// the owning application environment.
-    fn resolve_source_secrets(
-        &self,
-        source: &QuerySource,
-        secret_names: &BTreeSet<String>,
-    ) -> Result<BTreeMap<String, String>, CoreError>;
-
     /// Returns non-secret runtime inputs owned by the application layer.
     fn runtime_context(&self) -> QueryRuntimeContext;
 }

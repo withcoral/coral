@@ -38,7 +38,7 @@ pub(crate) async fn build_runtime(
     let mut compiled_sources = Vec::new();
     let mut failures = Vec::new();
     for source in sources {
-        match compile_query_source(source, runtime, &runtime_context) {
+        match compile_query_source(source, &runtime_context) {
             Ok(compiled) => compiled_sources.push(compiled),
             Err(error) => failures.push(SourceRegistrationFailure {
                 schema_name: source.source_name().to_string(),

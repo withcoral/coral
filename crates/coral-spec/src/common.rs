@@ -12,7 +12,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{ManifestError, Result};
+use crate::{ManifestError, ParsedTemplate, Result};
 
 /// Common top-level source metadata shared by every backend source spec.
 #[derive(Debug, Clone)]
@@ -131,7 +131,7 @@ pub struct RequestSpec {
     #[serde(default)]
     pub method: HttpMethod,
     #[serde(default)]
-    pub path: String,
+    pub path: ParsedTemplate,
     #[serde(default)]
     pub query: Vec<QueryParamSpec>,
     #[serde(default)]
@@ -182,7 +182,7 @@ pub struct BodyFieldSpec {
 #[serde(tag = "from", rename_all = "snake_case")]
 pub enum ValueSourceSpec {
     Template {
-        template: String,
+        template: ParsedTemplate,
     },
     Literal {
         value: Value,
@@ -626,7 +626,7 @@ mod tests {
             vec![],
             RequestSpec {
                 method: HttpMethod::GET,
-                path: "/items".into(),
+                path: ParsedTemplate::parse("/items").expect("template"),
                 query: vec![],
                 body: vec![],
                 headers: vec![],
@@ -648,7 +648,7 @@ mod tests {
             }],
             RequestSpec {
                 method: HttpMethod::GET,
-                path: "/items".into(),
+                path: ParsedTemplate::parse("/items").expect("template"),
                 query: vec![],
                 body: vec![],
                 headers: vec![],
@@ -658,7 +658,7 @@ mod tests {
             when_filters: vec!["id".into()],
             request: RequestSpec {
                 method: HttpMethod::GET,
-                path: "/items/{{filter.id}}".into(),
+                path: ParsedTemplate::parse("/items/{{filter.id}}").expect("template"),
                 query: vec![],
                 body: vec![],
                 headers: vec![],
@@ -689,7 +689,7 @@ mod tests {
             ],
             RequestSpec {
                 method: HttpMethod::GET,
-                path: "/items".into(),
+                path: ParsedTemplate::parse("/items").expect("template"),
                 query: vec![],
                 body: vec![],
                 headers: vec![],
@@ -700,7 +700,7 @@ mod tests {
                 when_filters: vec!["id".into()],
                 request: RequestSpec {
                     method: HttpMethod::GET,
-                    path: "/items/by-id/{{filter.id}}".into(),
+                    path: ParsedTemplate::parse("/items/by-id/{{filter.id}}").expect("template"),
                     query: vec![],
                     body: vec![],
                     headers: vec![],
@@ -710,7 +710,8 @@ mod tests {
                 when_filters: vec!["id".into(), "org".into()],
                 request: RequestSpec {
                     method: HttpMethod::GET,
-                    path: "/orgs/{{filter.org}}/items/{{filter.id}}".into(),
+                    path: ParsedTemplate::parse("/orgs/{{filter.org}}/items/{{filter.id}}")
+                        .expect("template"),
                     query: vec![],
                     body: vec![],
                     headers: vec![],

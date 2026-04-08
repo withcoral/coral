@@ -17,16 +17,17 @@ use serde_json::Value;
 
 use crate::common::build_source_manifest_common;
 use crate::{
-    AuthSpec, ColumnSpec, FilterSpec, ManifestError, PaginationSpec, RequestRouteSpec, RequestSpec,
-    ResponseSpec, Result, SourceBackend, SourceManifestCommon, TableCommon, ValueSourceSpec,
-    validate_http_table, validate_manifest_top_level,
+    AuthSpec, ColumnSpec, FilterSpec, ManifestError, PaginationSpec, ParsedTemplate,
+    RequestRouteSpec, RequestSpec, ResponseSpec, Result, SourceBackend, SourceManifestCommon,
+    TableCommon, TemplateNamespace, ValueSourceSpec, validate_http_table,
+    validate_manifest_top_level,
 };
 
 /// Validated top-level manifest for an HTTP-backed source.
 #[derive(Debug, Clone)]
 pub struct HttpSourceManifest {
     pub common: SourceManifestCommon,
-    pub base_url: String,
+    pub base_url: ParsedTemplate,
     pub auth: AuthSpec,
     pub tables: Vec<HttpTableSpec>,
 }
@@ -41,7 +42,7 @@ struct RawHttpSourceManifest {
     description: Option<String>,
     backend: SourceBackend,
     #[serde(default)]
-    base_url: String,
+    base_url: ParsedTemplate,
     #[serde(default)]
     auth: AuthSpec,
     tables: Vec<RawHttpTableSpec>,
@@ -278,24 +279,10 @@ fn collect_value_source_secret_names(
     }
 }
 
-fn collect_template_secret_names(template: &str, secret_names: &mut BTreeSet<String>) {
-    let mut rest = template;
-    while let Some(start) = rest.find("{{") {
-        let token_start = start + 2;
-        let Some(end_rel) = rest[token_start..].find("}}") else {
-            break;
-        };
-        let end = token_start + end_rel;
-        let token = rest[token_start..end].trim();
-        let (raw_key, default) = match token.split_once('|') {
-            Some((key, default)) => (key.trim(), Some(default)),
-            None => (token, None),
-        };
-        if let Some(key) = raw_key.strip_prefix("secret.")
-            && default.is_none()
-        {
-            secret_names.insert(key.to_string());
+fn collect_template_secret_names(template: &ParsedTemplate, secret_names: &mut BTreeSet<String>) {
+    for token in template.tokens() {
+        if token.namespace() == &TemplateNamespace::Secret && token.default_value().is_none() {
+            secret_names.insert(token.key().to_string());
         }
-        rest = &rest[end + 2..];
     }
 }

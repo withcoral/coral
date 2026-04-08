@@ -5,6 +5,14 @@ description: "Install Coral, add a bundled source, inspect available tables, and
 
 This tutorial gets you to a working Coral query flow with a bundled source. It assumes you already installed Coral and have `coral` on your `PATH`.
 
+Prefer the guided path? Run:
+
+```shellscript
+coral onboard
+```
+
+The rest of this page shows the equivalent manual flow so you can see each step explicitly.
+
 ## Prerequisites
 
 Before you start:
@@ -61,11 +69,11 @@ coral sql "
 "
 ```
 
-## 6. Expose Coral over MCP
+## 6. Use Coral with an agent
 
 Once you have a working local workspace, you can expose the same runtime to an MCP client (such as Claude Code, Cursor, or VS Code). 
 
-Because MCP servers are typically configured to be launched automatically by the client rather than run directly in your terminal, see [Use Coral over MCP](/guides/use-coral-over-mcp) for setup instructions.
+Because MCP servers are typically configured to be launched automatically by the client rather than run directly in your terminal, see [Agent usage](/guides/agent-usage) for the broader setup flow and [Use Coral over MCP](/guides/use-coral-over-mcp) for MCP-specific configuration examples.
 
 <Tip>
   The exact schemas and tables depend on the sources you have installed. When in
