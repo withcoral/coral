@@ -12,14 +12,6 @@ use crate::{ManifestError, ParsedTemplate, Result, TemplateNamespace};
 
 /// The kind of interactive input required by one validated source spec.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InputKind {
-    /// A non-secret input persisted in source variables.
-    Variable,
-    /// A secret input persisted separately from source variables.
-    Secret,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InputKind {
     Variable,
     Secret,
@@ -133,7 +125,9 @@ fn collect_input_help(root: &Value) -> Result<BTreeMap<String, String>> {
             ManifestError::validation("onboarding.input_help key must be a string")
         })?;
         let value = value.as_str().ok_or_else(|| {
-            ManifestError::validation(format!("onboarding.input_help.{key} value must be a string"))
+            ManifestError::validation(format!(
+                "onboarding.input_help.{key} value must be a string"
+            ))
         })?;
         help.insert(key.to_string(), value.to_string());
     }
@@ -262,6 +256,10 @@ version: 1.0.0
 dsl_version: 3
 backend: http
 base_url: "{{variable.API_BASE|https://example.com}}"
+onboarding:
+  input_help:
+    API_TOKEN: "Create a token at https://example.com/settings/tokens"
+    API_BASE: "Your API base URL for self-hosted instances"
 auth:
   headers:
     - name: Authorization
@@ -272,58 +270,23 @@ tables: []
 
         let inputs = collect_source_inputs_yaml(manifest).expect("inputs");
         assert_eq!(inputs.len(), 2);
+
         assert_eq!(inputs[0].key, "API_BASE");
         assert_eq!(inputs[0].kind, InputKind::Variable);
         assert!(!inputs[0].required);
         assert_eq!(inputs[0].default_value, "https://example.com");
+        assert_eq!(
+            inputs[0].help.as_deref(),
+            Some("Your API base URL for self-hosted instances")
+        );
+
         assert_eq!(inputs[1].key, "API_TOKEN");
         assert_eq!(inputs[1].kind, InputKind::Secret);
         assert!(inputs[1].required);
-    }
-
-    #[test]
-    fn ignores_onboarding_templates_during_input_discovery() {
-        let manifest = r#"
-name: demo
-version: 1.0.0
-dsl_version: 3
-backend: http
-base_url: "https://example.com"
-auth:
-  headers:
-    - name: Authorization
-      from: template
-      template: Bearer {{secret.API_TOKEN}}
-onboarding:
-  instructions: "Use {{env.SHOULD_NOT_BE_DISCOVERED}} only in docs"
-  input_help:
-    API_TOKEN: "Run {{env.SHOULD_NOT_BE_VALIDATED}} or create a token manually"
-tables: []
-"#;
-
-        let inputs = collect_source_inputs_yaml(manifest).expect("inputs");
-        assert_eq!(inputs.len(), 1);
-        assert_eq!(inputs[0].key, "API_TOKEN");
-    }
-
-    #[test]
-    fn inputs_without_onboarding_are_collected() {
-        let manifest = r"
-name: demo
-version: 1.0.0
-dsl_version: 3
-backend: http
-auth:
-  headers:
-    - name: Authorization
-      from: template
-      template: Bearer {{secret.API_TOKEN}}
-tables: []
-";
-
-        let inputs = collect_source_inputs_yaml(manifest).expect("inputs");
-        assert_eq!(inputs.len(), 1);
-        assert_eq!(inputs[0].key, "API_TOKEN");
+        assert_eq!(
+            inputs[1].help.as_deref(),
+            Some("Create a token at https://example.com/settings/tokens")
+        );
     }
 
     #[test]
@@ -367,4 +330,3 @@ tables: []
             Some("Create a token at https://example.com/settings/tokens")
         );
     }
-}

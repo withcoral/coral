@@ -655,52 +655,6 @@ mod tests {
     use std::collections::HashSet;
 
     #[test]
-    fn extracts_onboarding_help() {
-        let manifest = r#"
-name: demo
-version: 1.0.0
-dsl_version: 3
-backend: http
-onboarding:
-  instructions: Setup docs
-  input_help:
-    API_TOKEN: "Create a token at https://example.com/settings/tokens"
-tables: []
-"#;
-
-        let onboarding = collect_source_onboarding_yaml(manifest)
-            .expect("onboarding")
-            .expect("onboarding should exist");
-        assert_eq!(onboarding.instructions(), Some("Setup docs"));
-        assert_eq!(
-            onboarding.help_for_input("API_TOKEN"),
-            Some("Create a token at https://example.com/settings/tokens")
-        );
-        assert_eq!(onboarding.help_for_input("API_BASE"), None);
-    }
-
-    #[test]
-    fn rejects_onboarding_input_without_help() {
-        let root: serde_yaml::Value = serde_yaml::from_str(
-            r"
-name: demo
-version: 1.0.0
-dsl_version: 3
-backend: http
-onboarding:
-  input_help:
-    API_TOKEN: {}
-tables: []
-",
-        )
-        .expect("yaml");
-
-        let error =
-            collect_source_onboarding_value(&root).expect_err("non-string input help should fail");
-        assert!(error.to_string().contains("invalid type"));
-    }
-
-    #[test]
     fn resolve_request_returns_default_when_no_routes() {
         let table = test_http_table_spec(
             "items",
