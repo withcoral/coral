@@ -19,10 +19,23 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Detect release script changes
+        id: release-script-changes
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            release_python:
+              - '.github/scripts/**'
+              - '.github/workflows/release.yml'
+
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
           python-version-file: .github/scripts/.python-version
+
+      - name: Run release script integration tests
+        if: steps.release-script-changes.outputs.release_python == 'true'
+        run: python3 -m unittest discover -s .github/scripts -p 'test_prepare_release_integration.py'
 
       - name: Install Rust toolchain
         run: rustup show
