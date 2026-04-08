@@ -409,7 +409,6 @@ impl PaginationSpec {
             return Ok(None);
         };
 
-        // page_size.default >= 1 and page_size.max >= 1 are enforced by the JSON Schema.
         if page_size.query_param.is_none() && page_size.body_path.is_empty() {
             return Err(ManifestError::validation(format!(
                 "{schema}.{table} pagination.page_size must define query_param or body_path"
