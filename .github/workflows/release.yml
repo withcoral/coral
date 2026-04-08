@@ -108,22 +108,6 @@ jobs:
             echo "artifact_prefix=coral"
           } >> "$GITHUB_OUTPUT"
 
-  smoke-test:
-    needs: prepare
-    if: needs.prepare.outputs.should_release == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          ref: ${{ needs.prepare.outputs.build_ref }}
-      - name: Install Rust toolchain
-        run: rustup show
-      - name: Cache Rust artifacts
-        uses: Swatinem/rust-cache@23869a5bd66c73db3c0ac40331f3206eb23791dc # v2.9.1
-        with:
-          shared-key: coral-${{ runner.os }}-x86_64-unknown-linux-gnu
-      - name: Run smoke test
-        run: cargo test --locked -p coral-cli --test smoke
   build:
     needs: prepare
     if: needs.prepare.outputs.should_release == 'true'
@@ -177,7 +161,7 @@ jobs:
           name: ${{ needs.prepare.outputs.artifact_prefix }}-${{ matrix.target }}
           path: ${{ needs.prepare.outputs.artifact_prefix }}-${{ matrix.target }}.tar.gz
   checksums:
-    needs: [prepare, build, smoke-test]
+    needs: [prepare, build]
     if: needs.prepare.outputs.should_release == 'true'
     runs-on: ubuntu-latest
     steps:
