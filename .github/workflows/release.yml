@@ -161,9 +161,9 @@ jobs:
       - name: Build
         run: |
           if [ "${{ matrix.cross }}" = "true" ]; then
-            cross build --locked --release --features otel-receiver --target ${{ matrix.target }}
+            cross build --locked --release --target ${{ matrix.target }}
           else
-            cargo build --locked --release --features otel-receiver --target ${{ matrix.target }}
+            cargo build --locked --release --target ${{ matrix.target }}
           fi
       - name: Package
         run: |
