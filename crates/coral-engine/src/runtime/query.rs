@@ -9,6 +9,7 @@ use datafusion::prelude::{SessionConfig, SessionContext};
 
 use crate::backends::compile_query_source;
 use crate::backends::http::ProviderQueryError;
+use crate::needles::error::NeedleError;
 use crate::runtime::catalog;
 use crate::runtime::registry::{SourceRegistrationFailure, register_sources};
 use crate::{CoreError, QueryExecution, QueryRuntimeProvider, QuerySource, TableInfo};
@@ -46,9 +47,13 @@ pub(crate) async fn build_runtime(
             }),
         }
     }
-    let registration = register_sources(&ctx, compiled_sources)
-        .await
-        .map_err(datafusion_to_core)?;
+    let registration = register_sources(
+        &ctx,
+        compiled_sources,
+        runtime_context.needles_file.as_deref(),
+    )
+    .await
+    .map_err(datafusion_to_core)?;
     catalog::register(&ctx, &registration.active_sources).map_err(datafusion_to_core)?;
     let tables = catalog::collect_tables(&registration.active_sources);
     for failure in &failures {
@@ -92,6 +97,9 @@ fn datafusion_to_core(error: DataFusionError) -> CoreError {
             if let Some(provider_error) = inner.downcast_ref::<ProviderQueryError>() {
                 return provider_error_to_core(provider_error);
             }
+            if let Some(needle_error) = inner.downcast_ref::<NeedleError>() {
+                return needle_error_to_core(needle_error);
+            }
             CoreError::internal(inner.to_string())
         }
         DataFusionError::ObjectStore(error) => CoreError::Unavailable(error.to_string()),
@@ -129,5 +137,18 @@ fn provider_error_to_core(error: &ProviderQueryError) -> CoreError {
             )),
             _ => CoreError::FailedPrecondition(detail.clone()),
         },
+    }
+}
+
+fn needle_error_to_core(error: &NeedleError) -> CoreError {
+    match error {
+        NeedleError::Io { .. } | NeedleError::SourceRegistrationFailed { .. } => {
+            CoreError::FailedPrecondition(error.to_string())
+        }
+        NeedleError::Yaml(_)
+        | NeedleError::CastFailed { .. }
+        | NeedleError::JsonConversion(_)
+        | NeedleError::Arrow(_)
+        | NeedleError::UnusedEntries { .. } => CoreError::InvalidInput(error.to_string()),
     }
 }

@@ -69,9 +69,34 @@ impl QuerySource {
 
 /// App-owned non-secret runtime inputs needed while compiling sources.
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct QueryRuntimeContext {
     /// Current user's home directory for local path resolution.
     pub home_dir: Option<PathBuf>,
+    /// Optional path to a YAML needles file for benchmark needle planting.
+    ///
+    /// When set, the engine reads needle entries from this file and unions
+    /// matching synthetic rows into table query results at registration time.
+    /// This implements a "needle in a haystack" evaluation pattern.
+    pub needles_file: Option<PathBuf>,
+}
+
+impl QueryRuntimeContext {
+    #[must_use]
+    /// Builds app-owned runtime context with the provided home directory.
+    pub fn new(home_dir: Option<PathBuf>) -> Self {
+        Self {
+            home_dir,
+            needles_file: None,
+        }
+    }
+
+    #[must_use]
+    /// Returns a copy of this context with an optional needles file attached.
+    pub fn with_needles_file(mut self, needles_file: Option<PathBuf>) -> Self {
+        self.needles_file = needles_file;
+        self
+    }
 }
 
 /// Resolves app-owned runtime inputs at query time.
