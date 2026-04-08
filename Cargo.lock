@@ -809,6 +809,7 @@ dependencies = [
  "arrow",
  "async-trait",
  "bytes",
+ "chrono",
  "coral-spec",
  "datafusion",
  "futures",

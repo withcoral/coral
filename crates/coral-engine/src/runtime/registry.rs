@@ -1,6 +1,5 @@
 //! Registers compiled backend sources into a shared `DataFusion` session.
 
-use std::path::Path;
 use std::sync::Arc;
 
 use datafusion::error::{DataFusionError, Result};
@@ -46,13 +45,11 @@ fn check_reserved_schema(schema: &str) -> Result<()> {
 pub(crate) async fn register_sources(
     ctx: &SessionContext,
     sources: Vec<Box<dyn CompiledBackendSource>>,
-    needles_file: Option<&Path>,
+    needles: &mut NeedleState,
 ) -> Result<SourceRegistrationResult> {
     let catalog = ctx
         .catalog("datafusion")
         .ok_or_else(|| DataFusionError::Plan("catalog 'datafusion' not found".to_string()))?;
-
-    let mut needles = NeedleState::from_path(needles_file)?;
 
     let mut result = SourceRegistrationResult::default();
     let mut seen_schemas = std::collections::HashSet::new();
@@ -110,7 +107,8 @@ pub(crate) fn register_sources_blocking(
     ctx: &SessionContext,
     sources: Vec<Box<dyn CompiledBackendSource>>,
 ) -> Result<SourceRegistrationResult> {
-    futures::executor::block_on(register_sources(ctx, sources, None))
+    let mut needles = NeedleState::default();
+    futures::executor::block_on(register_sources(ctx, sources, &mut needles))
 }
 
 async fn register_source(
@@ -142,6 +140,7 @@ mod tests {
     use super::{check_reserved_schema, register_sources};
     use crate::QueryRuntimeContext;
     use crate::backends::{CompiledBackendSource, compile_source_manifest};
+    use crate::needles::NeedleState;
     use coral_spec::{ValidatedSourceManifest, parse_source_manifest_value};
 
     fn compile_sources(
@@ -262,7 +261,9 @@ mod tests {
         let location = format!("file://{}/", fixture_dir.path().display());
         let manifest = jsonl_manifest(&location);
 
-        register_sources(&ctx, compile_sources(vec![manifest]), Some(&needles_path))
+        let mut needles =
+            NeedleState::from_path(Some(&needles_path)).expect("needles file should load");
+        register_sources(&ctx, compile_sources(vec![manifest]), &mut needles)
             .await
             .expect("jsonl source with needles should register");
 
@@ -283,9 +284,7 @@ mod tests {
         let needles_path = fixture_dir.path().join("needles.yaml");
         fs::write(&needles_path, "not: valid: yaml: [").expect("write malformed needles fixture");
 
-        let ctx = SessionContext::new();
-        let error = register_sources(&ctx, Vec::new(), Some(&needles_path))
-            .await
+        let error = NeedleState::from_path(Some(&needles_path))
             .expect_err("invalid needles yaml should fail runtime build");
         assert!(
             error.to_string().contains("failed to parse needles YAML"),
@@ -321,7 +320,9 @@ mod tests {
         let location = format!("file://{}/", fixture_dir.path().display());
         let manifest = jsonl_manifest(&location);
 
-        let error = register_sources(&ctx, compile_sources(vec![manifest]), Some(&needles_path))
+        let mut needles =
+            NeedleState::from_path(Some(&needles_path)).expect("needles file should load");
+        let error = register_sources(&ctx, compile_sources(vec![manifest]), &mut needles)
             .await
             .expect_err("invalid needle row should fail runtime build");
         assert!(
@@ -361,7 +362,9 @@ mod tests {
         let location = format!("file://{}/", fixture_dir.path().display());
         let manifest = jsonl_manifest(&location);
 
-        let error = register_sources(&ctx, compile_sources(vec![manifest]), Some(&needles_path))
+        let mut needles =
+            NeedleState::from_path(Some(&needles_path)).expect("needles file should load");
+        let error = register_sources(&ctx, compile_sources(vec![manifest]), &mut needles)
             .await
             .expect_err("unused needle entries should fail runtime build");
         assert!(
@@ -391,7 +394,9 @@ mod tests {
         let ctx = SessionContext::new();
         let manifest = jsonl_manifest("file:///path/that/does/not/exist/");
 
-        let error = register_sources(&ctx, compile_sources(vec![manifest]), Some(&needles_path))
+        let mut needles =
+            NeedleState::from_path(Some(&needles_path)).expect("needles file should load");
+        let error = register_sources(&ctx, compile_sources(vec![manifest]), &mut needles)
             .await
             .expect_err("source failure for targeted needles should be fatal");
         assert!(

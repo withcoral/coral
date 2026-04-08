@@ -7,6 +7,7 @@
 //! [`provider::NeedleTableProvider`].
 
 use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use datafusion::datasource::TableProvider;
@@ -17,22 +18,41 @@ use crate::backends::BackendRegistration;
 pub(crate) mod error;
 pub(crate) mod loader;
 pub(crate) mod provider;
+pub(crate) mod tracker;
 
 use error::NeedleError;
-use loader::NeedleGroups;
+use loader::{LoadedNeedles, NeedleGroups};
 use provider::{NeedleTableProvider, build_needle_batches};
+pub(crate) use tracker::NeedleTracker;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NeedleSpec {
+    pub(crate) schema: String,
+    pub(crate) table: String,
+    pub(crate) column_values: serde_json::Map<String, serde_json::Value>,
+}
+
+#[derive(Debug, Default)]
 pub(crate) struct NeedleState {
     groups: NeedleGroups,
+    tracker_specs: Vec<NeedleSpec>,
+    log_path: Option<PathBuf>,
 }
 
 impl NeedleState {
     pub(crate) fn from_path(path: Option<&Path>) -> Result<Self> {
-        let groups = match path {
-            Some(path) => loader::load_needle_groups(path).map_err(DataFusionError::from)?,
-            None => NeedleGroups::default(),
-        };
-        Ok(Self { groups })
+        match path {
+            Some(path) => {
+                let LoadedNeedles { groups, specs } =
+                    loader::load_needles(path).map_err(DataFusionError::from)?;
+                Ok(Self {
+                    groups,
+                    tracker_specs: specs,
+                    log_path: Some(log_path_for_needles(path)),
+                })
+            }
+            None => Ok(Self::default()),
+        }
     }
 
     pub(crate) fn decorate(
@@ -49,7 +69,7 @@ impl NeedleState {
         schema_name: &str,
         detail: &impl std::fmt::Display,
     ) -> Option<DataFusionError> {
-        let tables = self.groups.table_names_for_schema(schema_name);
+        let tables = tracked_table_names(&self.tracker_specs, schema_name);
         if tables.is_empty() {
             return None;
         }
@@ -64,8 +84,16 @@ impl NeedleState {
         )
     }
 
-    pub(crate) fn finish(self) -> Result<()> {
+    pub(crate) fn finish(&self) -> Result<()> {
         self.groups.ensure_all_consumed().map_err(Into::into)
+    }
+
+    pub(crate) fn into_tracker(self) -> Option<NeedleTracker> {
+        let log_path = self.log_path?;
+        if self.tracker_specs.is_empty() {
+            return None;
+        }
+        Some(NeedleTracker::new(log_path, self.tracker_specs))
     }
 
     fn wrap_tables(
@@ -93,4 +121,21 @@ impl NeedleState {
 
         Ok(tables)
     }
+}
+
+fn tracked_table_names(specs: &[NeedleSpec], schema_name: &str) -> Vec<String> {
+    let mut tables = specs
+        .iter()
+        .filter(|spec| spec.schema == schema_name)
+        .map(|spec| spec.table.clone())
+        .collect::<Vec<_>>();
+    tables.sort();
+    tables.dedup();
+    tables
+}
+
+fn log_path_for_needles(path: &Path) -> PathBuf {
+    let mut log_path = path.as_os_str().to_os_string();
+    log_path.push(".log");
+    PathBuf::from(log_path)
 }

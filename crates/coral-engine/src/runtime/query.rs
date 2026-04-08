@@ -10,6 +10,7 @@ use datafusion::prelude::{SessionConfig, SessionContext};
 use crate::backends::compile_query_source;
 use crate::backends::http::ProviderQueryError;
 use crate::needles::error::NeedleError;
+use crate::needles::{NeedleState, NeedleTracker};
 use crate::runtime::catalog;
 use crate::runtime::registry::{SourceRegistrationFailure, register_sources};
 use crate::{CoreError, QueryExecution, QueryRuntimeProvider, QuerySource, TableInfo};
@@ -17,6 +18,7 @@ use crate::{CoreError, QueryExecution, QueryRuntimeProvider, QuerySource, TableI
 pub(crate) struct QueryRuntimeAdapter {
     ctx: Arc<SessionContext>,
     tables: Vec<TableInfo>,
+    needle_tracker: Option<NeedleTracker>,
 }
 
 pub(crate) async fn build_runtime(
@@ -36,6 +38,8 @@ pub(crate) async fn build_runtime(
     ));
 
     let runtime_context = runtime.runtime_context();
+    let mut needles = NeedleState::from_path(runtime_context.needles_file.as_deref())
+        .map_err(datafusion_to_core)?;
     let mut compiled_sources = Vec::new();
     let mut failures = Vec::new();
     for source in sources {
@@ -47,15 +51,12 @@ pub(crate) async fn build_runtime(
             }),
         }
     }
-    let registration = register_sources(
-        &ctx,
-        compiled_sources,
-        runtime_context.needles_file.as_deref(),
-    )
-    .await
-    .map_err(datafusion_to_core)?;
+    let registration = register_sources(&ctx, compiled_sources, &mut needles)
+        .await
+        .map_err(datafusion_to_core)?;
     catalog::register(&ctx, &registration.active_sources).map_err(datafusion_to_core)?;
     let tables = catalog::collect_tables(&registration.active_sources);
+    let needle_tracker = needles.into_tracker();
     for failure in &failures {
         tracing::warn!(
             source = %failure.schema_name,
@@ -64,7 +65,11 @@ pub(crate) async fn build_runtime(
         );
     }
 
-    Ok(QueryRuntimeAdapter { ctx, tables })
+    Ok(QueryRuntimeAdapter {
+        ctx,
+        tables,
+        needle_tracker,
+    })
 }
 
 impl QueryRuntimeAdapter {
@@ -80,6 +85,11 @@ impl QueryRuntimeAdapter {
         let df = self.ctx.sql(sql).await.map_err(datafusion_to_core)?;
         let arrow_schema = Arc::new(df.schema().as_arrow().clone());
         let batches = df.collect().await.map_err(datafusion_to_core)?;
+        if let Some(tracker) = &self.needle_tracker {
+            tracker
+                .check_and_log(sql, &batches)
+                .map_err(|error| needle_error_to_core(&error))?;
+        }
         Ok(QueryExecution::new(arrow_schema, batches))
     }
 }
@@ -150,5 +160,117 @@ fn needle_error_to_core(error: &NeedleError) -> CoreError {
         | NeedleError::JsonConversion(_)
         | NeedleError::Arrow(_)
         | NeedleError::UnusedEntries { .. } => CoreError::InvalidInput(error.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    use serde_json::json;
+    use tempfile::tempdir;
+
+    use super::build_runtime;
+    use crate::{CoreError, QueryRuntimeContext, QueryRuntimeProvider, QuerySource};
+    use coral_spec::{ValidatedSourceManifest, parse_source_manifest_value};
+
+    struct TestRuntimeProvider {
+        ctx: QueryRuntimeContext,
+    }
+
+    impl QueryRuntimeProvider for TestRuntimeProvider {
+        fn resolve_source_secrets(
+            &self,
+            _source: &QuerySource,
+            _secret_names: &BTreeSet<String>,
+        ) -> Result<BTreeMap<String, String>, CoreError> {
+            Ok(BTreeMap::new())
+        }
+
+        fn runtime_context(&self) -> QueryRuntimeContext {
+            self.ctx.clone()
+        }
+    }
+
+    fn jsonl_manifest(location: &str) -> ValidatedSourceManifest {
+        parse_source_manifest_value(json!({
+            "dsl_version": 3,
+            "name": "test_jsonl",
+            "version": "0.1.0",
+            "backend": "jsonl",
+            "tables": [{
+                "name": "events",
+                "description": "test events",
+                "source": {
+                    "location": location,
+                    "glob": "**/*.jsonl",
+                    "partitions": [],
+                },
+                "columns": [
+                    {"name": "id", "type": "Utf8", "nullable": false},
+                    {"name": "text", "type": "Utf8"},
+                    {"name": "score", "type": "Int64", "nullable": false},
+                ],
+            }]
+        }))
+        .expect("jsonl manifest should parse")
+    }
+
+    #[tokio::test]
+    async fn execute_sql_logs_matching_needles_to_ndjson() {
+        let fixture_dir = tempdir().expect("tempdir should be created");
+        std::fs::write(
+            fixture_dir.path().join("events.jsonl"),
+            r#"{"id":"live-1","text":"baseline row","score":10}
+{"id":"live-2","text":"high priority live row","score":75}
+"#,
+        )
+        .expect("write jsonl fixture");
+
+        let needles_path = fixture_dir.path().join("needles.yaml");
+        std::fs::write(
+            &needles_path,
+            r#"
+- schema: test_jsonl
+  table: events
+  data:
+    id: "needle-1"
+    text: "matching needle row"
+    score: 99
+"#,
+        )
+        .expect("write needles fixture");
+
+        let source = QuerySource::new(
+            "default",
+            jsonl_manifest(&format!("file://{}/", fixture_dir.path().display())),
+            BTreeMap::new(),
+        );
+        let runtime = TestRuntimeProvider {
+            ctx: QueryRuntimeContext::default().with_needles_file(Some(needles_path.clone())),
+        };
+
+        let adapter = build_runtime(&[source], &runtime)
+            .await
+            .expect("runtime should build");
+        adapter
+            .execute_sql("SELECT id, text FROM test_jsonl.events WHERE score > 50 ORDER BY id")
+            .await
+            .expect("query should succeed");
+
+        let log = std::fs::read_to_string(format!("{}.log", needles_path.display()))
+            .expect("log should be readable");
+        let lines = log.lines().collect::<Vec<_>>();
+        assert_eq!(lines.len(), 1);
+
+        let entry: serde_json::Value =
+            serde_json::from_str(lines[0]).expect("log entry should parse");
+        assert_eq!(entry["schema"], "test_jsonl");
+        assert_eq!(entry["table"], "events");
+        assert_eq!(entry["needle"]["id"], "needle-1");
+        assert_eq!(
+            entry["sql"],
+            "SELECT id, text FROM test_jsonl.events WHERE score > 50 ORDER BY id"
+        );
     }
 }

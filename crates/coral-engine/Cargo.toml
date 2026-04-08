@@ -13,6 +13,7 @@ workspace = true
 async-trait.workspace = true
 arrow.workspace = true
 bytes.workspace = true
+chrono.workspace = true
 datafusion.workspace = true
 futures.workspace = true
 glob.workspace = true
