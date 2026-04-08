@@ -5,12 +5,16 @@
 //! through narrow accessors such as [`ValidatedSourceManifest::as_http`].
 
 use std::collections::BTreeSet;
+use std::sync::OnceLock;
 
+use jsonschema::JSONSchema;
 use serde_json::Value;
 
 use crate::backends::file::{JsonlSourceManifest, ParquetSourceManifest};
 use crate::backends::http::HttpSourceManifest;
 use crate::{ManifestError, Result, SourceBackend};
+
+static SOURCE_SCHEMA: OnceLock<JSONSchema> = OnceLock::new();
 
 /// Validated top-level source spec for one registered source.
 ///
@@ -118,11 +122,15 @@ pub fn parse_source_manifest_yaml(raw: &str) -> Result<ValidatedSourceManifest> 
 
 /// Parse and validate a source spec from structured source-spec data.
 ///
+/// Runs JSON Schema validation first to catch structural problems, then
+/// deserializes and applies semantic validation rules.
+///
 /// # Errors
 ///
-/// Returns a [`ManifestError`] if the source spec violates any validation
-/// rules.
+/// Returns a [`ManifestError`] if the source spec fails schema validation
+/// or violates any semantic validation rules.
 pub fn parse_source_manifest_value(value: Value) -> Result<ValidatedSourceManifest> {
+    validate_manifest_schema(&value)?;
     let backend_kind = parse_source_backend(&value)?;
     match backend_kind {
         SourceBackend::Http => Ok(ValidatedSourceManifest {
@@ -146,4 +154,28 @@ fn parse_source_backend(value: &Value) -> Result<SourceBackend> {
     let backend: SourceBackend =
         serde_json::from_value(backend).map_err(ManifestError::deserialize)?;
     Ok(backend)
+}
+
+fn validate_manifest_schema(value: &Value) -> Result<()> {
+    let validator = source_schema_validator();
+    if let Err(errors) = validator.validate(value) {
+        let problems = errors
+            .take(8)
+            .map(|e| e.to_string())
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(ManifestError::validation(format!(
+            "manifest failed schema validation: {problems}"
+        )));
+    }
+    Ok(())
+}
+
+fn source_schema_validator() -> &'static JSONSchema {
+    SOURCE_SCHEMA.get_or_init(|| {
+        let schema_json: Value =
+            serde_json::from_str(include_str!("schema/source_manifest.schema.json"))
+                .expect("embedded source schema must be valid JSON");
+        JSONSchema::compile(&schema_json).expect("embedded source schema must compile")
+    })
 }

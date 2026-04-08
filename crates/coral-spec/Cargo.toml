@@ -16,6 +16,8 @@ serde_yaml.workspace = true
 thiserror.workspace = true
 url.workspace = true
 
+[dependencies.jsonschema]
+workspace = true
+
 [dev-dependencies]
-jsonschema.workspace = true
 tracing.workspace = true

@@ -287,12 +287,10 @@ impl ParquetSourceManifest {
             .map(|table| table.into_validated_parquet(&common.name))
             .collect::<Result<Vec<_>>>()?;
         validate_manifest_top_level(
-            common.dsl_version,
             &common.name,
             &common.name,
             SourceBackend::Parquet,
             &empty_base_url,
-            tables.len(),
         )?;
         Ok(Self { common, tables })
     }
@@ -317,12 +315,10 @@ impl JsonlSourceManifest {
             .map(|table| table.into_validated_jsonl(&common.name))
             .collect::<Result<Vec<_>>>()?;
         validate_manifest_top_level(
-            common.dsl_version,
             &common.name,
             &common.name,
             SourceBackend::Jsonl,
             &empty_base_url,
-            tables.len(),
         )?;
         Ok(Self { common, tables })
     }

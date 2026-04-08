@@ -205,6 +205,9 @@ tables:
             false,
         )
         .expect_err("legacy schema field should fail");
-        assert!(error.to_string().contains("unknown field `schema`"));
+        assert_eq!(
+            error.to_string(),
+            "invalid input: manifest failed schema validation: Additional properties are not allowed ('schema' was unexpected)"
+        );
     }
 }

@@ -83,6 +83,11 @@ enum SourceCommand {
         /// Name of the source to remove
         name: String,
     },
+    /// Validate a source manifest file
+    Validate {
+        /// Path to the source manifest file
+        path: PathBuf,
+    },
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -170,6 +175,9 @@ async fn main() -> Result<(), anyhow::Error> {
             SourceCommand::Remove { name } => {
                 source_ops::delete_source(&app, &name).await?;
                 println!("Removed source {name}");
+            }
+            SourceCommand::Validate { path } => {
+                source_ops::validate_manifest(&path)?;
             }
         },
         Command::Onboard => {

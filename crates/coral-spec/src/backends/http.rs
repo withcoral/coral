@@ -203,12 +203,10 @@ impl HttpSourceManifest {
             .map(|table| table.into_validated(&common.name))
             .collect::<Result<Vec<_>>>()?;
         validate_manifest_top_level(
-            common.dsl_version,
             &common.name,
             &common.name,
             SourceBackend::Http,
             &base_url,
-            tables.len(),
         )?;
         Ok(Self {
             common,

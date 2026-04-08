@@ -5,20 +5,14 @@ use std::path::Path;
 
 #[cfg(test)]
 use std::path::PathBuf;
-use std::sync::OnceLock;
 
-use jsonschema::JSONSchema;
-use serde_json::Value as JsonValue;
-
-use crate::{ManifestError, Result, ValidatedSourceManifest, parse_source_manifest_value};
+use crate::{ManifestError, Result, ValidatedSourceManifest, parse_source_manifest_yaml};
 
 /// Base name for source manifest files (without extension).
 const SOURCE_MANIFEST_NAME: &str = "source";
 
 /// Accepted `YAML` extensions in preferred order.
 const YAML_EXTENSIONS: &[&str] = &["yml", "yaml"];
-
-static SOURCE_SCHEMA: OnceLock<JSONSchema> = OnceLock::new();
 
 /// Load and validate source manifests from a sources directory.
 ///
@@ -89,42 +83,7 @@ fn load_manifest_path(path: &Path) -> Result<ValidatedSourceManifest> {
     let raw = fs::read_to_string(path).map_err(|e| {
         ManifestError::validation(format!("failed to read {}: {e}", path.display()))
     })?;
-
-    let manifest_value: serde_yaml::Value =
-        serde_yaml::from_str(&raw).map_err(ManifestError::parse_yaml)?;
-    let manifest_json: JsonValue = serde_json::to_value(manifest_value)
-        .map_err(|e| ManifestError::validation(format!("failed to encode manifest value: {e}")))?;
-
-    validate_manifest_schema(path, &manifest_json)?;
-
-    let manifest = parse_source_manifest_value(manifest_json)?;
-
-    Ok(manifest)
-}
-
-fn validate_manifest_schema(path: &Path, manifest_json: &JsonValue) -> Result<()> {
-    let validator = source_schema_validator();
-    if let Err(errors) = validator.validate(manifest_json) {
-        let problems = errors
-            .take(8)
-            .map(|e| e.to_string())
-            .collect::<Vec<_>>()
-            .join("; ");
-        return Err(ManifestError::validation(format!(
-            "{} failed schema validation: {problems}",
-            path.display()
-        )));
-    }
-    Ok(())
-}
-
-fn source_schema_validator() -> &'static JSONSchema {
-    SOURCE_SCHEMA.get_or_init(|| {
-        let schema_json: JsonValue =
-            serde_json::from_str(include_str!("schema/source_manifest.schema.json"))
-                .expect("embedded source schema must be valid JSON");
-        JSONSchema::compile(&schema_json).expect("embedded source schema must compile")
-    })
+    parse_source_manifest_yaml(&raw)
 }
 
 #[cfg(test)]

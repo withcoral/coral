@@ -7,7 +7,9 @@ use coral_api::v1::{
     SourceOrigin, SourceSecret, SourceVariable, ValidateSourceRequest, ValidateSourceResponse,
 };
 use coral_client::{AppClient, default_workspace};
-use coral_spec::{ManifestInputKind, ManifestInputSpec, collect_source_inputs_yaml};
+use coral_spec::{
+    ManifestInputKind, ManifestInputSpec, collect_source_inputs_yaml, parse_source_manifest_yaml,
+};
 use dialoguer::{Input, Password, theme::ColorfulTheme};
 use tonic::Request;
 
@@ -158,6 +160,17 @@ pub(crate) fn manifest_input_from_proto(
         required: input.required,
         default_value: input.default_value.clone(),
     })
+}
+
+pub(crate) fn validate_manifest(path: &Path) -> Result<(), anyhow::Error> {
+    let raw = std::fs::read_to_string(path)?;
+    let manifest = parse_source_manifest_yaml(&raw)?;
+    println!(
+        "Manifest OK: source '{}' (version {})",
+        manifest.schema_name(),
+        manifest.source_version()
+    );
+    Ok(())
 }
 
 pub(crate) fn load_manifest_inputs(

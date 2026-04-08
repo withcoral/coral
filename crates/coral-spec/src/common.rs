@@ -377,11 +377,6 @@ impl PaginationSpec {
                         "{schema}.{table} pagination.mode=page requires page_param"
                     )));
                 }
-                if self.page_step <= 0 {
-                    return Err(ManifestError::validation(format!(
-                        "{schema}.{table} pagination.page_step must be > 0"
-                    )));
-                }
                 Ok(ValidatedPaginationMode::Page)
             }
             PaginationMode::Offset => {
@@ -391,12 +386,7 @@ impl PaginationSpec {
                     ))
                 })?;
                 let step = match self.offset_step {
-                    Some(offset_step) if offset_step > 0 => OffsetStep::Explicit(offset_step),
-                    Some(_) => {
-                        return Err(ManifestError::validation(format!(
-                            "{schema}.{table} pagination.offset_step must be > 0"
-                        )));
-                    }
+                    Some(offset_step) => OffsetStep::Explicit(offset_step),
                     None if has_page_size => OffsetStep::PageSize,
                     None => {
                         return Err(ManifestError::validation(format!(
@@ -419,16 +409,7 @@ impl PaginationSpec {
             return Ok(None);
         };
 
-        if page_size.default == 0 {
-            return Err(ManifestError::validation(format!(
-                "{schema}.{table} pagination.page_size.default must be > 0"
-            )));
-        }
-        if page_size.max == 0 {
-            return Err(ManifestError::validation(format!(
-                "{schema}.{table} pagination.page_size.max must be > 0"
-            )));
-        }
+        // page_size.default >= 1 and page_size.max >= 1 are enforced by the JSON Schema.
         if page_size.query_param.is_none() && page_size.body_path.is_empty() {
             return Err(ManifestError::validation(format!(
                 "{schema}.{table} pagination.page_size must define query_param or body_path"
