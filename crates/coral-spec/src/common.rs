@@ -53,6 +53,7 @@ pub struct SourceManifestCommon {
     pub dsl_version: u32,
     pub name: String,
     pub version: String,
+    pub description: String,
     pub onboarding: Option<Onboarding>,
 }
 
@@ -80,12 +81,14 @@ pub(crate) fn build_source_manifest_common(
     dsl_version: u32,
     name: String,
     version: String,
+    description: String,
     onboarding: Option<Onboarding>,
 ) -> SourceManifestCommon {
     SourceManifestCommon {
         dsl_version,
         name,
         version,
+        description,
         onboarding,
     }
 }

@@ -86,7 +86,7 @@ pub use common::{
 };
 pub use common::{collect_source_onboarding_value, collect_source_onboarding_yaml};
 pub use error::{ManifestError, Result};
-pub use inputs::{InputSpec, InputKind, collect_inputs};
+pub use inputs::{InputKind, InputSpec, collect_inputs};
 pub use parser::{
     ValidatedSourceManifest, parse_source_manifest_value, parse_source_manifest_yaml,
 };

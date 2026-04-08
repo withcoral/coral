@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 
 use coral_api::v1::{AvailableSource, SourceInputKind, SourceInputSpec, SourceOrigin, Workspace};
-use coral_spec::{InputSpec, InputKind, collect_inputs, parse_source_manifest_yaml};
+use coral_spec::{InputKind, InputSpec, collect_inputs, parse_source_manifest_yaml};
 
 use crate::bootstrap::AppError;
 
@@ -55,7 +55,6 @@ pub(crate) fn describe_manifest(
 ) -> Result<AvailableSource, AppError> {
     let manifest = parse_source_manifest_yaml(manifest_yaml)
         .map_err(|error| AppError::InvalidInput(error.to_string()))?;
-    let description = manifest_description_yaml(manifest_yaml);
     let inputs: Vec<SourceInputSpec> = collect_inputs(&manifest)
         .map_err(|error| AppError::InvalidInput(error.to_string()))?
         .into_iter()
@@ -63,7 +62,7 @@ pub(crate) fn describe_manifest(
         .collect();
     Ok(AvailableSource {
         name: manifest.schema_name().to_string(),
-        description,
+        description: manifest.source_description().to_string(),
         version: manifest.source_version().to_string(),
         inputs,
         installed,
@@ -86,17 +85,6 @@ fn proto_input_kind(kind: InputKind) -> SourceInputKind {
         InputKind::Variable => SourceInputKind::Variable,
         InputKind::Secret => SourceInputKind::Secret,
     }
-}
-
-fn manifest_description_yaml(manifest_yaml: &str) -> String {
-    let root: serde_yaml::Value = match serde_yaml::from_str(manifest_yaml) {
-        Ok(v) => v,
-        Err(_) => return String::new(),
-    };
-    root.get("description")
-        .and_then(serde_yaml::Value::as_str)
-        .unwrap_or_default()
-        .to_string()
 }
 
 #[cfg(test)]

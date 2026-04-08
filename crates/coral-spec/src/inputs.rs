@@ -82,7 +82,12 @@ impl InputCollector {
         Ok(self.ordered)
     }
 
-    fn register(&mut self, key: &str, kind: InputKind, default_value: Option<String>) -> Result<()> {
+    fn register(
+        &mut self,
+        key: &str,
+        kind: InputKind,
+        default_value: Option<String>,
+    ) -> Result<()> {
         if let Some(existing) = self.seen.get(key) {
             if existing.0 != kind || existing.1 != default_value {
                 return Err(ManifestError::validation(format!(

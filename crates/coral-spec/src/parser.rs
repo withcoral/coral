@@ -73,6 +73,16 @@ impl ValidatedSourceManifest {
         }
     }
 
+    #[must_use]
+    /// Returns the source-spec description, if declared.
+    pub fn source_description(&self) -> &str {
+        match &self.inner {
+            ValidatedManifestKind::Http(manifest) => &manifest.common.description,
+            ValidatedManifestKind::Parquet(manifest) => &manifest.common.description,
+            ValidatedManifestKind::Jsonl(manifest) => &manifest.common.description,
+        }
+    }
+
     /// Returns the set of source secrets required to compile or authenticate
     /// the source spec.
     ///

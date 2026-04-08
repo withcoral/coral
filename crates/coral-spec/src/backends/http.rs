@@ -192,14 +192,20 @@ impl HttpSourceManifest {
             dsl_version,
             name,
             version,
-            description: _description,
+            description,
             backend: _backend,
             base_url,
             auth,
             tables,
             onboarding,
         } = raw;
-        let common = build_source_manifest_common(dsl_version, name, version, onboarding);
+        let common = build_source_manifest_common(
+            dsl_version,
+            name,
+            version,
+            description.unwrap_or_default(),
+            onboarding,
+        );
         let tables = tables
             .into_iter()
             .map(|table| table.into_validated(&common.name))
