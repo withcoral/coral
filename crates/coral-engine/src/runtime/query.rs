@@ -10,9 +10,7 @@ use datafusion::prelude::{SessionConfig, SessionContext};
 use crate::backends::compile_query_source;
 use crate::backends::http::ProviderQueryError;
 use crate::runtime::catalog;
-use crate::runtime::registry::{
-    SourceRegistrationFailure, SourceRegistrationMode, register_sources,
-};
+use crate::runtime::registry::{SourceRegistrationFailure, register_sources};
 use crate::{CoreError, QueryExecution, QueryRuntimeProvider, QuerySource, TableInfo};
 
 pub(crate) struct QueryRuntimeAdapter {
@@ -23,7 +21,6 @@ pub(crate) struct QueryRuntimeAdapter {
 pub(crate) async fn build_runtime(
     sources: &[QuerySource],
     runtime: &dyn QueryRuntimeProvider,
-    registration_mode: SourceRegistrationMode,
 ) -> Result<QueryRuntimeAdapter, CoreError> {
     let session_config = SessionConfig::new().with_information_schema(true);
     let runtime_env = Arc::new(
@@ -38,37 +35,21 @@ pub(crate) async fn build_runtime(
     ));
     let runtime_context = runtime.runtime_context();
 
-    let (active_sources, failures) = match registration_mode {
-        SourceRegistrationMode::BestEffort => {
-            let mut compiled_sources = Vec::new();
-            let mut failures = Vec::new();
-            for source in sources {
-                match compile_query_source(source, &runtime_context) {
-                    Ok(compiled) => compiled_sources.push(compiled),
-                    Err(error) => failures.push(SourceRegistrationFailure {
-                        schema_name: source.source_name().to_string(),
-                        detail: error.to_string(),
-                    }),
-                }
-            }
-            let registration =
-                register_sources(&ctx, compiled_sources, SourceRegistrationMode::BestEffort)
-                    .await
-                    .map_err(datafusion_to_core)?;
-            (registration.active_sources, failures)
+    let mut compiled_sources = Vec::new();
+    let mut failures = Vec::new();
+    for source in sources {
+        match compile_query_source(source, &runtime_context) {
+            Ok(compiled) => compiled_sources.push(compiled),
+            Err(error) => failures.push(SourceRegistrationFailure {
+                schema_name: source.source_name().to_string(),
+                detail: error.to_string(),
+            }),
         }
-        SourceRegistrationMode::Strict => {
-            let compiled_sources = sources
-                .iter()
-                .map(|source| compile_query_source(source, &runtime_context))
-                .collect::<Result<Vec<_>, _>>()?;
-            let registration =
-                register_sources(&ctx, compiled_sources, SourceRegistrationMode::Strict)
-                    .await
-                    .map_err(datafusion_to_core)?;
-            (registration.active_sources, Vec::new())
-        }
-    };
+    }
+    let registration = register_sources(&ctx, compiled_sources)
+        .await
+        .map_err(datafusion_to_core)?;
+    let active_sources = registration.active_sources;
 
     catalog::register(&ctx, &active_sources).map_err(datafusion_to_core)?;
     let tables = catalog::collect_tables(&active_sources);

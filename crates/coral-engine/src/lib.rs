@@ -93,13 +93,9 @@ impl CoralQuery {
         runtime: &dyn QueryRuntimeProvider,
         schema_filter: Option<&str>,
     ) -> Result<Vec<TableInfo>, CoreError> {
-        Ok(runtime::query::build_runtime(
-            sources,
-            runtime,
-            runtime::registry::SourceRegistrationMode::BestEffort,
-        )
-        .await?
-        .list_tables(schema_filter))
+        Ok(runtime::query::build_runtime(sources, runtime)
+            .await?
+            .list_tables(schema_filter))
     }
 
     /// Executes one read-only `SQL` statement against the provided sources.
@@ -117,14 +113,10 @@ impl CoralQuery {
             return Err(CoreError::InvalidInput("SQL must not be empty".to_string()));
         }
 
-        runtime::query::build_runtime(
-            sources,
-            runtime,
-            runtime::registry::SourceRegistrationMode::BestEffort,
-        )
-        .await?
-        .execute_sql(sql)
-        .await
+        runtime::query::build_runtime(sources, runtime)
+            .await?
+            .execute_sql(sql)
+            .await
     }
 
     /// Validates that a single source can be initialized and queried.
@@ -137,12 +129,10 @@ impl CoralQuery {
         source: &QuerySource,
         runtime: &dyn QueryRuntimeProvider,
     ) -> Result<Vec<TableInfo>, CoreError> {
-        Ok(runtime::query::build_runtime(
-            std::slice::from_ref(source),
-            runtime,
-            runtime::registry::SourceRegistrationMode::Strict,
+        Ok(
+            runtime::query::build_runtime(std::slice::from_ref(source), runtime)
+                .await?
+                .list_tables(Some(source.source_name())),
         )
-        .await?
-        .list_tables(Some(source.source_name())))
     }
 }

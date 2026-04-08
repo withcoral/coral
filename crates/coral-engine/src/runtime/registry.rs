@@ -25,12 +25,6 @@ pub(crate) struct SourceRegistrationResult {
     pub(crate) failures: Vec<SourceRegistrationFailure>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum SourceRegistrationMode {
-    BestEffort,
-    Strict,
-}
-
 fn check_reserved_schema(schema: &str) -> Result<()> {
     if RESERVED_SCHEMA_NAMES.contains(&schema) {
         return Err(DataFusionError::Execution(format!(
@@ -50,7 +44,6 @@ fn check_reserved_schema(schema: &str) -> Result<()> {
 pub(crate) async fn register_sources(
     ctx: &SessionContext,
     sources: Vec<Box<dyn CompiledBackendSource>>,
-    mode: SourceRegistrationMode,
 ) -> Result<SourceRegistrationResult> {
     let catalog = ctx
         .catalog("datafusion")
@@ -66,9 +59,6 @@ pub(crate) async fn register_sources(
         match register_source(ctx, &catalog, &mut seen_schemas, source.as_ref()).await {
             Ok(active_source) => result.active_sources.push(active_source),
             Err(error) => {
-                if mode == SourceRegistrationMode::Strict {
-                    return Err(error);
-                }
                 tracing::warn!(source = %source_name, error = %error, "skipping source");
                 result.failures.push(SourceRegistrationFailure {
                     schema_name,
@@ -86,11 +76,7 @@ pub(crate) fn register_sources_blocking(
     ctx: &SessionContext,
     sources: Vec<Box<dyn CompiledBackendSource>>,
 ) -> Result<SourceRegistrationResult> {
-    futures::executor::block_on(register_sources(
-        ctx,
-        sources,
-        SourceRegistrationMode::BestEffort,
-    ))
+    futures::executor::block_on(register_sources(ctx, sources))
 }
 
 async fn register_source(
