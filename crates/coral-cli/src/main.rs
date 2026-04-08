@@ -6,6 +6,7 @@
     reason = "CLI intentionally renders user-facing output"
 )]
 
+mod branding;
 mod onboard;
 mod source_ops;
 
@@ -33,7 +34,7 @@ enum Command {
     Sql(SqlArgs),
     /// Manage data sources
     Source(SourceArgs),
-    /// Run the guided source onboarding flow
+    /// Interactive wizard to set up Coral and explore use cases
     Onboard,
     /// Start the MCP server over stdio
     McpStdio,
