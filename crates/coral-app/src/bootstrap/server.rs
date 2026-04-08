@@ -19,6 +19,7 @@ use crate::query::service::QueryService;
 use crate::sources::manager::SourceManager;
 use crate::sources::service::SourceService;
 use crate::state::{AppStateLayout, ConfigStore, SecretStore};
+use crate::telemetry::TelemetryConfig;
 use crate::workspaces::WorkspaceManager;
 
 /// Server-side bootstrap configuration for the Coral server.
@@ -82,6 +83,8 @@ impl ServerBuilder {
                 .or_else(|| env.coral_config_dir_override()),
         )?;
         layout.ensure()?;
+        let telemetry_config = TelemetryConfig::load(&layout)?;
+        crate::telemetry::init_tracing(&telemetry_config);
         let config_store = ConfigStore::new(layout.clone());
         let secret_store = SecretStore::new(layout.clone());
         let source_manager =
@@ -192,6 +195,8 @@ async fn start_server(
 
 #[cfg(test)]
 mod tests {
+    use std::net::{Ipv4Addr, TcpListener};
+
     use coral_api::v1::query_service_client::QueryServiceClient;
     use coral_api::v1::source_service_client::SourceServiceClient;
     use coral_api::v1::{ExecuteSqlRequest, ImportSourceRequest, Workspace};
@@ -210,8 +215,16 @@ mod tests {
         WorkspaceManager::new().default_workspace()
     }
 
+    fn loopback_sockets_available() -> bool {
+        TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).is_ok()
+    }
+
     #[tokio::test]
     async fn file_tilde_sources_resolve_from_app_owned_runtime_context() {
+        if !loopback_sockets_available() {
+            return;
+        }
+
         let temp = TempDir::new().expect("temp dir");
         let fake_home = temp.path().join("fake-home");
         let config_dir = temp.path().join("coral-config");
