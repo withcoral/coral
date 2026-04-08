@@ -9,10 +9,43 @@
 //! source identity, filters, request templating, response extraction, typed
 //! columns, and pagination.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{ManifestError, ParsedTemplate, Result};
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct Onboarding {
+    instructions: Option<String>,
+    #[serde(default)]
+    input_help: Option<BTreeMap<String, String>>,
+}
+
+impl Onboarding {
+    pub fn instructions(&self) -> Option<&str> {
+        self.instructions.as_deref()
+    }
+
+    pub fn help_for_input(&self, key: &str) -> Option<&str> {
+        self.input_help.as_ref()?.get(key).map(String::as_str)
+    }
+}
+
+pub fn collect_source_onboarding_value(root: &serde_yaml::Value) -> Result<Option<Onboarding>> {
+    let Some(onboarding) = root.get("onboarding") else {
+        return Ok(None);
+    };
+    let onboarding = serde_json::to_value(onboarding).map_err(ManifestError::deserialize)?;
+    let onboarding = serde_json::from_value(onboarding).map_err(ManifestError::deserialize)?;
+    Ok(Some(onboarding))
+}
+
+pub fn collect_source_onboarding_yaml(raw: &str) -> Result<Option<Onboarding>> {
+    let root: serde_yaml::Value = serde_yaml::from_str(raw).map_err(ManifestError::parse_yaml)?;
+    collect_source_onboarding_value(&root)
+}
 
 /// Common top-level source metadata shared by every backend source spec.
 #[derive(Debug, Clone)]
@@ -20,6 +53,7 @@ pub struct SourceManifestCommon {
     pub dsl_version: u32,
     pub name: String,
     pub version: String,
+    pub onboarding: Option<Onboarding>,
 }
 
 /// Supported source-spec backends.
@@ -46,11 +80,13 @@ pub(crate) fn build_source_manifest_common(
     dsl_version: u32,
     name: String,
     version: String,
+    onboarding: Option<Onboarding>,
 ) -> SourceManifestCommon {
     SourceManifestCommon {
         dsl_version,
         name,
         version,
+        onboarding,
     }
 }
 
@@ -617,6 +653,52 @@ mod tests {
     use super::*;
     use crate::backends::http::test_http_table_spec;
     use std::collections::HashSet;
+
+    #[test]
+    fn extracts_onboarding_help() {
+        let manifest = r#"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+onboarding:
+  instructions: Setup docs
+  input_help:
+    API_TOKEN: "Create a token at https://example.com/settings/tokens"
+tables: []
+"#;
+
+        let onboarding = collect_source_onboarding_yaml(manifest)
+            .expect("onboarding")
+            .expect("onboarding should exist");
+        assert_eq!(onboarding.instructions(), Some("Setup docs"));
+        assert_eq!(
+            onboarding.help_for_input("API_TOKEN"),
+            Some("Create a token at https://example.com/settings/tokens")
+        );
+        assert_eq!(onboarding.help_for_input("API_BASE"), None);
+    }
+
+    #[test]
+    fn rejects_onboarding_input_without_help() {
+        let root: serde_yaml::Value = serde_yaml::from_str(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+onboarding:
+  input_help:
+    API_TOKEN: {}
+tables: []
+",
+        )
+        .expect("yaml");
+
+        let error =
+            collect_source_onboarding_value(&root).expect_err("non-string input help should fail");
+        assert!(error.to_string().contains("invalid type"));
+    }
 
     #[test]
     fn resolve_request_returns_default_when_no_routes() {

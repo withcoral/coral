@@ -81,13 +81,14 @@ mod validate;
 
 pub use common::{
     AuthSpec, BodyFieldSpec, ColumnSpec, ExprSpec, FilterMode, FilterSpec, HeaderSpec, HttpMethod,
-    ManifestDataType, PageSizeSpec, PaginationMode, PaginationSpec, QueryParamSpec,
+    ManifestDataType, Onboarding, PageSizeSpec, PaginationMode, PaginationSpec, QueryParamSpec,
     RequestRouteSpec, RequestSpec, ResponseSpec, RowStrategy, SourceBackend, SourceManifestCommon,
     TableCommon, ValidatedPagination, ValidatedPaginationMode, ValueSourceSpec,
 };
+pub use common::{collect_source_onboarding_value, collect_source_onboarding_yaml};
 pub use error::{ManifestError, Result};
 pub use inputs::{
-    ManifestInputKind, ManifestInputSpec, collect_source_inputs_value, collect_source_inputs_yaml,
+    InputSpec, InputKind, collect_source_inputs_value, collect_source_inputs_yaml,
 };
 pub use parser::{
     ValidatedSourceManifest, parse_source_manifest_value, parse_source_manifest_yaml,

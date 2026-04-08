@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 
 use coral_api::v1::{AvailableSource, SourceInputKind, SourceInputSpec, SourceOrigin, Workspace};
 use coral_spec::{
-    ManifestInputKind, ManifestInputSpec, collect_source_inputs_value, parse_source_manifest_value,
+    InputSpec, InputKind, collect_source_inputs_value, parse_source_manifest_value,
 };
 use serde_yaml::Value;
 
@@ -60,31 +60,33 @@ pub(crate) fn describe_manifest(
     let manifest = parse_source_manifest_value(serde_json::to_value(&root)?)
         .map_err(|error| AppError::InvalidInput(error.to_string()))?;
     let description = manifest_description(&root);
+    let inputs = collect_source_inputs_value(&root)
+        .map(|inputs| inputs.into_iter().map(proto_input_spec).collect())
+        .map_err(|error| AppError::InvalidInput(error.to_string()))?;
     Ok(AvailableSource {
         name: manifest.schema_name().to_string(),
         description,
         version: manifest.source_version().to_string(),
-        inputs: collect_source_inputs_value(&root)
-            .map(|inputs| inputs.into_iter().map(proto_input_spec).collect())
-            .map_err(|error| AppError::InvalidInput(error.to_string()))?,
+        inputs,
         installed,
         origin: origin as i32,
     })
 }
 
-fn proto_input_spec(input: ManifestInputSpec) -> SourceInputSpec {
+fn proto_input_spec(input: InputSpec) -> SourceInputSpec {
     SourceInputSpec {
         key: input.key,
         kind: proto_input_kind(input.kind) as i32,
         required: input.required,
         default_value: input.default_value,
+        help: input.help.unwrap_or_default(),
     }
 }
 
-fn proto_input_kind(kind: ManifestInputKind) -> SourceInputKind {
+fn proto_input_kind(kind: InputKind) -> SourceInputKind {
     match kind {
-        ManifestInputKind::Variable => SourceInputKind::Variable,
-        ManifestInputKind::Secret => SourceInputKind::Secret,
+        InputKind::Variable => SourceInputKind::Variable,
+        InputKind::Secret => SourceInputKind::Secret,
     }
 }
 
@@ -206,5 +208,44 @@ tables:
         )
         .expect_err("legacy schema field should fail");
         assert!(error.to_string().contains("unknown field `schema`"));
+    }
+
+    #[test]
+    fn describe_manifest_attaches_onboarding_help_to_inputs() {
+        let source = describe_manifest(
+            r#"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+base_url: "{{variable.API_BASE|https://example.com}}"
+auth:
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{secret.API_TOKEN}}
+onboarding:
+  input_help:
+    API_TOKEN: "Create a token at https://example.com/settings/tokens"
+tables:
+  - name: messages
+    description: Demo messages
+    request:
+      method: GET
+      path: /messages
+    response: {}
+    columns:
+      - name: id
+        type: Utf8
+"#,
+            coral_api::v1::SourceOrigin::Imported,
+            false,
+        )
+        .expect("describe manifest");
+        assert_eq!(source.inputs[0].help, "");
+        assert_eq!(
+            source.inputs[1].help,
+            "Create a token at https://example.com/settings/tokens"
+        );
     }
 }

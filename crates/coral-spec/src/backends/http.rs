@@ -15,7 +15,7 @@ use std::collections::{BTreeSet, HashSet};
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::common::build_source_manifest_common;
+use crate::common::{Onboarding, build_source_manifest_common};
 use crate::{
     AuthSpec, ColumnSpec, FilterSpec, ManifestError, PaginationSpec, ParsedTemplate,
     RequestRouteSpec, RequestSpec, ResponseSpec, Result, SourceBackend, SourceManifestCommon,
@@ -46,6 +46,7 @@ struct RawHttpSourceManifest {
     #[serde(default)]
     auth: AuthSpec,
     tables: Vec<RawHttpTableSpec>,
+    onboarding: Option<Onboarding>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -196,8 +197,9 @@ impl HttpSourceManifest {
             base_url,
             auth,
             tables,
+            onboarding,
         } = raw;
-        let common = build_source_manifest_common(dsl_version, name, version);
+        let common = build_source_manifest_common(dsl_version, name, version, onboarding);
         let tables = tables
             .into_iter()
             .map(|table| table.into_validated(&common.name))

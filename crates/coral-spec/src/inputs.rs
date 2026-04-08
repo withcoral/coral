@@ -12,7 +12,7 @@ use crate::{ManifestError, ParsedTemplate, Result, TemplateNamespace};
 
 /// The kind of interactive input required by one validated source spec.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ManifestInputKind {
+pub enum InputKind {
     /// A non-secret input persisted in source variables.
     Variable,
     /// A secret input persisted separately from source variables.
@@ -26,28 +26,30 @@ enum InputKind {
 }
 
 impl InputKind {
-    fn as_manifest_kind(self) -> ManifestInputKind {
+    fn as_manifest_kind(self) -> InputKind {
         match self {
-            Self::Variable => ManifestInputKind::Variable,
-            Self::Secret => ManifestInputKind::Secret,
+            Self::Variable => InputKind::Variable,
+            Self::Secret => InputKind::Secret,
         }
     }
 }
 
-/// One interactive input extracted from a validated source spec.
+/// One install-time input extracted from a validated source spec.
 ///
 /// The app and CLI can map this into prompts, persisted variables, or secret
 /// collection flows without depending on protobuf-specific types.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ManifestInputSpec {
+pub struct InputSpec {
     /// The source-spec-declared input key.
     pub key: String,
     /// Whether this input is a variable or a secret.
-    pub kind: ManifestInputKind,
+    pub kind: InputKind,
     /// Whether the user must provide an explicit value.
     pub required: bool,
     /// The source-spec-declared default value, if any.
     pub default_value: String,
+    /// Optional human-readable help describing how to acquire this value.
+    pub help: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -62,10 +64,14 @@ struct InputState {
 ///
 /// Returns a [`ManifestError`] when the source spec contains unsupported legacy
 /// source-input forms or malformed template tokens.
-pub fn collect_source_inputs_value(root: &Value) -> Result<Vec<ManifestInputSpec>> {
+pub fn collect_source_inputs_value(root: &Value) -> Result<Vec<InputSpec>> {
+    let input_help = collect_input_help(root)?;
     let mut ordered = Vec::new();
     let mut seen = BTreeMap::<String, InputState>::new();
     collect_from_value(root, &mut ordered, &mut seen)?;
+    for input in &mut ordered {
+        input.help = input_help.get(&input.key).cloned();
+    }
     Ok(ordered)
 }
 
@@ -76,14 +82,14 @@ pub fn collect_source_inputs_value(root: &Value) -> Result<Vec<ManifestInputSpec
 /// Returns a [`ManifestError`] when the YAML cannot be parsed or when the
 /// source spec contains unsupported legacy source-input forms or malformed
 /// template tokens.
-pub fn collect_source_inputs_yaml(raw: &str) -> Result<Vec<ManifestInputSpec>> {
+pub fn collect_source_inputs_yaml(raw: &str) -> Result<Vec<InputSpec>> {
     let root: Value = serde_yaml::from_str(raw).map_err(ManifestError::parse_yaml)?;
     collect_source_inputs_value(&root)
 }
 
 fn collect_from_value(
     value: &Value,
-    ordered: &mut Vec<ManifestInputSpec>,
+    ordered: &mut Vec<InputSpec>,
     seen: &mut BTreeMap<String, InputState>,
 ) -> Result<()> {
     match value {
@@ -104,9 +110,39 @@ fn collect_from_value(
     Ok(())
 }
 
+fn collect_input_help(root: &Value) -> Result<BTreeMap<String, String>> {
+    let Some(root) = root.as_mapping() else {
+        return Ok(BTreeMap::new());
+    };
+    let Some(onboarding) = root
+        .get(Value::String("onboarding".to_string()))
+        .and_then(Value::as_mapping)
+    else {
+        return Ok(BTreeMap::new());
+    };
+    let Some(input_help) = onboarding
+        .get(Value::String("input_help".to_string()))
+        .and_then(Value::as_mapping)
+    else {
+        return Ok(BTreeMap::new());
+    };
+
+    let mut help = BTreeMap::new();
+    for (key, value) in input_help {
+        let key = key.as_str().ok_or_else(|| {
+            ManifestError::validation("onboarding.input_help key must be a string")
+        })?;
+        let value = value.as_str().ok_or_else(|| {
+            ManifestError::validation(format!("onboarding.input_help.{key} value must be a string"))
+        })?;
+        help.insert(key.to_string(), value.to_string());
+    }
+    Ok(help)
+}
+
 fn collect_from_mapping(
     map: &Mapping,
-    ordered: &mut Vec<ManifestInputSpec>,
+    ordered: &mut Vec<InputSpec>,
     seen: &mut BTreeMap<String, InputState>,
 ) -> Result<()> {
     let Some(from) = map
@@ -145,7 +181,7 @@ fn collect_from_mapping(
 
 fn collect_from_template(
     template: &str,
-    ordered: &mut Vec<ManifestInputSpec>,
+    ordered: &mut Vec<InputSpec>,
     seen: &mut BTreeMap<String, InputState>,
 ) -> Result<()> {
     let template = ParsedTemplate::parse(template)?;
@@ -185,7 +221,7 @@ fn register_input(
     key: &str,
     kind: InputKind,
     default_value: Option<String>,
-    ordered: &mut Vec<ManifestInputSpec>,
+    ordered: &mut Vec<InputSpec>,
     seen: &mut BTreeMap<String, InputState>,
 ) -> Result<()> {
     if let Some(existing) = seen.get(key) {
@@ -197,11 +233,12 @@ fn register_input(
         return Ok(());
     }
 
-    ordered.push(ManifestInputSpec {
+    ordered.push(InputSpec {
         key: key.to_string(),
         kind: kind.as_manifest_kind(),
         required: default_value.is_none(),
         default_value: default_value.clone().unwrap_or_default(),
+        help: None,
     });
     seen.insert(
         key.to_string(),
@@ -215,7 +252,7 @@ fn register_input(
 
 #[cfg(test)]
 mod tests {
-    use super::{ManifestInputKind, collect_source_inputs_yaml};
+    use super::{InputKind, collect_source_inputs_yaml};
 
     #[test]
     fn extracts_variables_and_secrets_in_manifest_order() {
@@ -236,12 +273,57 @@ tables: []
         let inputs = collect_source_inputs_yaml(manifest).expect("inputs");
         assert_eq!(inputs.len(), 2);
         assert_eq!(inputs[0].key, "API_BASE");
-        assert_eq!(inputs[0].kind, ManifestInputKind::Variable);
+        assert_eq!(inputs[0].kind, InputKind::Variable);
         assert!(!inputs[0].required);
         assert_eq!(inputs[0].default_value, "https://example.com");
         assert_eq!(inputs[1].key, "API_TOKEN");
-        assert_eq!(inputs[1].kind, ManifestInputKind::Secret);
+        assert_eq!(inputs[1].kind, InputKind::Secret);
         assert!(inputs[1].required);
+    }
+
+    #[test]
+    fn ignores_onboarding_templates_during_input_discovery() {
+        let manifest = r#"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+base_url: "https://example.com"
+auth:
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{secret.API_TOKEN}}
+onboarding:
+  instructions: "Use {{env.SHOULD_NOT_BE_DISCOVERED}} only in docs"
+  input_help:
+    API_TOKEN: "Run {{env.SHOULD_NOT_BE_VALIDATED}} or create a token manually"
+tables: []
+"#;
+
+        let inputs = collect_source_inputs_yaml(manifest).expect("inputs");
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0].key, "API_TOKEN");
+    }
+
+    #[test]
+    fn inputs_without_onboarding_are_collected() {
+        let manifest = r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+auth:
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{secret.API_TOKEN}}
+tables: []
+";
+
+        let inputs = collect_source_inputs_yaml(manifest).expect("inputs");
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0].key, "API_TOKEN");
     }
 
     #[test]
@@ -256,5 +338,33 @@ tables: []
 "#;
         let error = collect_source_inputs_yaml(manifest).expect_err("legacy env unsupported");
         assert!(error.to_string().contains("unsupported"));
+    }
+
+    #[test]
+    fn collects_input_help_from_onboarding() {
+        let inputs = collect_source_inputs_yaml(
+            r#"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+onboarding:
+  input_help:
+    API_TOKEN: "Create a token at https://example.com/settings/tokens"
+auth:
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{secret.API_TOKEN}}
+tables: []
+"#,
+        )
+        .expect("inputs");
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0].kind, InputKind::Secret);
+        assert_eq!(
+            inputs[0].help.as_deref(),
+            Some("Create a token at https://example.com/settings/tokens")
+        );
     }
 }

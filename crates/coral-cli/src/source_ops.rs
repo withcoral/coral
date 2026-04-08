@@ -7,7 +7,7 @@ use coral_api::v1::{
     SourceOrigin, SourceSecret, SourceVariable, ValidateSourceRequest, ValidateSourceResponse,
 };
 use coral_client::{AppClient, default_workspace};
-use coral_spec::{ManifestInputKind, ManifestInputSpec, collect_source_inputs_yaml};
+use coral_spec::{InputKind, InputSpec, collect_source_inputs_yaml};
 use dialoguer::{Input, Password, theme::ColorfulTheme};
 use tonic::Request;
 
@@ -126,12 +126,12 @@ pub(crate) fn prompt_for_inputs(
 
     for input in inputs {
         match input.kind {
-            ManifestInputKind::Variable => {
+            InputKind::Variable => {
                 if let Some(variable) = prompt_variable(input)? {
                     variables.push(variable);
                 }
             }
-            ManifestInputKind::Secret => {
+            InputKind::Secret => {
                 if let Some(secret) = prompt_secret(input)? {
                     secrets.push(secret);
                 }
@@ -142,21 +142,26 @@ pub(crate) fn prompt_for_inputs(
     Ok((variables, secrets))
 }
 
-pub(crate) fn manifest_input_from_proto(
+pub(crate) fn input_from_proto(
     input: &SourceInputSpec,
 ) -> Result<ManifestInputSpec, anyhow::Error> {
     let kind = match SourceInputKind::try_from(input.kind) {
-        Ok(SourceInputKind::Variable) => ManifestInputKind::Variable,
-        Ok(SourceInputKind::Secret) => ManifestInputKind::Secret,
+        Ok(SourceInputKind::Variable) => InputKind::Variable,
+        Ok(SourceInputKind::Secret) => InputKind::Secret,
         Ok(SourceInputKind::Unspecified) | Err(_) => {
             return Err(anyhow::anyhow!("unknown input kind for '{}'", input.key));
         }
     };
-    Ok(ManifestInputSpec {
+    Ok(InputSpec {
         key: input.key.clone(),
         kind,
         required: input.required,
         default_value: input.default_value.clone(),
+        help: if input.help.is_empty() {
+            None
+        } else {
+            Some(input.help.clone())
+        },
     })
 }
 
@@ -252,7 +257,7 @@ pub(crate) fn finalize_input_value(
 
 #[cfg(test)]
 mod tests {
-    use coral_spec::{ManifestInputKind, ManifestInputSpec};
+    use coral_spec::{InputKind, ManifestInputSpec};
 
     use super::finalize_input_value;
 
@@ -260,7 +265,7 @@ mod tests {
     fn empty_input_uses_default_value() {
         let input = ManifestInputSpec {
             key: "API_BASE".to_string(),
-            kind: ManifestInputKind::Variable,
+            kind: InputKind::Variable,
             required: false,
             default_value: "https://example.com".to_string(),
         };
@@ -275,7 +280,7 @@ mod tests {
     fn empty_required_input_without_default_is_rejected() {
         let input = ManifestInputSpec {
             key: "API_TOKEN".to_string(),
-            kind: ManifestInputKind::Secret,
+            kind: InputKind::Secret,
             required: true,
             default_value: String::new(),
         };

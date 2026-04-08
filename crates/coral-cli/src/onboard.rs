@@ -147,7 +147,7 @@ async fn run_installed_source_menu(
             let inputs = source
                 .inputs
                 .iter()
-                .map(source_ops::manifest_input_from_proto)
+                .map(source_ops::input_from_proto)
                 .collect::<Result<Vec<_>, _>>()?;
             let (variables, secrets) = source_ops::prompt_for_inputs(&inputs)?;
             let result =
@@ -168,7 +168,7 @@ async fn run_add_bundled_source(
     let inputs = source
         .inputs
         .iter()
-        .map(source_ops::manifest_input_from_proto)
+        .map(source_ops::input_from_proto)
         .collect::<Result<Vec<_>, _>>()?;
     let (variables, secrets) = source_ops::prompt_for_inputs(&inputs)?;
     let result = source_ops::add_bundled_source(app, &source.name, variables, secrets).await?;
