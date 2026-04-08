@@ -33,8 +33,8 @@ pub(crate) async fn build_runtime(
         session_config,
         runtime_env,
     ));
-    let runtime_context = runtime.runtime_context();
 
+    let runtime_context = runtime.runtime_context();
     let mut compiled_sources = Vec::new();
     let mut failures = Vec::new();
     for source in sources {
@@ -49,10 +49,8 @@ pub(crate) async fn build_runtime(
     let registration = register_sources(&ctx, compiled_sources)
         .await
         .map_err(datafusion_to_core)?;
-    let active_sources = registration.active_sources;
-
-    catalog::register(&ctx, &active_sources).map_err(datafusion_to_core)?;
-    let tables = catalog::collect_tables(&active_sources);
+    catalog::register(&ctx, &registration.active_sources).map_err(datafusion_to_core)?;
+    let tables = catalog::collect_tables(&registration.active_sources);
     for failure in &failures {
         tracing::warn!(
             source = %failure.schema_name,
@@ -80,6 +78,7 @@ impl QueryRuntimeAdapter {
         Ok(QueryExecution::new(arrow_schema, batches))
     }
 }
+
 fn datafusion_to_core(error: DataFusionError) -> CoreError {
     match error {
         DataFusionError::SQL(detail, _) => CoreError::InvalidInput(detail.to_string()),
