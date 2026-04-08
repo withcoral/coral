@@ -5,7 +5,5 @@ validate:
 	RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps
 
 test:
-	mkdir -p .context/coverage
-	cargo llvm-cov --workspace --all-targets --all-features --locked --json --summary-only --output-path .context/coverage/llvm-cov.json
-	./scripts/coverage-summary.sh .context/coverage/llvm-cov.json .context/coverage/summary.md
-	cat .context/coverage/summary.md
+	cargo test -p coral-engine --test engine --locked
+	cargo test --workspace --all-targets --all-features --locked
