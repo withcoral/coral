@@ -28,88 +28,15 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
-      - name: Require main branch
-        if: github.event_name == 'workflow_dispatch'
-        run: |
-          if [ "${GITHUB_REF}" != "refs/heads/main" ]; then
-            echo "::error::Run this workflow from main."
-            exit 1
-          fi
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version-file: .github/scripts/.python-version
       - name: Prepare release metadata
         id: meta
-        run: |
-          set -euo pipefail
-
-          read_version() {
-            python3 -c "
-          import sys, tomllib
-          data = tomllib.loads(sys.stdin.read())
-          print(data.get('workspace', {}).get('package', {}).get('version', ''))
-          "
-          }
-
-          source_ref="${GITHUB_SHA}"
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.target_ref }}" ]; then
-            source_ref="${{ inputs.target_ref }}"
-          fi
-
-          resolved_sha="$(git rev-parse "${source_ref}^{commit}" 2>/dev/null)" || true
-          if [ -z "$resolved_sha" ]; then
-            echo "::error::Could not resolve ref '${source_ref}' to a commit."
-            exit 1
-          fi
-
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && ! git merge-base --is-ancestor "$resolved_sha" HEAD; then
-            echo "::error::target_ref must point to a commit on main."
-            exit 1
-          fi
-
-          current_version="$(git show "${resolved_sha}:Cargo.toml" | read_version)"
-          if [ -z "$current_version" ]; then
-            echo "::error::Could not read [workspace.package].version from Cargo.toml"
-            exit 1
-          fi
-
-          if [ "${{ github.event_name }}" = "push" ]; then
-            parent_version="$(git show "${resolved_sha}^:Cargo.toml" | read_version)" || true
-            if [ "$current_version" = "$parent_version" ]; then
-              echo "Version unchanged ($current_version), skipping release."
-              echo "should_release=false" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-            echo "Version changed: $parent_version -> $current_version"
-          fi
-
-          echo "should_release=true" >> "$GITHUB_OUTPUT"
-
-          version="v${current_version}"
-          if ! [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.]+)?$ ]]; then
-            echo "::error::version must look like v0.2.0, got $version"
-            exit 1
-          fi
-
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            if git rev-parse -q --verify "refs/tags/${version}" >/dev/null; then
-              echo "::error::Tag ${version} already exists."
-              exit 1
-            fi
-
-            latest_tag="$(git tag --list 'v*' --sort=-version:refname | head -n1 || true)"
-            if [ -n "$latest_tag" ]; then
-              highest_version="$(printf '%s\n%s\n' "$latest_tag" "$version" | sort -V | tail -n1)"
-              if [ "$highest_version" != "$version" ] || [ "$latest_tag" = "$version" ]; then
-                echo "::error::Version ${version} is not newer than latest tag ${latest_tag}."
-                exit 1
-              fi
-            fi
-          fi
-
-          {
-            echo "build_ref=${resolved_sha}"
-            echo "tag_name=$version"
-            echo "release_name=$version"
-            echo "artifact_prefix=coral"
-          } >> "$GITHUB_OUTPUT"
+        env:
+          TARGET_REF: ${{ inputs.target_ref }}
+        run: python3 .github/scripts/prepare_release.py
 
   build:
     needs: prepare

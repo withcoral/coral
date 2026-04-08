@@ -19,6 +19,11 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version-file: .github/scripts/.python-version
+
       - name: Install Rust toolchain
         run: rustup show
 
