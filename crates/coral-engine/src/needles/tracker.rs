@@ -13,6 +13,7 @@ use datafusion::common::ScalarValue;
 
 use super::{NeedleSpec, error::NeedleError};
 
+/// A single overlapping column is too collision-prone to count as retrieval.
 const MIN_MATCHING_COLUMNS: usize = 2;
 
 pub(crate) struct NeedleTracker {
@@ -93,7 +94,9 @@ fn batch_contains_needle(
     batch: &RecordBatch,
     column_values: &serde_json::Map<String, serde_json::Value>,
 ) -> bool {
-    let checks = build_match_checks(batch, column_values);
+    let Some(checks) = build_match_checks(batch, column_values) else {
+        return false;
+    };
     if checks.len() < MIN_MATCHING_COLUMNS {
         return false;
     }
@@ -104,22 +107,24 @@ fn batch_contains_needle(
 fn build_match_checks(
     batch: &RecordBatch,
     column_values: &serde_json::Map<String, serde_json::Value>,
-) -> Vec<MatchCheck> {
+) -> Option<Vec<MatchCheck>> {
     let schema = batch.schema();
+    let mut checks = Vec::new();
 
-    column_values
-        .iter()
-        .filter_map(|(column_name, json_value)| {
-            let column_index = schema.index_of(column_name).ok()?;
-            let data_type = schema.field(column_index).data_type();
-            let expected_value = json_to_scalar(json_value, data_type)?;
+    for (column_name, json_value) in column_values {
+        let Ok(column_index) = schema.index_of(column_name) else {
+            continue;
+        };
+        let data_type = schema.field(column_index).data_type();
+        let expected_value = json_to_scalar(json_value, data_type)?;
 
-            Some(MatchCheck {
-                column_index,
-                expected_value,
-            })
-        })
-        .collect()
+        checks.push(MatchCheck {
+            column_index,
+            expected_value,
+        });
+    }
+
+    Some(checks)
 }
 
 fn row_matches_needle(batch: &RecordBatch, row: usize, checks: &[MatchCheck]) -> bool {
@@ -131,6 +136,8 @@ fn row_matches_needle(batch: &RecordBatch, row: usize, checks: &[MatchCheck]) ->
     })
 }
 
+/// Converts one JSON value into the batch column's scalar type by round-tripping
+/// through Arrow's NDJSON reader instead of hand-implementing JSON -> `ScalarValue`.
 fn json_to_scalar(value: &serde_json::Value, data_type: &DataType) -> Option<ScalarValue> {
     let schema = Arc::new(Schema::new(vec![Field::new(
         "value",
@@ -222,6 +229,17 @@ mod tests {
 
         assert!(!batch_contains_needle(
             &batch,
+            needle.as_object().expect("needle should be object")
+        ));
+    }
+
+    #[test]
+    fn conversion_failure_prevents_match() {
+        let batches = query_results(&["needle-1"], &[42]);
+        let needle = json!({"id": "needle-1", "value": "not-an-int"});
+
+        assert!(!batch_contains_needle(
+            &batches[0],
             needle.as_object().expect("needle should be object")
         ));
     }
