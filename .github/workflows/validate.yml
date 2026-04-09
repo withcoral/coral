@@ -21,11 +21,11 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Detect release script changes
         id: release-script-changes
-        uses: dorny/paths-filter@v3
+        uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36 # v3
         with:
           filters: |
             release_python:
@@ -33,13 +33,13 @@ jobs:
               - '.github/workflows/release.yml'
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
         with:
           python-version-file: .github/scripts/.python-version
 
       - name: Set up uv
         if: steps.release-script-changes.outputs.release_python == 'true'
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
 
       - name: Ruff format check
         if: steps.release-script-changes.outputs.release_python == 'true'
@@ -57,7 +57,7 @@ jobs:
         run: rustup show
 
       - name: Cache Rust artifacts
-        uses: Swatinem/rust-cache@v2.9.1
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           shared-key: coral-validate-${{ runner.os }}
           cache-on-failure: true

@@ -26,11 +26,11 @@ jobs:
       release_name: ${{ steps.meta.outputs.release_name }}
       artifact_prefix: ${{ steps.meta.outputs.artifact_prefix }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           fetch-depth: 0
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
         with:
           python-version-file: .github/scripts/.python-version
       - name: Prepare release metadata
@@ -57,7 +57,7 @@ jobs:
             os: macos-latest
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           ref: ${{ needs.prepare.outputs.build_ref }}
       - name: Install Rust toolchain
@@ -65,7 +65,7 @@ jobs:
       - name: Ensure target is installed
         run: rustup target add ${{ matrix.target }}
       - name: Cache Rust artifacts
-        uses: Swatinem/rust-cache@23869a5bd66c73db3c0ac40331f3206eb23791dc # v2.9.1
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           shared-key: coral-${{ runner.os }}-${{ matrix.target }}
       - name: Install cross
@@ -88,7 +88,7 @@ jobs:
           tar czf "../../../${archive}" coral
           cd ../../../
       - name: Upload artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
           name: ${{ needs.prepare.outputs.artifact_prefix }}-${{ matrix.target }}
           path: ${{ needs.prepare.outputs.artifact_prefix }}-${{ matrix.target }}.tar.gz
@@ -98,7 +98,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: ${{ needs.prepare.outputs.artifact_prefix }}-*
           path: artifacts
@@ -108,7 +108,7 @@ jobs:
           cd artifacts
           sha256sum ${{ needs.prepare.outputs.artifact_prefix }}-*.tar.gz > checksums.sha256
       - name: Upload checksums
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
           name: ${{ needs.prepare.outputs.artifact_prefix }}-checksums
           path: artifacts/checksums.sha256
@@ -121,7 +121,7 @@ jobs:
     steps:
       - name: Compose release notes
         id: compose
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
           TAG_NAME: ${{ needs.prepare.outputs.tag_name }}
           BUILD_REF: ${{ needs.prepare.outputs.build_ref }}
@@ -144,14 +144,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: ${{ needs.prepare.outputs.artifact_prefix }}-*
           path: artifacts
           merge-multiple: true
 
       - name: Create GitHub App token
-        uses: actions/create-github-app-token@v3
+        uses: actions/create-github-app-token@f8d387b68d61c58ab83c6c016672934102569859 # v3
         id: github-app-token
         with:
           app-id: ${{ vars.RELEASE_APP_ID }}
@@ -161,7 +161,7 @@ jobs:
             homebrew-tap
 
       - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2
         with:
           tag_name: ${{ needs.prepare.outputs.tag_name }}
           # Tag the exact commit selected in prepare instead of defaulting to
@@ -178,7 +178,7 @@ jobs:
       # Dispatch the tap workflow after publishing the release:
       # https://octokit.github.io/rest.js/v22/#repos-create-dispatch-event
       - name: Trigger Homebrew tap bump
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
           RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
         with:
