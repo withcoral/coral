@@ -37,7 +37,7 @@ Coral prompts for any required variables or secrets. Once connected, the source'
 
 You can now query any connected source using SQL.
 
-Use the [system catalog](/concepts/system-catalog) to see all available tables:
+Use `coral.tables` to see all available tables:
 
 ```shellscript
 coral sql "SELECT schema_name, table_name FROM coral.tables ORDER BY 1, 2"
