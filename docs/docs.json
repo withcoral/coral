@@ -84,14 +84,6 @@
         ]
       },
       {
-        "group": "Concepts",
-        "pages": [
-          "concepts/sources-and-workspaces",
-          "concepts/runtime-and-mcp",
-          "concepts/system-catalog"
-        ]
-      },
-      {
         "group": "Reference",
         "pages": [
           "reference/cli-reference",
