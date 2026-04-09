@@ -83,7 +83,11 @@ impl ServerBuilder {
                 .or_else(|| env.coral_config_dir_override()),
         )?;
         layout.ensure()?;
-        let telemetry_config = TelemetryConfig::load(&layout)?;
+        let telemetry_config = match TelemetryConfig::load(&layout) {
+            Ok(config) => config,
+            Err(AppError::TomlDecode(_)) => TelemetryConfig::default(),
+            Err(error) => return Err(error),
+        };
         crate::telemetry::init_tracing(&telemetry_config);
         let config_store = ConfigStore::new(layout.clone());
         let secret_store = SecretStore::new(layout.clone());
