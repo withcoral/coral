@@ -10,7 +10,7 @@ on:
         required: false
         type: string
 permissions:
-  contents: write
+  contents: read
 concurrency:
   group: release
   cancel-in-progress: false
@@ -142,6 +142,8 @@ jobs:
     needs: [prepare, checksums, release-notes]
     if: needs.prepare.outputs.should_release == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Download artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
