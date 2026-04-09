@@ -168,7 +168,7 @@ async fn main() -> Result<(), anyhow::Error> {
                     let (variables, secrets) = source_ops::prompt_for_inputs(&inputs)?;
                     source_ops::import_source(&app, manifest_yaml, variables, secrets).await?
                 } else {
-                    unreachable!("clap enforces exactly one of name or path")
+                    unreachable!("clap enforces exactly one of name or file")
                 };
                 println!("Added source {}", response.name);
             }
