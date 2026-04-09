@@ -24,6 +24,7 @@ use tracing_subscriber::{EnvFilter, Registry};
 pub mod config;
 pub mod metrics;
 
+use config::DEFAULT_TRACE_FILTER;
 pub use config::TelemetryConfig;
 
 static INIT: Once = Once::new();
@@ -36,6 +37,18 @@ const METRICS_INTERVAL: Duration = Duration::from_secs(5);
 
 fn build_filter(log: &str) -> EnvFilter {
     EnvFilter::new(log)
+}
+
+fn build_trace_targets(filter: &str) -> (Targets, Option<String>) {
+    match filter.parse() {
+        Ok(targets) => (targets, None),
+        Err(error) => (
+            DEFAULT_TRACE_FILTER
+                .parse()
+                .expect("default trace filter must be valid"),
+            Some(error.to_string()),
+        ),
+    }
 }
 
 fn initialize_metrics(meter_provider: Option<&SdkMeterProvider>) {
@@ -211,10 +224,8 @@ pub(crate) fn init_tracing(config: &TelemetryConfig) {
 
             let provider = builder.build();
             let tracer = provider.tracer("coral");
-            let trace_targets: Targets = config
-                .otel_trace_filter
-                .parse()
-                .expect("trace filter must be valid");
+            let (trace_targets, trace_filter_error) =
+                build_trace_targets(&config.otel_trace_filter);
             let otel_trace_layer = tracing_opentelemetry::layer()
                 .with_tracer(tracer)
                 .with_filter(trace_targets.clone());
@@ -234,6 +245,14 @@ pub(crate) fn init_tracing(config: &TelemetryConfig) {
                 .with(otel_trace_layer)
                 .with(otel_log_layer)
                 .init();
+            if let Some(error) = trace_filter_error {
+                tracing::warn!(
+                    provided_filter = %config.otel_trace_filter,
+                    fallback_filter = DEFAULT_TRACE_FILTER,
+                    detail = %error,
+                    "invalid otel_trace_filter; falling back to default filter"
+                );
+            }
         } else {
             Registry::default().with(stderr_layer).init();
         }
@@ -246,6 +265,12 @@ pub(crate) fn init_tracing(config: &TelemetryConfig) {
 
 /// Flush any pending tracing, log, and metric exports before process exit.
 pub fn shutdown_tracing() {
+    if let Ok(mut guard) = METER_PROVIDER.lock()
+        && let Some(provider) = guard.take()
+        && let Err(error) = provider.shutdown()
+    {
+        tracing::warn!("OTEL meter provider shutdown error: {error}");
+    }
     if let Ok(mut guard) = PROVIDER.lock()
         && let Some(provider) = guard.take()
         && let Err(error) = provider.shutdown()
@@ -258,12 +283,6 @@ pub fn shutdown_tracing() {
     {
         tracing::warn!("OTEL logger provider shutdown error: {error}");
     }
-    if let Ok(mut guard) = METER_PROVIDER.lock()
-        && let Some(provider) = guard.take()
-        && let Err(error) = provider.shutdown()
-    {
-        tracing::warn!("OTEL meter provider shutdown error: {error}");
-    }
     if let Ok(mut guard) = REMOTE_CONTEXT.lock() {
         *guard = None;
     }
@@ -275,7 +294,10 @@ mod tests {
 
     use opentelemetry::trace::TraceContextExt as _;
 
-    use super::{normalize_otlp_endpoint, parse_headers, parse_traceparent, remote_parent_context};
+    use super::{
+        DEFAULT_TRACE_FILTER, build_trace_targets, normalize_otlp_endpoint, parse_headers,
+        parse_traceparent, remote_parent_context,
+    };
 
     #[test]
     fn parse_traceparent_valid() {
@@ -335,5 +357,15 @@ mod tests {
     #[test]
     fn remote_parent_context_defaults_to_empty_context() {
         assert!(!remote_parent_context().has_active_span());
+    }
+
+    #[test]
+    fn invalid_trace_filter_falls_back_to_default() {
+        let (targets, error) = build_trace_targets("coral_app=[");
+        let (expected, default_error) = build_trace_targets(DEFAULT_TRACE_FILTER);
+
+        assert_eq!(format!("{targets:?}"), format!("{expected:?}"));
+        assert!(error.is_some());
+        assert!(default_error.is_none());
     }
 }

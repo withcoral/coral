@@ -211,6 +211,10 @@ async fn local_mode_source_lifecycle_and_query_work() {
 
 #[tokio::test]
 async fn query_execution_rejects_non_read_only_sql() {
+    if !loopback_sockets_available() {
+        return;
+    }
+
     let temp = TempDir::new().expect("temp dir");
     let manifest_yaml = fixture_manifest_yaml(temp.path());
     let app = local_client(temp.path().join("coral-config")).await;

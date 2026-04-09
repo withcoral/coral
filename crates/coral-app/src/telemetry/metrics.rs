@@ -57,17 +57,23 @@ pub(crate) fn metrics() -> Metrics {
         return metrics;
     }
 
-    let initialized = METRICS
+    if let Some(metrics) = METRICS
         .read()
         .expect("metrics lock poisoned during read")
-        .is_some();
-    if !initialized {
-        init_global();
+        .clone()
+    {
+        return metrics;
     }
 
-    METRICS
-        .read()
-        .expect("metrics lock poisoned during read")
+    let mut metrics = METRICS
+        .write()
+        .expect("metrics lock poisoned during initialization");
+    if metrics.is_none() {
+        let meter = opentelemetry::global::meter("coral");
+        *metrics = Some(build_metrics(&meter));
+    }
+
+    metrics
         .clone()
         .expect("metrics must be initialized before use")
 }
