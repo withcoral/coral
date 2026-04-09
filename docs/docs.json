@@ -49,16 +49,6 @@
   "navbar": {
     "links": [
       {
-        "label": "Quickstart",
-        "href": "/getting-started/quickstart",
-        "icon": "rocket"
-      },
-      {
-        "label": "Agent Usage",
-        "href": "/guides/agent-usage",
-        "icon": "bot"
-      },
-      {
         "label": "Install Coral",
         "href": "/getting-started/installation",
         "icon": "download"

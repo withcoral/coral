@@ -1,31 +1,14 @@
 ---
 title: "Source spec reference"
-description: "Reference for Coral source spec fields, backends, install-time inputs, and current authoring workflow."
+description: "Schema and fields for Coral source spec YAML files."
 ---
 
-Coral is extensible through source specs — YAML files that describe how to connect to an API or read a local dataset. If the system you need is not in the [bundled source set](/reference/bundled-sources), you can write a spec and import it:
+Coral is extensible through source specs. These are YAML files that describe how to connect to an API or read a local dataset.
 
-```shellscript
-coral source import ./my-source.yaml
-```
-
-For a guided walkthrough, see [Write a custom source](/guides/write-a-custom-source). This page is the full field reference.
-
-## What a source spec declares
-
-A source spec defines:
-
-- the source name and version
-- the backend type
-- one or more tables
-- how Coral should read or request the underlying data
-- any required variables or secrets
-
-Today the main backends are:
-
-- `http`
-- `jsonl`
-- `parquet`
+<Tip>
+  For a guided walkthrough, see [Write a custom
+  source](/guides/write-a-custom-source).
+</Tip>
 
 ## Top-level fields
 
@@ -38,14 +21,32 @@ dsl_version: 3
 backend: http
 ```
 
-Field meanings:
+| Field         | Description                                        |
+| ------------- | -------------------------------------------------- |
+| `name`        | Source name, also used as the SQL schema name      |
+| `version`     | Source spec version string                         |
+| `dsl_version` | Coral source spec DSL version (currently `3`)      |
+| `backend`     | How data is fetched: `http`, `jsonl`, or `parquet` |
 
-- `name`: the installed source name and SQL schema name
-- `version`: the source-spec version string
-- `dsl_version`: the Coral source-spec DSL version
-- `backend`: how the source is loaded, such as `http`, `jsonl`, or `parquet`
+## Column types
 
-## Minimal local JSONL source
+The `type` field on each column accepts:
+
+| Type      | Description           |
+| --------- | --------------------- |
+| `Utf8`    | UTF-8 string          |
+| `Int64`   | 64-bit signed integer |
+| `Float64` | 64-bit floating point |
+| `Boolean` | Boolean true/false    |
+
+Each column also supports:
+
+- `nullable` (boolean, default `true`): whether the column can contain NULL values
+- `description` (string): human-readable description, surfaced through `coral.columns`
+
+## File-backed tables
+
+For `jsonl` and `parquet`, each table points at a file location:
 
 ```yaml
 name: local_messages
@@ -67,65 +68,11 @@ tables:
         type: Utf8
 ```
 
-Then import it:
-
-```shellscript
-coral source import ./local-messages.yaml
-```
-
-## Tables
-
-A source spec declares one or more tables.
-
-At a minimum, each table has:
-
-```yaml
-tables:
-  - name: example_table
-    description: What this table represents
-```
-
-What comes next depends on the backend.
-
-## File-backed tables
-
-For `jsonl` and `parquet`, each table points at a file location:
-
-```yaml
-tables:
-  - name: events
-    description: Application events
-    source:
-      location: file:///absolute/path/to/events/
-      glob: "**/*.jsonl"
-    columns:
-      - name: event_id
-        type: Utf8
-      - name: kind
-        type: Utf8
-```
-
 Notes:
 
 - `jsonl` currently expects `file://` locations
 - `parquet` supports `file://` and `s3://` locations
 - if you omit `glob`, Coral uses a backend-specific default
-
-## Column types
-
-The `type` field on each column accepts:
-
-| Type | Description |
-| --- | --- |
-| `Utf8` | UTF-8 string |
-| `Int64` | 64-bit signed integer |
-| `Float64` | 64-bit floating point |
-| `Boolean` | Boolean true/false |
-
-Each column also supports:
-
-- `nullable` (boolean, default `true`): whether the column can contain NULL values
-- `description` (string): human-readable description, surfaced through `coral.columns`
 
 ## HTTP-backed tables
 
@@ -160,19 +107,19 @@ In this minimal example:
 
 - `response: {}` means "use the default response rules" for an HTTP table
 - with the default response rules, Coral treats the selected response value directly as rows unless you configure a different `row_strategy`
-- `template: Bearer {{secret.API_TOKEN}}` means the header value is rendered from an install-time secret
+- `{{secret.API_TOKEN}}` is replaced with the secret value you provided when adding the source to Coral
 
-## HTTP response fields
+### HTTP response fields
 
 The `response` object controls how Coral extracts rows from an HTTP response body.
 
-| Field | Type | Default | Description |
-| --- | --- | --- | --- |
-| `rows_path` | list of strings | `[]` | JSON path segments to the array of rows in the response |
-| `ok_path` | list of strings | `[]` | JSON path to a field indicating success |
-| `error_path` | list of strings | `[]` | JSON path to a field containing an error message |
-| `allow_404_empty` | boolean | `false` | Treat HTTP 404 as an empty result set instead of an error |
-| `row_strategy` | string | `direct` | How to convert the selected value into rows. `direct` uses the array or object as-is. `dict_entries` maps a JSON object's key-value pairs into rows. `series_point_list` flattens specialized timeseries arrays (e.g., Datadog metrics). |
+| Field             | Type            | Default  | Description                                                                                                                                                                                                                              |
+| ----------------- | --------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `rows_path`       | list of strings | `[]`     | JSON path segments to the array of rows in the response                                                                                                                                                                                  |
+| `ok_path`         | list of strings | `[]`     | JSON path to a field indicating success                                                                                                                                                                                                  |
+| `error_path`      | list of strings | `[]`     | JSON path to a field containing an error message                                                                                                                                                                                         |
+| `allow_404_empty` | boolean         | `false`  | Treat HTTP 404 as an empty result set instead of an error                                                                                                                                                                                |
+| `row_strategy`    | string          | `direct` | How to convert the selected value into rows. `direct` uses the array or object as-is. `dict_entries` maps a JSON object's key-value pairs into rows. `series_point_list` flattens specialized timeseries arrays (e.g., Datadog metrics). |
 
 Example with `rows_path`:
 
@@ -186,25 +133,25 @@ response:
 
 This extracts rows from `response_body.data.items` instead of treating the entire response as the row array.
 
-## HTTP pagination
+### HTTP pagination
 
 The `pagination` object controls how Coral fetches additional pages of results.
 
-| Field | Type | Default | Description |
-| --- | --- | --- | --- |
-| `mode` | string | `none` | Pagination strategy: `none`, `auto`, `cursor_query`, `cursor_body`, `page`, `offset`, or `link_header` |
-| `cursor_param` | string | — | Query parameter name for the cursor (`cursor_query` mode) |
-| `response_cursor_path` | list of strings | `[]` | JSON path in the response to the next cursor value |
-| `cursor_body_path` | list of strings | `[]` | JSON path in the request body for the cursor (`cursor_body` mode) |
-| `page_param` | string | — | Query parameter name for the page number (`page` mode) |
-| `page_start` | integer | `0` | Starting page number |
-| `offset_param` | string | — | Query parameter name for the offset (`offset` mode) |
-| `offset_start` | integer | `0` | Starting offset value |
-| `page_size.default` | integer | — | Default page size |
-| `page_size.max` | integer | — | Maximum page size |
-| `page_size.query_param` | string | — | Query parameter name for the page size |
-| `max_pages` | integer | — | Maximum number of pages to fetch |
-| `link_header_require_results` | boolean | `false` | For `link_header` mode, require non-empty results to continue |
+| Field                         | Type            | Default | Description                                                                                            |
+| ----------------------------- | --------------- | ------- | ------------------------------------------------------------------------------------------------------ |
+| `mode`                        | string          | `none`  | Pagination strategy: `none`, `auto`, `cursor_query`, `cursor_body`, `page`, `offset`, or `link_header` |
+| `cursor_param`                | string          | —       | Query parameter name for the cursor (`cursor_query` mode)                                              |
+| `response_cursor_path`        | list of strings | `[]`    | JSON path in the response to the next cursor value                                                     |
+| `cursor_body_path`            | list of strings | `[]`    | JSON path in the request body for the cursor (`cursor_body` mode)                                      |
+| `page_param`                  | string          | —       | Query parameter name for the page number (`page` mode)                                                 |
+| `page_start`                  | integer         | `0`     | Starting page number                                                                                   |
+| `offset_param`                | string          | —       | Query parameter name for the offset (`offset` mode)                                                    |
+| `offset_start`                | integer         | `0`     | Starting offset value                                                                                  |
+| `page_size.default`           | integer         | —       | Default page size                                                                                      |
+| `page_size.max`               | integer         | —       | Maximum page size                                                                                      |
+| `page_size.query_param`       | string          | —       | Query parameter name for the page size                                                                 |
+| `max_pages`                   | integer         | —       | Maximum number of pages to fetch                                                                       |
+| `link_header_require_results` | boolean         | `false` | For `link_header` mode, require non-empty results to continue                                          |
 
 Example using cursor-based pagination:
 
@@ -249,14 +196,10 @@ pagination:
 
 ## Variables and secrets
 
-Source specs can declare install-time inputs.
+Source specs can reference values that Coral prompts for when you add or import a source:
 
-Two common patterns are:
-
-- variables for non-secret configuration such as base URLs or organization IDs
-- secrets for API keys or bearer tokens
-
-Example:
+- **Variables**: non-secret configuration like base URLs or organization IDs
+- **Secrets**: API keys or bearer tokens
 
 ```yaml
 base_url: "{{variable.API_BASE|https://api.example.com}}"
@@ -267,10 +210,4 @@ auth:
       template: Bearer {{secret.API_TOKEN}}
 ```
 
-In the `base_url` example, the `|https://api.example.com` part means "use this default value if the variable is not provided explicitly."
-
-When the spec is added or imported, Coral prompts for those values interactively.
-
-## Authoring workflow
-
-For a guided walkthrough — including agent-driven authoring, examples for both file-backed and HTTP sources, and iteration tips — see [Write a custom source](/guides/write-a-custom-source).
+The `|https://api.example.com` syntax provides a default value when the variable is not set.
