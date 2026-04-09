@@ -41,7 +41,7 @@ jobs:
               - '.github/workflows/**'
               - '.github/scripts/**'
 
-  release-python:
+  python-gha-helper-tests:
     name: Python tests (release scripts)
     runs-on: ubuntu-latest
     needs: changes
@@ -110,7 +110,7 @@ jobs:
   status:
     name: Validate status
     runs-on: ubuntu-latest
-    needs: [changes, release-python, validate-rust, gha-security-audit]
+    needs: [changes, python-gha-helper-tests, validate-rust, gha-security-audit]
     # Run even when upstream jobs fail or are conditionally skipped so this
     # job can act as the single required status check for the workflow.
     if: ${{ always() }}
@@ -119,7 +119,7 @@ jobs:
         run: |
           jobs=(
             "changes:${{ needs.changes.result }}"
-            "release-python:${{ needs.release-python.result }}"
+            "python-gha-helper-tests:${{ needs.python-gha-helper-tests.result }}"
             "validate-rust:${{ needs.validate-rust.result }}"
             "gha-security-audit:${{ needs.gha-security-audit.result }}"
           )
