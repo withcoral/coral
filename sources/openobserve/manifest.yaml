@@ -133,13 +133,13 @@ tables:
         expr: { kind: 'null' }
         virtual: true
       - name: start_time
-        type: Utf8
+        type: Int64
         nullable: true
         description: "Start time in microseconds (virtual filter, required)"
         expr: { kind: 'null' }
         virtual: true
       - name: end_time
-        type: Utf8
+        type: Int64
         nullable: true
         description: "End time in microseconds (virtual filter, required)"
         expr: { kind: 'null' }
@@ -224,13 +224,13 @@ tables:
         expr: { kind: 'null' }
         virtual: true
       - name: start_time
-        type: Utf8
+        type: Int64
         nullable: true
         description: "Start time in microseconds (virtual filter, required)"
         expr: { kind: 'null' }
         virtual: true
       - name: end_time
-        type: Utf8
+        type: Int64
         nullable: true
         description: "End time in microseconds (virtual filter, required)"
         expr: { kind: 'null' }
@@ -324,13 +324,13 @@ tables:
         expr: { kind: 'null' }
         virtual: true
       - name: start_time
-        type: Utf8
+        type: Int64
         nullable: true
         description: "Start time in microseconds (virtual filter, required)"
         expr: { kind: 'null' }
         virtual: true
       - name: end_time
-        type: Utf8
+        type: Int64
         nullable: true
         description: "End time in microseconds (virtual filter, required)"
         expr: { kind: 'null' }
