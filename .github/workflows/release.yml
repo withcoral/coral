@@ -29,6 +29,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           fetch-depth: 0
+          persist-credentials: false
       - name: Set up Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
         with:
@@ -60,6 +61,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           ref: ${{ needs.prepare.outputs.build_ref }}
+          persist-credentials: false
       - name: Install Rust toolchain
         run: rustup show
       - name: Ensure target is installed
@@ -83,10 +85,12 @@ jobs:
           fi
       - name: Package
         run: |
-          archive="${{ needs.prepare.outputs.artifact_prefix }}-${{ matrix.target }}.tar.gz"
+          archive="${NEEDS_PREPARE_OUTPUTS_ARTIFACT_PREFIX}-${{ matrix.target }}.tar.gz"
           cd "target/${{ matrix.target }}/release"
           tar czf "../../../${archive}" coral
           cd ../../../
+        env:
+          NEEDS_PREPARE_OUTPUTS_ARTIFACT_PREFIX: ${{ needs.prepare.outputs.artifact_prefix }}
       - name: Upload artifact
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
@@ -106,7 +110,9 @@ jobs:
       - name: Generate checksums
         run: |
           cd artifacts
-          sha256sum ${{ needs.prepare.outputs.artifact_prefix }}-*.tar.gz > checksums.sha256
+          sha256sum ${NEEDS_PREPARE_OUTPUTS_ARTIFACT_PREFIX}-*.tar.gz > checksums.sha256
+        env:
+          NEEDS_PREPARE_OUTPUTS_ARTIFACT_PREFIX: ${{ needs.prepare.outputs.artifact_prefix }}
       - name: Upload checksums
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
