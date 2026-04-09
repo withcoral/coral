@@ -248,7 +248,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
     assert_eq!(invalid_sql.is_error, Some(true));
     assert_eq!(
         invalid_sql.structured_content.expect("structured content")["error"]["summary"],
-        "Query failed"
+        "Query request is invalid"
     );
     assert!(
         invalid_sql.content[0]
