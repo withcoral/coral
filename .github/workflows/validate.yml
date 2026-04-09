@@ -116,12 +116,17 @@ jobs:
     if: ${{ always() }}
     steps:
       - name: Check all job results
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          PYTHON_GHA_HELPER_TESTS_RESULT: ${{ needs.python-gha-helper-tests.result }}
+          VALIDATE_RUST_RESULT: ${{ needs.validate-rust.result }}
+          GHA_SECURITY_AUDIT_RESULT: ${{ needs.gha-security-audit.result }}
         run: |
           jobs=(
-            "changes:${{ needs.changes.result }}"
-            "python-gha-helper-tests:${{ needs.python-gha-helper-tests.result }}"
-            "validate-rust:${{ needs.validate-rust.result }}"
-            "gha-security-audit:${{ needs.gha-security-audit.result }}"
+            "changes:$CHANGES_RESULT"
+            "python-gha-helper-tests:$PYTHON_GHA_HELPER_TESTS_RESULT"
+            "validate-rust:$VALIDATE_RUST_RESULT"
+            "gha-security-audit:$GHA_SECURITY_AUDIT_RESULT"
           )
 
           failed=0
