@@ -7,7 +7,9 @@ use coral_api::v1::{
     SourceOrigin, SourceSecret, SourceVariable, ValidateSourceRequest, ValidateSourceResponse,
 };
 use coral_client::{AppClient, default_workspace};
-use coral_spec::{ManifestInputKind, ManifestInputSpec, collect_source_inputs_yaml};
+use coral_spec::{
+    ManifestInputKind, ManifestInputSpec, collect_source_inputs_yaml, parse_source_manifest_yaml,
+};
 use dialoguer::{Input, Password, theme::ColorfulTheme};
 use tonic::Request;
 
@@ -83,6 +85,12 @@ pub(crate) async fn validate_source(
         }))
         .await?
         .into_inner())
+}
+
+pub(crate) fn lint_manifest_file(file: &Path) -> Result<(), anyhow::Error> {
+    let manifest_yaml = std::fs::read_to_string(file)?;
+    parse_source_manifest_yaml(manifest_yaml.as_str())?;
+    Ok(())
 }
 
 pub(crate) async fn delete_source(app: &AppClient, name: &str) -> Result<(), anyhow::Error> {

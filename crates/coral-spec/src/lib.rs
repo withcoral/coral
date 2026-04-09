@@ -76,6 +76,7 @@ mod inputs;
 #[cfg(test)]
 mod loader;
 mod parser;
+mod schema;
 mod template;
 mod validate;
 
@@ -95,5 +96,4 @@ pub use parser::{
 pub use template::{ParsedTemplate, TemplateNamespace, TemplatePart, TemplateToken};
 pub(crate) use validate::{
     validate_columns, validate_filters_and_column_exprs, validate_http_table,
-    validate_manifest_top_level,
 };

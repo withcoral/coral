@@ -63,6 +63,7 @@
           "type": "array",
           "items": {
             "type": "object",
+            "additionalProperties": false,
             "required": ["when_filters"],
             "properties": {
               "when_filters": {

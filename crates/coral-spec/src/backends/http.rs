@@ -15,12 +15,11 @@ use std::collections::{BTreeSet, HashSet};
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::common::build_source_manifest_common;
 use crate::{
     AuthSpec, ColumnSpec, FilterSpec, ManifestError, PaginationSpec, ParsedTemplate,
     RequestRouteSpec, RequestSpec, ResponseSpec, Result, SourceBackend, SourceManifestCommon,
-    TableCommon, TemplateNamespace, ValueSourceSpec, validate_http_table,
-    validate_manifest_top_level,
+    TableCommon, TemplateNamespace, ValueSourceSpec, validate::validate_template,
+    validate_http_table,
 };
 
 /// Validated top-level manifest for an HTTP-backed source.
@@ -39,7 +38,7 @@ struct RawHttpSourceManifest {
     name: String,
     version: String,
     #[serde(default)]
-    description: Option<String>,
+    description: String,
     backend: SourceBackend,
     #[serde(default)]
     base_url: ParsedTemplate,
@@ -191,25 +190,29 @@ impl HttpSourceManifest {
             dsl_version,
             name,
             version,
-            description: _description,
+            description,
             backend: _backend,
             base_url,
             auth,
             tables,
         } = raw;
-        let common = build_source_manifest_common(dsl_version, name, version);
+        let common = SourceManifestCommon::new(dsl_version, name, version, description);
         let tables = tables
             .into_iter()
             .map(|table| table.into_validated(&common.name))
             .collect::<Result<Vec<_>>>()?;
-        validate_manifest_top_level(
-            common.dsl_version,
-            &common.name,
-            &common.name,
-            SourceBackend::Http,
+        if base_url.raw().trim().is_empty() {
+            return Err(ManifestError::validation(format!(
+                "source '{}' must define a non-empty base_url",
+                common.name
+            )));
+        }
+        validate_template(
             &base_url,
-            tables.len(),
+            &HashSet::new(),
+            &format!("source '{}'", common.name),
         )?;
+
         Ok(Self {
             common,
             base_url,

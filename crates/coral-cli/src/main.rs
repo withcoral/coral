@@ -81,6 +81,8 @@ enum SourceCommand {
     List,
     /// Add a new source
     Add(SourceAddArgs),
+    /// Lint manifest file
+    Lint { file: PathBuf },
     /// Test connectivity for a source
     Test {
         /// Name of the source to test
@@ -173,6 +175,10 @@ async fn main() -> Result<(), anyhow::Error> {
                     _ => unreachable!("clap enforces exactly one of name or file"),
                 };
                 println!("Added source {}", response.name);
+            }
+            SourceCommand::Lint { file } => {
+                source_ops::lint_manifest_file(&file)?;
+                println!("Manifest is valid");
             }
             SourceCommand::Test { name } => {
                 let response = source_ops::validate_source(&app, &name).await?;

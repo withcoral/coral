@@ -10,6 +10,7 @@ use serde_json::Value;
 
 use crate::backends::file::{JsonlSourceManifest, ParquetSourceManifest};
 use crate::backends::http::HttpSourceManifest;
+use crate::schema::validate_manifest_schema;
 use crate::{ManifestError, Result, SourceBackend};
 
 /// Validated top-level source spec for one registered source.
@@ -61,6 +62,16 @@ impl ValidatedSourceManifest {
             ValidatedManifestKind::Http(manifest) => &manifest.common.version,
             ValidatedManifestKind::Parquet(manifest) => &manifest.common.version,
             ValidatedManifestKind::Jsonl(manifest) => &manifest.common.version,
+        }
+    }
+
+    #[must_use]
+    /// Returns the source-spec description string.
+    pub fn description(&self) -> &str {
+        match &self.inner {
+            ValidatedManifestKind::Http(manifest) => &manifest.common.description,
+            ValidatedManifestKind::Parquet(manifest) => &manifest.common.description,
+            ValidatedManifestKind::Jsonl(manifest) => &manifest.common.description,
         }
     }
 
@@ -123,6 +134,7 @@ pub fn parse_source_manifest_yaml(raw: &str) -> Result<ValidatedSourceManifest> 
 /// Returns a [`ManifestError`] if the source spec violates any validation
 /// rules.
 pub fn parse_source_manifest_value(value: Value) -> Result<ValidatedSourceManifest> {
+    validate_manifest_schema(&value)?;
     let backend_kind = parse_source_backend(&value)?;
     match backend_kind {
         SourceBackend::Http => Ok(ValidatedSourceManifest {
