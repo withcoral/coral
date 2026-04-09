@@ -118,35 +118,10 @@ jobs:
         with:
           name: ${{ needs.prepare.outputs.artifact_prefix }}-checksums
           path: artifacts/checksums.sha256
-  release-notes:
-    needs: [prepare]
-    if: needs.prepare.outputs.should_release == 'true'
-    runs-on: ubuntu-latest
-    outputs:
-      release_body: ${{ steps.compose.outputs.release_body }}
-    steps:
-      - name: Compose release notes
-        id: compose
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
-        env:
-          TAG_NAME: ${{ needs.prepare.outputs.tag_name }}
-          BUILD_REF: ${{ needs.prepare.outputs.build_ref }}
-        with:
-          script: |
-            const response = await github.rest.repos.generateReleaseNotes({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              tag_name: process.env.TAG_NAME,
-              // Keep release notes anchored to the resolved build commit.
-              // This matters for workflow_dispatch runs that release an older
-              // commit from main via target_ref.
-              target_commitish: process.env.BUILD_REF,
-            });
-
-            core.setOutput("release_body", response.data.body.trim());
   publish-version:
-    needs: [prepare, checksums, release-notes]
+    needs: [prepare, checksums]
     if: needs.prepare.outputs.should_release == 'true'
+    environment: release
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -169,19 +144,20 @@ jobs:
             homebrew-tap
 
       - name: Create GitHub release
-        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2
-        with:
-          tag_name: ${{ needs.prepare.outputs.tag_name }}
-          # Tag the exact commit selected in prepare instead of defaulting to
-          # the current main tip. This is required for manual target_ref
-          # releases and keeps the tag aligned with the artifacts and notes.
-          target_commitish: ${{ needs.prepare.outputs.build_ref }}
-          token: ${{ steps.github-app-token.outputs.token }}
-          name: ${{ needs.prepare.outputs.release_name }}
-          body: ${{ needs.release-notes.outputs.release_body }}
-          files: |
-            artifacts/${{ needs.prepare.outputs.artifact_prefix }}-*.tar.gz
-            artifacts/checksums.sha256
+        env:
+          ARTIFACT_PREFIX: ${{ needs.prepare.outputs.artifact_prefix }}
+          BUILD_REF: ${{ needs.prepare.outputs.build_ref }}
+          GH_TOKEN: ${{ steps.github-app-token.outputs.token }}
+          RELEASE_NAME: ${{ needs.prepare.outputs.release_name }}
+          TAG_NAME: ${{ needs.prepare.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG_NAME" \
+            artifacts/${ARTIFACT_PREFIX}-*.tar.gz \
+            artifacts/checksums.sha256 \
+            --target "$BUILD_REF" \
+            --title "$RELEASE_NAME" \
+            --generate-notes
 
       # Dispatch the tap workflow after publishing the release:
       # https://octokit.github.io/rest.js/v22/#repos-create-dispatch-event
