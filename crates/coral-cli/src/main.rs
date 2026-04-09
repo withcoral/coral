@@ -12,7 +12,7 @@ mod source_ops;
 
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 use coral_api::v1::ExecuteSqlRequest;
 use coral_client::{
     ClientBuilder, decode_execute_sql_response, default_workspace, format_batches_json,
@@ -57,6 +57,22 @@ struct SourceArgs {
     command: SourceCommand,
 }
 
+#[derive(Debug, Args)]
+#[command(group(
+    ArgGroup::new("source_input")
+        .args(["name", "file"])
+        .required(true)
+        .multiple(false)
+))]
+struct SourceAddArgs {
+    /// Name for the new source
+    name: Option<String>,
+
+    /// Path to a file
+    #[arg(long)]
+    file: Option<PathBuf>,
+}
+
 #[derive(Debug, Subcommand)]
 enum SourceCommand {
     /// Discover available sources
@@ -64,15 +80,7 @@ enum SourceCommand {
     /// List configured sources
     List,
     /// Add a new source
-    Add {
-        /// Name for the new source
-        name: String,
-    },
-    /// Import a source from a manifest file
-    Import {
-        /// Path to the source manifest file
-        path: PathBuf,
-    },
+    Add(SourceAddArgs),
     /// Test connectivity for a source
     Test {
         /// Name of the source to test
@@ -136,32 +144,33 @@ async fn main() -> Result<(), anyhow::Error> {
                     }
                 }
             }
-            SourceCommand::Add { name } => {
+            SourceCommand::Add(SourceAddArgs { name, file }) => {
                 source_ops::require_interactive()?;
-                let bundled_name = source_ops::source_name_arg(Some(&name))?;
-                let discover = source_ops::discover_sources(&app).await?;
-                let available = discover
-                    .into_iter()
-                    .find(|source| source.name == bundled_name)
-                    .ok_or_else(|| anyhow::anyhow!("unknown bundled source '{bundled_name}'"))?;
-                let inputs = available
-                    .inputs
-                    .iter()
-                    .map(source_ops::manifest_input_from_proto)
-                    .collect::<Result<Vec<_>, _>>()?;
-                let (variables, secrets) = source_ops::prompt_for_inputs(&inputs)?;
-                let response =
+                let response = if let Some(name) = name {
+                    let bundled_name = source_ops::source_name_arg(Some(&name))?;
+                    let discover = source_ops::discover_sources(&app).await?;
+                    let available = discover
+                        .into_iter()
+                        .find(|source| source.name == bundled_name)
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("unknown bundled source '{bundled_name}'")
+                        })?;
+                    let inputs = available
+                        .inputs
+                        .iter()
+                        .map(source_ops::manifest_input_from_proto)
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let (variables, secrets) = source_ops::prompt_for_inputs(&inputs)?;
                     source_ops::add_bundled_source(&app, &available.name, variables, secrets)
-                        .await?;
+                        .await?
+                } else if let Some(file) = file {
+                    let (manifest_yaml, inputs) = source_ops::load_manifest_inputs(&file)?;
+                    let (variables, secrets) = source_ops::prompt_for_inputs(&inputs)?;
+                    source_ops::import_source(&app, manifest_yaml, variables, secrets).await?
+                } else {
+                    unreachable!("clap enforces exactly one of name or path")
+                };
                 println!("Added source {}", response.name);
-            }
-            SourceCommand::Import { path } => {
-                source_ops::require_interactive()?;
-                let (manifest_yaml, inputs) = source_ops::load_manifest_inputs(&path)?;
-                let (variables, secrets) = source_ops::prompt_for_inputs(&inputs)?;
-                let response =
-                    source_ops::import_source(&app, manifest_yaml, variables, secrets).await?;
-                println!("Imported source {}", response.name);
             }
             SourceCommand::Test { name } => {
                 let response = source_ops::validate_source(&app, &name).await?;
