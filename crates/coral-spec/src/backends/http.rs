@@ -273,6 +273,7 @@ fn collect_value_source_secret_names(
         }
         ValueSourceSpec::Literal { .. }
         | ValueSourceSpec::Filter { .. }
+        | ValueSourceSpec::FilterInt { .. }
         | ValueSourceSpec::Variable { .. }
         | ValueSourceSpec::State { .. }
         | ValueSourceSpec::NowEpochMinusSeconds { .. } => {}

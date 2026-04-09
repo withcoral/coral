@@ -236,6 +236,14 @@
         },
         {
           "properties": {
+            "from": { "const": "filter_int" },
+            "key": { "type": "string", "minLength": 1 },
+            "default": { "type": "integer" }
+          },
+          "required": ["key"]
+        },
+        {
+          "properties": {
             "from": { "const": "secret" },
             "key": { "type": "string", "minLength": 1 },
             "default": { "type": "string" }

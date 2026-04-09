@@ -233,7 +233,7 @@ fn validate_value_source(
     context: &str,
 ) -> Result<()> {
     match source {
-        ValueSourceSpec::Filter { key, .. } => {
+        ValueSourceSpec::Filter { key, .. } | ValueSourceSpec::FilterInt { key, .. } => {
             if !known_filters.contains(key) {
                 return Err(ManifestError::validation(format!(
                     "{context} references unknown filter '{key}'"
