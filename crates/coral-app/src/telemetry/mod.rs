@@ -127,7 +127,7 @@ pub(crate) fn init_tracing(config: &TelemetryConfig) {
             .as_deref()
             .filter(|value| !value.is_empty())
             .map(str::to_string);
-        let stderr_layer = config.log_filter.as_deref().map(|log_filter| {
+        let stderr_layer = config.otel_log_filter.as_deref().map(|log_filter| {
             tracing_subscriber::fmt::layer()
                 .with_target(true)
                 .compact()
@@ -212,7 +212,7 @@ pub(crate) fn init_tracing(config: &TelemetryConfig) {
             let provider = builder.build();
             let tracer = provider.tracer("coral");
             let trace_targets: Targets = config
-                .trace_filter
+                .otel_trace_filter
                 .parse()
                 .expect("trace filter must be valid");
             let otel_trace_layer = tracing_opentelemetry::layer()

@@ -14,14 +14,18 @@ struct TelemetryConfigFile {
     telemetry: TelemetryConfig,
 }
 
-/// Telemetry settings loaded from `config.toml` and environment overrides.
+/// Telemetry settings loaded from `config.toml`.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(default)]
+#[allow(
+    clippy::struct_field_names,
+    reason = "field names mirror the TOML config keys for direct serde deserialization"
+)]
 pub struct TelemetryConfig {
     pub(crate) otel_endpoint: Option<String>,
     pub(crate) otel_headers: Option<String>,
-    pub(crate) log_filter: Option<String>,
-    pub(crate) trace_filter: String,
+    pub(crate) otel_log_filter: Option<String>,
+    pub(crate) otel_trace_filter: String,
     pub(crate) otel_service_name: String,
 }
 
@@ -30,8 +34,8 @@ impl Default for TelemetryConfig {
         Self {
             otel_endpoint: None,
             otel_headers: None,
-            log_filter: None,
-            trace_filter: DEFAULT_TRACE_FILTER.to_string(),
+            otel_log_filter: None,
+            otel_trace_filter: DEFAULT_TRACE_FILTER.to_string(),
             otel_service_name: DEFAULT_SERVICE_NAME.to_string(),
         }
     }
@@ -85,8 +89,8 @@ version = 1
 [telemetry]
 otel_endpoint = "http://localhost:4318"
 otel_headers = "from=config"
-log_filter = "info"
-trace_filter = "coral_app=debug"
+otel_log_filter = "info"
+otel_trace_filter = "coral_app=debug"
 otel_service_name = "from-config"
 "#,
         )
@@ -99,8 +103,8 @@ otel_service_name = "from-config"
             Some("http://localhost:4318")
         );
         assert_eq!(config.otel_headers.as_deref(), Some("from=config"));
-        assert_eq!(config.log_filter.as_deref(), Some("info"));
-        assert_eq!(config.trace_filter, "coral_app=debug");
+        assert_eq!(config.otel_log_filter.as_deref(), Some("info"));
+        assert_eq!(config.otel_trace_filter, "coral_app=debug");
         assert_eq!(config.otel_service_name, "from-config");
     }
 }
