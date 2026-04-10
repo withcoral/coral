@@ -47,6 +47,15 @@ pub(crate) async fn run(app: &AppClient) -> Result<(), anyhow::Error> {
     loop {
         let bundled_sources = source_ops::discover_sources(app).await?;
 
+        if bundled_sources.is_empty() {
+            println!();
+            println!(
+                "No sources available. Visit {} for setup instructions.",
+                style("withcoral.com/docs").bold()
+            );
+            return Ok(());
+        }
+
         println!();
         println!("{}", style("To start, connect at least one source:").bold());
         println!();
@@ -88,7 +97,13 @@ fn select_top_level(
         .map(|source| format_source_list_item(source, name_width))
         .collect();
 
-    labels.push("I have connected enough sources".to_string());
+    let has_installed = bundled_sources.iter().any(|s| s.installed);
+    let finish_index = if has_installed {
+        labels.push("I have connected enough sources".to_string());
+        Some(bundled_sources.len())
+    } else {
+        None
+    };
 
     let first_uninstalled = bundled_sources
         .iter()
@@ -103,7 +118,7 @@ fn select_top_level(
 
     match selection {
         Some(idx) if idx < bundled_sources.len() => Ok(TopLevelChoice::BundledSource(idx)),
-        Some(idx) if idx == bundled_sources.len() => Ok(TopLevelChoice::Finish),
+        Some(idx) if finish_index == Some(idx) => Ok(TopLevelChoice::Finish),
         _ => Ok(TopLevelChoice::Exit),
     }
 }
