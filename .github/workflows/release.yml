@@ -66,10 +66,8 @@ jobs:
         run: rustup show
       - name: Ensure target is installed
         run: rustup target add ${{ matrix.target }}
-      - name: Cache Rust artifacts
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-        with:
-          shared-key: coral-${{ runner.os }}-${{ matrix.target }}
+      # No Rust cache here — release builds must compile from a clean state
+      # to guard against cache poisoning attacks.
       - name: Install cross
         if: matrix.cross
         run: |
