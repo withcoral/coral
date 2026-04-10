@@ -175,14 +175,22 @@ async fn main() -> Result<(), anyhow::Error> {
                     _ => unreachable!("clap enforces exactly one of name or file"),
                 };
                 println!("Added source {}", response.name);
+                if let Err(err) = source_ops::validate_and_print(
+                    &app,
+                    &response.name,
+                    Some(source_ops::MAX_TABLES_PER_SCHEMA),
+                )
+                .await
+                {
+                    eprintln!("Warning: validation failed: {err}");
+                }
             }
             SourceCommand::Lint { file } => {
                 source_ops::lint_manifest_file(&file)?;
                 println!("Manifest is valid");
             }
             SourceCommand::Test { name } => {
-                let response = source_ops::validate_source(&app, &name).await?;
-                source_ops::print_validation_success(&response)?;
+                source_ops::validate_and_print(&app, &name, None).await?;
             }
             SourceCommand::Remove { name } => {
                 source_ops::delete_source(&app, &name).await?;
