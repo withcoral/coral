@@ -3,7 +3,7 @@ title: "Source spec reference"
 description: "Schema and fields for Coral source spec YAML files."
 ---
 
-Coral is extensible through source specs. These are YAML files that describe how to connect to an API or read a local dataset.
+Coral is extensible through source specs — YAML files that describe how to connect to an API or read a local dataset. If the system you need is not in the [bundled source set](/reference/bundled-sources), you can write a spec and add it from a file:
 
 <Tip>
   For a guided walkthrough, see [Write a custom
@@ -137,21 +137,21 @@ This extracts rows from `response_body.data.items` instead of treating the entir
 
 The `pagination` object controls how Coral fetches additional pages of results.
 
-| Field                         | Type            | Default | Description                                                                                            |
-| ----------------------------- | --------------- | ------- | ------------------------------------------------------------------------------------------------------ |
+| Field                         | Type            | Default | Description                                                                                              |
+| ----------------------------- | --------------- | ------- | -------------------------------------------------------------------------------------------------------- |
 | `mode`                        | string          | `none`  | Pagination strategy: `none`, `auto`, `cursor_query`, `cursor_body`, `page`, `offset`, or `link_header` |
-| `cursor_param`                | string          | —       | Query parameter name for the cursor (`cursor_query` mode)                                              |
-| `response_cursor_path`        | list of strings | `[]`    | JSON path in the response to the next cursor value                                                     |
-| `cursor_body_path`            | list of strings | `[]`    | JSON path in the request body for the cursor (`cursor_body` mode)                                      |
-| `page_param`                  | string          | —       | Query parameter name for the page number (`page` mode)                                                 |
-| `page_start`                  | integer         | `0`     | Starting page number                                                                                   |
-| `offset_param`                | string          | —       | Query parameter name for the offset (`offset` mode)                                                    |
-| `offset_start`                | integer         | `0`     | Starting offset value                                                                                  |
-| `page_size.default`           | integer         | —       | Default page size                                                                                      |
-| `page_size.max`               | integer         | —       | Maximum page size                                                                                      |
-| `page_size.query_param`       | string          | —       | Query parameter name for the page size                                                                 |
-| `max_pages`                   | integer         | —       | Maximum number of pages to fetch                                                                       |
-| `link_header_require_results` | boolean         | `false` | For `link_header` mode, require non-empty results to continue                                          |
+| `cursor_param`                | string          | —       | Query parameter name for the cursor (`cursor_query` mode)                                                |
+| `response_cursor_path`        | list of strings | `[]`    | JSON path in the response to the next cursor value                                                       |
+| `cursor_body_path`            | list of strings | `[]`    | JSON path in the request body for the cursor (`cursor_body` mode)                                        |
+| `page_param`                  | string          | —       | Query parameter name for the page number (`page` mode)                                                   |
+| `page_start`                  | integer         | `0`     | Starting page number                                                                                     |
+| `offset_param`                | string          | —       | Query parameter name for the offset (`offset` mode)                                                      |
+| `offset_start`                | integer         | `0`     | Starting offset value                                                                                    |
+| `page_size.default`           | integer         | —       | Default page size                                                                                        |
+| `page_size.max`               | integer         | —       | Maximum page size                                                                                        |
+| `page_size.query_param`       | string          | —       | Query parameter name for the page size                                                                   |
+| `max_pages`                   | integer         | —       | Maximum number of pages to fetch                                                                         |
+| `link_header_require_results` | boolean         | `false` | For `link_header` mode, require non-empty results to continue                                            |
 
 Example using cursor-based pagination:
 
