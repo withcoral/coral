@@ -1,4 +1,4 @@
-use coral_engine::{CoralQuery, CoreError, StatusCode};
+use coral_engine::{CoralQuery, CoreError, QueryErrorCode, StatusCode};
 use serde_json::{Value, json};
 use wiremock::matchers::{header, method, path, query_param, query_param_is_missing};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -382,7 +382,22 @@ async fn api_returns_500() {
 
     assert_eq!(error.status_code(), StatusCode::Unavailable);
     match error {
-        CoreError::Unavailable(detail) => assert!(detail.contains("boom")),
+        CoreError::Structured(query_error) => {
+            assert_eq!(query_error.code, QueryErrorCode::ProviderRequestFailed);
+            assert!(query_error.retryable, "5xx should be marked retryable");
+            assert!(query_error.detail.contains("boom"));
+            assert_eq!(query_error.fields.http_status, Some(500));
+            assert_eq!(query_error.fields.http_method.as_deref(), Some("GET"));
+            assert_eq!(query_error.fields.source.as_deref(), Some("http_500"));
+            assert_eq!(query_error.fields.table.as_deref(), Some("users"));
+            assert!(
+                query_error
+                    .hint
+                    .as_deref()
+                    .is_some_and(|hint| hint.contains("server error")),
+                "5xx hint should mention server error"
+            );
+        }
         other => panic!("unexpected 500 error variant: {other:?}"),
     }
 }
@@ -405,8 +420,66 @@ async fn api_returns_401() {
 
     assert_eq!(error.status_code(), StatusCode::FailedPrecondition);
     match error {
-        CoreError::FailedPrecondition(detail) => assert!(detail.contains("unauthorized")),
+        CoreError::Structured(query_error) => {
+            assert_eq!(query_error.code, QueryErrorCode::ProviderRequestFailed);
+            assert!(!query_error.retryable, "401 should not be retryable");
+            assert!(query_error.detail.contains("unauthorized"));
+            assert_eq!(query_error.fields.http_status, Some(401));
+            assert_eq!(query_error.fields.source.as_deref(), Some("http_401"));
+            assert_eq!(query_error.fields.table.as_deref(), Some("users"));
+            assert!(query_error.summary.contains("Source authentication failed"));
+            let hint = query_error.hint.expect("401 should have a hint");
+            assert!(
+                hint.contains("coral source add http_401"),
+                "401 hint should guide the user to re-run `coral source add`, got: {hint}"
+            );
+        }
         other => panic!("unexpected 401 error variant: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn missing_required_filter_surfaces_structured_error() {
+    let server = MockServer::start().await;
+    // The mock exists but should never be called — the required-filter check
+    // runs before the HTTP request is issued.
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": [] })))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let mut manifest = base_http_manifest("http_required", &server.uri());
+    let table = &mut manifest["tables"][0];
+    table["filters"] = json!([{ "name": "id", "required": true }]);
+    table["request"]["query"] = json!([
+        { "name": "id", "from": "filter", "key": "id" }
+    ]);
+    let source = build_source(manifest);
+
+    let error =
+        CoralQuery::execute_sql(&[source], &TestRuntime, "SELECT * FROM http_required.users")
+            .await
+            .expect_err("query without the required filter should fail");
+
+    assert_eq!(error.status_code(), StatusCode::FailedPrecondition);
+    match error {
+        CoreError::Structured(query_error) => {
+            assert_eq!(query_error.code, QueryErrorCode::MissingRequiredFilter);
+            assert_eq!(query_error.fields.schema.as_deref(), Some("http_required"));
+            assert_eq!(query_error.fields.table.as_deref(), Some("users"));
+            assert_eq!(query_error.fields.field.as_deref(), Some("id"));
+            assert!(!query_error.retryable);
+            assert!(query_error.summary.contains("http_required.users"));
+            assert!(query_error.summary.contains("WHERE id"));
+            let hint = query_error.hint.expect("missing-filter should have a hint");
+            assert!(
+                hint.contains("coral.columns") && hint.contains("coral.tables"),
+                "hint should direct the user to discovery tables, got: {hint}"
+            );
+        }
+        other => panic!("unexpected missing-filter error variant: {other:?}"),
     }
 }
 

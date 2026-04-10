@@ -13,6 +13,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::error::StatusCode;
+
 /// Wire-format sentinel carried as the `schema_version` field on every encoded
 /// [`QueryError`]. Decoders reject payloads whose `schema_version` does not
 /// match, so unrelated bytes in `tonic::Status::details()` don't get mistaken
@@ -152,6 +154,68 @@ fn shell_arg(value: &str) -> String {
     } else {
         let escaped = value.replace('\'', "'\\''");
         format!("'{escaped}'")
+    }
+}
+
+/// Appends an `[{method}] {url}` suffix to an upstream provider error detail
+/// when either the method or URL is known.
+///
+/// Preserves the pre-refactor behavior where 429 / 5xx provider failures
+/// surfaced the failing endpoint in the `Status::message()` text, and extends
+/// it to every status so 401 / 403 / 404 failures are equally diagnosable by
+/// consumers that still read the plain message instead of decoding
+/// `Status::details()`.
+fn enrich_provider_detail(detail: &str, method: Option<&str>, url: Option<&str>) -> String {
+    match (method, url) {
+        (Some(method), Some(url)) => format!("{detail} [{method}] {url}"),
+        (Some(method), None) => format!("{detail} [{method}]"),
+        (None, Some(url)) => format!("{detail} {url}"),
+        (None, None) => detail.to_string(),
+    }
+}
+
+/// Redacts a request URL so it's safe to embed in a user- or agent-visible
+/// error payload.
+///
+/// The HTTP backend builds request URLs by concatenating query parameters
+/// whose values may be resolved from source secrets (see `build_logged_url`
+/// in `backends/http/client.rs`). That means the raw URL on a failing
+/// request can legitimately contain credentials as `?api_key=…` and similar.
+/// Attaching that verbatim to a [`QueryError`] would leak those credentials
+/// to any CLI or MCP consumer that renders the structured error.
+///
+/// This helper drops the query component, fragment, and userinfo while
+/// keeping scheme, host/port, and path — preserving enough information to
+/// identify the failing endpoint without exposing secret-bearing parameters.
+/// Path-level secrets (e.g. template-expanded path segments that happen to
+/// include a secret) are not the current concern; no bundled source embeds
+/// secrets in the path today.
+///
+/// Returns the sanitized string on success; if `raw` is not a recognisable
+/// URL, the helper returns `None` so the caller drops it entirely rather
+/// than falling back to the raw value.
+fn sanitize_request_url(raw: &str) -> Option<String> {
+    let without_fragment = raw.split_once('#').map_or(raw, |(before, _)| before);
+    let without_query = without_fragment
+        .split_once('?')
+        .map_or(without_fragment, |(before, _)| before);
+    let (scheme, rest) = without_query.split_once("://")?;
+    if scheme.is_empty() || rest.is_empty() {
+        return None;
+    }
+    let (authority, path) = rest.split_once('/').map_or((rest, ""), |(a, p)| (a, p));
+    // POSIX authority layout is `userinfo@host[:port]`; drop any userinfo by
+    // keeping only the part after the right-most `@` before the path starts.
+    let host_and_port = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
+    if host_and_port.is_empty() {
+        return None;
+    }
+    if path.is_empty() {
+        Some(format!("{scheme}://{host_and_port}"))
+    } else {
+        Some(format!("{scheme}://{host_and_port}/{path}"))
     }
 }
 
@@ -312,7 +376,7 @@ impl QueryError {
                 "No table `{table}` exists. Use a schema prefix (e.g., `<source>.{table}`). Run `SELECT schema_name, table_name FROM coral.tables` to see available tables."
             ),
             _ => format!(
-                "No table `{table}` in schema `{schema}`. The source may not be installed. Check with `SELECT * FROM coral.tables WHERE schema_name = {schema_sql}` or add the source with `coral source add {schema_shell}`."
+                "No table `{table}` in schema `{schema}`. The source may not be installed. Check with `SELECT * FROM coral.tables WHERE schema_name = {schema_sql}`, then install it with `coral source add {schema_shell}` (bundled sources) or `coral source import <manifest-path>` (imported sources)."
             ),
         };
 
@@ -332,6 +396,14 @@ impl QueryError {
     /// Constructor for failures returned by the upstream HTTP source. Dispatches
     /// on HTTP status: 400 → invalid query shape, 401/403 → auth, 404 → not
     /// found, 429 and 5xx → retryable server errors.
+    ///
+    /// The supplied `url` is routed through `sanitize_request_url` before it
+    /// reaches either the structured field or the plain-text detail, so that
+    /// query-string parameters resolved from source secrets (see
+    /// `backends/http/client.rs::build_logged_url`) are never leaked through a
+    /// query error. Method and sanitized URL are also appended to the detail
+    /// string — the `Status::message()` fallback read by consumers that don't
+    /// decode `Status::details()` yet still carries the failing endpoint.
     #[must_use]
     pub fn provider_request(
         source: impl Into<String>,
@@ -343,8 +415,9 @@ impl QueryError {
     ) -> Self {
         let source = source.into();
         let table = table.into();
-        let detail = detail.into();
+        let raw_detail = detail.into();
         let source_shell = shell_arg(&source);
+        let sanitized_url = url.and_then(|raw| sanitize_request_url(&raw));
         let (code, summary, hint) = match status {
             Some(400) => (
                 QueryErrorCode::InvalidQueryShape,
@@ -357,7 +430,7 @@ impl QueryError {
                 QueryErrorCode::ProviderRequestFailed,
                 "Source authentication failed".to_string(),
                 Some(format!(
-                    "Re-run `coral source add {source_shell}` to refresh credentials."
+                    "Credentials for this source are invalid or expired. Re-install it to refresh: `coral source add {source_shell}` for bundled sources, or `coral source import <manifest-path>` for imported sources."
                 )),
             ),
             Some(403) => (
@@ -399,13 +472,16 @@ impl QueryError {
             None => summary,
         };
 
+        let detail =
+            enrich_provider_detail(&raw_detail, method.as_deref(), sanitized_url.as_deref());
+
         let is_retryable = matches!(status, Some(429 | 500..=599));
         let mut error = Self::new(code, summary, detail).with_fields(QueryErrorFields {
             source: Some(source),
             table: Some(table),
             http_status: status,
             http_method: method,
-            url,
+            url: sanitized_url,
             ..QueryErrorFields::default()
         });
         if let Some(hint) = hint {
@@ -415,6 +491,31 @@ impl QueryError {
             error = error.retryable();
         }
         error
+    }
+
+    /// Maps this error to the gRPC-mappable [`StatusCode`] used for routing.
+    ///
+    /// The classification is driven primarily by [`QueryErrorCode`]; for
+    /// [`QueryErrorCode::ProviderRequestFailed`] the HTTP status recorded in
+    /// `fields.http_status` refines the routing so that 429 / 5xx map to
+    /// `Unavailable` (transient, caller should retry) and 404 maps to
+    /// `NotFound`, while other statuses fall back to `FailedPrecondition`.
+    #[must_use]
+    pub fn grpc_status_code(&self) -> StatusCode {
+        match self.code {
+            QueryErrorCode::Unknown => StatusCode::Internal,
+            QueryErrorCode::EmptyQuery | QueryErrorCode::SqlError => StatusCode::InvalidArgument,
+            QueryErrorCode::MissingRequiredFilter | QueryErrorCode::InvalidQueryShape => {
+                StatusCode::FailedPrecondition
+            }
+            QueryErrorCode::UnknownField | QueryErrorCode::TableNotFound => StatusCode::NotFound,
+            QueryErrorCode::ProviderRequestFailed => match self.fields.http_status {
+                Some(429) => StatusCode::Unavailable,
+                Some(status) if (500..600).contains(&status) => StatusCode::Unavailable,
+                Some(404) => StatusCode::NotFound,
+                _ => StatusCode::FailedPrecondition,
+            },
+        }
     }
 
     /// Renders a plain-text message that preserves the summary, detail, and
@@ -761,6 +862,161 @@ mod tests {
     }
 
     #[test]
+    fn sanitize_request_url_strips_query_fragment_and_userinfo() {
+        assert_eq!(
+            super::sanitize_request_url("https://api.example.com/data?api_key=secret&page=1"),
+            Some("https://api.example.com/data".to_string())
+        );
+        assert_eq!(
+            super::sanitize_request_url("https://api.example.com/data#frag"),
+            Some("https://api.example.com/data".to_string())
+        );
+        assert_eq!(
+            super::sanitize_request_url("https://user:pass@api.example.com/path?token=xyz"),
+            Some("https://api.example.com/path".to_string())
+        );
+        assert_eq!(
+            super::sanitize_request_url("http://127.0.0.1:9000/api/v1/users"),
+            Some("http://127.0.0.1:9000/api/v1/users".to_string())
+        );
+        assert_eq!(
+            super::sanitize_request_url("https://api.example.com"),
+            Some("https://api.example.com".to_string())
+        );
+        assert!(super::sanitize_request_url("not a url").is_none());
+        assert!(super::sanitize_request_url("https://").is_none());
+        assert!(super::sanitize_request_url("").is_none());
+    }
+
+    #[test]
+    fn provider_request_redacts_secret_query_params_from_fields_url() {
+        // Regression: credentials resolved from ValueSourceSpec::Secret end up
+        // in the raw logged_url as query params. fields.url must never contain
+        // them — the sanitizer drops the whole query component.
+        let error = QueryError::provider_request(
+            "datadog",
+            "events",
+            Some(500),
+            Some("GET".to_string()),
+            Some(
+                "https://api.datadoghq.eu/api/v1/events?api_key=SECRET&app_key=ALSO_SECRET"
+                    .to_string(),
+            ),
+            "boom",
+        );
+        let url = error
+            .fields
+            .url
+            .clone()
+            .expect("url should be sanitized, not omitted");
+        assert_eq!(url, "https://api.datadoghq.eu/api/v1/events");
+        assert!(
+            !url.contains("SECRET"),
+            "sanitized url must not carry secret query params, got: {url}"
+        );
+        assert!(
+            !error.detail.contains("SECRET"),
+            "detail must not carry secret query params, got: {}",
+            error.detail
+        );
+    }
+
+    #[test]
+    fn provider_request_detail_preserves_method_and_sanitized_url() {
+        // Restores the pre-refactor behavior where the plain Status::message()
+        // fallback carried [method] url on 429/5xx failures, now extended to
+        // every HTTP status for consistent diagnosability.
+        let error = QueryError::provider_request(
+            "github",
+            "issues",
+            Some(500),
+            Some("GET".to_string()),
+            Some("https://api.github.com/repos/coral/coral/issues?page=3".to_string()),
+            "upstream boom",
+        );
+        assert!(
+            error.detail.contains("upstream boom"),
+            "original detail should be preserved, got: {}",
+            error.detail
+        );
+        assert!(
+            error
+                .detail
+                .contains("[GET] https://api.github.com/repos/coral/coral/issues"),
+            "detail should carry method and sanitized url, got: {}",
+            error.detail
+        );
+        assert!(
+            !error.detail.contains("page=3"),
+            "detail must not carry query params, got: {}",
+            error.detail
+        );
+    }
+
+    #[test]
+    fn provider_request_detail_handles_missing_method_or_url() {
+        let no_url = QueryError::provider_request(
+            "s",
+            "t",
+            Some(401),
+            Some("GET".to_string()),
+            None,
+            "bad credentials",
+        );
+        assert!(no_url.detail.contains("bad credentials"));
+        assert!(no_url.detail.contains("[GET]"));
+
+        let no_method = QueryError::provider_request(
+            "s",
+            "t",
+            Some(500),
+            None,
+            Some("https://api.example.com/x".to_string()),
+            "boom",
+        );
+        assert!(no_method.detail.contains("boom"));
+        assert!(no_method.detail.contains("https://api.example.com/x"));
+
+        let neither = QueryError::provider_request("s", "t", None, None, None, "raw");
+        assert_eq!(neither.detail, "raw");
+    }
+
+    #[test]
+    fn provider_request_401_hint_covers_bundled_and_imported_paths() {
+        let error = QueryError::provider_request(
+            "github",
+            "issues",
+            Some(401),
+            None,
+            None,
+            "Bad credentials",
+        );
+        let hint = error.hint.expect("401 should have a hint");
+        assert!(
+            hint.contains("coral source add github"),
+            "bundled-source path should be mentioned, got: {hint}"
+        );
+        assert!(
+            hint.contains("coral source import"),
+            "imported-source path should be mentioned, got: {hint}"
+        );
+    }
+
+    #[test]
+    fn table_not_found_hint_covers_bundled_and_imported_paths() {
+        let error = QueryError::table_not_found("datadog", "dashboards", "table not found");
+        let hint = error.hint.expect("hint should be present");
+        assert!(
+            hint.contains("coral source add datadog"),
+            "bundled-source path should be mentioned, got: {hint}"
+        );
+        assert!(
+            hint.contains("coral source import"),
+            "imported-source path should be mentioned, got: {hint}"
+        );
+    }
+
+    #[test]
     fn table_not_found_escapes_unsafe_schema_in_hint() {
         let error = QueryError::table_not_found("foo'bar", "things", "table not found");
         let hint = error.hint.expect("hint should be present");
@@ -772,6 +1028,69 @@ mod tests {
             hint.contains("coral source add 'foo'\\''bar'"),
             "shell arg should be single-quoted with escaped quotes, got: {hint}"
         );
+    }
+
+    #[test]
+    fn grpc_status_code_routes_codes_to_expected_buckets() {
+        use super::StatusCode;
+
+        assert_eq!(
+            QueryError::unknown("x").grpc_status_code(),
+            StatusCode::Internal
+        );
+        assert_eq!(
+            QueryError::empty_query().grpc_status_code(),
+            StatusCode::InvalidArgument
+        );
+        assert_eq!(
+            QueryError::sql_error("parse").grpc_status_code(),
+            StatusCode::InvalidArgument
+        );
+        assert_eq!(
+            QueryError::missing_required_filter("s", "t", "f", "").grpc_status_code(),
+            StatusCode::FailedPrecondition
+        );
+        assert_eq!(
+            QueryError::unknown_field("f", "hint").grpc_status_code(),
+            StatusCode::NotFound
+        );
+        assert_eq!(
+            QueryError::table_not_found("s", "t", "").grpc_status_code(),
+            StatusCode::NotFound
+        );
+        assert_eq!(
+            QueryError::invalid_query_shape("detail").grpc_status_code(),
+            StatusCode::FailedPrecondition
+        );
+    }
+
+    #[test]
+    fn grpc_status_code_provider_request_inspects_http_status() {
+        use super::StatusCode;
+
+        let retryable_429 =
+            QueryError::provider_request("s", "t", Some(429), None, None, "rate limited");
+        assert_eq!(retryable_429.grpc_status_code(), StatusCode::Unavailable);
+
+        let retryable_500 = QueryError::provider_request("s", "t", Some(500), None, None, "boom");
+        assert_eq!(retryable_500.grpc_status_code(), StatusCode::Unavailable);
+
+        let retryable_599 = QueryError::provider_request("s", "t", Some(599), None, None, "boom");
+        assert_eq!(retryable_599.grpc_status_code(), StatusCode::Unavailable);
+
+        let not_found_404 =
+            QueryError::provider_request("s", "t", Some(404), None, None, "missing");
+        assert_eq!(not_found_404.grpc_status_code(), StatusCode::NotFound);
+
+        let auth_401 =
+            QueryError::provider_request("s", "t", Some(401), None, None, "unauthorized");
+        assert_eq!(auth_401.grpc_status_code(), StatusCode::FailedPrecondition);
+
+        let auth_403 = QueryError::provider_request("s", "t", Some(403), None, None, "forbidden");
+        assert_eq!(auth_403.grpc_status_code(), StatusCode::FailedPrecondition);
+
+        let unknown = QueryError::provider_request("s", "t", None, None, None, "unknown");
+        assert_eq!(unknown.grpc_status_code(), StatusCode::FailedPrecondition);
     }
 
     #[test]

@@ -2,6 +2,8 @@
 
 use thiserror::Error;
 
+use super::query_error::QueryError;
+
 /// Errors surfaced by the query layer.
 #[derive(Debug, Clone, Error)]
 pub enum CoreError {
@@ -23,6 +25,18 @@ pub enum CoreError {
     /// The service failed internally.
     #[error("internal: {0}")]
     Internal(String),
+    /// A structured query failure produced at the engine or backend layer.
+    ///
+    /// The embedded [`QueryError`] carries the user- and agent-facing summary,
+    /// detail, hint, and structured fields. `CoreError::status_code()`
+    /// delegates to [`QueryError::grpc_status_code`] so routing stays
+    /// consistent with the legacy flat variants above.
+    ///
+    /// Boxed so the overall size of `CoreError` stays small — `QueryError` is
+    /// ~256 bytes and an unboxed variant would bloat every `Result<T, CoreError>`
+    /// across the crate.
+    #[error("{}", _0.to_plain_message())]
+    Structured(Box<QueryError>),
 }
 
 impl CoreError {
@@ -42,6 +56,7 @@ impl CoreError {
             Self::Unavailable(_) => StatusCode::Unavailable,
             Self::Unimplemented(_) => StatusCode::Unimplemented,
             Self::Internal(_) => StatusCode::Internal,
+            Self::Structured(query_error) => query_error.grpc_status_code(),
         }
     }
 }

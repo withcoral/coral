@@ -11,7 +11,7 @@ use crate::backends::compile_query_source;
 use crate::backends::http::ProviderQueryError;
 use crate::runtime::catalog;
 use crate::runtime::registry::{SourceRegistrationFailure, register_sources};
-use crate::{CoreError, QueryExecution, QueryRuntimeProvider, QuerySource, TableInfo};
+use crate::{CoreError, QueryError, QueryExecution, QueryRuntimeProvider, QuerySource, TableInfo};
 
 pub(crate) struct QueryRuntimeAdapter {
     ctx: Arc<SessionContext>,
@@ -112,33 +112,35 @@ fn datafusion_to_core(error: DataFusionError) -> CoreError {
 }
 
 fn provider_error_to_core(error: &ProviderQueryError) -> CoreError {
+    CoreError::Structured(Box::new(provider_error_to_query_error(error)))
+}
+
+fn provider_error_to_query_error(error: &ProviderQueryError) -> QueryError {
     match error {
         ProviderQueryError::MissingRequiredFilter {
             schema,
             table,
             field,
-        } => CoreError::FailedPrecondition(format!(
-            "{schema}.{table} requires WHERE {field} = <constant>"
-        )),
+        } => QueryError::missing_required_filter(
+            schema.clone(),
+            table.clone(),
+            field.clone(),
+            format!("{schema}.{table} requires a constant equality filter on {field}"),
+        ),
         ProviderQueryError::ApiRequest {
+            source_schema,
+            table,
             status,
-            detail,
             method,
             url,
-            ..
-        } => match status {
-            Some(429 | 500..=599) => CoreError::Unavailable(format!(
-                "{}{}{}",
-                detail,
-                method
-                    .as_ref()
-                    .map(|value| format!(" [{value}]"))
-                    .unwrap_or_default(),
-                url.as_ref()
-                    .map(|value| format!(" {value}"))
-                    .unwrap_or_default()
-            )),
-            _ => CoreError::FailedPrecondition(detail.clone()),
-        },
+            detail,
+        } => QueryError::provider_request(
+            source_schema.clone(),
+            table.clone(),
+            *status,
+            method.clone(),
+            url.clone(),
+            detail.clone(),
+        ),
     }
 }
