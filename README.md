@@ -126,16 +126,15 @@ Then add Coral to `claude_desktop_config.json`:
 {
   "mcpServers": {
     "coral": {
-      "command": "/path/to/coral",
+      "command": "coral",
       "args": ["mcp-stdio"]
     }
   }
 }
 ```
 
-Use the full path to your `coral` binary. Once configured, your agent can use
-Coral over MCP to inspect schemas, list tables, and query the sources installed
-in your local workspace.
+Once configured, your agent can use Coral over MCP to inspect schemas,
+list tables, and query the sources installed in your local workspace.
 
 Coral also ships a reusable skill for agent workflows:
 
