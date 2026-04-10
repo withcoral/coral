@@ -155,6 +155,7 @@ jobs:
           gh release create "$TAG_NAME" \
             artifacts/${ARTIFACT_PREFIX}-*.tar.gz \
             artifacts/checksums.sha256 \
+            --repo "$GITHUB_REPOSITORY" \
             --target "$BUILD_REF" \
             --title "$RELEASE_NAME" \
             --generate-notes
