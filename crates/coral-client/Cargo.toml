@@ -17,3 +17,4 @@ tonic.workspace = true
 
 coral-api.workspace = true
 coral-app.workspace = true
+coral-engine.workspace = true

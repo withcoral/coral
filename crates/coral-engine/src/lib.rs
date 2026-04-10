@@ -70,8 +70,8 @@ pub mod contracts;
 mod runtime;
 
 pub use contracts::{
-    ColumnInfo, CoreError, QueryExecution, QueryRuntimeContext, QueryRuntimeProvider, QuerySource,
-    StatusCode, TableInfo,
+    ColumnInfo, CoreError, QueryError, QueryErrorCode, QueryErrorFields, QueryExecution,
+    QueryRuntimeContext, QueryRuntimeProvider, QuerySource, SCHEMA_VERSION, StatusCode, TableInfo,
 };
 
 /// High-level query operations for the local query engine.

@@ -30,7 +30,7 @@ use serde_json::Value;
 pub use client::{
     AppClient, ClientBuilder, DEFAULT_WORKSPACE_ID, QueryClient, SourceClient, default_workspace,
 };
-pub use error::{ClientError, QueryResultError};
+pub use error::{ClientError, QueryResultError, query_error_from_status};
 
 /// Fully decoded unary query response.
 #[derive(Debug, Clone)]
