@@ -19,7 +19,7 @@ coral sql "<SQL>"
 
 ## `coral source`
 
-Manage configured sources, either the bundled, or the imported ones.
+Manage bundled sources and custom sources added from local files in the local workspace.
 
 ### `coral source discover`
 
@@ -49,7 +49,7 @@ Coral prompts for required variables or secrets interactively.
 
 ### `coral source add --file <PATH>`
 
-Import a custom source spec from a YAML file.
+Add a custom source spec from a YAML file.
 
 ```shellscript
 coral source add --file ./local-messages.yaml
@@ -79,6 +79,13 @@ Run the guided source setup flow.
 ```shellscript
 coral onboard
 ```
+
+This interactive command helps you:
+
+- add a bundled source
+- add a custom source manifest from a file
+- validate an installed source
+- see the next recommended commands after setup
 
 ## `coral mcp-stdio`
 
