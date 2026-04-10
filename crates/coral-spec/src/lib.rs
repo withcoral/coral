@@ -24,8 +24,7 @@
 //!   data
 //! - [`ValidatedSourceManifest`] provides a backend-agnostic validated
 //!   source-spec view with typed accessors for backend-specific models
-//! - [`collect_source_inputs_yaml`] and [`collect_source_inputs_value`] extract
-//!   variables and secrets that must be collected at install time
+//! - [`collect_inputs`] extracts variables and secrets from a validated manifest
 //!
 //! # Crate Relationships
 //!
@@ -81,14 +80,13 @@ mod validate;
 
 pub use common::{
     AuthSpec, BodyFieldSpec, ColumnSpec, ExprSpec, FilterMode, FilterSpec, HeaderSpec, HttpMethod,
-    ManifestDataType, PageSizeSpec, PaginationMode, PaginationSpec, QueryParamSpec,
+    ManifestDataType, Onboarding, PageSizeSpec, PaginationMode, PaginationSpec, QueryParamSpec,
     RequestRouteSpec, RequestSpec, ResponseSpec, RowStrategy, SourceBackend, SourceManifestCommon,
     TableCommon, ValidatedPagination, ValidatedPaginationMode, ValueSourceSpec,
 };
+pub use common::{collect_source_onboarding_value, collect_source_onboarding_yaml};
 pub use error::{ManifestError, Result};
-pub use inputs::{
-    ManifestInputKind, ManifestInputSpec, collect_source_inputs_value, collect_source_inputs_yaml,
-};
+pub use inputs::{InputKind, InputSpec, collect_inputs};
 pub use parser::{
     ValidatedSourceManifest, parse_source_manifest_value, parse_source_manifest_yaml,
 };

@@ -9,10 +9,43 @@
 //! source identity, filters, request templating, response extraction, typed
 //! columns, and pagination.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{ManifestError, ParsedTemplate, Result};
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct Onboarding {
+    instructions: Option<String>,
+    #[serde(default)]
+    input_help: Option<BTreeMap<String, String>>,
+}
+
+impl Onboarding {
+    pub fn instructions(&self) -> Option<&str> {
+        self.instructions.as_deref()
+    }
+
+    pub fn help_for_input(&self, key: &str) -> Option<&str> {
+        self.input_help.as_ref()?.get(key).map(String::as_str)
+    }
+}
+
+pub fn collect_source_onboarding_value(root: &serde_yaml::Value) -> Result<Option<Onboarding>> {
+    let Some(onboarding) = root.get("onboarding") else {
+        return Ok(None);
+    };
+    let onboarding = serde_json::to_value(onboarding).map_err(ManifestError::deserialize)?;
+    let onboarding = serde_json::from_value(onboarding).map_err(ManifestError::deserialize)?;
+    Ok(Some(onboarding))
+}
+
+pub fn collect_source_onboarding_yaml(raw: &str) -> Result<Option<Onboarding>> {
+    let root: serde_yaml::Value = serde_yaml::from_str(raw).map_err(ManifestError::parse_yaml)?;
+    collect_source_onboarding_value(&root)
+}
 
 /// Common top-level source metadata shared by every backend source spec.
 #[derive(Debug, Clone)]
@@ -20,6 +53,8 @@ pub struct SourceManifestCommon {
     pub dsl_version: u32,
     pub name: String,
     pub version: String,
+    pub description: String,
+    pub onboarding: Option<Onboarding>,
 }
 
 /// Supported source-spec backends.
@@ -46,11 +81,15 @@ pub(crate) fn build_source_manifest_common(
     dsl_version: u32,
     name: String,
     version: String,
+    description: String,
+    onboarding: Option<Onboarding>,
 ) -> SourceManifestCommon {
     SourceManifestCommon {
         dsl_version,
         name,
         version,
+        description,
+        onboarding,
     }
 }
 

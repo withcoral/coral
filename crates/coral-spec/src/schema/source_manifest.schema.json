@@ -21,11 +21,18 @@
     "onboarding": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["instructions"],
       "properties": {
         "instructions": {
           "type": "string",
           "description": "Freeform instructions for an AI agent to discover shared workspace context for this provider"
+        },
+        "input_help": {
+          "type": "object",
+          "description": "Per-input help describing how to acquire each variable or secret",
+          "additionalProperties": {
+            "type": "string",
+            "description": "Human-readable help shown during source setup explaining how to obtain this value"
+          }
         }
       }
     }

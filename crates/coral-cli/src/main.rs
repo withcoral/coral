@@ -147,7 +147,7 @@ async fn main() -> Result<(), anyhow::Error> {
                 let inputs = available
                     .inputs
                     .iter()
-                    .map(source_ops::manifest_input_from_proto)
+                    .map(source_ops::input_from_proto)
                     .collect::<Result<Vec<_>, _>>()?;
                 let (variables, secrets) = source_ops::prompt_for_inputs(&inputs)?;
                 let response =
@@ -182,7 +182,6 @@ async fn main() -> Result<(), anyhow::Error> {
 
     Ok(())
 }
-
 fn print_batches(
     batches: &[arrow::record_batch::RecordBatch],
     format: OutputFormat,

@@ -45,6 +45,15 @@ impl ValidatedSourceManifest {
     }
 
     #[must_use]
+    pub(crate) fn common(&self) -> &crate::SourceManifestCommon {
+        match &self.inner {
+            ValidatedManifestKind::Http(manifest) => &manifest.common,
+            ValidatedManifestKind::Parquet(manifest) => &manifest.common,
+            ValidatedManifestKind::Jsonl(manifest) => &manifest.common,
+        }
+    }
+
+    #[must_use]
     /// Returns the source-spec `name`, which is also the stable SQL schema name.
     pub fn schema_name(&self) -> &str {
         match &self.inner {
@@ -61,6 +70,16 @@ impl ValidatedSourceManifest {
             ValidatedManifestKind::Http(manifest) => &manifest.common.version,
             ValidatedManifestKind::Parquet(manifest) => &manifest.common.version,
             ValidatedManifestKind::Jsonl(manifest) => &manifest.common.version,
+        }
+    }
+
+    #[must_use]
+    /// Returns the source-spec description, if declared.
+    pub fn source_description(&self) -> &str {
+        match &self.inner {
+            ValidatedManifestKind::Http(manifest) => &manifest.common.description,
+            ValidatedManifestKind::Parquet(manifest) => &manifest.common.description,
+            ValidatedManifestKind::Jsonl(manifest) => &manifest.common.description,
         }
     }
 
