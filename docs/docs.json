@@ -76,11 +76,8 @@
       {
         "group": "Guides",
         "pages": [
-          "guides/agent-usage",
-          "guides/manage-sources",
-          "guides/write-a-custom-source",
-          "guides/advanced-cli-queries",
-          "guides/use-coral-over-mcp"
+          "guides/use-coral-over-mcp",
+          "guides/write-a-custom-source"
         ]
       },
       {

@@ -1,25 +1,25 @@
 ---
 title: "Use Coral over MCP"
-description: "Connect your AI coding tools to Coral using the Model Context Protocol (MCP)."
+description: "Set up MCP for Claude Code, Cursor, and other agents."
 ---
 
-Coral exposes its local runtime as an MCP stdio server, giving coding agents access to SQL queries and schema discovery across all your installed sources.
+Coral ships with a built-in MCP server, giving agents access to SQL queries and schema discovery across all your installed sources.
 
 <Note>
-Before setting up a client, make sure you have [installed Coral](/getting-started/installation) and configured at least one source with `coral onboard` or the lower-level `coral source add`.
-
-If you also want reusable workflow guidance for CLI-based agent interactions, see [Agent usage](/guides/agent-usage).
+Before setting up a client, make sure you have [connected at least one source](/getting-started/quickstart).
 
 </Note>
 
 ## What MCP clients get
 
-The Coral MCP server exposes:
+| Type     | Name             | Description                      |
+| -------- | ---------------- | -------------------------------- |
+| Tool     | `sql`            | Run a SQL query                  |
+| Tool     | `list_tables`    | List all available tables        |
+| Resource | `coral://guide`  | Usage guide for agents           |
+| Resource | `coral://tables` | Schema for all installed sources |
 
-- **Tools:** `sql`, `list_tables`
-- **Resources:** `coral://guide`, `coral://tables`
-
-Clients see the same installed sources, `coral.tables`, and query results as `coral sql`. Set up sources with the CLI, then query them from MCP clients.
+Clients see the same installed sources and query results as `coral sql`. You set up sources with the CLI, then agents query them over MCP.
 
 ## Client setup
 
@@ -205,10 +205,4 @@ The agent should call `list_tables` or query `coral.tables` and return the schem
 ## Troubleshooting
 
 - **`coral` not found:** Make sure `coral` is on your `PATH`, or use the full path from `which coral` in your client config.
-- **No tables visible:** Run `coral source list` in your terminal to confirm you have sources installed. If empty, start with `coral onboard`.
-- **Source errors:** Run `coral source test <NAME>` from the CLI to validate credentials and connectivity before using MCP.
-
-<Tip>
-  Coral is local-first. Set up sources once with the CLI, then reuse the same
-  local runtime from any connected MCP client.
-</Tip>
+- **No tables visible:** Run `coral source list` in your terminal to confirm you have sources installed. If empty, add one with `coral source add`.
