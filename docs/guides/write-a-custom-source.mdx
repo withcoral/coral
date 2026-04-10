@@ -1,6 +1,6 @@
 ---
-title: "Write a custom source"
-description: "Write a source spec to connect any HTTP API or local dataset to Coral, then query it through SQL."
+title: "Write a custom source spec"
+description: "Extend Coral by adding any API or dataset as a queryable source."
 ---
 
 Coral ships with [bundled sources](/reference/bundled-sources) for common systems, but you are not limited to them. If the system you need is not bundled, you can write a source spec in YAML and add it from a file.
@@ -16,8 +16,6 @@ Source authoring works well as an agent-driven workflow. Point your coding agent
 3. Validates with `coral source test my_source`
 4. Inspects `coral.tables` and `coral.columns` to check the shape
 5. Refines and repeats until the tables look right
-
-The agent needs access to the CLI and the spec reference — no MCP connection is required for authoring.
 
 ## Example: local JSONL source
 
@@ -117,7 +115,7 @@ tables:
 
 When you run `coral source add --file`, Coral prompts for the variable and secret values interactively.
 
-For the full set of HTTP response, pagination, auth, and column fields, see the [source spec reference](/reference/source-spec-reference).
+For the full set of HTTP response, pagination, auth, and column fields, see [HTTP-backed tables](/reference/source-spec-reference#http-backed-tables).
 
 ## Tips
 
