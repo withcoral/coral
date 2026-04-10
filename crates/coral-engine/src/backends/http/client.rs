@@ -194,7 +194,7 @@ impl HttpSourceClient {
                     self.source_secrets.as_ref(),
                     self.source_variables.as_ref(),
                 )?;
-                join_url(&base_url, &rendered_path)
+                join_url(&base_url, &rendered_path)?
             };
 
             let (query_pairs, body) = if following_link_header {
@@ -813,15 +813,18 @@ fn build_logged_url(url: &str, query_pairs: &[(String, String)]) -> String {
     }
 }
 
-fn join_url(base: &str, path: &str) -> String {
-    if path.starts_with("https://") || path.starts_with("http://") {
-        return path.to_string();
+fn join_url(base: &str, path: &str) -> Result<String> {
+    let trimmed = path.trim();
+    if reqwest::Url::parse(trimmed).is_ok() || trimmed.starts_with("//") {
+        return Err(DataFusionError::Execution(
+            "request path must be relative; absolute URLs are not allowed".to_string(),
+        ));
     }
     let base = base.trim_end_matches('/');
-    if path.starts_with('/') {
-        format!("{base}{path}")
+    if trimmed.starts_with('/') {
+        Ok(format!("{base}{trimmed}"))
     } else {
-        format!("{base}/{path}")
+        Ok(format!("{base}/{trimmed}"))
     }
 }
 
@@ -1128,18 +1131,23 @@ mod tests {
     }
 
     #[test]
-    fn join_url_handles_absolute_and_relative_paths() {
+    fn join_url_handles_relative_paths() {
         assert_eq!(
-            join_url("https://api.example.com", "/v1/resources"),
+            join_url("https://api.example.com", "/v1/resources").unwrap(),
             "https://api.example.com/v1/resources"
         );
         assert_eq!(
-            join_url("https://api.example.com/", "v1/resources"),
+            join_url("https://api.example.com/", "v1/resources").unwrap(),
             "https://api.example.com/v1/resources"
         );
-        assert_eq!(
-            join_url("https://api.example.com", "https://next.example.com/page"),
-            "https://next.example.com/page"
+    }
+
+    #[test]
+    fn join_url_rejects_absolute_paths() {
+        let err = join_url("https://api.example.com", "https://next.example.com/page").unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("request path must be relative; absolute URLs are not allowed")
         );
     }
 
