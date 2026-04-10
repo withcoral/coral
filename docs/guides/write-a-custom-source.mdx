@@ -27,8 +27,8 @@ The fastest way to see a custom source working is with a local file.
 ```shellscript
 mkdir -p demo-data
 cat > demo-data/messages.jsonl <<'EOF'
-{"type":"user","sessionId":"s1","text":"hello"}
-{"type":"assistant","sessionId":"s1","text":"world"}
+{"type":"user","session_id":"s1","text":"hello"}
+{"type":"assistant","session_id":"s1","text":"world"}
 EOF
 ```
 
@@ -50,7 +50,7 @@ tables:
     columns:
       - name: type
         type: Utf8
-      - name: sessionId
+      - name: session_id
         type: Utf8
       - name: text
         type: Utf8
@@ -69,9 +69,9 @@ coral source test local_messages
 
 ```shellscript
 coral sql "
-  SELECT type, sessionId, text
+  SELECT type, session_id, text
   FROM local_messages.messages
-  ORDER BY sessionId, type
+  ORDER BY session_id, type
 "
 ```
 
