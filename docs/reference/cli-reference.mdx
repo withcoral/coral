@@ -39,13 +39,13 @@ coral source list
 
 ### `coral source add <NAME>`
 
-Install a bundled source by name.
+Add a bundled source or update its credentials.
 
 ```shellscript
 coral source add github
 ```
 
-Coral prompts for required variables or secrets interactively.
+Coral prompts for required variables or secrets interactively. If the source is already installed, running this command again replaces its stored credentials with the new values you provide.
 
 ### `coral source import <PATH>`
 
