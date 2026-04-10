@@ -6,14 +6,14 @@ use crate::common::{
     ColumnSpec, ExprSpec, FilterSpec, PaginationSpec, RequestRouteSpec, RequestSpec, SourceBackend,
     ValueSourceSpec, parse_manifest_data_type,
 };
-use crate::{ManifestError, Result};
+use crate::{ManifestError, ParsedTemplate, Result, TemplateNamespace};
 
 pub(crate) fn validate_manifest_top_level(
     dsl_version: u32,
     name: &str,
     schema: &str,
     backend: SourceBackend,
-    base_url: &str,
+    base_url: &ParsedTemplate,
     table_count: usize,
 ) -> Result<()> {
     if dsl_version != 3 {
@@ -30,7 +30,7 @@ pub(crate) fn validate_manifest_top_level(
 
     match backend {
         SourceBackend::Http => {
-            if base_url.trim().is_empty() {
+            if base_url.raw().trim().is_empty() {
                 return Err(ManifestError::validation(format!(
                     "source '{name}' must define a non-empty base_url"
                 )));
@@ -39,7 +39,7 @@ pub(crate) fn validate_manifest_top_level(
             validate_template(base_url, &HashSet::new(), &format!("source '{schema}'"))?;
         }
         SourceBackend::Parquet | SourceBackend::Jsonl => {
-            if !base_url.trim().is_empty() {
+            if !base_url.raw().trim().is_empty() {
                 return Err(ManifestError::validation(format!(
                     "source '{name}' uses a file backend and must not define base_url"
                 )));
@@ -59,7 +59,7 @@ pub(crate) fn validate_http_table(
     requests: &[RequestRouteSpec],
     pagination: &PaginationSpec,
 ) -> Result<()> {
-    if request.path.trim().is_empty() {
+    if request.path.raw().trim().is_empty() {
         return Err(ManifestError::validation(format!(
             "{schema}.{table_name} has an empty request.path"
         )));
@@ -277,38 +277,30 @@ fn validate_expr(expr: &ExprSpec, known_filters: &HashSet<String>, context: &str
     Ok(())
 }
 
-fn validate_template(template: &str, known_filters: &HashSet<String>, context: &str) -> Result<()> {
-    let mut rest = template;
-
-    while let Some(start) = rest.find("{{") {
-        let token_start = start + 2;
-        let Some(end_rel) = rest[token_start..].find("}}") else {
-            return Err(ManifestError::validation(format!(
-                "{context} has an unclosed template token in '{template}'"
-            )));
-        };
-        let end = token_start + end_rel;
-        let token = rest[token_start..end].trim();
-        let raw_key = token.split_once('|').map_or(token, |(key, _)| key.trim());
-
-        if let Some(key) = raw_key.strip_prefix("filter.") {
-            if !known_filters.contains(key) {
+fn validate_template(
+    template: &ParsedTemplate,
+    known_filters: &HashSet<String>,
+    context: &str,
+) -> Result<()> {
+    for token in template.tokens() {
+        match token.namespace() {
+            TemplateNamespace::Filter => {
+                if !known_filters.contains(token.key()) {
+                    return Err(ManifestError::validation(format!(
+                        "{context} references unknown filter '{}' in template '{}'",
+                        token.key(),
+                        template.raw()
+                    )));
+                }
+            }
+            TemplateNamespace::Secret | TemplateNamespace::Variable | TemplateNamespace::State => {}
+            TemplateNamespace::Env | TemplateNamespace::Other(_) => {
                 return Err(ManifestError::validation(format!(
-                    "{context} references unknown filter '{key}' in template '{template}'"
+                    "{context} uses unsupported template token '{}'",
+                    token.raw()
                 )));
             }
-        } else if raw_key.starts_with("secret.")
-            || raw_key.starts_with("variable.")
-            || raw_key.starts_with("state.")
-        {
-            // Supported template namespaces.
-        } else {
-            return Err(ManifestError::validation(format!(
-                "{context} uses unsupported template token '{token}'"
-            )));
         }
-
-        rest = &rest[end + 2..];
     }
 
     Ok(())

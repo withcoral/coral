@@ -275,9 +275,14 @@ mod tests {
     }
 
     fn request_json(request: &RequestSpec) -> Value {
+        let path = if request.path.is_empty() {
+            "/items"
+        } else {
+            request.path.raw()
+        };
         json!({
             "method": format!("{:?}", request.method),
-            "path": if request.path.is_empty() { "/items" } else { &request.path },
+            "path": path,
             "query": [],
             "body": [],
             "headers": [],

@@ -62,7 +62,7 @@ update the relevant docs in the same pull request.
 
 ### Common commands
 
-`make validate` is the required local gate before finishing substantive work.
+`make rust-checks` is the required local gate before finishing substantive work.
 
 If you prefer to run steps individually, the equivalent commands are:
 
@@ -132,6 +132,53 @@ Please include:
 
 We may ask to narrow a PR even if the idea is good. That is usually about
 keeping Coral coherent and maintainable.
+
+### PR titles and squash commits
+
+Coral uses squash merges for changes that land on `main`. The pull request
+title should therefore be treated as the final commit title.
+
+PR titles must use the Conventional Commits format:
+
+```text
+type(scope): summary
+```
+
+Scope is optional. For breaking changes, place `!` immediately before the
+colon: `type!: summary` or `type(scope)!: summary`. PR titles are validated in
+CI.
+
+When you use a scope, prefer one that matches the primary area changed,
+usually the crate name minus the `coral-` prefix, `docs`, or `sources/<name>`.
+
+Examples:
+
+- `feat(cli): add source status command`
+- `fix(engine): preserve projected column aliases`
+- `docs: clarify workspace setup`
+- `refactor(spec)!: remove legacy manifest field`
+
+### What counts as a breaking change for a CLI?
+
+For a CLI, the user interface is the API.
+
+A change is breaking if it can break existing:
+
+- commands people run manually
+- scripts and CI jobs
+- documented workflows
+- integrations that parse output
+
+Treat these as stable contract surfaces:
+
+- command/subcommand names
+- flags and positional arguments
+- exit codes
+- structured output (for example JSON)
+- config file keys, format, and location
+- environment variables and precedence rules
+
+If any of those change incompatibly, it is a breaking change.
 
 ## Code of conduct
 

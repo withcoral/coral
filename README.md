@@ -31,6 +31,7 @@ Coral gives agents one query interface instead:
 
 ## What Coral does today
 
+- onboard a local workspace with bundled or imported sources
 - discover bundled sources
 - add or import sources into a local workspace
 - inspect schemas and tables through SQL
@@ -46,32 +47,32 @@ brew install withcoral/tap/coral
 coral --help
 ```
 
-### 2. Discover bundled sources
+### 2. Run onboarding
+
+```bash
+coral onboard
+```
+
+`coral onboard` guides you through adding or importing a source and validating
+it before you start querying.
+
+If you prefer the low-level manual flow, you can still run:
 
 ```bash
 coral source discover
-```
-
-### 3. Add a source
-
-For example, to add GitHub:
-
-```bash
 coral source add github
+coral source test github
 ```
 
-Coral prompts interactively for any required variables or credentials to keep
-them off the command line.
+### 3. Inspect available tables
 
-### 4. Inspect available tables
-
-Use the system catalog to see what Coral can query:
+Use `coral.tables` to see what Coral can query:
 
 ```bash
 coral sql "SELECT * FROM coral.tables LIMIT 20"
 ```
 
-### 5. Run a query
+### 4. Run a query
 
 For example, to inspect recent GitHub releases:
 
@@ -88,53 +89,13 @@ coral sql "
 The exact schemas and tables depend on the sources you have installed. When in
 doubt, inspect `coral.tables` first.
 
-### 6. Expose Coral over MCP
+### 5. Use Coral with an agent
 
 Coral can run as a local MCP server so agents can query your installed sources
-through the same runtime.
-
-#### Claude Code
-
-```bash
-claude mcp add coral -- coral mcp-stdio
-```
-
-#### Codex
-
-```bash
-codex mcp add coral -- coral mcp-stdio
-```
-
-#### OpenCode
-
-Add a new MCP app and use this command:
-
-```bash
-coral mcp-stdio
-```
-
-#### Claude Desktop
-
-Open:
-
-`Settings -> Developer -> Edit Config`
-
-Then add Coral to `claude_desktop_config.json`:
-
-```json
-{
-  "mcpServers": {
-    "coral": {
-      "command": "/path/to/coral",
-      "args": ["mcp-stdio"]
-    }
-  }
-}
-```
-
-Use the full path to your `coral` binary. Once configured, your agent can use
-Coral over MCP to inspect schemas, list tables, and query the sources installed
-in your local workspace.
+through the same runtime. Once connected, your agent can inspect schemas, list
+tables, and run SQL against the sources installed in your local workspace. For
+setup and client-specific MCP examples, see [Use Coral over
+MCP](https://withcoral.com/docs/guides/use-coral-over-mcp).
 
 ## Core concepts
 
@@ -187,7 +148,7 @@ Coral is already usable for local agent workflows. We’re currently expanding:
 Run the workspace validation gate from the repository root:
 
 ```bash
-make validate
+make rust-checks
 ```
 
 ## Documentation

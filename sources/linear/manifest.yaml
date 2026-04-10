@@ -1,5 +1,5 @@
 name: linear
-version: 2.0.0
+version: 2.2.0
 dsl_version: 3
 backend: http
 description: Manage issues, projects, cycles, and initiatives across teams
@@ -835,6 +835,9 @@ tables:
                     name
                     email
                   }
+                  project {
+                    id
+                  }
                 }
                 pageInfo {
                   endCursor
@@ -995,6 +998,15 @@ tables:
           kind: path
           path:
             - updatedAt
+      - name: project_id
+        type: Utf8
+        nullable: true
+        description: Project ID
+        expr:
+          kind: path
+          path:
+            - project
+            - id
       - name: completed_at
         type: Utf8
         nullable: true
@@ -1137,6 +1149,9 @@ tables:
                       name
                       email
                     }
+                    project {
+                      id
+                    }
                   }
                   pageInfo {
                     endCursor
@@ -1252,6 +1267,15 @@ tables:
           kind: path
           path:
             - createdAt
+      - name: project_id
+        type: Utf8
+        nullable: true
+        description: Project ID
+        expr:
+          kind: path
+          path:
+            - project
+            - id
       - name: updated_at
         type: Utf8
         nullable: true
@@ -1263,3 +1287,157 @@ tables:
     filters:
       - name: team_id
         required: true
+  - name: attachments
+    description: Attachments (including pull requests) linked to Linear issues
+    request:
+      method: POST
+      path: /graphql
+      query: []
+      body:
+        - path:
+            - query
+          from: literal
+          value: |
+            query Attachments($first: Int!, $after: String) {
+              attachments(first: $first, after: $after) {
+                nodes {
+                  id
+                  title
+                  subtitle
+                  url
+                  sourceType
+                  createdAt
+                  updatedAt
+                  issue {
+                    id
+                    identifier
+                  }
+                  creator {
+                    id
+                    name
+                  }
+                }
+                pageInfo {
+                  endCursor
+                }
+              }
+            }
+        - path:
+            - variables
+            - first
+          from: literal
+          value: 100
+    response:
+      rows_path:
+        - data
+        - attachments
+        - nodes
+    pagination:
+      mode: cursor_body
+      cursor_body_path:
+        - variables
+        - after
+      response_cursor_path:
+        - data
+        - attachments
+        - pageInfo
+        - endCursor
+      page_size:
+        default: 100
+        max: 250
+        body_path:
+          - variables
+          - first
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Attachment ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: title
+        type: Utf8
+        nullable: false
+        description: Attachment title
+        expr:
+          kind: path
+          path:
+            - title
+      - name: subtitle
+        type: Utf8
+        nullable: true
+        description: Attachment subtitle
+        expr:
+          kind: path
+          path:
+            - subtitle
+      - name: url
+        type: Utf8
+        nullable: false
+        description: Attachment URL (for example a pull request URL)
+        expr:
+          kind: path
+          path:
+            - url
+      - name: source_type
+        type: Utf8
+        nullable: true
+        description: Source type (for example github or gitlab)
+        expr:
+          kind: path
+          path:
+            - sourceType
+      - name: issue_id
+        type: Utf8
+        nullable: true
+        description: Linked issue ID
+        expr:
+          kind: path
+          path:
+            - issue
+            - id
+      - name: issue_identifier
+        type: Utf8
+        nullable: true
+        description: Linked issue identifier (for example ENG-123)
+        expr:
+          kind: path
+          path:
+            - issue
+            - identifier
+      - name: creator_id
+        type: Utf8
+        nullable: true
+        description: Creator user ID
+        expr:
+          kind: path
+          path:
+            - creator
+            - id
+      - name: creator_name
+        type: Utf8
+        nullable: true
+        description: Creator name
+        expr:
+          kind: path
+          path:
+            - creator
+            - name
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Creation timestamp
+        expr:
+          kind: path
+          path:
+            - createdAt
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: Updated timestamp
+        expr:
+          kind: path
+          path:
+            - updatedAt

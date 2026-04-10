@@ -12,8 +12,8 @@ use crate::backends::http::ProviderQueryError;
 use crate::backends::shared::json_path::get_path_value;
 use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec};
 use coral_spec::{
-    HeaderSpec, HttpMethod, PageSizeSpec, RowStrategy, ValidatedPagination,
-    ValidatedPaginationMode, ValueSourceSpec,
+    HeaderSpec, HttpMethod, PageSizeSpec, ParsedTemplate, RowStrategy, TemplateNamespace,
+    TemplatePart, ValidatedPagination, ValidatedPaginationMode, ValueSourceSpec,
 };
 
 const DEFAULT_RETRY_WAIT_SECS: u64 = 5;
@@ -26,7 +26,7 @@ const MAX_RATE_LIMIT_WAIT_SECS: u64 = 300;
 pub(crate) struct HttpSourceClient {
     http: reqwest::Client,
     source_schema: String,
-    base_url_template: String,
+    base_url: ParsedTemplate,
     auth_headers: Vec<HeaderSpec>,
     source_secrets: Arc<BTreeMap<String, String>>,
     source_variables: Arc<BTreeMap<String, String>>,
@@ -36,7 +36,7 @@ impl std::fmt::Debug for HttpSourceClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HttpSourceClient")
             .field("source_schema", &self.source_schema)
-            .field("base_url_template", &self.base_url_template)
+            .field("base_url", &self.base_url)
             .field("auth_headers", &self.auth_headers)
             .finish_non_exhaustive()
     }
@@ -80,7 +80,6 @@ impl HttpSourceClient {
         source_secrets: BTreeMap<String, String>,
         source_variables: BTreeMap<String, String>,
     ) -> Result<Self> {
-        let source_schema = manifest.common.name.as_str();
         let auth = &manifest.auth;
 
         for key in &auth.required_secrets {
@@ -94,7 +93,6 @@ impl HttpSourceClient {
 
         for header in &auth.headers {
             let resolved = resolve_value_source(
-                source_schema,
                 &header.value,
                 &HashMap::new(),
                 &HashMap::new(),
@@ -112,7 +110,7 @@ impl HttpSourceClient {
         Ok(Self {
             http: reqwest::Client::new(),
             source_schema: manifest.common.name.clone(),
-            base_url_template: manifest.base_url.clone(),
+            base_url: manifest.base_url.clone(),
             auth_headers: manifest.auth.headers.clone(),
             source_secrets: Arc::new(source_secrets),
             source_variables: Arc::new(source_variables),
@@ -170,8 +168,7 @@ impl HttpSourceClient {
             }
 
             let base_url = render_template(
-                &self.source_schema,
-                &self.base_url_template,
+                &self.base_url,
                 filters,
                 &pagination_state_values(&state),
                 self.source_secrets.as_ref(),
@@ -191,21 +188,19 @@ impl HttpSourceClient {
                 next
             } else {
                 let rendered_path = render_template(
-                    &self.source_schema,
                     &active_request.path,
                     filters,
                     &pagination_state_values(&state),
                     self.source_secrets.as_ref(),
                     self.source_variables.as_ref(),
                 )?;
-                join_url(&base_url, &rendered_path)
+                join_url(&base_url, &rendered_path)?
             };
 
             let (query_pairs, body) = if following_link_header {
                 (Vec::new(), None)
             } else {
                 let mut query_pairs = build_query_pairs(
-                    &self.source_schema,
                     active_request,
                     filters,
                     &state,
@@ -221,7 +216,6 @@ impl HttpSourceClient {
                 )?;
 
                 let mut body = build_request_body(
-                    &self.source_schema,
                     active_request,
                     filters,
                     &state,
@@ -311,13 +305,13 @@ impl HttpSourceClient {
                     }
                 }
                 ValidatedPaginationMode::Page => {
-                    if rows_on_page == 0 {
+                    if page_is_exhausted(rows_on_page, page_size) {
                         break;
                     }
                     state.page = state.page.saturating_add(table.pagination.page_step);
                 }
                 ValidatedPaginationMode::Offset(offset) => {
-                    if rows_on_page == 0 {
+                    if page_is_exhausted(rows_on_page, page_size) {
                         break;
                     }
                     let step = offset
@@ -371,7 +365,6 @@ async fn execute_request(
 
         for header in auth_headers {
             let value = resolve_value_source(
-                source_schema,
                 &header.value,
                 filters,
                 state,
@@ -389,7 +382,6 @@ async fn execute_request(
 
         for header in table_headers {
             if let Some(value) = resolve_value_source(
-                source_schema,
                 &header.value,
                 filters,
                 state,
@@ -514,7 +506,6 @@ fn build_http_request(
 }
 
 fn build_query_pairs(
-    source_schema: &str,
     request: &coral_spec::RequestSpec,
     filters: &HashMap<String, String>,
     state: &PageState,
@@ -526,7 +517,6 @@ fn build_query_pairs(
 
     for param in &request.query {
         let value = resolve_value_source(
-            source_schema,
             &param.value,
             filters,
             &state_values,
@@ -584,7 +574,6 @@ fn apply_pagination_query_pairs(
 }
 
 fn build_request_body(
-    source_schema: &str,
     request: &coral_spec::RequestSpec,
     filters: &HashMap<String, String>,
     state: &PageState,
@@ -600,7 +589,6 @@ fn build_request_body(
 
     for field in &request.body {
         if let Some(value) = resolve_value_source(
-            source_schema,
             &field.value,
             filters,
             &state_values,
@@ -664,8 +652,11 @@ fn resolve_page_size(spec: Option<&PageSizeSpec>, sql_limit: Option<usize>) -> O
     Some(base.min(spec.max).max(1))
 }
 
+fn page_is_exhausted(rows_on_page: usize, page_size: Option<usize>) -> bool {
+    rows_on_page == 0 || page_size.is_some_and(|requested| rows_on_page < requested)
+}
+
 fn resolve_value_source(
-    source_schema: &str,
     value: &ValueSourceSpec,
     filters: &HashMap<String, String>,
     state: &HashMap<String, String>,
@@ -674,14 +665,8 @@ fn resolve_value_source(
 ) -> Result<Option<Value>> {
     match value {
         ValueSourceSpec::Template { template } => {
-            let rendered = render_template(
-                source_schema,
-                template,
-                filters,
-                state,
-                source_secrets,
-                source_variables,
-            )?;
+            let rendered =
+                render_template(template, filters, state, source_secrets, source_variables)?;
             Ok(Some(Value::String(rendered)))
         }
         ValueSourceSpec::Literal { value } => Ok(Some(value.clone())),
@@ -726,86 +711,79 @@ fn pagination_state_values(state: &PageState) -> HashMap<String, String> {
 }
 
 fn render_template(
-    source_schema: &str,
-    template: &str,
+    template: &ParsedTemplate,
     filters: &HashMap<String, String>,
     state: &HashMap<String, String>,
     source_secrets: &BTreeMap<String, String>,
     source_variables: &BTreeMap<String, String>,
 ) -> Result<String> {
-    let mut out = String::with_capacity(template.len());
-    let mut rest = template;
-
-    while let Some(start) = rest.find("{{") {
-        out.push_str(&rest[..start]);
-        let token_start = start + 2;
-        let Some(end_rel) = rest[token_start..].find("}}") else {
-            return Err(DataFusionError::Execution(format!(
-                "unclosed template token in '{template}'"
-            )));
-        };
-        let end = token_start + end_rel;
-        let token = rest[token_start..end].trim();
-        out.push_str(&resolve_template_token(
-            source_schema,
-            token,
-            filters,
-            state,
-            source_secrets,
-            source_variables,
-        )?);
-        rest = &rest[end + 2..];
+    let mut out = String::with_capacity(template.raw().len());
+    for part in template.parts() {
+        match part {
+            TemplatePart::Literal(part) => out.push_str(part),
+            TemplatePart::Token(token) => out.push_str(&resolve_template_token(
+                token,
+                filters,
+                state,
+                source_secrets,
+                source_variables,
+            )?),
+        }
     }
-
-    out.push_str(rest);
     Ok(out)
 }
 
 fn resolve_template_token(
-    _source_schema: &str,
-    token: &str,
+    token: &coral_spec::TemplateToken,
     filters: &HashMap<String, String>,
     state: &HashMap<String, String>,
     source_secrets: &BTreeMap<String, String>,
     source_variables: &BTreeMap<String, String>,
 ) -> Result<String> {
-    let (raw_key, default) = match token.split_once('|') {
-        Some((key, default)) => (key.trim(), Some(default.to_string())),
-        None => (token, None),
-    };
+    let default = token.default_value().map(ToString::to_string);
 
-    if let Some(key) = raw_key.strip_prefix("secret.") {
-        return source_secrets.get(key).cloned().or(default).ok_or_else(|| {
-            DataFusionError::Execution(format!("missing source secret '{key}' for template token"))
+    if token.namespace() == &TemplateNamespace::Secret {
+        return source_secrets
+            .get(token.key())
+            .cloned()
+            .or(default)
+            .ok_or_else(|| {
+                DataFusionError::Execution(format!(
+                    "missing source secret '{}' for template token",
+                    token.key()
+                ))
+            });
+    }
+
+    if token.namespace() == &TemplateNamespace::Filter {
+        return filters
+            .get(token.key())
+            .cloned()
+            .or(default)
+            .ok_or_else(|| {
+                DataFusionError::Execution(format!("missing filter '{}'", token.key()))
+            });
+    }
+
+    if token.namespace() == &TemplateNamespace::Variable {
+        return source_variables
+            .get(token.key())
+            .cloned()
+            .or(default)
+            .ok_or_else(|| {
+                DataFusionError::Execution(format!("missing source variable '{}'", token.key()))
+            });
+    }
+
+    if token.namespace() == &TemplateNamespace::State {
+        return state.get(token.key()).cloned().or(default).ok_or_else(|| {
+            DataFusionError::Execution(format!("missing state value '{}'", token.key()))
         });
     }
 
-    if let Some(key) = raw_key.strip_prefix("filter.") {
-        return filters
-            .get(key)
-            .cloned()
-            .or(default)
-            .ok_or_else(|| DataFusionError::Execution(format!("missing filter '{key}'")));
-    }
-
-    if let Some(key) = raw_key.strip_prefix("variable.") {
-        return source_variables
-            .get(key)
-            .cloned()
-            .or(default)
-            .ok_or_else(|| DataFusionError::Execution(format!("missing source variable '{key}'")));
-    }
-
-    if let Some(key) = raw_key.strip_prefix("state.") {
-        return state
-            .get(key)
-            .cloned()
-            .or(default)
-            .ok_or_else(|| DataFusionError::Execution(format!("missing state value '{key}'")));
-    }
-
     Err(DataFusionError::Execution(format!(
-        "unsupported template token '{token}'"
+        "unsupported template token '{}'",
+        token.raw()
     )))
 }
 
@@ -835,15 +813,18 @@ fn build_logged_url(url: &str, query_pairs: &[(String, String)]) -> String {
     }
 }
 
-fn join_url(base: &str, path: &str) -> String {
-    if path.starts_with("https://") || path.starts_with("http://") {
-        return path.to_string();
+fn join_url(base: &str, path: &str) -> Result<String> {
+    let trimmed = path.trim();
+    if reqwest::Url::parse(trimmed).is_ok() || trimmed.starts_with("//") {
+        return Err(DataFusionError::Execution(
+            "request path must be relative; absolute URLs are not allowed".to_string(),
+        ));
     }
     let base = base.trim_end_matches('/');
-    if path.starts_with('/') {
-        format!("{base}{path}")
+    if trimmed.starts_with('/') {
+        Ok(format!("{base}{trimmed}"))
     } else {
-        format!("{base}/{path}")
+        Ok(format!("{base}/{trimmed}"))
     }
 }
 
@@ -1033,13 +1014,13 @@ mod tests {
 
     use super::{
         HttpSourceClient, PageState, apply_pagination_query_pairs, extract_next_link_url,
-        extract_rows, join_url, normalize_base_url, resolve_value_source,
+        extract_rows, join_url, normalize_base_url, page_is_exhausted, resolve_value_source,
     };
     use coral_spec::PaginationMode;
     use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec};
     use coral_spec::{
-        HttpMethod, PaginationSpec, RequestSpec, RowStrategy, ValidatedPaginationMode,
-        ValueSourceSpec, parse_source_manifest_value,
+        HttpMethod, PaginationSpec, ParsedTemplate, RequestSpec, RowStrategy,
+        ValidatedPaginationMode, ValueSourceSpec, parse_source_manifest_value,
     };
 
     fn parse_http_manifest(value: serde_json::Value) -> HttpSourceManifest {
@@ -1150,18 +1131,23 @@ mod tests {
     }
 
     #[test]
-    fn join_url_handles_absolute_and_relative_paths() {
+    fn join_url_handles_relative_paths() {
         assert_eq!(
-            join_url("https://api.example.com", "/v1/resources"),
+            join_url("https://api.example.com", "/v1/resources").unwrap(),
             "https://api.example.com/v1/resources"
         );
         assert_eq!(
-            join_url("https://api.example.com/", "v1/resources"),
+            join_url("https://api.example.com/", "v1/resources").unwrap(),
             "https://api.example.com/v1/resources"
         );
-        assert_eq!(
-            join_url("https://api.example.com", "https://next.example.com/page"),
-            "https://next.example.com/page"
+    }
+
+    #[test]
+    fn join_url_rejects_absolute_paths() {
+        let err = join_url("https://api.example.com", "https://next.example.com/page").unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("request path must be relative; absolute URLs are not allowed")
         );
     }
 
@@ -1202,7 +1188,6 @@ mod tests {
         let source_secrets = BTreeMap::from([("API_KEY".to_string(), "alpha-secret".to_string())]);
 
         let value = resolve_value_source(
-            "alpha",
             &ValueSourceSpec::Secret {
                 key: "API_KEY".to_string(),
                 default: None,
@@ -1256,7 +1241,7 @@ mod tests {
             &json!([]),
             &RequestSpec {
                 method: HttpMethod::GET,
-                path: "/items".to_string(),
+                path: ParsedTemplate::parse("/items").expect("template"),
                 query: vec![],
                 body: vec![],
                 headers: vec![],
@@ -1298,6 +1283,15 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn page_is_exhausted_handles_empty_short_and_full_pages() {
+        for (rows_on_page, page_size, expected) in
+            [(0, Some(50), true), (24, Some(25), true), (24, None, false)]
+        {
+            assert_eq!(page_is_exhausted(rows_on_page, page_size), expected);
+        }
+    }
+
     fn make_table_with_row_strategy(
         strategy: RowStrategy,
         rows_path: Vec<String>,
@@ -1306,7 +1300,7 @@ mod tests {
             &json!([]),
             &RequestSpec {
                 method: HttpMethod::GET,
-                path: "/items".to_string(),
+                path: ParsedTemplate::parse("/items").expect("template"),
                 query: vec![],
                 body: vec![],
                 headers: vec![],

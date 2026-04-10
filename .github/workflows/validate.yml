@@ -1,0 +1,164 @@
+name: Validate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      release_python: ${{ steps.filter.outputs.release_python }}
+      github_actions: ${{ steps.filter.outputs.github_actions }}
+      rust_checks: ${{ steps.filter.outputs.rust_checks }}
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: true
+
+      - name: Detect changes
+        id: filter
+        uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36 # v3
+        with:
+          filters: |
+            release_python:
+              - '.github/scripts/**'
+              - '.github/workflows/release.yml'
+            github_actions:
+              - '.github/workflows/**'
+            rust_checks:
+              - '.github/workflows/validate.yml'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'Makefile'
+              - 'rust-toolchain.toml'
+              - 'rust-toolchain'
+              - 'crates/**'
+
+  python-gha-helper-tests:
+    name: Python tests (release scripts)
+    runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ needs.changes.outputs.release_python == 'true' }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version-file: .github/scripts/.python-version
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+
+      - name: Ruff format check
+        run: uvx ruff format --check .github/scripts
+
+      - name: Ruff lint
+        run: uvx ruff check .github/scripts
+
+      - name: Run release script integration tests
+        run: python3 -m unittest discover -s .github/scripts -p 'test_prepare_release_integration.py'
+
+  rust-checks:
+    name: Rust checks
+    runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ needs.changes.outputs.rust_checks == 'true' }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        run: rustup show
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          shared-key: coral-validate-${{ runner.os }}
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Run make rust-checks
+        run: make rust-checks
+
+  gha-security-audit:
+    name: Github Actions security audit with zizmor
+    runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ needs.changes.outputs.github_actions == 'true' }}
+    permissions:
+      # security-events: write # Required for upload-sarif (used by zizmor-action) to upload SARIF files.
+      contents: read # Only needed for private repos. Needed to clone the repo.
+      actions: read # Only needed for private repos. Needed for upload-sarif to read workflow run info.
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Run zizmor
+        uses: zizmorcore/zizmor-action@71321a20a9ded102f6e9ce5718a2fcec2c4f70d8 # v0.5.2
+        with:
+          advanced-security: false # disable while the repo is private
+
+  validate:
+    runs-on: ubuntu-latest
+    needs: [changes, python-gha-helper-tests, rust-checks, gha-security-audit]
+    # Run even when upstream jobs fail or are conditionally skipped so this
+    # job can act as the single required status check for the workflow.
+    if: ${{ always() }}
+    steps:
+      - name: Check all job results
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          PYTHON_GHA_HELPER_TESTS_RESULT: ${{ needs.python-gha-helper-tests.result }}
+          RUST_CHECKS_RESULT: ${{ needs.rust-checks.result }}
+          GHA_SECURITY_AUDIT_RESULT: ${{ needs.gha-security-audit.result }}
+        run: |
+          jobs=(
+            "changes:$CHANGES_RESULT"
+            "python-gha-helper-tests:$PYTHON_GHA_HELPER_TESTS_RESULT"
+            "rust-checks:$RUST_CHECKS_RESULT"
+            "gha-security-audit:$GHA_SECURITY_AUDIT_RESULT"
+          )
+
+          failed=0
+          for job_status in "${jobs[@]}"; do
+            job_name="${job_status%%:*}"
+            result="${job_status#*:}"
+
+            if [[ -z "$result" ]]; then
+              echo "$job_name has no recorded result"
+              failed=1
+              continue
+            fi
+
+            if [[ "$result" != "success" && "$result" != "skipped" ]]; then
+              echo "$job_name: $result"
+              failed=1
+            fi
+          done
+
+          if [ $failed -eq 1 ]; then
+            exit 1
+          fi

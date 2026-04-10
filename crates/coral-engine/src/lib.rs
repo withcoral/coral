@@ -23,24 +23,16 @@
 //! # Example
 //!
 //! ```no_run
-//! use std::collections::{BTreeMap, BTreeSet};
+//! use std::collections::BTreeMap;
 //!
 //! use coral_engine::{CoralQuery, QueryRuntimeContext, QueryRuntimeProvider, QuerySource};
 //! use coral_spec::parse_source_manifest_yaml;
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!
-//! struct EmptyCredentials;
+//! struct EmptyRuntime;
 //!
-//! impl QueryRuntimeProvider for EmptyCredentials {
-//!     fn resolve_source_secrets(
-//!         &self,
-//!         _source: &QuerySource,
-//!         _secret_names: &BTreeSet<String>,
-//!     ) -> Result<BTreeMap<String, String>, coral_engine::CoreError> {
-//!         Ok(BTreeMap::new())
-//!     }
-//!
+//! impl QueryRuntimeProvider for EmptyRuntime {
 //!     fn runtime_context(&self) -> QueryRuntimeContext {
 //!         QueryRuntimeContext::default()
 //!     }
@@ -50,11 +42,11 @@
 //! #     "name: demo\nversion: 0.1.0\ndsl_version: 3\nbackend: jsonl\ntables: []",
 //! # )?;
 //! # let sources = vec![QuerySource::new(
-//! #     "default",
 //! #     source_spec,
 //! #     BTreeMap::new(),
+//! #     BTreeMap::new(),
 //! # )];
-//! # let provider = EmptyCredentials;
+//! # let provider = EmptyRuntime;
 //! # async fn demo(
 //! #     sources: &[QuerySource],
 //! #     provider: &dyn QueryRuntimeProvider,
@@ -65,6 +57,13 @@
 //! # Ok(())
 //! # }
 //! ```
+#![cfg_attr(
+    test,
+    allow(
+        unused_crate_dependencies,
+        reason = "wiremock is only used by the integration test target in this crate's dev-dependencies."
+    )
+)]
 
 mod backends;
 pub mod contracts;

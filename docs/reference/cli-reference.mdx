@@ -1,49 +1,29 @@
 ---
 title: "CLI reference"
-description: "Reference for the current Coral CLI commands and options."
+description: "Reference for Coral CLI commands and options."
 ---
-
-Coral is currently a CLI-first product. The main command surface is:
-
-```shellscript
-coral <COMMAND>
-```
-
-Top-level commands:
-
-- `sql`
-- `source`
-- `mcp-stdio`
 
 ## `coral sql`
 
 Run one SQL query and exit.
 
 ```shellscript
-coral sql [--format table|json] "<SQL>"
+coral sql "<SQL>"
 ```
 
 ### Options
 
-| Option | Type | Default | Description |
-| --- | --- | --- | --- |
+| Option     | Type              | Default | Description   |
+| ---------- | ----------------- | ------- | ------------- |
 | `--format` | `table` \| `json` | `table` | Output format |
-
-### Examples
-
-```shellscript
-coral sql "SELECT * FROM coral.tables LIMIT 10"
-coral sql --format json "SELECT * FROM coral.tables LIMIT 10"
-coral sql --format table "SELECT * FROM slack.messages LIMIT 10"
-```
 
 ## `coral source`
 
-Manage bundled and imported sources in the local workspace.
+Manage configured sources, either the bundled ones, or your custom source specs.
 
 ### `coral source discover`
 
-List bundled sources available in your build.
+List all configured sources.
 
 ```shellscript
 coral source discover
@@ -51,7 +31,7 @@ coral source discover
 
 ### `coral source list`
 
-List sources currently installed in the workspace.
+List sources currently installed.
 
 ```shellscript
 coral source list
@@ -59,20 +39,20 @@ coral source list
 
 ### `coral source add <NAME>`
 
-Install a bundled source by name.
+Add a bundled source or update its credentials.
 
 ```shellscript
 coral source add github
 ```
 
-Coral prompts for required variables or secrets interactively.
+Coral prompts for required variables or secrets interactively. If the source is already installed, running this command again replaces its stored credentials with the new values you provide.
 
-### `coral source import <PATH>`
+### `coral source add --file <PATH>`
 
-Import a custom source spec from a YAML file.
+Add a custom source spec from a YAML file.
 
 ```shellscript
-coral source import ./local-messages.yaml
+coral source add --file ./local-messages.yaml
 ```
 
 ### `coral source test <NAME>`
@@ -86,10 +66,18 @@ coral source test local_messages
 
 ### `coral source remove <NAME>`
 
-Remove an installed source from the local workspace.
+Remove an installed source.
 
 ```shellscript
 coral source remove github
+```
+
+## `coral onboard`
+
+Run the guided source setup flow.
+
+```shellscript
+coral onboard
 ```
 
 ## `coral mcp-stdio`
@@ -102,7 +90,11 @@ coral mcp-stdio
 
 This command is intended to be launched by an MCP-capable client rather than used directly in an interactive shell.
 
-The current MCP surface is intentionally small:
+This server exposes:
 
-- tools: `sql`, `list_tables`
-- resources: `coral://guide`, `coral://tables`
+| Type     | Name             | Description                      |
+| -------- | ---------------- | -------------------------------- |
+| Tool     | `sql`            | Run a SQL query                  |
+| Tool     | `list_tables`    | List all available tables        |
+| Resource | `coral://guide`  | Usage guide for agents           |
+| Resource | `coral://tables` | Schema for all installed sources |

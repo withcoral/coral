@@ -31,4 +31,10 @@ urlencoding.workspace = true
 coral-spec.workspace = true
 
 [dev-dependencies]
+arrow.workspace = true
+coral-spec.workspace = true
+parquet.workspace = true
+serde_json.workspace = true
 tempfile.workspace = true
+tokio.workspace = true
+wiremock.workspace = true

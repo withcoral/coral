@@ -1,18 +1,13 @@
 ---
 title: "Installation"
-description: "Install Coral with Homebrew, the install script, or from source."
+description: "Install the Coral CLI"
 ---
 
 Coral ships as a single local CLI. Once installed, the same binary is used for source management, SQL queries, and the MCP stdio server.
 
-## Prerequisites
-
-Before you install Coral, make sure you have:
-
-- macOS or Linux
-- a shell with permission to place `coral` on your `PATH`
-- Homebrew, if you want the Homebrew install path
-- Rust and Cargo, if you want to build Coral from source
+<Note>
+  Coral currently supports macOS and Linux only.
+</Note>
 
 ## Install Coral
 
@@ -30,6 +25,8 @@ Before you install Coral, make sure you have:
   </Tab>
 
   <Tab title="Build from source">
+    Requires [Rust and Cargo](https://www.rust-lang.org/tools/install) installed.
+
     ```shellscript
     cargo build -p coral-cli --release
     ./target/release/coral --help
@@ -37,17 +34,9 @@ Before you install Coral, make sure you have:
   </Tab>
 </Tabs>
 
-Use Homebrew for a standard install. Build from source if you are contributing to Coral or need to test the current repo state directly.
-
-## Verify the install
-
-Run:
-
-```shellscript
-coral --help
-```
-
-The rest of the documentation assumes `coral` is available on your `PATH`.
+<Tip>
+  Once installed, run `coral onboard` to start the interactive wizard to complete the setup.
+</Tip>
 
 ## Upgrade
 
@@ -59,7 +48,7 @@ The rest of the documentation assumes `coral` is available on your `PATH`.
   </Tab>
 
   <Tab title="Install script">
-    Re-run the installer:
+    Re-run the installer to upgrade a direct install:
 
     ```shellscript
     curl -fsSL https://withcoral.com/install.sh | sh
@@ -97,7 +86,3 @@ Important files include:
 - `config.toml` for installed-source metadata and non-secret variables
 - installed source specs under `workspaces/<workspace>/sources/...`
 - source secrets stored separately within the same local trust boundary
-
-## Next step
-
-Continue to [Quickstart](/getting-started/quickstart) to add a source and run your first query.

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use datafusion::common::SchemaError;
 use datafusion::error::DataFusionError;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
-use datafusion::prelude::{SessionConfig, SessionContext};
+use datafusion::prelude::{SQLOptions, SessionConfig, SessionContext};
 
 use crate::backends::compile_query_source;
 use crate::backends::http::ProviderQueryError;
@@ -39,7 +39,7 @@ pub(crate) async fn build_runtime(
     let mut compiled_sources = Vec::new();
     let mut failures = Vec::new();
     for source in sources {
-        match compile_query_source(source, runtime, &runtime_context) {
+        match compile_query_source(source, &runtime_context) {
             Ok(compiled) => compiled_sources.push(compiled),
             Err(error) => failures.push(SourceRegistrationFailure {
                 schema_name: source.source_name().to_string(),
@@ -77,11 +77,22 @@ impl QueryRuntimeAdapter {
     }
 
     pub(crate) async fn execute_sql(&self, sql: &str) -> Result<QueryExecution, CoreError> {
-        let df = self.ctx.sql(sql).await.map_err(datafusion_to_core)?;
+        let df = self
+            .ctx
+            .sql_with_options(sql, read_only_sql_options())
+            .await
+            .map_err(datafusion_to_core)?;
         let arrow_schema = Arc::new(df.schema().as_arrow().clone());
         let batches = df.collect().await.map_err(datafusion_to_core)?;
         Ok(QueryExecution::new(arrow_schema, batches))
     }
+}
+
+fn read_only_sql_options() -> SQLOptions {
+    SQLOptions::new()
+        .with_allow_ddl(false)
+        .with_allow_dml(false)
+        .with_allow_statements(false)
 }
 
 fn datafusion_to_core(error: DataFusionError) -> CoreError {
