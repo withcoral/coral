@@ -2,8 +2,8 @@
 //!
 //! [`QueryError`] is the rich counterpart to [`super::CoreError`]: `CoreError`
 //! classifies a failure into a gRPC-mappable bucket, `QueryError` carries the
-//! summary, detail, actionable hint, and structured fields that CLI renderers
-//! and MCP tool results need to explain the failure to a human or agent.
+//! summary, detail, actionable hint, and structured fields that downstream
+//! consumers need to explain the failure to a human or agent.
 //!
 //! The type is transport-neutral. [`QueryError::to_json_bytes`] and
 //! [`QueryError::from_json_bytes`] produce the wire format consumed by the
@@ -49,8 +49,8 @@ pub enum QueryErrorCode {
 /// Structured fields attached to a [`QueryError`] for programmatic consumers.
 ///
 /// Every field is optional; constructors populate whichever make sense for the
-/// failure. MCP agents can pattern-match on these instead of parsing the
-/// human-readable summary or detail.
+/// failure. Automated callers can pattern-match on these instead of parsing
+/// the human-readable summary or detail.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, Eq, PartialEq)]
 pub struct QueryErrorFields {
     /// Schema (source) the failing table belongs to, e.g. `github`.
@@ -94,8 +94,7 @@ impl QueryErrorFields {
 ///
 /// Constructed at the failure origin (engine, backend, or app layer) and
 /// serialized into `tonic::Status::details()` via [`QueryError::to_json_bytes`]
-/// so CLI and MCP consumers can render a helpful message instead of a bare
-/// status string.
+/// so consumers can render a helpful message instead of a bare status string.
 #[derive(Debug, Clone, Deserialize, Serialize, Eq, PartialEq)]
 pub struct QueryError {
     /// Wire-format sentinel. See [`SCHEMA_VERSION`].
@@ -117,8 +116,8 @@ pub struct QueryError {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hint: Option<String>,
     /// Whether the same query may succeed on retry (e.g. upstream 5xx, rate
-    /// limits). CLI renderers surface this and MCP agents can consult it
-    /// before retrying.
+    /// limits). Interactive renderers can surface this flag in their UI, and
+    /// automated callers can consult it before retrying.
     #[serde(default)]
     pub retryable: bool,
     /// Structured fields for programmatic consumers.
@@ -423,8 +422,8 @@ impl QueryError {
     ///
     /// Used as the fallback `Status::message()` so proxies or client
     /// version-skew that strip `Status::details()` still deliver the actionable
-    /// content to the user. The CLI renderer in `coral-cli` may also fall back
-    /// to this when structured rendering is unavailable.
+    /// content to the user. Renderers may also fall back to this when
+    /// structured rendering is unavailable.
     #[must_use]
     pub fn to_plain_message(&self) -> String {
         let mut message = self.summary.clone();

@@ -34,8 +34,8 @@ pub enum QueryResultError {
 /// `tonic::Status`, if one is present.
 ///
 /// The engine and app attach a JSON-encoded `QueryError` to query failures so
-/// CLI and MCP consumers can recover the structured error and render a hint
-/// instead of the bare `Status::message()`.
+/// consumers can recover the structured error and render a hint instead of
+/// the bare `Status::message()`.
 ///
 /// Returns `None` when the status has no details, when the bytes don't parse
 /// as JSON, or when the payload's `schema_version` doesn't match the expected
