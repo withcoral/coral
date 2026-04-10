@@ -5,14 +5,14 @@ description: "Extend Coral by adding any API or dataset as a queryable source."
 
 Coral ships with [popular data sources](/reference/bundled-sources), but you are not limited to them. If the data source you need is not available out of the box, you can write a source spec in YAML and import it.
 
-A source spec tells Coral how to connect to an API or read a local dataset, what tables to expose, and what columns each table has. Once imported, the source works exactly like a bundled one: same SQL, same `coral.tables` and `coral.columns`, same MCP surface.
+A source spec tells Coral how to connect to an API or read a local dataset, what tables to expose, and what columns each table has. Once added, the source works exactly like a bundled one: same SQL, same `coral.tables` and `coral.columns`, same MCP surface.
 
 ## Agent-driven authoring
 
 Source authoring works well as an agent-driven workflow. Point your coding agent at the Coral CLI and the [source spec reference](/reference/source-spec-reference), give it the API docs or describe the endpoints you want, and let it iterate:
 
 1. The agent writes or updates the source spec YAML
-2. Imports it with `coral source import ./my-source.yaml`
+2. Adds it with `coral source add --file ./my-source.yaml`
 3. Validates with `coral source test my_source`
 4. Inspects `coral.tables` and `coral.columns` to check the shape
 5. Refines and repeats until the tables look right
@@ -57,10 +57,10 @@ tables:
 
 Replace `/absolute/path/to/demo-data/` with the real absolute path on your machine.
 
-### 3. Import and validate
+### 3. Add and validate
 
 ```shellscript
-coral source import ./local-messages.yaml
+coral source add --file ./local-messages.yaml
 coral source test local_messages
 ```
 
@@ -113,12 +113,12 @@ tables:
         type: Utf8
 ```
 
-When you run `coral source import`, Coral prompts for the variable and secret values interactively.
+When you run `coral source add --file`, Coral prompts for the variable and secret values interactively.
 
 For the full set of HTTP response, pagination, auth, and column fields, see [HTTP-backed tables](/reference/source-spec-reference#http-backed-tables).
 
 ## Tips
 
 - **Start small.** Begin with one table and a few columns. Validate with `coral source test`, check `coral.columns`, then expand.
-- **Use `coral.tables` and `coral.columns`.** They show you exactly what Coral sees after an import, including required filters and column metadata.
+- **Use `coral.tables` and `coral.columns`.** They show you exactly what Coral sees after adding a source — including required filters and column metadata.
 - **Look at bundled sources for patterns.** The bundled source specs in the repo under `sources/` are working examples of HTTP pagination, response parsing, auth, and variables.

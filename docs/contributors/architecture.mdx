@@ -34,11 +34,11 @@ A query follows this path:
 
 The user-facing command-line interface.
 
-| Owns                | Details                                                         |
-| ------------------- | --------------------------------------------------------------- |
-| Command parsing     | `coral sql`, `coral source`, `coral onboard`, `coral mcp-stdio` |
-| Interactive prompts | Variables and secrets during `source add` / `source import`     |
-| Output formatting   | Table and JSON via `coral-client` helpers                       |
+| Owns | Details |
+| --- | --- |
+| Command parsing | `coral sql`, `coral source`, `coral onboard`, `coral mcp-stdio` |
+| Interactive prompts | Variables and secrets during `source add` |
+| Output formatting | Table and JSON via `coral-client` helpers |
 
 Single file: `main.rs`. Intentionally thin, delegates all business logic to `coral-client`.
 
@@ -59,7 +59,7 @@ The local server and core orchestrator.
 | Owns                | Details                                                      |
 | ------------------- | ------------------------------------------------------------ |
 | Server bootstrap    | In-process gRPC server lifecycle (`bootstrap/`)              |
-| Source management   | Install, import, list, validate, remove (`sources/`)         |
+| Source management   | Install, list, validate, remove (`sources/`)         |
 | Workspace state     | Config, secrets, and workspace layout (`state/`, `storage/`) |
 | Query orchestration | Loads sources, builds the engine, executes SQL (`query/`)    |
 
