@@ -3,7 +3,7 @@ title: "Source spec reference"
 description: "Schema and fields for Coral source spec YAML files."
 ---
 
-Coral is extensible through source specs. These are YAML files that describe how to connect to an API or read a local dataset.
+Coral is extensible through source specs — YAML files that describe how to connect to an API or read a local dataset. If the system you need is not in the [bundled source set](/reference/bundled-sources), you can write a spec and add it from a file:
 
 <Tip>
   For a guided walkthrough, see [Write a custom
@@ -68,6 +68,86 @@ tables:
         type: Utf8
 ```
 
+<<<<<<< HEAD
+||||||| parent of d6cce13 (chore: update docs, to reflect changes to cli)
+Then import it:
+
+```shellscript
+coral source add --file ./local-messages.yaml
+```
+
+## Tables
+
+A source spec declares one or more tables.
+
+At a minimum, each table has:
+
+```yaml
+tables:
+  - name: example_table
+    description: What this table represents
+```
+
+What comes next depends on the backend.
+
+## File-backed tables
+
+For `jsonl` and `parquet`, each table points at a file location:
+
+```yaml
+tables:
+  - name: events
+    description: Application events
+    source:
+      location: file:///absolute/path/to/events/
+      glob: "**/*.jsonl"
+    columns:
+      - name: event_id
+        type: Utf8
+      - name: kind
+        type: Utf8
+```
+
+=======
+Then add it:
+
+```shellscript
+coral source add --file ./local-messages.yaml
+```
+
+## Tables
+
+A source spec declares one or more tables.
+
+At a minimum, each table has:
+
+```yaml
+tables:
+  - name: example_table
+    description: What this table represents
+```
+
+What comes next depends on the backend.
+
+## File-backed tables
+
+For `jsonl` and `parquet`, each table points at a file location:
+
+```yaml
+tables:
+  - name: events
+    description: Application events
+    source:
+      location: file:///absolute/path/to/events/
+      glob: "**/*.jsonl"
+    columns:
+      - name: event_id
+        type: Utf8
+      - name: kind
+        type: Utf8
+```
+
+>>>>>>> d6cce13 (chore: update docs, to reflect changes to cli)
 Notes:
 
 - `jsonl` currently expects `file://` locations
@@ -137,21 +217,21 @@ This extracts rows from `response_body.data.items` instead of treating the entir
 
 The `pagination` object controls how Coral fetches additional pages of results.
 
-| Field                         | Type            | Default | Description                                                                                            |
-| ----------------------------- | --------------- | ------- | ------------------------------------------------------------------------------------------------------ |
+| Field                         | Type            | Default | Description                                                                                              |
+| ----------------------------- | --------------- | ------- | -------------------------------------------------------------------------------------------------------- |
 | `mode`                        | string          | `none`  | Pagination strategy: `none`, `auto`, `cursor_query`, `cursor_body`, `page`, `offset`, or `link_header` |
-| `cursor_param`                | string          | —       | Query parameter name for the cursor (`cursor_query` mode)                                              |
-| `response_cursor_path`        | list of strings | `[]`    | JSON path in the response to the next cursor value                                                     |
-| `cursor_body_path`            | list of strings | `[]`    | JSON path in the request body for the cursor (`cursor_body` mode)                                      |
-| `page_param`                  | string          | —       | Query parameter name for the page number (`page` mode)                                                 |
-| `page_start`                  | integer         | `0`     | Starting page number                                                                                   |
-| `offset_param`                | string          | —       | Query parameter name for the offset (`offset` mode)                                                    |
-| `offset_start`                | integer         | `0`     | Starting offset value                                                                                  |
-| `page_size.default`           | integer         | —       | Default page size                                                                                      |
-| `page_size.max`               | integer         | —       | Maximum page size                                                                                      |
-| `page_size.query_param`       | string          | —       | Query parameter name for the page size                                                                 |
-| `max_pages`                   | integer         | —       | Maximum number of pages to fetch                                                                       |
-| `link_header_require_results` | boolean         | `false` | For `link_header` mode, require non-empty results to continue                                          |
+| `cursor_param`                | string          | —       | Query parameter name for the cursor (`cursor_query` mode)                                                |
+| `response_cursor_path`        | list of strings | `[]`    | JSON path in the response to the next cursor value                                                       |
+| `cursor_body_path`            | list of strings | `[]`    | JSON path in the request body for the cursor (`cursor_body` mode)                                        |
+| `page_param`                  | string          | —       | Query parameter name for the page number (`page` mode)                                                   |
+| `page_start`                  | integer         | `0`     | Starting page number                                                                                     |
+| `offset_param`                | string          | —       | Query parameter name for the offset (`offset` mode)                                                      |
+| `offset_start`                | integer         | `0`     | Starting offset value                                                                                    |
+| `page_size.default`           | integer         | —       | Default page size                                                                                        |
+| `page_size.max`               | integer         | —       | Maximum page size                                                                                        |
+| `page_size.query_param`       | string          | —       | Query parameter name for the page size                                                                   |
+| `max_pages`                   | integer         | —       | Maximum number of pages to fetch                                                                         |
+| `link_header_require_results` | boolean         | `false` | For `link_header` mode, require non-empty results to continue                                            |
 
 Example using cursor-based pagination:
 
@@ -210,4 +290,10 @@ auth:
       template: Bearer {{secret.API_TOKEN}}
 ```
 
-The `|https://api.example.com` syntax provides a default value when the variable is not set.
+In the `base_url` example, the `|https://api.example.com` part means "use this default value if the variable is not provided explicitly."
+
+When the spec is added, Coral prompts for those values interactively.
+
+## Authoring workflow
+
+For a guided walkthrough — including agent-driven authoring, examples for both file-backed and HTTP sources, and iteration tips — see [Write a custom source](/guides/write-a-custom-source).

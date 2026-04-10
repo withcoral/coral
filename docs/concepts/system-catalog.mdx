@@ -1,0 +1,49 @@
+---
+title: "System catalog"
+description: "Use coral.tables and coral.columns to discover what your installed Coral workspace can query."
+---
+
+Coral exposes system tables that describe the installed runtime. These are usually the first tables you should query in a new workspace.
+
+This page is the canonical reference for the discovery workflow used throughout the docs: inspect `coral.tables`, inspect `coral.columns`, then write a small query against a real source table.
+
+## `coral.tables`
+
+Use this to discover schemas and tables:
+
+```shellscript
+coral sql "
+  SELECT schema_name, table_name
+  FROM coral.tables
+  ORDER BY schema_name, table_name
+"
+```
+
+This is the safest way to learn what Coral can currently query before you write larger SQL statements.
+
+The table also includes metadata such as `description` and `required_filters`, which can help you understand tables that need filter-only inputs before they can return rows.
+
+## `coral.columns`
+
+Use this to inspect column shapes:
+
+```shellscript
+coral sql "
+  SELECT schema_name, table_name, column_name, data_type
+  FROM coral.columns
+  WHERE schema_name = 'github'
+  ORDER BY table_name, ordinal_position
+"
+```
+
+`coral.columns` also includes metadata such as `description` and `is_required_filter`.
+
+## Recommended discovery flow
+
+1. Add a source.
+2. Run `coral source test <NAME>`.
+3. Inspect `coral.tables`.
+4. Inspect `coral.columns`.
+5. Run a small query first.
+
+That workflow is more reliable than guessing table names or column structures.
