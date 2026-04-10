@@ -6,7 +6,7 @@ description: "Reference for Coral source spec fields, backends, install-time inp
 Coral is extensible through source specs — YAML files that describe how to connect to an API or read a local dataset. If the system you need is not in the [bundled source set](/reference/bundled-sources), you can write a spec and import it:
 
 ```shellscript
-coral source import ./my-source.yaml
+coral source add --file ./my-source.yaml
 ```
 
 For a guided walkthrough, see [Write a custom source](/guides/write-a-custom-source). This page is the full field reference.
@@ -70,7 +70,7 @@ tables:
 Then import it:
 
 ```shellscript
-coral source import ./local-messages.yaml
+coral source add --file ./local-messages.yaml
 ```
 
 ## Tables

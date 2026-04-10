@@ -146,29 +146,31 @@ async fn main() -> Result<(), anyhow::Error> {
             }
             SourceCommand::Add(SourceAddArgs { name, file }) => {
                 source_ops::require_interactive()?;
-                let response = if let Some(name) = name {
-                    let bundled_name = source_ops::source_name_arg(Some(&name))?;
-                    let discover = source_ops::discover_sources(&app).await?;
-                    let available = discover
-                        .into_iter()
-                        .find(|source| source.name == bundled_name)
-                        .ok_or_else(|| {
-                            anyhow::anyhow!("unknown bundled source '{bundled_name}'")
-                        })?;
-                    let inputs = available
-                        .inputs
-                        .iter()
-                        .map(source_ops::manifest_input_from_proto)
-                        .collect::<Result<Vec<_>, _>>()?;
-                    let (variables, secrets) = source_ops::prompt_for_inputs(&inputs)?;
-                    source_ops::add_bundled_source(&app, &available.name, variables, secrets)
-                        .await?
-                } else if let Some(file) = file {
-                    let (manifest_yaml, inputs) = source_ops::load_manifest_inputs(&file)?;
-                    let (variables, secrets) = source_ops::prompt_for_inputs(&inputs)?;
-                    source_ops::import_source(&app, manifest_yaml, variables, secrets).await?
-                } else {
-                    unreachable!("clap enforces exactly one of name or file")
+                let response = match (name, file) {
+                    (Some(name), None) => {
+                        let bundled_name = source_ops::source_name_arg(Some(&name))?;
+                        let discover = source_ops::discover_sources(&app).await?;
+                        let available = discover
+                            .into_iter()
+                            .find(|source| source.name == bundled_name)
+                            .ok_or_else(|| {
+                                anyhow::anyhow!("unknown bundled source '{bundled_name}'")
+                            })?;
+                        let inputs = available
+                            .inputs
+                            .iter()
+                            .map(source_ops::manifest_input_from_proto)
+                            .collect::<Result<Vec<_>, _>>()?;
+                        let (variables, secrets) = source_ops::prompt_for_inputs(&inputs)?;
+                        source_ops::add_bundled_source(&app, &available.name, variables, secrets)
+                            .await?
+                    }
+                    (None, Some(file)) => {
+                        let (manifest_yaml, inputs) = source_ops::load_manifest_inputs(&file)?;
+                        let (variables, secrets) = source_ops::prompt_for_inputs(&inputs)?;
+                        source_ops::import_source(&app, manifest_yaml, variables, secrets).await?
+                    }
+                    _ => unreachable!("clap enforces exactly one of name or file"),
                 };
                 println!("Added source {}", response.name);
             }
