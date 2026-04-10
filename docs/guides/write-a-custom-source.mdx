@@ -12,7 +12,7 @@ A source spec tells Coral how to connect to an API or read a local dataset, what
 Source authoring works well as an agent-driven workflow. Point your coding agent at the Coral CLI and the [source spec reference](/reference/source-spec-reference), give it the API docs or describe the endpoints you want, and let it iterate:
 
 1. The agent writes or updates the source spec YAML
-2. Imports it with `coral source import ./my-source.yaml`
+2. Imports it with `coral source add --file ./my-source.yaml`
 3. Validates with `coral source test my_source`
 4. Inspects `coral.tables` and `coral.columns` to check the shape
 5. Refines and repeats until the tables look right
@@ -60,7 +60,7 @@ Replace `/absolute/path/to/demo-data/` with the real absolute path on your machi
 ### 3. Import and validate
 
 ```shellscript
-coral source import ./local-messages.yaml
+coral source add --file ./local-messages.yaml
 coral source test local_messages
 ```
 
@@ -113,7 +113,7 @@ tables:
         type: Utf8
 ```
 
-When you run `coral source import`, Coral prompts for the variable and secret values interactively.
+When you run `coral source add --file`, Coral prompts for the variable and secret values interactively.
 
 For the full set of HTTP response, pagination, auth, and column fields, see [HTTP-backed tables](/reference/source-spec-reference#http-backed-tables).
 

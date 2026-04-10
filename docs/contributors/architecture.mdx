@@ -34,11 +34,11 @@ A query follows this path:
 
 The user-facing command-line interface.
 
-| Owns                | Details                                                         |
-| ------------------- | --------------------------------------------------------------- |
-| Command parsing     | `coral sql`, `coral source`, `coral onboard`, `coral mcp-stdio` |
-| Interactive prompts | Variables and secrets during `source add` / `source import`     |
-| Output formatting   | Table and JSON via `coral-client` helpers                       |
+| Owns | Details |
+| --- | --- |
+| Command parsing | `coral sql`, `coral source`, `coral onboard`, `coral mcp-stdio` |
+| Interactive prompts | Variables and secrets during `source add` |
+| Output formatting | Table and JSON via `coral-client` helpers |
 
 Single file: `main.rs`. Intentionally thin, delegates all business logic to `coral-client`.
 
