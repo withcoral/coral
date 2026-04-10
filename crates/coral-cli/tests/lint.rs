@@ -4,10 +4,22 @@
     reason = "Integration test crates only use a small subset of the package dependencies."
 )]
 
-use std::io::Write;
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use tempfile::NamedTempFile;
+fn temp_manifest(content: &str) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time before unix epoch")
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!(
+        "coral-lint-test-{}-{nanos}.yaml",
+        std::process::id()
+    ));
+    std::fs::write(&path, content).expect("write temp manifest");
+    path
+}
 
 fn coral_lint(file: &std::path::Path) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_coral"))
@@ -19,15 +31,9 @@ fn coral_lint(file: &std::path::Path) -> std::process::Output {
         .expect("failed to run coral source lint")
 }
 
-fn write_manifest(content: &str) -> NamedTempFile {
-    let mut f = NamedTempFile::with_suffix(".yaml").expect("create temp file");
-    f.write_all(content.as_bytes()).expect("write manifest");
-    f
-}
-
 #[test]
 fn lint_accepts_valid_manifest() {
-    let f = write_manifest(
+    let path = temp_manifest(
         r"
 name: demo
 version: 1.0.0
@@ -41,7 +47,7 @@ tables:
       path: /messages
 ",
     );
-    let output = coral_lint(f.path());
+    let output = coral_lint(&path);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         output.status.success(),
@@ -52,11 +58,12 @@ tables:
         stdout.contains("Manifest is valid"),
         "expected 'Manifest is valid' in stdout, got: {stdout}"
     );
+    let _ = std::fs::remove_file(path);
 }
 
 #[test]
 fn lint_rejects_schema_violation() {
-    let f = write_manifest(
+    let path = temp_manifest(
         r"
 name: demo
 version: 1.0.0
@@ -69,7 +76,7 @@ tables:
       path: /messages
 ",
     );
-    let output = coral_lint(f.path());
+    let output = coral_lint(&path);
 
     assert!(!output.status.success(), "expected non-zero exit status");
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -77,11 +84,12 @@ tables:
         stderr.contains("\"backend\" is a required property"),
         "expected missing-backend schema error, got: {stderr}"
     );
+    let _ = std::fs::remove_file(path);
 }
 
 #[test]
 fn lint_rejects_semantic_violation() {
-    let f = write_manifest(
+    let path = temp_manifest(
         r"
 name: demo
 version: 1.0.0
@@ -100,7 +108,7 @@ tables:
         type: Int64
 ",
     );
-    let output = coral_lint(f.path());
+    let output = coral_lint(&path);
 
     assert!(!output.status.success(), "expected non-zero exit status");
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -108,4 +116,5 @@ tables:
         stderr.contains("duplicate column 'id'"),
         "expected duplicate-column error, got: {stderr}"
     );
+    let _ = std::fs::remove_file(path);
 }

@@ -24,6 +24,3 @@ coral-api.workspace = true
 coral-client.workspace = true
 coral-spec.workspace = true
 coral-mcp.workspace = true
-
-[dev-dependencies]
-tempfile.workspace = true

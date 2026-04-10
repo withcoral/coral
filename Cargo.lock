@@ -796,7 +796,6 @@ dependencies = [
  "coral-mcp",
  "coral-spec",
  "dialoguer",
- "tempfile",
  "tokio",
  "tonic",
 ]
