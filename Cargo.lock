@@ -750,7 +750,7 @@ checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
 
 [[package]]
 name = "coral-api"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "prost",
  "protoc-bin-vendored",
@@ -762,7 +762,7 @@ dependencies = [
 
 [[package]]
 name = "coral-app"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "arrow",
  "coral-api",
@@ -786,7 +786,7 @@ dependencies = [
 
 [[package]]
 name = "coral-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "arrow",
@@ -802,7 +802,7 @@ dependencies = [
 
 [[package]]
 name = "coral-client"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "arrow",
  "coral-api",
@@ -814,7 +814,7 @@ dependencies = [
 
 [[package]]
 name = "coral-engine"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "arrow",
  "async-trait",
@@ -838,7 +838,7 @@ dependencies = [
 
 [[package]]
 name = "coral-mcp"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "coral-api",
  "coral-app",
@@ -853,7 +853,7 @@ dependencies = [
 
 [[package]]
 name = "coral-spec"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "jsonschema",
  "serde",
@@ -1799,9 +1799,9 @@ dependencies = [
 
 [[package]]
 name = "fastrand"
-version = "2.3.0"
+version = "2.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "37909eebbb50d72f9059c3b6d82c0463f2ff062c9e95845c43a6c9c0355411be"
+checksum = "9f1f227452a390804cdb637b74a86990f2a7d7ba4b7d5693aac9b4dd6defd8d6"
 
 [[package]]
 name = "find-msvc-tools"
@@ -2575,9 +2575,9 @@ dependencies = [
 
 [[package]]
 name = "liblzma-sys"
-version = "0.4.5"
+version = "0.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9f2db66f3268487b5033077f266da6777d057949b8f93c8ad82e441df25e6186"
+checksum = "1a60851d15cd8c5346eca4ab8babff585be2ae4bc8097c067291d3ffe2add3b6"
 dependencies = [
  "cc",
  "libc",
@@ -3669,9 +3669,9 @@ dependencies = [
 
 [[package]]
 name = "semver"
-version = "1.0.27"
+version = "1.0.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d767eb0aabc880b29956c35734170f26ed551a859dbd361d140cdbeca61ab1e2"
+checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
 
 [[package]]
 name = "seq-macro"
@@ -4061,9 +4061,9 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
 name = "tokio"
-version = "1.51.0"
+version = "1.51.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2bd1c4c0fc4a7ab90fc15ef6daaa3ec3b893f004f915f2392557ed23237820cd"
+checksum = "f66bf9585cda4b724d3e78ab34b73fb2bbaba9011b9bfdf69dc836382ea13b8c"
 dependencies = [
  "bytes",
  "libc",
@@ -4156,9 +4156,9 @@ dependencies = [
 
 [[package]]
 name = "toml_edit"
-version = "0.25.10+spec-1.1.0"
+version = "0.25.11+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a82418ca169e235e6c399a84e395ab6debeb3bc90edc959bf0f48647c6a32d1b"
+checksum = "0b59c4d22ed448339746c59b905d24568fcbb3ab65a500494f7b8c3e97739f2b"
 dependencies = [
  "indexmap",
  "toml_datetime 1.1.1+spec-1.1.0",

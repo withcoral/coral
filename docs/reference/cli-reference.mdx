@@ -1,50 +1,29 @@
 ---
 title: "CLI reference"
-description: "Reference for the current Coral CLI commands and options."
+description: "Reference for Coral CLI commands and options."
 ---
-
-Coral is currently a CLI-first product. The main command surface is:
-
-```shellscript
-coral <COMMAND>
-```
-
-Top-level commands:
-
-- `sql`
-- `source`
-- `onboard`
-- `mcp-stdio`
 
 ## `coral sql`
 
 Run one SQL query and exit.
 
 ```shellscript
-coral sql [--format table|json] "<SQL>"
+coral sql "<SQL>"
 ```
 
 ### Options
 
-| Option | Type | Default | Description |
-| --- | --- | --- | --- |
+| Option     | Type              | Default | Description   |
+| ---------- | ----------------- | ------- | ------------- |
 | `--format` | `table` \| `json` | `table` | Output format |
-
-### Examples
-
-```shellscript
-coral sql "SELECT * FROM coral.tables LIMIT 10"
-coral sql --format json "SELECT * FROM coral.tables LIMIT 10"
-coral sql --format table "SELECT * FROM slack.messages LIMIT 10"
-```
 
 ## `coral source`
 
-Manage bundled and imported sources in the local workspace.
+Manage configured sources, either the bundled, or the imported ones.
 
 ### `coral source discover`
 
-List bundled sources available in your build.
+List all configured sources.
 
 ```shellscript
 coral source discover
@@ -52,7 +31,7 @@ coral source discover
 
 ### `coral source list`
 
-List sources currently installed in the workspace.
+List sources currently installed.
 
 ```shellscript
 coral source list
@@ -101,13 +80,6 @@ Run the guided source setup flow.
 coral onboard
 ```
 
-This interactive command helps you:
-
-- add a bundled source
-- import a custom source manifest
-- validate an installed source
-- see the next recommended commands after setup
-
 ## `coral mcp-stdio`
 
 Expose the local Coral runtime as an MCP stdio server.
@@ -118,7 +90,7 @@ coral mcp-stdio
 
 This command is intended to be launched by an MCP-capable client rather than used directly in an interactive shell.
 
-The current MCP surface is intentionally small:
+This server exposes:
 
-- tools: `sql`, `list_tables`
-- resources: `coral://guide`, `coral://tables`
+- **Tools:** `sql`, `list_tables`
+- **Resources:** `coral://guide`, `coral://tables`

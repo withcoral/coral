@@ -66,7 +66,7 @@ coral source test github
 
 ### 3. Inspect available tables
 
-Use the system catalog to see what Coral can query:
+Use `coral.tables` to see what Coral can query:
 
 ```bash
 coral sql "SELECT * FROM coral.tables LIMIT 20"
