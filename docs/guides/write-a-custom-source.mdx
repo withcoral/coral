@@ -3,9 +3,9 @@ title: "Write a custom source spec"
 description: "Extend Coral by adding any API or dataset as a queryable source."
 ---
 
-Coral ships with [bundled sources](/reference/bundled-sources) for common systems, but you are not limited to them. If the system you need is not bundled, you can write a source spec in YAML and add it from a file.
+Coral ships with [popular data sources](/reference/bundled-sources), but you are not limited to them. If the data source you need is not available out of the box, you can write a source spec in YAML and import it.
 
-A source spec tells Coral how to connect to an API or read a local dataset, what tables to expose, and what columns each table has. Once added, the source works exactly like a bundled one — same SQL, same `coral.tables` and `coral.columns`, same MCP surface.
+A source spec tells Coral how to connect to an API or read a local dataset, what tables to expose, and what columns each table has. Once added, the source works exactly like a bundled one: same SQL, same `coral.tables` and `coral.columns`, same MCP surface.
 
 ## Agent-driven authoring
 
