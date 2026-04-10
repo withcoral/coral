@@ -66,6 +66,8 @@ jobs:
         run: rustup show
       - name: Ensure target is installed
         run: rustup target add ${{ matrix.target }}
+      # No Rust cache here — release builds must compile from a clean state
+      # to guard against cache poisoning attacks.
       - name: Install cross
         if: matrix.cross
         run: |
