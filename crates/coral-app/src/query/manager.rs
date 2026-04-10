@@ -1,6 +1,7 @@
 //! Query-time loading, validation, and execution over installed sources.
 
 use std::collections::BTreeMap;
+use std::time::Instant;
 
 use coral_api::v1::Workspace;
 use coral_engine::{
@@ -8,6 +9,7 @@ use coral_engine::{
     TableInfo,
 };
 use coral_spec::parse_source_manifest_yaml;
+use tracing::Instrument as _;
 
 use crate::bootstrap::AppError;
 use crate::sources::model::ManagedSource;
@@ -65,13 +67,37 @@ impl QueryManager {
         workspace: &Workspace,
         sql: &str,
     ) -> Result<QueryExecution, QueryManagerError> {
-        let sources = self
-            .load_query_sources(workspace)
-            .map_err(QueryManagerError::App)?;
-        let runtime = self.runtime_provider();
-        CoralQuery::execute_sql(&sources, &runtime, sql)
-            .await
-            .map_err(QueryManagerError::Core)
+        let started_at = Instant::now();
+        let query_span = create_query_span(sql);
+        let result = async {
+            let sources = self
+                .load_query_sources(workspace)
+                .map_err(QueryManagerError::App)?;
+            let runtime = self.runtime_provider();
+            CoralQuery::execute_sql(&sources, &runtime, sql)
+                .await
+                .map_err(QueryManagerError::Core)
+        }
+        .instrument(query_span.clone())
+        .await;
+
+        let metrics = crate::telemetry::metrics::metrics();
+        metrics.count.add(1, &[]);
+        metrics
+            .duration
+            .record(started_at.elapsed().as_secs_f64() * 1000.0, &[]);
+
+        if let Ok(execution) = &result {
+            let row_count = u64::try_from(execution.row_count()).unwrap_or(u64::MAX);
+            query_span.record("row_count", row_count);
+            query_span.record("status", "ok");
+            metrics.rows.record(row_count, &[]);
+        } else {
+            query_span.record("status", "error");
+            metrics.errors.add(1, &[]);
+        }
+
+        result
     }
 
     pub(crate) async fn validate_source(
@@ -156,6 +182,17 @@ impl QueryManager {
             runtime_context: self.runtime_context.clone(),
         }
     }
+}
+
+fn create_query_span(sql: &str) -> tracing::Span {
+    let _remote_parent_guard = crate::telemetry::remote_parent_context().attach();
+    tracing::info_span!(
+        "coral.query",
+        otel.name = "coral.query",
+        sql = %sql,
+        row_count = tracing::field::Empty,
+        status = tracing::field::Empty,
+    )
 }
 
 #[derive(Clone)]

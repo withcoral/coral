@@ -6,6 +6,7 @@
 )]
 
 use std::fs;
+use std::net::{Ipv4Addr, TcpListener};
 use std::path::{Path, PathBuf};
 
 use coral_api::v1::{
@@ -19,6 +20,10 @@ use coral_client::{
 };
 use tempfile::TempDir;
 use tonic::Request;
+
+fn loopback_sockets_available() -> bool {
+    TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).is_ok()
+}
 
 fn fixture_manifest_yaml(root: &Path) -> String {
     let data_dir = root.join("fixture-data");
@@ -97,6 +102,10 @@ async fn local_client(config_dir: impl Into<PathBuf>) -> AppClient {
     reason = "This integration test intentionally exercises the full local app flow in one place."
 )]
 async fn local_mode_source_lifecycle_and_query_work() {
+    if !loopback_sockets_available() {
+        return;
+    }
+
     let temp = TempDir::new().expect("temp dir");
     let manifest_yaml = fixture_manifest_yaml(temp.path());
     let coral_config_dir = temp.path().join("coral-config");
@@ -202,6 +211,10 @@ async fn local_mode_source_lifecycle_and_query_work() {
 
 #[tokio::test]
 async fn query_execution_rejects_non_read_only_sql() {
+    if !loopback_sockets_available() {
+        return;
+    }
+
     let temp = TempDir::new().expect("temp dir");
     let manifest_yaml = fixture_manifest_yaml(temp.path());
     let app = local_client(temp.path().join("coral-config")).await;
@@ -255,6 +268,10 @@ async fn query_execution_rejects_non_read_only_sql() {
 
 #[tokio::test]
 async fn missing_source_manifest_file_returns_not_found() {
+    if !loopback_sockets_available() {
+        return;
+    }
+
     let temp = TempDir::new().expect("temp dir");
     let config_dir = temp.path().join("coral-config");
     fs::create_dir_all(&config_dir).expect("create config dir");
@@ -284,6 +301,10 @@ origin = "imported"
 
 #[tokio::test]
 async fn config_persists_across_rebuilds_without_local_trace_state() {
+    if !loopback_sockets_available() {
+        return;
+    }
+
     let temp = TempDir::new().expect("temp dir");
     let manifest_yaml = fixture_manifest_yaml(temp.path());
     let config_dir = temp.path().join("coral-config");
@@ -344,6 +365,10 @@ async fn config_persists_across_rebuilds_without_local_trace_state() {
 
 #[tokio::test]
 async fn bundled_github_source_initializes_tables_with_template_secret_binding() {
+    if !loopback_sockets_available() {
+        return;
+    }
+
     let temp = TempDir::new().expect("temp dir");
     let app = local_client(temp.path().join("coral-config")).await;
     let mut source_client = app.source_client();
@@ -381,6 +406,10 @@ async fn bundled_github_source_initializes_tables_with_template_secret_binding()
 
 #[tokio::test]
 async fn broken_source_does_not_block_healthy_sources() {
+    if !loopback_sockets_available() {
+        return;
+    }
+
     let temp = TempDir::new().expect("temp dir");
     let config_dir = temp.path().join("coral-config");
     let app = local_client(&config_dir).await;
@@ -472,6 +501,10 @@ async fn broken_source_does_not_block_healthy_sources() {
 
 #[tokio::test]
 async fn discover_surfaces_corrupted_config_instead_of_marking_sources_uninstalled() {
+    if !loopback_sockets_available() {
+        return;
+    }
+
     let temp = TempDir::new().expect("temp dir");
     let config_dir = temp.path().join("coral-config");
     fs::create_dir_all(&config_dir).expect("create config dir");
@@ -492,6 +525,10 @@ async fn discover_surfaces_corrupted_config_instead_of_marking_sources_uninstall
 #[tokio::test]
 async fn import_rolls_back_written_artifacts_when_config_write_fails() {
     use std::os::unix::fs::PermissionsExt;
+
+    if !loopback_sockets_available() {
+        return;
+    }
 
     let temp = TempDir::new().expect("temp dir");
     let config_dir = temp.path().join("coral-config");
@@ -548,6 +585,10 @@ async fn import_rolls_back_written_artifacts_when_config_write_fails() {
 #[tokio::test]
 async fn delete_restores_artifacts_when_manifest_cleanup_fails() {
     use std::os::unix::fs::PermissionsExt;
+
+    if !loopback_sockets_available() {
+        return;
+    }
 
     let temp = TempDir::new().expect("temp dir");
     let config_dir = temp.path().join("coral-config");
@@ -607,6 +648,10 @@ async fn delete_restores_artifacts_when_manifest_cleanup_fails() {
 
 #[tokio::test]
 async fn missing_source_requests_return_not_found() {
+    if !loopback_sockets_available() {
+        return;
+    }
+
     let temp = TempDir::new().expect("temp dir");
     let app = local_client(temp.path().join("coral-config")).await;
     let mut source_client = app.source_client();
@@ -623,6 +668,10 @@ async fn missing_source_requests_return_not_found() {
 
 #[tokio::test]
 async fn rejects_backslashes_in_workspace_and_source_names() {
+    if !loopback_sockets_available() {
+        return;
+    }
+
     let temp = TempDir::new().expect("temp dir");
     let app = local_client(temp.path().join("coral-config")).await;
     let mut source_client = app.source_client();

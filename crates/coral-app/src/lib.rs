@@ -36,7 +36,9 @@ mod query;
 mod sources;
 mod state;
 mod storage;
+pub mod telemetry;
 mod workspaces;
 
 pub use bootstrap::{AppError, RunningServer, ServerBuilder};
+pub use telemetry::shutdown_tracing;
 pub use workspaces::DEFAULT_WORKSPACE_ID;

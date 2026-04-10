@@ -93,11 +93,17 @@ enum OutputFormat {
 
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
+    let result = run().await;
+    coral_app::shutdown_tracing();
+    result
+}
+
+async fn run() -> Result<(), anyhow::Error> {
     let cli = Cli::parse();
-    let app = ClientBuilder::new().build().await?;
 
     match cli.command {
         Command::Sql(args) => {
+            let app = build_app().await?;
             let response = app
                 .query_client()
                 .execute_sql(Request::new(ExecuteSqlRequest {
@@ -111,6 +117,7 @@ async fn main() -> Result<(), anyhow::Error> {
         }
         Command::Source(args) => match args.command {
             SourceCommand::Discover => {
+                let app = build_app().await?;
                 let sources = source_ops::discover_sources(&app).await?;
                 if sources.is_empty() {
                     println!("No bundled sources available.");
@@ -126,6 +133,7 @@ async fn main() -> Result<(), anyhow::Error> {
                 }
             }
             SourceCommand::List => {
+                let app = build_app().await?;
                 let sources = source_ops::list_sources(&app).await?;
                 if sources.is_empty() {
                     println!("No sources configured.");
@@ -138,6 +146,7 @@ async fn main() -> Result<(), anyhow::Error> {
             }
             SourceCommand::Add { name } => {
                 source_ops::require_interactive()?;
+                let app = build_app().await?;
                 let bundled_name = source_ops::source_name_arg(Some(&name))?;
                 let discover = source_ops::discover_sources(&app).await?;
                 let available = discover
@@ -157,6 +166,7 @@ async fn main() -> Result<(), anyhow::Error> {
             }
             SourceCommand::Import { path } => {
                 source_ops::require_interactive()?;
+                let app = build_app().await?;
                 let (manifest_yaml, inputs) = source_ops::load_manifest_inputs(&path)?;
                 let (variables, secrets) = source_ops::prompt_for_inputs(&inputs)?;
                 let response =
@@ -164,23 +174,32 @@ async fn main() -> Result<(), anyhow::Error> {
                 println!("Imported source {}", response.name);
             }
             SourceCommand::Test { name } => {
+                let app = build_app().await?;
                 let response = source_ops::validate_source(&app, &name).await?;
                 source_ops::print_validation_success(&response)?;
             }
             SourceCommand::Remove { name } => {
+                let app = build_app().await?;
                 source_ops::delete_source(&app, &name).await?;
                 println!("Removed source {name}");
             }
         },
         Command::Onboard => {
+            source_ops::require_interactive()?;
+            let app = build_app().await?;
             onboard::run(&app).await?;
         }
         Command::McpStdio => {
+            let app = build_app().await?;
             coral_mcp::run_stdio_with_client(app).await?;
         }
     }
 
     Ok(())
+}
+
+async fn build_app() -> Result<coral_client::AppClient, anyhow::Error> {
+    ClientBuilder::new().build().await.map_err(Into::into)
 }
 
 fn print_batches(
