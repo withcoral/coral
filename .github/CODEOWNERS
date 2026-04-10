@@ -9,5 +9,5 @@ README.md @jsummerfield
 /crates/coral-client/ @jsummerfield
 /crates/coral-engine/ @antonmry
 /crates/coral-mcp/ @Bradley-Butcher @mystic123
-/crates/coral-spec/ @iaptsiauri
-/sources/ @iaptsiauri
+/crates/coral-spec/ @iaptsiauri @antonmry
+/sources/ @iaptsiauri @antonmry
