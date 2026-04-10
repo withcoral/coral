@@ -196,7 +196,7 @@ Coral is already usable for local agent workflows. We’re currently expanding:
 Run the workspace validation gate from the repository root:
 
 ```bash
-make validate
+make rust-checks
 ```
 
 ## Documentation

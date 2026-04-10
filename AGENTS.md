@@ -16,7 +16,7 @@
 
 ## Rules
 
-- Run `make validate` before finishing.
+- Run `make rust-checks` before finishing making changes to Rust code.
 - Keep adapters thin. If CLI or MCP behavior gets complex, move it inward.
 - Keep transport contract concerns in `coral-api`, source-spec concerns in
   `coral-spec`, app/state concerns in `coral-app`, and query/runtime

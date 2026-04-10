@@ -1,5 +1,5 @@
 name: linear
-version: 2.1.0
+version: 2.2.0
 dsl_version: 3
 backend: http
 description: Manage issues, projects, cycles, and initiatives across teams
@@ -835,6 +835,9 @@ tables:
                     name
                     email
                   }
+                  project {
+                    id
+                  }
                 }
                 pageInfo {
                   endCursor
@@ -995,6 +998,15 @@ tables:
           kind: path
           path:
             - updatedAt
+      - name: project_id
+        type: Utf8
+        nullable: true
+        description: Project ID
+        expr:
+          kind: path
+          path:
+            - project
+            - id
       - name: completed_at
         type: Utf8
         nullable: true
@@ -1137,6 +1149,9 @@ tables:
                       name
                       email
                     }
+                    project {
+                      id
+                    }
                   }
                   pageInfo {
                     endCursor
@@ -1252,6 +1267,15 @@ tables:
           kind: path
           path:
             - createdAt
+      - name: project_id
+        type: Utf8
+        nullable: true
+        description: Project ID
+        expr:
+          kind: path
+          path:
+            - project
+            - id
       - name: updated_at
         type: Utf8
         nullable: true
