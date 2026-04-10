@@ -73,9 +73,18 @@
               },
               "method": { "type": "string", "enum": ["GET", "POST"] },
               "path": { "type": "string", "minLength": 1 },
-              "query": { "type": "array", "items": { "$ref": "#/$defs/query_param" } },
-              "body": { "type": "array", "items": { "$ref": "#/$defs/body_field" } },
-              "headers": { "type": "array", "items": { "$ref": "#/$defs/header" } }
+              "query": {
+                "type": "array",
+                "items": { "$ref": "#/$defs/query_param" }
+              },
+              "body": {
+                "type": "array",
+                "items": { "$ref": "#/$defs/body_field" }
+              },
+              "headers": {
+                "type": "array",
+                "items": { "$ref": "#/$defs/header" }
+              }
             }
           }
         },
@@ -123,7 +132,7 @@
     "request": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["method", "path"],
+      "required": ["path"],
       "properties": {
         "method": { "type": "string", "enum": ["GET", "POST"] },
         "path": { "type": "string", "minLength": 1 },
@@ -160,9 +169,7 @@
         "default": {},
         "seconds": { "type": "integer" }
       },
-      "allOf": [
-        { "$ref": "#/$defs/value_source_switch" }
-      ]
+      "allOf": [{ "$ref": "#/$defs/value_source_switch" }]
     },
     "body_field": {
       "type": "object",
@@ -186,9 +193,7 @@
         "default": {},
         "seconds": { "type": "integer" }
       },
-      "allOf": [
-        { "$ref": "#/$defs/value_source_switch" }
-      ]
+      "allOf": [{ "$ref": "#/$defs/value_source_switch" }]
     },
     "header": {
       "type": "object",
@@ -208,9 +213,7 @@
         "default": {},
         "seconds": { "type": "integer" }
       },
-      "allOf": [
-        { "$ref": "#/$defs/value_source_switch" }
-      ]
+      "allOf": [{ "$ref": "#/$defs/value_source_switch" }]
     },
     "value_source_switch": {
       "oneOf": [
@@ -296,7 +299,15 @@
       "properties": {
         "mode": {
           "type": "string",
-          "enum": ["none", "auto", "cursor_query", "cursor_body", "page", "offset", "link_header"]
+          "enum": [
+            "none",
+            "auto",
+            "cursor_query",
+            "cursor_body",
+            "page",
+            "offset",
+            "link_header"
+          ]
         },
         "page_size": { "$ref": "#/$defs/page_size" },
         "cursor_param": { "type": "string", "minLength": 1 },
@@ -338,7 +349,10 @@
       "required": ["name", "type"],
       "properties": {
         "name": { "type": "string", "minLength": 1 },
-        "type": { "type": "string", "enum": ["Utf8", "Int64", "Boolean", "Float64"] },
+        "type": {
+          "type": "string",
+          "enum": ["Utf8", "Int64", "Boolean", "Float64"]
+        },
         "nullable": { "type": "boolean" },
         "virtual": { "type": "boolean" },
         "description": { "type": "string" },
