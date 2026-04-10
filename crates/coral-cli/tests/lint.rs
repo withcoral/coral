@@ -8,27 +8,35 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-fn temp_manifest(content: &str) -> PathBuf {
+fn temp_path(suffix: &str) -> PathBuf {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("system time before unix epoch")
         .as_nanos();
-    let path = std::env::temp_dir().join(format!(
-        "coral-lint-test-{}-{nanos}.yaml",
+    std::env::temp_dir().join(format!(
+        "coral-lint-test-{}-{nanos}{suffix}",
         std::process::id()
-    ));
+    ))
+}
+
+fn temp_manifest(content: &str) -> PathBuf {
+    let path = temp_path(".yaml");
     std::fs::write(&path, content).expect("write temp manifest");
     path
 }
 
 fn coral_lint(file: &std::path::Path) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_coral"))
+    let config_dir = temp_path("-config");
+    let output = Command::new(env!("CARGO_BIN_EXE_coral"))
         .args(["source", "lint", file.to_str().unwrap()])
+        .env("CORAL_CONFIG_DIR", &config_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
-        .expect("failed to run coral source lint")
+        .expect("failed to run coral source lint");
+    let _ = std::fs::remove_dir_all(config_dir);
+    output
 }
 
 #[test]
