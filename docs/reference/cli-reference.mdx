@@ -55,6 +55,14 @@ Add a custom source spec from a YAML file.
 coral source add --file ./local-messages.yaml
 ```
 
+### `coral source lint <FILE>`
+
+Validate a source spec YAML file without installing it. Checks YAML syntax, JSON schema conformance, and semantic rules such as duplicate columns or references to unknown filters.
+
+```shellscript
+coral source lint ./my-source.yaml
+```
+
 ### `coral source test <NAME>`
 
 Validate that an installed source can initialize and expose tables.
