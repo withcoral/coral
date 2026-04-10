@@ -807,7 +807,6 @@ dependencies = [
  "arrow",
  "coral-api",
  "coral-app",
- "coral-engine",
  "serde_json",
  "thiserror",
  "tonic",

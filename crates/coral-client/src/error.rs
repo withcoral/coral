@@ -1,6 +1,6 @@
 //! Error surfaces for Coral client bootstrap and query result decoding.
 
-use coral_engine::QueryError;
+use coral_app::QueryError;
 
 /// Errors surfaced while bootstrapping a Coral client.
 #[derive(Debug, thiserror::Error)]
@@ -33,14 +33,13 @@ pub enum QueryResultError {
 /// Extracts a structured [`QueryError`] from the `details` payload of a
 /// `tonic::Status`, if one is present.
 ///
-/// The engine and app attach a JSON-encoded `QueryError` to query failures via
-/// `coral_app::bootstrap::status_with_query_error`. CLI and MCP consumers call
-/// this helper to recover the structured error so they can render a hint
+/// The engine and app attach a JSON-encoded `QueryError` to query failures so
+/// CLI and MCP consumers can recover the structured error and render a hint
 /// instead of the bare `Status::message()`.
 ///
 /// Returns `None` when the status has no details, when the bytes don't parse
 /// as JSON, or when the payload's `schema_version` doesn't match the expected
-/// [`coral_engine::SCHEMA_VERSION`]. Callers should fall back to the plain
+/// [`coral_app::SCHEMA_VERSION`]. Callers should fall back to the plain
 /// `Status::message()` in that case.
 #[must_use]
 pub fn query_error_from_status(status: &tonic::Status) -> Option<QueryError> {
@@ -54,7 +53,7 @@ pub fn query_error_from_status(status: &tonic::Status) -> Option<QueryError> {
 #[cfg(test)]
 mod tests {
     use super::query_error_from_status;
-    use coral_engine::{QueryError, QueryErrorCode};
+    use coral_app::{QueryError, QueryErrorCode};
     use tonic::{Code, Status};
 
     #[test]

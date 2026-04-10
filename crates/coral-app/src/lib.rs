@@ -39,4 +39,11 @@ mod storage;
 mod workspaces;
 
 pub use bootstrap::{AppError, RunningServer, ServerBuilder};
+/// Structured query error contract, re-exported from `coral-engine`.
+///
+/// `coral-engine` is an internal dependency of `coral-app`; the client library
+/// is expected to stay behind the `coral-app` boundary and reaches
+/// [`QueryError`] through this re-export rather than depending on
+/// `coral-engine` directly.
+pub use coral_engine::{QueryError, QueryErrorCode, QueryErrorFields, SCHEMA_VERSION};
 pub use workspaces::DEFAULT_WORKSPACE_ID;
