@@ -182,7 +182,7 @@ fn enrich_provider_detail(detail: &str, method: Option<&str>, url: Option<&str>)
 /// in `backends/http/client.rs`). That means the raw URL on a failing
 /// request can legitimately contain credentials as `?api_key=…` and similar.
 /// Attaching that verbatim to a [`QueryError`] would leak those credentials
-/// to any CLI or MCP consumer that renders the structured error.
+/// to any consumer that renders the structured error.
 ///
 /// This helper drops the query component, fragment, and userinfo while
 /// keeping scheme, host/port, and path — preserving enough information to
