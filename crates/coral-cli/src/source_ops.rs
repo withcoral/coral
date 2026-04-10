@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::io::{IsTerminal, stdin, stdout};
 use std::path::Path;
 
@@ -10,8 +11,11 @@ use coral_client::{AppClient, default_workspace};
 use coral_spec::{
     ManifestInputKind, ManifestInputSpec, collect_source_inputs_yaml, parse_source_manifest_yaml,
 };
+use dialoguer::console::style;
 use dialoguer::{Input, Password, theme::ColorfulTheme};
 use tonic::Request;
+
+pub(crate) const MAX_TABLES_PER_SCHEMA: usize = 9;
 
 pub(crate) async fn discover_sources(
     app: &AppClient,
@@ -184,17 +188,74 @@ pub(crate) fn source_origin_label(origin: i32) -> &'static str {
     }
 }
 
-pub(crate) fn print_validation_success(
+pub(crate) async fn validate_and_print(
+    app: &AppClient,
+    source_name: &str,
+    max_tables: Option<usize>,
+) -> Result<(), anyhow::Error> {
+    let response = validate_source(app, source_name).await?;
+    print_validation_pretty(&response, max_tables)
+}
+
+pub(crate) fn print_validation_pretty(
     response: &ValidateSourceResponse,
+    max_tables: Option<usize>,
 ) -> Result<(), anyhow::Error> {
     let source = response
         .source
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("validate response missing source metadata"))?;
-    println!("Source {} is queryable", source.name);
+
+    println!();
+    println!(
+        "  {} {}",
+        style("✓").green(),
+        style(format!("{} connected successfully", source.name)).bold()
+    );
+
+    // Group tables by schema, sorted.
+    let mut by_schema: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     for table in &response.tables {
-        println!("{}.{}", table.schema_name, table.name);
+        by_schema
+            .entry(&table.schema_name)
+            .or_default()
+            .push(&table.name);
     }
+    for tables in by_schema.values_mut() {
+        tables.sort_unstable();
+    }
+
+    for (schema, tables) in &by_schema {
+        let count = tables.len();
+        println!();
+        println!(
+            "    {}",
+            style(format!(
+                "{schema} ({count} {})",
+                if count == 1 { "table" } else { "tables" }
+            ))
+            .bold()
+        );
+
+        let show_count = max_tables.map_or(tables.len(), |max| tables.len().min(max));
+        let remaining = tables.len() - show_count;
+
+        for (i, table) in tables.iter().take(show_count).enumerate() {
+            let is_last = i == show_count - 1 && remaining == 0;
+            let branch = if is_last { "└─" } else { "├─" };
+            println!("    {} {}", style(branch).dim(), table);
+        }
+
+        if remaining > 0 {
+            println!(
+                "    {} {}",
+                style("└─").dim(),
+                style(format!("... and {remaining} more")).dim()
+            );
+        }
+    }
+    println!();
+
     Ok(())
 }
 
