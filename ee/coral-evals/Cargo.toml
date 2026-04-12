@@ -1,0 +1,25 @@
+[package]
+name = "coral-evals"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait.workspace = true
+datafusion.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+thiserror.workspace = true
+
+coral-engine.workspace = true
+
+[dev-dependencies]
+arrow.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
+coral-spec.workspace = true

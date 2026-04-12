@@ -9,6 +9,7 @@ use arrow::record_batch::RecordBatch;
 use coral_spec::ValidatedSourceManifest;
 
 use super::ColumnInfo;
+use crate::SourceDecorator;
 
 /// One managed source selected into the current query runtime.
 #[derive(Debug, Clone)]
@@ -76,6 +77,13 @@ pub struct QueryRuntimeContext {
 pub trait QueryRuntimeProvider: Send + Sync {
     /// Returns non-secret runtime inputs owned by the application layer.
     fn runtime_context(&self) -> QueryRuntimeContext;
+
+    /// Returns registration-time source decorators for this runtime build.
+    ///
+    /// The default implementation returns no decorators.
+    fn source_decorators(&self) -> Vec<Box<dyn SourceDecorator>> {
+        Vec::new()
+    }
 }
 
 /// The fully materialized result of executing one `SQL` statement.

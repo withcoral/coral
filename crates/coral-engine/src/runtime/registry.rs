@@ -5,8 +5,9 @@ use std::sync::Arc;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::prelude::SessionContext;
 
-use crate::backends::{CompiledBackendSource, RegisteredSource};
+use crate::backends::{BackendRegistration, CompiledBackendSource, RegisteredSource};
 use crate::runtime::schema_provider::StaticSchemaProvider;
+use crate::{SourceDecorator, SourceDecoratorError};
 
 const RESERVED_SCHEMA_NAMES: &[&str] = &["coral", "coral_admin"];
 
@@ -44,10 +45,13 @@ fn check_reserved_schema(schema: &str) -> Result<()> {
 pub(crate) async fn register_sources(
     ctx: &SessionContext,
     sources: Vec<Box<dyn CompiledBackendSource>>,
+    source_decorators: &mut [Box<dyn SourceDecorator>],
 ) -> Result<SourceRegistrationResult> {
     let catalog = ctx
         .catalog("datafusion")
         .ok_or_else(|| DataFusionError::Plan("catalog 'datafusion' not found".to_string()))?;
+
+    prepare_source_decorators(source_decorators)?;
 
     let mut result = SourceRegistrationResult::default();
     let mut seen_schemas = std::collections::HashSet::new();
@@ -56,8 +60,28 @@ pub(crate) async fn register_sources(
         let schema_name = source.schema_name().to_string();
         let source_name = source.source_name().to_string();
 
-        match register_source(ctx, &catalog, &mut seen_schemas, source.as_ref()).await {
-            Ok(active_source) => result.active_sources.push(active_source),
+        match register_source(ctx, &mut seen_schemas, source.as_ref()).await {
+            Ok(registration) => {
+                let BackendRegistration {
+                    tables,
+                    source: registered_source,
+                } = registration;
+                let decorated_tables =
+                    decorate_source_tables(source_decorators, source.schema_name(), tables)?;
+                match catalog.register_schema(
+                    source.schema_name(),
+                    Arc::new(StaticSchemaProvider::new(decorated_tables)),
+                ) {
+                    Ok(_) => result.active_sources.push(registered_source),
+                    Err(error) => {
+                        tracing::warn!(source = %source_name, error = %error, "skipping source");
+                        result.failures.push(SourceRegistrationFailure {
+                            schema_name,
+                            detail: error.to_string(),
+                        });
+                    }
+                }
+            }
             Err(error) => {
                 tracing::warn!(source = %source_name, error = %error, "skipping source");
                 result.failures.push(SourceRegistrationFailure {
@@ -68,6 +92,8 @@ pub(crate) async fn register_sources(
         }
     }
 
+    finish_source_decorators(source_decorators)?;
+
     Ok(result)
 }
 
@@ -76,15 +102,19 @@ pub(crate) fn register_sources_blocking(
     ctx: &SessionContext,
     sources: Vec<Box<dyn CompiledBackendSource>>,
 ) -> Result<SourceRegistrationResult> {
-    futures::executor::block_on(register_sources(ctx, sources))
+    let mut source_decorators: Vec<Box<dyn SourceDecorator>> = Vec::new();
+    futures::executor::block_on(register_sources(
+        ctx,
+        sources,
+        source_decorators.as_mut_slice(),
+    ))
 }
 
 async fn register_source(
     ctx: &SessionContext,
-    catalog: &Arc<dyn datafusion::catalog::CatalogProvider>,
     seen_schemas: &mut std::collections::HashSet<String>,
     source: &dyn CompiledBackendSource,
-) -> Result<RegisteredSource> {
+) -> Result<BackendRegistration> {
     check_reserved_schema(source.schema_name())?;
 
     if !seen_schemas.insert(source.schema_name().to_string()) {
@@ -94,13 +124,51 @@ async fn register_source(
         )));
     }
 
-    let registration = source.register(ctx).await?;
-    catalog.register_schema(
-        source.schema_name(),
-        Arc::new(StaticSchemaProvider::new(registration.tables)),
-    )?;
+    source.register(ctx).await
+}
 
-    Ok(registration.source)
+fn prepare_source_decorators(source_decorators: &mut [Box<dyn SourceDecorator>]) -> Result<()> {
+    for decorator in source_decorators {
+        decorator
+            .prepare()
+            .map_err(|error| source_decorator_error(decorator.name(), error))?;
+    }
+    Ok(())
+}
+
+fn decorate_source_tables(
+    source_decorators: &mut [Box<dyn SourceDecorator>],
+    schema_name: &str,
+    mut tables: crate::SourceTables,
+) -> Result<crate::SourceTables> {
+    for decorator in source_decorators {
+        tables = decorator
+            .decorate_source(schema_name, tables)
+            .map_err(|error| source_decorator_error(decorator.name(), error))?;
+    }
+    Ok(tables)
+}
+
+fn finish_source_decorators(source_decorators: &mut [Box<dyn SourceDecorator>]) -> Result<()> {
+    for decorator in source_decorators {
+        decorator
+            .finish()
+            .map_err(|error| source_decorator_error(decorator.name(), error))?;
+    }
+    Ok(())
+}
+
+fn source_decorator_error(name: &str, error: SourceDecoratorError) -> DataFusionError {
+    match error {
+        SourceDecoratorError::InvalidInput(detail) => {
+            DataFusionError::Plan(format!("source decorator '{name}': {detail}"))
+        }
+        SourceDecoratorError::FailedPrecondition(detail) => {
+            DataFusionError::External(Box::new(SourceDecoratorError::FailedPrecondition(format!(
+                "source decorator '{name}': {detail}"
+            ))))
+        }
+    }
 }
 
 #[cfg(test)]

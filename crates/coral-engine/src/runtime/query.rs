@@ -9,13 +9,20 @@ use datafusion::prelude::{SQLOptions, SessionConfig, SessionContext};
 
 use crate::backends::compile_query_source;
 use crate::backends::http::ProviderQueryError;
+use crate::composition::SourceDecoratorError;
 use crate::runtime::catalog;
 use crate::runtime::registry::{SourceRegistrationFailure, register_sources};
-use crate::{CoreError, QueryExecution, QueryRuntimeProvider, QuerySource, TableInfo};
+use crate::{
+    CoreError, QueryExecution, QueryRuntimeProvider, QuerySource, SourceDecorator, TableInfo,
+};
 
 pub(crate) struct QueryRuntimeAdapter {
     ctx: Arc<SessionContext>,
     tables: Vec<TableInfo>,
+}
+
+struct RuntimeBuildOptions {
+    source_decorators: Vec<Box<dyn SourceDecorator>>,
 }
 
 pub(crate) async fn build_runtime(
@@ -35,6 +42,9 @@ pub(crate) async fn build_runtime(
     ));
 
     let runtime_context = runtime.runtime_context();
+    let mut build_options = RuntimeBuildOptions {
+        source_decorators: runtime.source_decorators(),
+    };
     let mut compiled_sources = Vec::new();
     let mut failures = Vec::new();
     for source in sources {
@@ -46,9 +56,13 @@ pub(crate) async fn build_runtime(
             }),
         }
     }
-    let registration = register_sources(&ctx, compiled_sources)
-        .await
-        .map_err(datafusion_to_core)?;
+    let registration = register_sources(
+        &ctx,
+        compiled_sources,
+        build_options.source_decorators.as_mut_slice(),
+    )
+    .await
+    .map_err(datafusion_to_core)?;
     catalog::register(&ctx, &registration.active_sources).map_err(datafusion_to_core)?;
     let tables = catalog::collect_tables(&registration.active_sources);
     for failure in &failures {
@@ -103,11 +117,23 @@ fn datafusion_to_core(error: DataFusionError) -> CoreError {
             if let Some(provider_error) = inner.downcast_ref::<ProviderQueryError>() {
                 return provider_error_to_core(provider_error);
             }
+            if let Some(source_decorator_error) = inner.downcast_ref::<SourceDecoratorError>() {
+                return source_decorator_error_to_core(source_decorator_error);
+            }
             CoreError::internal(inner.to_string())
         }
         DataFusionError::ObjectStore(error) => CoreError::Unavailable(error.to_string()),
         DataFusionError::ResourcesExhausted(detail) => CoreError::Unavailable(detail),
         other => CoreError::internal(other.to_string()),
+    }
+}
+
+fn source_decorator_error_to_core(error: &SourceDecoratorError) -> CoreError {
+    match error {
+        SourceDecoratorError::InvalidInput(detail) => CoreError::InvalidInput(detail.clone()),
+        SourceDecoratorError::FailedPrecondition(detail) => {
+            CoreError::FailedPrecondition(detail.clone())
+        }
     }
 }
 

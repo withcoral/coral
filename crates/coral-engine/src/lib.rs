@@ -66,9 +66,11 @@
 )]
 
 mod backends;
+mod composition;
 pub mod contracts;
 mod runtime;
 
+pub use composition::{SourceDecorator, SourceDecoratorError, SourceTables};
 pub use contracts::{
     ColumnInfo, CoreError, QueryExecution, QueryRuntimeContext, QueryRuntimeProvider, QuerySource,
     StatusCode, TableInfo,
