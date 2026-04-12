@@ -674,6 +674,19 @@ fn resolve_value_source(
             .get(key)
             .map(|v| Value::String(v.clone()))
             .or_else(|| default.clone())),
+        ValueSourceSpec::FilterInt { key, default } => {
+            let value = if let Some(filter) = filters.get(key) {
+                let parsed = filter.parse::<i64>().map_err(|error| {
+                    DataFusionError::Execution(format!(
+                        "filter '{key}' value '{filter}' is not a valid i64: {error}"
+                    ))
+                })?;
+                Some(json!(parsed))
+            } else {
+                default.map(|value| json!(value))
+            };
+            Ok(value)
+        }
         ValueSourceSpec::Secret { key, default } => Ok(source_secrets
             .get(key)
             .cloned()
@@ -1081,6 +1094,11 @@ mod tests {
                 "key": key,
                 "default": default,
             }),
+            ValueSourceSpec::FilterInt { key, default } => json!({
+                "from": "filter_int",
+                "key": key,
+                "default": default,
+            }),
             ValueSourceSpec::Variable { key, default } => json!({
                 "from": "variable",
                 "key": key,
@@ -1200,6 +1218,48 @@ mod tests {
         .expect("secret lookup should succeed");
 
         assert_eq!(value, Some(json!("alpha-secret")));
+    }
+
+    #[test]
+    fn resolve_value_source_parses_filter_ints_as_numbers() {
+        let filters = HashMap::from([("start_time".to_string(), "1700000000000000".to_string())]);
+
+        let value = resolve_value_source(
+            &ValueSourceSpec::FilterInt {
+                key: "start_time".to_string(),
+                default: None,
+            },
+            &filters,
+            &HashMap::new(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        )
+        .expect("integer filter should resolve");
+
+        assert_eq!(value, Some(json!(1_700_000_000_000_000_i64)));
+    }
+
+    #[test]
+    fn resolve_value_source_rejects_invalid_filter_ints() {
+        let filters = HashMap::from([("start_time".to_string(), "not-a-number".to_string())]);
+
+        let error = resolve_value_source(
+            &ValueSourceSpec::FilterInt {
+                key: "start_time".to_string(),
+                default: None,
+            },
+            &filters,
+            &HashMap::new(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        )
+        .expect_err("invalid integer filter should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("filter 'start_time' value 'not-a-number' is not a valid i64")
+        );
     }
 
     #[test]
