@@ -3,136 +3,95 @@
 use std::fs;
 use std::path::Path;
 
-#[cfg(test)]
-use std::path::PathBuf;
-use std::sync::OnceLock;
+use crate::parser::parse_source_manifest_yaml;
+use crate::{ManifestError, Result, ValidatedSourceManifest};
 
-use jsonschema::JSONSchema;
-use serde_json::Value as JsonValue;
-
-use crate::{ManifestError, Result, ValidatedSourceManifest, parse_source_manifest_value};
-
-/// Base name for source manifest files (without extension).
-const SOURCE_MANIFEST_NAME: &str = "source";
-
-/// Accepted `YAML` extensions in preferred order.
-const YAML_EXTENSIONS: &[&str] = &["yml", "yaml"];
-
-static SOURCE_SCHEMA: OnceLock<JSONSchema> = OnceLock::new();
-
-/// Load and validate source manifests from a sources directory.
-///
-/// Invalid source manifests are skipped after logging an error; the returned vector
-/// contains only successfully loaded manifests.
+/// Read and parse a source manifest from a file path.
 ///
 /// # Errors
 ///
-/// Returns a [`ManifestError`] if the root directory cannot be enumerated.
-#[cfg(test)]
-fn load_manifests<P: AsRef<Path>>(root: P) -> Result<Vec<ValidatedSourceManifest>> {
-    let root = root.as_ref();
-    if !root.exists() {
-        return Ok(Vec::new());
-    }
-
-    let mut files = Vec::new();
-
-    // Support both <root>/<name>/source.{yml,yaml} and <root>/source.{yml,yaml}
-    if let Some(direct) = find_manifest_in(root) {
-        files.push(direct);
-    }
-
-    let entries = fs::read_dir(root).map_err(|e| {
-        ManifestError::validation(format!("failed to read {}: {e}", root.display()))
-    })?;
-    for entry in entries {
-        let entry = entry.map_err(|e| {
-            ManifestError::validation(format!("failed to read {}: {e}", root.display()))
-        })?;
-        let path = entry.path();
-        if path.is_dir()
-            && let Some(file) = find_manifest_in(&path)
-        {
-            files.push(file);
-        }
-    }
-
-    files.sort();
-
-    if files.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let mut manifests = Vec::new();
-    for file in files {
-        match load_manifest_path(&file) {
-            Ok(manifest) => manifests.push(manifest),
-            Err(error) => {
-                tracing::warn!(path = %file.display(), error = %error, "skipping malformed source");
-            }
-        }
-    }
-
-    Ok(manifests)
-}
-
-/// Return the first existing manifest file in `dir`, preferring `.yml` over `.yaml`.
-#[cfg(test)]
-fn find_manifest_in(dir: &Path) -> Option<PathBuf> {
-    YAML_EXTENSIONS
-        .iter()
-        .map(|ext| dir.join(format!("{SOURCE_MANIFEST_NAME}.{ext}")))
-        .find(|p| p.is_file())
-}
-
-fn load_manifest_path(path: &Path) -> Result<ValidatedSourceManifest> {
+/// Returns a [`ManifestError`] if the file cannot be read or the manifest
+/// violates any validation rules.
+pub fn load_manifest_path(path: &Path) -> Result<ValidatedSourceManifest> {
     let raw = fs::read_to_string(path).map_err(|e| {
         ManifestError::validation(format!("failed to read {}: {e}", path.display()))
     })?;
-
-    let manifest_value: serde_yaml::Value =
-        serde_yaml::from_str(&raw).map_err(ManifestError::parse_yaml)?;
-    let manifest_json: JsonValue = serde_json::to_value(manifest_value)
-        .map_err(|e| ManifestError::validation(format!("failed to encode manifest value: {e}")))?;
-
-    validate_manifest_schema(path, &manifest_json)?;
-
-    let manifest = parse_source_manifest_value(manifest_json)?;
-
+    let manifest = parse_source_manifest_yaml(raw.as_str())?;
     Ok(manifest)
-}
-
-fn validate_manifest_schema(path: &Path, manifest_json: &JsonValue) -> Result<()> {
-    let validator = source_schema_validator();
-    if let Err(errors) = validator.validate(manifest_json) {
-        let problems = errors
-            .take(8)
-            .map(|e| e.to_string())
-            .collect::<Vec<_>>()
-            .join("; ");
-        return Err(ManifestError::validation(format!(
-            "{} failed schema validation: {problems}",
-            path.display()
-        )));
-    }
-    Ok(())
-}
-
-fn source_schema_validator() -> &'static JSONSchema {
-    SOURCE_SCHEMA.get_or_init(|| {
-        let schema_json: JsonValue =
-            serde_json::from_str(include_str!("schema/source_manifest.schema.json"))
-                .expect("embedded source schema must be valid JSON");
-        JSONSchema::compile(&schema_json).expect("embedded source schema must compile")
-    })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{SOURCE_MANIFEST_NAME, load_manifests};
+    use super::load_manifest_path;
+    use crate::{ManifestError, Result, ValidatedSourceManifest};
     use std::fs;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// Base name for source manifest files (without extension).
+    const SOURCE_MANIFEST_NAME: &str = "source";
+
+    /// Accepted `YAML` extensions in preferred order.
+    const YAML_EXTENSIONS: &[&str] = &["yml", "yaml"];
+
+    /// Load and validate source manifests from a sources directory.
+    ///
+    /// Invalid source manifests are skipped after logging an error; the returned vector
+    /// contains only successfully loaded manifests.
+    fn load_manifests<P: AsRef<Path>>(root: P) -> Result<Vec<ValidatedSourceManifest>> {
+        let root = root.as_ref();
+        if !root.exists() {
+            return Ok(Vec::new());
+        }
+
+        let mut files = Vec::new();
+
+        // Support both <root>/<name>/source.{yml,yaml} and <root>/source.{yml,yaml}
+        if let Some(direct) = find_manifest_in(root) {
+            files.push(direct);
+        }
+
+        let entries = fs::read_dir(root).map_err(|e| {
+            ManifestError::validation(format!("failed to read {}: {e}", root.display()))
+        })?;
+        for entry in entries {
+            let entry = entry.map_err(|e| {
+                ManifestError::validation(format!("failed to read {}: {e}", root.display()))
+            })?;
+            let path = entry.path();
+            if path.is_dir()
+                && let Some(file) = find_manifest_in(&path)
+            {
+                files.push(file);
+            }
+        }
+
+        files.sort();
+
+        if files.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut manifests = Vec::new();
+        for file in files {
+            match load_manifest_path(&file) {
+                Ok(manifest) => manifests.push(manifest),
+                Err(error) => {
+                    tracing::warn!(path = %file.display(), error = %error, "skipping malformed source");
+                }
+            }
+        }
+
+        Ok(manifests)
+    }
+
+    /// Return the first existing manifest file in `dir`, preferring `.yml` over `.yaml`.
+    fn find_manifest_in(dir: &Path) -> Option<PathBuf> {
+        YAML_EXTENSIONS
+            .iter()
+            .map(|ext| dir.join(format!("{SOURCE_MANIFEST_NAME}.{ext}")))
+            .find(|p| p.is_file())
+    }
 
     fn unique_temp_dir(prefix: &str) -> PathBuf {
         let unique = SystemTime::now()

@@ -3,10 +3,7 @@
 use std::collections::BTreeSet;
 
 use coral_api::v1::{AvailableSource, SourceInputKind, SourceInputSpec, SourceOrigin, Workspace};
-use coral_spec::{
-    ManifestInputKind, ManifestInputSpec, collect_source_inputs_value, parse_source_manifest_value,
-};
-use serde_yaml::Value;
+use coral_spec::{ManifestInputKind, ManifestInputSpec, parse_manifest_and_inputs};
 
 use crate::bootstrap::AppError;
 
@@ -56,17 +53,13 @@ pub(crate) fn describe_manifest(
     origin: SourceOrigin,
     installed: bool,
 ) -> Result<AvailableSource, AppError> {
-    let root: Value = serde_yaml::from_str(manifest_yaml)?;
-    let manifest = parse_source_manifest_value(serde_json::to_value(&root)?)
+    let (manifest, inputs) = parse_manifest_and_inputs(manifest_yaml)
         .map_err(|error| AppError::InvalidInput(error.to_string()))?;
-    let description = manifest_description(&root);
     Ok(AvailableSource {
         name: manifest.schema_name().to_string(),
-        description,
+        description: manifest.description().to_string(),
         version: manifest.source_version().to_string(),
-        inputs: collect_source_inputs_value(&root)
-            .map(|inputs| inputs.into_iter().map(proto_input_spec).collect())
-            .map_err(|error| AppError::InvalidInput(error.to_string()))?,
+        inputs: inputs.into_iter().map(proto_input_spec).collect(),
         installed,
         origin: origin as i32,
     })
@@ -86,13 +79,6 @@ fn proto_input_kind(kind: ManifestInputKind) -> SourceInputKind {
         ManifestInputKind::Variable => SourceInputKind::Variable,
         ManifestInputKind::Secret => SourceInputKind::Secret,
     }
-}
-
-fn manifest_description(root: &Value) -> String {
-    root.get("description")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string()
 }
 
 #[cfg(test)]
@@ -190,6 +176,7 @@ schema: demo
 version: 1.0.0
 dsl_version: 3
 backend: http
+base_url: https://example.com
 tables:
   - name: messages
     description: Demo messages
@@ -205,6 +192,8 @@ tables:
             false,
         )
         .expect_err("legacy schema field should fail");
-        assert!(error.to_string().contains("unknown field `schema`"));
+        let message = error.to_string();
+        assert!(message.starts_with("invalid input: source manifest failed schema validation:"));
+        assert!(message.contains("'schema'"));
     }
 }

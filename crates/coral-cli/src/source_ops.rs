@@ -7,7 +7,9 @@ use coral_api::v1::{
     SourceOrigin, SourceSecret, SourceVariable, ValidateSourceRequest, ValidateSourceResponse,
 };
 use coral_client::{AppClient, default_workspace};
-use coral_spec::{ManifestInputKind, ManifestInputSpec, collect_source_inputs_yaml};
+use coral_spec::{
+    ManifestInputKind, ManifestInputSpec, ValidatedSourceManifest, parse_manifest_and_inputs,
+};
 use dialoguer::{Input, Password, theme::ColorfulTheme};
 use tonic::Request;
 
@@ -85,6 +87,14 @@ pub(crate) async fn validate_source(
         .into_inner())
 }
 
+pub(crate) fn load_validated_manifest_file(
+    file: &Path,
+) -> Result<(String, ValidatedSourceManifest, Vec<ManifestInputSpec>), anyhow::Error> {
+    let manifest_yaml = std::fs::read_to_string(file)?;
+    let (manifest, inputs) = parse_manifest_and_inputs(manifest_yaml.as_str())?;
+    Ok((manifest_yaml, manifest, inputs))
+}
+
 pub(crate) async fn delete_source(app: &AppClient, name: &str) -> Result<(), anyhow::Error> {
     app.source_client()
         .delete_source(Request::new(DeleteSourceRequest {
@@ -158,14 +168,6 @@ pub(crate) fn manifest_input_from_proto(
         required: input.required,
         default_value: input.default_value.clone(),
     })
-}
-
-pub(crate) fn load_manifest_inputs(
-    path: &Path,
-) -> Result<(String, Vec<ManifestInputSpec>), anyhow::Error> {
-    let manifest_yaml = std::fs::read_to_string(path)?;
-    let inputs = collect_source_inputs_yaml(&manifest_yaml)?;
-    Ok((manifest_yaml, inputs))
 }
 
 pub(crate) fn source_origin_label(origin: i32) -> &'static str {

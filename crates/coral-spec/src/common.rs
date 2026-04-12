@@ -20,6 +20,23 @@ pub struct SourceManifestCommon {
     pub dsl_version: u32,
     pub name: String,
     pub version: String,
+    pub description: String,
+}
+
+impl SourceManifestCommon {
+    pub(crate) fn new(
+        dsl_version: u32,
+        name: String,
+        version: String,
+        description: String,
+    ) -> Self {
+        Self {
+            dsl_version,
+            name,
+            version,
+            description,
+        }
+    }
 }
 
 /// Supported source-spec backends.
@@ -40,18 +57,6 @@ pub enum ManifestDataType {
     Int64,
     Boolean,
     Float64,
-}
-
-pub(crate) fn build_source_manifest_common(
-    dsl_version: u32,
-    name: String,
-    version: String,
-) -> SourceManifestCommon {
-    SourceManifestCommon {
-        dsl_version,
-        name,
-        version,
-    }
 }
 
 /// Source-level authentication requirements for HTTP-backed source specs.

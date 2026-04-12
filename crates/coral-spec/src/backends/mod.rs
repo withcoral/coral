@@ -6,7 +6,7 @@
 //! - [`mod@file`] for file-backed sources such as `parquet` and `jsonl`
 //!
 //! Parsing entry points remain crate-private. Callers should normally use
-//! [`crate::parse_source_manifest_yaml`] or [`crate::parse_source_manifest_value`]
+//! [`crate::parse_manifest_and_inputs`] or [`crate::parse_source_manifest_value`]
 //! and then inspect the resulting [`crate::ValidatedSourceManifest`].
 
 pub mod file;

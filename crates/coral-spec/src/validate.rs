@@ -3,52 +3,10 @@
 use std::collections::HashSet;
 
 use crate::common::{
-    ColumnSpec, ExprSpec, FilterSpec, PaginationSpec, RequestRouteSpec, RequestSpec, SourceBackend,
-    ValueSourceSpec, parse_manifest_data_type,
+    ColumnSpec, ExprSpec, FilterSpec, PaginationSpec, RequestRouteSpec, RequestSpec,
+    ValueSourceSpec,
 };
 use crate::{ManifestError, ParsedTemplate, Result, TemplateNamespace};
-
-pub(crate) fn validate_manifest_top_level(
-    dsl_version: u32,
-    name: &str,
-    schema: &str,
-    backend: SourceBackend,
-    base_url: &ParsedTemplate,
-    table_count: usize,
-) -> Result<()> {
-    if dsl_version != 3 {
-        return Err(ManifestError::validation(format!(
-            "source '{name}' uses unsupported dsl_version={dsl_version} (expected 3)"
-        )));
-    }
-
-    if table_count == 0 {
-        return Err(ManifestError::validation(format!(
-            "source '{name}' has no tables"
-        )));
-    }
-
-    match backend {
-        SourceBackend::Http => {
-            if base_url.raw().trim().is_empty() {
-                return Err(ManifestError::validation(format!(
-                    "source '{name}' must define a non-empty base_url"
-                )));
-            }
-
-            validate_template(base_url, &HashSet::new(), &format!("source '{schema}'"))?;
-        }
-        SourceBackend::Parquet | SourceBackend::Jsonl => {
-            if !base_url.raw().trim().is_empty() {
-                return Err(ManifestError::validation(format!(
-                    "source '{name}' uses a file backend and must not define base_url"
-                )));
-            }
-        }
-    }
-
-    Ok(())
-}
 
 pub(crate) fn validate_http_table(
     schema: &str,
@@ -140,11 +98,6 @@ pub(crate) fn validate_filters_and_column_exprs(
 ) -> Result<HashSet<String>> {
     let mut known_filters = HashSet::new();
     for filter in filters {
-        if filter.name.trim().is_empty() {
-            return Err(ManifestError::validation(format!(
-                "{schema}.{table} has a filter with an empty name"
-            )));
-        }
         if !known_filters.insert(filter.name.clone()) {
             return Err(ManifestError::validation(format!(
                 "{schema}.{table} has duplicate filter '{}'",
@@ -169,7 +122,6 @@ pub(crate) fn validate_filters_and_column_exprs(
 pub(crate) fn validate_columns(columns: &[ColumnSpec], schema: &str, table: &str) -> Result<()> {
     let mut seen_columns = HashSet::new();
     for col in columns {
-        let _ = parse_manifest_data_type(&col.data_type)?;
         if !seen_columns.insert(col.name.clone()) {
             return Err(ManifestError::validation(format!(
                 "{schema}.{table} has duplicate column '{}'",
@@ -277,7 +229,7 @@ fn validate_expr(expr: &ExprSpec, known_filters: &HashSet<String>, context: &str
     Ok(())
 }
 
-fn validate_template(
+pub(crate) fn validate_template(
     template: &ParsedTemplate,
     known_filters: &HashSet<String>,
     context: &str,
