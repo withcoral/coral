@@ -1,0 +1,50 @@
+name: Lint Sources
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".yamllint.yaml"
+      - "sources/**/*.yaml"
+      - "sources/**/*.yml"
+      - ".github/workflows/lint-source.yml"
+      - "Makefile"
+  pull_request:
+    paths:
+      - ".yamllint.yaml"
+      - "sources/**/*.yaml"
+      - "sources/**/*.yml"
+      - ".github/workflows/lint-source.yml"
+      - "Makefile"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  yaml-lint:
+    name: YAML lint (source manifests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        run: rustup show
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          shared-key: coral-source-lint-${{ runner.os }}
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Run make yaml-lint
+        run: make yaml-lint
