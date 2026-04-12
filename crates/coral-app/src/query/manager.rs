@@ -2,14 +2,14 @@
 
 use std::collections::BTreeMap;
 
+use crate::bootstrap::AppError;
+use crate::sources::model::ManagedSource;
+use crate::state::{AppStateLayout, ConfigStore, SecretStore};
 use coral_api::v1::Workspace;
 use coral_engine::{
     CoralQuery, CoreError, QueryExecution, QueryRuntimeContext, QueryRuntimeProvider, QuerySource,
     TableInfo,
 };
-use crate::bootstrap::AppError;
-use crate::sources::model::ManagedSource;
-use crate::state::{AppStateLayout, ConfigStore, SecretStore};
 
 #[derive(Debug)]
 pub(crate) enum QueryManagerError {
