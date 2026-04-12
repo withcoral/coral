@@ -26,7 +26,7 @@
 //! use std::collections::BTreeMap;
 //!
 //! use coral_engine::{CoralQuery, QueryRuntimeContext, QueryRuntimeProvider, QuerySource};
-//! use coral_spec::parse_source_manifest_yaml;
+//! use coral_spec::parse_manifest_and_inputs;
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!
@@ -38,7 +38,7 @@
 //!     }
 //! }
 //!
-//! # let source_spec = parse_source_manifest_yaml(
+//! # let (source_spec, _) = parse_manifest_and_inputs(
 //! #     "name: demo\nversion: 0.1.0\ndsl_version: 3\nbackend: jsonl\ntables: []",
 //! # )?;
 //! # let sources = vec![QuerySource::new(

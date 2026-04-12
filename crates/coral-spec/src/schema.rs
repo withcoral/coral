@@ -38,7 +38,7 @@ mod tests {
     use serde_json::Value as JsonValue;
 
     use super::validate_manifest_schema;
-    use crate::parse_source_manifest_yaml;
+    use crate::parser::parse_source_manifest_yaml;
 
     fn valid_http_manifest() -> &'static str {
         r"

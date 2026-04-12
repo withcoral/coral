@@ -19,13 +19,17 @@
 //!
 //! # Primary Entry Points
 //!
-//! - [`parse_source_manifest_yaml`] parses and validates raw `YAML`
-//! - [`parse_source_manifest_value`] parses and validates structured source-spec
-//!   data
+//! - [`parse_manifest_and_inputs`] is the full acceptance path used by
+//!   lint, add, import, and discovery — it parses the manifest and collects
+//!   its inputs in one call, running the same validation as the server
+//! - [`load_manifest_path`] loads a persisted manifest file from disk for the
+//!   query/runtime path (fast parse, no input collection)
+//! - [`parse_source_manifest_value`] parses a pre-built structured value for
+//!   engine callers that construct manifests programmatically
 //! - [`ValidatedSourceManifest`] provides a backend-agnostic validated
 //!   source-spec view with typed accessors for backend-specific models
-//! - [`collect_source_inputs_yaml`] and [`collect_source_inputs_value`] extract
-//!   variables and secrets that must be collected at install time
+//! - [`ManifestInputSpec`] describes one install-time input (variable or secret)
+//!   collected as part of [`parse_manifest_and_inputs`]
 //!
 //! # Crate Relationships
 //!
@@ -37,9 +41,9 @@
 //! # Example
 //!
 //! ```no_run
-//! use coral_spec::parse_source_manifest_yaml;
+//! use coral_spec::parse_manifest_and_inputs;
 //!
-//! let manifest = parse_source_manifest_yaml(
+//! let (manifest, _inputs) = parse_manifest_and_inputs(
 //!     r#"
 //! name: demo
 //! version: 0.1.0
@@ -73,7 +77,6 @@ pub mod backends;
 mod common;
 mod error;
 mod inputs;
-#[cfg(test)]
 mod loader;
 mod parser;
 mod schema;
@@ -87,11 +90,10 @@ pub use common::{
     TableCommon, ValidatedPagination, ValidatedPaginationMode, ValueSourceSpec,
 };
 pub use error::{ManifestError, Result};
-pub use inputs::{
-    ManifestInputKind, ManifestInputSpec, collect_source_inputs_value, collect_source_inputs_yaml,
-};
+pub use inputs::{ManifestInputKind, ManifestInputSpec};
+pub use loader::load_manifest_path;
 pub use parser::{
-    ValidatedSourceManifest, parse_source_manifest_value, parse_source_manifest_yaml,
+    ValidatedSourceManifest, parse_manifest_and_inputs, parse_source_manifest_value,
 };
 pub use template::{ParsedTemplate, TemplateNamespace, TemplatePart, TemplateToken};
 pub(crate) use validate::{

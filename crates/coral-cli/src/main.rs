@@ -168,7 +168,8 @@ async fn main() -> Result<(), anyhow::Error> {
                             .await?
                     }
                     (None, Some(file)) => {
-                        let (manifest_yaml, inputs) = source_ops::load_manifest_inputs(&file)?;
+                        let (manifest_yaml, _, inputs) =
+                            source_ops::load_validated_manifest_file(&file)?;
                         let (variables, secrets) = source_ops::prompt_for_inputs(&inputs)?;
                         source_ops::import_source(&app, manifest_yaml, variables, secrets).await?
                     }
@@ -177,7 +178,7 @@ async fn main() -> Result<(), anyhow::Error> {
                 println!("Added source {}", response.name);
             }
             SourceCommand::Lint { file } => {
-                source_ops::lint_manifest_file(&file)?;
+                source_ops::load_validated_manifest_file(&file)?;
                 println!("Manifest is valid");
             }
             SourceCommand::Test { name } => {

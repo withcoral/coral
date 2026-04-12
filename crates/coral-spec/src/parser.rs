@@ -10,8 +10,9 @@ use serde_json::Value;
 
 use crate::backends::file::{JsonlSourceManifest, ParquetSourceManifest};
 use crate::backends::http::HttpSourceManifest;
+use crate::inputs::collect_source_inputs_value;
 use crate::schema::validate_manifest_schema;
-use crate::{ManifestError, Result, SourceBackend};
+use crate::{ManifestError, ManifestInputSpec, Result, SourceBackend};
 
 /// Validated top-level source spec for one registered source.
 ///
@@ -116,13 +117,32 @@ impl ValidatedSourceManifest {
     }
 }
 
+/// Parse a source-spec manifest into its validated form and inputs.
+///
+/// Runs the same validation the server uses at install time. Use this for
+/// lint, add, import, and discovery. For runtime paths where inputs are
+/// not needed, use [`crate::load_manifest_path`] instead.
+///
+/// # Errors
+///
+/// Returns a [`ManifestError`] if the manifest fails validation or its
+/// input declarations are inconsistent.
+pub fn parse_manifest_and_inputs(
+    raw: &str,
+) -> Result<(ValidatedSourceManifest, Vec<ManifestInputSpec>)> {
+    let manifest_value: Value = serde_yaml::from_str(raw).map_err(ManifestError::parse_yaml)?;
+    let inputs = collect_source_inputs_value(&manifest_value)?;
+    let manifest = parse_source_manifest_value(manifest_value)?;
+    Ok((manifest, inputs))
+}
+
 /// Parse and validate a source-spec manifest from `YAML` text.
 ///
 /// # Errors
 ///
 /// Returns a [`ManifestError`] if the `YAML` cannot be parsed or the source
 /// spec violates any validation rules.
-pub fn parse_source_manifest_yaml(raw: &str) -> Result<ValidatedSourceManifest> {
+pub(crate) fn parse_source_manifest_yaml(raw: &str) -> Result<ValidatedSourceManifest> {
     let manifest_value: Value = serde_yaml::from_str(raw).map_err(ManifestError::parse_yaml)?;
     parse_source_manifest_value(manifest_value)
 }
