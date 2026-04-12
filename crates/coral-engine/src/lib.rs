@@ -67,6 +67,7 @@
 
 mod backends;
 pub mod contracts;
+mod needles;
 mod runtime;
 
 pub use contracts::{

@@ -234,9 +234,7 @@ mod tests {
         let query_manager = QueryManager::new(
             ConfigStore::new(layout.clone()),
             SecretStore::new(layout.clone()),
-            QueryRuntimeContext {
-                home_dir: Some(fake_home.clone()),
-            },
+            QueryRuntimeContext::new(Some(fake_home.clone())),
             layout,
         );
         let running = start_server(source_manager, query_manager)
