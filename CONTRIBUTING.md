@@ -72,6 +72,21 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
+### Source manifest linting
+
+Source manifests under `sources/*/manifest.yaml` are checked with
+[`ryl`](https://github.com/owenlamont/ryl), a Rust-native yamllint port.
+Config lives in `.yamllint.yaml` at the repo root.
+
+```bash
+make yaml-lint   # check — run this before pushing changes to sources/
+make yaml-fix    # auto-apply safe fixes in place
+```
+
+`ryl` is installed automatically on first invocation via
+`cargo install ryl --locked --version <pinned>` (version pinned in the
+`Makefile`). The same pinned version runs in CI.
+
 ## Repo layout
 
 The internal crate layout may change over time as the project evolves.

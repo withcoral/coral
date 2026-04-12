@@ -1,0 +1,28 @@
+extends: default
+
+ignore: |
+  target/
+  .github/
+  crates/
+  docs/
+  Cargo.lock
+
+rules:
+  # Descriptions are surfaced via MCP and the coral.tables/columns catalog,
+  # so they're meant to be a single readable sentence. After the
+  # indentation prefix ("        description: ", 21 chars), a 120-char
+  # content limit would require hand-shortening every summary to < 100
+  # chars of actual content. 150 is the practical budget that lets
+  # descriptions hit ~130 chars of content without wrapping.
+  #
+  # `allow-non-breakable-inline-mappings: true` lets `path:` values that are
+  # single unbreakable URL templates (e.g.
+  # `/api/v4/projects/{{filter.id}}/packages/conan/.../files`) pass without
+  # requiring a wrap — there is no whitespace to break on in a URL.
+  line-length:
+    max: 150
+    allow-non-breakable-inline-mappings: true
+
+  # Every manifest is a single-document YAML file, so the `---` document-
+  # start marker is pure convention. Skip it to keep files one line shorter.
+  document-start: disable
