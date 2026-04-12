@@ -3,9 +3,9 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use super::error::NeedleError;
+use super::{NeedleSpec, error::NeedleError};
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct NeedleEntry {
     schema: String,
@@ -24,6 +24,12 @@ pub(crate) struct TableKey {
 #[derive(Debug, Default)]
 pub(crate) struct NeedleGroups {
     inner: HashMap<TableKey, Vec<serde_json::Value>>,
+}
+
+#[derive(Debug)]
+pub(crate) struct LoadedNeedles {
+    pub(crate) groups: NeedleGroups,
+    pub(crate) specs: Vec<NeedleSpec>,
 }
 
 impl NeedleGroups {
@@ -48,25 +54,14 @@ impl NeedleGroups {
         self.inner.remove(&key)
     }
 
-    pub(crate) fn table_names_for_schema(&self, schema: &str) -> Vec<String> {
-        let mut tables = self
-            .inner
-            .keys()
-            .filter(|key| key.schema == schema)
-            .map(|key| key.table.clone())
-            .collect::<Vec<_>>();
-        tables.sort();
-        tables
-    }
-
-    pub(crate) fn ensure_all_consumed(self) -> Result<(), NeedleError> {
+    pub(crate) fn ensure_all_consumed(&self) -> Result<(), NeedleError> {
         if self.inner.is_empty() {
             return Ok(());
         }
 
         let mut tables = self
             .inner
-            .into_keys()
+            .keys()
             .map(|key| format!("{}.{}", key.schema, key.table))
             .collect::<Vec<_>>();
         tables.sort();
@@ -87,13 +82,19 @@ impl NeedleGroups {
 /// # Errors
 ///
 /// Returns [`NeedleError`] if the file cannot be read or parsed.
-pub(crate) fn load_needle_groups(path: &Path) -> Result<NeedleGroups, NeedleError> {
+pub(crate) fn load_needles(path: &Path) -> Result<LoadedNeedles, NeedleError> {
     let contents = std::fs::read_to_string(path).map_err(|e| NeedleError::io(path, e))?;
     let entries: Vec<NeedleEntry> =
         serde_yaml::from_str(&contents).map_err(|e| NeedleError::Yaml(e.to_string()))?;
 
     let mut inner: HashMap<TableKey, Vec<serde_json::Value>> = HashMap::new();
+    let mut specs = Vec::with_capacity(entries.len());
     for entry in entries {
+        specs.push(NeedleSpec {
+            schema: entry.schema.clone(),
+            table: entry.table.clone(),
+            column_values: entry.data.clone(),
+        });
         inner
             .entry(TableKey {
                 schema: entry.schema,
@@ -103,7 +104,10 @@ pub(crate) fn load_needle_groups(path: &Path) -> Result<NeedleGroups, NeedleErro
             .push(serde_json::Value::Object(entry.data));
     }
 
-    Ok(NeedleGroups { inner })
+    Ok(LoadedNeedles {
+        groups: NeedleGroups { inner },
+        specs,
+    })
 }
 
 #[cfg(test)]
@@ -115,7 +119,7 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("needles.yaml");
         std::fs::write(&path, "[]").unwrap();
-        let groups = load_needle_groups(&path).unwrap();
+        let groups = load_needles(&path).unwrap().groups;
         assert!(groups.is_empty());
     }
 
@@ -144,7 +148,7 @@ mod tests {
         )
         .unwrap();
 
-        let groups = load_needle_groups(&path).unwrap();
+        let groups = load_needles(&path).unwrap().groups;
         assert!(!groups.is_empty());
         assert_eq!(groups.get("github", "issues").unwrap().len(), 2);
         assert_eq!(groups.get("slack", "messages").unwrap().len(), 1);
@@ -156,7 +160,7 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("needles.yaml");
         std::fs::write(&path, "not: valid: yaml: [").unwrap();
-        let result = load_needle_groups(&path);
+        let result = load_needles(&path);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("YAML"), "error should mention YAML: {err}");
@@ -175,7 +179,7 @@ mod tests {
 "#,
         )
         .unwrap();
-        let result = load_needle_groups(&path);
+        let result = load_needles(&path);
         assert!(result.is_err());
     }
 
@@ -192,7 +196,7 @@ mod tests {
 "#,
         )
         .unwrap();
-        let result = load_needle_groups(&path);
+        let result = load_needles(&path);
         assert!(result.is_err());
     }
 
@@ -210,13 +214,13 @@ mod tests {
 "#,
         )
         .unwrap();
-        let result = load_needle_groups(&path);
+        let result = load_needles(&path);
         assert!(result.is_err(), "typo'd field should be rejected");
     }
 
     #[test]
     fn missing_file_returns_io_error() {
-        let result = load_needle_groups(Path::new("/nonexistent/needles.yaml"));
+        let result = load_needles(Path::new("/nonexistent/needles.yaml"));
         assert!(result.is_err());
     }
 
@@ -235,7 +239,7 @@ mod tests {
         )
         .unwrap();
 
-        let mut groups = load_needle_groups(&path).unwrap();
+        let mut groups = load_needles(&path).unwrap().groups;
         assert_eq!(groups.take("github", "issues").unwrap().len(), 1);
         assert!(groups.get("github", "issues").is_none());
     }
@@ -255,7 +259,7 @@ mod tests {
         )
         .unwrap();
 
-        let groups = load_needle_groups(&path).unwrap();
+        let groups = load_needles(&path).unwrap().groups;
         let error = groups.ensure_all_consumed().unwrap_err();
         assert!(error.to_string().contains("github.issues"));
     }
@@ -283,11 +287,21 @@ mod tests {
         )
         .unwrap();
 
-        let groups = load_needle_groups(&path).unwrap();
+        let groups = load_needles(&path).unwrap().groups;
+        let mut github_tables = groups
+            .inner
+            .keys()
+            .filter(|key| key.schema == "github")
+            .map(|key| key.table.clone())
+            .collect::<Vec<_>>();
+        github_tables.sort();
         assert_eq!(
-            groups.table_names_for_schema("github"),
+            github_tables,
             vec!["issues".to_string(), "pull_requests".to_string()]
         );
-        assert!(groups.table_names_for_schema("linear").is_empty());
+        assert!(
+            groups.inner.keys().all(|key| key.schema != "linear"),
+            "unexpected linear entries"
+        );
     }
 }
