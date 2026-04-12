@@ -107,9 +107,7 @@ jobs:
     needs: changes
     if: ${{ needs.changes.outputs.github_actions == 'true' }}
     permissions:
-      # security-events: write # Required for upload-sarif (used by zizmor-action) to upload SARIF files.
-      contents: read # Only needed for private repos. Needed to clone the repo.
-      actions: read # Only needed for private repos. Needed for upload-sarif to read workflow run info.
+      security-events: write # Required for upload-sarif (used by zizmor-action) to upload SARIF files.
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -118,8 +116,7 @@ jobs:
 
       - name: Run zizmor
         uses: zizmorcore/zizmor-action@71321a20a9ded102f6e9ce5718a2fcec2c4f70d8 # v0.5.2
-        with:
-          advanced-security: false # disable while the repo is private
+      
 
   validate:
     runs-on: ubuntu-latest
