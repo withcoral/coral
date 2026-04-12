@@ -1,0 +1,1393 @@
+dsl_version: 3
+name: jira
+version: 0.1.0
+description: Jira Cloud REST API source for project metadata
+backend: http
+base_url: "{{variable.JIRA_BASE_URL|https://your-domain.atlassian.net}}"
+auth:
+  required_secrets:
+    - JIRA_BASIC_AUTH
+  headers:
+    - name: Authorization
+      from: template
+      template: Basic {{secret.JIRA_BASIC_AUTH}}
+    - name: Accept
+      from: literal
+      value: application/json
+tables:
+  - name: projects
+    description: Projects visible to the authenticated Jira user
+    filters:
+      - name: query
+        required: false
+      - name: expand
+        required: false
+      - name: order_by
+        required: false
+    request:
+      method: GET
+      path: /rest/api/3/project/search
+      query:
+        - name: query
+          from: filter
+          key: query
+        - name: expand
+          from: filter
+          key: expand
+        - name: orderBy
+          from: filter
+          key: order_by
+    response:
+      rows_path:
+        - values
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: startAt
+      page_size:
+        default: 50
+        max: 50
+        query_param: maxResults
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Project ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: key
+        type: Utf8
+        nullable: true
+        description: Project key
+        expr:
+          kind: path
+          path:
+            - key
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Project name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: project_type_key
+        type: Utf8
+        nullable: true
+        description: Project type key
+        expr:
+          kind: path
+          path:
+            - projectTypeKey
+      - name: simplified
+        type: Boolean
+        nullable: true
+        description: Whether the project uses the simplified workflow model
+        expr:
+          kind: path
+          path:
+            - simplified
+      - name: style
+        type: Utf8
+        nullable: true
+        description: Project style
+        expr:
+          kind: path
+          path:
+            - style
+      - name: is_private
+        type: Boolean
+        nullable: true
+        description: Whether the project is private
+        expr:
+          kind: path
+          path:
+            - isPrivate
+      - name: self
+        type: Utf8
+        nullable: true
+        description: Jira API URL for the project
+        expr:
+          kind: path
+          path:
+            - self
+      - name: avatar_url_48x48
+        type: Utf8
+        nullable: true
+        description: Project avatar URL at 48x48 resolution
+        expr:
+          kind: path
+          path:
+            - avatarUrls
+            - 48x48
+      - name: category_id
+        type: Int64
+        nullable: true
+        description: Project category ID
+        expr:
+          kind: path
+          path:
+            - projectCategory
+            - id
+      - name: category_name
+        type: Utf8
+        nullable: true
+        description: Project category name
+        expr:
+          kind: path
+          path:
+            - projectCategory
+            - name
+      - name: query
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional project search query
+        expr:
+          kind: from_filter
+          key: query
+      - name: expand
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional expand parameter
+        expr:
+          kind: from_filter
+          key: expand
+      - name: order_by
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional sort field
+        expr:
+          kind: from_filter
+          key: order_by
+  - name: issues
+    description: Issues visible to the authenticated Jira user
+    filters:
+      - name: jql
+        required: true
+      - name: expand
+        required: false
+    request:
+      method: GET
+      path: /rest/api/3/search/jql
+      query:
+        - name: jql
+          from: filter
+          key: jql
+        - name: expand
+          from: filter
+          key: expand
+        - name: fields
+          from: literal
+          value: summary,status,issuetype,project,assignee,priority,reporter,created,updated,resolutiondate
+    response:
+      rows_path:
+        - issues
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: nextPageToken
+      response_cursor_path:
+        - nextPageToken
+      page_size:
+        default: 50
+        max: 50
+        query_param: maxResults
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Issue ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: key
+        type: Utf8
+        nullable: true
+        description: Issue key
+        expr:
+          kind: path
+          path:
+            - key
+      - name: self
+        type: Utf8
+        nullable: true
+        description: Jira API URL for the issue
+        expr:
+          kind: path
+          path:
+            - self
+      - name: summary
+        type: Utf8
+        nullable: true
+        description: Issue summary
+        expr:
+          kind: path
+          path:
+            - fields
+            - summary
+      - name: status_name
+        type: Utf8
+        nullable: true
+        description: Current issue status
+        expr:
+          kind: path
+          path:
+            - fields
+            - status
+            - name
+      - name: issue_type_name
+        type: Utf8
+        nullable: true
+        description: Issue type name
+        expr:
+          kind: path
+          path:
+            - fields
+            - issuetype
+            - name
+      - name: issue_type_subtask
+        type: Boolean
+        nullable: true
+        description: Whether the issue type is a sub-task
+        expr:
+          kind: path
+          path:
+            - fields
+            - issuetype
+            - subtask
+      - name: project_id
+        type: Utf8
+        nullable: true
+        description: Parent project ID
+        expr:
+          kind: path
+          path:
+            - fields
+            - project
+            - id
+      - name: project_key
+        type: Utf8
+        nullable: true
+        description: Parent project key
+        expr:
+          kind: path
+          path:
+            - fields
+            - project
+            - key
+      - name: project_name
+        type: Utf8
+        nullable: true
+        description: Parent project name
+        expr:
+          kind: path
+          path:
+            - fields
+            - project
+            - name
+      - name: assignee_account_id
+        type: Utf8
+        nullable: true
+        description: Assignee account ID
+        expr:
+          kind: path
+          path:
+            - fields
+            - assignee
+            - accountId
+      - name: assignee_display_name
+        type: Utf8
+        nullable: true
+        description: Assignee display name
+        expr:
+          kind: path
+          path:
+            - fields
+            - assignee
+            - displayName
+      - name: reporter_account_id
+        type: Utf8
+        nullable: true
+        description: Reporter account ID
+        expr:
+          kind: path
+          path:
+            - fields
+            - reporter
+            - accountId
+      - name: reporter_display_name
+        type: Utf8
+        nullable: true
+        description: Reporter display name
+        expr:
+          kind: path
+          path:
+            - fields
+            - reporter
+            - displayName
+      - name: priority_name
+        type: Utf8
+        nullable: true
+        description: Priority name
+        expr:
+          kind: path
+          path:
+            - fields
+            - priority
+            - name
+      - name: created
+        type: Utf8
+        nullable: true
+        description: Creation timestamp
+        expr:
+          kind: path
+          path:
+            - fields
+            - created
+      - name: updated
+        type: Utf8
+        nullable: true
+        description: Last update timestamp
+        expr:
+          kind: path
+          path:
+            - fields
+            - updated
+      - name: resolution_date
+        type: Utf8
+        nullable: true
+        description: Resolution timestamp, if resolved
+        expr:
+          kind: path
+          path:
+            - fields
+            - resolutiondate
+      - name: jql
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional JQL query
+        expr:
+          kind: from_filter
+          key: jql
+      - name: expand
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional expand parameter
+        expr:
+          kind: from_filter
+          key: expand
+  - name: issue_comments
+    description: Comments for a specific Jira issue
+    filters:
+      - name: issue_id_or_key
+        required: true
+      - name: order_by
+        required: false
+      - name: expand
+        required: false
+    request:
+      method: GET
+      path: /rest/api/3/issue/{{filter.issue_id_or_key}}/comment
+      query:
+        - name: orderBy
+          from: filter
+          key: order_by
+        - name: expand
+          from: filter
+          key: expand
+    response:
+      rows_path:
+        - comments
+      row_strategy: direct
+      allow_404_empty: false
+    pagination:
+      mode: offset
+      offset_param: startAt
+      page_size:
+        default: 50
+        max: 50
+        query_param: maxResults
+    columns:
+      - name: issue_id_or_key
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Issue ID or key used to fetch comments
+        expr:
+          kind: from_filter
+          key: issue_id_or_key
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Comment ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: self
+        type: Utf8
+        nullable: true
+        description: Jira API URL for the comment
+        expr:
+          kind: path
+          path:
+            - self
+      - name: body
+        type: Utf8
+        nullable: true
+        description: Comment body as Atlassian document JSON
+        expr:
+          kind: path
+          path:
+            - body
+      - name: created
+        type: Utf8
+        nullable: true
+        description: Creation timestamp
+        expr:
+          kind: path
+          path:
+            - created
+      - name: updated
+        type: Utf8
+        nullable: true
+        description: Last update timestamp
+        expr:
+          kind: path
+          path:
+            - updated
+      - name: author_account_id
+        type: Utf8
+        nullable: true
+        description: Comment author account ID
+        expr:
+          kind: path
+          path:
+            - author
+            - accountId
+      - name: author_display_name
+        type: Utf8
+        nullable: true
+        description: Comment author display name
+        expr:
+          kind: path
+          path:
+            - author
+            - displayName
+      - name: update_author_account_id
+        type: Utf8
+        nullable: true
+        description: Account ID of the user who last updated the comment
+        expr:
+          kind: path
+          path:
+            - updateAuthor
+            - accountId
+      - name: update_author_display_name
+        type: Utf8
+        nullable: true
+        description: Display name of the user who last updated the comment
+        expr:
+          kind: path
+          path:
+            - updateAuthor
+            - displayName
+      - name: visibility_type
+        type: Utf8
+        nullable: true
+        description: Visibility restriction type
+        expr:
+          kind: path
+          path:
+            - visibility
+            - type
+      - name: visibility_value
+        type: Utf8
+        nullable: true
+        description: Visibility restriction value
+        expr:
+          kind: path
+          path:
+            - visibility
+            - value
+      - name: order_by
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional comment sort order
+        expr:
+          kind: from_filter
+          key: order_by
+      - name: expand
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional expand parameter
+        expr:
+          kind: from_filter
+          key: expand
+  - name: project_versions
+    description: Versions for a specific Jira project
+    filters:
+      - name: project_id_or_key
+        required: true
+      - name: order_by
+        required: false
+      - name: query
+        required: false
+      - name: status
+        required: false
+      - name: expand
+        required: false
+    request:
+      method: GET
+      path: /rest/api/3/project/{{filter.project_id_or_key}}/version
+      query:
+        - name: orderBy
+          from: filter
+          key: order_by
+        - name: query
+          from: filter
+          key: query
+        - name: status
+          from: filter
+          key: status
+        - name: expand
+          from: filter
+          key: expand
+    response:
+      rows_path:
+        - values
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: startAt
+      page_size:
+        default: 50
+        max: 50
+        query_param: maxResults
+    columns:
+      - name: project_id_or_key
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Project ID or key used to fetch versions
+        expr:
+          kind: from_filter
+          key: project_id_or_key
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Version ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: self
+        type: Utf8
+        nullable: true
+        description: Jira API URL for the version
+        expr:
+          kind: path
+          path:
+            - self
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Version name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Version description
+        expr:
+          kind: path
+          path:
+            - description
+      - name: archived
+        type: Boolean
+        nullable: true
+        description: Whether the version is archived
+        expr:
+          kind: path
+          path:
+            - archived
+      - name: released
+        type: Boolean
+        nullable: true
+        description: Whether the version is released
+        expr:
+          kind: path
+          path:
+            - released
+      - name: overdue
+        type: Boolean
+        nullable: true
+        description: Whether the version is overdue
+        expr:
+          kind: path
+          path:
+            - overdue
+      - name: project_id
+        type: Int64
+        nullable: true
+        description: Numeric project ID for the version
+        expr:
+          kind: path
+          path:
+            - projectId
+      - name: release_date
+        type: Utf8
+        nullable: true
+        description: Release date
+        expr:
+          kind: path
+          path:
+            - releaseDate
+      - name: start_date
+        type: Utf8
+        nullable: true
+        description: Start date
+        expr:
+          kind: path
+          path:
+            - startDate
+      - name: user_release_date
+        type: Utf8
+        nullable: true
+        description: User-formatted release date
+        expr:
+          kind: path
+          path:
+            - userReleaseDate
+      - name: expand
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional expand parameter
+        expr:
+          kind: from_filter
+          key: expand
+      - name: order_by
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional sort field
+        expr:
+          kind: from_filter
+          key: order_by
+      - name: query
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional version search query
+        expr:
+          kind: from_filter
+          key: query
+      - name: status
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional version status filter
+        expr:
+          kind: from_filter
+          key: status
+  - name: project_components
+    description: Components for a specific Jira project
+    filters:
+      - name: project_id_or_key
+        required: true
+      - name: order_by
+        required: false
+      - name: component_source
+        required: false
+      - name: query
+        required: false
+    request:
+      method: GET
+      path: /rest/api/3/project/{{filter.project_id_or_key}}/component
+      query:
+        - name: orderBy
+          from: filter
+          key: order_by
+        - name: componentSource
+          from: filter
+          key: component_source
+        - name: query
+          from: filter
+          key: query
+    response:
+      rows_path:
+        - values
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: startAt
+      page_size:
+        default: 50
+        max: 50
+        query_param: maxResults
+    columns:
+      - name: project_id_or_key
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Project ID or key used to fetch components
+        expr:
+          kind: from_filter
+          key: project_id_or_key
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Component ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: self
+        type: Utf8
+        nullable: true
+        description: Jira API URL for the component
+        expr:
+          kind: path
+          path:
+            - self
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Component name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Component description
+        expr:
+          kind: path
+          path:
+            - description
+      - name: is_assignee_type_valid
+        type: Boolean
+        nullable: true
+        description: Whether the assignee type is valid
+        expr:
+          kind: path
+          path:
+            - isAssigneeTypeValid
+      - name: assignee_type
+        type: Utf8
+        nullable: true
+        description: Component assignee type
+        expr:
+          kind: path
+          path:
+            - assigneeType
+      - name: real_assignee_type
+        type: Utf8
+        nullable: true
+        description: Effective assignee type
+        expr:
+          kind: path
+          path:
+            - realAssigneeType
+      - name: real_assignee_account_id
+        type: Utf8
+        nullable: true
+        description: Effective assignee account ID
+        expr:
+          kind: path
+          path:
+            - realAssignee
+            - accountId
+      - name: real_assignee_display_name
+        type: Utf8
+        nullable: true
+        description: Effective assignee display name
+        expr:
+          kind: path
+          path:
+            - realAssignee
+            - displayName
+      - name: lead_account_id
+        type: Utf8
+        nullable: true
+        description: Component lead account ID
+        expr:
+          kind: path
+          path:
+            - lead
+            - accountId
+      - name: lead_display_name
+        type: Utf8
+        nullable: true
+        description: Component lead display name
+        expr:
+          kind: path
+          path:
+            - lead
+            - displayName
+      - name: component_source
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional component source filter
+        expr:
+          kind: from_filter
+          key: component_source
+      - name: order_by
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional sort field
+        expr:
+          kind: from_filter
+          key: order_by
+      - name: query
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional component search query
+        expr:
+          kind: from_filter
+          key: query
+  - name: myself
+    description: Current authenticated Jira user
+    filters:
+      - name: expand
+        required: false
+    request:
+      method: GET
+      path: /rest/api/3/myself
+      query:
+        - name: expand
+          from: filter
+          key: expand
+    response:
+      row_strategy: direct
+    columns:
+      - name: self
+        type: Utf8
+        nullable: true
+        description: Jira API URL for the current user
+        expr:
+          kind: path
+          path:
+            - self
+      - name: account_id
+        type: Utf8
+        nullable: true
+        description: Atlassian account ID
+        expr:
+          kind: path
+          path:
+            - accountId
+      - name: account_type
+        type: Utf8
+        nullable: true
+        description: Account type
+        expr:
+          kind: path
+          path:
+            - accountType
+      - name: email_address
+        type: Utf8
+        nullable: true
+        description: Email address if exposed by Jira
+        expr:
+          kind: path
+          path:
+            - emailAddress
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: Display name
+        expr:
+          kind: path
+          path:
+            - displayName
+      - name: locale
+        type: Utf8
+        nullable: true
+        description: Locale
+        expr:
+          kind: path
+          path:
+            - locale
+      - name: time_zone
+        type: Utf8
+        nullable: true
+        description: Time zone
+        expr:
+          kind: path
+          path:
+            - timeZone
+      - name: active
+        type: Boolean
+        nullable: true
+        description: Whether the account is active
+        expr:
+          kind: path
+          path:
+            - active
+      - name: expand
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional expand parameter
+        expr:
+          kind: from_filter
+          key: expand
+  - name: issue_types
+    description: Issue types visible to the authenticated Jira user
+    request:
+      method: GET
+      path: /rest/api/3/issuetype
+    response:
+      row_strategy: direct
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Issue type ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: self
+        type: Utf8
+        nullable: true
+        description: Jira API URL for the issue type
+        expr:
+          kind: path
+          path:
+            - self
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Issue type name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Issue type description
+        expr:
+          kind: path
+          path:
+            - description
+      - name: icon_url
+        type: Utf8
+        nullable: true
+        description: Issue type icon URL
+        expr:
+          kind: path
+          path:
+            - iconUrl
+      - name: avatar_id
+        type: Int64
+        nullable: true
+        description: Avatar ID
+        expr:
+          kind: path
+          path:
+            - avatarId
+      - name: entity_id
+        type: Utf8
+        nullable: true
+        description: Entity ID
+        expr:
+          kind: path
+          path:
+            - entityId
+      - name: hierarchy_level
+        type: Int64
+        nullable: true
+        description: Hierarchy level
+        expr:
+          kind: path
+          path:
+            - hierarchyLevel
+      - name: subtask
+        type: Boolean
+        nullable: true
+        description: Whether the issue type is a sub-task
+        expr:
+          kind: path
+          path:
+            - subtask
+      - name: scope_type
+        type: Utf8
+        nullable: true
+        description: Scope type
+        expr:
+          kind: path
+          path:
+            - scope
+            - type
+      - name: scope_project_id
+        type: Utf8
+        nullable: true
+        description: Scope project ID, if project-scoped
+        expr:
+          kind: path
+          path:
+            - scope
+            - project
+            - id
+      - name: scope_project_key
+        type: Utf8
+        nullable: true
+        description: Scope project key, if project-scoped
+        expr:
+          kind: path
+          path:
+            - scope
+            - project
+            - key
+  - name: priorities
+    description: Issue priorities configured in Jira
+    request:
+      method: GET
+      path: /rest/api/3/priority
+    response:
+      row_strategy: direct
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Priority ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: self
+        type: Utf8
+        nullable: true
+        description: Jira API URL for the priority
+        expr:
+          kind: path
+          path:
+            - self
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Priority name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Priority description
+        expr:
+          kind: path
+          path:
+            - description
+      - name: icon_url
+        type: Utf8
+        nullable: true
+        description: Priority icon URL
+        expr:
+          kind: path
+          path:
+            - iconUrl
+      - name: status_color
+        type: Utf8
+        nullable: true
+        description: Display color for the priority
+        expr:
+          kind: path
+          path:
+            - statusColor
+  - name: project_categories
+    description: Project categories configured in Jira
+    request:
+      method: GET
+      path: /rest/api/3/projectCategory
+    response:
+      row_strategy: direct
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Project category ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: self
+        type: Utf8
+        nullable: true
+        description: Jira API URL for the category
+        expr:
+          kind: path
+          path:
+            - self
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Category name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Category description
+        expr:
+          kind: path
+          path:
+            - description
+  - name: issue_link_types
+    description: Issue link types configured in Jira
+    request:
+      method: GET
+      path: /rest/api/3/issueLinkType
+    response:
+      rows_path:
+        - issueLinkTypes
+      row_strategy: direct
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Issue link type ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: self
+        type: Utf8
+        nullable: true
+        description: Jira API URL for the issue link type
+        expr:
+          kind: path
+          path:
+            - self
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Link type name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: inward
+        type: Utf8
+        nullable: true
+        description: Inward relationship label
+        expr:
+          kind: path
+          path:
+            - inward
+      - name: outward
+        type: Utf8
+        nullable: true
+        description: Outward relationship label
+        expr:
+          kind: path
+          path:
+            - outward
+  - name: issue_worklogs
+    description: Worklogs for a specific Jira issue
+    filters:
+      - name: issue_id_or_key
+        required: true
+      - name: started_after
+        required: false
+      - name: started_before
+        required: false
+      - name: expand
+        required: false
+    request:
+      method: GET
+      path: /rest/api/3/issue/{{filter.issue_id_or_key}}/worklog
+      query:
+        - name: startedAfter
+          from: filter
+          key: started_after
+        - name: startedBefore
+          from: filter
+          key: started_before
+        - name: expand
+          from: filter
+          key: expand
+    response:
+      rows_path:
+        - worklogs
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: startAt
+      page_size:
+        default: 50
+        max: 50
+        query_param: maxResults
+    columns:
+      - name: issue_id_or_key
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Issue ID or key used to fetch worklogs
+        expr:
+          kind: from_filter
+          key: issue_id_or_key
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Worklog ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: issue_id
+        type: Utf8
+        nullable: true
+        description: Numeric issue ID
+        expr:
+          kind: path
+          path:
+            - issueId
+      - name: self
+        type: Utf8
+        nullable: true
+        description: Jira API URL for the worklog
+        expr:
+          kind: path
+          path:
+            - self
+      - name: created
+        type: Utf8
+        nullable: true
+        description: Creation timestamp
+        expr:
+          kind: path
+          path:
+            - created
+      - name: updated
+        type: Utf8
+        nullable: true
+        description: Last update timestamp
+        expr:
+          kind: path
+          path:
+            - updated
+      - name: started
+        type: Utf8
+        nullable: true
+        description: Work start timestamp
+        expr:
+          kind: path
+          path:
+            - started
+      - name: time_spent
+        type: Utf8
+        nullable: true
+        description: Human-readable time spent
+        expr:
+          kind: path
+          path:
+            - timeSpent
+      - name: time_spent_seconds
+        type: Int64
+        nullable: true
+        description: Time spent in seconds
+        expr:
+          kind: path
+          path:
+            - timeSpentSeconds
+      - name: author_account_id
+        type: Utf8
+        nullable: true
+        description: Worklog author account ID
+        expr:
+          kind: path
+          path:
+            - author
+            - accountId
+      - name: author_display_name
+        type: Utf8
+        nullable: true
+        description: Worklog author display name
+        expr:
+          kind: path
+          path:
+            - author
+            - displayName
+      - name: update_author_account_id
+        type: Utf8
+        nullable: true
+        description: Account ID of the user who last updated the worklog
+        expr:
+          kind: path
+          path:
+            - updateAuthor
+            - accountId
+      - name: update_author_display_name
+        type: Utf8
+        nullable: true
+        description: Display name of the user who last updated the worklog
+        expr:
+          kind: path
+          path:
+            - updateAuthor
+            - displayName
+      - name: visibility_type
+        type: Utf8
+        nullable: true
+        description: Visibility restriction type
+        expr:
+          kind: path
+          path:
+            - visibility
+            - type
+      - name: visibility_value
+        type: Utf8
+        nullable: true
+        description: Visibility restriction value
+        expr:
+          kind: path
+          path:
+            - visibility
+            - value
+      - name: started_after
+        type: Int64
+        nullable: true
+        virtual: true
+        description: Optional lower bound on worklog start time in epoch milliseconds
+        expr:
+          kind: from_filter
+          key: started_after
+      - name: started_before
+        type: Int64
+        nullable: true
+        virtual: true
+        description: Optional upper bound on worklog start time in epoch milliseconds
+        expr:
+          kind: from_filter
+          key: started_before
+      - name: expand
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional expand parameter
+        expr:
+          kind: from_filter
+          key: expand
