@@ -41,7 +41,7 @@ impl WorkspaceManager {
 
     pub(crate) fn normalize(&self, workspace: &Workspace) -> Result<Workspace, AppError> {
         Ok(Workspace {
-            name: self.validate_name("workspace name", &workspace.name)?,
+            name: self.validate_path_name("workspace name", &workspace.name)?,
         })
     }
 
@@ -63,8 +63,22 @@ impl WorkspaceManager {
         Ok(trimmed.to_string())
     }
 
-    pub(crate) fn status_validate_name(&self, label: &str, value: &str) -> Result<String, Status> {
-        self.validate_name(label, value)
+    pub(crate) fn validate_path_name(&self, label: &str, value: &str) -> Result<String, AppError> {
+        let trimmed = self.validate_name(label, value)?;
+        if trimmed == "." || trimmed == ".." {
+            return Err(AppError::InvalidInput(format!(
+                "{label} must not be '.' or '..'"
+            )));
+        }
+        Ok(trimmed)
+    }
+
+    pub(crate) fn status_validate_path_name(
+        &self,
+        label: &str,
+        value: &str,
+    ) -> Result<String, Status> {
+        self.validate_path_name(label, value)
             .map_err(app_error_to_status)
     }
 }
@@ -103,10 +117,43 @@ mod tests {
         assert!(error.to_string().contains("'/' or '\\\\'"));
 
         let error = manager
-            .validate_name("source name", "bad/source")
+            .validate_path_name("source name", "bad/source")
             .expect_err("name should fail");
         assert!(error.to_string().contains("'/' or '\\\\'"));
 
         assert_eq!(workspace.name, DEFAULT_WORKSPACE_ID);
+    }
+
+    #[test]
+    fn rejects_path_traversal() {
+        let manager = WorkspaceManager::new();
+
+        let error = manager
+            .validate_path_name("workspace name", "..")
+            .expect_err("'..' should be rejected");
+        assert!(error.to_string().contains("'.' or '..'"));
+
+        let error = manager
+            .validate_path_name("source name", ".")
+            .expect_err("'.' should be rejected");
+        assert!(error.to_string().contains("'.' or '..'"));
+
+        // Padded with whitespace should also be rejected after trimming
+        let error = manager
+            .validate_path_name("source name", " .. ")
+            .expect_err("' .. ' should be rejected");
+        assert!(error.to_string().contains("'.' or '..'"));
+    }
+
+    #[test]
+    fn allows_dot_only_logical_binding_keys() {
+        let manager = WorkspaceManager::new();
+
+        assert_eq!(
+            manager
+                .validate_name("source variable key", "..")
+                .expect("logical binding key named '..' should remain valid"),
+            ".."
+        );
     }
 }

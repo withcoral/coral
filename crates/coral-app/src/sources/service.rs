@@ -73,7 +73,7 @@ impl SourceServiceApi for SourceService {
         let workspace = self.workspaces.require(request.workspace.as_ref())?;
         let source_name = self
             .workspaces
-            .status_validate_name("source name", &request.name)?;
+            .status_validate_path_name("source name", &request.name)?;
         let source = self
             .sources
             .get_source(&workspace, &source_name)
@@ -110,7 +110,7 @@ impl SourceServiceApi for SourceService {
         let workspace = self.workspaces.require(request.workspace.as_ref())?;
         let source_name = self
             .workspaces
-            .status_validate_name("source name", &request.name)?;
+            .status_validate_path_name("source name", &request.name)?;
         let _stored = self
             .sources
             .delete_source(&workspace, &source_name)
@@ -126,7 +126,7 @@ impl SourceServiceApi for SourceService {
         let workspace = self.workspaces.require(request.workspace.as_ref())?;
         let source_name = self
             .workspaces
-            .status_validate_name("source name", &request.name)?;
+            .status_validate_path_name("source name", &request.name)?;
         let result = self
             .queries
             .validate_source(&workspace, &source_name)

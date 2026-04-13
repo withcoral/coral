@@ -91,7 +91,7 @@ impl SourceManager {
             .require_app(request.workspace.as_ref())?;
         let bundled_name = self
             .workspace_manager
-            .validate_name("source name", &request.name)?;
+            .validate_path_name("source name", &request.name)?;
         let bundled = load_bundled_source(&bundled_name)?;
         let available = self.describe_bundled_source(&workspace, &bundled.manifest_yaml)?;
         let bindings = validate_bindings(
@@ -193,7 +193,7 @@ impl SourceManager {
     ) -> Result<ManagedSource, AppError> {
         let source_name = self
             .workspace_manager
-            .validate_name("source name", &request.available.name)?;
+            .validate_path_name("source name", &request.available.name)?;
         let previous = self.load_existing_state(workspace, &source_name)?;
         let manifest_path = self.layout.manifest_file(workspace, &source_name);
         if let Some(parent) = manifest_path.parent() {

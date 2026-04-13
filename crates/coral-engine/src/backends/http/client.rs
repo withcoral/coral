@@ -194,7 +194,7 @@ impl HttpSourceClient {
                     self.source_secrets.as_ref(),
                     self.source_variables.as_ref(),
                 )?;
-                join_url(&base_url, &rendered_path)
+                join_url(&base_url, &rendered_path)?
             };
 
             let (query_pairs, body) = if following_link_header {
@@ -305,13 +305,13 @@ impl HttpSourceClient {
                     }
                 }
                 ValidatedPaginationMode::Page => {
-                    if rows_on_page == 0 {
+                    if page_is_exhausted(rows_on_page, page_size) {
                         break;
                     }
                     state.page = state.page.saturating_add(table.pagination.page_step);
                 }
                 ValidatedPaginationMode::Offset(offset) => {
-                    if rows_on_page == 0 {
+                    if page_is_exhausted(rows_on_page, page_size) {
                         break;
                     }
                     let step = offset
@@ -652,6 +652,10 @@ fn resolve_page_size(spec: Option<&PageSizeSpec>, sql_limit: Option<usize>) -> O
     Some(base.min(spec.max).max(1))
 }
 
+fn page_is_exhausted(rows_on_page: usize, page_size: Option<usize>) -> bool {
+    rows_on_page == 0 || page_size.is_some_and(|requested| rows_on_page < requested)
+}
+
 fn resolve_value_source(
     value: &ValueSourceSpec,
     filters: &HashMap<String, String>,
@@ -809,15 +813,18 @@ fn build_logged_url(url: &str, query_pairs: &[(String, String)]) -> String {
     }
 }
 
-fn join_url(base: &str, path: &str) -> String {
-    if path.starts_with("https://") || path.starts_with("http://") {
-        return path.to_string();
+fn join_url(base: &str, path: &str) -> Result<String> {
+    let trimmed = path.trim();
+    if reqwest::Url::parse(trimmed).is_ok() || trimmed.starts_with("//") {
+        return Err(DataFusionError::Execution(
+            "request path must be relative; absolute URLs are not allowed".to_string(),
+        ));
     }
     let base = base.trim_end_matches('/');
-    if path.starts_with('/') {
-        format!("{base}{path}")
+    if trimmed.starts_with('/') {
+        Ok(format!("{base}{trimmed}"))
     } else {
-        format!("{base}/{path}")
+        Ok(format!("{base}/{trimmed}"))
     }
 }
 
@@ -1007,7 +1014,7 @@ mod tests {
 
     use super::{
         HttpSourceClient, PageState, apply_pagination_query_pairs, extract_next_link_url,
-        extract_rows, join_url, normalize_base_url, resolve_value_source,
+        extract_rows, join_url, normalize_base_url, page_is_exhausted, resolve_value_source,
     };
     use coral_spec::PaginationMode;
     use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec};
@@ -1124,18 +1131,23 @@ mod tests {
     }
 
     #[test]
-    fn join_url_handles_absolute_and_relative_paths() {
+    fn join_url_handles_relative_paths() {
         assert_eq!(
-            join_url("https://api.example.com", "/v1/resources"),
+            join_url("https://api.example.com", "/v1/resources").unwrap(),
             "https://api.example.com/v1/resources"
         );
         assert_eq!(
-            join_url("https://api.example.com/", "v1/resources"),
+            join_url("https://api.example.com/", "v1/resources").unwrap(),
             "https://api.example.com/v1/resources"
         );
-        assert_eq!(
-            join_url("https://api.example.com", "https://next.example.com/page"),
-            "https://next.example.com/page"
+    }
+
+    #[test]
+    fn join_url_rejects_absolute_paths() {
+        let err = join_url("https://api.example.com", "https://next.example.com/page").unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("request path must be relative; absolute URLs are not allowed")
         );
     }
 
@@ -1269,6 +1281,15 @@ mod tests {
             pagination.mode,
             ValidatedPaginationMode::Offset(_)
         ));
+    }
+
+    #[test]
+    fn page_is_exhausted_handles_empty_short_and_full_pages() {
+        for (rows_on_page, page_size, expected) in
+            [(0, Some(50), true), (24, Some(25), true), (24, None, false)]
+        {
+            assert_eq!(page_is_exhausted(rows_on_page, page_size), expected);
+        }
     }
 
     fn make_table_with_row_strategy(

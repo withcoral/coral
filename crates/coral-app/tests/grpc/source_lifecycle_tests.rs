@@ -205,6 +205,52 @@ async fn validate_source_returns_tables() {
 }
 
 #[tokio::test]
+async fn query_execution_rejects_non_read_only_sql() {
+    let harness = GrpcHarness::new().await;
+    let manifest_yaml = fixture_manifest_yaml(harness.temp_path());
+    harness
+        .import_source(manifest_yaml, Vec::new(), Vec::new())
+        .await;
+
+    let copy_target = harness.temp_path().join("copied.arrow");
+    let copy_error = harness
+        .query_client()
+        .execute_sql(Request::new(ExecuteSqlRequest {
+            workspace: Some(default_workspace()),
+            sql: format!(
+                "COPY local_messages.messages TO '{}' STORED AS ARROW",
+                copy_target.display()
+            ),
+        }))
+        .await
+        .expect_err("COPY TO should be rejected");
+    assert_eq!(copy_error.code(), tonic::Code::InvalidArgument);
+    assert!(copy_error.message().contains("DML not supported: COPY"));
+
+    let create_error = harness
+        .query_client()
+        .execute_sql(Request::new(ExecuteSqlRequest {
+            workspace: Some(default_workspace()),
+            sql: "CREATE TABLE copied AS SELECT * FROM local_messages.messages".to_string(),
+        }))
+        .await
+        .expect_err("CREATE TABLE should be rejected");
+    assert_eq!(create_error.code(), tonic::Code::InvalidArgument);
+    assert!(create_error.message().contains("DDL not supported"));
+
+    let set_error = harness
+        .query_client()
+        .execute_sql(Request::new(ExecuteSqlRequest {
+            workspace: Some(default_workspace()),
+            sql: "SET datafusion.execution.batch_size = 1".to_string(),
+        }))
+        .await
+        .expect_err("SET should be rejected");
+    assert_eq!(set_error.code(), tonic::Code::InvalidArgument);
+    assert!(set_error.message().contains("Statement not supported"));
+}
+
+#[tokio::test]
 async fn validate_source_with_unreachable_api_returns_declared_tables() {
     let harness = GrpcHarness::new().await;
     harness

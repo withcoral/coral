@@ -62,7 +62,7 @@ update the relevant docs in the same pull request.
 
 ### Common commands
 
-`make validate` is the required local gate before finishing substantive work.
+`make rust-checks` is the required local gate before finishing substantive work.
 
 If you prefer to run steps individually, the equivalent commands are:
 

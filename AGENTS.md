@@ -16,7 +16,7 @@
 
 ## Rules
 
-- Run `make validate` before finishing.
+- Run `make rust-checks` before finishing making changes to Rust code.
 - Keep adapters thin. If CLI or MCP behavior gets complex, move it inward.
 - Keep transport contract concerns in `coral-api`, source-spec concerns in
   `coral-spec`, app/state concerns in `coral-app`, and query/runtime
@@ -26,6 +26,8 @@
   its bootstrap seam today.
 - If a caller needs explicit local server control, prefer `coral-client::local`
   over widening the default client surface.
+- Changes to CLI or MCP surfaces must include corresponding documentation
+  updates under `docs/` in the same change.
 - When proposing or updating a PR title, use Conventional Commits:
   `type(scope): summary`.
 - When using a scope, prefer one that matches the primary area changed,
