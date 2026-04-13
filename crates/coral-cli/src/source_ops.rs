@@ -15,7 +15,21 @@ use dialoguer::console::style;
 use dialoguer::{Input, Password, theme::ColorfulTheme};
 use tonic::Request;
 
-pub(crate) const MAX_TABLES_PER_SCHEMA: usize = 9;
+const MAX_TABLES_PER_SCHEMA: usize = 9;
+
+/// How many tables to show per schema when pretty-printing validation results.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum TableDisplayLimit {
+    /// Show every table the source exposes.
+    All,
+    /// Show at most this many tables per schema, with a summary for the rest.
+    Max(usize),
+}
+
+impl TableDisplayLimit {
+    /// The default truncation used after `source add` and during onboarding.
+    pub(crate) const DEFAULT: Self = Self::Max(MAX_TABLES_PER_SCHEMA);
+}
 
 pub(crate) async fn discover_sources(
     app: &AppClient,
@@ -185,15 +199,15 @@ pub(crate) fn source_origin_label(origin: i32) -> &'static str {
 pub(crate) async fn validate_and_print(
     app: &AppClient,
     source_name: &str,
-    max_tables: Option<usize>,
+    limit: TableDisplayLimit,
 ) -> Result<(), anyhow::Error> {
     let response = validate_source(app, source_name).await?;
-    print_validation_pretty(&response, max_tables)
+    print_validation_pretty(&response, limit)
 }
 
 pub(crate) fn print_validation_pretty(
     response: &ValidateSourceResponse,
-    max_tables: Option<usize>,
+    limit: TableDisplayLimit,
 ) -> Result<(), anyhow::Error> {
     let source = response
         .source
@@ -231,7 +245,10 @@ pub(crate) fn print_validation_pretty(
             .bold()
         );
 
-        let show_count = max_tables.map_or(tables.len(), |max| tables.len().min(max));
+        let show_count = match limit {
+            TableDisplayLimit::All => tables.len(),
+            TableDisplayLimit::Max(max) => tables.len().min(max),
+        };
         let remaining = tables.len() - show_count;
 
         for (i, table) in tables.iter().take(show_count).enumerate() {

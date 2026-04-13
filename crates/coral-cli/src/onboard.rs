@@ -157,7 +157,7 @@ async fn run_installed_source_menu(
             source_ops::validate_and_print(
                 app,
                 &source.name,
-                Some(source_ops::MAX_TABLES_PER_SCHEMA),
+                source_ops::TableDisplayLimit::DEFAULT,
             )
             .await?;
         }
@@ -174,7 +174,7 @@ async fn run_installed_source_menu(
             source_ops::validate_and_print(
                 app,
                 &result.name,
-                Some(source_ops::MAX_TABLES_PER_SCHEMA),
+                source_ops::TableDisplayLimit::DEFAULT,
             )
             .await?;
         }
@@ -196,7 +196,7 @@ async fn run_add_bundled_source(
     let (variables, secrets) = source_ops::prompt_for_inputs(&inputs)?;
     let result = source_ops::add_bundled_source(app, &source.name, variables, secrets).await?;
     println!("Added source {}", result.name);
-    source_ops::validate_and_print(app, &result.name, Some(source_ops::MAX_TABLES_PER_SCHEMA)).await
+    source_ops::validate_and_print(app, &result.name, source_ops::TableDisplayLimit::DEFAULT).await
 }
 
 async fn run_next_steps(
