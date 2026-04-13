@@ -68,7 +68,7 @@ pub(crate) fn resolve_installed_manifest(
             std::fs::read_to_string(layout.manifest_file(&source.workspace, &source.name))?
         }
     };
-    let mut available = describe_manifest(&manifest_yaml, source.origin.to_proto(), true)?;
+    let mut available = describe_manifest(&manifest_yaml, source.origin.to_proto(), false)?;
     if available.name != source.name {
         return Err(AppError::FailedPrecondition(format!(
             "installed source '{}' does not match manifest name '{}'",
