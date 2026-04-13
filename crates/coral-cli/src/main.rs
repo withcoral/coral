@@ -22,7 +22,9 @@ use tonic::Request;
 
 #[derive(Debug, Parser)]
 #[command(name = "coral", version, arg_required_else_help = true)]
-/// Query and manage local data sources
+/// A local-first SQL interface for APIs, files, and other data sources.
+///
+/// New here? Run `coral onboard` for an interactive setup wizard.
 struct Cli {
     #[command(subcommand)]
     command: Command,
