@@ -68,7 +68,10 @@ pub(crate) async fn run(
         }
 
         host.println("")?;
-        host.println(&format!("{}", style("To start, connect at least one source:").bold()))?;
+        host.println(&format!(
+            "{}",
+            style("To start, connect at least one source:").bold()
+        ))?;
         host.println("")?;
 
         match select_top_level(prompts, &bundled_sources)? {
@@ -400,7 +403,10 @@ async fn show_next_steps_screen(
                     }
                     Err(err) => {
                         host.println("")?;
-                        host.println(&format!("{}", style(format!("Could not run query: {err}")).red()))?;
+                        host.println(&format!(
+                            "{}",
+                            style(format!("Could not run query: {err}")).red()
+                        ))?;
                     }
                 }
             }
@@ -413,10 +419,7 @@ async fn show_next_steps_screen(
     }
 }
 
-async fn run_first_query(
-    services: &mut CliServices,
-    sql: &str,
-) -> Result<String, anyhow::Error> {
+async fn run_first_query(services: &mut CliServices, sql: &str) -> Result<String, anyhow::Error> {
     let response = services
         .query_client
         .execute_sql(Request::new(ExecuteSqlRequest {

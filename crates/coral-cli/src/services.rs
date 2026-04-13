@@ -11,6 +11,9 @@ pub struct CliServices {
 
 impl CliServices {
     /// Connects the CLI to the default local Coral app.
+    ///
+    /// # Errors
+    /// Returns an error if the gRPC connection fails.
     pub async fn connect_local() -> Result<Self, anyhow::Error> {
         let app = ClientBuilder::new().build().await?;
         Ok(Self::from_app(app))
@@ -35,10 +38,13 @@ impl CliServices {
     }
 
     /// Runs the MCP stdio server when the services were built from an app client.
+    ///
+    /// # Errors
+    /// Returns an error if the services lack an app client or the server fails.
     pub async fn serve_mcp_stdio(self) -> Result<(), anyhow::Error> {
-        let app = self
-            .app
-            .ok_or_else(|| anyhow::anyhow!("mcp-stdio requires an AppClient-backed service bundle"))?;
+        let app = self.app.ok_or_else(|| {
+            anyhow::anyhow!("mcp-stdio requires an AppClient-backed service bundle")
+        })?;
         coral_mcp::run_stdio_with_client(app).await?;
         Ok(())
     }

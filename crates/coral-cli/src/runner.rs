@@ -12,6 +12,13 @@ use crate::host::{CliHost, CliPrompter};
 use crate::{CliServices, onboard, source_ops};
 
 /// Runs one parsed CLI command against the provided backend and terminal adapters.
+///
+/// # Errors
+/// Returns an error if the command fails.
+#[allow(
+    clippy::too_many_lines,
+    reason = "single match dispatch over CLI commands"
+)]
 pub async fn run(
     cli: Cli,
     services: &mut CliServices,
@@ -88,7 +95,9 @@ pub async fn run(
                         let available = discover
                             .into_iter()
                             .find(|source| source.name == bundled_name)
-                            .ok_or_else(|| anyhow::anyhow!("unknown bundled source '{bundled_name}'"))?;
+                            .ok_or_else(|| {
+                                anyhow::anyhow!("unknown bundled source '{bundled_name}'")
+                            })?;
                         let inputs = available
                             .inputs
                             .iter()

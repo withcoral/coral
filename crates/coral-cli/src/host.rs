@@ -11,9 +11,15 @@ pub trait CliHost {
     fn stdout_is_terminal(&self) -> bool;
 
     /// Writes raw output to stdout.
+    ///
+    /// # Errors
+    /// Returns an error if the write fails.
     fn print(&mut self, text: &str) -> Result<(), anyhow::Error>;
 
     /// Writes one line to stdout.
+    ///
+    /// # Errors
+    /// Returns an error if the write fails.
     fn println(&mut self, text: &str) -> Result<(), anyhow::Error> {
         self.print(text)?;
         self.print("\n")
@@ -26,6 +32,9 @@ pub trait CliHost {
 /// Prompt interactions used by the CLI runner.
 pub trait CliPrompter {
     /// Displays a selection prompt.
+    ///
+    /// # Errors
+    /// Returns an error if the prompt interaction fails.
     fn select(
         &mut self,
         prompt: &str,
@@ -34,14 +43,20 @@ pub trait CliPrompter {
     ) -> Result<Option<usize>, anyhow::Error>;
 
     /// Prompts for plain text input.
+    ///
+    /// # Errors
+    /// Returns an error if the prompt interaction fails.
     fn input_text(&mut self, prompt: &str, allow_empty: bool) -> Result<String, anyhow::Error>;
 
     /// Prompts for secret input.
-    fn input_secret(&mut self, prompt: &str, allow_empty: bool)
-    -> Result<String, anyhow::Error>;
+    ///
+    /// # Errors
+    /// Returns an error if the prompt interaction fails.
+    fn input_secret(&mut self, prompt: &str, allow_empty: bool) -> Result<String, anyhow::Error>;
 }
 
 /// Real terminal host for the shipping CLI.
+#[derive(Default)]
 pub struct RealCliHost;
 
 impl RealCliHost {
@@ -86,6 +101,7 @@ impl CliHost for RealCliHost {
 }
 
 /// Real prompt adapter backed by `dialoguer`.
+#[derive(Default)]
 pub struct DialoguerCliPrompter;
 
 impl DialoguerCliPrompter {
@@ -120,11 +136,7 @@ impl CliPrompter for DialoguerCliPrompter {
             .interact_text()?)
     }
 
-    fn input_secret(
-        &mut self,
-        prompt: &str,
-        allow_empty: bool,
-    ) -> Result<String, anyhow::Error> {
+    fn input_secret(&mut self, prompt: &str, allow_empty: bool) -> Result<String, anyhow::Error> {
         let theme = ColorfulTheme::default();
         Ok(Password::with_theme(&theme)
             .with_prompt(prompt.to_string())
