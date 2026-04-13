@@ -56,6 +56,8 @@ pub(crate) fn load_bundled_source(name: &str) -> Result<BundledSourceManifest, A
     })
 }
 
+/// Resolve the effective installed manifest and verify it still matches the
+/// installed source identity in app state.
 pub(crate) fn resolve_installed_manifest(
     source: &ManagedSource,
     layout: &AppStateLayout,
