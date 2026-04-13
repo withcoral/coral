@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 
 use crate::harness::{
-    TestRuntime, assert_internal, assert_row_count, build_source, dir_url, execution_to_rows,
+    TestRuntime, assert_invalid_input, assert_row_count, build_source, dir_url, execution_to_rows,
     users_rows, write_jsonl_file,
 };
 
@@ -169,8 +169,5 @@ async fn missing_file_returns_error() {
             .await
             .expect_err("missing jsonl source should fail");
 
-    assert_internal(
-        error,
-        "Error during planning: table 'datafusion.jsonl_missing.users' not found",
-    );
+    assert_invalid_input(error, "table 'datafusion.jsonl_missing.users' not found");
 }

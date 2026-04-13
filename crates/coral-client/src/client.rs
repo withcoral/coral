@@ -3,6 +3,7 @@
 use coral_api::v1::Workspace;
 use coral_api::v1::query_service_client::QueryServiceClient;
 use coral_api::v1::source_service_client::SourceServiceClient;
+use coral_api::{HTTP2_MAX_HEADER_LIST_SIZE, QUERY_SERVICE_MAX_MESSAGE_SIZE};
 use tonic::transport::{Channel, Endpoint};
 
 use crate::error::ClientError;
@@ -77,12 +78,19 @@ impl AppClient {
     async fn connect_clients(
         endpoint_uri: &str,
     ) -> Result<(SourceClient, QueryClient), ClientError> {
-        let endpoint = Endpoint::from_shared(endpoint_uri.to_string())?;
+        let endpoint = Endpoint::from_shared(endpoint_uri.to_string())?
+            .http2_max_header_list_size(HTTP2_MAX_HEADER_LIST_SIZE);
         let channel = endpoint.connect().await?;
-        Ok((
-            SourceServiceClient::new(channel.clone()),
-            QueryServiceClient::new(channel),
-        ))
+        let source_client = SourceServiceClient::new(channel.clone());
+        // Bump the per-call message size limits above tonic's 4 MB default
+        // to fit large `ExecuteSql` responses produced by wide manifests
+        // such as `github.search_issues`. Both directions
+        // are set symmetrically — only decode is strictly required for
+        // the failing direction, but symmetry is clearer operationally.
+        let query_client = QueryServiceClient::new(channel)
+            .max_decoding_message_size(QUERY_SERVICE_MAX_MESSAGE_SIZE)
+            .max_encoding_message_size(QUERY_SERVICE_MAX_MESSAGE_SIZE);
+        Ok((source_client, query_client))
     }
 
     pub(crate) async fn from_running_server(
