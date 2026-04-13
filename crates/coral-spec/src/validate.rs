@@ -68,56 +68,17 @@ pub(crate) fn validate_http_table(
     validate_columns(columns, schema, table_name)?;
     let known_filters = validate_filters_and_column_exprs(filters, columns, schema, table_name)?;
 
-    validate_template(
-        &request.path,
-        &known_filters,
-        &format!("{schema}.{table_name}"),
-    )?;
-
-    for header in &request.headers {
-        validate_value_source(
-            &header.value,
-            &known_filters,
-            &format!("{schema}.{table_name} request header '{}'", header.name),
-        )?;
-    }
-
-    for param in &request.query {
-        validate_value_source(
-            &param.value,
-            &known_filters,
-            &format!("{schema}.{table_name} query param '{}'", param.name),
-        )?;
-    }
-
-    for field in &request.body {
-        validate_value_source(
-            &field.value,
-            &known_filters,
-            &format!(
-                "{schema}.{table_name} request body path '{}'",
-                field.path.join(".")
-            ),
-        )?;
-    }
+    validate_request_bindings(schema, table_name, request, &known_filters)?;
 
     for route in requests {
-        let known: HashSet<&str> = filters.iter().map(|f| f.name.as_str()).collect();
         for filter_name in &route.when_filters {
-            if !known.contains(filter_name.as_str()) {
+            if !known_filters.contains(filter_name) {
                 return Err(ManifestError::validation(format!(
                     "{schema}.{table_name} requests.when_filters references unknown filter '{filter_name}'"
                 )));
             }
         }
-        validate_http_binding(
-            schema,
-            table_name,
-            filters,
-            &route.request,
-            columns,
-            pagination,
-        )?;
+        validate_request_bindings(schema, table_name, &route.request, &known_filters)?;
     }
 
     for filter in filters.iter().filter(|f| f.required) {
@@ -181,26 +142,22 @@ pub(crate) fn validate_columns(columns: &[ColumnSpec], schema: &str, table: &str
     Ok(())
 }
 
-fn validate_http_binding(
+fn validate_request_bindings(
     schema: &str,
     table_name: &str,
-    filters: &[FilterSpec],
     request: &RequestSpec,
-    _columns: &[ColumnSpec],
-    _pagination: &PaginationSpec,
+    known_filters: &HashSet<String>,
 ) -> Result<()> {
-    let known_filters: HashSet<String> = filters.iter().map(|f| f.name.clone()).collect();
-
     validate_template(
         &request.path,
-        &known_filters,
+        known_filters,
         &format!("{schema}.{table_name}"),
     )?;
 
     for header in &request.headers {
         validate_value_source(
             &header.value,
-            &known_filters,
+            known_filters,
             &format!("{schema}.{table_name} request header '{}'", header.name),
         )?;
     }
@@ -208,7 +165,7 @@ fn validate_http_binding(
     for param in &request.query {
         validate_value_source(
             &param.value,
-            &known_filters,
+            known_filters,
             &format!("{schema}.{table_name} query param '{}'", param.name),
         )?;
     }
@@ -216,7 +173,7 @@ fn validate_http_binding(
     for field in &request.body {
         validate_value_source(
             &field.value,
-            &known_filters,
+            known_filters,
             &format!(
                 "{schema}.{table_name} request body path '{}'",
                 field.path.join(".")
@@ -304,4 +261,106 @@ fn validate_template(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::common::{
+        ColumnSpec, FilterMode, FilterSpec, PaginationSpec, QueryParamSpec, RequestRouteSpec,
+        RequestSpec, ValueSourceSpec,
+    };
+    use crate::template::ParsedTemplate;
+
+    use super::validate_http_table;
+
+    fn test_column() -> ColumnSpec {
+        ColumnSpec {
+            name: "id".to_string(),
+            data_type: "Utf8".to_string(),
+            nullable: true,
+            r#virtual: false,
+            description: String::new(),
+            expr: None,
+        }
+    }
+
+    fn test_filters() -> Vec<FilterSpec> {
+        vec![FilterSpec {
+            name: "id".to_string(),
+            required: false,
+            mode: FilterMode::Equality,
+        }]
+    }
+
+    fn base_request() -> RequestSpec {
+        RequestSpec {
+            path: ParsedTemplate::parse("/messages").expect("request path"),
+            ..RequestSpec::default()
+        }
+    }
+
+    #[test]
+    fn validate_http_table_rejects_unknown_filter_in_default_request_bindings() {
+        let request = RequestSpec {
+            query: vec![QueryParamSpec {
+                name: "user_id".to_string(),
+                value: ValueSourceSpec::Filter {
+                    key: "missing".to_string(),
+                    default: None,
+                },
+            }],
+            ..base_request()
+        };
+
+        let error = validate_http_table(
+            "demo",
+            "messages",
+            &test_filters(),
+            &[test_column()],
+            &request,
+            &[],
+            &PaginationSpec::default(),
+        )
+        .expect_err("default request should reject unknown filters");
+
+        assert!(
+            error
+                .to_string()
+                .contains("references unknown filter 'missing'")
+        );
+    }
+
+    #[test]
+    fn validate_http_table_rejects_unknown_filter_in_route_request_bindings() {
+        let route = RequestRouteSpec {
+            when_filters: vec!["id".to_string()],
+            request: RequestSpec {
+                query: vec![QueryParamSpec {
+                    name: "cursor".to_string(),
+                    value: ValueSourceSpec::Filter {
+                        key: "missing".to_string(),
+                        default: None,
+                    },
+                }],
+                ..base_request()
+            },
+        };
+
+        let error = validate_http_table(
+            "demo",
+            "messages",
+            &test_filters(),
+            &[test_column()],
+            &base_request(),
+            &[route],
+            &PaginationSpec::default(),
+        )
+        .expect_err("route request should reject unknown filters");
+
+        assert!(
+            error
+                .to_string()
+                .contains("references unknown filter 'missing'")
+        );
+    }
 }
