@@ -14,7 +14,7 @@ rust-checks:
 #   make yaml-fix    # apply safe fixes in place
 
 RYL_VERSION := 0.6.0
-YAMLLINT_FILES := sources/*/manifest.yaml
+YAMLLINT_FILES := $(wildcard sources/*/manifest.yaml sources/*/manifest.yml)
 
 ryl-ensure:
 	@if ! command -v ryl >/dev/null 2>&1 || \
