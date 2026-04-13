@@ -10,8 +10,9 @@ use tempfile::TempDir;
 use tonic::Request;
 
 use crate::harness::{
-    GrpcHarness, fixture_manifest_with_inputs_yaml, fixture_manifest_with_required_inputs_yaml,
-    fixture_manifest_yaml, invalid_manifest_yaml, source_dir, unreachable_http_manifest_yaml,
+    FailingHttpFixture, GrpcHarness, fixture_manifest_with_inputs_yaml,
+    fixture_manifest_with_required_inputs_yaml, fixture_manifest_yaml, invalid_manifest_yaml,
+    source_dir,
 };
 
 #[tokio::test]
@@ -253,8 +254,9 @@ async fn query_execution_rejects_non_read_only_sql() {
 #[tokio::test]
 async fn validate_source_with_unreachable_api_returns_declared_tables() {
     let harness = GrpcHarness::new().await;
+    let failing_http = FailingHttpFixture::new().await;
     harness
-        .import_source(unreachable_http_manifest_yaml(), Vec::new(), Vec::new())
+        .import_source(failing_http.manifest_yaml(), Vec::new(), Vec::new())
         .await;
 
     let validated = harness
@@ -274,8 +276,9 @@ async fn validate_source_with_unreachable_api_returns_declared_tables() {
 #[tokio::test]
 async fn execute_sql_with_unreachable_api_returns_internal_error() {
     let harness = GrpcHarness::new().await;
+    let failing_http = FailingHttpFixture::new().await;
     harness
-        .import_source(unreachable_http_manifest_yaml(), Vec::new(), Vec::new())
+        .import_source(failing_http.manifest_yaml(), Vec::new(), Vec::new())
         .await;
 
     let error = harness

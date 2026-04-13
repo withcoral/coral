@@ -1,5 +1,4 @@
 use std::fs;
-use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 
 use coral_api::v1::{
@@ -19,6 +18,11 @@ pub(crate) struct GrpcHarness {
     temp_dir: TempDir,
     config_dir: PathBuf,
     app: AppClient,
+}
+
+pub(crate) struct FailingHttpFixture {
+    base_url: String,
+    task: tokio::task::JoinHandle<()>,
 }
 
 impl GrpcHarness {
@@ -128,6 +132,54 @@ impl GrpcHarness {
     }
 }
 
+impl FailingHttpFixture {
+    pub(crate) async fn new() -> Self {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind failing http fixture");
+        let addr = listener.local_addr().expect("fixture local addr");
+        let task = tokio::spawn(async move {
+            loop {
+                let (socket, _) = listener.accept().await.expect("accept fixture connection");
+                drop(socket);
+            }
+        });
+
+        Self {
+            base_url: format!("http://{addr}"),
+            task,
+        }
+    }
+
+    pub(crate) fn manifest_yaml(&self) -> String {
+        manifest_yaml(&json!({
+            "name": "unreachable_messages",
+            "version": "0.1.0",
+            "dsl_version": 3,
+            "backend": "http",
+            "base_url": self.base_url,
+            "tables": [{
+                "name": "messages",
+                "description": "Unreachable messages",
+                "request": {
+                    "method": "GET",
+                    "path": "/messages",
+                },
+                "response": {},
+                "columns": [
+                    {"name": "id", "type": "Utf8"},
+                ],
+            }],
+        }))
+    }
+}
+
+impl Drop for FailingHttpFixture {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
 pub(crate) fn fixture_manifest_yaml(root: &Path) -> String {
     let data_dir = root.join("fixture-data");
     fs::create_dir_all(&data_dir).expect("create data dir");
@@ -227,32 +279,6 @@ pub(crate) fn invalid_manifest_yaml() -> String {
         "tables": [{
             "name": "messages",
             "description": "Demo messages",
-            "request": {
-                "method": "GET",
-                "path": "/messages",
-            },
-            "response": {},
-            "columns": [
-                {"name": "id", "type": "Utf8"},
-            ],
-        }],
-    }))
-}
-
-pub(crate) fn unreachable_http_manifest_yaml() -> String {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind closed port probe");
-    let base_url = format!("http://{}", listener.local_addr().expect("local addr"));
-    drop(listener);
-
-    manifest_yaml(&json!({
-        "name": "unreachable_messages",
-        "version": "0.1.0",
-        "dsl_version": 3,
-        "backend": "http",
-        "base_url": base_url,
-        "tables": [{
-            "name": "messages",
-            "description": "Unreachable messages",
             "request": {
                 "method": "GET",
                 "path": "/messages",
