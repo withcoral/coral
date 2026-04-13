@@ -410,6 +410,131 @@ async fn api_returns_401() {
     }
 }
 
+/// Regression test for DATA-366: Slack message timestamps must be returned as
+/// human-readable ISO-8601 dates (not raw Slack ts strings), and each message
+/// should include a Slack permalink.
+#[tokio::test]
+async fn slack_messages_have_formatted_ts_and_permalink() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/conversations.history"))
+        .and(query_param("channel", "C123456"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "messages": [
+                {
+                    "user": "U001",
+                    "text": "Hello world",
+                    "ts": "1609459200.000100"
+                },
+                {
+                    "user": "U002",
+                    "text": "Hi there",
+                    "ts": "1609459300.000200"
+                }
+            ]
+        })))
+        .mount(&server)
+        .await;
+
+    let source = build_source(json!({
+        "name": "slack_ts",
+        "version": "2.0.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": server.uri(),
+        "tables": [{
+            "name": "messages",
+            "description": "Slack messages",
+            "request": {
+                "method": "GET",
+                "path": "/api/conversations.history",
+                "query": [
+                    { "name": "channel", "from": "filter", "key": "channel" }
+                ]
+            },
+            "response": {
+                "ok_path": ["ok"],
+                "error_path": ["error"],
+                "rows_path": ["messages"]
+            },
+            "columns": [
+                {
+                    "name": "channel",
+                    "type": "Utf8",
+                    "nullable": false,
+                    "expr": { "kind": "from_filter", "key": "channel" }
+                },
+                {
+                    "name": "user_id",
+                    "type": "Utf8",
+                    "nullable": true,
+                    "expr": { "kind": "path", "path": ["user"] }
+                },
+                {
+                    "name": "text",
+                    "type": "Utf8",
+                    "nullable": true,
+                    "expr": { "kind": "path", "path": ["text"] }
+                },
+                {
+                    "name": "ts",
+                    "type": "Utf8",
+                    "nullable": false,
+                    "expr": {
+                        "kind": "format_timestamp",
+                        "input": "seconds",
+                        "expr": { "kind": "path", "path": ["ts"] }
+                    }
+                },
+                {
+                    "name": "permalink",
+                    "type": "Utf8",
+                    "nullable": false,
+                    "expr": {
+                        "kind": "template",
+                        "template": "https://slack.com/archives/{channel}/p{ts_id|remove:.}",
+                        "values": {
+                            "channel": { "kind": "from_filter", "key": "channel" },
+                            "ts_id": { "kind": "path", "path": ["ts"] }
+                        }
+                    }
+                }
+            ],
+            "filters": [
+                { "name": "channel", "required": true }
+            ]
+        }]
+    }));
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            &TestRuntime,
+            "SELECT ts, permalink, user_id, text FROM slack_ts.messages WHERE channel = 'C123456' ORDER BY ts",
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(rows.len(), 2);
+
+    // ts is now ISO-8601 UTC, not the raw Slack string.
+    assert_eq!(rows[0]["ts"], "2021-01-01T00:00:00Z");
+    assert_eq!(rows[1]["ts"], "2021-01-01T00:01:40Z");
+
+    // Permalinks are constructed from channel + ts with dot removed.
+    assert_eq!(
+        rows[0]["permalink"],
+        "https://slack.com/archives/C123456/p1609459200000100"
+    );
+    assert_eq!(
+        rows[1]["permalink"],
+        "https://slack.com/archives/C123456/p1609459300000200"
+    );
+}
+
 #[tokio::test]
 async fn api_returns_malformed_json() {
     let server = MockServer::start().await;

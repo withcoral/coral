@@ -9,6 +9,8 @@
 //! source identity, filters, request templating, response extraction, typed
 //! columns, and pagination.
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -580,6 +582,26 @@ pub enum ExprSpec {
         item_path: Vec<String>,
     },
     CurrentRow,
+    FormatTimestamp {
+        expr: Box<ExprSpec>,
+        #[serde(default)]
+        input: TimestampInput,
+    },
+    Template {
+        template: String,
+        values: HashMap<String, ExprSpec>,
+    },
+}
+
+/// Declares how to interpret the raw value before formatting as ISO-8601.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TimestampInput {
+    /// Seconds since Unix epoch (integer or float).
+    #[default]
+    Seconds,
+    /// Milliseconds since Unix epoch.
+    Milliseconds,
 }
 
 fn default_separator() -> String {
