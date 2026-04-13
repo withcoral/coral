@@ -687,7 +687,10 @@ async fn create_bundled_source_does_not_persist_manifest_to_config_dir() {
 
     assert_eq!(created.name, "github");
     assert_eq!(created.origin, SourceOrigin::Bundled as i32);
-    assert!(!created.version.is_empty(), "version should be resolved from the binary");
+    assert!(
+        !created.version.is_empty(),
+        "version should be resolved from the binary"
+    );
 
     // Bundled sources must not persist a manifest.yaml to the config directory;
     // they resolve the manifest from the compiled-in BUNDLED_SOURCES constant.
@@ -741,11 +744,7 @@ origin = "bundled"
         .join("sources")
         .join("sentry");
     fs::create_dir_all(&secret_dir).expect("create secret dir");
-    fs::write(
-        secret_dir.join("secrets.env"),
-        "SENTRY_TOKEN=fake-token\n",
-    )
-    .expect("write secrets");
+    fs::write(secret_dir.join("secrets.env"), "SENTRY_TOKEN=fake-token\n").expect("write secrets");
 
     let harness = GrpcHarness::start_with_config_dir(config_dir).await;
     let error = harness
