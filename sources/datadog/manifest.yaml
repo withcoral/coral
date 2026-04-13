@@ -17,7 +17,7 @@ tables:
     description: Datadog monitors with status and alert configuration.
     guide: >
       No required filters — returns all monitors. Filter by status or type in SQL. Status values: Alert, Warn, No Data, OK,
-      Ignored, Skipped. #magic___^_^___line
+      Ignored, Skipped.
     request:
       method: GET
       path: /api/v1/monitor
