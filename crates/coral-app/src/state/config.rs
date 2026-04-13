@@ -161,10 +161,10 @@ fn render_config(config: &PersistedAppConfig) -> String {
             }
 
             if source.version.is_empty() {
-                source_item
+                let source_table = source_item
                     .as_table_mut()
-                    .expect("source item must stay a table")
-                    .remove("version");
+                    .expect("source config entry should be a table after initialization");
+                source_table.remove("version");
             } else {
                 source_item["version"] = value(source.version.clone());
             }
