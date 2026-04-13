@@ -5,12 +5,11 @@ use std::sync::Arc;
 
 use datafusion::arrow::array::{
     Array, BooleanArray, Float64Array, Int64Array, RecordBatch, StringArray,
+    TimestampMicrosecondArray,
 };
 use datafusion::arrow::datatypes::{DataType, SchemaRef};
 use datafusion::error::{DataFusionError, Result};
 use serde_json::Value;
-
-use chrono::DateTime;
 
 use crate::backends::arrow_type_for_column;
 use crate::backends::shared::json_path::get_path_value;
@@ -66,6 +65,14 @@ pub(crate) fn convert_items(
                     .iter()
                     .map(|row| to_f64(eval_expr(&expr, row, filters)))
                     .collect();
+                arrays.push(Arc::new(array));
+            }
+            DataType::Timestamp(_, _) => {
+                let array: TimestampMicrosecondArray = items
+                    .iter()
+                    .map(|row| to_i64(eval_expr(&expr, row, filters)))
+                    .collect();
+                let array = array.with_timezone("+00:00");
                 arrays.push(Arc::new(array));
             }
             other => {
@@ -179,6 +186,12 @@ fn eval_expr(expr: &ExprSpec, row: &Value, filters: &HashMap<String, String>) ->
     }
 }
 
+/// Evaluate a `FormatTimestamp` expression, returning epoch **microseconds** as
+/// a `Value::Number` suitable for an Arrow `TimestampMicrosecondArray`.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "Epoch-second f64 is intentionally converted to i64 microseconds; sub-microsecond precision is acceptable to lose"
+)]
 fn eval_format_timestamp(
     expr: &ExprSpec,
     input: &TimestampInput,
@@ -195,20 +208,8 @@ fn eval_format_timestamp(
         TimestampInput::Seconds => epoch_secs,
         TimestampInput::Milliseconds => epoch_secs / 1000.0,
     };
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "Sub-second remainder is intentionally truncated to nanosecond precision"
-    )]
-    let nanos = (epoch_secs.fract().abs() * 1_000_000_000.0) as u32;
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "Epoch seconds intentionally truncated from f64 to i64 for DateTime conversion"
-    )]
-    let dt = DateTime::from_timestamp(epoch_secs as i64, nanos)?;
-    Some(Value::String(
-        dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-    ))
+    let micros = (epoch_secs * 1_000_000.0) as i64;
+    Some(Value::Number(micros.into()))
 }
 
 fn eval_template(

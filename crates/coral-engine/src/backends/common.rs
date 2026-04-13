@@ -7,7 +7,7 @@ use crate::QueryRuntimeContext;
 use async_trait::async_trait;
 use coral_spec::backends::file::PartitionColumnSpec;
 use coral_spec::{ColumnSpec, FilterSpec, ManifestDataType, TableCommon};
-use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use datafusion::datasource::TableProvider;
 use datafusion::error::DataFusionError;
 use datafusion::prelude::SessionContext;
@@ -123,6 +123,9 @@ pub(crate) fn manifest_data_type_to_arrow(data_type: ManifestDataType) -> DataTy
         ManifestDataType::Int64 => DataType::Int64,
         ManifestDataType::Boolean => DataType::Boolean,
         ManifestDataType::Float64 => DataType::Float64,
+        ManifestDataType::Timestamp => {
+            DataType::Timestamp(TimeUnit::Microsecond, Some("+00:00".into()))
+        }
     }
 }
 

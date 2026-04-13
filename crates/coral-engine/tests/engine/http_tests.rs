@@ -453,7 +453,7 @@ fn slack_messages_manifest(base_url: &str) -> Value {
                 },
                 {
                     "name": "ts",
-                    "type": "Utf8",
+                    "type": "Timestamp",
                     "nullable": false,
                     "expr": {
                         "kind": "format_timestamp",
@@ -515,8 +515,8 @@ async fn slack_messages_have_formatted_ts_and_permalink() {
     );
 
     assert_eq!(rows.len(), 2);
-    assert_eq!(rows[0]["ts"], "2021-01-01T00:00:00Z");
-    assert_eq!(rows[1]["ts"], "2021-01-01T00:01:40Z");
+    assert_eq!(rows[0]["ts"], "2021-01-01T00:00:00.000100Z");
+    assert_eq!(rows[1]["ts"], "2021-01-01T00:01:40.000200Z");
     assert_eq!(
         rows[0]["permalink"],
         "https://slack.com/archives/C123456/p1609459200000100"

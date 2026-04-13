@@ -153,7 +153,7 @@ tables:
           path:
             - text
       - name: ts
-        type: Utf8
+        type: Timestamp
         nullable: false
         description: Message timestamp formatted as ISO-8601 UTC
         expr:

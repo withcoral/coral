@@ -42,6 +42,7 @@ pub enum ManifestDataType {
     Int64,
     Boolean,
     Float64,
+    Timestamp,
 }
 
 pub(crate) fn build_source_manifest_common(
@@ -628,6 +629,7 @@ pub(crate) fn parse_manifest_data_type(s: &str) -> Result<ManifestDataType> {
         "Int64" => Ok(ManifestDataType::Int64),
         "Boolean" => Ok(ManifestDataType::Boolean),
         "Float64" => Ok(ManifestDataType::Float64),
+        "Timestamp" => Ok(ManifestDataType::Timestamp),
         other => Err(ManifestError::validation(format!(
             "unsupported data type '{other}' in source manifest"
         ))),
