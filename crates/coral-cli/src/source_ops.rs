@@ -1,102 +1,15 @@
-use std::io::{IsTerminal, stdin, stdout};
 use std::path::Path;
 
 use coral_api::v1::{
-    AvailableSource, CreateBundledSourceRequest, DeleteSourceRequest, DiscoverSourcesRequest,
-    ImportSourceRequest, ListSourcesRequest, Source, SourceInputKind, SourceInputSpec,
-    SourceOrigin, SourceSecret, SourceVariable, ValidateSourceRequest, ValidateSourceResponse,
+    SourceInputKind, SourceInputSpec, SourceOrigin, SourceSecret, SourceVariable,
+    ValidateSourceResponse,
 };
-use coral_client::{AppClient, default_workspace};
 use coral_spec::{ManifestInputKind, ManifestInputSpec, collect_source_inputs_yaml};
-use dialoguer::{Input, Password, theme::ColorfulTheme};
-use tonic::Request;
 
-pub(crate) async fn discover_sources(
-    app: &AppClient,
-) -> Result<Vec<AvailableSource>, anyhow::Error> {
-    Ok(app
-        .source_client()
-        .discover_sources(Request::new(DiscoverSourcesRequest {
-            workspace: Some(default_workspace()),
-        }))
-        .await?
-        .into_inner()
-        .sources)
-}
+use crate::host::{CliHost, CliPrompter};
 
-pub(crate) async fn list_sources(app: &AppClient) -> Result<Vec<Source>, anyhow::Error> {
-    Ok(app
-        .source_client()
-        .list_sources(Request::new(ListSourcesRequest {
-            workspace: Some(default_workspace()),
-        }))
-        .await?
-        .into_inner()
-        .sources)
-}
-
-pub(crate) async fn add_bundled_source(
-    app: &AppClient,
-    name: &str,
-    variables: Vec<SourceVariable>,
-    secrets: Vec<SourceSecret>,
-) -> Result<Source, anyhow::Error> {
-    Ok(app
-        .source_client()
-        .create_bundled_source(Request::new(CreateBundledSourceRequest {
-            workspace: Some(default_workspace()),
-            name: name.to_string(),
-            variables,
-            secrets,
-        }))
-        .await?
-        .into_inner())
-}
-
-pub(crate) async fn import_source(
-    app: &AppClient,
-    manifest_yaml: String,
-    variables: Vec<SourceVariable>,
-    secrets: Vec<SourceSecret>,
-) -> Result<Source, anyhow::Error> {
-    Ok(app
-        .source_client()
-        .import_source(Request::new(ImportSourceRequest {
-            workspace: Some(default_workspace()),
-            manifest_yaml,
-            variables,
-            secrets,
-        }))
-        .await?
-        .into_inner())
-}
-
-pub(crate) async fn validate_source(
-    app: &AppClient,
-    name: &str,
-) -> Result<ValidateSourceResponse, anyhow::Error> {
-    Ok(app
-        .source_client()
-        .validate_source(Request::new(ValidateSourceRequest {
-            workspace: Some(default_workspace()),
-            name: source_name_arg(Some(name))?,
-        }))
-        .await?
-        .into_inner())
-}
-
-pub(crate) async fn delete_source(app: &AppClient, name: &str) -> Result<(), anyhow::Error> {
-    app.source_client()
-        .delete_source(Request::new(DeleteSourceRequest {
-            workspace: Some(default_workspace()),
-            name: source_name_arg(Some(name))?,
-        }))
-        .await?;
-    Ok(())
-}
-
-pub(crate) fn require_interactive() -> Result<(), anyhow::Error> {
-    if !stdin().is_terminal() || !stdout().is_terminal() {
+pub(crate) fn require_interactive(host: &dyn CliHost) -> Result<(), anyhow::Error> {
+    if !host.stdin_is_terminal() || !host.stdout_is_terminal() {
         return Err(anyhow::anyhow!("interactive source install requires a TTY"));
     }
     Ok(())
@@ -119,6 +32,7 @@ pub(crate) fn source_name_arg(name: Option<&str>) -> Result<String, anyhow::Erro
 }
 
 pub(crate) fn prompt_for_inputs(
+    prompts: &mut dyn CliPrompter,
     inputs: &[ManifestInputSpec],
 ) -> Result<(Vec<SourceVariable>, Vec<SourceSecret>), anyhow::Error> {
     let mut variables = Vec::new();
@@ -127,12 +41,12 @@ pub(crate) fn prompt_for_inputs(
     for input in inputs {
         match input.kind {
             ManifestInputKind::Variable => {
-                if let Some(variable) = prompt_variable(input)? {
+                if let Some(variable) = prompt_variable(prompts, input)? {
                     variables.push(variable);
                 }
             }
             ManifestInputKind::Secret => {
-                if let Some(secret) = prompt_secret(input)? {
+                if let Some(secret) = prompt_secret(prompts, input)? {
                     secrets.push(secret);
                 }
             }
@@ -177,30 +91,30 @@ pub(crate) fn source_origin_label(origin: i32) -> &'static str {
 }
 
 pub(crate) fn print_validation_success(
+    host: &mut dyn CliHost,
     response: &ValidateSourceResponse,
 ) -> Result<(), anyhow::Error> {
     let source = response
         .source
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("validate response missing source metadata"))?;
-    println!("Source {} is queryable", source.name);
+    host.println(&format!("Source {} is queryable", source.name))?;
     for table in &response.tables {
-        println!("{}.{}", table.schema_name, table.name);
+        host.println(&format!("{}.{}", table.schema_name, table.name))?;
     }
     Ok(())
 }
 
-fn prompt_variable(input: &ManifestInputSpec) -> Result<Option<SourceVariable>, anyhow::Error> {
-    let theme = ColorfulTheme::default();
+fn prompt_variable(
+    prompts: &mut dyn CliPrompter,
+    input: &ManifestInputSpec,
+) -> Result<Option<SourceVariable>, anyhow::Error> {
     let prompt = if input.default_value.is_empty() {
         input.key.clone()
     } else {
         format!("{} [{}]", input.key, input.default_value)
     };
-    let value = Input::<String>::with_theme(&theme)
-        .with_prompt(prompt)
-        .allow_empty(true)
-        .interact_text()?;
+    let value = prompts.input_text(&prompt, true)?;
     let Some(value) = finalize_input_value(input, value, "source variable")? else {
         return Ok(None);
     };
@@ -210,17 +124,16 @@ fn prompt_variable(input: &ManifestInputSpec) -> Result<Option<SourceVariable>, 
     }))
 }
 
-fn prompt_secret(input: &ManifestInputSpec) -> Result<Option<SourceSecret>, anyhow::Error> {
-    let theme = ColorfulTheme::default();
+fn prompt_secret(
+    prompts: &mut dyn CliPrompter,
+    input: &ManifestInputSpec,
+) -> Result<Option<SourceSecret>, anyhow::Error> {
     let prompt = if input.default_value.is_empty() {
         input.key.clone()
     } else {
         format!("{} [default hidden]", input.key)
     };
-    let value = Password::with_theme(&theme)
-        .with_prompt(prompt)
-        .allow_empty_password(true)
-        .interact()?;
+    let value = prompts.input_secret(&prompt, true)?;
     let Some(value) = finalize_input_value(input, value, "source secret")? else {
         return Ok(None);
     };
