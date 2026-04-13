@@ -8,7 +8,7 @@ use coral_client::{decode_execute_sql_response, default_workspace, format_batche
 use dialoguer::console::{measure_text_width, style};
 use tonic::Request;
 
-use crate::host::{CliHost, CliPrompter, OpenUrlOutcome};
+use crate::host::{CliHost, CliPrompter};
 use crate::{CliServices, source_ops};
 
 const SOURCE_DESCRIPTION_PREVIEW_LIMIT: usize = 88;
@@ -406,12 +406,7 @@ async fn show_next_steps_screen(
             }
             Some(NextStepAction::AddMoreSources) => return Ok(NextStepChoice::AddMoreSources),
             Some(NextStepAction::OpenDocs) => {
-                match host.open_url("https://withcoral.com/docs") {
-                    OpenUrlOutcome::Opened | OpenUrlOutcome::Unsupported => {}
-                    OpenUrlOutcome::Message(message) => {
-                        host.println(&format!("{}", style(message).dim()))?;
-                    }
-                }
+                host.open_url("https://withcoral.com/docs");
             }
             Some(NextStepAction::Exit) | None => return Ok(NextStepChoice::Exit),
         }

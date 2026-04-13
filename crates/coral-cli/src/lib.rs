@@ -20,6 +20,6 @@ mod source_ops;
 pub use cli::{
     Cli, Command, OutputFormat, SourceAddArgs, SourceArgs, SourceCommand, SqlArgs,
 };
-pub use host::{CliHost, CliPrompter, DialoguerCliPrompter, OpenUrlOutcome, RealCliHost};
+pub use host::{CliHost, CliPrompter, DialoguerCliPrompter, RealCliHost};
 pub use runner::run;
 pub use services::CliServices;

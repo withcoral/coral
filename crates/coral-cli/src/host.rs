@@ -2,14 +2,6 @@ use std::io::{IsTerminal, Write, stdin, stdout};
 
 use dialoguer::{Input, Password, Select, theme::ColorfulTheme};
 
-/// Result of attempting to open a URL from the CLI.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum OpenUrlOutcome {
-    Opened,
-    Message(String),
-    Unsupported,
-}
-
 /// Terminal-facing output and host operations used by the CLI runner.
 pub trait CliHost {
     /// Whether stdin is interactive.
@@ -27,8 +19,8 @@ pub trait CliHost {
         self.print("\n")
     }
 
-    /// Opens a URL in the user's browser.
-    fn open_url(&mut self, url: &str) -> OpenUrlOutcome;
+    /// Opens a URL in the user's browser. Returns `true` if opened successfully.
+    fn open_url(&mut self, url: &str) -> bool;
 }
 
 /// Prompt interactions used by the CLI runner.
@@ -76,7 +68,7 @@ impl CliHost for RealCliHost {
         Ok(())
     }
 
-    fn open_url(&mut self, url: &str) -> OpenUrlOutcome {
+    fn open_url(&mut self, url: &str) -> bool {
         let result = if cfg!(target_os = "macos") {
             std::process::Command::new("open").arg(url).status()
         } else if cfg!(target_os = "linux") {
@@ -86,14 +78,10 @@ impl CliHost for RealCliHost {
                 .args(["/c", "start", url])
                 .status()
         } else {
-            return OpenUrlOutcome::Unsupported;
+            return false;
         };
 
-        match result {
-            Ok(status) if status.success() => OpenUrlOutcome::Opened,
-            Ok(status) => OpenUrlOutcome::Message(format!("Browser exited with {status}")),
-            Err(err) => OpenUrlOutcome::Message(format!("Could not open browser: {err}")),
-        }
+        matches!(result, Ok(status) if status.success())
     }
 }
 
