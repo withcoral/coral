@@ -9,7 +9,8 @@ tables:
     guide: >
       Each row is one log record. The body column is a struct with typed value fields (str, int, double, bool). Join to log_attrs
       on id = parent_id to access structured attributes. severity_number follows OTel conventions (1-4 TRACE, 5-8 DEBUG, 9-12
-      INFO, 13-16 WARN, 17-20 ERROR, 21-24 FATAL). #magic___^_^___line
+      INFO, 13-16 WARN, 17-20 ERROR, 21-24 FATAL).
+
     source:
       location: "file:///tmp/coral-otel/logs/"
       glob: "**/*.parquet"
