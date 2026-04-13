@@ -410,40 +410,13 @@ async fn api_returns_401() {
     }
 }
 
-/// Regression test for DATA-366: Slack message timestamps must be returned as
-/// human-readable ISO-8601 dates (not raw Slack ts strings), and each message
-/// should include a Slack permalink.
-#[tokio::test]
-async fn slack_messages_have_formatted_ts_and_permalink() {
-    let server = MockServer::start().await;
-
-    Mock::given(method("GET"))
-        .and(path("/api/conversations.history"))
-        .and(query_param("channel", "C123456"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "ok": true,
-            "messages": [
-                {
-                    "user": "U001",
-                    "text": "Hello world",
-                    "ts": "1609459200.000100"
-                },
-                {
-                    "user": "U002",
-                    "text": "Hi there",
-                    "ts": "1609459300.000200"
-                }
-            ]
-        })))
-        .mount(&server)
-        .await;
-
-    let source = build_source(json!({
+fn slack_messages_manifest(base_url: &str) -> Value {
+    json!({
         "name": "slack_ts",
         "version": "2.0.0",
         "dsl_version": 3,
         "backend": "http",
-        "base_url": server.uri(),
+        "base_url": base_url,
         "tables": [{
             "name": "messages",
             "description": "Slack messages",
@@ -506,7 +479,30 @@ async fn slack_messages_have_formatted_ts_and_permalink() {
                 { "name": "channel", "required": true }
             ]
         }]
-    }));
+    })
+}
+
+/// Regression test for DATA-366: Slack message timestamps must be returned as
+/// human-readable ISO-8601 dates (not raw Slack ts strings), and each message
+/// should include a Slack permalink.
+#[tokio::test]
+async fn slack_messages_have_formatted_ts_and_permalink() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/conversations.history"))
+        .and(query_param("channel", "C123456"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "messages": [
+                { "user": "U001", "text": "Hello world", "ts": "1609459200.000100" },
+                { "user": "U002", "text": "Hi there", "ts": "1609459300.000200" }
+            ]
+        })))
+        .mount(&server)
+        .await;
+
+    let source = build_source(slack_messages_manifest(&server.uri()));
 
     let rows = execution_to_rows(
         &CoralQuery::execute_sql(
@@ -519,12 +515,8 @@ async fn slack_messages_have_formatted_ts_and_permalink() {
     );
 
     assert_eq!(rows.len(), 2);
-
-    // ts is now ISO-8601 UTC, not the raw Slack string.
     assert_eq!(rows[0]["ts"], "2021-01-01T00:00:00Z");
     assert_eq!(rows[1]["ts"], "2021-01-01T00:01:40Z");
-
-    // Permalinks are constructed from channel + ts with dot removed.
     assert_eq!(
         rows[0]["permalink"],
         "https://slack.com/archives/C123456/p1609459200000100"

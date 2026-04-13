@@ -81,10 +81,9 @@ mod validate;
 
 pub use common::{
     AuthSpec, BodyFieldSpec, ColumnSpec, ExprSpec, FilterMode, FilterSpec, HeaderSpec, HttpMethod,
-    TimestampInput,
     ManifestDataType, PageSizeSpec, PaginationMode, PaginationSpec, QueryParamSpec,
     RequestRouteSpec, RequestSpec, ResponseSpec, RowStrategy, SourceBackend, SourceManifestCommon,
-    TableCommon, ValidatedPagination, ValidatedPaginationMode, ValueSourceSpec,
+    TableCommon, TimestampInput, ValidatedPagination, ValidatedPaginationMode, ValueSourceSpec,
 };
 pub use error::{ManifestError, Result};
 pub use inputs::{

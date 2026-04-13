@@ -171,52 +171,72 @@ fn eval_expr(expr: &ExprSpec, row: &Value, filters: &HashMap<String, String>) ->
         }
         ExprSpec::CurrentRow => Some(row.clone()),
         ExprSpec::FormatTimestamp { expr, input } => {
-            let value = eval_expr(expr, row, filters)?;
-            let epoch_secs = match &value {
-                Value::Number(n) => n.as_f64(),
-                Value::String(s) => s.parse::<f64>().ok(),
-                _ => None,
-            }?;
-            let epoch_secs = match input {
-                TimestampInput::Seconds => epoch_secs,
-                TimestampInput::Milliseconds => epoch_secs / 1000.0,
-            };
-            #[allow(
-                clippy::cast_possible_truncation,
-                reason = "Sub-second remainder is intentionally truncated to nanosecond precision"
-            )]
-            let nanos = ((epoch_secs.fract()) * 1_000_000_000.0) as u32;
-            #[allow(
-                clippy::cast_possible_truncation,
-                reason = "Epoch seconds intentionally truncated from f64 to i64 for DateTime conversion"
-            )]
-            let dt = DateTime::from_timestamp(epoch_secs as i64, nanos)?;
-            Some(Value::String(dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)))
+            eval_format_timestamp(expr, input, row, filters)
         }
         ExprSpec::Template { template, values } => {
-            let mut result = template.clone();
-            for (key, expr) in values {
-                let raw = eval_expr(expr, row, filters)
-                    .and_then(|v| to_utf8(Some(v)))
-                    .unwrap_or_default();
-                // Support {key} and {key|remove:X} syntax.
-                let plain_placeholder = format!("{{{key}}}");
-                result = result.replace(&plain_placeholder, &raw);
-                let remove_prefix = format!("{{{key}|remove:");
-                if let Some(start) = result.find(&remove_prefix) {
-                    let after = start + remove_prefix.len();
-                    if let Some(end) = result[after..].find('}') {
-                        let char_to_remove = &result[after..after + end];
-                        let cleaned = raw.replace(char_to_remove, "");
-                        let full_placeholder = &result[start..after + end + 1];
-                        let full_placeholder = full_placeholder.to_string();
-                        result = result.replace(&full_placeholder, &cleaned);
-                    }
-                }
-            }
-            Some(Value::String(result))
+            Some(eval_template(template, values, row, filters))
         }
     }
+}
+
+fn eval_format_timestamp(
+    expr: &ExprSpec,
+    input: &TimestampInput,
+    row: &Value,
+    filters: &HashMap<String, String>,
+) -> Option<Value> {
+    let value = eval_expr(expr, row, filters)?;
+    let epoch_secs = match &value {
+        Value::Number(n) => n.as_f64(),
+        Value::String(s) => s.parse::<f64>().ok(),
+        _ => None,
+    }?;
+    let epoch_secs = match input {
+        TimestampInput::Seconds => epoch_secs,
+        TimestampInput::Milliseconds => epoch_secs / 1000.0,
+    };
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "Sub-second remainder is intentionally truncated to nanosecond precision"
+    )]
+    let nanos = (epoch_secs.fract().abs() * 1_000_000_000.0) as u32;
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "Epoch seconds intentionally truncated from f64 to i64 for DateTime conversion"
+    )]
+    let dt = DateTime::from_timestamp(epoch_secs as i64, nanos)?;
+    Some(Value::String(
+        dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+    ))
+}
+
+fn eval_template(
+    template: &str,
+    values: &HashMap<String, ExprSpec>,
+    row: &Value,
+    filters: &HashMap<String, String>,
+) -> Value {
+    let mut result = template.to_owned();
+    for (key, expr) in values {
+        let raw = eval_expr(expr, row, filters)
+            .and_then(|v| to_utf8(Some(v)))
+            .unwrap_or_default();
+        // Support {key} and {key|remove:X} syntax.
+        let plain_placeholder = format!("{{{key}}}");
+        result = result.replace(&plain_placeholder, &raw);
+        let remove_prefix = format!("{{{key}|remove:");
+        if let Some(start) = result.find(&remove_prefix) {
+            let after = start + remove_prefix.len();
+            if let Some(end) = result[after..].find('}') {
+                let char_to_remove = &result[after..after + end];
+                let cleaned = raw.replace(char_to_remove, "");
+                let full_placeholder = result[start..=after + end].to_string();
+                result = result.replace(&full_placeholder, &cleaned);
+            }
+        }
+    }
+    Value::String(result)
 }
 
 fn value_to_string_for_join(value: &Value) -> Option<String> {
