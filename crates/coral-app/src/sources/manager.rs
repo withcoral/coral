@@ -1,14 +1,16 @@
 //! Owns the source lifecycle workflow for the local app.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::ErrorKind;
 use std::path::PathBuf;
 
 use coral_api::v1::{
-    AvailableSource, CreateBundledSourceRequest, ImportSourceRequest, SourceInputKind,
-    SourceSecret, SourceVariable, Workspace,
+    AvailableSource, BundledManifestState, CreateBundledSourceRequest, ImportSourceRequest, Source,
+    SourceInputKind, SourceSecret, SourceVariable, Workspace,
 };
 
 use crate::bootstrap::AppError;
+use crate::sources::bundled_store::BundledStore;
 use crate::sources::catalog::{describe_manifest, list_bundled_sources, load_bundled_source};
 use crate::sources::model::{ManagedSource, ManagedSourceOrigin};
 use crate::state::{AppStateLayout, ConfigStore, SecretStore};
@@ -20,6 +22,7 @@ pub(crate) struct SourceManager {
     config_store: ConfigStore,
     secret_store: SecretStore,
     layout: AppStateLayout,
+    bundled_store: BundledStore,
     workspace_manager: WorkspaceManager,
 }
 
@@ -28,16 +31,22 @@ struct ValidatedBindings {
     secrets: BTreeMap<String, String>,
 }
 
+enum ManifestPersistence<'a> {
+    WorkspaceManifest(&'a str),
+    BundledTracking { bundle_id: String },
+}
+
 struct PersistSourceRequest<'a> {
     available: &'a AvailableSource,
-    manifest_yaml: &'a str,
     bindings: ValidatedBindings,
     origin: ManagedSourceOrigin,
+    manifest_persistence: ManifestPersistence<'a>,
 }
 
 struct ExistingSourceState {
     source: ManagedSource,
-    manifest_yaml: String,
+    manifest_yaml: Option<String>,
+    bundled_manifest_tracking: Option<String>,
     secrets: BTreeMap<String, String>,
 }
 
@@ -50,6 +59,7 @@ impl SourceManager {
         Self {
             config_store,
             secret_store,
+            bundled_store: BundledStore::new(layout.clone()),
             layout,
             workspace_manager: WorkspaceManager::new(),
         }
@@ -62,12 +72,31 @@ impl SourceManager {
         self.config_store.list_workspace_sources(workspace)
     }
 
+    pub(crate) fn list_workspace_source_resources(
+        &self,
+        workspace: &Workspace,
+    ) -> Result<Vec<Source>, AppError> {
+        self.list_workspace_sources(workspace)?
+            .into_iter()
+            .map(|source| self.to_source_resource(&source))
+            .collect()
+    }
+
     pub(crate) fn get_source(
         &self,
         workspace: &Workspace,
         source_name: &str,
     ) -> Result<ManagedSource, AppError> {
         self.config_store.get_source(workspace, source_name)
+    }
+
+    pub(crate) fn get_source_resource(
+        &self,
+        workspace: &Workspace,
+        source_name: &str,
+    ) -> Result<Source, AppError> {
+        let source = self.get_source(workspace, source_name)?;
+        self.to_source_resource(&source)
     }
 
     pub(crate) fn discover_sources(
@@ -100,13 +129,16 @@ impl SourceManager {
             &request.variables,
             &request.secrets,
         )?;
+        let bundle_id = self
+            .bundled_store
+            .ensure_current_bundle_available(&bundled)?;
         self.persist_source(
             &workspace,
             PersistSourceRequest {
                 available: &available,
-                manifest_yaml: &bundled.manifest_yaml,
                 bindings,
                 origin: ManagedSourceOrigin::Bundled,
+                manifest_persistence: ManifestPersistence::BundledTracking { bundle_id },
             },
         )
     }
@@ -134,9 +166,11 @@ impl SourceManager {
             &workspace,
             PersistSourceRequest {
                 available: &available,
-                manifest_yaml: &request.manifest_yaml,
                 bindings,
                 origin: ManagedSourceOrigin::Imported,
+                manifest_persistence: ManifestPersistence::WorkspaceManifest(
+                    &request.manifest_yaml,
+                ),
             },
         )
     }
@@ -148,15 +182,14 @@ impl SourceManager {
     ) -> Result<ManagedSource, AppError> {
         let stored = self.config_store.get_source(workspace, source_name)?;
         let source_dir = self.layout.source_dir(&stored.workspace, &stored.name);
-        let previous = ExistingSourceState {
-            source: stored.clone(),
-            manifest_yaml: std::fs::read_to_string(
-                self.layout.manifest_file(&stored.workspace, &stored.name),
-            )?,
-            secrets: self
-                .secret_store
-                .read_source_secrets_for(&stored.workspace, &stored.name)?,
-        };
+        let previous = self
+            .load_existing_state(&stored.workspace, &stored.name)?
+            .ok_or_else(|| {
+                AppError::FailedPrecondition(format!(
+                    "source '{}' exists in config without on-disk state",
+                    stored.name
+                ))
+            })?;
         if source_dir.exists()
             && let Err(error) = std::fs::remove_dir_all(&source_dir)
         {
@@ -195,11 +228,18 @@ impl SourceManager {
             .workspace_manager
             .validate_path_name("source name", &request.available.name)?;
         let previous = self.load_existing_state(workspace, &source_name)?;
-        let manifest_path = self.layout.manifest_file(workspace, &source_name);
-        if let Some(parent) = manifest_path.parent() {
-            fs::ensure_dir(parent)?;
+        let source_dir = self.layout.source_dir(workspace, &source_name);
+        if let Err(error) = fs::ensure_dir(&source_dir) {
+            self.restore_existing_state(workspace, &source_name, previous);
+            return Err(error.into());
         }
-        fs::write_atomic(&manifest_path, request.manifest_yaml.as_bytes())?;
+
+        if let Err(error) =
+            self.persist_manifest_artifacts(workspace, &source_name, &request.manifest_persistence)
+        {
+            self.restore_existing_state(workspace, &source_name, previous);
+            return Err(error);
+        }
 
         let persisted_secrets = match self.secret_store.replace_source_secrets_for(
             workspace,
@@ -228,6 +268,43 @@ impl SourceManager {
         Ok(stored)
     }
 
+    fn persist_manifest_artifacts(
+        &self,
+        workspace: &Workspace,
+        source_name: &str,
+        persistence: &ManifestPersistence<'_>,
+    ) -> Result<(), AppError> {
+        let manifest_path = self.layout.manifest_file(workspace, source_name);
+        let tracking_path = self
+            .layout
+            .bundled_manifest_tracking_file(workspace, source_name);
+
+        match persistence {
+            ManifestPersistence::WorkspaceManifest(manifest_yaml) => {
+                fs::write_atomic(&manifest_path, manifest_yaml.as_bytes())?;
+                remove_file_if_exists(&tracking_path)?;
+            }
+            ManifestPersistence::BundledTracking { bundle_id } => {
+                self.bundled_store
+                    .write_tracking_file(workspace, source_name, bundle_id)?;
+                remove_file_if_exists(&manifest_path)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn to_source_resource(&self, source: &ManagedSource) -> Result<Source, AppError> {
+        if source.origin.is_bundled() {
+            let resolved = self.bundled_store.resolve_manifest(source)?;
+            Ok(source.to_source_resource_with(resolved.version, resolved.bundled_manifest_state))
+        } else {
+            Ok(source.to_source_resource_with(
+                source.version.clone(),
+                BundledManifestState::NotApplicable,
+            ))
+        }
+    }
+
     fn source_exists(&self, workspace: &Workspace, source_name: &str) -> Result<bool, AppError> {
         match self.config_store.get_source(workspace, source_name) {
             Ok(_) => Ok(true),
@@ -246,14 +323,18 @@ impl SourceManager {
             Err(AppError::SourceNotFound(_)) => return Ok(None),
             Err(error) => return Err(error),
         };
-        let manifest_yaml =
-            std::fs::read_to_string(self.layout.manifest_file(workspace, source_name))?;
+        let manifest_yaml = read_optional_file(self.layout.manifest_file(workspace, source_name))?;
+        let bundled_manifest_tracking = read_optional_file(
+            self.layout
+                .bundled_manifest_tracking_file(workspace, source_name),
+        )?;
         let secrets = self
             .secret_store
             .read_source_secrets_for(workspace, source_name)?;
         Ok(Some(ExistingSourceState {
             source,
             manifest_yaml,
+            bundled_manifest_tracking,
             secrets,
         }))
     }
@@ -265,11 +346,19 @@ impl SourceManager {
         previous: Option<ExistingSourceState>,
     ) {
         if let Some(previous) = previous {
-            let manifest_path = self.layout.manifest_file(workspace, source_name);
-            if let Some(parent) = manifest_path.parent() {
-                let _ = fs::ensure_dir(parent);
-            }
-            let _ = fs::write_atomic(&manifest_path, previous.manifest_yaml.as_bytes());
+            let source_dir = self.layout.source_dir(workspace, source_name);
+            let _ = fs::ensure_dir(&source_dir);
+
+            restore_optional_file(
+                &self.layout.manifest_file(workspace, source_name),
+                previous.manifest_yaml.as_deref(),
+            );
+            restore_optional_file(
+                &self
+                    .layout
+                    .bundled_manifest_tracking_file(workspace, source_name),
+                previous.bundled_manifest_tracking.as_deref(),
+            );
             let _ = self.secret_store.replace_source_secrets_for(
                 workspace,
                 source_name,
@@ -282,6 +371,36 @@ impl SourceManager {
                 let _ = std::fs::remove_dir_all(&source_dir);
             }
         }
+    }
+}
+
+fn read_optional_file(path: PathBuf) -> Result<Option<String>, AppError> {
+    match std::fs::read_to_string(path) {
+        Ok(raw) => Ok(Some(raw)),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn restore_optional_file(path: &std::path::Path, contents: Option<&str>) {
+    match contents {
+        Some(contents) => {
+            if let Some(parent) = path.parent() {
+                let _ = fs::ensure_dir(parent);
+            }
+            let _ = fs::write_atomic(path, contents.as_bytes());
+        }
+        None => {
+            let _ = remove_file_if_exists(path);
+        }
+    }
+}
+
+fn remove_file_if_exists(path: &std::path::Path) -> Result<(), AppError> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
     }
 }
 

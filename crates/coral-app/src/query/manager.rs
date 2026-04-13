@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use coral_api::v1::Workspace;
+use coral_api::v1::{BundledManifestState, Source, Workspace};
 use coral_engine::{
     CoralQuery, CoreError, QueryExecution, QueryRuntimeContext, QueryRuntimeProvider, QuerySource,
     TableInfo,
@@ -10,6 +10,7 @@ use coral_engine::{
 use coral_spec::parse_source_manifest_yaml;
 
 use crate::bootstrap::AppError;
+use crate::sources::bundled_store::BundledStore;
 use crate::sources::model::ManagedSource;
 use crate::state::{AppStateLayout, ConfigStore, SecretStore};
 
@@ -20,7 +21,7 @@ pub(crate) enum QueryManagerError {
 }
 
 pub(crate) struct ValidatedSource {
-    pub(crate) source: ManagedSource,
+    pub(crate) source: Source,
     pub(crate) tables: Vec<TableInfo>,
 }
 
@@ -29,7 +30,7 @@ pub(crate) struct QueryManager {
     config_store: ConfigStore,
     secret_store: SecretStore,
     runtime_context: QueryRuntimeContext,
-    layout: AppStateLayout,
+    bundled_store: BundledStore,
 }
 
 impl QueryManager {
@@ -43,7 +44,7 @@ impl QueryManager {
             config_store,
             secret_store,
             runtime_context,
-            layout,
+            bundled_store: BundledStore::new(layout),
         }
     }
 
@@ -83,7 +84,7 @@ impl QueryManager {
             .config_store
             .get_source(workspace, source_name)
             .map_err(QueryManagerError::App)?;
-        let query_source = self
+        let (query_source, resource) = self
             .load_query_source(&source)
             .map_err(QueryManagerError::App)?;
         let runtime = self.runtime_provider();
@@ -91,14 +92,17 @@ impl QueryManager {
             .await
             .map_err(QueryManagerError::Core)?;
 
-        Ok(ValidatedSource { source, tables })
+        Ok(ValidatedSource {
+            source: resource,
+            tables,
+        })
     }
 
     fn load_query_sources(&self, workspace: &Workspace) -> Result<Vec<QuerySource>, AppError> {
         let mut query_sources = Vec::new();
         for source in self.config_store.list_workspace_sources(workspace)? {
             match self.load_query_source(&source) {
-                Ok(query_source) => query_sources.push(query_source),
+                Ok((query_source, _)) => query_sources.push(query_source),
                 Err(error) => {
                     tracing::warn!(
                         source = %source.name,
@@ -111,9 +115,9 @@ impl QueryManager {
         Ok(query_sources)
     }
 
-    fn load_query_source(&self, source: &ManagedSource) -> Result<QuerySource, AppError> {
-        let manifest_path = self.layout.manifest_file(&source.workspace, &source.name);
-        let manifest_yaml = std::fs::read_to_string(&manifest_path)?;
+    fn load_query_source(&self, source: &ManagedSource) -> Result<(QuerySource, Source), AppError> {
+        let resolved = self.bundled_store.resolve_manifest(source)?;
+        let manifest_yaml = std::fs::read_to_string(&resolved.manifest_path)?;
         let source_spec = parse_source_manifest_yaml(&manifest_yaml)
             .map_err(|error| AppError::InvalidInput(error.to_string()))?;
         if source_spec.schema_name() != source.name {
@@ -123,7 +127,7 @@ impl QueryManager {
                 source_spec.schema_name()
             )));
         }
-        if source_spec.source_version() != source.version {
+        if !source.origin.is_bundled() && source_spec.source_version() != source.version {
             return Err(AppError::FailedPrecondition(format!(
                 "installed source '{}' version '{}' does not match manifest version '{}'",
                 source.name,
@@ -144,10 +148,15 @@ impl QueryManager {
             };
             resolved_secrets.insert(secret_name, value);
         }
-        Ok(QuerySource::new(
-            source_spec,
-            source.variables.clone(),
-            resolved_secrets,
+        let version = source_spec.source_version().to_string();
+        let bundled_manifest_state = if source.origin.is_bundled() {
+            resolved.bundled_manifest_state
+        } else {
+            BundledManifestState::NotApplicable
+        };
+        Ok((
+            QuerySource::new(source_spec, source.variables.clone(), resolved_secrets),
+            source.to_source_resource_with(version, bundled_manifest_state),
         ))
     }
 

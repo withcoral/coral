@@ -5,13 +5,14 @@
     reason = "Integration tests inherit the library crate's dependency set and intentionally exercise only a subset of it."
 )]
 
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use coral_api::v1::{
-    CreateBundledSourceRequest, DeleteSourceRequest, DiscoverSourcesRequest, ExecuteSqlRequest,
-    ImportSourceRequest, ListSourcesRequest, ListTablesRequest, SourceSecret, SourceVariable,
-    ValidateSourceRequest, Workspace,
+    BundledManifestState, CreateBundledSourceRequest, DeleteSourceRequest, DiscoverSourcesRequest,
+    ExecuteSqlRequest, ImportSourceRequest, ListSourcesRequest, ListTablesRequest, SourceSecret,
+    SourceVariable, ValidateSourceRequest, Workspace,
 };
 use coral_client::{
     AppClient, batches_to_json_rows, decode_execute_sql_response, default_workspace,
@@ -78,6 +79,35 @@ tables:
         type: Utf8
 "#
     .to_string()
+}
+
+fn bundled_manifest_yaml(source_name: &str) -> String {
+    let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    fs::read_to_string(
+        crate_root
+            .join("../../sources")
+            .join(source_name)
+            .join("manifest.yaml"),
+    )
+    .expect("read bundled manifest fixture")
+}
+
+fn manifest_with_version(manifest_yaml: &str, version: &str) -> String {
+    let mut rewritten = String::new();
+    let mut replaced = false;
+
+    for line in manifest_yaml.lines() {
+        if !replaced && line.starts_with("version: ") {
+            let _ = writeln!(&mut rewritten, "version: {version}");
+            replaced = true;
+        } else {
+            rewritten.push_str(line);
+            rewritten.push('\n');
+        }
+    }
+
+    assert!(replaced, "manifest fixture must contain a version line");
+    rewritten
 }
 
 async fn local_client(config_dir: impl Into<PathBuf>) -> AppClient {
@@ -345,9 +375,152 @@ async fn config_persists_across_rebuilds_without_local_trace_state() {
 #[tokio::test]
 async fn bundled_github_source_initializes_tables_with_template_secret_binding() {
     let temp = TempDir::new().expect("temp dir");
-    let app = local_client(temp.path().join("coral-config")).await;
+    let config_dir = temp.path().join("coral-config");
+    let app = local_client(&config_dir).await;
     let mut source_client = app.source_client();
     let mut query_client = app.query_client();
+
+    let added = source_client
+        .create_bundled_source(Request::new(CreateBundledSourceRequest {
+            workspace: Some(default_workspace()),
+            name: "github".to_string(),
+            variables: vec![SourceVariable {
+                key: "GITHUB_API_BASE".to_string(),
+                value: "https://api.github.com".to_string(),
+            }],
+            secrets: vec![SourceSecret {
+                key: "GITHUB_TOKEN".to_string(),
+                value: "fake-token".to_string(),
+            }],
+        }))
+        .await
+        .expect("create bundled github source")
+        .into_inner();
+
+    assert_eq!(added.name, "github");
+    assert_eq!(
+        BundledManifestState::try_from(added.bundled_manifest_state),
+        Ok(BundledManifestState::FollowingCurrent)
+    );
+
+    let source_dir = config_dir
+        .join("workspaces")
+        .join("default")
+        .join("sources")
+        .join("github");
+    assert!(
+        !source_dir.join("manifest.yaml").exists(),
+        "bundled installs should not keep a workspace manifest by default"
+    );
+    let tracking_raw =
+        fs::read_to_string(source_dir.join("bundled-manifest.toml")).expect("read tracking file");
+    let bundle_id = tracking_raw
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix("bundle_id = ")
+                .map(|value| value.trim_matches('"').to_string())
+        })
+        .expect("bundle_id in tracking file");
+    assert!(
+        config_dir
+            .join("bundled-sources")
+            .join("github")
+            .join(&bundle_id)
+            .join("manifest.yaml")
+            .exists(),
+        "bundled cache should contain the tracked manifest"
+    );
+
+    let tables = query_client
+        .list_tables(Request::new(ListTablesRequest {
+            workspace: Some(default_workspace()),
+        }))
+        .await
+        .expect("list tables")
+        .into_inner()
+        .tables;
+    assert!(
+        tables.iter().any(|table| table.schema_name == "github"),
+        "github tables should register once the template secret dependency is provided"
+    );
+
+    let listed = source_client
+        .list_sources(Request::new(ListSourcesRequest {
+            workspace: Some(default_workspace()),
+        }))
+        .await
+        .expect("list sources")
+        .into_inner();
+    assert_eq!(listed.sources.len(), 1);
+    assert_eq!(
+        BundledManifestState::try_from(listed.sources[0].bundled_manifest_state),
+        Ok(BundledManifestState::FollowingCurrent)
+    );
+}
+
+#[tokio::test]
+async fn startup_migrates_legacy_bundled_installs_to_tracking_mode() {
+    let temp = TempDir::new().expect("temp dir");
+    let config_dir = temp.path().join("coral-config");
+    let source_dir = config_dir
+        .join("workspaces")
+        .join("default")
+        .join("sources")
+        .join("github");
+    fs::create_dir_all(&source_dir).expect("create legacy bundled dir");
+    fs::write(
+        source_dir.join("manifest.yaml"),
+        bundled_manifest_yaml("github"),
+    )
+    .expect("write legacy manifest");
+    fs::write(
+        config_dir.join("config.toml"),
+        r#"
+version = 1
+
+[workspaces.default.sources.github]
+version = "0.0.0"
+origin = "bundled"
+"#,
+    )
+    .expect("write legacy config");
+
+    let app = local_client(&config_dir).await;
+    let mut source_client = app.source_client();
+
+    assert!(
+        !source_dir.join("manifest.yaml").exists(),
+        "startup migration should remove legacy workspace manifests"
+    );
+    assert!(
+        source_dir.join("bundled-manifest.toml").exists(),
+        "startup migration should create bundled tracking metadata"
+    );
+
+    let listed = source_client
+        .list_sources(Request::new(ListSourcesRequest {
+            workspace: Some(default_workspace()),
+        }))
+        .await
+        .expect("list sources after migration")
+        .into_inner();
+    assert_eq!(listed.sources.len(), 1);
+    assert_eq!(
+        BundledManifestState::try_from(listed.sources[0].bundled_manifest_state),
+        Ok(BundledManifestState::FollowingCurrent)
+    );
+    assert_ne!(
+        listed.sources[0].version, "0.0.0",
+        "startup sync should refresh the bundled version from the resolved manifest"
+    );
+}
+
+#[tokio::test]
+async fn bundled_local_override_is_reported_and_source_add_resets_it() {
+    let temp = TempDir::new().expect("temp dir");
+    let config_dir = temp.path().join("coral-config");
+    let app = local_client(&config_dir).await;
+    let mut source_client = app.source_client();
 
     source_client
         .create_bundled_source(Request::new(CreateBundledSourceRequest {
@@ -365,17 +538,128 @@ async fn bundled_github_source_initializes_tables_with_template_secret_binding()
         .await
         .expect("create bundled github source");
 
-    let tables = query_client
-        .list_tables(Request::new(ListTablesRequest {
+    let override_manifest = manifest_with_version(&bundled_manifest_yaml("github"), "9.9.9");
+    let source_dir = config_dir
+        .join("workspaces")
+        .join("default")
+        .join("sources")
+        .join("github");
+    fs::write(source_dir.join("manifest.yaml"), override_manifest).expect("write local override");
+
+    let override_list = source_client
+        .list_sources(Request::new(ListSourcesRequest {
             workspace: Some(default_workspace()),
         }))
         .await
-        .expect("list tables")
-        .into_inner()
-        .tables;
+        .expect("list overridden source")
+        .into_inner();
+    assert_eq!(override_list.sources.len(), 1);
+    assert_eq!(override_list.sources[0].version, "9.9.9");
+    assert_eq!(
+        BundledManifestState::try_from(override_list.sources[0].bundled_manifest_state),
+        Ok(BundledManifestState::LocalOverride)
+    );
+
+    let tested = source_client
+        .validate_source(Request::new(ValidateSourceRequest {
+            workspace: Some(default_workspace()),
+            name: "github".to_string(),
+        }))
+        .await
+        .expect("validate overridden source")
+        .into_inner();
+    assert_eq!(
+        BundledManifestState::try_from(
+            tested
+                .source
+                .expect("validated source metadata")
+                .bundled_manifest_state
+        ),
+        Ok(BundledManifestState::LocalOverride)
+    );
+
+    source_client
+        .create_bundled_source(Request::new(CreateBundledSourceRequest {
+            workspace: Some(default_workspace()),
+            name: "github".to_string(),
+            variables: vec![SourceVariable {
+                key: "GITHUB_API_BASE".to_string(),
+                value: "https://api.github.com".to_string(),
+            }],
+            secrets: vec![SourceSecret {
+                key: "GITHUB_TOKEN".to_string(),
+                value: "fake-token".to_string(),
+            }],
+        }))
+        .await
+        .expect("re-add bundled source to reset override");
+
     assert!(
-        tables.iter().any(|table| table.schema_name == "github"),
-        "github tables should register once the template secret dependency is provided"
+        !source_dir.join("manifest.yaml").exists(),
+        "re-adding a bundled source should remove the local override"
+    );
+    let relisted = source_client
+        .list_sources(Request::new(ListSourcesRequest {
+            workspace: Some(default_workspace()),
+        }))
+        .await
+        .expect("list relinked source")
+        .into_inner();
+    assert_eq!(
+        BundledManifestState::try_from(relisted.sources[0].bundled_manifest_state),
+        Ok(BundledManifestState::FollowingCurrent)
+    );
+}
+
+#[tokio::test]
+async fn deleting_bundled_source_keeps_shared_cache() {
+    let temp = TempDir::new().expect("temp dir");
+    let config_dir = temp.path().join("coral-config");
+    let app = local_client(&config_dir).await;
+    let mut source_client = app.source_client();
+
+    source_client
+        .create_bundled_source(Request::new(CreateBundledSourceRequest {
+            workspace: Some(default_workspace()),
+            name: "github".to_string(),
+            variables: vec![SourceVariable {
+                key: "GITHUB_API_BASE".to_string(),
+                value: "https://api.github.com".to_string(),
+            }],
+            secrets: vec![SourceSecret {
+                key: "GITHUB_TOKEN".to_string(),
+                value: "fake-token".to_string(),
+            }],
+        }))
+        .await
+        .expect("create bundled github source");
+
+    let bundle_root = config_dir.join("bundled-sources").join("github");
+    assert!(
+        bundle_root.exists(),
+        "bundle cache should exist before delete"
+    );
+
+    source_client
+        .delete_source(Request::new(DeleteSourceRequest {
+            workspace: Some(default_workspace()),
+            name: "github".to_string(),
+        }))
+        .await
+        .expect("delete bundled source");
+
+    assert!(
+        bundle_root.exists(),
+        "deleting a bundled source should leave shared cache entries intact"
+    );
+    assert!(
+        !config_dir
+            .join("workspaces")
+            .join("default")
+            .join("sources")
+            .join("github")
+            .exists(),
+        "workspace-specific source artifacts should be removed"
     );
 }
 

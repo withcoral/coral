@@ -14,7 +14,18 @@ include!(concat!(env!("OUT_DIR"), "/bundled_sources.rs"));
 
 #[derive(Debug, Clone)]
 pub(crate) struct BundledSourceManifest {
+    pub(crate) name: String,
     pub(crate) manifest_yaml: String,
+}
+
+pub(crate) fn bundled_source_manifests() -> Vec<BundledSourceManifest> {
+    BUNDLED_SOURCES
+        .iter()
+        .map(|(name, manifest_yaml)| BundledSourceManifest {
+            name: (*name).to_string(),
+            manifest_yaml: (*manifest_yaml).to_string(),
+        })
+        .collect()
 }
 
 pub(crate) fn list_bundled_sources(
@@ -38,15 +49,16 @@ pub(crate) fn list_bundled_sources(
 }
 
 pub(crate) fn load_bundled_source(name: &str) -> Result<BundledSourceManifest, AppError> {
-    let Some((_, manifest_yaml)) = BUNDLED_SOURCES
+    find_bundled_source(name)
+        .ok_or_else(|| AppError::InvalidInput(format!("unknown bundled source '{name}'")))
+}
+
+pub(crate) fn find_bundled_source(name: &str) -> Option<BundledSourceManifest> {
+    let (_, manifest_yaml) = BUNDLED_SOURCES
         .iter()
-        .find(|(candidate, _)| *candidate == name)
-    else {
-        return Err(AppError::InvalidInput(format!(
-            "unknown bundled source '{name}'"
-        )));
-    };
-    Ok(BundledSourceManifest {
+        .find(|(candidate, _)| *candidate == name)?;
+    Some(BundledSourceManifest {
+        name: name.to_string(),
         manifest_yaml: (*manifest_yaml).to_string(),
     })
 }

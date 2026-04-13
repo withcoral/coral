@@ -55,13 +55,10 @@ impl SourceServiceApi for SourceService {
     ) -> Result<Response<ListSourcesResponse>, Status> {
         let request = request.into_inner();
         let workspace = self.workspaces.require(request.workspace.as_ref())?;
-        let sources: Vec<_> = self
+        let sources = self
             .sources
-            .list_workspace_sources(&workspace)
-            .map_err(app_status)?
-            .into_iter()
-            .map(|source| source.to_source_resource())
-            .collect();
+            .list_workspace_source_resources(&workspace)
+            .map_err(app_status)?;
         Ok(Response::new(ListSourcesResponse { sources }))
     }
 
@@ -76,9 +73,9 @@ impl SourceServiceApi for SourceService {
             .status_validate_path_name("source name", &request.name)?;
         let source = self
             .sources
-            .get_source(&workspace, &source_name)
+            .get_source_resource(&workspace, &source_name)
             .map_err(app_status)?;
-        Ok(Response::new(source.to_source_resource()))
+        Ok(Response::new(source))
     }
 
     async fn create_bundled_source(
@@ -90,7 +87,11 @@ impl SourceServiceApi for SourceService {
             .sources
             .create_bundled_source(&request)
             .map_err(app_status)?;
-        Ok(Response::new(stored.to_source_resource()))
+        let resource = self
+            .sources
+            .get_source_resource(&stored.workspace, &stored.name)
+            .map_err(app_status)?;
+        Ok(Response::new(resource))
     }
 
     async fn import_source(
@@ -99,7 +100,11 @@ impl SourceServiceApi for SourceService {
     ) -> Result<Response<Source>, Status> {
         let request = request.into_inner();
         let stored = self.sources.import_source(&request).map_err(app_status)?;
-        Ok(Response::new(stored.to_source_resource()))
+        let resource = self
+            .sources
+            .get_source_resource(&stored.workspace, &stored.name)
+            .map_err(app_status)?;
+        Ok(Response::new(resource))
     }
 
     async fn delete_source(
@@ -138,7 +143,7 @@ impl SourceServiceApi for SourceService {
             .map(|table| table_to_proto(&workspace, table))
             .collect::<Vec<_>>();
         Ok(Response::new(ValidateSourceResponse {
-            source: Some(result.source.to_source_resource()),
+            source: Some(result.source),
             tables,
         }))
     }

@@ -16,6 +16,7 @@ use super::env::AppEnvironment;
 use super::error::AppError;
 use crate::query::manager::QueryManager;
 use crate::query::service::QueryService;
+use crate::sources::bundled_store::BundledStore;
 use crate::sources::manager::SourceManager;
 use crate::sources::service::SourceService;
 use crate::state::{AppStateLayout, ConfigStore, SecretStore};
@@ -84,6 +85,13 @@ impl ServerBuilder {
         layout.ensure()?;
         let config_store = ConfigStore::new(layout.clone());
         let secret_store = SecretStore::new(layout.clone());
+        let bundled_store = BundledStore::new(layout.clone());
+        if let Err(error) = bundled_store.startup_maintenance(&config_store) {
+            tracing::warn!(
+                detail = %error,
+                "best-effort bundled manifest startup maintenance did not complete cleanly"
+            );
+        }
         let source_manager =
             SourceManager::new(config_store.clone(), secret_store.clone(), layout.clone());
         let query_manager = QueryManager::new(

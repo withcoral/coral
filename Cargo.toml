@@ -46,6 +46,7 @@ rusqlite = { version = "0.37", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
+sha2 = "0.10"
 sqlparser = "0.59.0"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }

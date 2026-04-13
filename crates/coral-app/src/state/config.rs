@@ -105,6 +105,11 @@ impl ConfigStore {
         })
     }
 
+    pub(crate) fn list_all_sources(&self) -> Result<Vec<ManagedSource>, AppError> {
+        let _lock = self.lock_shared()?;
+        self.load_unlocked().map(|config| config.sources)
+    }
+
     pub(crate) fn get_source(
         &self,
         workspace: &Workspace,

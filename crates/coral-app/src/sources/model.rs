@@ -5,7 +5,9 @@
 
 use std::collections::BTreeMap;
 
-use coral_api::v1::{Source, SourceOrigin, SourceSecret, SourceVariable, Workspace};
+use coral_api::v1::{
+    BundledManifestState, Source, SourceOrigin, SourceSecret, SourceVariable, Workspace,
+};
 use serde::{Deserialize, Serialize};
 
 /// App-owned persisted representation of one managed source.
@@ -43,12 +45,16 @@ impl ManagedSource {
     }
 
     #[must_use]
-    /// Returns the installed source resource exposed by the management plane.
-    pub(crate) fn to_source_resource(&self) -> Source {
+    /// Returns the installed source resource with runtime-resolved manifest metadata.
+    pub(crate) fn to_source_resource_with(
+        &self,
+        version: impl Into<String>,
+        bundled_manifest_state: BundledManifestState,
+    ) -> Source {
         Source {
             workspace: Some(self.workspace.clone()),
             name: self.name.clone(),
-            version: self.version.clone(),
+            version: version.into(),
             secrets: self
                 .secrets()
                 .into_iter()
@@ -66,11 +72,16 @@ impl ManagedSource {
                 })
                 .collect(),
             origin: self.origin.to_proto() as i32,
+            bundled_manifest_state: bundled_manifest_state as i32,
         }
     }
 }
 
 impl ManagedSourceOrigin {
+    pub(crate) fn is_bundled(self) -> bool {
+        matches!(self, Self::Bundled)
+    }
+
     pub(crate) fn to_proto(self) -> SourceOrigin {
         match self {
             Self::Bundled => SourceOrigin::Bundled,

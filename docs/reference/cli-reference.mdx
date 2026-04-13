@@ -37,6 +37,9 @@ List sources currently installed.
 coral source list
 ```
 
+Output includes the source origin, and for bundled sources whether they are
+`following-current` or using a `local-override`.
+
 ### `coral source add <NAME>`
 
 Add a bundled source or update its credentials.
@@ -46,6 +49,10 @@ coral source add github
 ```
 
 Coral prompts for required variables or secrets interactively. If the source is already installed, running this command again replaces its stored credentials with the new values you provide.
+
+For bundled sources, running `coral source add <NAME>` also resets any local
+workspace manifest override and relinks the source to Coral's current bundled
+manifest cache.
 
 ### `coral source add --file <PATH>`
 
@@ -63,6 +70,9 @@ Validate that an installed source can initialize and expose tables.
 coral source test github
 coral source test local_messages
 ```
+
+Bundled sources also print their manifest state as `following-current` or
+`local-override`.
 
 ### `coral source remove <NAME>`
 

@@ -2,9 +2,10 @@ use std::io::{IsTerminal, stdin, stdout};
 use std::path::Path;
 
 use coral_api::v1::{
-    AvailableSource, CreateBundledSourceRequest, DeleteSourceRequest, DiscoverSourcesRequest,
-    ImportSourceRequest, ListSourcesRequest, Source, SourceInputKind, SourceInputSpec,
-    SourceOrigin, SourceSecret, SourceVariable, ValidateSourceRequest, ValidateSourceResponse,
+    AvailableSource, BundledManifestState, CreateBundledSourceRequest, DeleteSourceRequest,
+    DiscoverSourcesRequest, ImportSourceRequest, ListSourcesRequest, Source, SourceInputKind,
+    SourceInputSpec, SourceOrigin, SourceSecret, SourceVariable, ValidateSourceRequest,
+    ValidateSourceResponse,
 };
 use coral_client::{AppClient, default_workspace};
 use coral_spec::{ManifestInputKind, ManifestInputSpec, collect_source_inputs_yaml};
@@ -176,6 +177,16 @@ pub(crate) fn source_origin_label(origin: i32) -> &'static str {
     }
 }
 
+pub(crate) fn bundled_manifest_state_label(state: i32) -> Option<&'static str> {
+    match BundledManifestState::try_from(state) {
+        Ok(BundledManifestState::FollowingCurrent) => Some("following-current"),
+        Ok(BundledManifestState::LocalOverride) => Some("local-override"),
+        Ok(BundledManifestState::NotApplicable | BundledManifestState::Unspecified) | Err(_) => {
+            None
+        }
+    }
+}
+
 pub(crate) fn print_validation_success(
     response: &ValidateSourceResponse,
 ) -> Result<(), anyhow::Error> {
@@ -184,6 +195,9 @@ pub(crate) fn print_validation_success(
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("validate response missing source metadata"))?;
     println!("Source {} is queryable", source.name);
+    if let Some(state) = bundled_manifest_state_label(source.bundled_manifest_state) {
+        println!("Manifest state: {state}");
+    }
     for table in &response.tables {
         println!("{}.{}", table.schema_name, table.name);
     }
@@ -252,9 +266,10 @@ pub(crate) fn finalize_input_value(
 
 #[cfg(test)]
 mod tests {
+    use coral_api::v1::BundledManifestState;
     use coral_spec::{ManifestInputKind, ManifestInputSpec};
 
-    use super::finalize_input_value;
+    use super::{bundled_manifest_state_label, finalize_input_value};
 
     #[test]
     fn empty_input_uses_default_value() {
@@ -282,5 +297,21 @@ mod tests {
         let error = finalize_input_value(&input, String::new(), "source secret")
             .expect_err("required empty input should fail");
         assert!(error.to_string().contains("missing required source secret"));
+    }
+
+    #[test]
+    fn bundled_manifest_states_render_expected_labels() {
+        assert_eq!(
+            bundled_manifest_state_label(BundledManifestState::FollowingCurrent as i32),
+            Some("following-current")
+        );
+        assert_eq!(
+            bundled_manifest_state_label(BundledManifestState::LocalOverride as i32),
+            Some("local-override")
+        );
+        assert_eq!(
+            bundled_manifest_state_label(BundledManifestState::NotApplicable as i32),
+            None
+        );
     }
 }

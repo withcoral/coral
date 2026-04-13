@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 use coral_api::v1::ExecuteSqlRequest;
 use coral_client::{
-    ClientBuilder, decode_execute_sql_response, default_workspace, format_batches_json,
+    AppClient, ClientBuilder, decode_execute_sql_response, default_workspace, format_batches_json,
     format_batches_table,
 };
 use tonic::Request;
@@ -105,92 +105,105 @@ async fn main() -> Result<(), anyhow::Error> {
     let app = ClientBuilder::new().build().await?;
 
     match cli.command {
-        Command::Sql(args) => {
-            let response = app
-                .query_client()
-                .execute_sql(Request::new(ExecuteSqlRequest {
-                    workspace: Some(default_workspace()),
-                    sql: args.sql,
-                }))
-                .await?
-                .into_inner();
-            let result = decode_execute_sql_response(&response)?;
-            print_batches(result.batches(), args.format)?;
-        }
-        Command::Source(args) => match args.command {
-            SourceCommand::Discover => {
-                let sources = source_ops::discover_sources(&app).await?;
-                if sources.is_empty() {
-                    println!("No bundled sources available.");
-                } else {
-                    for source in sources {
-                        let status = if source.installed {
-                            "installed"
-                        } else {
-                            "available"
-                        };
-                        println!("{}\t{}\t{}", source.name, source.version, status);
-                    }
-                }
-            }
-            SourceCommand::List => {
-                let sources = source_ops::list_sources(&app).await?;
-                if sources.is_empty() {
-                    println!("No sources configured.");
-                } else {
-                    for source in sources {
-                        let origin = source_ops::source_origin_label(source.origin);
-                        println!("{}\t{}\t{}", source.name, source.version, origin);
-                    }
-                }
-            }
-            SourceCommand::Add(SourceAddArgs { name, file }) => {
-                source_ops::require_interactive()?;
-                let response = match (name, file) {
-                    (Some(name), None) => {
-                        let bundled_name = source_ops::source_name_arg(Some(&name))?;
-                        let discover = source_ops::discover_sources(&app).await?;
-                        let available = discover
-                            .into_iter()
-                            .find(|source| source.name == bundled_name)
-                            .ok_or_else(|| {
-                                anyhow::anyhow!("unknown bundled source '{bundled_name}'")
-                            })?;
-                        let inputs = available
-                            .inputs
-                            .iter()
-                            .map(source_ops::manifest_input_from_proto)
-                            .collect::<Result<Vec<_>, _>>()?;
-                        let (variables, secrets) = source_ops::prompt_for_inputs(&inputs)?;
-                        source_ops::add_bundled_source(&app, &available.name, variables, secrets)
-                            .await?
-                    }
-                    (None, Some(file)) => {
-                        let (manifest_yaml, inputs) = source_ops::load_manifest_inputs(&file)?;
-                        let (variables, secrets) = source_ops::prompt_for_inputs(&inputs)?;
-                        source_ops::import_source(&app, manifest_yaml, variables, secrets).await?
-                    }
-                    _ => unreachable!("clap enforces exactly one of name or file"),
-                };
-                println!("Added source {}", response.name);
-            }
-            SourceCommand::Test { name } => {
-                let response = source_ops::validate_source(&app, &name).await?;
-                source_ops::print_validation_success(&response)?;
-            }
-            SourceCommand::Remove { name } => {
-                source_ops::delete_source(&app, &name).await?;
-                println!("Removed source {name}");
-            }
-        },
-        Command::Onboard => {
-            onboard::run(&app).await?;
-        }
+        Command::Sql(args) => run_sql(&app, args).await?,
+        Command::Source(args) => run_source_command(&app, args.command).await?,
+        Command::Onboard => onboard::run(&app).await?,
         Command::McpStdio => {
             coral_mcp::run_stdio_with_client(app).await?;
         }
     }
 
+    Ok(())
+}
+
+async fn run_sql(app: &AppClient, args: SqlArgs) -> Result<(), anyhow::Error> {
+    let response = app
+        .query_client()
+        .execute_sql(Request::new(ExecuteSqlRequest {
+            workspace: Some(default_workspace()),
+            sql: args.sql,
+        }))
+        .await?
+        .into_inner();
+    let result = decode_execute_sql_response(&response)?;
+    print_batches(result.batches(), args.format)
+}
+
+async fn run_source_command(app: &AppClient, command: SourceCommand) -> Result<(), anyhow::Error> {
+    match command {
+        SourceCommand::Discover => {
+            let sources = source_ops::discover_sources(app).await?;
+            if sources.is_empty() {
+                println!("No bundled sources available.");
+            } else {
+                for source in sources {
+                    let status = if source.installed {
+                        "installed"
+                    } else {
+                        "available"
+                    };
+                    println!("{}\t{}\t{}", source.name, source.version, status);
+                }
+            }
+        }
+        SourceCommand::List => {
+            let sources = source_ops::list_sources(app).await?;
+            if sources.is_empty() {
+                println!("No sources configured.");
+            } else {
+                for source in sources {
+                    let origin = source_ops::source_origin_label(source.origin);
+                    match source_ops::bundled_manifest_state_label(source.bundled_manifest_state) {
+                        Some(state) => {
+                            println!("{}\t{}\t{}\t{}", source.name, source.version, origin, state);
+                        }
+                        None => {
+                            println!("{}\t{}\t{}", source.name, source.version, origin);
+                        }
+                    }
+                }
+            }
+        }
+        SourceCommand::Add(args) => run_source_add(app, args).await?,
+        SourceCommand::Test { name } => {
+            let response = source_ops::validate_source(app, &name).await?;
+            source_ops::print_validation_success(&response)?;
+        }
+        SourceCommand::Remove { name } => {
+            source_ops::delete_source(app, &name).await?;
+            println!("Removed source {name}");
+        }
+    }
+
+    Ok(())
+}
+
+async fn run_source_add(app: &AppClient, args: SourceAddArgs) -> Result<(), anyhow::Error> {
+    source_ops::require_interactive()?;
+    let response = match (args.name, args.file) {
+        (Some(name), None) => {
+            let bundled_name = source_ops::source_name_arg(Some(&name))?;
+            let discover = source_ops::discover_sources(app).await?;
+            let available = discover
+                .into_iter()
+                .find(|source| source.name == bundled_name)
+                .ok_or_else(|| anyhow::anyhow!("unknown bundled source '{bundled_name}'"))?;
+            let inputs = available
+                .inputs
+                .iter()
+                .map(source_ops::manifest_input_from_proto)
+                .collect::<Result<Vec<_>, _>>()?;
+            let (variables, secrets) = source_ops::prompt_for_inputs(&inputs)?;
+            source_ops::add_bundled_source(app, &available.name, variables, secrets).await?
+        }
+        (None, Some(file)) => {
+            let (manifest_yaml, inputs) = source_ops::load_manifest_inputs(&file)?;
+            let (variables, secrets) = source_ops::prompt_for_inputs(&inputs)?;
+            source_ops::import_source(app, manifest_yaml, variables, secrets).await?
+        }
+        _ => unreachable!("clap enforces exactly one of name or file"),
+    };
+    println!("Added source {}", response.name);
     Ok(())
 }
 

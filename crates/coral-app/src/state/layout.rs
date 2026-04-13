@@ -9,6 +9,7 @@ use crate::bootstrap::AppError;
 
 pub(crate) const INSTALLED_MANIFEST_FILE_NAME: &str = "manifest.yaml";
 pub(crate) const INSTALLED_SECRETS_FILE_NAME: &str = "secrets.env";
+pub(crate) const BUNDLED_MANIFEST_TRACKING_FILE_NAME: &str = "bundled-manifest.toml";
 
 #[derive(Debug, Clone)]
 pub(crate) struct AppStateLayout {
@@ -52,6 +53,27 @@ impl AppStateLayout {
         self.config_dir.join("workspaces")
     }
 
+    pub(crate) fn bundled_sources_root(&self) -> PathBuf {
+        self.config_dir.join("bundled-sources")
+    }
+
+    pub(crate) fn bundled_source_root(&self, source_name: &str) -> PathBuf {
+        self.bundled_sources_root().join(source_name)
+    }
+
+    pub(crate) fn bundled_source_bundle_dir(&self, source_name: &str, bundle_id: &str) -> PathBuf {
+        self.bundled_source_root(source_name).join(bundle_id)
+    }
+
+    pub(crate) fn bundled_source_manifest_file(
+        &self,
+        source_name: &str,
+        bundle_id: &str,
+    ) -> PathBuf {
+        self.bundled_source_bundle_dir(source_name, bundle_id)
+            .join(INSTALLED_MANIFEST_FILE_NAME)
+    }
+
     pub(crate) fn workspace_dir(&self, workspace: &coral_api::v1::Workspace) -> PathBuf {
         self.workspaces_root().join(&workspace.name)
     }
@@ -85,6 +107,15 @@ impl AppStateLayout {
         self.source_dir(workspace, source_name)
             .join(INSTALLED_SECRETS_FILE_NAME)
     }
+
+    pub(crate) fn bundled_manifest_tracking_file(
+        &self,
+        workspace: &coral_api::v1::Workspace,
+        source_name: &str,
+    ) -> PathBuf {
+        self.source_dir(workspace, source_name)
+            .join(BUNDLED_MANIFEST_TRACKING_FILE_NAME)
+    }
 }
 
 #[cfg(test)]
@@ -111,8 +142,20 @@ mod tests {
             )
         );
         assert_eq!(
+            layout.bundled_source_manifest_file("github", "bundle-123"),
+            std::path::Path::new(
+                "/tmp/coral-config/bundled-sources/github/bundle-123/manifest.yaml"
+            )
+        );
+        assert_eq!(
             layout.secret_file(&workspace, "github"),
             std::path::Path::new("/tmp/coral-config/workspaces/default/sources/github/secrets.env")
+        );
+        assert_eq!(
+            layout.bundled_manifest_tracking_file(&workspace, "github"),
+            std::path::Path::new(
+                "/tmp/coral-config/workspaces/default/sources/github/bundled-manifest.toml"
+            )
         );
     }
 }

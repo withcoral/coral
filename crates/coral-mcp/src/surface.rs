@@ -328,7 +328,7 @@ fn json_object_schema(value: &Value) -> Arc<Map<String, Value>> {
 
 #[cfg(test)]
 mod tests {
-    use coral_api::v1::{Source, Table, Workspace};
+    use coral_api::v1::{BundledManifestState, Source, Table, Workspace};
 
     use super::{ToolError, guide_resource_content, tool_error_result};
 
@@ -342,6 +342,7 @@ mod tests {
             secrets: Vec::new(),
             variables: Vec::new(),
             origin: 0,
+            bundled_manifest_state: BundledManifestState::NotApplicable as i32,
         }
     }
 

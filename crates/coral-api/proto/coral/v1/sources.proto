@@ -13,6 +13,15 @@ enum SourceOrigin {
   SOURCE_ORIGIN_IMPORTED = 2;
 }
 
+// Whether a bundled source is following Coral's bundled manifest cache or a
+// workspace-local override.
+enum BundledManifestState {
+  BUNDLED_MANIFEST_STATE_UNSPECIFIED = 0;
+  BUNDLED_MANIFEST_STATE_NOT_APPLICABLE = 1;
+  BUNDLED_MANIFEST_STATE_FOLLOWING_CURRENT = 2;
+  BUNDLED_MANIFEST_STATE_LOCAL_OVERRIDE = 3;
+}
+
 // One configured non-secret source variable.
 message SourceVariable {
   // Logical variable key expected by the source manifest.
@@ -48,6 +57,9 @@ message Source {
   repeated SourceVariable variables = 5;
   // Where this installed source came from.
   SourceOrigin origin = 6;
+  // Whether a bundled source is following Coral's bundled manifest cache or a
+  // local override.
+  BundledManifestState bundled_manifest_state = 7;
 }
 
 // Input kinds that Coral prompts for while installing or importing a source.
