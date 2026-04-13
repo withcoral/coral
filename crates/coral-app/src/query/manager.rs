@@ -10,6 +10,9 @@ use coral_engine::{
     CoralQuery, CoreError, QueryExecution, QueryRuntimeContext, QueryRuntimeProvider, QuerySource,
     TableInfo,
 };
+use coral_spec::{ManifestInputKind, collect_source_inputs_yaml, parse_source_manifest_yaml};
+
+use crate::sources::catalog::resolve_installed_manifest;
 
 #[derive(Debug)]
 pub(crate) enum QueryManagerError {
@@ -81,13 +84,15 @@ impl QueryManager {
             .config_store
             .get_source(workspace, source_name)
             .map_err(QueryManagerError::App)?;
-        let query_source = self
+        let (query_source, version) = self
             .load_query_source(&source)
             .map_err(QueryManagerError::App)?;
         let runtime = self.runtime_provider();
         let tables = CoralQuery::test_source(&query_source, &runtime)
             .await
             .map_err(QueryManagerError::Core)?;
+        let mut source = source;
+        source.version = version;
 
         Ok(ValidatedSource { source, tables })
     }
@@ -96,7 +101,7 @@ impl QueryManager {
         let mut query_sources = Vec::new();
         for source in self.config_store.list_workspace_sources(workspace)? {
             match self.load_query_source(&source) {
-                Ok(query_source) => query_sources.push(query_source),
+                Ok((query_source, _version)) => query_sources.push(query_source),
                 Err(error) => {
                     tracing::warn!(
                         source = %source.name,
@@ -109,28 +114,12 @@ impl QueryManager {
         Ok(query_sources)
     }
 
-    fn load_query_source(&self, source: &ManagedSource) -> Result<QuerySource, AppError> {
-        let manifest_path = self.layout.manifest_file(&source.workspace, &source.name);
-        if !manifest_path.exists() {
-            return Err(AppError::SourceNotFound(source.name.clone()));
-        }
-        let source_spec = coral_spec::load_manifest_path(&manifest_path)
+    fn load_query_source(&self, source: &ManagedSource) -> Result<(QuerySource, String), AppError> {
+        let installed = resolve_installed_manifest(source, &self.layout)?;
+        let manifest_yaml = installed.manifest_yaml;
+        let source_spec = parse_source_manifest_yaml(&manifest_yaml)
             .map_err(|error| AppError::InvalidInput(error.to_string()))?;
-        if source_spec.schema_name() != source.name {
-            return Err(AppError::FailedPrecondition(format!(
-                "installed source '{}' does not match manifest name '{}'",
-                source.name,
-                source_spec.schema_name()
-            )));
-        }
-        if source_spec.source_version() != source.version {
-            return Err(AppError::FailedPrecondition(format!(
-                "installed source '{}' version '{}' does not match manifest version '{}'",
-                source.name,
-                source.version,
-                source_spec.source_version()
-            )));
-        }
+        validate_required_variables(source, &manifest_yaml)?;
         let stored_secrets = self
             .secret_store
             .read_source_secrets_for(&source.workspace, &source.name)?;
@@ -144,10 +133,9 @@ impl QueryManager {
             };
             resolved_secrets.insert(secret_name, value);
         }
-        Ok(QuerySource::new(
-            source_spec,
-            source.variables.clone(),
-            resolved_secrets,
+        Ok((
+            QuerySource::new(source_spec, source.variables.clone(), resolved_secrets),
+            installed.available.version,
         ))
     }
 
@@ -167,4 +155,24 @@ impl QueryRuntimeProvider for RuntimeProvider {
     fn runtime_context(&self) -> QueryRuntimeContext {
         self.runtime_context.clone()
     }
+}
+
+fn validate_required_variables(
+    source: &ManagedSource,
+    manifest_yaml: &str,
+) -> Result<(), AppError> {
+    let inputs = collect_source_inputs_yaml(manifest_yaml)
+        .map_err(|error| AppError::InvalidInput(error.to_string()))?;
+    for input in inputs {
+        if input.kind == ManifestInputKind::Variable
+            && input.required
+            && !source.variables.contains_key(&input.key)
+        {
+            return Err(AppError::FailedPrecondition(format!(
+                "source '{}' is missing variable '{}'",
+                source.name, input.key
+            )));
+        }
+    }
+    Ok(())
 }
