@@ -40,7 +40,7 @@ The user-facing command-line interface.
 | Interactive prompts | Variables and secrets during `source add` |
 | Output formatting | Table and JSON via `coral-client` helpers |
 
-Single file: `main.rs`. Intentionally thin, delegates all business logic to `coral-client`.
+Modules: `cli.rs` (argument parsing), `runner.rs` (command orchestration), `host.rs` (terminal I/O and prompt traits), `services.rs` (gRPC service wiring), `onboard.rs` (interactive setup flow), `source_ops.rs` (source helpers), and a thin `main.rs` entry point. Delegates all business logic to `coral-client`.
 
 ### `coral-client`
 

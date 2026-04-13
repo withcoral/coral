@@ -90,7 +90,7 @@ impl CliHost for RealCliHost {
             std::process::Command::new("xdg-open").arg(url).status()
         } else if cfg!(target_os = "windows") {
             std::process::Command::new("cmd")
-                .args(["/c", "start", url])
+                .args(["/c", "start", "", url])
                 .status()
         } else {
             return false;

@@ -412,7 +412,12 @@ async fn show_next_steps_screen(
             }
             Some(NextStepAction::AddMoreSources) => return Ok(NextStepChoice::AddMoreSources),
             Some(NextStepAction::OpenDocs) => {
-                host.open_url("https://withcoral.com/docs");
+                if !host.open_url("https://withcoral.com/docs") {
+                    host.println(&format!(
+                        "  {}",
+                        style("Visit https://withcoral.com/docs").dim()
+                    ))?;
+                }
             }
             Some(NextStepAction::Exit) | None => return Ok(NextStepChoice::Exit),
         }
