@@ -13,6 +13,7 @@
     "backend": { "type": "string", "enum": ["http", "parquet", "jsonl"] },
     "base_url": { "type": "string", "minLength": 1 },
     "auth": { "$ref": "#/$defs/auth" },
+    "rate_limit": { "$ref": "#/$defs/rate_limit" },
     "tables": {
       "type": "array",
       "minItems": 1,
@@ -43,6 +44,21 @@
           "type": "array",
           "items": { "$ref": "#/$defs/header" }
         }
+      }
+    },
+    "rate_limit": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "extra_statuses": {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 400, "maximum": 599 },
+          "uniqueItems": true
+        },
+        "retry_after_header": { "type": "string", "minLength": 1 },
+        "remaining_header": { "type": "string", "minLength": 1 },
+        "reset_header": { "type": "string", "minLength": 1 },
+        "fallback_delay_seconds": { "type": "integer", "minimum": 0 }
       }
     },
     "table": {

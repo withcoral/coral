@@ -26,7 +26,7 @@ pub struct ValidatedSourceManifest {
 
 #[derive(Debug, Clone)]
 enum ValidatedManifestKind {
-    Http(HttpSourceManifest),
+    Http(Box<HttpSourceManifest>),
     Parquet(ParquetSourceManifest),
     Jsonl(JsonlSourceManifest),
 }
@@ -158,7 +158,9 @@ pub fn parse_source_manifest_value(value: Value) -> Result<ValidatedSourceManife
     let backend_kind = parse_source_backend(&value)?;
     match backend_kind {
         SourceBackend::Http => Ok(ValidatedSourceManifest {
-            inner: ValidatedManifestKind::Http(HttpSourceManifest::parse_manifest_value(value)?),
+            inner: ValidatedManifestKind::Http(Box::new(HttpSourceManifest::parse_manifest_value(
+                value,
+            )?)),
         }),
         SourceBackend::Parquet => Ok(ValidatedSourceManifest {
             inner: ValidatedManifestKind::Parquet(ParquetSourceManifest::parse_manifest_value(

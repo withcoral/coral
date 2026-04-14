@@ -10,7 +10,7 @@ use serde_json::{Map, Value, json};
 
 use crate::backends::http::ProviderQueryError;
 use crate::backends::shared::json_path::get_path_value;
-use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec};
+use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec, RateLimitSpec};
 use coral_spec::{
     HeaderSpec, HttpMethod, PageSizeSpec, ParsedTemplate, RowStrategy, TemplateNamespace,
     TemplatePart, ValidatedPagination, ValidatedPaginationMode, ValueSourceSpec,
@@ -30,6 +30,7 @@ pub(crate) struct HttpSourceClient {
     source_schema: String,
     base_url: ParsedTemplate,
     auth_headers: Vec<HeaderSpec>,
+    rate_limit: RateLimitSpec,
     source_secrets: Arc<BTreeMap<String, String>>,
     source_variables: Arc<BTreeMap<String, String>>,
 }
@@ -40,6 +41,7 @@ impl std::fmt::Debug for HttpSourceClient {
             .field("source_schema", &self.source_schema)
             .field("base_url", &self.base_url)
             .field("auth_headers", &self.auth_headers)
+            .field("rate_limit", &self.rate_limit)
             .finish_non_exhaustive()
     }
 }
@@ -62,6 +64,7 @@ struct RequestSpec<'a> {
     query_pairs: &'a [(String, String)],
     body: Option<&'a Value>,
     source_schema: &'a str,
+    rate_limit: &'a RateLimitSpec,
     filters: &'a HashMap<String, String>,
     state: &'a HashMap<String, String>,
     source_secrets: &'a BTreeMap<String, String>,
@@ -126,6 +129,7 @@ impl HttpSourceClient {
             source_schema: manifest.common.name.clone(),
             base_url: manifest.base_url.clone(),
             auth_headers: manifest.auth.headers.clone(),
+            rate_limit: manifest.rate_limit.clone(),
             source_secrets: Arc::new(source_secrets),
             source_variables: Arc::new(source_variables),
         })
@@ -254,6 +258,7 @@ impl HttpSourceClient {
                     query_pairs: &query_pairs,
                     body: body.as_ref(),
                     source_schema: &self.source_schema,
+                    rate_limit: &self.rate_limit,
                     filters,
                     state: &pagination_values,
                     source_secrets: self.source_secrets.as_ref(),
@@ -366,6 +371,7 @@ async fn execute_request(
         query_pairs,
         body,
         source_schema,
+        rate_limit,
         filters,
         state,
         source_secrets,
@@ -431,9 +437,14 @@ async fn execute_request(
             )
         })?;
 
-        if let Some(wait) =
-            check_rate_limit(&response, rate_limit_retries, method_label, &logged_url)?
-        {
+        if let Some(wait) = check_rate_limit(
+            response.status(),
+            response.headers(),
+            rate_limit,
+            rate_limit_retries,
+            method_label,
+            &logged_url,
+        )? {
             rate_limit_retries += 1;
             tokio::time::sleep(wait).await;
             continue;
@@ -500,14 +511,14 @@ fn request_error(
 }
 
 fn check_rate_limit(
-    response: &reqwest::Response,
+    status: reqwest::StatusCode,
+    headers: &HeaderMap,
+    spec: &RateLimitSpec,
     retries: usize,
     method_label: &str,
     logged_url: &str,
 ) -> Result<Option<Duration>, DataFusionError> {
-    let is_rate_limited = response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS
-        || (response.status() == reqwest::StatusCode::FORBIDDEN
-            && has_rate_limit_headers(response.headers()));
+    let is_rate_limited = is_rate_limited_status(status, headers, spec);
     if !is_rate_limited {
         return Ok(None);
     }
@@ -516,23 +527,58 @@ fn check_rate_limit(
             "source API request hit rate limit too many times for {method_label} {logged_url}"
         )));
     }
-    let wait_secs = rate_limit_wait_secs(response.headers(), SystemTime::now());
+    let wait_secs = rate_limit_wait_secs(headers, spec, SystemTime::now());
     Ok(Some(Duration::from_secs(wait_secs)))
 }
 
-fn has_rate_limit_headers(headers: &HeaderMap) -> bool {
-    headers.contains_key("Retry-After") || headers.contains_key("X-RateLimit-Reset")
+fn is_rate_limited_status(
+    status: reqwest::StatusCode,
+    headers: &HeaderMap,
+    spec: &RateLimitSpec,
+) -> bool {
+    if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        return true;
+    }
+
+    if !spec.extra_statuses.contains(&status.as_u16()) {
+        return false;
+    }
+
+    has_header(
+        headers,
+        spec.retry_after_header.as_deref().unwrap_or("Retry-After"),
+    ) || spec
+        .remaining_header
+        .as_deref()
+        .is_some_and(|header| header_equals(headers, header, "0"))
 }
 
-fn rate_limit_wait_secs(headers: &HeaderMap, now: SystemTime) -> u64 {
-    parse_retry_after(headers, now)
-        .or_else(|| parse_rate_limit_reset(headers, now))
-        .unwrap_or(DEFAULT_RETRY_WAIT_SECS)
-        .min(MAX_RATE_LIMIT_WAIT_SECS)
+fn rate_limit_wait_secs(headers: &HeaderMap, spec: &RateLimitSpec, now: SystemTime) -> u64 {
+    parse_retry_after(
+        headers,
+        spec.retry_after_header.as_deref().unwrap_or("Retry-After"),
+        now,
+    )
+    .or_else(|| parse_rate_limit_reset(headers, spec.reset_header.as_deref(), now))
+    .or(spec.fallback_delay_seconds)
+    .unwrap_or(DEFAULT_RETRY_WAIT_SECS)
+    .min(MAX_RATE_LIMIT_WAIT_SECS)
 }
 
-fn parse_retry_after(headers: &HeaderMap, now: SystemTime) -> Option<u64> {
-    let value = headers.get("Retry-After")?.to_str().ok()?.trim();
+fn has_header(headers: &HeaderMap, name: &str) -> bool {
+    headers.get(name).is_some()
+}
+
+fn header_equals(headers: &HeaderMap, name: &str, expected: &str) -> bool {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .is_some_and(|value| value == expected)
+}
+
+fn parse_retry_after(headers: &HeaderMap, header_name: &str, now: SystemTime) -> Option<u64> {
+    let value = headers.get(header_name)?.to_str().ok()?.trim();
     if let Ok(seconds) = value.parse::<u64>() {
         return Some(seconds);
     }
@@ -540,8 +586,12 @@ fn parse_retry_after(headers: &HeaderMap, now: SystemTime) -> Option<u64> {
     Some(when.duration_since(now).unwrap_or_default().as_secs())
 }
 
-fn parse_rate_limit_reset(headers: &HeaderMap, now: SystemTime) -> Option<u64> {
-    let value = headers.get("X-RateLimit-Reset")?.to_str().ok()?.trim();
+fn parse_rate_limit_reset(
+    headers: &HeaderMap,
+    header_name: Option<&str>,
+    now: SystemTime,
+) -> Option<u64> {
+    let value = headers.get(header_name?)?.to_str().ok()?.trim();
     let reset_epoch = value.parse::<u64>().ok()?;
     let now_epoch = now.duration_since(UNIX_EPOCH).ok()?.as_secs();
     Some(reset_epoch.saturating_sub(now_epoch))
@@ -1090,11 +1140,11 @@ mod tests {
 
     use super::{
         HttpSourceClient, PageState, RequestSpec as HttpRequestSpec, apply_pagination_query_pairs,
-        execute_request, extract_next_link_url, extract_rows, join_url, normalize_base_url,
-        page_is_exhausted, rate_limit_wait_secs, resolve_value_source,
+        execute_request, extract_next_link_url, extract_rows, is_rate_limited_status, join_url,
+        normalize_base_url, page_is_exhausted, rate_limit_wait_secs, resolve_value_source,
     };
     use coral_spec::PaginationMode;
-    use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec};
+    use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec, RateLimitSpec};
     use coral_spec::{
         HttpMethod, PaginationSpec, ParsedTemplate, RequestSpec, RowStrategy,
         ValidatedPaginationMode, ValueSourceSpec, parse_source_manifest_value,
@@ -1591,6 +1641,7 @@ mod tests {
                 query_pairs: &query_pairs,
                 body: None,
                 source_schema: "demo",
+                rate_limit: &RateLimitSpec::default(),
                 filters: &filters,
                 state: &state,
                 source_secrets: &source_secrets,
@@ -1616,10 +1667,92 @@ mod tests {
         // Reset happened 1 second ago (epoch 1_700_000_099)
         headers.insert("X-RateLimit-Reset", HeaderValue::from_static("1700000099"));
 
-        let wait = rate_limit_wait_secs(&headers, now);
+        let wait = rate_limit_wait_secs(
+            &headers,
+            &RateLimitSpec {
+                reset_header: Some("X-RateLimit-Reset".to_string()),
+                ..RateLimitSpec::default()
+            },
+            now,
+        );
         assert_eq!(
             wait, 0,
             "past epoch means reset already happened; wait should be 0"
         );
+    }
+
+    #[test]
+    fn parse_manifest_accepts_source_rate_limit_policy() {
+        let manifest = parse_http_manifest(json!({
+            "dsl_version": 3,
+            "name": "alpha",
+            "version": "0.1.0",
+            "backend": "http",
+            "base_url": "https://api.example.com",
+            "rate_limit": {
+                "extra_statuses": [403],
+                "remaining_header": "X-RateLimit-Remaining",
+                "reset_header": "X-RateLimit-Reset",
+                "fallback_delay_seconds": 60
+            },
+            "tables": [{
+                "name": "items",
+                "description": "items",
+                "request": { "path": "/items" },
+                "columns": [{
+                    "name": "id",
+                    "type": "Utf8"
+                }]
+            }]
+        }));
+
+        assert_eq!(manifest.rate_limit.extra_statuses, vec![403]);
+        assert_eq!(
+            manifest.rate_limit.remaining_header.as_deref(),
+            Some("X-RateLimit-Remaining")
+        );
+    }
+
+    #[test]
+    fn github_style_403_requires_remaining_zero() {
+        let spec = RateLimitSpec {
+            extra_statuses: vec![403],
+            remaining_header: Some("X-RateLimit-Remaining".to_string()),
+            reset_header: Some("X-RateLimit-Reset".to_string()),
+            ..RateLimitSpec::default()
+        };
+
+        let mut headers = HeaderMap::new();
+        headers.insert("X-RateLimit-Reset", HeaderValue::from_static("1700000099"));
+
+        assert!(!is_rate_limited_status(
+            reqwest::StatusCode::FORBIDDEN,
+            &headers,
+            &spec
+        ));
+
+        headers.insert("X-RateLimit-Remaining", HeaderValue::from_static("0"));
+
+        assert!(is_rate_limited_status(
+            reqwest::StatusCode::FORBIDDEN,
+            &headers,
+            &spec
+        ));
+    }
+
+    #[test]
+    fn retry_after_alone_marks_extra_status_as_rate_limited() {
+        let spec = RateLimitSpec {
+            extra_statuses: vec![403],
+            ..RateLimitSpec::default()
+        };
+        let mut headers = HeaderMap::new();
+        headers.insert("Retry-After", HeaderValue::from_static("7"));
+
+        assert!(is_rate_limited_status(
+            reqwest::StatusCode::FORBIDDEN,
+            &headers,
+            &spec
+        ));
     }
 }

@@ -1,9 +1,14 @@
 name: github
-version: 1.1.5
+version: 1.1.6
 dsl_version: 3
 backend: http
 description: GitHub's v3 REST API.
 base_url: "{{variable.GITHUB_API_BASE|https://api.github.com}}"
+rate_limit:
+  extra_statuses: [403]
+  remaining_header: X-RateLimit-Remaining
+  reset_header: X-RateLimit-Reset
+  fallback_delay_seconds: 60
 auth:
   headers:
     - name: Authorization

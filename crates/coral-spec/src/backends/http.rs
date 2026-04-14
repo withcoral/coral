@@ -22,12 +22,29 @@ use crate::{
     validate_http_table,
 };
 
+/// Provider-specific response hints for classifying and delaying rate-limit retries.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct RateLimitSpec {
+    #[serde(default)]
+    pub extra_statuses: Vec<u16>,
+    #[serde(default)]
+    pub retry_after_header: Option<String>,
+    #[serde(default)]
+    pub remaining_header: Option<String>,
+    #[serde(default)]
+    pub reset_header: Option<String>,
+    #[serde(default)]
+    pub fallback_delay_seconds: Option<u64>,
+}
+
 /// Validated top-level manifest for an HTTP-backed source.
 #[derive(Debug, Clone)]
 pub struct HttpSourceManifest {
     pub common: SourceManifestCommon,
     pub base_url: ParsedTemplate,
     pub auth: AuthSpec,
+    pub rate_limit: RateLimitSpec,
     pub tables: Vec<HttpTableSpec>,
 }
 
@@ -44,6 +61,8 @@ struct RawHttpSourceManifest {
     base_url: ParsedTemplate,
     #[serde(default)]
     auth: AuthSpec,
+    #[serde(default)]
+    rate_limit: RateLimitSpec,
     tables: Vec<RawHttpTableSpec>,
 }
 
@@ -194,6 +213,7 @@ impl HttpSourceManifest {
             backend: _backend,
             base_url,
             auth,
+            rate_limit,
             tables,
         } = raw;
         let common = SourceManifestCommon::new(dsl_version, name, version, description);
@@ -217,6 +237,7 @@ impl HttpSourceManifest {
             common,
             base_url,
             auth,
+            rate_limit,
             tables,
         })
     }
