@@ -23,6 +23,7 @@ print_stderr = "warn"
 print_stdout = "warn"
 
 [workspace.dependencies]
+assert_cmd = "2"
 anyhow = "1"
 arrow = "57.3.0"
 async-trait = "0.1"

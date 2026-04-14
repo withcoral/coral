@@ -1,0 +1,209 @@
+use std::sync::Arc;
+
+use arrow::array::Int64Array;
+use arrow::datatypes::{DataType, Field, Schema};
+use arrow::ipc::writer::StreamWriter;
+use arrow::record_batch::RecordBatch;
+use assert_cmd::Command;
+use coral_api::v1::query_service_server::{QueryService, QueryServiceServer};
+use coral_api::v1::source_service_server::{SourceService, SourceServiceServer};
+use coral_api::v1::{
+    CreateBundledSourceRequest, DeleteSourceRequest, DiscoverSourcesRequest,
+    DiscoverSourcesResponse, ExecuteSqlRequest, ExecuteSqlResponse, GetSourceRequest,
+    ImportSourceRequest, ListSourcesRequest, ListSourcesResponse, ListTablesRequest,
+    ListTablesResponse, Source, SourceOrigin, ValidateSourceRequest, ValidateSourceResponse,
+    Workspace,
+};
+use tokio::net::TcpListener;
+use tokio::sync::oneshot;
+use tokio::task::JoinHandle;
+use tokio_stream::wrappers::TcpListenerStream;
+use tonic::transport::Server;
+use tonic::{Request, Response, Status};
+
+fn workspace() -> Workspace {
+    Workspace {
+        name: "default".to_string(),
+    }
+}
+
+fn mock_source() -> Source {
+    Source {
+        workspace: Some(workspace()),
+        name: "github".to_string(),
+        version: "1.0.0".to_string(),
+        secrets: Vec::new(),
+        variables: Vec::new(),
+        origin: SourceOrigin::Bundled as i32,
+    }
+}
+
+fn encode_arrow_ipc_stream(
+    schema: &Schema,
+    batches: &[RecordBatch],
+) -> Result<Vec<u8>, arrow::error::ArrowError> {
+    let mut bytes = Vec::new();
+    {
+        let mut writer = StreamWriter::try_new(&mut bytes, schema)?;
+        for batch in batches {
+            writer.write(batch)?;
+        }
+        writer.finish()?;
+    }
+    Ok(bytes)
+}
+
+#[derive(Clone)]
+struct MockQueryService;
+
+#[tonic::async_trait]
+impl QueryService for MockQueryService {
+    async fn list_tables(
+        &self,
+        _request: Request<ListTablesRequest>,
+    ) -> Result<Response<ListTablesResponse>, Status> {
+        Ok(Response::new(ListTablesResponse {
+            tables: Vec::new(),
+        }))
+    }
+
+    async fn execute_sql(
+        &self,
+        _request: Request<ExecuteSqlRequest>,
+    ) -> Result<Response<ExecuteSqlResponse>, Status> {
+        let schema = Schema::new(vec![Field::new("value", DataType::Int64, false)]);
+        let batch = RecordBatch::try_new(
+            Arc::new(schema.clone()),
+            vec![Arc::new(Int64Array::from(vec![1_i64]))],
+        )
+        .expect("build record batch");
+
+        Ok(Response::new(ExecuteSqlResponse {
+            arrow_ipc_stream: encode_arrow_ipc_stream(&schema, &[batch])
+                .expect("encode arrow ipc"),
+            row_count: 1,
+        }))
+    }
+}
+
+#[derive(Clone)]
+struct MockSourceService;
+
+#[tonic::async_trait]
+impl SourceService for MockSourceService {
+    async fn discover_sources(
+        &self,
+        _request: Request<DiscoverSourcesRequest>,
+    ) -> Result<Response<DiscoverSourcesResponse>, Status> {
+        Ok(Response::new(DiscoverSourcesResponse {
+            sources: Vec::new(),
+        }))
+    }
+
+    async fn list_sources(
+        &self,
+        _request: Request<ListSourcesRequest>,
+    ) -> Result<Response<ListSourcesResponse>, Status> {
+        Ok(Response::new(ListSourcesResponse {
+            sources: vec![
+                Source {
+                    workspace: Some(workspace()),
+                    name: "github".to_string(),
+                    version: "1.0.0".to_string(),
+                    secrets: Vec::new(),
+                    variables: Vec::new(),
+                    origin: SourceOrigin::Bundled as i32,
+                },
+                Source {
+                    workspace: Some(workspace()),
+                    name: "jira".to_string(),
+                    version: "2.0.0".to_string(),
+                    secrets: Vec::new(),
+                    variables: Vec::new(),
+                    origin: SourceOrigin::Imported as i32,
+                },
+            ],
+        }))
+    }
+
+    async fn get_source(
+        &self,
+        _request: Request<GetSourceRequest>,
+    ) -> Result<Response<Source>, Status> {
+        Ok(Response::new(mock_source()))
+    }
+
+    async fn create_bundled_source(
+        &self,
+        _request: Request<CreateBundledSourceRequest>,
+    ) -> Result<Response<Source>, Status> {
+        Ok(Response::new(mock_source()))
+    }
+
+    async fn import_source(
+        &self,
+        _request: Request<ImportSourceRequest>,
+    ) -> Result<Response<Source>, Status> {
+        Ok(Response::new(mock_source()))
+    }
+
+    async fn delete_source(
+        &self,
+        _request: Request<DeleteSourceRequest>,
+    ) -> Result<Response<()>, Status> {
+        Ok(Response::new(()))
+    }
+
+    async fn validate_source(
+        &self,
+        _request: Request<ValidateSourceRequest>,
+    ) -> Result<Response<ValidateSourceResponse>, Status> {
+        Ok(Response::new(ValidateSourceResponse {
+            source: Some(mock_source()),
+            tables: Vec::new(),
+        }))
+    }
+}
+
+pub(crate) struct MockServer {
+    endpoint_uri: String,
+    shutdown_tx: Option<oneshot::Sender<()>>,
+    task: JoinHandle<Result<(), tonic::transport::Error>>,
+}
+
+impl MockServer {
+    pub(crate) async fn start() -> Self {
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind mock server");
+        let endpoint_uri = format!("http://{}", listener.local_addr().expect("local addr"));
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let task = tokio::spawn(async move {
+            Server::builder()
+                .add_service(QueryServiceServer::new(MockQueryService))
+                .add_service(SourceServiceServer::new(MockSourceService))
+                .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+        });
+        Self {
+            endpoint_uri,
+            shutdown_tx: Some(shutdown_tx),
+            task,
+        }
+    }
+
+    pub(crate) fn cmd(&self) -> Command {
+        let mut cmd = Command::cargo_bin("coral").expect("cargo bin");
+        cmd.args(["--server", &self.endpoint_uri]);
+        cmd
+    }
+
+    pub(crate) async fn shutdown(mut self) {
+        if let Some(tx) = self.shutdown_tx.take() {
+            let _ = tx.send(());
+        }
+        self.task.await.expect("join").expect("server");
+    }
+}

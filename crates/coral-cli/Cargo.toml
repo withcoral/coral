@@ -29,4 +29,10 @@ coral-spec.workspace = true
 coral-mcp.workspace = true
 
 [dev-dependencies]
+assert_cmd.workspace = true
+arrow.workspace = true
+tokio.workspace = true
 tokio-stream.workspace = true
+tonic.workspace = true
+
+coral-api.workspace = true
