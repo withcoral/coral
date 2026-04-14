@@ -36,6 +36,7 @@ mod query;
 mod sources;
 mod state;
 mod storage;
+mod transport;
 mod workspaces;
 
 pub use bootstrap::{AppError, RunningServer, ServerBuilder};
