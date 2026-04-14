@@ -40,13 +40,13 @@ pub mod v1 {
     tonic::include_proto!("coral.v1");
 }
 
-/// Maximum gRPC message size for the local `QueryService` transport, in
-/// bytes.
+/// Maximum gRPC message size for `QueryService` *responses*, in bytes.
 ///
 /// `ExecuteSql` is a unary RPC that returns the full Arrow IPC result in
 /// one message. Tonic's default of 4 MB is easily exceeded by wide
-/// manifests like `github.search_issues`
-pub const QUERY_SERVICE_MAX_MESSAGE_SIZE: usize = 64 * 1024 * 1024;
+/// manifests like `github.search_issues`. Only the response direction
+/// needs the bump — requests are small SQL strings.
+pub const QUERY_RESPONSE_MAX_MESSAGE_SIZE: usize = 64 * 1024 * 1024;
 
 /// HTTP/2 `SETTINGS_MAX_HEADER_LIST_SIZE` for the local Coral transport,
 /// in bytes.

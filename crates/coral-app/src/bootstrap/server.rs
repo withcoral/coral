@@ -6,7 +6,7 @@ use std::sync::Mutex;
 
 use coral_api::v1::query_service_server::QueryServiceServer;
 use coral_api::v1::source_service_server::SourceServiceServer;
-use coral_api::{HTTP2_MAX_HEADER_LIST_SIZE, QUERY_SERVICE_MAX_MESSAGE_SIZE};
+use coral_api::{HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
@@ -180,8 +180,7 @@ async fn start_server(
             .add_service(SourceServiceServer::new(source_service))
             .add_service(
                 QueryServiceServer::new(query_service)
-                    .max_encoding_message_size(QUERY_SERVICE_MAX_MESSAGE_SIZE)
-                    .max_decoding_message_size(QUERY_SERVICE_MAX_MESSAGE_SIZE),
+                    .max_encoding_message_size(QUERY_RESPONSE_MAX_MESSAGE_SIZE),
             )
             .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
                 let _ = shutdown_rx.await;
@@ -201,7 +200,7 @@ mod tests {
     use coral_api::v1::query_service_client::QueryServiceClient;
     use coral_api::v1::source_service_client::SourceServiceClient;
     use coral_api::v1::{ExecuteSqlRequest, ImportSourceRequest, Workspace};
-    use coral_api::{HTTP2_MAX_HEADER_LIST_SIZE, QUERY_SERVICE_MAX_MESSAGE_SIZE};
+    use coral_api::{HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE};
     use coral_engine::QueryRuntimeContext;
     use tempfile::TempDir;
     use tonic::Request;
@@ -257,8 +256,7 @@ mod tests {
             .expect("connect");
         let mut source_client = SourceServiceClient::new(channel.clone());
         let mut query_client = QueryServiceClient::new(channel)
-            .max_decoding_message_size(QUERY_SERVICE_MAX_MESSAGE_SIZE)
-            .max_encoding_message_size(QUERY_SERVICE_MAX_MESSAGE_SIZE);
+            .max_decoding_message_size(QUERY_RESPONSE_MAX_MESSAGE_SIZE);
 
         source_client
             .import_source(Request::new(ImportSourceRequest {
@@ -332,8 +330,7 @@ tables:
             .await
             .expect("connect");
         let mut query_client = QueryServiceClient::new(channel)
-            .max_decoding_message_size(QUERY_SERVICE_MAX_MESSAGE_SIZE)
-            .max_encoding_message_size(QUERY_SERVICE_MAX_MESSAGE_SIZE);
+            .max_decoding_message_size(QUERY_RESPONSE_MAX_MESSAGE_SIZE);
 
         // No underscore separator — DataFusion's SQL parser is conservative
         // about numeric literal formats.
@@ -421,8 +418,7 @@ tables:
             .expect("connect");
         let mut source_client = SourceServiceClient::new(channel.clone());
         let mut query_client = QueryServiceClient::new(channel)
-            .max_decoding_message_size(QUERY_SERVICE_MAX_MESSAGE_SIZE)
-            .max_encoding_message_size(QUERY_SERVICE_MAX_MESSAGE_SIZE);
+            .max_decoding_message_size(QUERY_RESPONSE_MAX_MESSAGE_SIZE);
 
         source_client
             .import_source(Request::new(ImportSourceRequest {
