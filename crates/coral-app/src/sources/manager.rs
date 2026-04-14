@@ -226,10 +226,14 @@ impl SourceManager {
             }
         };
 
+        let persisted_version = match request.origin {
+            ManagedSourceOrigin::Bundled => String::new(),
+            ManagedSourceOrigin::Imported => request.available.version.clone(),
+        };
         let stored = ManagedSource {
             workspace: workspace.clone(),
             name: source_name.clone(),
-            version: String::new(),
+            version: persisted_version,
             variables: request.bindings.variables,
             secrets: persisted_secrets,
             origin: request.origin,

@@ -10,7 +10,7 @@ use coral_engine::{
     CoralQuery, CoreError, QueryExecution, QueryRuntimeContext, QueryRuntimeProvider, QuerySource,
     TableInfo,
 };
-use coral_spec::{ManifestInputKind, collect_source_inputs_yaml, parse_source_manifest_yaml};
+use coral_spec::{ManifestInputKind, ManifestInputSpec, parse_manifest_and_inputs};
 
 use crate::sources::catalog::resolve_installed_manifest;
 
@@ -102,7 +102,6 @@ impl QueryManager {
         for source in self.config_store.list_workspace_sources(workspace)? {
             match self.load_query_source(&source) {
                 Ok((query_source, _version)) => query_sources.push(query_source),
-                Err(error @ AppError::FailedPrecondition(_)) => return Err(error),
                 Err(error) => {
                     tracing::warn!(
                         source = %source.name,
@@ -118,9 +117,9 @@ impl QueryManager {
     fn load_query_source(&self, source: &ManagedSource) -> Result<(QuerySource, String), AppError> {
         let installed = resolve_installed_manifest(source, &self.layout)?;
         let manifest_yaml = installed.manifest_yaml;
-        let source_spec = parse_source_manifest_yaml(&manifest_yaml)
+        let (source_spec, inputs) = parse_manifest_and_inputs(&manifest_yaml)
             .map_err(|error| AppError::InvalidInput(error.to_string()))?;
-        validate_required_variables(source, &manifest_yaml)?;
+        validate_required_variables(source, &inputs)?;
         let stored_secrets = self
             .secret_store
             .read_source_secrets_for(&source.workspace, &source.name)?;
@@ -137,8 +136,8 @@ impl QueryManager {
                 format!("secret '{first}' and {} other(s)", rest.len())
             };
             return Err(AppError::FailedPrecondition(format!(
-                "source '{}' is missing {detail} — re-run `coral source add {}` to update",
-                source.name, source.name
+                "source '{}' is missing {detail}",
+                source.name
             )));
         }
         for secret_name in source_spec.required_secret_names() {
@@ -171,12 +170,10 @@ impl QueryRuntimeProvider for RuntimeProvider {
 
 fn validate_required_variables(
     source: &ManagedSource,
-    manifest_yaml: &str,
+    inputs: &[ManifestInputSpec],
 ) -> Result<(), AppError> {
-    let inputs = collect_source_inputs_yaml(manifest_yaml)
-        .map_err(|error| AppError::InvalidInput(error.to_string()))?;
     let missing: Vec<_> = inputs
-        .into_iter()
+        .iter()
         .filter(|input| {
             input.kind == ManifestInputKind::Variable
                 && input.required
@@ -190,8 +187,8 @@ fn validate_required_variables(
             format!("variable '{}' and {} other(s)", first.key, rest.len())
         };
         return Err(AppError::FailedPrecondition(format!(
-            "source '{}' is missing {detail} — re-run `coral source add {}` to update",
-            source.name, source.name
+            "source '{}' is missing {detail}",
+            source.name
         )));
     }
     Ok(())
