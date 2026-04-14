@@ -27,6 +27,7 @@ use coral_client::{
     AppClient, ClientBuilder, decode_execute_sql_response, default_workspace, format_batches_json,
     format_batches_table,
 };
+use tokio as _;
 use tonic::Request;
 
 #[cfg(test)]
