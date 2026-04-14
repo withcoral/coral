@@ -37,31 +37,31 @@ tables:
         type: Utf8
         nullable: false
         description: Stream name
-        expr: { kind: path, path: [name] }
+        expr: {kind: path, path: [name]}
       - name: stream_type
         type: Utf8
         nullable: true
         description: "Stream type (logs, metrics, traces). Also a virtual filter."
-        expr: { kind: path, path: [stream_type] }
+        expr: {kind: path, path: [stream_type]}
       - name: storage_type
         type: Utf8
         nullable: true
-        expr: { kind: path, path: [storage_type] }
+        expr: {kind: path, path: [storage_type]}
       - name: doc_num
         type: Int64
         nullable: true
         description: Number of documents
-        expr: { kind: path, path: [stats, doc_num] }
+        expr: {kind: path, path: [stats, doc_num]}
       - name: storage_size
         type: Float64
         nullable: true
         description: Storage size in bytes
-        expr: { kind: path, path: [stats, storage_size] }
+        expr: {kind: path, path: [stats, storage_size]}
       - name: compressed_size
         type: Float64
         nullable: true
         description: Compressed size in bytes
-        expr: { kind: path, path: [stats, compressed_size] }
+        expr: {kind: path, path: [stats, compressed_size]}
     filters:
       - name: stream_type
 
@@ -100,49 +100,49 @@ tables:
         type: Int64
         nullable: false
         description: "Event timestamp in microseconds"
-        expr: { kind: path, path: [_timestamp] }
+        expr: {kind: path, path: [_timestamp]}
       - name: body
         type: Utf8
         nullable: true
         description: "Log message body (OTLP log content)"
-        expr: { kind: path, path: [body] }
+        expr: {kind: path, path: [body]}
       - name: severity
         type: Utf8
         nullable: true
         description: "Log severity level"
-        expr: { kind: path, path: [severity] }
+        expr: {kind: path, path: [severity]}
       - name: service_name
         type: Utf8
         nullable: true
         description: "Service that emitted the log"
-        expr: { kind: path, path: [service_name] }
+        expr: {kind: path, path: [service_name]}
       - name: event_name
         type: Utf8
         nullable: true
         description: "Event name"
-        expr: { kind: path, path: [event_name] }
+        expr: {kind: path, path: [event_name]}
       - name: session_id
         type: Utf8
         nullable: true
         description: "Session identifier"
-        expr: { kind: path, path: [session_id] }
+        expr: {kind: path, path: [session_id]}
       - name: stream
         type: Utf8
         nullable: true
         description: "OpenObserve stream name (virtual filter, required)"
-        expr: { kind: 'null' }
+        expr: {kind: 'null'}
         virtual: true
       - name: start_time
         type: Int64
         nullable: true
         description: "Start time in microseconds (virtual filter, required)"
-        expr: { kind: 'null' }
+        expr: {kind: 'null'}
         virtual: true
       - name: end_time
         type: Int64
         nullable: true
         description: "End time in microseconds (virtual filter, required)"
-        expr: { kind: 'null' }
+        expr: {kind: 'null'}
         virtual: true
     filters:
       - name: stream
@@ -191,49 +191,49 @@ tables:
         type: Int64
         nullable: false
         description: "Event timestamp in microseconds"
-        expr: { kind: path, path: [_timestamp] }
+        expr: {kind: path, path: [_timestamp]}
       - name: metric_name
         type: Utf8
         nullable: true
         description: "Metric name"
-        expr: { kind: path, path: [__name__] }
+        expr: {kind: path, path: [__name__]}
       - name: value
         type: Float64
         nullable: true
         description: "Metric value"
-        expr: { kind: path, path: [value] }
+        expr: {kind: path, path: [value]}
       - name: service_name
         type: Utf8
         nullable: true
         description: "Service that emitted the metric"
-        expr: { kind: path, path: [service_name] }
+        expr: {kind: path, path: [service_name]}
       - name: model
         type: Utf8
         nullable: true
         description: "Model name (for AI-related metrics)"
-        expr: { kind: path, path: [model] }
+        expr: {kind: path, path: [model]}
       - name: session_id
         type: Utf8
         nullable: true
         description: "Session identifier"
-        expr: { kind: path, path: [session_id] }
+        expr: {kind: path, path: [session_id]}
       - name: stream
         type: Utf8
         nullable: true
         description: "OpenObserve metric stream name (virtual filter, required)"
-        expr: { kind: 'null' }
+        expr: {kind: 'null'}
         virtual: true
       - name: start_time
         type: Int64
         nullable: true
         description: "Start time in microseconds (virtual filter, required)"
-        expr: { kind: 'null' }
+        expr: {kind: 'null'}
         virtual: true
       - name: end_time
         type: Int64
         nullable: true
         description: "End time in microseconds (virtual filter, required)"
-        expr: { kind: 'null' }
+        expr: {kind: 'null'}
         virtual: true
     filters:
       - name: stream
@@ -281,59 +281,59 @@ tables:
         type: Int64
         nullable: false
         description: "Event timestamp in microseconds"
-        expr: { kind: path, path: [_timestamp] }
+        expr: {kind: path, path: [_timestamp]}
       - name: trace_id
         type: Utf8
         nullable: false
         description: "Trace identifier grouping related spans"
-        expr: { kind: path, path: [trace_id] }
+        expr: {kind: path, path: [trace_id]}
       - name: span_id
         type: Utf8
         nullable: false
         description: "Unique span identifier"
-        expr: { kind: path, path: [span_id] }
+        expr: {kind: path, path: [span_id]}
       - name: operation_name
         type: Utf8
         nullable: true
         description: "Span operation name"
-        expr: { kind: path, path: [operation_name] }
+        expr: {kind: path, path: [operation_name]}
       - name: service_name
         type: Utf8
         nullable: true
         description: "Service that emitted the span"
-        expr: { kind: path, path: [service_name] }
+        expr: {kind: path, path: [service_name]}
       - name: duration
         type: Int64
         nullable: true
         description: "Span duration in microseconds"
-        expr: { kind: path, path: [duration] }
+        expr: {kind: path, path: [duration]}
       - name: span_kind
         type: Utf8
         nullable: true
         description: "Span kind (1=Internal, 2=Server, 3=Client, 4=Producer, 5=Consumer)"
-        expr: { kind: path, path: [span_kind] }
+        expr: {kind: path, path: [span_kind]}
       - name: span_status
         type: Utf8
         nullable: true
         description: "Span status (OK, ERROR, UNSET)"
-        expr: { kind: path, path: [span_status] }
+        expr: {kind: path, path: [span_status]}
       - name: stream
         type: Utf8
         nullable: true
         description: "OpenObserve trace stream name (virtual filter, required)"
-        expr: { kind: 'null' }
+        expr: {kind: 'null'}
         virtual: true
       - name: start_time
         type: Int64
         nullable: true
         description: "Start time in microseconds (virtual filter, required)"
-        expr: { kind: 'null' }
+        expr: {kind: 'null'}
         virtual: true
       - name: end_time
         type: Int64
         nullable: true
         description: "End time in microseconds (virtual filter, required)"
-        expr: { kind: 'null' }
+        expr: {kind: 'null'}
         virtual: true
     filters:
       - name: stream
