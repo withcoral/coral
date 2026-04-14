@@ -226,12 +226,16 @@ pub(crate) fn fixture_manifest_with_inputs_yaml() -> String {
         "version": "0.1.0",
         "dsl_version": 3,
         "backend": "http",
-        "base_url": "{{variable.API_BASE|https://example.com}}",
+        "inputs": {
+            "API_BASE": { "kind": "variable", "default": "https://example.com" },
+            "API_TOKEN": { "kind": "secret" },
+        },
+        "base_url": "{{input.API_BASE}}",
         "auth": {
             "headers": [{
                 "name": "Authorization",
                 "from": "template",
-                "template": "Bearer {{secret.API_TOKEN}}",
+                "template": "Bearer {{input.API_TOKEN}}",
             }],
         },
         "tables": [{
@@ -255,12 +259,16 @@ pub(crate) fn fixture_manifest_with_required_inputs_yaml() -> String {
         "version": "0.1.0",
         "dsl_version": 3,
         "backend": "http",
-        "base_url": "{{variable.API_BASE}}",
+        "inputs": {
+            "API_BASE": { "kind": "variable" },
+            "API_TOKEN": { "kind": "secret" },
+        },
+        "base_url": "{{input.API_BASE}}",
         "auth": {
             "headers": [{
                 "name": "Authorization",
                 "from": "template",
-                "template": "Bearer {{secret.API_TOKEN}}",
+                "template": "Bearer {{input.API_TOKEN}}",
             }],
         },
         "tables": [{

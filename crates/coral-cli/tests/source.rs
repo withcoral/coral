@@ -18,11 +18,14 @@ fn source_test_errors_when_required_secret_is_missing() {
     dsl_version: 3
     backend: http
     base_url: https://example.com
+    inputs:
+      TEST_API_KEY:
+        kind: secret
     auth:
       headers:
         - name: Authorization
           from: template
-          template: "{{secret.TEST_API_KEY}}"
+          template: "{{input.TEST_API_KEY}}"
     tables:
       - name: dummy
         description: dummy table

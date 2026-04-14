@@ -9,7 +9,7 @@ use coral_api::v1::{
 };
 use coral_client::{AppClient, default_workspace};
 use coral_spec::{
-    ManifestInputKind, ManifestInputSpec, ValidatedSourceManifest, parse_manifest_and_inputs,
+    ManifestInputKind, ManifestInputSpec, ValidatedSourceManifest, parse_source_manifest_yaml,
 };
 use dialoguer::console::style;
 use dialoguer::{Input, Password, theme::ColorfulTheme};
@@ -107,10 +107,10 @@ pub(crate) async fn validate_source(
 
 pub(crate) fn load_validated_manifest_file(
     file: &Path,
-) -> Result<(String, ValidatedSourceManifest, Vec<ManifestInputSpec>), anyhow::Error> {
+) -> Result<(String, ValidatedSourceManifest), anyhow::Error> {
     let manifest_yaml = std::fs::read_to_string(file)?;
-    let (manifest, inputs) = parse_manifest_and_inputs(manifest_yaml.as_str())?;
-    Ok((manifest_yaml, manifest, inputs))
+    let manifest = parse_source_manifest_yaml(manifest_yaml.as_str())?;
+    Ok((manifest_yaml, manifest))
 }
 
 pub(crate) async fn delete_source(app: &AppClient, name: &str) -> Result<(), anyhow::Error> {
@@ -185,6 +185,11 @@ pub(crate) fn manifest_input_from_proto(
         kind,
         required: input.required,
         default_value: input.default_value.clone(),
+        hint: if input.hint.is_empty() {
+            None
+        } else {
+            Some(input.hint.clone())
+        },
     })
 }
 
@@ -272,6 +277,7 @@ pub(crate) fn print_validation_pretty(
 
 fn prompt_variable(input: &ManifestInputSpec) -> Result<Option<SourceVariable>, anyhow::Error> {
     let theme = ColorfulTheme::default();
+    print_input_hint(input);
     let prompt = if input.default_value.is_empty() {
         input.key.clone()
     } else {
@@ -292,6 +298,7 @@ fn prompt_variable(input: &ManifestInputSpec) -> Result<Option<SourceVariable>, 
 
 fn prompt_secret(input: &ManifestInputSpec) -> Result<Option<SourceSecret>, anyhow::Error> {
     let theme = ColorfulTheme::default();
+    print_input_hint(input);
     let prompt = if input.default_value.is_empty() {
         input.key.clone()
     } else {
@@ -308,6 +315,14 @@ fn prompt_secret(input: &ManifestInputSpec) -> Result<Option<SourceSecret>, anyh
         key: input.key.clone(),
         value,
     }))
+}
+
+fn print_input_hint(input: &ManifestInputSpec) {
+    if let Some(hint) = input.hint.as_deref()
+        && !hint.is_empty()
+    {
+        println!("  {}", style(hint).dim());
+    }
 }
 
 pub(crate) fn finalize_input_value(
@@ -343,6 +358,7 @@ mod tests {
             kind: ManifestInputKind::Variable,
             required: false,
             default_value: "https://example.com".to_string(),
+            hint: None,
         };
         assert_eq!(
             finalize_input_value(&input, String::new(), "source variable")
@@ -358,6 +374,7 @@ mod tests {
             kind: ManifestInputKind::Secret,
             required: true,
             default_value: String::new(),
+            hint: None,
         };
         let error = finalize_input_value(&input, String::new(), "source secret")
             .expect_err("required empty input should fail");

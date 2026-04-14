@@ -233,10 +233,8 @@ fn validate_expr_template(
                     )));
                 }
             }
-            TemplateNamespace::Secret
-            | TemplateNamespace::Variable
+            TemplateNamespace::Input
             | TemplateNamespace::State
-            | TemplateNamespace::Env
             | TemplateNamespace::Other(_) => {
                 return Err(ManifestError::validation(format!(
                     "{context} uses unsupported expr template token '{}'",
@@ -266,7 +264,7 @@ pub(crate) fn validate_template(
                 }
             }
             TemplateNamespace::Input | TemplateNamespace::State => {}
-            TemplateNamespace::Other(_) => {
+            TemplateNamespace::Expr | TemplateNamespace::Other(_) => {
                 return Err(ManifestError::validation(format!(
                     "{context} uses unsupported template token '{}'",
                     token.raw()

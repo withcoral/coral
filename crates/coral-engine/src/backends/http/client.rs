@@ -720,16 +720,11 @@ fn resolve_value_source(
             };
             Ok(value)
         }
-        ValueSourceSpec::Secret { key, default } => Ok(source_secrets
+        ValueSourceSpec::Input { key } => Ok(source_secrets
             .get(key)
+            .or_else(|| source_variables.get(key))
             .cloned()
-            .map(Value::String)
-            .or_else(|| default.clone().map(Value::String))),
-        ValueSourceSpec::Variable { key, default } => Ok(source_variables
-            .get(key)
-            .cloned()
-            .map(Value::String)
-            .or_else(|| default.clone().map(Value::String))),
+            .map(Value::String)),
         ValueSourceSpec::State { key } => Ok(state.get(key).map(|v| Value::String(v.clone()))),
         ValueSourceSpec::NowEpochMinusSeconds { seconds } => {
             #[allow(
@@ -788,14 +783,15 @@ fn resolve_template_token(
 ) -> Result<String> {
     let default = token.default_value().map(ToString::to_string);
 
-    if token.namespace() == &TemplateNamespace::Secret {
+    if token.namespace() == &TemplateNamespace::Input {
         return source_secrets
             .get(token.key())
+            .or_else(|| source_variables.get(token.key()))
             .cloned()
             .or(default)
             .ok_or_else(|| {
                 DataFusionError::Execution(format!(
-                    "missing source secret '{}' for template token",
+                    "missing source input '{}' for template token",
                     token.key()
                 ))
             });
@@ -808,16 +804,6 @@ fn resolve_template_token(
             .or(default)
             .ok_or_else(|| {
                 DataFusionError::Execution(format!("missing filter '{}'", token.key()))
-            });
-    }
-
-    if token.namespace() == &TemplateNamespace::Variable {
-        return source_variables
-            .get(token.key())
-            .cloned()
-            .or(default)
-            .ok_or_else(|| {
-                DataFusionError::Execution(format!("missing source variable '{}'", token.key()))
             });
     }
 
@@ -1154,15 +1140,9 @@ mod tests {
                 "key": key,
                 "default": default,
             }),
-            ValueSourceSpec::Variable { key, default } => json!({
-                "from": "variable",
+            ValueSourceSpec::Input { key } => json!({
+                "from": "input",
                 "key": key,
-                "default": default,
-            }),
-            ValueSourceSpec::Secret { key, default } => json!({
-                "from": "secret",
-                "key": key,
-                "default": default,
             }),
             ValueSourceSpec::Template { template } => json!({
                 "from": "template",
@@ -1261,16 +1241,15 @@ mod tests {
         let source_secrets = BTreeMap::from([("API_KEY".to_string(), "alpha-secret".to_string())]);
 
         let value = resolve_value_source(
-            &ValueSourceSpec::Secret {
+            &ValueSourceSpec::Input {
                 key: "API_KEY".to_string(),
-                default: None,
             },
             &HashMap::new(),
             &HashMap::new(),
             &source_secrets,
             &BTreeMap::new(),
         )
-        .expect("secret lookup should succeed");
+        .expect("input lookup should succeed");
 
         assert_eq!(value, Some(json!("alpha-secret")));
     }

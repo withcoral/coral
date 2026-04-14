@@ -6,7 +6,7 @@ use coral_engine::{
     CoralQuery, CoreError, QueryExecution, QueryRuntimeContext, QueryRuntimeProvider, QuerySource,
     TableInfo,
 };
-use coral_spec::{ManifestInputKind, ManifestInputSpec, parse_manifest_and_inputs};
+use coral_spec::{ManifestInputKind, ManifestInputSpec, parse_source_manifest_yaml};
 
 use crate::bootstrap::AppError;
 use crate::sources::SourceName;
@@ -126,9 +126,9 @@ impl QueryManager {
     ) -> Result<(QuerySource, String), AppError> {
         let installed = resolve_installed_manifest(workspace_name, source, &self.layout)?;
         let manifest_yaml = installed.manifest_yaml;
-        let (source_spec, inputs) = parse_manifest_and_inputs(&manifest_yaml)
+        let source_spec = parse_source_manifest_yaml(&manifest_yaml)
             .map_err(|error| AppError::InvalidInput(error.to_string()))?;
-        validate_required_variables(source, &inputs)?;
+        validate_required_variables(source, source_spec.declared_inputs())?;
         let stored_secrets = self
             .secret_store
             .read_source_secrets_for(workspace_name, &source.name)?;
