@@ -3,11 +3,15 @@ name: clickup
 version: '2.0'
 description: Manage tasks, spaces, folders, lists, goals, and time tracking
 backend: http
+inputs:
+  CLICKUP_API_TOKEN:
+    kind: secret
+    hint: Create a personal token in ClickUp → Settings → Apps
 base_url: https://api.clickup.com/api
 auth:
   headers:
     - name: Authorization
-      from: secret
+      from: input
       key: CLICKUP_API_TOKEN
 tables:
   - name: current

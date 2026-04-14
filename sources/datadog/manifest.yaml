@@ -3,14 +3,25 @@ version: 2.0.0
 dsl_version: 3
 backend: http
 description: Monitor infrastructure, track incidents, and analyze logs and APM traces
-base_url: https://api.{{variable.DD_SITE|datadoghq.com}}
+inputs:
+  DD_SITE:
+    kind: variable
+    default: datadoghq.com
+    hint: Datadog site host (e.g. datadoghq.com, datadoghq.eu, us3.datadoghq.com)
+  DD_API_KEY:
+    kind: secret
+    hint: Create an API key in Datadog → Organization Settings → API Keys
+  DD_APPLICATION_KEY:
+    kind: secret
+    hint: Create an application key in Datadog → Organization Settings → Application Keys
+base_url: https://api.{{input.DD_SITE}}
 auth:
   headers:
     - name: DD-API-KEY
-      from: secret
+      from: input
       key: DD_API_KEY
     - name: DD-APPLICATION-KEY
-      from: secret
+      from: input
       key: DD_APPLICATION_KEY
 tables:
   - name: monitors

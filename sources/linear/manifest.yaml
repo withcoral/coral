@@ -3,12 +3,16 @@ version: 2.2.0
 dsl_version: 3
 backend: http
 description: Manage issues, projects, cycles, and initiatives across teams
+inputs:
+  LINEAR_API_KEY:
+    kind: secret
+    hint: Create a personal API key in Linear → Settings → API
 base_url: https://api.linear.app
 auth:
   headers:
     - name: Authorization
       from: template
-      template: "{{secret.LINEAR_API_KEY}}"
+      template: "{{input.LINEAR_API_KEY}}"
 tables:
   - name: teams
     description: Teams in the Linear workspace

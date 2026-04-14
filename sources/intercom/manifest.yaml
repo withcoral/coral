@@ -3,14 +3,16 @@ version: 0.1.0
 dsl_version: 3
 backend: http
 description: Customer messaging platform for support, engagement, and marketing
+inputs:
+  INTERCOM_ACCESS_TOKEN:
+    kind: secret
+    hint: Create an access token in Intercom → Settings → Developers → Developer Hub
 base_url: https://api.intercom.io
 auth:
-  required_secrets:
-    - INTERCOM_ACCESS_TOKEN
   headers:
     - name: Authorization
       from: template
-      template: Bearer {{secret.INTERCOM_ACCESS_TOKEN}}
+      template: Bearer {{input.INTERCOM_ACCESS_TOKEN}}
     - name: Intercom-Version
       from: literal
       value: "2.11"
