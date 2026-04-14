@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 
-use tonic_types::StatusExt as _;
+use tonic_types::{ErrorDetail, StatusExt as _};
 
 /// Coral error domain used in `google.rpc.ErrorInfo`.
 pub const CORAL_ERROR_DOMAIN: &str = "coral.withcoral.com";
@@ -54,28 +54,28 @@ pub struct CoralQueryError {
 /// the function returns `Plain(status.message())`.
 #[must_use]
 pub fn decode_status_error(status: &tonic::Status) -> DecodedStatusError {
-    let details = status.details();
+    let details = status.get_error_details_vec();
+
     if details.is_empty() {
         return DecodedStatusError::Plain(status.message().to_string());
     }
 
-    let error_details = status.get_error_details_vec();
-
-    let mut coral_error_info = None;
+    let mut error_info = None;
     let mut retryable = false;
 
-    for detail in &error_details {
-        if let tonic_types::ErrorDetail::ErrorInfo(info) = detail
-            && info.domain == CORAL_ERROR_DOMAIN
-        {
-            coral_error_info = Some(info.clone());
-        }
-        if matches!(detail, tonic_types::ErrorDetail::RetryInfo(_)) {
-            retryable = true;
+    for detail in details {
+        match detail {
+            ErrorDetail::ErrorInfo(info) if info.domain == CORAL_ERROR_DOMAIN => {
+                error_info = Some(info);
+            }
+            ErrorDetail::RetryInfo(_) => {
+                retryable = true;
+            }
+            _ => {}
         }
     }
 
-    match coral_error_info {
+    match error_info {
         Some(info) => DecodedStatusError::Structured(Box::new(CoralQueryError {
             reason: info.reason,
             metadata: info.metadata,
