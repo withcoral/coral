@@ -265,8 +265,8 @@ pub(crate) fn validate_template(
                     )));
                 }
             }
-            TemplateNamespace::Secret | TemplateNamespace::Variable | TemplateNamespace::State => {}
-            TemplateNamespace::Expr | TemplateNamespace::Env | TemplateNamespace::Other(_) => {
+            TemplateNamespace::Input | TemplateNamespace::State => {}
+            TemplateNamespace::Other(_) => {
                 return Err(ManifestError::validation(format!(
                     "{context} uses unsupported template token '{}'",
                     token.raw()

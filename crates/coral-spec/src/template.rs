@@ -166,18 +166,16 @@ impl TemplateToken {
 /// The namespace component of one template token.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TemplateNamespace {
-    /// A source secret token.
-    Secret,
-    /// A source variable token.
-    Variable,
+    /// A declared source input, looked up by authored key. The declared kind
+    /// (variable or secret) in the manifest's top-level `inputs` table
+    /// determines which store resolves the value.
+    Input,
     /// A SQL filter token.
     Filter,
     /// A row-expression sub-expression token.
     Expr,
     /// A runtime pagination or request state token.
     State,
-    /// A legacy environment token.
-    Env,
     /// Any other namespace, preserved for higher-level validation.
     Other(String),
 }
@@ -185,12 +183,10 @@ pub enum TemplateNamespace {
 impl TemplateNamespace {
     fn parse(raw: &str) -> Self {
         match raw {
-            "secret" => Self::Secret,
-            "variable" => Self::Variable,
+            "input" => Self::Input,
             "filter" => Self::Filter,
             "expr" => Self::Expr,
             "state" => Self::State,
-            "env" => Self::Env,
             other => Self::Other(other.to_string()),
         }
     }
@@ -203,12 +199,12 @@ mod tests {
     #[test]
     fn parses_literals_and_tokens_in_order() {
         let template =
-            ParsedTemplate::parse("Bearer {{secret.API_TOKEN}} for {{filter.org|openai}}")
+            ParsedTemplate::parse("Bearer {{input.API_TOKEN}} for {{filter.org|openai}}")
                 .expect("template");
 
         assert_eq!(
             template.raw(),
-            "Bearer {{secret.API_TOKEN}} for {{filter.org|openai}}"
+            "Bearer {{input.API_TOKEN}} for {{filter.org|openai}}"
         );
         assert_eq!(template.parts().len(), 4);
         assert!(matches!(
@@ -218,7 +214,7 @@ mod tests {
         assert!(matches!(
             &template.parts()[1],
             TemplatePart::Token(token)
-                if token.namespace() == &TemplateNamespace::Secret && token.key() == "API_TOKEN"
+                if token.namespace() == &TemplateNamespace::Input && token.key() == "API_TOKEN"
         ));
         assert!(matches!(
             &template.parts()[2],
@@ -255,7 +251,7 @@ mod tests {
 
     #[test]
     fn rejects_unclosed_tokens() {
-        let error = ParsedTemplate::parse("{{secret.API_TOKEN").expect_err("unclosed token");
+        let error = ParsedTemplate::parse("{{input.API_TOKEN").expect_err("unclosed token");
         assert!(error.to_string().contains("unclosed template token"));
     }
 }
