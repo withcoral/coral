@@ -3,7 +3,7 @@
 //! The server attaches standard `google.rpc.*` error detail messages to
 //! failed RPC responses following [AIP-193](https://google.aip.dev/193).
 //! Coral errors are identified by an `ErrorInfo` entry with
-//! `domain = "coral.withcoral.dev"`. This module centralises the
+//! `domain = "coral.withcoral.com"`. This module centralises the
 //! decode-or-fallback policy so every downstream consumer — `coral-cli`,
 //! `coral-mcp`, and any future SDK — sees the same shape.
 
@@ -12,12 +12,12 @@ use std::collections::HashMap;
 use tonic_types::StatusExt as _;
 
 /// Coral error domain used in `google.rpc.ErrorInfo`.
-pub const CORAL_ERROR_DOMAIN: &str = "coral.withcoral.dev";
+pub const CORAL_ERROR_DOMAIN: &str = "coral.withcoral.com";
 
 /// Result of decoding a structured query error from a `tonic::Status`.
 pub enum DecodedStatusError {
     /// The server attached a `google.rpc.ErrorInfo` with
-    /// `domain = "coral.withcoral.dev"`.
+    /// `domain = "coral.withcoral.com"`.
     Structured(Box<CoralQueryError>),
     /// No Coral error detail found. Holds the raw `Status::message()`.
     Plain(String),
@@ -47,7 +47,7 @@ pub struct CoralQueryError {
 /// is found.
 ///
 /// The decode looks for a `google.rpc.ErrorInfo` with
-/// `domain = "coral.withcoral.dev"` in the AIP-193 status details.
+/// `domain = "coral.withcoral.com"` in the AIP-193 status details.
 /// The domain string is the wire-level discriminator — unlike protobuf
 /// structural matching, it cannot collide with unrelated error details
 /// from other services or proxies. If no matching `ErrorInfo` is found,
