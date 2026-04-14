@@ -664,6 +664,143 @@ async fn create_bundled_source_repeated_secret_returns_invalid_argument() {
 }
 
 #[tokio::test]
+async fn create_bundled_source_does_not_persist_manifest_to_config_dir() {
+    let harness = GrpcHarness::new().await;
+
+    let created = harness
+        .source_client()
+        .create_bundled_source(Request::new(CreateBundledSourceRequest {
+            workspace: Some(default_workspace()),
+            name: "github".to_string(),
+            variables: vec![SourceVariable {
+                key: "GITHUB_API_BASE".to_string(),
+                value: "https://api.github.com".to_string(),
+            }],
+            secrets: vec![SourceSecret {
+                key: "GITHUB_TOKEN".to_string(),
+                value: "fake-token".to_string(),
+            }],
+        }))
+        .await
+        .expect("create bundled github source")
+        .into_inner();
+
+    assert_eq!(created.name, "github");
+    assert_eq!(created.origin, SourceOrigin::Bundled as i32);
+    assert!(
+        !created.version.is_empty(),
+        "version should be resolved from the binary"
+    );
+
+    // Bundled sources must not persist a manifest.yaml to the config directory;
+    // they resolve the manifest from the compiled-in BUNDLED_SOURCES constant.
+    let manifest_path = source_dir(harness.config_dir(), "github").join("manifest.yaml");
+    assert!(
+        !manifest_path.exists(),
+        "bundled source should not write manifest.yaml to the config directory"
+    );
+
+    // The source should still be fully functional despite no on-disk manifest.
+    let tables = harness.list_tables().await;
+    assert!(
+        tables.iter().any(|table| table.schema_name == "github"),
+        "bundled source should register tables resolved from the binary"
+    );
+
+    let config_raw =
+        fs::read_to_string(harness.config_dir().join("config.toml")).expect("read config");
+    assert!(
+        !config_raw.contains("version = \""),
+        "bundled source config should not persist a version field"
+    );
+}
+
+#[tokio::test]
+async fn validate_bundled_source_missing_required_variable_returns_failed_precondition() {
+    let temp = TempDir::new().expect("temp dir");
+    let config_dir = temp.path().join("coral-config");
+    fs::create_dir_all(&config_dir).expect("create config dir");
+
+    // Simulate a bundled source installed without the required SENTRY_ORG variable.
+    // This models the case where the binary is updated to require a new variable
+    // that was not provided during the original installation.
+    fs::write(
+        config_dir.join("config.toml"),
+        r#"
+version = 1
+
+[workspaces.default.sources.sentry]
+variables = {}
+secrets = ["SENTRY_TOKEN"]
+origin = "bundled"
+"#,
+    )
+    .expect("write config");
+
+    // Write the secret file so the secret store can find it.
+    let secret_dir = config_dir
+        .join("workspaces")
+        .join("default")
+        .join("sources")
+        .join("sentry");
+    fs::create_dir_all(&secret_dir).expect("create secret dir");
+    fs::write(secret_dir.join("secrets.env"), "SENTRY_TOKEN=fake-token\n").expect("write secrets");
+
+    let harness = GrpcHarness::start_with_config_dir(config_dir).await;
+    let error = harness
+        .source_client()
+        .validate_source(Request::new(ValidateSourceRequest {
+            workspace: Some(default_workspace()),
+            name: "sentry".to_string(),
+        }))
+        .await
+        .expect_err("validation should fail when a required variable is missing");
+    assert_eq!(error.code(), tonic::Code::FailedPrecondition);
+    assert!(
+        error.message().contains("missing variable 'SENTRY_ORG'"),
+        "error should identify the missing variable, got: {}",
+        error.message()
+    );
+}
+
+#[tokio::test]
+async fn validate_bundled_source_missing_required_secret_returns_failed_precondition() {
+    let temp = TempDir::new().expect("temp dir");
+    let config_dir = temp.path().join("coral-config");
+    fs::create_dir_all(&config_dir).expect("create config dir");
+
+    // Simulate a bundled source installed without the required SENTRY_TOKEN secret.
+    fs::write(
+        config_dir.join("config.toml"),
+        r#"
+version = 1
+
+[workspaces.default.sources.sentry]
+variables = { SENTRY_ORG = "test-org" }
+secrets = []
+origin = "bundled"
+"#,
+    )
+    .expect("write config");
+
+    let harness = GrpcHarness::start_with_config_dir(config_dir).await;
+    let error = harness
+        .source_client()
+        .validate_source(Request::new(ValidateSourceRequest {
+            workspace: Some(default_workspace()),
+            name: "sentry".to_string(),
+        }))
+        .await
+        .expect_err("validation should fail when a required secret is missing");
+    assert_eq!(error.code(), tonic::Code::FailedPrecondition);
+    assert!(
+        error.message().contains("missing secret 'SENTRY_TOKEN'"),
+        "error should identify the missing secret, got: {}",
+        error.message()
+    );
+}
+
+#[tokio::test]
 async fn get_nonexistent_source_returns_not_found() {
     let harness = GrpcHarness::new().await;
 

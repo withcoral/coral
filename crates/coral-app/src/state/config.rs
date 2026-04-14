@@ -160,7 +160,14 @@ fn render_config(config: &PersistedAppConfig) -> String {
                 *source_item = toml_edit::table();
             }
 
-            source_item["version"] = value(source.version.clone());
+            if source.version.is_empty() {
+                let source_table = source_item
+                    .as_table_mut()
+                    .expect("source config entry should be a table after initialization");
+                source_table.remove("version");
+            } else {
+                source_item["version"] = value(source.version.clone());
+            }
             source_item["variables"] = Item::Value(render_inline_table(&source.variables));
             source_item["secrets"] = Item::Value(render_string_array(&source.secrets));
             source_item["origin"] = value(source.origin.as_config_value());
@@ -267,7 +274,7 @@ mod tests {
                     name: "default".to_string(),
                 },
                 name: "github".to_string(),
-                version: "1.1.4".to_string(),
+                version: String::new(),
                 variables: BTreeMap::from([(
                     "GITHUB_API_BASE".to_string(),
                     "https://api.github.com".to_string(),
@@ -281,6 +288,7 @@ mod tests {
         assert!(raw.contains("[workspaces.default.sources.github]"));
         assert!(raw.contains("variables = { GITHUB_API_BASE = \"https://api.github.com\" }"));
         assert!(raw.contains("secrets = [\"GITHUB_TOKEN\"]"));
+        assert!(!raw.contains("version = \""));
         assert!(!raw.contains("[[sources]]"));
         assert!(!raw.contains("workspace = { name = \"default\" }"));
         assert!(!raw.contains("manifest_file"));

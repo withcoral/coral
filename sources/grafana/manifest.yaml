@@ -1,0 +1,1002 @@
+name: grafana
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: |
+  Query dashboards, folders, datasources, alert rules, annotations,
+  contact points, teams, users, and dashboard panels from Grafana
+  (Cloud or self-hosted). Requires a service-account token with read
+  permissions: dashboards:read, folders:read, datasources:read,
+  alert.rules:read, annotations:read, teams:read, org.users:read
+  (alert.provisioning:read on some versions).
+base_url: "{{variable.GRAFANA_URL}}"
+auth:
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{secret.GRAFANA_TOKEN}}
+
+tables:
+  - name: dashboards
+    description: Grafana dashboards listed via the search API
+    request:
+      method: GET
+      path: /api/search
+      query:
+        - name: type
+          from: literal
+          value: dash-db
+    response: {}
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_size:
+        default: 1000
+        max: 5000
+        query_param: limit
+    columns:
+      - name: id
+        type: Int64
+        nullable: true
+        description: Dashboard numeric ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: uid
+        type: Utf8
+        nullable: false
+        description: Dashboard UID
+        expr:
+          kind: path
+          path:
+            - uid
+      - name: title
+        type: Utf8
+        nullable: false
+        description: Dashboard title
+        expr:
+          kind: path
+          path:
+            - title
+      - name: uri
+        type: Utf8
+        nullable: true
+        description: Dashboard URI (e.g. db/slug)
+        expr:
+          kind: path
+          path:
+            - uri
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Dashboard URL path
+        expr:
+          kind: path
+          path:
+            - url
+      - name: slug
+        type: Utf8
+        nullable: true
+        description: Dashboard slug
+        expr:
+          kind: path
+          path:
+            - slug
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Result type (dash-db for dashboards)
+        expr:
+          kind: path
+          path:
+            - type
+      - name: tags
+        type: Utf8
+        nullable: true
+        description: Comma-separated dashboard tags
+        expr:
+          kind: join_array
+          path:
+            - tags
+          separator: ","
+      - name: is_starred
+        type: Boolean
+        nullable: true
+        description: Whether the dashboard is starred by the authenticated user
+        expr:
+          kind: path
+          path:
+            - isStarred
+      - name: folder_id
+        type: Int64
+        nullable: true
+        description: Parent folder numeric ID
+        expr:
+          kind: path
+          path:
+            - folderId
+      - name: folder_uid
+        type: Utf8
+        nullable: true
+        description: Parent folder UID
+        expr:
+          kind: path
+          path:
+            - folderUid
+      - name: folder_title
+        type: Utf8
+        nullable: true
+        description: Parent folder title
+        expr:
+          kind: path
+          path:
+            - folderTitle
+
+  - name: folders
+    description: |
+      Grafana folders. Without a parent_uid filter, only root-level folders are
+      returned. Pass WHERE parent_uid = '<uid>' to list the direct children of a
+      specific folder; nested traversal must be performed by the caller.
+    request:
+      method: GET
+      path: /api/folders
+      query:
+        - name: parentUid
+          from: filter
+          key: parent_uid
+    response: {}
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_size:
+        default: 1000
+        max: 1000
+        query_param: limit
+    columns:
+      - name: id
+        type: Int64
+        nullable: true
+        description: Folder numeric ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: uid
+        type: Utf8
+        nullable: false
+        description: Folder UID
+        expr:
+          kind: path
+          path:
+            - uid
+      - name: title
+        type: Utf8
+        nullable: false
+        description: Folder title
+        expr:
+          kind: path
+          path:
+            - title
+      - name: parent_uid
+        type: Utf8
+        nullable: true
+        description: Optional parent folder UID filter (echoes the filter value)
+        expr:
+          kind: from_filter
+          key: parent_uid
+    filters:
+      - name: parent_uid
+
+  - name: datasources
+    description: Configured Grafana data sources (Prometheus, Loki, etc.)
+    request:
+      method: GET
+      path: /api/datasources
+      query: []
+    response: {}
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Int64
+        nullable: true
+        description: Data source numeric ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: uid
+        type: Utf8
+        nullable: false
+        description: Data source UID
+        expr:
+          kind: path
+          path:
+            - uid
+      - name: org_id
+        type: Int64
+        nullable: true
+        description: Organization ID owning the data source
+        expr:
+          kind: path
+          path:
+            - orgId
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Data source display name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Data source plugin type (e.g. prometheus, loki)
+        expr:
+          kind: path
+          path:
+            - type
+      - name: type_name
+        type: Utf8
+        nullable: true
+        description: Human-readable plugin name
+        expr:
+          kind: path
+          path:
+            - typeName
+      - name: access
+        type: Utf8
+        nullable: true
+        description: Access mode (proxy or direct)
+        expr:
+          kind: path
+          path:
+            - access
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Upstream data source URL
+        expr:
+          kind: path
+          path:
+            - url
+      - name: is_default
+        type: Boolean
+        nullable: true
+        description: Whether this is the organization default data source
+        expr:
+          kind: path
+          path:
+            - isDefault
+      - name: read_only
+        type: Boolean
+        nullable: true
+        description: Whether the data source is provisioned read-only
+        expr:
+          kind: path
+          path:
+            - readOnly
+      - name: basic_auth
+        type: Boolean
+        nullable: true
+        description: Whether HTTP basic auth is enabled
+        expr:
+          kind: path
+          path:
+            - basicAuth
+      - name: database
+        type: Utf8
+        nullable: true
+        description: Database name (when applicable)
+        expr:
+          kind: path
+          path:
+            - database
+      - name: user
+        type: Utf8
+        nullable: true
+        description: Username used to connect (when applicable)
+        expr:
+          kind: path
+          path:
+            - user
+
+  - name: alert_rules
+    description: Unified alerting rules from the provisioning API
+    request:
+      method: GET
+      path: /api/v1/provisioning/alert-rules
+      query: []
+    response: {}
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Int64
+        nullable: true
+        description: Alert rule numeric ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: uid
+        type: Utf8
+        nullable: false
+        description: Alert rule UID
+        expr:
+          kind: path
+          path:
+            - uid
+      - name: org_id
+        type: Int64
+        nullable: true
+        description: Organization ID owning the rule
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path:
+                - orgID
+            - kind: path
+              path:
+                - orgId
+      - name: folder_uid
+        type: Utf8
+        nullable: true
+        description: UID of the folder containing the rule
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path:
+                - folderUID
+            - kind: path
+              path:
+                - folderUid
+      - name: rule_group
+        type: Utf8
+        nullable: true
+        description: Rule group name
+        expr:
+          kind: path
+          path:
+            - ruleGroup
+      - name: title
+        type: Utf8
+        nullable: false
+        description: Alert rule title
+        expr:
+          kind: path
+          path:
+            - title
+      - name: condition
+        type: Utf8
+        nullable: true
+        description: Reference to the query/expression that triggers the alert
+        expr:
+          kind: path
+          path:
+            - condition
+      - name: no_data_state
+        type: Utf8
+        nullable: true
+        description: Behavior when queries return no data
+        expr:
+          kind: path
+          path:
+            - noDataState
+      - name: exec_err_state
+        type: Utf8
+        nullable: true
+        description: Behavior when rule execution errors
+        expr:
+          kind: path
+          path:
+            - execErrState
+      - name: for
+        type: Utf8
+        nullable: true
+        description: Pending duration before firing (e.g. 5m)
+        expr:
+          kind: path
+          path:
+            - for
+      - name: is_paused
+        type: Boolean
+        nullable: true
+        description: Whether evaluation is paused
+        expr:
+          kind: path
+          path:
+            - isPaused
+      - name: updated
+        type: Utf8
+        nullable: true
+        description: Last update timestamp
+        expr:
+          kind: path
+          path:
+            - updated
+
+  - name: annotations
+    description: |
+      Grafana annotations (alert firings and user events). Filter by a time
+      range using epoch-millisecond integer literals (WHERE "from" = 1744502400000
+      AND "to" = 1744588800000). Each call requests up to 1000 rows; the server
+      may enforce its own maximum. To scan more rows, narrow the time window.
+    request:
+      method: GET
+      path: /api/annotations
+      query:
+        - name: limit
+          from: literal
+          value: "1000"
+        - name: from
+          from: filter
+          key: from
+        - name: to
+          from: filter
+          key: to
+        - name: type
+          from: filter
+          key: type
+        - name: dashboardUID
+          from: filter
+          key: dashboard_uid
+        - name: panelId
+          from: filter
+          key: panel_id
+        - name: alertId
+          from: filter
+          key: alert_id
+        - name: userId
+          from: filter
+          key: user_id
+    response: {}
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Int64
+        nullable: true
+        description: Annotation numeric ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: alert_id
+        type: Int64
+        nullable: true
+        description: Alert rule ID (0 when not an alert annotation)
+        expr:
+          kind: path
+          path:
+            - alertId
+      - name: alert_name
+        type: Utf8
+        nullable: true
+        description: Alert rule name (for alert annotations)
+        expr:
+          kind: path
+          path:
+            - alertName
+      - name: dashboard_id
+        type: Int64
+        nullable: true
+        description: Dashboard numeric ID
+        expr:
+          kind: path
+          path:
+            - dashboardId
+      - name: dashboard_uid
+        type: Utf8
+        nullable: true
+        description: Dashboard UID
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path:
+                - dashboardUID
+            - kind: path
+              path:
+                - dashboardUid
+      - name: panel_id
+        type: Int64
+        nullable: true
+        description: Panel numeric ID
+        expr:
+          kind: path
+          path:
+            - panelId
+      - name: user_id
+        type: Int64
+        nullable: true
+        description: User ID that created the annotation
+        expr:
+          kind: path
+          path:
+            - userId
+      - name: user_name
+        type: Utf8
+        nullable: true
+        description: User name/login that created the annotation
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path:
+                - userName
+            - kind: path
+              path:
+                - login
+      - name: new_state
+        type: Utf8
+        nullable: true
+        description: New alert state (alert annotations only)
+        expr:
+          kind: path
+          path:
+            - newState
+      - name: prev_state
+        type: Utf8
+        nullable: true
+        description: Previous alert state (alert annotations only)
+        expr:
+          kind: path
+          path:
+            - prevState
+      - name: time
+        type: Int64
+        nullable: true
+        description: Annotation start time (epoch ms)
+        expr:
+          kind: path
+          path:
+            - time
+      - name: time_end
+        type: Int64
+        nullable: true
+        description: Annotation end time (epoch ms, null for point annotations)
+        expr:
+          kind: path
+          path:
+            - timeEnd
+      - name: text
+        type: Utf8
+        nullable: true
+        description: Annotation text
+        expr:
+          kind: path
+          path:
+            - text
+      - name: tags
+        type: Utf8
+        nullable: true
+        description: Comma-separated annotation tags
+        expr:
+          kind: join_array
+          path:
+            - tags
+          separator: ","
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Annotation type ('alert' or 'annotation')
+        expr:
+          kind: path
+          path:
+            - type
+      - name: created
+        type: Int64
+        nullable: true
+        description: Creation timestamp (epoch ms)
+        expr:
+          kind: path
+          path:
+            - created
+      - name: updated
+        type: Int64
+        nullable: true
+        description: Last update timestamp (epoch ms)
+        expr:
+          kind: path
+          path:
+            - updated
+      - name: from
+        type: Int64
+        nullable: true
+        description: Start of time-range filter (epoch ms, filter only)
+        expr:
+          kind: 'null'
+        virtual: true
+      - name: to
+        type: Int64
+        nullable: true
+        description: End of time-range filter (epoch ms, filter only)
+        expr:
+          kind: 'null'
+        virtual: true
+    filters:
+      - name: from
+      - name: to
+      - name: type
+      - name: dashboard_uid
+      - name: panel_id
+      - name: alert_id
+      - name: user_id
+
+  - name: contact_points
+    description: |
+      Grafana unified-alerting contact points (notification receivers).
+      Per-receiver settings (Slack URL, PagerDuty integration key, email
+      addresses, etc.) are not exposed — they vary by type and may contain
+      credentials.
+    request:
+      method: GET
+      path: /api/v1/provisioning/contact-points
+      query:
+        - name: name
+          from: filter
+          key: name
+    response: {}
+    pagination:
+      mode: none
+    columns:
+      - name: uid
+        type: Utf8
+        nullable: false
+        description: Contact point UID
+        expr:
+          kind: path
+          path:
+            - uid
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Contact point name (multiple receivers can share a name)
+        expr:
+          kind: path
+          path:
+            - name
+      - name: type
+        type: Utf8
+        nullable: false
+        description: Integration type (email, slack, webhook, pagerduty, ...)
+        expr:
+          kind: path
+          path:
+            - type
+      - name: disable_resolve_message
+        type: Boolean
+        nullable: true
+        description: Whether resolved notifications are suppressed
+        expr:
+          kind: path
+          path:
+            - disableResolveMessage
+      - name: provenance
+        type: Utf8
+        nullable: true
+        description: Empty for UI-managed; 'api' or 'file' for provisioned
+        expr:
+          kind: path
+          path:
+            - provenance
+    filters:
+      - name: name
+
+  - name: teams
+    description: Grafana teams listed via the search API (paginated)
+    request:
+      method: GET
+      path: /api/teams/search
+      query: []
+    response:
+      rows_path:
+        - teams
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      page_size:
+        default: 1000
+        max: 1000
+        query_param: perpage
+    columns:
+      - name: id
+        type: Int64
+        nullable: true
+        description: Team numeric ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: org_id
+        type: Int64
+        nullable: true
+        description: Organization ID owning the team
+        expr:
+          kind: path
+          path:
+            - orgId
+      - name: uid
+        type: Utf8
+        nullable: true
+        description: Team UID (available on recent Grafana versions)
+        expr:
+          kind: path
+          path:
+            - uid
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Team name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: email
+        type: Utf8
+        nullable: true
+        description: Team contact email
+        expr:
+          kind: path
+          path:
+            - email
+      - name: avatar_url
+        type: Utf8
+        nullable: true
+        description: Team avatar URL
+        expr:
+          kind: path
+          path:
+            - avatarUrl
+      - name: member_count
+        type: Int64
+        nullable: true
+        description: Number of members in the team
+        expr:
+          kind: path
+          path:
+            - memberCount
+      - name: permission
+        type: Int64
+        nullable: true
+        description: Caller's permission level on the team (0 member, 4 admin)
+        expr:
+          kind: path
+          path:
+            - permission
+
+  - name: org_users
+    description: |
+      Users in the caller's Grafana organization. Useful for ownership,
+      rotation, and access reviews.
+    request:
+      method: GET
+      path: /api/org/users
+      query: []
+    response: {}
+    pagination:
+      mode: none
+    columns:
+      - name: org_id
+        type: Int64
+        nullable: true
+        description: Organization ID
+        expr:
+          kind: path
+          path:
+            - orgId
+      - name: user_id
+        type: Int64
+        nullable: true
+        description: User numeric ID
+        expr:
+          kind: path
+          path:
+            - userId
+      - name: email
+        type: Utf8
+        nullable: true
+        description: User email
+        expr:
+          kind: path
+          path:
+            - email
+      - name: name
+        type: Utf8
+        nullable: true
+        description: User display name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: login
+        type: Utf8
+        nullable: true
+        description: User login (username)
+        expr:
+          kind: path
+          path:
+            - login
+      - name: role
+        type: Utf8
+        nullable: true
+        description: Org role (Admin, Editor, Viewer)
+        expr:
+          kind: path
+          path:
+            - role
+      - name: last_seen_at
+        type: Utf8
+        nullable: true
+        description: Last activity timestamp (RFC 3339)
+        expr:
+          kind: path
+          path:
+            - lastSeenAt
+      - name: avatar_url
+        type: Utf8
+        nullable: true
+        description: User avatar URL
+        expr:
+          kind: path
+          path:
+            - avatarUrl
+      - name: is_disabled
+        type: Boolean
+        nullable: true
+        description: Whether the user account is disabled
+        expr:
+          kind: path
+          path:
+            - isDisabled
+
+  - name: dashboard_panels
+    description: |
+      Panels inside a single Grafana dashboard. Requires a constant equality
+      filter on dashboard_uid (WHERE dashboard_uid = '<uid>'); JOINs against
+      grafana.dashboards will not satisfy the required-filter check, so run
+      a two-step workflow (list dashboards, then query panels per UID).
+      Only top-level panels are surfaced: panels nested inside a collapsed
+      'row' panel, and the legacy (Grafana v5 and earlier) dashboard.rows[]
+      layout, are not flattened.
+    request:
+      method: GET
+      path: /api/dashboards/uid/{{filter.dashboard_uid}}
+      query: []
+    response:
+      rows_path:
+        - dashboard
+        - panels
+    pagination:
+      mode: none
+    columns:
+      - name: dashboard_uid
+        type: Utf8
+        nullable: false
+        description: Dashboard UID (echoes the required filter value)
+        expr:
+          kind: from_filter
+          key: dashboard_uid
+      - name: id
+        type: Int64
+        nullable: true
+        description: Panel numeric ID (unique within the dashboard)
+        expr:
+          kind: path
+          path:
+            - id
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Panel type (graph, timeseries, stat, table, row, etc.)
+        expr:
+          kind: path
+          path:
+            - type
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Panel title
+        expr:
+          kind: path
+          path:
+            - title
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Panel description
+        expr:
+          kind: path
+          path:
+            - description
+      - name: datasource_type
+        type: Utf8
+        nullable: true
+        description: Datasource plugin type (e.g. prometheus, loki); only populated for modern object-shaped datasource references
+        expr:
+          kind: path
+          path:
+            - datasource
+            - type
+      - name: datasource_uid
+        type: Utf8
+        nullable: true
+        description: Datasource UID for modern dashboards, or the bare datasource name string for legacy dashboards
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path:
+                - datasource
+                - uid
+            - kind: path
+              path:
+                - datasource
+      - name: grid_x
+        type: Int64
+        nullable: true
+        description: Panel grid X position
+        expr:
+          kind: path
+          path:
+            - gridPos
+            - x
+      - name: grid_y
+        type: Int64
+        nullable: true
+        description: Panel grid Y position
+        expr:
+          kind: path
+          path:
+            - gridPos
+            - y
+      - name: grid_w
+        type: Int64
+        nullable: true
+        description: Panel grid width
+        expr:
+          kind: path
+          path:
+            - gridPos
+            - w
+      - name: grid_h
+        type: Int64
+        nullable: true
+        description: Panel grid height
+        expr:
+          kind: path
+          path:
+            - gridPos
+            - h
+      - name: first_target_expr
+        type: Utf8
+        nullable: true
+        description: Query expression of the first target (e.g. PromQL or LogQL)
+        expr:
+          kind: first_array_item_path
+          path:
+            - targets
+          item_path:
+            - expr
+      - name: first_target_ref_id
+        type: Utf8
+        nullable: true
+        description: refId of the first target
+        expr:
+          kind: first_array_item_path
+          path:
+            - targets
+          item_path:
+            - refId
+    filters:
+      - name: dashboard_uid
+        required: true
