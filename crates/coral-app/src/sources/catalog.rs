@@ -1,22 +1,26 @@
-//! Bundled source catalog and source-spec description helpers.
+//! Bundled source catalog and installed-manifest resolution helpers.
 
 use std::collections::BTreeSet;
 
-use coral_spec::{
-    ManifestInputKind, ManifestInputSpec, collect_source_inputs_value, parse_source_manifest_value,
-};
-use serde_yaml::Value;
+use coral_spec::{ManifestInputKind, ManifestInputSpec, parse_manifest_and_inputs};
 
 use crate::bootstrap::AppError;
 use crate::sources::model::{
-    CandidateSource, CandidateSourceInput, CandidateSourceInputKind, SourceOrigin,
+    CandidateSource, CandidateSourceInput, CandidateSourceInputKind, InstalledSource, SourceOrigin,
 };
+use crate::state::AppStateLayout;
 
 include!(concat!(env!("OUT_DIR"), "/bundled_sources.rs"));
 
 #[derive(Debug, Clone)]
 pub(crate) struct BundledSourceManifest {
     pub(crate) manifest_yaml: String,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct InstalledSourceManifest {
+    pub(crate) manifest_yaml: String,
+    pub(crate) candidate: CandidateSource,
 }
 
 pub(crate) fn list_bundled_sources(
@@ -52,22 +56,45 @@ pub(crate) fn load_bundled_source(name: &str) -> Result<BundledSourceManifest, A
     })
 }
 
+/// Resolve the effective installed manifest and verify it still matches the
+/// installed source identity in app state.
+pub(crate) fn resolve_installed_manifest(
+    workspace: &coral_api::v1::Workspace,
+    source: &InstalledSource,
+    layout: &AppStateLayout,
+) -> Result<InstalledSourceManifest, AppError> {
+    let manifest_yaml = match source.origin {
+        SourceOrigin::Bundled => load_bundled_source(&source.name)?.manifest_yaml,
+        SourceOrigin::Imported => {
+            std::fs::read_to_string(layout.manifest_file(workspace, &source.name))?
+        }
+    };
+    let mut candidate = describe_manifest(&manifest_yaml, source.origin, false)?;
+    if candidate.name != source.name {
+        return Err(AppError::FailedPrecondition(format!(
+            "installed source '{}' does not match manifest name '{}'",
+            source.name, candidate.name
+        )));
+    }
+    candidate.installed = true;
+    Ok(InstalledSourceManifest {
+        manifest_yaml,
+        candidate,
+    })
+}
+
 pub(crate) fn describe_manifest(
     manifest_yaml: &str,
     origin: SourceOrigin,
     installed: bool,
 ) -> Result<CandidateSource, AppError> {
-    let root: Value = serde_yaml::from_str(manifest_yaml)?;
-    let manifest = parse_source_manifest_value(serde_json::to_value(&root)?)
+    let (manifest, inputs) = parse_manifest_and_inputs(manifest_yaml)
         .map_err(|error| AppError::InvalidInput(error.to_string()))?;
-    let description = manifest_description(&root);
     Ok(CandidateSource {
         name: manifest.schema_name().to_string(),
-        description,
+        description: manifest.description().to_string(),
         version: manifest.source_version().to_string(),
-        inputs: collect_source_inputs_value(&root)
-            .map(|inputs| inputs.into_iter().map(candidate_input_spec).collect())
-            .map_err(|error| AppError::InvalidInput(error.to_string()))?,
+        inputs: inputs.into_iter().map(candidate_input_spec).collect(),
         installed,
         origin,
     })
@@ -87,13 +114,6 @@ fn candidate_input_kind(kind: ManifestInputKind) -> CandidateSourceInputKind {
         ManifestInputKind::Variable => CandidateSourceInputKind::Variable,
         ManifestInputKind::Secret => CandidateSourceInputKind::Secret,
     }
-}
-
-fn manifest_description(root: &Value) -> String {
-    root.get("description")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string()
 }
 
 #[cfg(test)]
@@ -184,6 +204,7 @@ schema: demo
 version: 1.0.0
 dsl_version: 3
 backend: http
+base_url: https://example.com
 tables:
   - name: messages
     description: Demo messages
@@ -199,6 +220,8 @@ tables:
             false,
         )
         .expect_err("legacy schema field should fail");
-        assert!(error.to_string().contains("unknown field `schema`"));
+        let message = error.to_string();
+        assert!(message.starts_with("invalid input: source manifest failed schema validation:"));
+        assert!(message.contains("'schema'"));
     }
 }

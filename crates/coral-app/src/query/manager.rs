@@ -7,9 +7,10 @@ use coral_engine::{
     CoralQuery, CoreError, QueryExecution, QueryRuntimeContext, QueryRuntimeProvider, QuerySource,
     TableInfo,
 };
-use coral_spec::parse_source_manifest_yaml;
+use coral_spec::{ManifestInputKind, ManifestInputSpec, parse_manifest_and_inputs};
 
 use crate::bootstrap::AppError;
+use crate::sources::catalog::resolve_installed_manifest;
 use crate::sources::model::InstalledSource;
 use crate::state::{AppStateLayout, ConfigStore, SecretStore};
 
@@ -83,13 +84,15 @@ impl QueryManager {
             .config_store
             .get_source(workspace, source_name)
             .map_err(QueryManagerError::App)?;
-        let query_source = self
+        let (query_source, version) = self
             .load_query_source(workspace, &source)
             .map_err(QueryManagerError::App)?;
         let runtime = self.runtime_provider();
         let tables = CoralQuery::test_source(&query_source, &runtime)
             .await
             .map_err(QueryManagerError::Core)?;
+        let mut source = source;
+        source.version = version;
 
         Ok(ValidatedSource { source, tables })
     }
@@ -99,7 +102,7 @@ impl QueryManager {
         let mut query_sources = Vec::new();
         for source in catalog.workspace_sources(workspace) {
             match self.load_query_source(workspace, &source) {
-                Ok(query_source) => query_sources.push(query_source),
+                Ok((query_source, _version)) => query_sources.push(query_source),
                 Err(error) => {
                     tracing::warn!(
                         source = %source.name,
@@ -116,43 +119,39 @@ impl QueryManager {
         &self,
         workspace: &Workspace,
         source: &InstalledSource,
-    ) -> Result<QuerySource, AppError> {
-        let manifest_path = self.layout.manifest_file(workspace, &source.name);
-        let manifest_yaml = std::fs::read_to_string(&manifest_path)?;
-        let source_spec = parse_source_manifest_yaml(&manifest_yaml)
+    ) -> Result<(QuerySource, String), AppError> {
+        let installed = resolve_installed_manifest(workspace, source, &self.layout)?;
+        let manifest_yaml = installed.manifest_yaml;
+        let (source_spec, inputs) = parse_manifest_and_inputs(&manifest_yaml)
             .map_err(|error| AppError::InvalidInput(error.to_string()))?;
-        if source_spec.schema_name() != source.name {
-            return Err(AppError::FailedPrecondition(format!(
-                "installed source '{}' does not match manifest name '{}'",
-                source.name,
-                source_spec.schema_name()
-            )));
-        }
-        if source_spec.source_version() != source.version {
-            return Err(AppError::FailedPrecondition(format!(
-                "installed source '{}' version '{}' does not match manifest version '{}'",
-                source.name,
-                source.version,
-                source_spec.source_version()
-            )));
-        }
+        validate_required_variables(source, &inputs)?;
         let stored_secrets = self
             .secret_store
             .read_source_secrets_for(workspace, &source.name)?;
         let mut resolved_secrets = BTreeMap::new();
-        for secret_name in source_spec.required_secret_names() {
-            let Some(value) = stored_secrets.get(&secret_name).cloned() else {
-                return Err(AppError::FailedPrecondition(format!(
-                    "source '{}' is missing secret '{secret_name}'",
-                    source.name
-                )));
+        let missing_secrets: Vec<String> = source_spec
+            .required_secret_names()
+            .into_iter()
+            .filter(|name| !stored_secrets.contains_key(name))
+            .collect();
+        if let Some((first, rest)) = missing_secrets.split_first() {
+            let detail = if rest.is_empty() {
+                format!("secret '{first}'")
+            } else {
+                format!("secret '{first}' and {} other(s)", rest.len())
             };
+            return Err(AppError::FailedPrecondition(format!(
+                "source '{}' is missing {detail}",
+                source.name
+            )));
+        }
+        for secret_name in source_spec.required_secret_names() {
+            let value = stored_secrets[&secret_name].clone();
             resolved_secrets.insert(secret_name, value);
         }
-        Ok(QuerySource::new(
-            source_spec,
-            source.variables.clone(),
-            resolved_secrets,
+        Ok((
+            QuerySource::new(source_spec, source.variables.clone(), resolved_secrets),
+            installed.candidate.version,
         ))
     }
 
@@ -172,4 +171,30 @@ impl QueryRuntimeProvider for RuntimeProvider {
     fn runtime_context(&self) -> QueryRuntimeContext {
         self.runtime_context.clone()
     }
+}
+
+fn validate_required_variables(
+    source: &InstalledSource,
+    inputs: &[ManifestInputSpec],
+) -> Result<(), AppError> {
+    let missing: Vec<_> = inputs
+        .iter()
+        .filter(|input| {
+            input.kind == ManifestInputKind::Variable
+                && input.required
+                && !source.variables.contains_key(&input.key)
+        })
+        .collect();
+    if let Some((first, rest)) = missing.split_first() {
+        let detail = if rest.is_empty() {
+            format!("variable '{}'", first.key)
+        } else {
+            format!("variable '{}' and {} other(s)", first.key, rest.len())
+        };
+        return Err(AppError::FailedPrecondition(format!(
+            "source '{}' is missing {detail}",
+            source.name
+        )));
+    }
+    Ok(())
 }

@@ -12,7 +12,6 @@ auth:
     - name: Content-Type
       from: literal
       value: application/json
-
 tables:
   - name: projects
     description: LaunchDarkly projects visible to the authenticated token

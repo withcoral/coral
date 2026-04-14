@@ -90,7 +90,7 @@ jobs:
         env:
           NEEDS_PREPARE_OUTPUTS_ARTIFACT_PREFIX: ${{ needs.prepare.outputs.artifact_prefix }}
       - name: Upload artifact
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: ${{ needs.prepare.outputs.artifact_prefix }}-${{ matrix.target }}
           path: ${{ needs.prepare.outputs.artifact_prefix }}-${{ matrix.target }}.tar.gz
@@ -112,7 +112,7 @@ jobs:
         env:
           NEEDS_PREPARE_OUTPUTS_ARTIFACT_PREFIX: ${{ needs.prepare.outputs.artifact_prefix }}
       - name: Upload checksums
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: ${{ needs.prepare.outputs.artifact_prefix }}-checksums
           path: artifacts/checksums.sha256
@@ -132,7 +132,7 @@ jobs:
           merge-multiple: true
 
       - name: Create GitHub App token
-        uses: actions/create-github-app-token@f8d387b68d61c58ab83c6c016672934102569859 # v3
+        uses: actions/create-github-app-token@f8d387b68d61c58ab83c6c016672934102569859 # v3.0.0
         id: github-app-token
         with:
           app-id: ${{ vars.RELEASE_APP_ID }}

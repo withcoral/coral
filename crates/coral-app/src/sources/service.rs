@@ -2,20 +2,21 @@
 
 use coral_api::v1::source_service_server::SourceService as SourceServiceApi;
 use coral_api::v1::{
-    AvailableSource, Column, CreateBundledSourceRequest, DeleteSourceRequest,
-    DiscoverSourcesRequest, DiscoverSourcesResponse, GetSourceRequest, ImportSourceRequest,
-    ListSourcesRequest, ListSourcesResponse, Source, SourceInputKind, SourceInputSpec,
-    SourceOrigin as ProtoSourceOrigin, SourceSecret, SourceVariable, Table, ValidateSourceRequest,
+    AvailableSource, CreateBundledSourceRequest, DeleteSourceRequest, DiscoverSourcesRequest,
+    DiscoverSourcesResponse, GetSourceRequest, ImportSourceRequest, ListSourcesRequest,
+    ListSourcesResponse, Source, SourceInputKind, SourceInputSpec,
+    SourceOrigin as ProtoSourceOrigin, SourceSecret, SourceVariable, ValidateSourceRequest,
     ValidateSourceResponse, Workspace,
 };
 use tonic::{Request, Response, Status};
 
-use crate::bootstrap::{app_status, core_status};
-use crate::query::manager::{QueryManager, QueryManagerError};
+use crate::bootstrap::app_status;
+use crate::query::manager::QueryManager;
 use crate::sources::manager::SourceManager;
 use crate::sources::model::{
     CandidateSource, CandidateSourceInput, CandidateSourceInputKind, InstalledSource, SourceOrigin,
 };
+use crate::transport::{query_status, table_to_proto};
 use crate::workspaces::WorkspaceValidator;
 
 #[derive(Clone)]
@@ -158,32 +159,6 @@ impl SourceServiceApi for SourceService {
             source: Some(installed_source_to_proto(&workspace, result.source)),
             tables,
         }))
-    }
-}
-
-fn query_status(error: QueryManagerError) -> Status {
-    match error {
-        QueryManagerError::App(error) => app_status(error),
-        QueryManagerError::Core(error) => core_status(error),
-    }
-}
-
-fn table_to_proto(workspace: &Workspace, table: coral_engine::TableInfo) -> Table {
-    Table {
-        workspace: Some(workspace.clone()),
-        schema_name: table.schema_name,
-        name: table.table_name,
-        description: table.description,
-        columns: table
-            .columns
-            .into_iter()
-            .map(|column| Column {
-                name: column.name,
-                data_type: column.data_type,
-                nullable: column.nullable,
-            })
-            .collect(),
-        required_filters: table.required_filters,
     }
 }
 

@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 
-use serde_yaml::{Mapping, Value};
+use serde_json::{Map, Value};
 
 use crate::{ManifestError, ParsedTemplate, Result, TemplateNamespace};
 
@@ -17,21 +17,6 @@ pub enum ManifestInputKind {
     Variable,
     /// A secret input persisted separately from source variables.
     Secret,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum InputKind {
-    Variable,
-    Secret,
-}
-
-impl InputKind {
-    fn as_manifest_kind(self) -> ManifestInputKind {
-        match self {
-            Self::Variable => ManifestInputKind::Variable,
-            Self::Secret => ManifestInputKind::Secret,
-        }
-    }
 }
 
 /// One interactive input extracted from a validated source spec.
@@ -52,33 +37,21 @@ pub struct ManifestInputSpec {
 
 #[derive(Debug, Clone)]
 struct InputState {
-    kind: InputKind,
+    kind: ManifestInputKind,
     default_value: Option<String>,
 }
 
-/// Collect interactive source inputs from structured source-spec data.
+/// Collect interactive source inputs from an already-parsed manifest value.
 ///
 /// # Errors
 ///
 /// Returns a [`ManifestError`] when the source spec contains unsupported legacy
 /// source-input forms or malformed template tokens.
-pub fn collect_source_inputs_value(root: &Value) -> Result<Vec<ManifestInputSpec>> {
+pub(crate) fn collect_source_inputs_value(root: &Value) -> Result<Vec<ManifestInputSpec>> {
     let mut ordered = Vec::new();
     let mut seen = BTreeMap::<String, InputState>::new();
     collect_from_value(root, &mut ordered, &mut seen)?;
     Ok(ordered)
-}
-
-/// Collect interactive source inputs from raw source-spec YAML.
-///
-/// # Errors
-///
-/// Returns a [`ManifestError`] when the YAML cannot be parsed or when the
-/// source spec contains unsupported legacy source-input forms or malformed
-/// template tokens.
-pub fn collect_source_inputs_yaml(raw: &str) -> Result<Vec<ManifestInputSpec>> {
-    let root: Value = serde_yaml::from_str(raw).map_err(ManifestError::parse_yaml)?;
-    collect_source_inputs_value(&root)
 }
 
 fn collect_from_value(
@@ -87,38 +60,35 @@ fn collect_from_value(
     seen: &mut BTreeMap<String, InputState>,
 ) -> Result<()> {
     match value {
-        Value::Mapping(map) => {
+        Value::Object(map) => {
             collect_from_mapping(map, ordered, seen)?;
             for nested in map.values() {
                 collect_from_value(nested, ordered, seen)?;
             }
         }
-        Value::Sequence(items) => {
+        Value::Array(items) => {
             for item in items {
                 collect_from_value(item, ordered, seen)?;
             }
         }
         Value::String(raw) => collect_from_template(raw, ordered, seen)?,
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::Tagged(_) => {}
+        Value::Null | Value::Bool(_) | Value::Number(_) => {}
     }
     Ok(())
 }
 
 fn collect_from_mapping(
-    map: &Mapping,
+    map: &Map<String, Value>,
     ordered: &mut Vec<ManifestInputSpec>,
     seen: &mut BTreeMap<String, InputState>,
 ) -> Result<()> {
-    let Some(from) = map
-        .get(Value::String("from".to_string()))
-        .and_then(Value::as_str)
-    else {
+    let Some(from) = map.get("from").and_then(Value::as_str) else {
         return Ok(());
     };
 
     let kind = match from {
-        "secret" => Some(InputKind::Secret),
-        "variable" => Some(InputKind::Variable),
+        "secret" => Some(ManifestInputKind::Secret),
+        "variable" => Some(ManifestInputKind::Variable),
         "env" | "env_any" | "secret_any" | "variable_any" => {
             return Err(ManifestError::validation(format!(
                 "unsupported manifest input source '{from}'"
@@ -130,14 +100,11 @@ fn collect_from_mapping(
         return Ok(());
     };
 
-    let key = map
-        .get(Value::String("key".to_string()))
-        .and_then(Value::as_str)
-        .ok_or_else(|| {
-            ManifestError::validation(format!("manifest '{from}' input is missing key"))
-        })?;
+    let key = map.get("key").and_then(Value::as_str).ok_or_else(|| {
+        ManifestError::validation(format!("manifest '{from}' input is missing key"))
+    })?;
     let default_value = map
-        .get(Value::String("default".to_string()))
+        .get("default")
         .and_then(Value::as_str)
         .map(ToString::to_string);
     register_input(key, kind, default_value, ordered, seen)
@@ -154,7 +121,7 @@ fn collect_from_template(
             TemplateNamespace::Secret => {
                 register_input(
                     token.key(),
-                    InputKind::Secret,
+                    ManifestInputKind::Secret,
                     token.default_value().map(ToString::to_string),
                     ordered,
                     seen,
@@ -163,7 +130,7 @@ fn collect_from_template(
             TemplateNamespace::Variable => {
                 register_input(
                     token.key(),
-                    InputKind::Variable,
+                    ManifestInputKind::Variable,
                     token.default_value().map(ToString::to_string),
                     ordered,
                     seen,
@@ -183,7 +150,7 @@ fn collect_from_template(
 
 fn register_input(
     key: &str,
-    kind: InputKind,
+    kind: ManifestInputKind,
     default_value: Option<String>,
     ordered: &mut Vec<ManifestInputSpec>,
     seen: &mut BTreeMap<String, InputState>,
@@ -199,7 +166,7 @@ fn register_input(
 
     ordered.push(ManifestInputSpec {
         key: key.to_string(),
-        kind: kind.as_manifest_kind(),
+        kind,
         required: default_value.is_none(),
         default_value: default_value.clone().unwrap_or_default(),
     });
@@ -215,7 +182,13 @@ fn register_input(
 
 #[cfg(test)]
 mod tests {
-    use super::{ManifestInputKind, collect_source_inputs_yaml};
+    use super::{ManifestInputKind, ManifestInputSpec, collect_source_inputs_value};
+    use crate::Result;
+
+    fn collect(raw: &str) -> Result<Vec<ManifestInputSpec>> {
+        let root: serde_json::Value = serde_yaml::from_str(raw).expect("parse yaml");
+        collect_source_inputs_value(&root)
+    }
 
     #[test]
     fn extracts_variables_and_secrets_in_manifest_order() {
@@ -233,7 +206,7 @@ auth:
 tables: []
 "#;
 
-        let inputs = collect_source_inputs_yaml(manifest).expect("inputs");
+        let inputs = collect(manifest).expect("inputs");
         assert_eq!(inputs.len(), 2);
         assert_eq!(inputs[0].key, "API_BASE");
         assert_eq!(inputs[0].kind, ManifestInputKind::Variable);
@@ -254,7 +227,7 @@ backend: http
 base_url: "{{env.API_BASE}}"
 tables: []
 "#;
-        let error = collect_source_inputs_yaml(manifest).expect_err("legacy env unsupported");
+        let error = collect(manifest).expect_err("legacy env unsupported");
         assert!(error.to_string().contains("unsupported"));
     }
 }

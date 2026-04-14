@@ -34,7 +34,7 @@ Coral gives agents and developers one local-first SQL interface over APIs, files
     Write SQL directly or let your AI agent query on your behalf.
 
     ```shellscript
-    coral sql "SELECT name, stargazers_count FROM github.repos WHERE owner = 'withcoral' ORDER BY stargazers_count DESC"
+    coral sql "SELECT name, stargazers_count FROM github.org_repos WHERE org = 'withcoral' ORDER BY stargazers_count DESC"
     ```
 
     [Or use Coral over MCP](/guides/use-coral-over-mcp)

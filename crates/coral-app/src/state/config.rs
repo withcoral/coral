@@ -340,7 +340,7 @@ mod tests {
                 "https://api.github.com".to_string(),
             )]),
             secrets: vec!["GITHUB_TOKEN".to_string()],
-            origin: SourceOrigin::Bundled,
+            origin: SourceOrigin::Imported,
         }
     }
 
@@ -374,6 +374,7 @@ mod tests {
         let workspace = default_workspace();
         let mut source = installed_source("github");
         source.version.clear();
+        source.origin = SourceOrigin::Bundled;
         let mut catalog = SourceCatalog::default();
         catalog.upsert_source(&workspace, source);
         let config = AppConfig {

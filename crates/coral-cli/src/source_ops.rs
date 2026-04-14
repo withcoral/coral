@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::io::{IsTerminal, stdin, stdout};
 use std::path::Path;
 
@@ -7,9 +8,28 @@ use coral_api::v1::{
     SourceOrigin, SourceSecret, SourceVariable, ValidateSourceRequest, ValidateSourceResponse,
 };
 use coral_client::{AppClient, default_workspace};
-use coral_spec::{ManifestInputKind, ManifestInputSpec, collect_source_inputs_yaml};
+use coral_spec::{
+    ManifestInputKind, ManifestInputSpec, ValidatedSourceManifest, parse_manifest_and_inputs,
+};
+use dialoguer::console::style;
 use dialoguer::{Input, Password, theme::ColorfulTheme};
 use tonic::Request;
+
+const MAX_TABLES_PER_SCHEMA: usize = 9;
+
+/// How many tables to show per schema when pretty-printing validation results.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum TableDisplayLimit {
+    /// Show every table the source exposes.
+    All,
+    /// Show at most this many tables per schema, with a summary for the rest.
+    Max(usize),
+}
+
+impl TableDisplayLimit {
+    /// The default truncation used after `source add` and during onboarding.
+    pub(crate) const DEFAULT: Self = Self::Max(MAX_TABLES_PER_SCHEMA);
+}
 
 pub(crate) async fn discover_sources(
     app: &AppClient,
@@ -83,6 +103,14 @@ pub(crate) async fn validate_source(
         }))
         .await?
         .into_inner())
+}
+
+pub(crate) fn load_validated_manifest_file(
+    file: &Path,
+) -> Result<(String, ValidatedSourceManifest, Vec<ManifestInputSpec>), anyhow::Error> {
+    let manifest_yaml = std::fs::read_to_string(file)?;
+    let (manifest, inputs) = parse_manifest_and_inputs(manifest_yaml.as_str())?;
+    Ok((manifest_yaml, manifest, inputs))
 }
 
 pub(crate) async fn delete_source(app: &AppClient, name: &str) -> Result<(), anyhow::Error> {
@@ -160,14 +188,6 @@ pub(crate) fn manifest_input_from_proto(
     })
 }
 
-pub(crate) fn load_manifest_inputs(
-    path: &Path,
-) -> Result<(String, Vec<ManifestInputSpec>), anyhow::Error> {
-    let manifest_yaml = std::fs::read_to_string(path)?;
-    let inputs = collect_source_inputs_yaml(&manifest_yaml)?;
-    Ok((manifest_yaml, inputs))
-}
-
 pub(crate) fn source_origin_label(origin: i32) -> &'static str {
     match SourceOrigin::try_from(origin) {
         Ok(SourceOrigin::Bundled) => "bundled",
@@ -176,17 +196,77 @@ pub(crate) fn source_origin_label(origin: i32) -> &'static str {
     }
 }
 
-pub(crate) fn print_validation_success(
+pub(crate) async fn validate_and_print(
+    app: &AppClient,
+    source_name: &str,
+    limit: TableDisplayLimit,
+) -> Result<(), anyhow::Error> {
+    let response = validate_source(app, source_name).await?;
+    print_validation_pretty(&response, limit)
+}
+
+pub(crate) fn print_validation_pretty(
     response: &ValidateSourceResponse,
+    limit: TableDisplayLimit,
 ) -> Result<(), anyhow::Error> {
     let source = response
         .source
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("validate response missing source metadata"))?;
-    println!("Source {} is queryable", source.name);
+
+    println!();
+    println!(
+        "  {} {}",
+        style("✓").green(),
+        style(format!("{} connected successfully", source.name)).bold()
+    );
+
+    // Group tables by schema, sorted.
+    let mut by_schema: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     for table in &response.tables {
-        println!("{}.{}", table.schema_name, table.name);
+        by_schema
+            .entry(&table.schema_name)
+            .or_default()
+            .push(&table.name);
     }
+    for tables in by_schema.values_mut() {
+        tables.sort_unstable();
+    }
+
+    for (schema, tables) in &by_schema {
+        let count = tables.len();
+        println!();
+        println!(
+            "    {}",
+            style(format!(
+                "{schema} ({count} {})",
+                if count == 1 { "table" } else { "tables" }
+            ))
+            .bold()
+        );
+
+        let show_count = match limit {
+            TableDisplayLimit::All => tables.len(),
+            TableDisplayLimit::Max(max) => tables.len().min(max),
+        };
+        let remaining = tables.len() - show_count;
+
+        for (i, table) in tables.iter().take(show_count).enumerate() {
+            let is_last = i == show_count - 1 && remaining == 0;
+            let branch = if is_last { "└─" } else { "├─" };
+            println!("    {} {}", style(branch).dim(), table);
+        }
+
+        if remaining > 0 {
+            println!(
+                "    {} {}",
+                style("└─").dim(),
+                style(format!("... and {remaining} more")).dim()
+            );
+        }
+    }
+    println!();
+
     Ok(())
 }
 

@@ -30,8 +30,10 @@ root.
 - Keep `state/`, `workspaces/`, `sources/`, and `query/` as the main internal
   boundaries. Do not create new sub-boundaries unless they own durable,
   independent behavior.
-- Persist installed manifests as files under app-owned state; do not inline
+- Persist imported manifests as files under app-owned state; do not inline
   them into `config.toml`.
+- Bundled installs persist source identity plus configured variables and
+  secrets, then resolve their manifest from the current binary at runtime.
 - Source `name` is the canonical installed identifier and SQL schema name.
 - `coral-client::local` intentionally depends on `coral-app::ServerBuilder` for
   the explicit local bootstrap seam.
