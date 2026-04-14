@@ -16,10 +16,10 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::{
-    AuthSpec, ColumnSpec, FilterSpec, ManifestError, PaginationSpec, ParsedTemplate,
-    RequestRouteSpec, RequestSpec, ResponseSpec, Result, SourceBackend, SourceManifestCommon,
-    TableCommon, TemplateNamespace, ValueSourceSpec, validate::validate_template,
-    validate_http_table,
+    AuthSpec, ColumnSpec, FilterSpec, ManifestError, ManifestInputKind, ManifestInputSpec,
+    PaginationSpec, ParsedTemplate, RequestRouteSpec, RequestSpec, ResponseSpec, Result,
+    SourceBackend, SourceManifestCommon, TableCommon, inputs::collect_source_inputs_value,
+    validate::validate_template, validate_http_table,
 };
 
 /// Provider-specific response hints for classifying and delaying rate-limit retries.
@@ -44,6 +44,7 @@ pub struct HttpSourceManifest {
     pub auth: AuthSpec,
     pub rate_limit: RateLimitSpec,
     pub tables: Vec<HttpTableSpec>,
+    pub declared_inputs: Vec<ManifestInputSpec>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -61,6 +62,8 @@ struct RawHttpSourceManifest {
     auth: AuthSpec,
     #[serde(default)]
     rate_limit: RateLimitSpec,
+    #[serde(default)]
+    inputs: Option<Value>,
     tables: Vec<RawHttpTableSpec>,
 }
 
@@ -148,8 +151,12 @@ impl HttpTableSpec {
 }
 
 impl HttpSourceManifest {
-    /// Returns the source secrets required by auth headers and request
-    /// templates after defaults are taken into account.
+    /// Returns the source secrets required by this manifest.
+    ///
+    /// In the new input model, every declared input with `kind: secret` is
+    /// required (secrets cannot carry defaults), so the required set is just
+    /// the secret-kind subset of `declared_inputs` plus any names explicitly
+    /// listed in `auth.required_secrets`.
     pub fn required_secret_names(&self) -> BTreeSet<String> {
         let mut secret_names = self
             .auth
@@ -157,13 +164,9 @@ impl HttpSourceManifest {
             .iter()
             .cloned()
             .collect::<BTreeSet<_>>();
-        for header in &self.auth.headers {
-            collect_value_source_secret_names(&header.value, &mut secret_names);
-        }
-        for table in &self.tables {
-            collect_request_secret_names(&table.request, &mut secret_names);
-            for route in &table.requests {
-                collect_route_secret_names(route, &mut secret_names);
+        for input in &self.declared_inputs {
+            if input.kind == ManifestInputKind::Secret {
+                secret_names.insert(input.key.clone());
             }
         }
         secret_names
@@ -201,6 +204,7 @@ impl RawHttpTableSpec {
 
 impl HttpSourceManifest {
     pub(crate) fn parse_manifest_value(value: Value) -> Result<Self> {
+        let declared_inputs = collect_source_inputs_value(&value)?;
         let raw: RawHttpSourceManifest =
             serde_json::from_value(value).map_err(ManifestError::deserialize)?;
         let RawHttpSourceManifest {
@@ -212,6 +216,7 @@ impl HttpSourceManifest {
             base_url,
             auth,
             rate_limit,
+            inputs: _inputs,
             tables,
         } = raw;
         let common = SourceManifestCommon::new(dsl_version, name, version, description);
@@ -237,6 +242,7 @@ impl HttpSourceManifest {
             auth,
             rate_limit,
             tables,
+            declared_inputs,
         })
     }
 }
@@ -264,48 +270,3 @@ pub(crate) fn test_http_table_spec(
     }
 }
 
-fn collect_route_secret_names(route: &RequestRouteSpec, secret_names: &mut BTreeSet<String>) {
-    collect_request_secret_names(&route.request, secret_names);
-}
-
-fn collect_request_secret_names(request: &RequestSpec, secret_names: &mut BTreeSet<String>) {
-    for query in &request.query {
-        collect_value_source_secret_names(&query.value, secret_names);
-    }
-    for body in &request.body {
-        collect_value_source_secret_names(&body.value, secret_names);
-    }
-    for header in &request.headers {
-        collect_value_source_secret_names(&header.value, secret_names);
-    }
-}
-
-fn collect_value_source_secret_names(
-    value_source: &ValueSourceSpec,
-    secret_names: &mut BTreeSet<String>,
-) {
-    match value_source {
-        ValueSourceSpec::Secret { key, default } => {
-            if default.is_none() {
-                secret_names.insert(key.clone());
-            }
-        }
-        ValueSourceSpec::Template { template } => {
-            collect_template_secret_names(template, secret_names);
-        }
-        ValueSourceSpec::Literal { .. }
-        | ValueSourceSpec::Filter { .. }
-        | ValueSourceSpec::FilterInt { .. }
-        | ValueSourceSpec::Variable { .. }
-        | ValueSourceSpec::State { .. }
-        | ValueSourceSpec::NowEpochMinusSeconds { .. } => {}
-    }
-}
-
-fn collect_template_secret_names(template: &ParsedTemplate, secret_names: &mut BTreeSet<String>) {
-    for token in template.tokens() {
-        if token.namespace() == &TemplateNamespace::Secret && token.default_value().is_none() {
-            secret_names.insert(token.key().to_string());
-        }
-    }
-}

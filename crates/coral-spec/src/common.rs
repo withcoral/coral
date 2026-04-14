@@ -205,15 +205,8 @@ pub enum ValueSourceSpec {
         #[serde(default)]
         default: Option<i64>,
     },
-    Secret {
+    Input {
         key: String,
-        #[serde(default)]
-        default: Option<String>,
-    },
-    Variable {
-        key: String,
-        #[serde(default)]
-        default: Option<String>,
     },
     State {
         key: String,
