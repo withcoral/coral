@@ -131,7 +131,7 @@ impl QueryError {
                 Some(format!(
                     "Credentials for this source are invalid or expired. Re-install it to refresh: \
                      `coral source add {source_shell}` for bundled sources, or \
-                     `coral source import <manifest-path>` for imported sources."
+                     `coral source add --file <manifest-path>` for imported sources."
                 )),
                 StatusCode::FailedPrecondition,
             ),
