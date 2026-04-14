@@ -1,0 +1,30 @@
+{
+  // Use IntelliSense to learn about possible attributes.
+  // Hover to view descriptions of existing attributes.
+  // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug executable 'coral'",
+      "type": "lldb",
+      "request": "launch",
+      "preLaunchTask": "rust: cargo build",
+      "program": "${workspaceFolder}/target/debug/coral"
+    },
+    {
+      // Example of how to debug a specific command. Adapt this to fit your needs.
+      "name": "Debug executable 'coral sql'",
+      "type": "lldb",
+      "request": "launch",
+      "preLaunchTask": "rust: cargo build",
+      "program": "${workspaceFolder}/target/debug/coral",
+      "args": ["sql", "select * from linear.projects"]
+    },
+    {
+      "name": "Attach to running process",
+      "type": "lldb",
+      "request": "attach",
+      "pid": "${command:pickMyProcess}"
+    }
+  ]
+}
