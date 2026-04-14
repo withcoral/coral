@@ -150637,6 +150637,12 @@ tables:
             - values_editable_by
   - name: search_commits
     description: Search commits
+    guide: >
+      Searches commits via GitHub's /search/commits API. Requires q. ALWAYS scope with repo:OWNER/NAME or org:NAME —
+      unscoped commit searches return matches across all of public GitHub and waste your query budget. Common qualifiers:
+      author:LOGIN, committer:LOGIN, hash:SHA, committer-date:>=YYYY-MM-DD, path:DIR. Hard limits: max 5 AND/OR/NOT
+      operators per q (422 if exceeded); tight secondary rate limit on /search/* endpoints (avoid parallel queries).
+      Example: q = 'repo:rust-lang/rust author:alexcrichton path:src/libcore'.
     filters:
       - name: q
         required: true
@@ -151160,7 +151166,10 @@ tables:
         type: Utf8
         nullable: true
         virtual: true
-        description: Commit search query with keywords and qualifiers.
+        description: >
+          GitHub commit search query (e.g. 'repo:OWNER/NAME author:LOGIN path:src/'). Max 5 AND/OR/NOT operators per q.
+          Always scope with repo:OWNER/NAME or org:NAME — unscoped commit searches return matches across all of public
+          GitHub. See: https://docs.github.com/en/search-github/searching-on-github/searching-commits
         expr:
           kind: from_filter
           key: q
@@ -152467,6 +152476,17 @@ tables:
             - url
   - name: search_issues
     description: Search issues and pull requests
+    guide: >
+      Searches issues and pull requests via GitHub's /search/issues API. Requires q, which accepts the full GitHub issue/PR
+      search syntax (see https://docs.github.com/en/search-github/searching-on-github/searching-issues-and-pull-requests).
+      ALWAYS scope with org:NAME, user:NAME, or repo:OWNER/NAME — unscoped searches return matches across all of public
+      GitHub and waste your query budget. Hard limits: max 5 AND/OR/NOT operators per q (422 if exceeded); tight secondary
+      rate limit on /search/* endpoints (avoid parallel queries). For N-of-many lookups (e.g. finding PRs that mention
+      several ticket IDs), run one query per identifier rather than OR-chaining — the operator limit makes long OR chains
+      fail fast. Common qualifiers: is:pr, is:issue, is:open, is:closed, is:merged, is:draft, author:LOGIN, assignee:LOGIN,
+      mentions:LOGIN, label:NAME, milestone:NAME, in:title, in:body, in:comments, head:BRANCH, base:BRANCH, language:LANG,
+      created:>=YYYY-MM-DD, updated:>=YYYY-MM-DD, comments:>N, reactions:>N. Examples:
+      q = 'is:pr is:open author:simonwhitaker org:withcoral' or q = 'is:pr repo:withcoral/coral DATA-293'.
     filters:
       - name: q
         required: true
@@ -154477,7 +154497,10 @@ tables:
         type: Utf8
         nullable: true
         virtual: true
-        description: Issue search query with keywords and qualifiers.
+        description: >
+          Full GitHub issue/PR search query (e.g. 'is:pr is:open author:NAME org:ORG'). Max 5 AND/OR/NOT operators per q
+          (422 if exceeded). Always include org:/user:/repo: scoping — unscoped searches return matches across all of
+          public GitHub. See: https://docs.github.com/en/search-github/searching-on-github/searching-issues-and-pull-requests
         expr:
           kind: from_filter
           key: q
@@ -156298,6 +156321,12 @@ tables:
             - user_view_type
   - name: search_labels
     description: Search labels
+    guide: >
+      Searches labels within ONE specific repository. Requires both repository_id (numeric GitHub repo ID, NOT the
+      OWNER/NAME slug) and q (a label name or fragment). Discover repository_id by querying github.user_repos or
+      github.search_repositories first and reading the id column for the row whose full_name matches OWNER/NAME. Hard
+      limits: max 5 AND/OR/NOT operators per q (422 if exceeded); tight secondary rate limit on /search/* endpoints
+      (avoid parallel queries). Example: WHERE repository_id = 12345 AND q = 'bug'.
     filters:
       - name: repository_id
         required: true
@@ -156400,7 +156429,10 @@ tables:
         type: Utf8
         nullable: true
         virtual: true
-        description: Search keywords for labels (no qualifiers accepted).
+        description: >
+          Label name or fragment to match within ONE repository (e.g. 'bug'). Use together with the required repository_id
+          filter (numeric repo ID, NOT the OWNER/NAME slug). q is treated as plain label text — GitHub search qualifiers
+          are not accepted here. See: https://docs.github.com/en/search-github/searching-on-github/searching-labels
         expr:
           kind: from_filter
           key: q
@@ -156446,6 +156478,12 @@ tables:
             - url
   - name: search_repositories
     description: Search repositories
+    guide: >
+      Searches GitHub repositories. Requires q. Common qualifiers: language:LANG, stars:>N, forks:>N, size:>N, topic:NAME,
+      user:LOGIN, org:NAME, in:name, in:description, in:readme, created:>=YYYY-MM-DD, pushed:>=YYYY-MM-DD, archived:false,
+      is:public, is:private, license:KEY. Hard limits: max 5 AND/OR/NOT operators per q (422 if exceeded); tight secondary
+      rate limit on /search/* endpoints (avoid parallel queries). Examples: q = 'language:rust stars:>1000' or
+      q = 'org:withcoral topic:datafusion'.
     filters:
       - name: q
         required: true
@@ -157346,7 +157384,10 @@ tables:
         type: Utf8
         nullable: true
         virtual: true
-        description: Repository search query with keywords and qualifiers.
+        description: >
+          GitHub repository search query (e.g. 'language:rust stars:>1000 topic:datafusion'). Max 5 AND/OR/NOT operators
+          per q. Common qualifiers: language:, stars:>N, topic:, user:, org:, archived:false. See:
+          https://docs.github.com/en/search-github/searching-on-github/searching-for-repositories
         expr:
           kind: from_filter
           key: q
@@ -157537,6 +157578,11 @@ tables:
             - web_commit_signoff_required
   - name: search_topics
     description: Search topics
+    guide: >
+      Searches GitHub repository topics by name fragment. Requires q. Topic search accepts free-text terms and a small set
+      of qualifiers (is:featured, is:curated, repositories:>N, created:>=YYYY-MM-DD) but does not accept the full GitHub
+      issue/PR search vocabulary. Hard limits: max 5 AND/OR/NOT operators per q (422 if exceeded); tight secondary rate
+      limit on /search/* endpoints. Example: q = 'machine-learning'.
     filters:
       - name: q
         required: true
@@ -157640,7 +157686,10 @@ tables:
         type: Utf8
         nullable: true
         virtual: true
-        description: Topic search query with keywords and qualifiers.
+        description: >
+          GitHub topic search query, e.g. 'machine-learning'. Max 5 AND/OR/NOT operators per q. Topic search accepts
+          free-text terms and a limited qualifier set (is:featured, is:curated, repositories:>N), not the full GitHub
+          issue search syntax. See: https://docs.github.com/en/search-github/searching-on-github/searching-topics
         expr:
           kind: from_filter
           key: q
@@ -157702,6 +157751,11 @@ tables:
             - updated_at
   - name: search_users
     description: Search users
+    guide: >
+      Searches GitHub users and organizations. Requires q. Common qualifiers: type:user, type:org, location:CITY,
+      language:LANG, followers:>N, repos:>N, created:>=YYYY-MM-DD, in:login, in:name, in:email. Hard limits: max 5
+      AND/OR/NOT operators per q (422 if exceeded); tight secondary rate limit on /search/* endpoints (avoid parallel
+      queries). Examples: q = 'simonwhitaker' or q = 'type:user location:london language:rust followers:>100'.
     filters:
       - name: q
         required: true
@@ -157935,7 +157989,10 @@ tables:
         type: Utf8
         nullable: true
         virtual: true
-        description: User search query with keywords and qualifiers.
+        description: >
+          GitHub user/org search query (e.g. 'type:user location:london followers:>100'). Max 5 AND/OR/NOT operators per
+          q. Common qualifiers: type:user/org, location:, language:, followers:>N, repos:>N. See:
+          https://docs.github.com/en/search-github/searching-on-github/searching-users
         expr:
           kind: from_filter
           key: q

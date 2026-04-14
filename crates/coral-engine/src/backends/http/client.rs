@@ -431,15 +431,11 @@ async fn execute_request(
             )
         })?;
 
-        if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
-            if rate_limit_retries >= MAX_RATE_LIMIT_RETRIES {
-                return Err(DataFusionError::Execution(format!(
-                    "source API request hit rate limit too many times for {method_label} {logged_url}"
-                )));
-            }
+        if let Some(wait) =
+            check_rate_limit(&response, rate_limit_retries, method_label, &logged_url)?
+        {
             rate_limit_retries += 1;
-            let wait_secs = rate_limit_wait_secs(response.headers(), SystemTime::now());
-            tokio::time::sleep(Duration::from_secs(wait_secs)).await;
+            tokio::time::sleep(wait).await;
             continue;
         }
 
@@ -501,6 +497,31 @@ fn request_error(
     DataFusionError::Execution(format!(
         "source API {stage} failed for {method_label} {logged_url}: {error}"
     ))
+}
+
+fn check_rate_limit(
+    response: &reqwest::Response,
+    retries: usize,
+    method_label: &str,
+    logged_url: &str,
+) -> Result<Option<Duration>, DataFusionError> {
+    let is_rate_limited = response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS
+        || (response.status() == reqwest::StatusCode::FORBIDDEN
+            && has_rate_limit_headers(response.headers()));
+    if !is_rate_limited {
+        return Ok(None);
+    }
+    if retries >= MAX_RATE_LIMIT_RETRIES {
+        return Err(DataFusionError::Execution(format!(
+            "source API request hit rate limit too many times for {method_label} {logged_url}"
+        )));
+    }
+    let wait_secs = rate_limit_wait_secs(response.headers(), SystemTime::now());
+    Ok(Some(Duration::from_secs(wait_secs)))
+}
+
+fn has_rate_limit_headers(headers: &HeaderMap) -> bool {
+    headers.contains_key("Retry-After") || headers.contains_key("X-RateLimit-Reset")
 }
 
 fn rate_limit_wait_secs(headers: &HeaderMap, now: SystemTime) -> u64 {
