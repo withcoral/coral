@@ -71,7 +71,7 @@ mod runtime;
 
 pub use contracts::{
     ColumnInfo, CoreError, QueryExecution, QueryRuntimeContext, QueryRuntimeProvider, QuerySource,
-    StatusCode, TableInfo,
+    StatusCode, StructuredQueryError, TableInfo,
 };
 
 /// High-level query operations for the local query engine.

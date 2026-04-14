@@ -781,6 +781,7 @@ dependencies = [
  "toml",
  "toml_edit",
  "tonic",
+ "tonic-types",
  "tracing",
 ]
 

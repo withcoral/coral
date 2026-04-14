@@ -1,5 +1,7 @@
 //! Stable transport-neutral error contract for `coral-engine`.
 
+use std::collections::HashMap;
+
 use thiserror::Error;
 
 /// Errors surfaced by the query layer.
@@ -23,6 +25,77 @@ pub enum CoreError {
     /// The service failed internally.
     #[error("internal: {0}")]
     Internal(String),
+    /// A structured query failure produced at the engine or backend layer.
+    ///
+    /// Construction is restricted to `coral-engine` via the `pub(crate)`
+    /// constructor on [`StructuredQueryError`]. The app boundary reads
+    /// the plain Rust data via getters and encodes it as AIP-193 standard
+    /// error details.
+    #[error("{}", _0.plain_message())]
+    Structured(StructuredQueryError),
+}
+
+/// Opaque wrapper around a structured query failure.
+///
+/// Fields are private. External crates read them via getters; only
+/// `coral-engine` can construct instances (the constructor is `pub(crate)`).
+/// All fields are plain Rust data — no protobuf types — so `coral-engine`
+/// stays transport-neutral.
+#[derive(Debug, Clone)]
+pub struct StructuredQueryError {
+    reason: String,
+    metadata: HashMap<String, String>,
+    retryable: bool,
+    plain_message: String,
+    status: StatusCode,
+}
+
+impl StructuredQueryError {
+    pub(crate) fn new(
+        reason: &str,
+        metadata: HashMap<String, String>,
+        retryable: bool,
+        plain_message: String,
+        status: StatusCode,
+    ) -> Self {
+        Self {
+            reason: reason.to_string(),
+            metadata,
+            retryable,
+            plain_message,
+            status,
+        }
+    }
+
+    /// Machine-readable error reason (e.g. `"MISSING_REQUIRED_FILTER"`).
+    #[must_use]
+    pub fn reason(&self) -> &str {
+        &self.reason
+    }
+
+    /// Key-value metadata for AIP-193 `ErrorInfo.metadata`.
+    #[must_use]
+    pub fn metadata(&self) -> &HashMap<String, String> {
+        &self.metadata
+    }
+
+    /// Whether the error is transient (maps to `RetryInfo` presence).
+    #[must_use]
+    pub fn retryable(&self) -> bool {
+        self.retryable
+    }
+
+    /// Multi-line plain-text fallback for `Status::message()`.
+    #[must_use]
+    pub fn plain_message(&self) -> &str {
+        &self.plain_message
+    }
+
+    /// Pre-computed gRPC status code.
+    #[must_use]
+    pub fn status(&self) -> StatusCode {
+        self.status
+    }
 }
 
 impl CoreError {
@@ -42,6 +115,7 @@ impl CoreError {
             Self::Unavailable(_) => StatusCode::Unavailable,
             Self::Unimplemented(_) => StatusCode::Unimplemented,
             Self::Internal(_) => StatusCode::Internal,
+            Self::Structured(sqe) => sqe.status(),
         }
     }
 }

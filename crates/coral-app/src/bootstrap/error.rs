@@ -2,6 +2,7 @@
 
 use coral_engine::{CoreError, StatusCode};
 use tonic::{Code, Status};
+use tonic_types::{ErrorDetail, StatusExt as _};
 
 use crate::state::CredentialsError;
 
@@ -88,10 +89,24 @@ pub(crate) fn app_status(error: AppError) -> Status {
     reason = "used directly as a map_err adapter across tonic service handlers"
 )]
 pub(crate) fn core_status(error: CoreError) -> Status {
-    Status::new(
-        grpc_code(error.status_code()),
-        truncate_status_detail(error.to_string()),
-    )
+    match error {
+        CoreError::Structured(sqe) => {
+            let mut details: Vec<ErrorDetail> =
+                vec![ErrorDetail::ErrorInfo(tonic_types::ErrorInfo::new(
+                    sqe.reason(),
+                    "coral.withcoral.com",
+                    sqe.metadata().clone(),
+                ))];
+            if sqe.retryable() {
+                details.push(ErrorDetail::RetryInfo(tonic_types::RetryInfo::new(None)));
+            }
+            Status::with_error_details_vec(grpc_code(sqe.status()), sqe.plain_message(), details)
+        }
+        other => Status::new(
+            grpc_code(other.status_code()),
+            truncate_status_detail(other.to_string()),
+        ),
+    }
 }
 
 fn grpc_code(status: StatusCode) -> Code {
