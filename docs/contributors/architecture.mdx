@@ -46,11 +46,12 @@ Single file: `main.rs`. Intentionally thin, delegates all business logic to `cor
 
 Shared client library used by both `coral-cli` and `coral-mcp`.
 
-| Owns               | Details                                           |
-| ------------------ | ------------------------------------------------- |
-| Local transport    | Starts or connects to the `coral-app` gRPC server |
-| Result decoding    | Arrow IPC → record batches                        |
-| Formatting helpers | `format_batches_table`, `format_batches_json`     |
+| Owns               | Details                                                                                  |
+| ------------------ | ---------------------------------------------------------------------------------------- |
+| Local transport    | Starts or connects to the `coral-app` gRPC server                                       |
+| Result decoding    | Arrow IPC → record batches                                                               |
+| Error decoding     | Decodes AIP-193 `ErrorInfo` from `tonic::Status` details (`status_error.rs`)             |
+| Formatting helpers | `format_batches_table`, `format_batches_json`                                            |
 
 ### `coral-app`
 
