@@ -27276,7 +27276,7 @@ tables:
         type: Utf8
         nullable: true
         virtual: false
-        description: The URL from which the Status Page can be accessed on the internet (either customer's domain or default *.trust.pagerduty.com).
+        description: "The URL from which the Status Page can be accessed (either customer domain or default trust.pagerduty.com)."
         expr:
           kind: path
           path:
@@ -29583,7 +29583,7 @@ tables:
         type: Utf8
         nullable: true
         virtual: false
-        description: 'The display name of the Incident Type. The first character must be alphanumeric. Max length: 50, Min Length : 1. The'
+        description: 'The display name of the Incident Type. The first character must be alphanumeric. Max length: 50, Min Length: 1. The'
         expr:
           kind: path
           path:
@@ -29645,7 +29645,7 @@ tables:
         type: Utf8
         nullable: true
         virtual: false
-        description: 'The display name of the Incident Type. The first character must be alphanumeric. Max length: 50, Min Length : 1. The'
+        description: 'The display name of the Incident Type. The first character must be alphanumeric. Max length: 50, Min Length: 1. The'
         expr:
           kind: path
           path:
