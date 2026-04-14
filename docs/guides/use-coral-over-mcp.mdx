@@ -1,126 +1,189 @@
 ---
 title: "Use Coral over MCP"
-description: "Connect your AI coding tools to Coral using the Model Context Protocol (MCP)."
+description: "Set up MCP for Claude Code, Cursor, and other agents."
 ---
 
-Coral exposes its local runtime over MCP stdio, giving coding agents access to SQL queries and schema discovery across all your installed sources.
+Coral ships with a built-in MCP server, giving agents access to SQL queries and schema discovery across all your installed sources.
 
-Before setting up a client, make sure you have [installed Coral](/getting-started/installation) and added at least one source with `coral source add`.
+<Note>
+Before setting up a client, make sure you have [connected at least one source](/getting-started/quickstart).
+
+</Note>
 
 ## What MCP clients get
 
-The Coral MCP server exposes:
+| Type     | Name             | Description                      |
+| -------- | ---------------- | -------------------------------- |
+| Tool     | `sql`            | Run a SQL query                  |
+| Tool     | `list_tables`    | List all available tables        |
+| Resource | `coral://guide`  | Usage guide for agents           |
+| Resource | `coral://tables` | Schema for all installed sources |
 
-- **tools:** `sql`, `list_tables`
-- **resources:** `coral://guide`, `coral://tables`
-
-Clients see the same installed sources, system catalog, and query results as `coral sql`. You set up sources with the CLI, then agents query them over MCP.
+Clients see the same installed sources and query results as `coral sql`. You set up sources with the CLI, then agents query them over MCP.
 
 ## Client setup
 
-Coral uses stdio transport. Clients that accept a command can point directly at `coral mcp-stdio`. For clients that need a full path, run `which coral` to find it.
+Coral uses stdio transport. If a client supports a command-based install flow, point it at `coral mcp-stdio`. If a client needs a full path, run `which coral` and use that path in the config instead of `coral`.
 
 <Tabs>
   <Tab title="Claude Code">
-    ```shellscript
-    claude mcp add coral -- coral mcp-stdio
-    ```
-  </Tab>
+  **CLI**
 
-  <Tab title="Cursor">
-    Add to `.cursor/mcp.json`:
+  ```shellscript
+  claude mcp add coral -- coral mcp-stdio
+  ```
 
-    ```json
-    {
-      "mcpServers": {
-        "coral": {
-          "command": "coral",
-          "args": ["mcp-stdio"]
-        }
-      }
-    }
-    ```
+  To install it at a different scope:
 
-    If `coral` is not on Cursor's `PATH`, use the full path from `which coral`.
-  </Tab>
+  ```shellscript
+  claude mcp add coral --scope project -- coral mcp-stdio
+  claude mcp add coral --scope user -- coral mcp-stdio
+  ```
 
-  <Tab title="VS Code / Copilot">
-    Add to `.vscode/mcp.json` in your workspace:
+  **Manual config**
 
-    ```json
-    {
-      "servers": {
-        "coral": {
-          "type": "stdio",
-          "command": "coral",
-          "args": ["mcp-stdio"]
-        }
-      }
-    }
-    ```
-  </Tab>
+  Add to `.mcp.json`:
 
-  <Tab title="Claude Desktop">
-    Add to `claude_desktop_config.json`:
-
-    ```json
-    {
-      "mcpServers": {
-        "coral": {
-          "command": "/path/to/coral",
-          "args": ["mcp-stdio"]
-        }
-      }
-    }
-    ```
-
-    Use the full path to `coral`. On macOS, open this file from Claude Desktop → Settings → Developer → Edit Config.
-  </Tab>
-
-  <Tab title="Windsurf">
-    Add to `~/.codeium/windsurf/mcp_config.json`:
-
-    ```json
-    {
-      "mcpServers": {
-        "coral": {
-          "command": "coral",
-          "args": ["mcp-stdio"]
-        }
-      }
-    }
-    ```
-  </Tab>
-
-  <Tab title="Codex">
-    ```shellscript
-    codex mcp add coral -- coral mcp-stdio
-    ```
-  </Tab>
-
-  <Tab title="Amp">
-    **VS Code extension** — add to `settings.json`:
-
-    ```json
-    "amp.mcpServers": {
+  ```json
+  {
+    "mcpServers": {
       "coral": {
         "command": "coral",
         "args": ["mcp-stdio"]
       }
     }
-    ```
+  }
+  ```
 
-    **CLI:**
+  `local` is the default scope and stays private to you in the current project. `project` writes shared config to `.mcp.json`, and `user` makes the server available across projects.
+</Tab>
 
-    ```shellscript
-    amp mcp add coral -- coral mcp-stdio
-    ```
-  </Tab>
+  <Tab title="Codex">
+  **CLI**
 
-  <Tab title="Other clients">
+  ```shellscript
+  codex mcp add coral -- coral mcp-stdio
+  ```
+
+  **Manual config**
+
+  Add to `~/.codex/config.toml`:
+
+  ```toml
+  [mcp_servers.coral]
+  command = "coral"
+  args = ["mcp-stdio"]
+  ```
+
+  Codex uses user-scoped config shared between the CLI and IDE extension, so you only need to configure it once.
+</Tab>
+
+  <Tab title="OpenCode">
+  **CLI**
+
+  ```shellscript
+  opencode mcp add
+  ```
+
+  OpenCode's `mcp add` command is interactive and can add either a local or remote MCP server.
+
+  **Manual config**
+
+  Add to `~/.config/opencode/opencode.json` for global scope, or `opencode.json` in your project root for project scope:
+
+  ```json
+  {
+    "$schema": "https://opencode.ai/config.json",
+    "mcp": {
+      "coral": {
+        "type": "local",
+        "command": ["coral", "mcp-stdio"],
+        "enabled": true
+      }
+    }
+  }
+  ```
+
+  OpenCode merges global and project config, with project config taking precedence over global config.
+</Tab>
+
+  <Tab title="Cursor">
+  **Install**
+
+  Cursor documents one-click install, UI-based setup, and `mcp.json` configuration. Its CLI reads the same MCP config but does not document a separate add command.
+
+  **Manual config**
+
+  Add to `.cursor/mcp.json` for a project-scoped server, or `~/.cursor/mcp.json` for a user-scoped server:
+
+  ```json
+  {
+    "mcpServers": {
+      "coral": {
+        "type": "stdio",
+        "command": "coral",
+        "args": ["mcp-stdio"]
+      }
+    }
+  }
+  ```
+
+  If `coral` is not on Cursor's `PATH`, use the full path from `which coral`.
+</Tab>
+
+  <Tab title="VS Code">
+  **Install**
+
+  Use the Command Palette and run `MCP: Add Server`, then choose whether to add Coral to the workspace or your user profile.
+
+  **Manual config**
+
+  Add to `.vscode/mcp.json` in your workspace:
+
+  ```json
+  {
+    "servers": {
+      "coral": {
+        "type": "stdio",
+        "command": "coral",
+        "args": ["mcp-stdio"]
+      }
+    }
+  }
+  ```
+
+  For user scope, open the user-profile `mcp.json` with `MCP: Open User Configuration` and add the same server entry there.
+</Tab>
+
+
+    <Tab title="Claude Desktop">
+  **Install**
+
+  Claude Desktop now supports local MCP desktop extensions, but Coral currently uses the manual local-server config below.
+
+  **Manual config**
+
+  Add to `claude_desktop_config.json`:
+
+  ```json
+  {
+    "mcpServers": {
+      "coral": {
+        "command": "coral",
+        "args": ["mcp-stdio"]
+      }
+    }
+  }
+  ```
+
+  Use the full path to `coral`. Open this file from Claude Desktop → Settings → Developer → Edit Config.
+  Claude Desktop uses user-scoped config for this setup.
+</Tab>
+
+  <Tab title="Other">
     Any MCP client that supports stdio transport can use Coral. Point it at:
 
-    ```
+    ```text
     command: coral
     args: ["mcp-stdio"]
     ```
@@ -131,9 +194,11 @@ Coral uses stdio transport. Clients that accept a command can point directly at 
 
 ## Verify the connection
 
-Once your client is connected, ask the agent to list available tables or run a simple query. For example:
+Once your client is connected, ask the agent to list available tables or run a simple query. Examples:
 
-> "List the tables available in Coral"
+> "List the tables available in Coral."
+
+> "Run a small Coral query against `coral.tables`."
 
 The agent should call `list_tables` or query `coral.tables` and return the schemas from your installed sources.
 
@@ -141,9 +206,3 @@ The agent should call `list_tables` or query `coral.tables` and return the schem
 
 - **`coral` not found:** Make sure `coral` is on your `PATH`, or use the full path from `which coral` in your client config.
 - **No tables visible:** Run `coral source list` in your terminal to confirm you have sources installed. If empty, add one with `coral source add`.
-- **Source errors:** Run `coral source test <NAME>` from the CLI to validate credentials and connectivity before using MCP.
-
-<Tip>
-  Coral is local-first. MCP exposes the same local runtime as the CLI — set up
-  sources once with the CLI, then query them from any connected agent.
-</Tip>

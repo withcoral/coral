@@ -17,6 +17,9 @@
 - Search for existing information before adding new content. Avoid duplication unless it is done for a strategic reason
 - Check existing patterns for consistency
 - Start by making the smallest reasonable changes
+- Keep `docs/` aligned with CLI and MCP user-facing surfaces; if commands,
+  flags, output contracts, tools, resources, prompts, or workflows change
+  elsewhere in the repo, update the relevant docs in the same change
 
 ## Frontmatter requirements for pages
 - title: Clear, descriptive page title

@@ -19,8 +19,8 @@
     "strict": true
   },
   "colors": {
-    "primary": "#B2EAA5",
-    "dark": "#B2EAA5",
+    "primary": "#398125",
+    "dark": "#398125",
     "light": "#B2EAA5"
   },
   "fonts": {
@@ -49,11 +49,6 @@
   "navbar": {
     "links": [
       {
-        "label": "Quickstart",
-        "href": "/getting-started/quickstart",
-        "icon": "rocket"
-      },
-      {
         "label": "Install Coral",
         "href": "/getting-started/installation",
         "icon": "download"
@@ -81,18 +76,8 @@
       {
         "group": "Guides",
         "pages": [
-          "guides/manage-sources",
-          "guides/write-a-custom-source",
-          "guides/advanced-cli-queries",
-          "guides/use-coral-over-mcp"
-        ]
-      },
-      {
-        "group": "Concepts",
-        "pages": [
-          "concepts/sources-and-workspaces",
-          "concepts/runtime-and-mcp",
-          "concepts/system-catalog"
+          "guides/use-coral-over-mcp",
+          "guides/write-a-custom-source"
         ]
       },
       {

@@ -192,6 +192,11 @@ pub enum ValueSourceSpec {
         #[serde(default)]
         default: Option<Value>,
     },
+    FilterInt {
+        key: String,
+        #[serde(default)]
+        default: Option<i64>,
+    },
     Secret {
         key: String,
         #[serde(default)]

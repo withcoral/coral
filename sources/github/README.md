@@ -8,11 +8,13 @@
 
 ## Authentication
 
-Requires a `GITHUB_TOKEN` environment variable or saved credential via `coral connect github`.
+Requires a `GITHUB_TOKEN` environment variable or saved credential via `coral source add github`.
 
 ```bash
-coral connect github
+coral source add github
 ```
+
+To rotate or update your token, run the same command again.
 
 ### Token types
 
@@ -306,7 +308,7 @@ user_repos / org_repos / search_repositories
 
 ```bash
 # Setup
-coral connect github
+coral source add github
 coral server stop && coral server start
 
 # Discover tables

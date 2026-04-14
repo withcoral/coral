@@ -2,11 +2,12 @@ AGENTS.md @jsummerfield
 Cargo.toml @jsummerfield
 README.md @jsummerfield
 
+/docs/ @simonwhitaker @AlbertQM
 /crates/coral-api/ @jsummerfield
 /crates/coral-app/ @jsummerfield
 /crates/coral-cli/ @jsummerfield
 /crates/coral-client/ @jsummerfield
 /crates/coral-engine/ @antonmry
-/crates/coral-mcp/ @Bradley-Butcher
-/crates/coral-spec/ @iaptsiauri
-/sources/ @iaptsiauri
+/crates/coral-mcp/ @Bradley-Butcher @mystic123
+/crates/coral-spec/ @iaptsiauri @antonmry
+/sources/ @iaptsiauri @antonmry

@@ -1,0 +1,344 @@
+dsl_version: 3
+name: openobserve
+version: 0.1.0
+backend: http
+description: Query logs, metrics, and traces stored in OpenObserve
+base_url: "{{variable.OPENOBSERVE_URL}}"
+auth:
+  required_secrets:
+    - OPENOBSERVE_BASIC_AUTH
+  headers:
+    - name: Authorization
+      from: template
+      template: "Basic {{secret.OPENOBSERVE_BASIC_AUTH}}"
+
+tables:
+  - name: streams
+    description: List available OpenObserve streams.
+    guide: >
+      No required filters. Optionally filter by stream_type (logs, metrics, traces).
+    request:
+      method: GET
+      path: "/api/{{variable.OPENOBSERVE_ORG|default}}/streams"
+      query:
+        - name: type
+          from: filter
+          key: stream_type
+          default: "logs"
+        - name: fetchSchema
+          from: literal
+          value: "false"
+    response:
+      rows_path: [list]
+    pagination:
+      mode: none
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Stream name
+        expr: { kind: path, path: [name] }
+      - name: stream_type
+        type: Utf8
+        nullable: true
+        description: "Stream type (logs, metrics, traces). Also a virtual filter."
+        expr: { kind: path, path: [stream_type] }
+      - name: storage_type
+        type: Utf8
+        nullable: true
+        expr: { kind: path, path: [storage_type] }
+      - name: doc_num
+        type: Int64
+        nullable: true
+        description: Number of documents
+        expr: { kind: path, path: [stats, doc_num] }
+      - name: storage_size
+        type: Float64
+        nullable: true
+        description: Storage size in bytes
+        expr: { kind: path, path: [stats, storage_size] }
+      - name: compressed_size
+        type: Float64
+        nullable: true
+        description: Compressed size in bytes
+        expr: { kind: path, path: [stats, compressed_size] }
+    filters:
+      - name: stream_type
+
+  - name: logs
+    description: Search OpenObserve log streams via SQL.
+    guide: >
+      Requires stream, start_time, and end_time filters.
+      start_time and end_time are Unix timestamps in microseconds.
+      Returns up to 10000 rows per query.
+      For OTLP-exported logs, the message content is in the 'body' column.
+    request:
+      method: POST
+      path: "/api/{{variable.OPENOBSERVE_ORG|default}}/_search"
+      body:
+        - path: [query, sql]
+          from: template
+          template: "SELECT * FROM \"{{filter.stream}}\""
+        - path: [query, start_time]
+          from: filter_int
+          key: start_time
+        - path: [query, end_time]
+          from: filter_int
+          key: end_time
+        - path: [query, from]
+          from: literal
+          value: 0
+        - path: [query, size]
+          from: literal
+          value: 10000
+    response:
+      rows_path: [hits]
+    pagination:
+      mode: none
+    columns:
+      - name: _timestamp
+        type: Int64
+        nullable: false
+        description: "Event timestamp in microseconds"
+        expr: { kind: path, path: [_timestamp] }
+      - name: body
+        type: Utf8
+        nullable: true
+        description: "Log message body (OTLP log content)"
+        expr: { kind: path, path: [body] }
+      - name: severity
+        type: Utf8
+        nullable: true
+        description: "Log severity level"
+        expr: { kind: path, path: [severity] }
+      - name: service_name
+        type: Utf8
+        nullable: true
+        description: "Service that emitted the log"
+        expr: { kind: path, path: [service_name] }
+      - name: event_name
+        type: Utf8
+        nullable: true
+        description: "Event name"
+        expr: { kind: path, path: [event_name] }
+      - name: session_id
+        type: Utf8
+        nullable: true
+        description: "Session identifier"
+        expr: { kind: path, path: [session_id] }
+      - name: stream
+        type: Utf8
+        nullable: true
+        description: "OpenObserve stream name (virtual filter, required)"
+        expr: { kind: 'null' }
+        virtual: true
+      - name: start_time
+        type: Int64
+        nullable: true
+        description: "Start time in microseconds (virtual filter, required)"
+        expr: { kind: 'null' }
+        virtual: true
+      - name: end_time
+        type: Int64
+        nullable: true
+        description: "End time in microseconds (virtual filter, required)"
+        expr: { kind: 'null' }
+        virtual: true
+    filters:
+      - name: stream
+        required: true
+      - name: start_time
+        required: true
+      - name: end_time
+        required: true
+
+  - name: metrics
+    description: Search OpenObserve metric streams via SQL.
+    guide: >
+      Requires stream, start_time, and end_time filters.
+      start_time and end_time are Unix timestamps in microseconds.
+      The stream name is the metric name (e.g. 'coral_http_count').
+      Returns up to 10000 rows per query.
+    request:
+      method: POST
+      path: "/api/{{variable.OPENOBSERVE_ORG|default}}/_search"
+      query:
+        - name: type
+          from: literal
+          value: "metrics"
+      body:
+        - path: [query, sql]
+          from: template
+          template: "SELECT * FROM \"{{filter.stream}}\""
+        - path: [query, start_time]
+          from: filter_int
+          key: start_time
+        - path: [query, end_time]
+          from: filter_int
+          key: end_time
+        - path: [query, from]
+          from: literal
+          value: 0
+        - path: [query, size]
+          from: literal
+          value: 10000
+    response:
+      rows_path: [hits]
+    pagination:
+      mode: none
+    columns:
+      - name: _timestamp
+        type: Int64
+        nullable: false
+        description: "Event timestamp in microseconds"
+        expr: { kind: path, path: [_timestamp] }
+      - name: metric_name
+        type: Utf8
+        nullable: true
+        description: "Metric name"
+        expr: { kind: path, path: [__name__] }
+      - name: value
+        type: Float64
+        nullable: true
+        description: "Metric value"
+        expr: { kind: path, path: [value] }
+      - name: service_name
+        type: Utf8
+        nullable: true
+        description: "Service that emitted the metric"
+        expr: { kind: path, path: [service_name] }
+      - name: model
+        type: Utf8
+        nullable: true
+        description: "Model name (for AI-related metrics)"
+        expr: { kind: path, path: [model] }
+      - name: session_id
+        type: Utf8
+        nullable: true
+        description: "Session identifier"
+        expr: { kind: path, path: [session_id] }
+      - name: stream
+        type: Utf8
+        nullable: true
+        description: "OpenObserve metric stream name (virtual filter, required)"
+        expr: { kind: 'null' }
+        virtual: true
+      - name: start_time
+        type: Int64
+        nullable: true
+        description: "Start time in microseconds (virtual filter, required)"
+        expr: { kind: 'null' }
+        virtual: true
+      - name: end_time
+        type: Int64
+        nullable: true
+        description: "End time in microseconds (virtual filter, required)"
+        expr: { kind: 'null' }
+        virtual: true
+    filters:
+      - name: stream
+        required: true
+      - name: start_time
+        required: true
+      - name: end_time
+        required: true
+
+  - name: traces
+    description: Search OpenObserve trace/span streams via SQL.
+    guide: >
+      Requires stream, start_time, and end_time filters.
+      start_time and end_time are Unix timestamps in microseconds.
+      Returns up to 10000 rows per query.
+    request:
+      method: POST
+      path: "/api/{{variable.OPENOBSERVE_ORG|default}}/_search"
+      query:
+        - name: type
+          from: literal
+          value: "traces"
+      body:
+        - path: [query, sql]
+          from: template
+          template: "SELECT * FROM \"{{filter.stream}}\""
+        - path: [query, start_time]
+          from: filter_int
+          key: start_time
+        - path: [query, end_time]
+          from: filter_int
+          key: end_time
+        - path: [query, from]
+          from: literal
+          value: 0
+        - path: [query, size]
+          from: literal
+          value: 10000
+    response:
+      rows_path: [hits]
+    pagination:
+      mode: none
+    columns:
+      - name: _timestamp
+        type: Int64
+        nullable: false
+        description: "Event timestamp in microseconds"
+        expr: { kind: path, path: [_timestamp] }
+      - name: trace_id
+        type: Utf8
+        nullable: false
+        description: "Trace identifier grouping related spans"
+        expr: { kind: path, path: [trace_id] }
+      - name: span_id
+        type: Utf8
+        nullable: false
+        description: "Unique span identifier"
+        expr: { kind: path, path: [span_id] }
+      - name: operation_name
+        type: Utf8
+        nullable: true
+        description: "Span operation name"
+        expr: { kind: path, path: [operation_name] }
+      - name: service_name
+        type: Utf8
+        nullable: true
+        description: "Service that emitted the span"
+        expr: { kind: path, path: [service_name] }
+      - name: duration
+        type: Int64
+        nullable: true
+        description: "Span duration in microseconds"
+        expr: { kind: path, path: [duration] }
+      - name: span_kind
+        type: Utf8
+        nullable: true
+        description: "Span kind (1=Internal, 2=Server, 3=Client, 4=Producer, 5=Consumer)"
+        expr: { kind: path, path: [span_kind] }
+      - name: span_status
+        type: Utf8
+        nullable: true
+        description: "Span status (OK, ERROR, UNSET)"
+        expr: { kind: path, path: [span_status] }
+      - name: stream
+        type: Utf8
+        nullable: true
+        description: "OpenObserve trace stream name (virtual filter, required)"
+        expr: { kind: 'null' }
+        virtual: true
+      - name: start_time
+        type: Int64
+        nullable: true
+        description: "Start time in microseconds (virtual filter, required)"
+        expr: { kind: 'null' }
+        virtual: true
+      - name: end_time
+        type: Int64
+        nullable: true
+        description: "End time in microseconds (virtual filter, required)"
+        expr: { kind: 'null' }
+        virtual: true
+    filters:
+      - name: stream
+        required: true
+      - name: start_time
+        required: true
+      - name: end_time
+        required: true

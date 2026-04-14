@@ -28,3 +28,6 @@
 - Decode query payloads through `coral-client`; do not fork Arrow IPC handling
   here.
 - Shape MCP surfaces for agent ergonomics, not raw proto parity.
+- Treat MCP tools, resources, prompts, and other user-facing protocol surfaces
+  as documented surfaces; when they change, update the relevant docs under
+  `docs/` in the same change.

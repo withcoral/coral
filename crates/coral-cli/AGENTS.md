@@ -24,5 +24,7 @@
   handling here.
 - Keep install/import user-friendly, but move reusable behavior inward instead
   of duplicating app or MCP logic.
+- Treat CLI commands, flags, output, and workflows as documented surfaces; when
+  they change, update the relevant docs under `docs/` in the same change.
 - Prefer improving prompts and terminal presentation here rather than pushing
   user-facing formatting concerns into `coral-app` or `coral-engine`.

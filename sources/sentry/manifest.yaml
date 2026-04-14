@@ -9,7 +9,6 @@ auth:
     - name: Authorization
       from: template
       template: Bearer {{secret.SENTRY_TOKEN}}
-
 tables:
   - name: projects
     description: Sentry projects in the organization
@@ -168,8 +167,7 @@ tables:
     description: Individual events for a specific issue
     request:
       method: GET
-      path: 
-        /api/0/organizations/{{variable.SENTRY_ORG}}/issues/{{filter.issue_id}}/events/
+      path: /api/0/organizations/{{variable.SENTRY_ORG}}/issues/{{filter.issue_id}}/events/
       query: []
     response: {}
     pagination:
@@ -613,8 +611,7 @@ tables:
     description: Deployments for a release version
     request:
       method: GET
-      path: 
-        /api/0/organizations/{{variable.SENTRY_ORG}}/releases/{{filter.version}}/deploys/
+      path: /api/0/organizations/{{variable.SENTRY_ORG}}/releases/{{filter.version}}/deploys/
       query: []
     response: {}
     pagination:
@@ -683,8 +680,7 @@ tables:
     description: Files for a release version
     request:
       method: GET
-      path: 
-        /api/0/organizations/{{variable.SENTRY_ORG}}/releases/{{filter.version}}/files/
+      path: /api/0/organizations/{{variable.SENTRY_ORG}}/releases/{{filter.version}}/files/
       query: []
     response: {}
     pagination:

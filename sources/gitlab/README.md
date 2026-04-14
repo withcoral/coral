@@ -14,6 +14,8 @@ Requires a `GITLAB_TOKEN` credential. Add the source and provide your token when
 coral source add gitlab
 ```
 
+To rotate or update your token, run the same command again.
+
 ### Token scopes
 
 | Scope | Coverage | Notes |
