@@ -14,8 +14,8 @@ pub use coral_app::RunningServer;
 
 /// Connects an [`AppClient`] to an already-running local Coral server.
 ///
-/// This is not the default entrypoint. Prefer [`crate::ClientBuilder`] unless a
-/// caller needs explicit local server control for tests or embedding.
+/// This is not the default entrypoint. Prefer [`crate::ClientBuilder`]
+/// unless a caller needs explicit local server control for tests or embedding.
 ///
 /// # Errors
 ///

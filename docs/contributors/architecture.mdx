@@ -40,7 +40,8 @@ The user-facing command-line interface.
 | Interactive prompts | Variables and secrets during `source add` |
 | Output formatting | Table and JSON via `coral-client` helpers |
 
-Modules: `cli.rs` (argument parsing), `runner.rs` (command orchestration), `host.rs` (terminal I/O and prompt traits), `services.rs` (gRPC service wiring), `onboard.rs` (interactive setup flow), `source_ops.rs` (source helpers), and a thin `main.rs` entry point. Delegates all business logic to `coral-client`.
+Intentionally thin — `main.rs` owns command parsing and delegates business logic to `coral-client`.
+For black-box CLI tests, contributors can enable the hidden `--server` override with `cargo test -p coral-cli --features cli-test-server`.
 
 ### `coral-client`
 
@@ -48,7 +49,7 @@ Shared client library used by both `coral-cli` and `coral-mcp`.
 
 | Owns               | Details                                           |
 | ------------------ | ------------------------------------------------- |
-| Local transport    | Starts or connects to the `coral-app` gRPC server |
+| Local transport    | `ClientBuilder` starts a local server or connects to a remote endpoint |
 | Result decoding    | Arrow IPC → record batches                        |
 | Formatting helpers | `format_batches_table`, `format_batches_json`     |
 

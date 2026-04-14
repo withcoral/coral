@@ -1,15 +1,14 @@
 use std::collections::BTreeMap;
 
-use coral_api::v1::{
-    AvailableSource, CreateBundledSourceRequest, DiscoverSourcesRequest, ExecuteSqlRequest,
-    ListSourcesRequest, Source, ValidateSourceRequest, ValidateSourceResponse,
+use coral_api::v1::{AvailableSource, ExecuteSqlRequest, Source, ValidateSourceResponse};
+use coral_client::{
+    AppClient, decode_execute_sql_response, default_workspace, format_batches_table,
 };
-use coral_client::{decode_execute_sql_response, default_workspace, format_batches_table};
 use dialoguer::console::{measure_text_width, style};
+use dialoguer::{Select, theme::ColorfulTheme};
 use tonic::Request;
 
-use crate::host::{CliHost, CliPrompter};
-use crate::{CliServices, source_ops};
+use crate::source_ops;
 
 const SOURCE_DESCRIPTION_PREVIEW_LIMIT: usize = 88;
 
@@ -39,55 +38,42 @@ enum InstalledSourceAction {
     Back,
 }
 
-pub(crate) async fn run(
-    services: &mut CliServices,
-    host: &mut dyn CliHost,
-    prompts: &mut dyn CliPrompter,
-) -> Result<(), anyhow::Error> {
-    source_ops::require_interactive(host)?;
+pub(crate) async fn run(app: &AppClient) -> Result<(), anyhow::Error> {
+    source_ops::require_interactive()?;
+    let theme = ColorfulTheme::default();
 
-    crate::branding::print_welcome_header(host)?;
+    crate::branding::print_welcome_header();
 
     loop {
-        let bundled_sources = services
-            .source_client
-            .discover_sources(Request::new(DiscoverSourcesRequest {
-                workspace: Some(default_workspace()),
-            }))
-            .await?
-            .into_inner()
-            .sources;
+        let bundled_sources = source_ops::discover_sources(app).await?;
 
         if bundled_sources.is_empty() {
-            host.println("")?;
-            host.println(&format!(
+            println!();
+            println!(
                 "No sources available. Visit {} for setup instructions.",
                 style("withcoral.com/docs").bold()
-            ))?;
+            );
             return Ok(());
         }
 
-        host.println("")?;
-        host.println(&format!(
-            "{}",
-            style("To start, connect at least one source:").bold()
-        ))?;
-        host.println("")?;
+        println!();
+        println!("{}", style("To start, connect at least one source:").bold());
+        println!();
 
-        match select_top_level(prompts, &bundled_sources)? {
+        match select_top_level(&theme, &bundled_sources)? {
             TopLevelChoice::BundledSource(idx) => {
                 let source = &bundled_sources[idx];
                 if source.installed {
-                    run_installed_source_menu(services, host, prompts, source).await?;
+                    run_installed_source_menu(app, &theme, source).await?;
                 } else {
-                    run_add_bundled_source(services, host, prompts, source).await?;
-                    match run_next_steps(services, host, prompts).await? {
+                    run_add_bundled_source(app, source).await?;
+                    match run_next_steps(app, &theme).await? {
                         NextStepChoice::AddMoreSources => {}
                         NextStepChoice::Exit => return Ok(()),
                     }
                 }
             }
-            TopLevelChoice::Finish => match run_next_steps(services, host, prompts).await? {
+            TopLevelChoice::Finish => match run_next_steps(app, &theme).await? {
                 NextStepChoice::AddMoreSources => {}
                 NextStepChoice::Exit => return Ok(()),
             },
@@ -97,7 +83,7 @@ pub(crate) async fn run(
 }
 
 fn select_top_level(
-    prompts: &mut dyn CliPrompter,
+    theme: &ColorfulTheme,
     bundled_sources: &[AvailableSource],
 ) -> Result<TopLevelChoice, anyhow::Error> {
     let name_width = bundled_sources
@@ -124,7 +110,11 @@ fn select_top_level(
         .position(|s| !s.installed)
         .unwrap_or(bundled_sources.len());
 
-    let selection = prompts.select("Choose a source", &labels, first_uninstalled)?;
+    let selection = Select::with_theme(theme)
+        .with_prompt("Choose a source")
+        .items(&labels)
+        .default(first_uninstalled)
+        .interact_opt()?;
 
     match selection {
         Some(idx) if idx < bundled_sources.len() => Ok(TopLevelChoice::BundledSource(idx)),
@@ -147,27 +137,26 @@ fn format_source_list_item(source: &AvailableSource, name_width: usize) -> Strin
 }
 
 async fn run_installed_source_menu(
-    services: &mut CliServices,
-    host: &mut dyn CliHost,
-    prompts: &mut dyn CliPrompter,
+    app: &AppClient,
+    theme: &ColorfulTheme,
     source: &AvailableSource,
 ) -> Result<(), anyhow::Error> {
-    let items = vec![
-        "Update credentials".to_string(),
-        "Validate".to_string(),
-        "Back".to_string(),
-    ];
+    let items = ["Update credentials", "Validate", "Back"];
     let actions = [
         InstalledSourceAction::Reconfigure,
         InstalledSourceAction::Validate,
         InstalledSourceAction::Back,
     ];
 
-    let selection = prompts.select(&format!("{} is already installed", source.name), &items, 0)?;
+    let selection = Select::with_theme(theme)
+        .with_prompt(format!("{} is already installed", source.name))
+        .items(items)
+        .default(0)
+        .interact_opt()?;
 
     match selection.map(|i| actions[i]) {
         Some(InstalledSourceAction::Validate) => {
-            validate_after_install(services, host, &source.name).await?;
+            validate_after_install(app, &source.name).await?;
         }
         Some(InstalledSourceAction::Reconfigure) => {
             let inputs = source
@@ -175,19 +164,11 @@ async fn run_installed_source_menu(
                 .iter()
                 .map(source_ops::manifest_input_from_proto)
                 .collect::<Result<Vec<_>, _>>()?;
-            let (variables, secrets) = source_ops::prompt_for_inputs(prompts, &inputs)?;
-            let result = services
-                .source_client
-                .create_bundled_source(Request::new(CreateBundledSourceRequest {
-                    workspace: Some(default_workspace()),
-                    name: source.name.clone(),
-                    variables,
-                    secrets,
-                }))
-                .await?;
-            let result = result.into_inner();
-            host.println(&format!("Reconfigured source {}", result.name))?;
-            validate_after_install(services, host, &result.name).await?;
+            let (variables, secrets) = source_ops::prompt_for_inputs(&inputs)?;
+            let result =
+                source_ops::add_bundled_source(app, &source.name, variables, secrets).await?;
+            println!("Reconfigured source {}", result.name);
+            validate_after_install(app, &result.name).await?;
         }
         Some(InstalledSourceAction::Back) | None => {}
     }
@@ -196,9 +177,7 @@ async fn run_installed_source_menu(
 }
 
 async fn run_add_bundled_source(
-    services: &mut CliServices,
-    host: &mut dyn CliHost,
-    prompts: &mut dyn CliPrompter,
+    app: &AppClient,
     source: &AvailableSource,
 ) -> Result<(), anyhow::Error> {
     let inputs = source
@@ -206,54 +185,31 @@ async fn run_add_bundled_source(
         .iter()
         .map(source_ops::manifest_input_from_proto)
         .collect::<Result<Vec<_>, _>>()?;
-    let (variables, secrets) = source_ops::prompt_for_inputs(prompts, &inputs)?;
-    let result = services
-        .source_client
-        .create_bundled_source(Request::new(CreateBundledSourceRequest {
-            workspace: Some(default_workspace()),
-            name: source.name.clone(),
-            variables,
-            secrets,
-        }))
-        .await?
-        .into_inner();
-    host.println(&format!("Added source {}", result.name))?;
-    validate_after_install(services, host, &result.name).await
+    let (variables, secrets) = source_ops::prompt_for_inputs(&inputs)?;
+    let result = source_ops::add_bundled_source(app, &source.name, variables, secrets).await?;
+    println!("Added source {}", result.name);
+    validate_after_install(app, &result.name).await
 }
 
-async fn validate_after_install(
-    services: &mut CliServices,
-    host: &mut dyn CliHost,
-    source_name: &str,
-) -> Result<(), anyhow::Error> {
-    let response = services
-        .source_client
-        .validate_source(Request::new(ValidateSourceRequest {
-            workspace: Some(default_workspace()),
-            name: source_ops::source_name_arg(Some(source_name))?,
-        }))
-        .await?
-        .into_inner();
-    print_validation_pretty(host, &response)
+async fn validate_after_install(app: &AppClient, source_name: &str) -> Result<(), anyhow::Error> {
+    let response = source_ops::validate_source(app, source_name).await?;
+    print_validation_pretty(&response)
 }
 
 const MAX_TABLES_PER_SCHEMA: usize = 9;
 
-fn print_validation_pretty(
-    host: &mut dyn CliHost,
-    response: &ValidateSourceResponse,
-) -> Result<(), anyhow::Error> {
+fn print_validation_pretty(response: &ValidateSourceResponse) -> Result<(), anyhow::Error> {
     let source = response
         .source
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("validate response missing source metadata"))?;
 
-    host.println("")?;
-    host.println(&format!(
+    println!();
+    println!(
         "  {} {}",
         style("✓").green(),
         style(format!("{} connected successfully", source.name)).bold()
-    ))?;
+    );
 
     // Group tables by schema, sorted.
     let mut by_schema: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
@@ -269,15 +225,15 @@ fn print_validation_pretty(
 
     for (schema, tables) in &by_schema {
         let count = tables.len();
-        host.println("")?;
-        host.println(&format!(
+        println!();
+        println!(
             "    {}",
             style(format!(
                 "{schema} ({count} {})",
                 if count == 1 { "table" } else { "tables" }
             ))
             .bold()
-        ))?;
+        );
 
         let show_count = tables.len().min(MAX_TABLES_PER_SCHEMA);
         let remaining = tables.len() - show_count;
@@ -285,54 +241,45 @@ fn print_validation_pretty(
         for (i, table) in tables.iter().take(show_count).enumerate() {
             let is_last = i == show_count - 1 && remaining == 0;
             let branch = if is_last { "└─" } else { "├─" };
-            host.println(&format!("    {} {}", style(branch).dim(), table))?;
+            println!("    {} {}", style(branch).dim(), table);
         }
 
         if remaining > 0 {
-            host.println(&format!(
+            println!(
                 "    {} {}",
                 style("└─").dim(),
                 style(format!("... and {remaining} more")).dim()
-            ))?;
+            );
         }
     }
-    host.println("")?;
+    println!();
 
     Ok(())
 }
 
 async fn run_next_steps(
-    services: &mut CliServices,
-    host: &mut dyn CliHost,
-    prompts: &mut dyn CliPrompter,
+    app: &AppClient,
+    theme: &ColorfulTheme,
 ) -> Result<NextStepChoice, anyhow::Error> {
-    let installed_sources = services
-        .source_client
-        .list_sources(Request::new(ListSourcesRequest {
-            workspace: Some(default_workspace()),
-        }))
-        .await?
-        .into_inner()
-        .sources;
-    show_next_steps_screen(services, host, prompts, &installed_sources).await
+    let installed_sources = source_ops::list_sources(app).await?;
+    show_next_steps_screen(app, theme, &installed_sources).await
 }
 
 async fn show_next_steps_screen(
-    services: &mut CliServices,
-    host: &mut dyn CliHost,
-    prompts: &mut dyn CliPrompter,
+    app: &AppClient,
+    theme: &ColorfulTheme,
     installed_sources: &[Source],
 ) -> Result<NextStepChoice, anyhow::Error> {
     // --- Static summary ---
-    host.println("")?;
+    println!();
     if installed_sources.is_empty() {
-        host.println(&format!(
+        println!(
             "No sources connected yet — you can add them anytime with {}.",
             style("coral source add").bold()
-        ))?;
+        );
     } else {
         let n = installed_sources.len();
-        host.println(&format!(
+        println!(
             "{}",
             style(format!(
                 "You've connected {} {}.",
@@ -340,43 +287,43 @@ async fn show_next_steps_screen(
                 if n == 1 { "source" } else { "sources" }
             ))
             .bold()
-        ))?;
-        host.println("")?;
+        );
+        println!();
         for s in installed_sources {
-            host.println(&format!("  {} {}", style("✓").green(), s.name))?;
+            println!("  {} {}", style("✓").green(), s.name);
         }
     }
 
-    host.println("")?;
-    host.println(&format!("{}", style("What's next:").bold()))?;
+    println!();
+    println!("{}", style("What's next:").bold());
     if !installed_sources.is_empty() {
-        host.println(&format!(
+        println!(
             "  {} {}",
             style("•").dim(),
             style("coral sql \"SELECT ...\"            Run a one-off query").dim()
-        ))?;
+        );
     }
-    host.println(&format!(
+    println!(
         "  {} {}",
         style("•").dim(),
         style("npx skills add withcoral/skills     Add Coral skills to your agent").dim()
-    ))?;
-    host.println(&format!(
+    );
+    println!(
         "  {} {}",
         style("•").dim(),
         style("Set up MCP for your agent       withcoral.com/docs/guides/use-coral-over-mcp").dim()
-    ))?;
-    host.println("")?;
-    host.println(&format!(
+    );
+    println!();
+    println!(
         "{}",
         style("Learn more about Coral at withcoral.com/docs").dim()
-    ))?;
+    );
 
     // --- Interactive menu ---
     let has_sources = !installed_sources.is_empty();
 
     loop {
-        host.println("")?;
+        println!();
         let mut items: Vec<(&str, NextStepAction)> = Vec::new();
         if has_sources {
             items.push(("Run an example query", NextStepAction::RunExampleQuery));
@@ -385,48 +332,42 @@ async fn show_next_steps_screen(
         items.push(("Open docs in browser", NextStepAction::OpenDocs));
         items.push(("Exit", NextStepAction::Exit));
 
-        let labels = items
-            .iter()
-            .map(|(label, _)| (*label).to_string())
-            .collect::<Vec<_>>();
-        let selection = prompts.select("What would you like to do?", &labels, 0)?;
+        let labels: Vec<&str> = items.iter().map(|(label, _)| *label).collect();
+
+        let selection = Select::with_theme(theme)
+            .with_prompt("What would you like to do?")
+            .items(&labels)
+            .default(0)
+            .interact_opt()?;
 
         let action = selection.map(|i| items[i].1);
         match action {
             Some(NextStepAction::RunExampleQuery) => {
                 let sql = "SELECT schema_name, COUNT(*) AS table_count FROM coral.tables GROUP BY schema_name ORDER BY 1";
-                match run_first_query(services, sql).await {
+                match run_first_query(app, sql).await {
                     Ok(output) => {
-                        host.println("")?;
-                        host.println(&format!("{}", style(sql).dim()))?;
-                        host.println(&output)?;
+                        println!();
+                        println!("{}", style(sql).dim());
+                        println!("{output}");
                     }
                     Err(err) => {
-                        host.println("")?;
-                        host.println(&format!(
-                            "{}",
-                            style(format!("Could not run query: {err}")).red()
-                        ))?;
+                        println!();
+                        println!("{}", style(format!("Could not run query: {err}")).red());
                     }
                 }
             }
             Some(NextStepAction::AddMoreSources) => return Ok(NextStepChoice::AddMoreSources),
             Some(NextStepAction::OpenDocs) => {
-                if !host.open_url("https://withcoral.com/docs") {
-                    host.println(&format!(
-                        "  {}",
-                        style("Visit https://withcoral.com/docs").dim()
-                    ))?;
-                }
+                open_url("https://withcoral.com/docs");
             }
             Some(NextStepAction::Exit) | None => return Ok(NextStepChoice::Exit),
         }
     }
 }
 
-async fn run_first_query(services: &mut CliServices, sql: &str) -> Result<String, anyhow::Error> {
-    let response = services
-        .query_client
+async fn run_first_query(app: &AppClient, sql: &str) -> Result<String, anyhow::Error> {
+    let response = app
+        .query_client()
         .execute_sql(Request::new(ExecuteSqlRequest {
             workspace: Some(default_workspace()),
             sql: sql.to_string(),
@@ -435,6 +376,25 @@ async fn run_first_query(services: &mut CliServices, sql: &str) -> Result<String
         .into_inner();
     let result = decode_execute_sql_response(&response)?;
     Ok(format_batches_table(result.batches())?)
+}
+
+fn open_url(url: &str) {
+    let result = if cfg!(target_os = "macos") {
+        std::process::Command::new("open").arg(url).status()
+    } else if cfg!(target_os = "linux") {
+        std::process::Command::new("xdg-open").arg(url).status()
+    } else if cfg!(target_os = "windows") {
+        std::process::Command::new("cmd")
+            .args(["/c", "start", url])
+            .status()
+    } else {
+        return;
+    };
+    match result {
+        Ok(status) if status.success() => {}
+        Ok(status) => println!("{}", style(format!("Browser exited with {status}")).dim()),
+        Err(err) => println!("{}", style(format!("Could not open browser: {err}")).dim()),
+    }
 }
 
 fn truncate_description(description: &str, max_len: usize) -> String {

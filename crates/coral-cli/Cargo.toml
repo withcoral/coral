@@ -12,6 +12,9 @@ path = "src/main.rs"
 [lints]
 workspace = true
 
+[features]
+cli-test-server = []
+
 [dependencies]
 anyhow.workspace = true
 arrow.workspace = true
@@ -24,3 +27,6 @@ coral-api.workspace = true
 coral-client.workspace = true
 coral-spec.workspace = true
 coral-mcp.workspace = true
+
+[dev-dependencies]
+tokio-stream.workspace = true
