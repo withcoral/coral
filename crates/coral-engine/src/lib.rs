@@ -66,9 +66,13 @@
 )]
 
 mod backends;
+mod composition;
 pub mod contracts;
 mod runtime;
 
+pub use composition::{
+    EngineExtensions, SourceDecorator, SourceDecoratorError, SourceFailurePolicy, SourceTables,
+};
 pub use contracts::{
     ColumnInfo, CoreError, QueryExecution, QueryRuntimeContext, QueryRuntimeProvider, QuerySource,
     QueryTestFailure, QueryTestResult, QueryTestSuccess, SourceValidationReport, StatusCode,

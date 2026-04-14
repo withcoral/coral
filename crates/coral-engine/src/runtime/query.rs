@@ -8,9 +8,14 @@ use datafusion::prelude::{SQLOptions, SessionConfig, SessionContext};
 
 use crate::backends::compile_query_source;
 use crate::backends::http::ProviderQueryError;
+use crate::composition::SourceDecoratorError;
 use crate::runtime::catalog;
-use crate::runtime::registry::{SourceRegistrationFailure, register_sources};
-use crate::{CoreError, QueryExecution, QueryRuntimeProvider, QuerySource, TableInfo};
+use crate::runtime::registry::{
+    SelectedCompiledSource, SourceRegistrationFailure, register_sources,
+};
+use crate::{
+    CoreError, EngineExtensions, QueryExecution, QueryRuntimeProvider, QuerySource, TableInfo,
+};
 
 pub(crate) struct QueryRuntimeAdapter {
     ctx: Arc<SessionContext>,
@@ -35,20 +40,28 @@ pub(crate) async fn build_runtime(
     ));
 
     let runtime_context = runtime.runtime_context();
+    let mut build_options: EngineExtensions = runtime.engine_extensions();
     let mut compiled_sources = Vec::new();
     let mut failures = Vec::new();
     for source in sources {
         match compile_query_source(source, &runtime_context) {
-            Ok(compiled) => compiled_sources.push(compiled),
+            Ok(compiled) => compiled_sources.push(SelectedCompiledSource {
+                source: source.clone(),
+                compiled,
+            }),
             Err(error) => failures.push(SourceRegistrationFailure {
                 schema_name: source.source_name().to_string(),
                 detail: error.to_string(),
             }),
         }
     }
-    let registration = register_sources(&ctx, compiled_sources)
-        .await
-        .map_err(|err| datafusion_to_core(&err))?;
+    let registration = register_sources(
+        &ctx,
+        compiled_sources,
+        build_options.source_decorators.as_mut_slice(),
+    )
+    .await
+    .map_err(|err| datafusion_to_core(&err))?;
     catalog::register(&ctx, &registration.active_sources)
         .map_err(|err| datafusion_to_core(&err))?;
     let tables = catalog::collect_tables(&registration.active_sources);
@@ -123,11 +136,23 @@ fn datafusion_to_core(error: &DataFusionError) -> CoreError {
             if let Some(provider_error) = inner.downcast_ref::<ProviderQueryError>() {
                 return provider_error_to_core(provider_error);
             }
+            if let Some(source_decorator_error) = inner.downcast_ref::<SourceDecoratorError>() {
+                return source_decorator_error_to_core(source_decorator_error);
+            }
             CoreError::internal(inner.to_string())
         }
         DataFusionError::ObjectStore(err) => CoreError::Unavailable(err.to_string()),
         DataFusionError::ResourcesExhausted(detail) => CoreError::Unavailable(detail.clone()),
         other => CoreError::internal(other.to_string()),
+    }
+}
+
+fn source_decorator_error_to_core(error: &SourceDecoratorError) -> CoreError {
+    match error {
+        SourceDecoratorError::InvalidInput(detail) => CoreError::InvalidInput(detail.clone()),
+        SourceDecoratorError::FailedPrecondition(detail) => {
+            CoreError::FailedPrecondition(detail.clone())
+        }
     }
 }
 
