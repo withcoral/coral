@@ -5,10 +5,11 @@
 )]
 
 use std::process::{Command, Stdio};
+use tempfile::tempdir;
 
 #[test]
 fn onboard_rejects_non_interactive_terminals() {
-    let config_dir = tempfile::tempdir().expect("config dir");
+    let config_dir = tempdir().expect("failed to create temp dir");
     let output = Command::new(env!("CARGO_BIN_EXE_coral"))
         .arg("onboard")
         .env("CORAL_CONFIG_DIR", config_dir.path())

@@ -27,6 +27,9 @@ use coral_client::{
 };
 use tonic::Request;
 
+#[cfg(test)]
+use tempfile as _;
+
 #[derive(Debug, Parser)]
 #[command(name = "coral", version, arg_required_else_help = true)]
 /// A local-first SQL interface for APIs, files, and other data sources.
