@@ -4,9 +4,28 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use datafusion::datasource::TableProvider;
+use datafusion::error::DataFusionError;
+
+use crate::contracts::QuerySource;
 
 /// One source's table providers keyed by manifest table name.
 pub type SourceTables = HashMap<String, Arc<dyn TableProvider>>;
+
+/// Neutral bundle of optional engine extensions for one runtime build.
+#[derive(Default)]
+pub struct EngineExtensions {
+    /// Registration-time table decorators for the selected source set.
+    pub source_decorators: Vec<Box<dyn SourceDecorator>>,
+}
+
+/// Neutral policy decision for one source registration failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceFailurePolicy {
+    /// The failure does not require aborting the runtime build.
+    Ignore,
+    /// The original source failure should abort the runtime build.
+    Abort,
+}
 
 /// Neutral error type for source-decoration failures.
 #[derive(Debug, thiserror::Error)]
@@ -46,7 +65,7 @@ pub trait SourceDecorator: Send + Sync {
     /// # Errors
     ///
     /// Returns [`SourceDecoratorError`] if the decorator cannot initialize.
-    fn prepare(&mut self) -> Result<(), SourceDecoratorError> {
+    fn prepare(&mut self, _selected_sources: &[QuerySource]) -> Result<(), SourceDecoratorError> {
         Ok(())
     }
 
@@ -57,9 +76,26 @@ pub trait SourceDecorator: Send + Sync {
     /// Returns [`SourceDecoratorError`] if the tables cannot be decorated.
     fn decorate_source(
         &mut self,
-        schema_name: &str,
+        source: &QuerySource,
         tables: SourceTables,
     ) -> Result<SourceTables, SourceDecoratorError>;
+
+    /// Reports a selected source that failed during registration.
+    ///
+    /// Returning [`SourceFailurePolicy::Abort`] causes the original source
+    /// registration error to abort runtime construction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SourceDecoratorError`] if the decorator cannot process the
+    /// failure event.
+    fn source_failed(
+        &mut self,
+        _source: &QuerySource,
+        _error: &DataFusionError,
+    ) -> Result<SourceFailurePolicy, SourceDecoratorError> {
+        Ok(SourceFailurePolicy::Ignore)
+    }
 
     /// Performs final validation after all source registration attempts finish.
     ///

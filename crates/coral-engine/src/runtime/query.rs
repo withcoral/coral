@@ -11,18 +11,16 @@ use crate::backends::compile_query_source;
 use crate::backends::http::ProviderQueryError;
 use crate::composition::SourceDecoratorError;
 use crate::runtime::catalog;
-use crate::runtime::registry::{SourceRegistrationFailure, register_sources};
+use crate::runtime::registry::{
+    SelectedCompiledSource, SourceRegistrationFailure, register_sources,
+};
 use crate::{
-    CoreError, QueryExecution, QueryRuntimeProvider, QuerySource, SourceDecorator, TableInfo,
+    CoreError, EngineExtensions, QueryExecution, QueryRuntimeProvider, QuerySource, TableInfo,
 };
 
 pub(crate) struct QueryRuntimeAdapter {
     ctx: Arc<SessionContext>,
     tables: Vec<TableInfo>,
-}
-
-struct RuntimeBuildOptions {
-    source_decorators: Vec<Box<dyn SourceDecorator>>,
 }
 
 pub(crate) async fn build_runtime(
@@ -42,14 +40,15 @@ pub(crate) async fn build_runtime(
     ));
 
     let runtime_context = runtime.runtime_context();
-    let mut build_options = RuntimeBuildOptions {
-        source_decorators: runtime.source_decorators(),
-    };
+    let mut build_options: EngineExtensions = runtime.engine_extensions();
     let mut compiled_sources = Vec::new();
     let mut failures = Vec::new();
     for source in sources {
         match compile_query_source(source, &runtime_context) {
-            Ok(compiled) => compiled_sources.push(compiled),
+            Ok(compiled) => compiled_sources.push(SelectedCompiledSource {
+                source: source.clone(),
+                compiled,
+            }),
             Err(error) => failures.push(SourceRegistrationFailure {
                 schema_name: source.source_name().to_string(),
                 detail: error.to_string(),

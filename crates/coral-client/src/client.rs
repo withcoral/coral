@@ -33,14 +33,25 @@ pub type SourceClient = SourceServiceClient<Channel>;
 pub type QueryClient = QueryServiceClient<Channel>;
 
 /// Builder for the public Coral client handle.
-#[derive(Debug, Clone, Default)]
-pub struct ClientBuilder;
+#[derive(Clone, Default)]
+pub struct ClientBuilder {
+    server_builder: coral_app::ServerBuilder,
+}
 
 impl ClientBuilder {
     #[must_use]
     /// Creates a builder for the default local Coral client.
     pub fn new() -> Self {
-        Self
+        Self {
+            server_builder: coral_app::ServerBuilder::new(),
+        }
+    }
+
+    #[must_use]
+    /// Overrides the local server builder used during client bootstrap.
+    pub fn with_server_builder(mut self, server_builder: coral_app::ServerBuilder) -> Self {
+        self.server_builder = server_builder;
+        self
     }
 
     /// Builds the public Coral client against an internal local gRPC server.
@@ -53,7 +64,7 @@ impl ClientBuilder {
     /// Returns [`ClientError`] if local server startup or client connection
     /// fails.
     pub async fn build(self) -> Result<AppClient, ClientError> {
-        let running = coral_app::ServerBuilder::new().start().await?;
+        let running = self.server_builder.start().await?;
         AppClient::from_running_server(running).await
     }
 }

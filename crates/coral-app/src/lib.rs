@@ -40,4 +40,5 @@ mod transport;
 mod workspaces;
 
 pub use bootstrap::{AppError, RunningServer, ServerBuilder};
+pub use query::extensions::{EngineExtensionsProvider, NoopEngineExtensionsProvider};
 pub use workspaces::DEFAULT_WORKSPACE_ID;
