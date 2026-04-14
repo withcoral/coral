@@ -5,6 +5,13 @@
     clippy::print_stderr,
     reason = "CLI intentionally renders user-facing output"
 )]
+#![cfg_attr(
+    test,
+    allow(
+        unused_crate_dependencies,
+        reason = "Dev-dependencies (e.g. tempfile) are only consumed by integration tests under `tests/`."
+    )
+)]
 
 mod branding;
 mod onboard;

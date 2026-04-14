@@ -4,44 +4,33 @@
     reason = "Integration test crates only use a small subset of the package dependencies."
 )]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{SystemTime, UNIX_EPOCH};
 
-fn temp_path(suffix: &str) -> PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system time before unix epoch")
-        .as_nanos();
-    std::env::temp_dir().join(format!(
-        "coral-lint-test-{}-{nanos}{suffix}",
-        std::process::id()
-    ))
-}
+use tempfile::TempDir;
 
-fn temp_manifest(content: &str) -> PathBuf {
-    let path = temp_path(".yaml");
+fn temp_manifest(content: &str) -> (TempDir, PathBuf) {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("manifest.yaml");
     std::fs::write(&path, content).expect("write temp manifest");
-    path
+    (dir, path)
 }
 
-fn coral_lint(file: &std::path::Path) -> std::process::Output {
-    let config_dir = temp_path("-config");
-    let output = Command::new(env!("CARGO_BIN_EXE_coral"))
+fn coral_lint(file: &Path) -> std::process::Output {
+    let config_dir = tempfile::tempdir().expect("config dir");
+    Command::new(env!("CARGO_BIN_EXE_coral"))
         .args(["source", "lint", file.to_str().unwrap()])
-        .env("CORAL_CONFIG_DIR", &config_dir)
+        .env("CORAL_CONFIG_DIR", config_dir.path())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
-        .expect("failed to run coral source lint");
-    let _ = std::fs::remove_dir_all(config_dir);
-    output
+        .expect("failed to run coral source lint")
 }
 
 #[test]
 fn lint_accepts_valid_manifest() {
-    let path = temp_manifest(
+    let (_dir, path) = temp_manifest(
         r"
 name: demo
 version: 1.0.0
@@ -66,12 +55,11 @@ tables:
         stdout.contains("Manifest is valid"),
         "expected 'Manifest is valid' in stdout, got: {stdout}"
     );
-    let _ = std::fs::remove_file(path);
 }
 
 #[test]
 fn lint_rejects_schema_violation() {
-    let path = temp_manifest(
+    let (_dir, path) = temp_manifest(
         r"
 name: demo
 version: 1.0.0
@@ -92,12 +80,11 @@ tables:
         stderr.contains("\"backend\" is a required property"),
         "expected missing-backend schema error, got: {stderr}"
     );
-    let _ = std::fs::remove_file(path);
 }
 
 #[test]
 fn lint_rejects_semantic_violation() {
-    let path = temp_manifest(
+    let (_dir, path) = temp_manifest(
         r"
 name: demo
 version: 1.0.0
@@ -124,5 +111,4 @@ tables:
         stderr.contains("duplicate column 'id'"),
         "expected duplicate-column error, got: {stderr}"
     );
-    let _ = std::fs::remove_file(path);
 }
