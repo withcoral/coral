@@ -20,11 +20,13 @@ const DEFAULT_RETRY_WAIT_SECS: u64 = 5;
 const DEFAULT_MAX_PAGES: usize = 10_000;
 const MAX_RATE_LIMIT_RETRIES: usize = 5;
 const MAX_RATE_LIMIT_WAIT_SECS: u64 = 300;
+const DEFAULT_HTTP_REQUEST_TIMEOUT_SECS: u64 = 30;
 
 /// Executes manifest-driven HTTP requests for one registered source.
 #[derive(Clone)]
 pub(crate) struct HttpSourceClient {
     http: reqwest::Client,
+    request_timeout: Duration,
     source_schema: String,
     base_url: ParsedTemplate,
     auth_headers: Vec<HeaderSpec>,
@@ -107,8 +109,20 @@ impl HttpSourceClient {
             }
         }
 
+        let request_timeout = Duration::from_secs(DEFAULT_HTTP_REQUEST_TIMEOUT_SECS);
+        let http = reqwest::Client::builder()
+            .timeout(request_timeout)
+            .build()
+            .map_err(|error| {
+                DataFusionError::Execution(format!(
+                    "failed to build HTTP client for source '{}': {error}",
+                    manifest.common.name
+                ))
+            })?;
+
         Ok(Self {
-            http: reqwest::Client::new(),
+            http,
+            request_timeout,
             source_schema: manifest.common.name.clone(),
             base_url: manifest.base_url.clone(),
             auth_headers: manifest.auth.headers.clone(),
@@ -229,6 +243,7 @@ impl HttpSourceClient {
             let pagination_values = pagination_state_values(&state);
             let request = execute_request(
                 &self.http,
+                self.request_timeout,
                 RequestSpec {
                     auth_headers: &self.auth_headers,
                     table_headers: &active_request.headers,
@@ -338,6 +353,7 @@ impl HttpSourceClient {
 )]
 async fn execute_request(
     http: &reqwest::Client,
+    request_timeout: Duration,
     request: RequestSpec<'_>,
 ) -> Result<Option<(Value, Option<String>)>> {
     let RequestSpec {
@@ -405,10 +421,14 @@ async fn execute_request(
             .and_then(|b| serde_json::to_string_pretty(b).ok())
             .filter(|s| !s.is_empty());
 
-        let response = request.send().await.map_err(|e| {
-            DataFusionError::Execution(format!(
-                "source API request failed for {method_label} {logged_url}: {e}"
-            ))
+        let response = request.send().await.map_err(|error| {
+            request_error(
+                "request",
+                method_label,
+                &logged_url,
+                request_timeout,
+                &error,
+            )
         })?;
 
         if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
@@ -451,13 +471,36 @@ async fn execute_request(
             )));
         }
 
-        let payload: Value = response.json().await.map_err(|e| {
-            DataFusionError::Execution(format!(
-                "source API response decoding failed for {method_label} {logged_url}: {e}"
-            ))
+        let payload: Value = response.json().await.map_err(|error| {
+            request_error(
+                "response decoding",
+                method_label,
+                &logged_url,
+                request_timeout,
+                &error,
+            )
         })?;
         return Ok(Some((payload, next_url)));
     }
+}
+
+fn request_error(
+    stage: &str,
+    method_label: &str,
+    logged_url: &str,
+    request_timeout: Duration,
+    error: &reqwest::Error,
+) -> DataFusionError {
+    if error.is_timeout() {
+        return DataFusionError::Execution(format!(
+            "source API {stage} timed out for {method_label} {logged_url} after {}s",
+            request_timeout.as_secs_f64()
+        ));
+    }
+
+    DataFusionError::Execution(format!(
+        "source API {stage} failed for {method_label} {logged_url}: {error}"
+    ))
 }
 
 fn rate_limit_wait_secs(headers: &HeaderMap, now: SystemTime) -> u64 {
@@ -674,6 +717,19 @@ fn resolve_value_source(
             .get(key)
             .map(|v| Value::String(v.clone()))
             .or_else(|| default.clone())),
+        ValueSourceSpec::FilterInt { key, default } => {
+            let value = if let Some(filter) = filters.get(key) {
+                let parsed = filter.parse::<i64>().map_err(|error| {
+                    DataFusionError::Execution(format!(
+                        "filter '{key}' value '{filter}' is not a valid i64: {error}"
+                    ))
+                })?;
+                Some(json!(parsed))
+            } else {
+                default.map(|value| json!(value))
+            };
+            Ok(value)
+        }
         ValueSourceSpec::Secret { key, default } => Ok(source_secrets
             .get(key)
             .cloned()
@@ -1008,13 +1064,17 @@ fn extract_next_link_url(
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, HashMap};
+    use std::time::Duration;
 
     use reqwest::header::{HeaderMap, HeaderValue};
     use serde_json::json;
+    use tokio::net::TcpListener;
+    use tokio::task::JoinHandle;
 
     use super::{
-        HttpSourceClient, PageState, apply_pagination_query_pairs, extract_next_link_url,
-        extract_rows, join_url, normalize_base_url, page_is_exhausted, resolve_value_source,
+        HttpSourceClient, PageState, RequestSpec as HttpRequestSpec, apply_pagination_query_pairs,
+        execute_request, extract_next_link_url, extract_rows, join_url, normalize_base_url,
+        page_is_exhausted, resolve_value_source,
     };
     use coral_spec::PaginationMode;
     use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec};
@@ -1029,6 +1089,20 @@ mod tests {
             .as_http()
             .expect("http manifest")
             .clone()
+    }
+
+    async fn spawn_hanging_http_server() -> (String, JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind hanging http server");
+        let addr = listener.local_addr().expect("local addr");
+        let task = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.expect("accept hanging request");
+            let _socket = socket;
+            std::future::pending::<()>().await;
+        });
+
+        (format!("http://{addr}"), task)
     }
 
     fn test_http_table_spec(columns: &serde_json::Value, request: &RequestSpec) -> HttpTableSpec {
@@ -1078,6 +1152,11 @@ mod tests {
             }),
             ValueSourceSpec::Filter { key, default } => json!({
                 "from": "filter",
+                "key": key,
+                "default": default,
+            }),
+            ValueSourceSpec::FilterInt { key, default } => json!({
+                "from": "filter_int",
                 "key": key,
                 "default": default,
             }),
@@ -1200,6 +1279,48 @@ mod tests {
         .expect("secret lookup should succeed");
 
         assert_eq!(value, Some(json!("alpha-secret")));
+    }
+
+    #[test]
+    fn resolve_value_source_parses_filter_ints_as_numbers() {
+        let filters = HashMap::from([("start_time".to_string(), "1700000000000000".to_string())]);
+
+        let value = resolve_value_source(
+            &ValueSourceSpec::FilterInt {
+                key: "start_time".to_string(),
+                default: None,
+            },
+            &filters,
+            &HashMap::new(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        )
+        .expect("integer filter should resolve");
+
+        assert_eq!(value, Some(json!(1_700_000_000_000_000_i64)));
+    }
+
+    #[test]
+    fn resolve_value_source_rejects_invalid_filter_ints() {
+        let filters = HashMap::from([("start_time".to_string(), "not-a-number".to_string())]);
+
+        let error = resolve_value_source(
+            &ValueSourceSpec::FilterInt {
+                key: "start_time".to_string(),
+                default: None,
+            },
+            &filters,
+            &HashMap::new(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        )
+        .expect_err("invalid integer filter should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("filter 'start_time' value 'not-a-number' is not a valid i64")
+        );
     }
 
     #[test]
@@ -1423,5 +1544,48 @@ mod tests {
             manifest.tables[0].response.row_strategy,
             RowStrategy::DictEntries
         ));
+    }
+
+    #[tokio::test]
+    async fn execute_request_times_out_when_upstream_stalls() {
+        let (base_url, task) = spawn_hanging_http_server().await;
+        let request_timeout = Duration::from_millis(100);
+        let http = reqwest::Client::builder()
+            .timeout(request_timeout)
+            .build()
+            .expect("build test client");
+        let url = format!("{base_url}/items");
+        let query_pairs = Vec::new();
+        let filters = HashMap::new();
+        let state = HashMap::new();
+        let source_secrets = BTreeMap::new();
+        let source_variables = BTreeMap::new();
+
+        let error = execute_request(
+            &http,
+            request_timeout,
+            HttpRequestSpec {
+                auth_headers: &[],
+                table_headers: &[],
+                table_name: "items",
+                method: HttpMethod::GET,
+                base_url: &base_url,
+                url: &url,
+                query_pairs: &query_pairs,
+                body: None,
+                source_schema: "demo",
+                filters: &filters,
+                state: &state,
+                source_secrets: &source_secrets,
+                source_variables: &source_variables,
+                allow_404_empty: false,
+                link_header_require_results: false,
+            },
+        )
+        .await
+        .expect_err("hung upstream should time out");
+
+        assert!(error.to_string().contains("timed out"));
+        task.abort();
     }
 }

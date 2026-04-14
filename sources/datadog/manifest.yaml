@@ -12,13 +12,12 @@ auth:
     - name: DD-APPLICATION-KEY
       from: secret
       key: DD_APPLICATION_KEY
-
 tables:
   - name: monitors
     description: Datadog monitors with status and alert configuration.
     guide: >
-      No required filters — returns all monitors. Filter by status or type in SQL.
-      Status values: Alert, Warn, No Data, OK, Ignored, Skipped.
+      No required filters — returns all monitors. Filter by status or type in SQL. Status values: Alert, Warn, No Data, OK,
+      Ignored, Skipped.
     request:
       method: GET
       path: /api/v1/monitor
@@ -69,7 +68,7 @@ tables:
       - name: status
         type: Utf8
         nullable: true
-        description: "Monitor status. Values: Alert, Warn, No Data, OK, Ignored, Skipped."
+        description: "Monitor status with values: Alert, Warn, No Data, OK, Ignored, Skipped."
         expr:
           kind: path
           path:
@@ -194,8 +193,9 @@ tables:
   - name: events
     description: Datadog events within a time range.
     guide: >
-      Requires start and end filters in ISO 8601 format (e.g. '2024-01-15T00:00:00Z').
-      date_happened is Unix epoch seconds. Priority values: normal, low.
+      Requires start and end filters in ISO 8601 format (e.g. '2024-01-15T00:00:00Z'). date_happened is Unix epoch seconds.
+      Priority values: normal, low.
+
     request:
       method: GET
       path: /api/v1/events
@@ -246,8 +246,7 @@ tables:
       - name: date_happened
         type: Int64
         nullable: true
-        description: "Event timestamp as Unix epoch seconds. Divide by 1 for seconds, no conversion
-          needed."
+        description: "Event timestamp as Unix epoch seconds."
         expr:
           kind: path
           path:
@@ -271,7 +270,7 @@ tables:
       - name: priority
         type: Utf8
         nullable: true
-        description: "Event priority. Values: normal, low."
+        description: "Event priority with values: normal, low."
         expr:
           kind: path
           path:
@@ -508,8 +507,8 @@ tables:
   - name: hosts
     description: Datadog infrastructure hosts.
     guide: >
-      No required filters — returns all hosts. Use up = true to filter for live hosts.
-      last_reported_time is Unix epoch seconds.
+      No required filters — returns all hosts. Use up = true to filter for live hosts. last_reported_time is Unix epoch seconds.
+
     request:
       method: GET
       path: /api/v1/hosts
@@ -1250,10 +1249,10 @@ tables:
   - name: logs
     description: Datadog logs within a time range.
     guide: >
-      Requires start and end filters in ISO 8601 format (e.g. '2024-01-15T00:00:00Z').
-      Optional query filter uses Datadog log search syntax (e.g. 'service:web status:error').
-      Severity levels: emergency, alert, critical, error, warn, info, debug, trace.
-      Timestamps are ISO 8601.
+      Requires start and end filters in ISO 8601 format (e.g. '2024-01-15T00:00:00Z'). Optional query filter uses Datadog
+      log search syntax (e.g. 'service:web status:error'). Severity levels: emergency, alert, critical, error, warn, info,
+      debug, trace. Timestamps are ISO 8601.
+
     fetch_limit_default: 1000
     request:
       method: POST
@@ -1310,7 +1309,7 @@ tables:
       - name: message
         type: Utf8
         nullable: true
-        description: "Log message body. The primary text content of the log entry."
+        description: "Log message body containing the primary text content of the log entry."
         expr:
           kind: coalesce
           exprs:
@@ -1352,8 +1351,7 @@ tables:
       - name: status
         type: Utf8
         nullable: true
-        description: "Log severity level. Values: emergency, alert, critical, error, warn,
-          info, debug, trace."
+        description: "Log severity level with values: emergency, alert, critical, error, warn, info, debug, trace."
         expr:
           kind: coalesce
           exprs:
@@ -1422,10 +1420,10 @@ tables:
   - name: spans
     description: Datadog APM distributed tracing spans within a time range.
     guide: >
-      Requires start and end filters in ISO 8601 format (e.g. '2024-01-15T00:00:00Z').
-      Optional query filter uses Datadog trace search syntax (e.g. 'service:web resource_name:/api/v1').
-      Duration is in nanoseconds (/1e6 for ms, /1e9 for seconds).
+      Requires start and end filters in ISO 8601 format (e.g. '2024-01-15T00:00:00Z'). Optional query filter uses Datadog
+      trace search syntax (e.g. 'service:web resource_name:/api/v1'). Duration is in nanoseconds (/1e6 for ms, /1e9 for seconds).
       Resource is typically the endpoint path or DB query — use for grouping by operation.
+
     fetch_limit_default: 1000
     request:
       method: GET
@@ -1501,8 +1499,7 @@ tables:
       - name: resource
         type: Utf8
         nullable: true
-        description: "Resource name — typically the endpoint path or database query. Use for
-          grouping spans by operation."
+        description: "Resource name typically the endpoint path or database query used for grouping spans by operation."
         expr:
           kind: coalesce
           exprs:
@@ -1594,11 +1591,10 @@ tables:
   - name: metrics
     description: Datadog metrics timeseries data.
     guide: >
-      Requires query, start, and end filters. The query filter uses Datadog metrics query
-      syntax
-      (e.g. 'avg:system.cpu.user{*}', 'sum:trace.servlet.request.hits{service:web}.as_count()').
-      Timestamp is Unix epoch milliseconds (/1000 for seconds). Scope is the tag group (e.g.
-      'host:web-01').
+      Requires query, start, and end filters. The query filter uses Datadog metrics query syntax (e.g. 'avg:system.cpu.user{*}',
+      'sum:trace.servlet.request.hits{service:web}.as_count()'). Timestamp is Unix epoch milliseconds (/1000 for seconds).
+      Scope is the tag group (e.g. 'host:web-01').
+
     request:
       method: GET
       path: /api/v1/query

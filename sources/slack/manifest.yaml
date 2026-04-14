@@ -9,7 +9,6 @@ auth:
     - name: Authorization
       from: template
       template: Bearer {{secret.SLACK_TOKEN}}
-
 tables:
   - name: channels
     description: Slack channels with topic, purpose, and member count
@@ -204,8 +203,7 @@ tables:
       - name: oldest
       - name: latest
   - name: users
-    description: Slack workspace users with profile info (email requires 
-      users:read.email scope)
+    description: Slack workspace users with profile info (email requires users:read.email scope)
     request:
       method: GET
       path: /api/users.list

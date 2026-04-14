@@ -109,6 +109,21 @@ In this minimal example:
 - with the default response rules, Coral treats the selected response value directly as rows unless you configure a different `row_strategy`
 - `{{secret.API_TOKEN}}` is replaced with the secret value you provided when adding the source to Coral
 
+### HTTP value sources
+
+Request query params, body fields, and headers support these `from` values:
+
+| `from` value | Description |
+| ------------ | ----------- |
+| `literal` | Use the manifest-authored JSON value directly |
+| `template` | Render a string template with `variable`, `secret`, `filter`, or `state` tokens |
+| `filter` | Read a SQL filter as a string |
+| `filter_int` | Read a SQL filter and serialize it as a JSON integer |
+| `variable` | Read a non-secret source variable |
+| `secret` | Read a source secret |
+| `state` | Read pagination/runtime state |
+| `now_epoch_minus_seconds` | Emit the current Unix epoch seconds minus the configured offset |
+
 ### HTTP response fields
 
 The `response` object controls how Coral extracts rows from an HTTP response body.
