@@ -7,7 +7,7 @@ use datafusion::arrow::array::{
     Array, BooleanArray, Float64Array, Int64Array, RecordBatch, StringArray,
     TimestampMicrosecondArray,
 };
-use datafusion::arrow::datatypes::{DataType, SchemaRef};
+use datafusion::arrow::datatypes::{DataType, SchemaRef, TimeUnit};
 use datafusion::error::{DataFusionError, Result};
 use serde_json::Value;
 
@@ -67,7 +67,7 @@ pub(crate) fn convert_items(
                     .collect();
                 arrays.push(Arc::new(array));
             }
-            DataType::Timestamp(_, _) => {
+            DataType::Timestamp(TimeUnit::Microsecond, Some(ref tz)) if tz.as_ref() == "+00:00" => {
                 let array: TimestampMicrosecondArray = items
                     .iter()
                     .map(|row| to_i64(eval_expr(&expr, row, filters)))
@@ -188,10 +188,6 @@ fn eval_expr(expr: &ExprSpec, row: &Value, filters: &HashMap<String, String>) ->
 
 /// Evaluate a `FormatTimestamp` expression, returning epoch **microseconds** as
 /// a `Value::Number` suitable for an Arrow `TimestampMicrosecondArray`.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "Epoch-second f64 is intentionally converted to i64 microseconds; sub-microsecond precision is acceptable to lose"
-)]
 fn eval_format_timestamp(
     expr: &ExprSpec,
     input: &TimestampInput,
@@ -199,17 +195,36 @@ fn eval_format_timestamp(
     filters: &HashMap<String, String>,
 ) -> Option<Value> {
     let value = eval_expr(expr, row, filters)?;
-    let epoch_secs = match &value {
-        Value::Number(n) => n.as_f64(),
-        Value::String(s) => s.parse::<f64>().ok(),
+    let micros = match &value {
+        Value::String(s) => parse_epoch_micros(s, input),
+        Value::Number(n) => {
+            // serde_json stores numbers as f64 internally, so precision may
+            // already be reduced. Try the string representation first to
+            // recover as much precision as possible.
+            let s = n.to_string();
+            parse_epoch_micros(&s, input)
+        }
         _ => None,
     }?;
-    let epoch_secs = match input {
-        TimestampInput::Seconds => epoch_secs,
-        TimestampInput::Milliseconds => epoch_secs / 1000.0,
-    };
-    let micros = (epoch_secs * 1_000_000.0) as i64;
     Some(Value::Number(micros.into()))
+}
+
+/// Parse a timestamp string into epoch microseconds without intermediate
+/// floating-point arithmetic, preserving full microsecond precision.
+fn parse_epoch_micros(s: &str, input: &TimestampInput) -> Option<i64> {
+    let (int_str, frac_str) = s.split_once('.').unwrap_or((s, ""));
+    let whole: i64 = int_str.parse().ok()?;
+    let frac_width: usize = match input {
+        TimestampInput::Seconds => 6,
+        TimestampInput::Milliseconds => 3,
+    };
+    let padded = format!("{frac_str:0<frac_width$}");
+    let frac: i64 = padded[..frac_width].parse().ok()?;
+    let multiplier: i64 = match input {
+        TimestampInput::Seconds => 1_000_000,
+        TimestampInput::Milliseconds => 1_000,
+    };
+    Some(whole * multiplier + frac)
 }
 
 fn eval_template(
