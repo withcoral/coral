@@ -35,10 +35,155 @@ pub struct ManifestInputSpec {
     pub default_value: String,
 }
 
+impl ManifestInputSpec {
+    /// Builds one collected source input from its authored manifest fields.
+    #[must_use]
+    pub fn new(
+        key: impl Into<String>,
+        kind: ManifestInputKind,
+        default_value: Option<String>,
+    ) -> Self {
+        let required = default_value.is_none();
+        Self {
+            key: key.into(),
+            kind,
+            required,
+            default_value: default_value.unwrap_or_default(),
+        }
+    }
+
+    /// Returns whether this input was authored with a default value.
+    #[must_use]
+    pub fn has_default(&self) -> bool {
+        !self.required
+    }
+}
+
 #[derive(Debug, Clone)]
 struct InputState {
     kind: ManifestInputKind,
     default_value: Option<String>,
+}
+
+#[derive(Debug, Default)]
+struct InputCollector {
+    ordered: Vec<ManifestInputSpec>,
+    seen: BTreeMap<String, InputState>,
+}
+
+impl InputCollector {
+    fn collect(root: &Value) -> Result<Vec<ManifestInputSpec>> {
+        let mut collector = Self::default();
+        collector.collect_from_value(root)?;
+        Ok(collector.ordered)
+    }
+
+    fn collect_from_value(&mut self, value: &Value) -> Result<()> {
+        match value {
+            Value::Object(map) => {
+                self.collect_from_mapping(map)?;
+                for nested in map.values() {
+                    self.collect_from_value(nested)?;
+                }
+            }
+            Value::Array(items) => {
+                for item in items {
+                    self.collect_from_value(item)?;
+                }
+            }
+            Value::String(raw) => self.collect_from_template(raw)?,
+            Value::Null | Value::Bool(_) | Value::Number(_) => {}
+        }
+        Ok(())
+    }
+
+    fn collect_from_mapping(&mut self, map: &Map<String, Value>) -> Result<()> {
+        let Some(from) = map.get("from").and_then(Value::as_str) else {
+            return Ok(());
+        };
+
+        let kind = match from {
+            "secret" => Some(ManifestInputKind::Secret),
+            "variable" => Some(ManifestInputKind::Variable),
+            "env" | "env_any" | "secret_any" | "variable_any" => {
+                return Err(ManifestError::validation(format!(
+                    "unsupported manifest input source '{from}'"
+                )));
+            }
+            _ => None,
+        };
+        let Some(kind) = kind else {
+            return Ok(());
+        };
+
+        let key = map.get("key").and_then(Value::as_str).ok_or_else(|| {
+            ManifestError::validation(format!("manifest '{from}' input is missing key"))
+        })?;
+        let default_value = map
+            .get("default")
+            .and_then(Value::as_str)
+            .map(ToString::to_string);
+        self.register_input(key, kind, default_value)
+    }
+
+    fn collect_from_template(&mut self, template: &str) -> Result<()> {
+        let template = ParsedTemplate::parse(template)?;
+        for token in template.tokens() {
+            match token.namespace() {
+                TemplateNamespace::Secret => {
+                    self.register_input(
+                        token.key(),
+                        ManifestInputKind::Secret,
+                        token.default_value().map(ToString::to_string),
+                    )?;
+                }
+                TemplateNamespace::Variable => {
+                    self.register_input(
+                        token.key(),
+                        ManifestInputKind::Variable,
+                        token.default_value().map(ToString::to_string),
+                    )?;
+                }
+                TemplateNamespace::Env => {
+                    return Err(ManifestError::validation(format!(
+                        "unsupported template namespace '{}'",
+                        token.raw_key()
+                    )));
+                }
+                TemplateNamespace::Filter
+                | TemplateNamespace::State
+                | TemplateNamespace::Other(_) => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn register_input(
+        &mut self,
+        key: &str,
+        kind: ManifestInputKind,
+        default_value: Option<String>,
+    ) -> Result<()> {
+        if let Some(existing) = self.seen.get(key) {
+            if existing.kind != kind || existing.default_value != default_value {
+                return Err(ManifestError::validation(format!(
+                    "manifest input '{key}' is declared inconsistently"
+                )));
+            }
+            return Ok(());
+        }
+
+        self.ordered
+            .push(ManifestInputSpec::new(key, kind, default_value.clone()));
+        self.seen.insert(
+            key.to_string(),
+            InputState {
+                kind,
+                default_value,
+            },
+        );
+        Ok(())
+    }
 }
 
 /// Collect interactive source inputs from an already-parsed manifest value.
@@ -48,136 +193,7 @@ struct InputState {
 /// Returns a [`ManifestError`] when the source spec contains unsupported legacy
 /// source-input forms or malformed template tokens.
 pub(crate) fn collect_source_inputs_value(root: &Value) -> Result<Vec<ManifestInputSpec>> {
-    let mut ordered = Vec::new();
-    let mut seen = BTreeMap::<String, InputState>::new();
-    collect_from_value(root, &mut ordered, &mut seen)?;
-    Ok(ordered)
-}
-
-fn collect_from_value(
-    value: &Value,
-    ordered: &mut Vec<ManifestInputSpec>,
-    seen: &mut BTreeMap<String, InputState>,
-) -> Result<()> {
-    match value {
-        Value::Object(map) => {
-            collect_from_mapping(map, ordered, seen)?;
-            for nested in map.values() {
-                collect_from_value(nested, ordered, seen)?;
-            }
-        }
-        Value::Array(items) => {
-            for item in items {
-                collect_from_value(item, ordered, seen)?;
-            }
-        }
-        Value::String(raw) => collect_from_template(raw, ordered, seen)?,
-        Value::Null | Value::Bool(_) | Value::Number(_) => {}
-    }
-    Ok(())
-}
-
-fn collect_from_mapping(
-    map: &Map<String, Value>,
-    ordered: &mut Vec<ManifestInputSpec>,
-    seen: &mut BTreeMap<String, InputState>,
-) -> Result<()> {
-    let Some(from) = map.get("from").and_then(Value::as_str) else {
-        return Ok(());
-    };
-
-    let kind = match from {
-        "secret" => Some(ManifestInputKind::Secret),
-        "variable" => Some(ManifestInputKind::Variable),
-        "env" | "env_any" | "secret_any" | "variable_any" => {
-            return Err(ManifestError::validation(format!(
-                "unsupported manifest input source '{from}'"
-            )));
-        }
-        _ => None,
-    };
-    let Some(kind) = kind else {
-        return Ok(());
-    };
-
-    let key = map.get("key").and_then(Value::as_str).ok_or_else(|| {
-        ManifestError::validation(format!("manifest '{from}' input is missing key"))
-    })?;
-    let default_value = map
-        .get("default")
-        .and_then(Value::as_str)
-        .map(ToString::to_string);
-    register_input(key, kind, default_value, ordered, seen)
-}
-
-fn collect_from_template(
-    template: &str,
-    ordered: &mut Vec<ManifestInputSpec>,
-    seen: &mut BTreeMap<String, InputState>,
-) -> Result<()> {
-    let template = ParsedTemplate::parse(template)?;
-    for token in template.tokens() {
-        match token.namespace() {
-            TemplateNamespace::Secret => {
-                register_input(
-                    token.key(),
-                    ManifestInputKind::Secret,
-                    token.default_value().map(ToString::to_string),
-                    ordered,
-                    seen,
-                )?;
-            }
-            TemplateNamespace::Variable => {
-                register_input(
-                    token.key(),
-                    ManifestInputKind::Variable,
-                    token.default_value().map(ToString::to_string),
-                    ordered,
-                    seen,
-                )?;
-            }
-            TemplateNamespace::Env => {
-                return Err(ManifestError::validation(format!(
-                    "unsupported template namespace '{}'",
-                    token.raw_key()
-                )));
-            }
-            TemplateNamespace::Filter | TemplateNamespace::State | TemplateNamespace::Other(_) => {}
-        }
-    }
-    Ok(())
-}
-
-fn register_input(
-    key: &str,
-    kind: ManifestInputKind,
-    default_value: Option<String>,
-    ordered: &mut Vec<ManifestInputSpec>,
-    seen: &mut BTreeMap<String, InputState>,
-) -> Result<()> {
-    if let Some(existing) = seen.get(key) {
-        if existing.kind != kind || existing.default_value != default_value {
-            return Err(ManifestError::validation(format!(
-                "manifest input '{key}' is declared inconsistently"
-            )));
-        }
-        return Ok(());
-    }
-
-    ordered.push(ManifestInputSpec {
-        key: key.to_string(),
-        kind,
-        required: default_value.is_none(),
-        default_value: default_value.clone().unwrap_or_default(),
-    });
-    seen.insert(
-        key.to_string(),
-        InputState {
-            kind,
-            default_value,
-        },
-    );
-    Ok(())
+    InputCollector::collect(root)
 }
 
 #[cfg(test)]
@@ -229,5 +245,28 @@ tables: []
 "#;
         let error = collect(manifest).expect_err("legacy env unsupported");
         assert!(error.to_string().contains("unsupported"));
+    }
+
+    #[test]
+    fn constructor_derives_required_and_default_state() {
+        let input = ManifestInputSpec::new(
+            "API_BASE",
+            ManifestInputKind::Variable,
+            Some("https://example.com".to_string()),
+        );
+
+        assert_eq!(input.key, "API_BASE");
+        assert!(!input.required);
+        assert!(input.has_default());
+        assert_eq!(input.default_value, "https://example.com");
+    }
+
+    #[test]
+    fn constructor_marks_missing_default_as_required() {
+        let input = ManifestInputSpec::new("API_TOKEN", ManifestInputKind::Secret, None);
+
+        assert!(input.required);
+        assert!(!input.has_default());
+        assert!(input.default_value.is_empty());
     }
 }
