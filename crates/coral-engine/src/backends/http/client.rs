@@ -1593,13 +1593,12 @@ mod tests {
         let now = UNIX_EPOCH + Duration::from_secs(1_700_000_100);
 
         // Reset happened 1 second ago (epoch 1_700_000_099)
-        headers.insert(
-            "X-RateLimit-Reset",
-            HeaderValue::from_static("1700000099"),
-        );
+        headers.insert("X-RateLimit-Reset", HeaderValue::from_static("1700000099"));
 
         let wait = rate_limit_wait_secs(&headers, now);
-        assert_eq!(wait, 0, "past epoch means reset already happened; wait should be 0");
+        assert_eq!(
+            wait, 0,
+            "past epoch means reset already happened; wait should be 0"
+        );
     }
-
 }
