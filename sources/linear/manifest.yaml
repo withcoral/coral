@@ -9,7 +9,6 @@ auth:
     - name: Authorization
       from: template
       template: "{{secret.LINEAR_API_KEY}}"
-
 tables:
   - name: teams
     description: Teams in the Linear workspace

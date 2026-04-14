@@ -2,16 +2,14 @@
 
 use std::collections::BTreeMap;
 
+use crate::bootstrap::AppError;
+use crate::sources::model::ManagedSource;
+use crate::state::{AppStateLayout, ConfigStore, SecretStore};
 use coral_api::v1::Workspace;
 use coral_engine::{
     CoralQuery, CoreError, QueryExecution, QueryRuntimeContext, QueryRuntimeProvider, QuerySource,
     TableInfo,
 };
-use coral_spec::parse_source_manifest_yaml;
-
-use crate::bootstrap::AppError;
-use crate::sources::model::ManagedSource;
-use crate::state::{AppStateLayout, ConfigStore, SecretStore};
 
 #[derive(Debug)]
 pub(crate) enum QueryManagerError {
@@ -113,8 +111,10 @@ impl QueryManager {
 
     fn load_query_source(&self, source: &ManagedSource) -> Result<QuerySource, AppError> {
         let manifest_path = self.layout.manifest_file(&source.workspace, &source.name);
-        let manifest_yaml = std::fs::read_to_string(&manifest_path)?;
-        let source_spec = parse_source_manifest_yaml(&manifest_yaml)
+        if !manifest_path.exists() {
+            return Err(AppError::SourceNotFound(source.name.clone()));
+        }
+        let source_spec = coral_spec::load_manifest_path(&manifest_path)
             .map_err(|error| AppError::InvalidInput(error.to_string()))?;
         if source_spec.schema_name() != source.name {
             return Err(AppError::FailedPrecondition(format!(

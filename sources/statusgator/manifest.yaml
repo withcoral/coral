@@ -12,7 +12,6 @@ auth:
     - name: Accept
       from: literal
       value: application/json
-
 tables:
   - name: boards
     description: StatusGator monitoring boards
@@ -72,7 +71,6 @@ tables:
           kind: path
           path:
             - updated_at
-
   - name: monitors
     description: Service monitors on a board
     request:
@@ -224,7 +222,6 @@ tables:
     filters:
       - name: board_id
         required: true
-
   - name: history
     description: Status history for a board
     request:
@@ -333,7 +330,6 @@ tables:
         required: true
       - name: start_date
       - name: end_date
-
   - name: incidents
     description: Incidents for a board
     request:
@@ -450,7 +446,6 @@ tables:
     filters:
       - name: board_id
         required: true
-
   - name: monitor_components
     description: Components for a specific monitor
     request:
@@ -536,7 +531,6 @@ tables:
         required: true
       - name: monitor_id
         required: true
-
   - name: service_search
     description: Search for services by name
     request:
@@ -608,7 +602,6 @@ tables:
     filters:
       - name: q
         required: true
-
   - name: service_components
     description: Components for a service
     request:
@@ -677,7 +670,6 @@ tables:
     filters:
       - name: service_id
         required: true
-
   - name: status_page_subscribers
     description: Subscribers to a board's status page
     request:
@@ -754,7 +746,6 @@ tables:
     filters:
       - name: board_id
         required: true
-
   - name: users
     description: Users in the StatusGator account
     request:
@@ -837,7 +828,6 @@ tables:
           kind: path
           path:
             - last_sign_in_at
-
   - name: monitoring_regions
     description: Available monitoring regions
     request:
@@ -964,7 +954,6 @@ tables:
     filters:
       - name: board_id
         required: true
-
   - name: ping
     description: Health check endpoint
     request:

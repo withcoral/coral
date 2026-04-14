@@ -57,12 +57,12 @@ Shared client library used by both `coral-cli` and `coral-mcp`.
 
 The local server and core orchestrator.
 
-| Owns                | Details                                                      |
-| ------------------- | ------------------------------------------------------------ |
-| Server bootstrap    | In-process gRPC server lifecycle (`bootstrap/`)              |
-| Source management   | Install, list, validate, remove (`sources/`)         |
-| Workspace state     | Config, secrets, and workspace layout (`state/`, `storage/`) |
-| Query orchestration | Loads sources, builds the engine, executes SQL (`query/`)    |
+| Owns | Details |
+| --- | --- |
+| Server bootstrap | In-process gRPC server lifecycle (`bootstrap/`) |
+| Source management | Install, add from file, list, validate, remove (`sources/`) |
+| Workspace state | Config, secrets, and workspace layout (`state/`, `storage/`) |
+| Query orchestration | Loads sources, builds the engine, executes SQL (`query/`) |
 
 This is the largest crate. It ties `coral-spec` and `coral-engine` together and manages all persistent local state.
 
@@ -97,7 +97,7 @@ The MCP stdio server.
 | Owns            | Details                                                             |
 | --------------- | ------------------------------------------------------------------- |
 | MCP protocol    | Tool and resource handlers via the `rmcp` SDK (`server.rs`)         |
-| Surface shaping | Tool descriptions, guide template, result formatting (`surface.rs`) |
+| Surface shaping | Tool/resource/error helpers split across `surface/{mod,tools,resources,errors}.rs` |
 | Tools           | `sql`, `list_tables`                                                |
 | Resources       | `coral://guide`, `coral://tables`                                   |
 
