@@ -30,11 +30,7 @@ async fn sql_command_renders_table_output() {
 async fn source_list_renders_configured_sources() {
     let server = MockServer::start().await;
 
-    let assert = server
-        .cmd()
-        .args(["source", "list"])
-        .assert()
-        .success();
+    let assert = server.cmd().args(["source", "list"]).assert().success();
 
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
     assert!(

@@ -70,8 +70,7 @@ impl ClientBuilder {
             })
         } else {
             let server = coral_app::ServerBuilder::new().start().await?;
-            let (source_client, query_client) =
-                connect_clients(server.endpoint_uri()).await?;
+            let (source_client, query_client) = connect_clients(server.endpoint_uri()).await?;
             Ok(AppClient {
                 source_client,
                 query_client,
@@ -134,9 +133,7 @@ impl AppClient {
     }
 }
 
-async fn connect_clients(
-    endpoint_uri: &str,
-) -> Result<(SourceClient, QueryClient), ClientError> {
+async fn connect_clients(endpoint_uri: &str) -> Result<(SourceClient, QueryClient), ClientError> {
     let endpoint = Endpoint::from_shared(endpoint_uri.to_string())?;
     let channel = endpoint.connect().await?;
     Ok((

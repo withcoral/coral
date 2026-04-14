@@ -62,9 +62,7 @@ impl QueryService for MockQueryService {
         &self,
         _request: Request<ListTablesRequest>,
     ) -> Result<Response<ListTablesResponse>, Status> {
-        Ok(Response::new(ListTablesResponse {
-            tables: Vec::new(),
-        }))
+        Ok(Response::new(ListTablesResponse { tables: Vec::new() }))
     }
 
     async fn execute_sql(
@@ -79,8 +77,7 @@ impl QueryService for MockQueryService {
         .expect("build record batch");
 
         Ok(Response::new(ExecuteSqlResponse {
-            arrow_ipc_stream: encode_arrow_ipc_stream(&schema, &[batch])
-                .expect("encode arrow ipc"),
+            arrow_ipc_stream: encode_arrow_ipc_stream(&schema, &[batch]).expect("encode arrow ipc"),
             row_count: 1,
         }))
     }
