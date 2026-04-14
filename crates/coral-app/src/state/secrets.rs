@@ -5,9 +5,11 @@ use std::io;
 use std::path::Path;
 
 use crate::bootstrap::AppError;
+use crate::sources::SourceName;
 use crate::state::AppStateLayout;
 use crate::storage::fs as storage_fs;
 use crate::storage::fs::FileLock;
+use crate::workspaces::WorkspaceName;
 
 /// Errors returned by the plaintext env-file secret helpers.
 #[derive(Debug, thiserror::Error)]
@@ -30,11 +32,11 @@ impl SecretStore {
 
     pub(crate) fn replace_source_secrets_for(
         &self,
-        workspace: &coral_api::v1::Workspace,
-        source_name: &str,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
         secrets: &BTreeMap<String, String>,
     ) -> Result<Vec<String>, AppError> {
-        let path = self.layout.secret_file(workspace, source_name);
+        let path = self.layout.secret_file(workspace_name, source_name);
         if secrets.is_empty() {
             if path.exists() {
                 std::fs::remove_file(path)?;
@@ -47,10 +49,10 @@ impl SecretStore {
 
     pub(crate) fn read_source_secrets_for(
         &self,
-        workspace: &coral_api::v1::Workspace,
-        source_name: &str,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
     ) -> Result<BTreeMap<String, String>, AppError> {
-        let path = self.layout.secret_file(workspace, source_name);
+        let path = self.layout.secret_file(workspace_name, source_name);
         load_file(&path).map_err(Into::into)
     }
 }

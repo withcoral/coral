@@ -4,13 +4,14 @@ use coral_api::v1::Workspace;
 use tonic::Status;
 
 use crate::bootstrap::AppError;
+use crate::workspaces::WorkspaceName;
 
 /// Canonical default workspace name used across local Coral surfaces.
 pub const DEFAULT_WORKSPACE_ID: &str = "default";
 
 #[derive(Debug, Clone)]
 pub(crate) struct WorkspaceValidator {
-    default_workspace: Workspace,
+    default_workspace: WorkspaceName,
     forbidden_path_chars: [char; 2],
 }
 
@@ -25,24 +26,27 @@ impl WorkspaceValidator {
         allow(dead_code, reason = "used by internal tests and bootstrap helpers")
     )]
     #[must_use]
-    pub(crate) fn default_workspace(&self) -> Workspace {
+    pub(crate) fn default_workspace(&self) -> WorkspaceName {
         self.default_workspace.clone()
     }
 
-    pub(crate) fn require_app(&self, workspace: Option<&Workspace>) -> Result<Workspace, AppError> {
+    pub(crate) fn require_app(
+        &self,
+        workspace: Option<&Workspace>,
+    ) -> Result<WorkspaceName, AppError> {
         let workspace =
             workspace.ok_or_else(|| AppError::InvalidInput("missing workspace".to_string()))?;
         self.normalize(workspace)
     }
 
-    pub(crate) fn require(&self, workspace: Option<&Workspace>) -> Result<Workspace, Status> {
+    pub(crate) fn require(&self, workspace: Option<&Workspace>) -> Result<WorkspaceName, Status> {
         self.require_app(workspace).map_err(app_error_to_status)
     }
 
-    pub(crate) fn normalize(&self, workspace: &Workspace) -> Result<Workspace, AppError> {
-        Ok(Workspace {
-            name: self.validate_path_name("workspace name", &workspace.name)?,
-        })
+    pub(crate) fn normalize(&self, workspace: &Workspace) -> Result<WorkspaceName, AppError> {
+        Ok(WorkspaceName::new(
+            self.validate_path_name("workspace name", &workspace.name)?,
+        ))
     }
 
     pub(crate) fn validate_name(&self, label: &str, value: &str) -> Result<String, AppError> {
@@ -86,9 +90,7 @@ impl WorkspaceValidator {
 impl Default for WorkspaceValidator {
     fn default() -> Self {
         Self {
-            default_workspace: Workspace {
-                name: DEFAULT_WORKSPACE_ID.to_string(),
-            },
+            default_workspace: WorkspaceName::new(DEFAULT_WORKSPACE_ID.to_string()),
             forbidden_path_chars: ['/', '\\'],
         }
     }
@@ -108,7 +110,7 @@ mod tests {
     #[test]
     fn rejects_forward_and_backward_slashes() {
         let manager = WorkspaceValidator::new();
-        let workspace = manager.default_workspace();
+        let workspace_name = manager.default_workspace();
         let error = manager
             .normalize(&coral_api::v1::Workspace {
                 name: r"bad\workspace".to_string(),
@@ -121,7 +123,7 @@ mod tests {
             .expect_err("name should fail");
         assert!(error.to_string().contains("'/' or '\\\\'"));
 
-        assert_eq!(workspace.name, DEFAULT_WORKSPACE_ID);
+        assert_eq!(workspace_name.as_str(), DEFAULT_WORKSPACE_ID);
     }
 
     #[test]

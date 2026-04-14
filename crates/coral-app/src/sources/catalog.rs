@@ -5,10 +5,12 @@ use std::collections::BTreeSet;
 use coral_spec::{ManifestInputKind, ManifestInputSpec, parse_manifest_and_inputs};
 
 use crate::bootstrap::AppError;
+use crate::sources::SourceName;
 use crate::sources::model::{
     CandidateSource, CandidateSourceInput, CandidateSourceInputKind, InstalledSource, SourceOrigin,
 };
 use crate::state::AppStateLayout;
+use crate::workspaces::WorkspaceName;
 
 include!(concat!(env!("OUT_DIR"), "/bundled_sources.rs"));
 
@@ -24,28 +26,28 @@ pub(crate) struct InstalledSourceManifest {
 }
 
 pub(crate) fn list_bundled_sources(
-    installed_source_names: &BTreeSet<String>,
+    installed_source_names: &BTreeSet<SourceName>,
 ) -> Result<Vec<CandidateSource>, AppError> {
-    let mut available = BUNDLED_SOURCES
+    let mut candidates = BUNDLED_SOURCES
         .iter()
         .map(|(name, manifest_yaml)| {
-            let mut source = describe_manifest(
+            let mut candidate = describe_manifest(
                 manifest_yaml,
                 SourceOrigin::Bundled,
-                installed_source_names.contains(*name),
+                installed_source_names.contains(&SourceName::new((*name).to_string())),
             )?;
-            source.name = (*name).to_string();
-            Ok(source)
+            candidate.name = SourceName::new((*name).to_string());
+            Ok(candidate)
         })
         .collect::<Result<Vec<_>, AppError>>()?;
-    available.sort_by(|left, right| left.name.cmp(&right.name));
-    Ok(available)
+    candidates.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(candidates)
 }
 
-pub(crate) fn load_bundled_source(name: &str) -> Result<BundledSourceManifest, AppError> {
+pub(crate) fn load_bundled_source(name: &SourceName) -> Result<BundledSourceManifest, AppError> {
     let Some((_, manifest_yaml)) = BUNDLED_SOURCES
         .iter()
-        .find(|(candidate, _)| *candidate == name)
+        .find(|(candidate, _)| *candidate == name.as_str())
     else {
         return Err(AppError::InvalidInput(format!(
             "unknown bundled source '{name}'"
@@ -59,14 +61,14 @@ pub(crate) fn load_bundled_source(name: &str) -> Result<BundledSourceManifest, A
 /// Resolve the effective installed manifest and verify it still matches the
 /// installed source identity in app state.
 pub(crate) fn resolve_installed_manifest(
-    workspace: &coral_api::v1::Workspace,
+    workspace_name: &WorkspaceName,
     source: &InstalledSource,
     layout: &AppStateLayout,
 ) -> Result<InstalledSourceManifest, AppError> {
     let manifest_yaml = match source.origin {
         SourceOrigin::Bundled => load_bundled_source(&source.name)?.manifest_yaml,
         SourceOrigin::Imported => {
-            std::fs::read_to_string(layout.manifest_file(workspace, &source.name))?
+            std::fs::read_to_string(layout.manifest_file(workspace_name, &source.name))?
         }
     };
     let mut candidate = describe_manifest(&manifest_yaml, source.origin, false)?;
@@ -91,7 +93,7 @@ pub(crate) fn describe_manifest(
     let (manifest, inputs) = parse_manifest_and_inputs(manifest_yaml)
         .map_err(|error| AppError::InvalidInput(error.to_string()))?;
     Ok(CandidateSource {
-        name: manifest.schema_name().to_string(),
+        name: SourceName::new(manifest.schema_name().to_string()),
         description: manifest.description().to_string(),
         version: manifest.source_version().to_string(),
         inputs: inputs.into_iter().map(candidate_input_spec).collect(),
@@ -121,14 +123,23 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::{describe_manifest, list_bundled_sources};
+    use crate::sources::SourceName;
     use crate::sources::model::{CandidateSourceInputKind, SourceOrigin};
 
     #[test]
     fn bundled_sources_load_through_catalog() {
         let sources = list_bundled_sources(&BTreeSet::new()).expect("bundled sources");
         assert!(!sources.is_empty());
-        assert!(sources.iter().any(|source| source.name == "github"));
-        assert!(sources.iter().any(|source| source.name == "stripe"));
+        assert!(
+            sources
+                .iter()
+                .any(|source| source.name == SourceName::new("github".to_string()))
+        );
+        assert!(
+            sources
+                .iter()
+                .any(|source| source.name == SourceName::new("stripe".to_string()))
+        );
         assert!(sources.iter().all(|source| !source.version.is_empty()));
     }
 

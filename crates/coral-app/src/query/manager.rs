@@ -2,7 +2,6 @@
 
 use std::collections::BTreeMap;
 
-use coral_api::v1::Workspace;
 use coral_engine::{
     CoralQuery, CoreError, QueryExecution, QueryRuntimeContext, QueryRuntimeProvider, QuerySource,
     TableInfo,
@@ -10,9 +9,11 @@ use coral_engine::{
 use coral_spec::{ManifestInputKind, ManifestInputSpec, parse_manifest_and_inputs};
 
 use crate::bootstrap::AppError;
+use crate::sources::SourceName;
 use crate::sources::catalog::resolve_installed_manifest;
 use crate::sources::model::InstalledSource;
 use crate::state::{AppStateLayout, ConfigStore, SecretStore};
+use crate::workspaces::WorkspaceName;
 
 #[derive(Debug)]
 pub(crate) enum QueryManagerError {
@@ -50,10 +51,10 @@ impl QueryManager {
 
     pub(crate) async fn list_tables(
         &self,
-        workspace: &Workspace,
+        workspace_name: &WorkspaceName,
     ) -> Result<Vec<TableInfo>, QueryManagerError> {
         let sources = self
-            .load_query_sources(workspace)
+            .load_query_sources(workspace_name)
             .map_err(QueryManagerError::App)?;
         let runtime = self.runtime_provider();
         CoralQuery::list_tables(&sources, &runtime, None)
@@ -63,11 +64,11 @@ impl QueryManager {
 
     pub(crate) async fn execute_sql(
         &self,
-        workspace: &Workspace,
+        workspace_name: &WorkspaceName,
         sql: &str,
     ) -> Result<QueryExecution, QueryManagerError> {
         let sources = self
-            .load_query_sources(workspace)
+            .load_query_sources(workspace_name)
             .map_err(QueryManagerError::App)?;
         let runtime = self.runtime_provider();
         CoralQuery::execute_sql(&sources, &runtime, sql)
@@ -77,15 +78,15 @@ impl QueryManager {
 
     pub(crate) async fn validate_source(
         &self,
-        workspace: &Workspace,
-        source_name: &str,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
     ) -> Result<ValidatedSource, QueryManagerError> {
         let source = self
             .config_store
-            .get_source(workspace, source_name)
+            .get_source(workspace_name, source_name)
             .map_err(QueryManagerError::App)?;
         let (query_source, version) = self
-            .load_query_source(workspace, &source)
+            .load_query_source(workspace_name, &source)
             .map_err(QueryManagerError::App)?;
         let runtime = self.runtime_provider();
         let tables = CoralQuery::test_source(&query_source, &runtime)
@@ -97,11 +98,14 @@ impl QueryManager {
         Ok(ValidatedSource { source, tables })
     }
 
-    fn load_query_sources(&self, workspace: &Workspace) -> Result<Vec<QuerySource>, AppError> {
+    fn load_query_sources(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<Vec<QuerySource>, AppError> {
         let catalog = self.config_store.load_catalog()?;
         let mut query_sources = Vec::new();
-        for source in catalog.workspace_sources(workspace) {
-            match self.load_query_source(workspace, &source) {
+        for source in catalog.workspace_sources(workspace_name) {
+            match self.load_query_source(workspace_name, &source) {
                 Ok((query_source, _version)) => query_sources.push(query_source),
                 Err(error) => {
                     tracing::warn!(
@@ -117,17 +121,17 @@ impl QueryManager {
 
     fn load_query_source(
         &self,
-        workspace: &Workspace,
+        workspace_name: &WorkspaceName,
         source: &InstalledSource,
     ) -> Result<(QuerySource, String), AppError> {
-        let installed = resolve_installed_manifest(workspace, source, &self.layout)?;
+        let installed = resolve_installed_manifest(workspace_name, source, &self.layout)?;
         let manifest_yaml = installed.manifest_yaml;
         let (source_spec, inputs) = parse_manifest_and_inputs(&manifest_yaml)
             .map_err(|error| AppError::InvalidInput(error.to_string()))?;
         validate_required_variables(source, &inputs)?;
         let stored_secrets = self
             .secret_store
-            .read_source_secrets_for(workspace, &source.name)?;
+            .read_source_secrets_for(workspace_name, &source.name)?;
         let mut resolved_secrets = BTreeMap::new();
         let missing_secrets: Vec<String> = source_spec
             .required_secret_names()

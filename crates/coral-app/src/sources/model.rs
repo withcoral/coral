@@ -4,10 +4,12 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::sources::SourceName;
+
 /// App-owned description of a source candidate that can be installed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CandidateSource {
-    pub(crate) name: String,
+    pub(crate) name: SourceName,
     pub(crate) description: String,
     pub(crate) version: String,
     pub(crate) inputs: Vec<CandidateSourceInput>,
@@ -33,7 +35,7 @@ pub(crate) enum CandidateSourceInputKind {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct InstalledSource {
     /// Bare source name. This is also the visible SQL schema name.
-    pub(crate) name: String,
+    pub(crate) name: SourceName,
     /// Manifest version from the installed source spec.
     #[serde(default)]
     pub(crate) version: String,

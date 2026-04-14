@@ -37,14 +37,14 @@ impl QueryServiceApi for QueryService {
         request: Request<ListTablesRequest>,
     ) -> Result<Response<ListTablesResponse>, Status> {
         let request = request.into_inner();
-        let workspace = self.workspaces.require(request.workspace.as_ref())?;
+        let workspace_name = self.workspaces.require(request.workspace.as_ref())?;
         let tables = self
             .queries
-            .list_tables(&workspace)
+            .list_tables(&workspace_name)
             .await
             .map_err(query_status)?
             .into_iter()
-            .map(|table| table_to_proto(&workspace, table))
+            .map(|table| table_to_proto(&workspace_name, table))
             .collect();
         Ok(Response::new(ListTablesResponse { tables }))
     }
@@ -54,10 +54,10 @@ impl QueryServiceApi for QueryService {
         request: Request<ExecuteSqlRequest>,
     ) -> Result<Response<ExecuteSqlResponse>, Status> {
         let request = request.into_inner();
-        let workspace = self.workspaces.require(request.workspace.as_ref())?;
+        let workspace_name = self.workspaces.require(request.workspace.as_ref())?;
         let execution = self
             .queries
-            .execute_sql(&workspace, &request.sql)
+            .execute_sql(&workspace_name, &request.sql)
             .await
             .map_err(query_status)?;
         let response = ExecuteSqlResponse {

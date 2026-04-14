@@ -2,14 +2,15 @@
 
 use std::collections::BTreeMap;
 
-use coral_api::v1::Workspace;
 use serde::{Deserialize, Serialize};
 use toml_edit::{DocumentMut, InlineTable, Item, Value, value};
 
 use crate::bootstrap::AppError;
+use crate::sources::SourceName;
 use crate::sources::model::{InstalledSource, SourceOrigin};
 use crate::state::AppStateLayout;
 use crate::storage::fs::{self as storage_fs, FileLock};
+use crate::workspaces::WorkspaceName;
 
 #[derive(Debug, Clone)]
 struct AppConfig {
@@ -56,7 +57,7 @@ struct PersistedInstalledSource {
 }
 
 impl PersistedInstalledSource {
-    fn into_installed_source(self, source_name: String) -> InstalledSource {
+    fn into_installed_source(self, source_name: SourceName) -> InstalledSource {
         InstalledSource {
             name: source_name,
             version: self.version,
@@ -79,47 +80,55 @@ impl From<&InstalledSource> for PersistedInstalledSource {
 }
 
 #[derive(Debug, Clone, Default)]
-pub(crate) struct SourceCatalog(BTreeMap<String, BTreeMap<String, InstalledSource>>);
+pub(crate) struct SourceCatalog(BTreeMap<WorkspaceName, BTreeMap<SourceName, InstalledSource>>);
 
 impl SourceCatalog {
-    pub(crate) fn workspace_sources(&self, workspace: &Workspace) -> Vec<InstalledSource> {
+    pub(crate) fn workspace_sources(&self, workspace_name: &WorkspaceName) -> Vec<InstalledSource> {
         self.0
-            .get(&workspace.name)
+            .get(workspace_name)
             .map(|sources| sources.values().cloned().collect())
             .unwrap_or_default()
     }
 
     pub(crate) fn get_source(
         &self,
-        workspace: &Workspace,
-        source_name: &str,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
     ) -> Option<InstalledSource> {
         self.0
-            .get(&workspace.name)
+            .get(workspace_name)
             .and_then(|sources| sources.get(source_name))
             .cloned()
     }
 
-    pub(crate) fn contains(&self, workspace: &Workspace, source_name: &str) -> bool {
+    pub(crate) fn contains(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> bool {
         self.0
-            .get(&workspace.name)
+            .get(workspace_name)
             .is_some_and(|sources| sources.contains_key(source_name))
     }
 
-    pub(crate) fn upsert_source(&mut self, workspace: &Workspace, source: InstalledSource) {
+    pub(crate) fn upsert_source(
+        &mut self,
+        workspace_name: &WorkspaceName,
+        source: InstalledSource,
+    ) {
         self.0
-            .entry(workspace.name.clone())
+            .entry(workspace_name.clone())
             .or_default()
             .insert(source.name.clone(), source);
     }
 
     pub(crate) fn remove_source(
         &mut self,
-        workspace: &Workspace,
-        source_name: &str,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
     ) -> Option<InstalledSource> {
         let mut removed = None;
-        let remove_workspace = match self.0.get_mut(&workspace.name) {
+        let remove_workspace = match self.0.get_mut(workspace_name) {
             Some(sources) => {
                 removed = sources.remove(source_name);
                 sources.is_empty()
@@ -128,7 +137,7 @@ impl SourceCatalog {
         };
 
         if remove_workspace {
-            self.0.remove(&workspace.name);
+            self.0.remove(workspace_name);
         }
 
         removed
@@ -189,37 +198,37 @@ impl ConfigStore {
 
     pub(crate) fn list_workspace_sources(
         &self,
-        workspace: &Workspace,
+        workspace_name: &WorkspaceName,
     ) -> Result<Vec<InstalledSource>, AppError> {
         self.load_catalog()
-            .map(|catalog| catalog.workspace_sources(workspace))
+            .map(|catalog| catalog.workspace_sources(workspace_name))
     }
 
     pub(crate) fn get_source(
         &self,
-        workspace: &Workspace,
-        source_name: &str,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
     ) -> Result<InstalledSource, AppError> {
         self.load_catalog()?
-            .get_source(workspace, source_name)
-            .ok_or_else(|| AppError::SourceNotFound(format!("{}:{source_name}", workspace.name)))
+            .get_source(workspace_name, source_name)
+            .ok_or_else(|| AppError::SourceNotFound(format!("{workspace_name}:{source_name}")))
     }
 
     pub(crate) fn upsert_source(
         &self,
-        workspace: &Workspace,
+        workspace_name: &WorkspaceName,
         source: InstalledSource,
     ) -> Result<(), AppError> {
-        self.update_catalog(|catalog| catalog.upsert_source(workspace, source))
+        self.update_catalog(|catalog| catalog.upsert_source(workspace_name, source))
     }
 
     pub(crate) fn remove_source(
         &self,
-        workspace: &Workspace,
-        source_name: &str,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
     ) -> Result<(), AppError> {
         self.update_catalog(|catalog| {
-            catalog.remove_source(workspace, source_name);
+            catalog.remove_source(workspace_name, source_name);
         })
     }
 }
@@ -269,11 +278,10 @@ impl From<PersistedAppConfig> for AppConfig {
     fn from(value: PersistedAppConfig) -> Self {
         let mut catalog = SourceCatalog::default();
         for (workspace_name, workspace_config) in value.workspaces {
-            let workspace = Workspace {
-                name: workspace_name.clone(),
-            };
+            let workspace_name = WorkspaceName::new(workspace_name);
             for (source_name, source) in workspace_config.sources {
-                catalog.upsert_source(&workspace, source.into_installed_source(source_name));
+                let source_name = SourceName::new(source_name);
+                catalog.upsert_source(&workspace_name, source.into_installed_source(source_name));
             }
         }
         Self {
@@ -288,12 +296,13 @@ impl From<&AppConfig> for PersistedAppConfig {
         let mut workspaces = BTreeMap::new();
         for (workspace_name, sources) in &value.catalog.0 {
             let workspace_config = workspaces
-                .entry(workspace_name.clone())
+                .entry(workspace_name.as_str().to_string())
                 .or_insert_with(PersistedWorkspaceConfig::default);
             for source in sources.values() {
-                workspace_config
-                    .sources
-                    .insert(source.name.clone(), PersistedInstalledSource::from(source));
+                workspace_config.sources.insert(
+                    source.name.as_str().to_string(),
+                    PersistedInstalledSource::from(source),
+                );
             }
         }
         Self {
@@ -320,20 +329,18 @@ fn render_string_array(values: &[String]) -> Value {
 mod tests {
     use std::collections::BTreeMap;
 
-    use coral_api::v1::Workspace;
-
     use super::{AppConfig, PersistedAppConfig, SourceCatalog, render_config};
+    use crate::sources::SourceName;
     use crate::sources::model::{InstalledSource, SourceOrigin};
+    use crate::workspaces::WorkspaceName;
 
-    fn default_workspace() -> Workspace {
-        Workspace {
-            name: "default".to_string(),
-        }
+    fn default_workspace() -> WorkspaceName {
+        WorkspaceName::new("default".to_string())
     }
 
     fn installed_source(name: &str) -> InstalledSource {
         InstalledSource {
-            name: name.to_string(),
+            name: SourceName::new(name.to_string()),
             version: "1.1.4".to_string(),
             variables: BTreeMap::from([(
                 "GITHUB_API_BASE".to_string(),
@@ -351,9 +358,9 @@ mod tests {
 
     #[test]
     fn renders_sources_under_workspace_keyed_tables() {
-        let workspace = default_workspace();
+        let workspace_name = default_workspace();
         let mut catalog = SourceCatalog::default();
-        catalog.upsert_source(&workspace, installed_source("github"));
+        catalog.upsert_source(&workspace_name, installed_source("github"));
         let config = AppConfig {
             version: 1,
             catalog,
@@ -371,12 +378,12 @@ mod tests {
 
     #[test]
     fn omits_empty_versions_from_rendered_source_entries() {
-        let workspace = default_workspace();
+        let workspace_name = default_workspace();
         let mut source = installed_source("github");
         source.version.clear();
         source.origin = SourceOrigin::Bundled;
         let mut catalog = SourceCatalog::default();
-        catalog.upsert_source(&workspace, source);
+        catalog.upsert_source(&workspace_name, source);
         let config = AppConfig {
             version: 1,
             catalog,
@@ -404,7 +411,7 @@ origin = "bundled"
         );
         let sources = config.catalog.workspace_sources(&default_workspace());
         assert_eq!(sources.len(), 1);
-        assert_eq!(sources[0].name, "github");
+        assert_eq!(sources[0].name.as_str(), "github");
         assert_eq!(sources[0].version, "1.1.4");
         assert_eq!(
             sources[0].variables.get("GITHUB_API_BASE"),
@@ -415,37 +422,43 @@ origin = "bundled"
 
     #[test]
     fn catalog_upsert_replaces_existing_workspace_source_entry() {
-        let workspace = default_workspace();
+        let workspace_name = default_workspace();
         let mut catalog = SourceCatalog::default();
-        catalog.upsert_source(&workspace, installed_source("github"));
+        catalog.upsert_source(&workspace_name, installed_source("github"));
 
         let mut updated = installed_source("github");
         updated.version = "2.0.0".to_string();
         updated.origin = SourceOrigin::Imported;
-        catalog.upsert_source(&workspace, updated);
+        catalog.upsert_source(&workspace_name, updated);
 
         let stored = catalog
-            .get_source(&workspace, "github")
+            .get_source(&workspace_name, &SourceName::new("github".to_string()))
             .expect("source should be present");
         assert_eq!(stored.version, "2.0.0");
         assert_eq!(stored.origin, SourceOrigin::Imported);
-        assert_eq!(catalog.workspace_sources(&workspace).len(), 1);
+        assert_eq!(catalog.workspace_sources(&workspace_name).len(), 1);
     }
 
     #[test]
     fn catalog_remove_drops_empty_workspace_bucket() {
         let default_workspace = default_workspace();
-        let other_workspace = Workspace {
-            name: "other".to_string(),
-        };
+        let other_workspace_name = WorkspaceName::new("other".to_string());
         let mut catalog = SourceCatalog::default();
         catalog.upsert_source(&default_workspace, installed_source("github"));
-        catalog.upsert_source(&other_workspace, installed_source("slack"));
+        catalog.upsert_source(&other_workspace_name, installed_source("slack"));
 
-        catalog.remove_source(&default_workspace, "github");
+        catalog.remove_source(&default_workspace, &SourceName::new("github".to_string()));
 
-        assert!(catalog.get_source(&default_workspace, "github").is_none());
+        assert!(
+            catalog
+                .get_source(&default_workspace, &SourceName::new("github".to_string()))
+                .is_none()
+        );
         assert!(catalog.workspace_sources(&default_workspace).is_empty());
-        assert!(catalog.get_source(&other_workspace, "slack").is_some());
+        assert!(
+            catalog
+                .get_source(&other_workspace_name, &SourceName::new("slack".to_string()))
+                .is_some()
+        );
     }
 }

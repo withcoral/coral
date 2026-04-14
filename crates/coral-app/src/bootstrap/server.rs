@@ -212,7 +212,7 @@ mod tests {
     use crate::workspaces::WorkspaceValidator;
 
     fn default_workspace() -> Workspace {
-        WorkspaceValidator::new().default_workspace()
+        WorkspaceValidator::new().default_workspace().to_proto()
     }
 
     #[tokio::test]

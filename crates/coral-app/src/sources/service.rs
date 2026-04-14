@@ -6,18 +6,19 @@ use coral_api::v1::{
     DiscoverSourcesResponse, GetSourceRequest, ImportSourceRequest, ListSourcesRequest,
     ListSourcesResponse, Source, SourceInputKind, SourceInputSpec,
     SourceOrigin as ProtoSourceOrigin, SourceSecret, SourceVariable, ValidateSourceRequest,
-    ValidateSourceResponse, Workspace,
+    ValidateSourceResponse,
 };
 use tonic::{Request, Response, Status};
 
 use crate::bootstrap::app_status;
 use crate::query::manager::QueryManager;
+use crate::sources::SourceName;
 use crate::sources::manager::SourceManager;
 use crate::sources::model::{
     CandidateSource, CandidateSourceInput, CandidateSourceInputKind, InstalledSource, SourceOrigin,
 };
 use crate::transport::{query_status, table_to_proto};
-use crate::workspaces::WorkspaceValidator;
+use crate::workspaces::{WorkspaceName, WorkspaceValidator};
 
 #[derive(Clone)]
 pub(crate) struct SourceService {
@@ -47,10 +48,10 @@ impl SourceServiceApi for SourceService {
         request: Request<DiscoverSourcesRequest>,
     ) -> Result<Response<DiscoverSourcesResponse>, Status> {
         let request = request.into_inner();
-        let workspace = self.workspaces.require(request.workspace.as_ref())?;
+        let workspace_name = self.workspaces.require(request.workspace.as_ref())?;
         let sources = self
             .sources
-            .discover_sources(&workspace)
+            .discover_sources(&workspace_name)
             .map_err(app_status)?
             .into_iter()
             .map(candidate_source_to_proto)
@@ -63,13 +64,13 @@ impl SourceServiceApi for SourceService {
         request: Request<ListSourcesRequest>,
     ) -> Result<Response<ListSourcesResponse>, Status> {
         let request = request.into_inner();
-        let workspace = self.workspaces.require(request.workspace.as_ref())?;
+        let workspace_name = self.workspaces.require(request.workspace.as_ref())?;
         let sources: Vec<_> = self
             .sources
-            .list_workspace_sources(&workspace)
+            .list_workspace_sources(&workspace_name)
             .map_err(app_status)?
             .into_iter()
-            .map(|source| installed_source_to_proto(&workspace, source))
+            .map(|source| installed_source_to_proto(&workspace_name, source))
             .collect();
         Ok(Response::new(ListSourcesResponse { sources }))
     }
@@ -79,15 +80,19 @@ impl SourceServiceApi for SourceService {
         request: Request<GetSourceRequest>,
     ) -> Result<Response<Source>, Status> {
         let request = request.into_inner();
-        let workspace = self.workspaces.require(request.workspace.as_ref())?;
-        let source_name = self
-            .workspaces
-            .status_validate_path_name("source name", &request.name)?;
+        let workspace_name = self.workspaces.require(request.workspace.as_ref())?;
+        let source_name = SourceName::new(
+            self.workspaces
+                .status_validate_path_name("source name", &request.name)?,
+        );
         let source = self
             .sources
-            .get_source(&workspace, &source_name)
+            .get_source(&workspace_name, &source_name)
             .map_err(app_status)?;
-        Ok(Response::new(installed_source_to_proto(&workspace, source)))
+        Ok(Response::new(installed_source_to_proto(
+            &workspace_name,
+            source,
+        )))
     }
 
     async fn create_bundled_source(
@@ -95,13 +100,14 @@ impl SourceServiceApi for SourceService {
         request: Request<CreateBundledSourceRequest>,
     ) -> Result<Response<Source>, Status> {
         let request = request.into_inner();
-        let workspace = self.workspaces.require(request.workspace.as_ref())?;
+        let workspace_name = self.workspaces.require(request.workspace.as_ref())?;
         let installed = self
             .sources
-            .create_bundled_source(&workspace, &request)
+            .create_bundled_source(&workspace_name, &request)
             .map_err(app_status)?;
         Ok(Response::new(installed_source_to_proto(
-            &workspace, installed,
+            &workspace_name,
+            installed,
         )))
     }
 
@@ -110,13 +116,14 @@ impl SourceServiceApi for SourceService {
         request: Request<ImportSourceRequest>,
     ) -> Result<Response<Source>, Status> {
         let request = request.into_inner();
-        let workspace = self.workspaces.require(request.workspace.as_ref())?;
+        let workspace_name = self.workspaces.require(request.workspace.as_ref())?;
         let installed = self
             .sources
-            .import_source(&workspace, &request)
+            .import_source(&workspace_name, &request)
             .map_err(app_status)?;
         Ok(Response::new(installed_source_to_proto(
-            &workspace, installed,
+            &workspace_name,
+            installed,
         )))
     }
 
@@ -125,13 +132,14 @@ impl SourceServiceApi for SourceService {
         request: Request<DeleteSourceRequest>,
     ) -> Result<Response<()>, Status> {
         let request = request.into_inner();
-        let workspace = self.workspaces.require(request.workspace.as_ref())?;
-        let source_name = self
-            .workspaces
-            .status_validate_path_name("source name", &request.name)?;
+        let workspace_name = self.workspaces.require(request.workspace.as_ref())?;
+        let source_name = SourceName::new(
+            self.workspaces
+                .status_validate_path_name("source name", &request.name)?,
+        );
         let _installed = self
             .sources
-            .delete_source(&workspace, &source_name)
+            .delete_source(&workspace_name, &source_name)
             .map_err(app_status)?;
         Ok(Response::new(()))
     }
@@ -141,31 +149,32 @@ impl SourceServiceApi for SourceService {
         request: Request<ValidateSourceRequest>,
     ) -> Result<Response<ValidateSourceResponse>, Status> {
         let request = request.into_inner();
-        let workspace = self.workspaces.require(request.workspace.as_ref())?;
-        let source_name = self
-            .workspaces
-            .status_validate_path_name("source name", &request.name)?;
+        let workspace_name = self.workspaces.require(request.workspace.as_ref())?;
+        let source_name = SourceName::new(
+            self.workspaces
+                .status_validate_path_name("source name", &request.name)?,
+        );
         let result = self
             .queries
-            .validate_source(&workspace, &source_name)
+            .validate_source(&workspace_name, &source_name)
             .await
             .map_err(query_status)?;
         let tables = result
             .tables
             .into_iter()
-            .map(|table| table_to_proto(&workspace, table))
+            .map(|table| table_to_proto(&workspace_name, table))
             .collect::<Vec<_>>();
         Ok(Response::new(ValidateSourceResponse {
-            source: Some(installed_source_to_proto(&workspace, result.source)),
+            source: Some(installed_source_to_proto(&workspace_name, result.source)),
             tables,
         }))
     }
 }
 
-fn installed_source_to_proto(workspace: &Workspace, source: InstalledSource) -> Source {
+fn installed_source_to_proto(workspace_name: &WorkspaceName, source: InstalledSource) -> Source {
     Source {
-        workspace: Some(workspace.clone()),
-        name: source.name,
+        workspace: Some(workspace_name.to_proto()),
+        name: source.name.as_str().to_string(),
         version: source.version,
         secrets: source
             .secrets
@@ -193,7 +202,7 @@ fn proto_source_origin(origin: SourceOrigin) -> ProtoSourceOrigin {
 
 fn candidate_source_to_proto(source: CandidateSource) -> AvailableSource {
     AvailableSource {
-        name: source.name,
+        name: source.name.as_str().to_string(),
         description: source.description,
         version: source.version,
         inputs: source

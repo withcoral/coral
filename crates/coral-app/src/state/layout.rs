@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 use directories::ProjectDirs;
 
 use crate::bootstrap::AppError;
+use crate::sources::SourceName;
+use crate::workspaces::WorkspaceName;
 
 pub(crate) const INSTALLED_MANIFEST_FILE_NAME: &str = "manifest.yaml";
 pub(crate) const INSTALLED_SECRETS_FILE_NAME: &str = "secrets.env";
@@ -52,66 +54,65 @@ impl AppStateLayout {
         self.config_dir.join("workspaces")
     }
 
-    pub(crate) fn workspace_dir(&self, workspace: &coral_api::v1::Workspace) -> PathBuf {
-        self.workspaces_root().join(&workspace.name)
+    pub(crate) fn workspace_dir(&self, workspace_name: &WorkspaceName) -> PathBuf {
+        self.workspaces_root().join(workspace_name.as_str())
     }
 
-    pub(crate) fn sources_root(&self, workspace: &coral_api::v1::Workspace) -> PathBuf {
-        self.workspace_dir(workspace).join("sources")
+    pub(crate) fn sources_root(&self, workspace_name: &WorkspaceName) -> PathBuf {
+        self.workspace_dir(workspace_name).join("sources")
     }
 
     pub(crate) fn source_dir(
         &self,
-        workspace: &coral_api::v1::Workspace,
-        source_name: &str,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
     ) -> PathBuf {
-        self.sources_root(workspace).join(source_name)
+        self.sources_root(workspace_name).join(source_name.as_str())
     }
 
     pub(crate) fn manifest_file(
         &self,
-        workspace: &coral_api::v1::Workspace,
-        source_name: &str,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
     ) -> PathBuf {
-        self.source_dir(workspace, source_name)
+        self.source_dir(workspace_name, source_name)
             .join(INSTALLED_MANIFEST_FILE_NAME)
     }
 
     pub(crate) fn secret_file(
         &self,
-        workspace: &coral_api::v1::Workspace,
-        source_name: &str,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
     ) -> PathBuf {
-        self.source_dir(workspace, source_name)
+        self.source_dir(workspace_name, source_name)
             .join(INSTALLED_SECRETS_FILE_NAME)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use coral_api::v1::Workspace;
-
     use super::AppStateLayout;
+    use crate::sources::SourceName;
+    use crate::workspaces::WorkspaceName;
 
     #[test]
     fn derives_top_level_config_and_source_artifact_paths() {
         let layout = AppStateLayout::discover(Some("/tmp/coral-config".into())).expect("layout");
-        let workspace = Workspace {
-            name: "default".to_string(),
-        };
+        let workspace_name = WorkspaceName::new("default".to_string());
+        let source_name = SourceName::new("github".to_string());
 
         assert_eq!(
             layout.config_file(),
             std::path::Path::new("/tmp/coral-config/config.toml")
         );
         assert_eq!(
-            layout.manifest_file(&workspace, "github"),
+            layout.manifest_file(&workspace_name, &source_name),
             std::path::Path::new(
                 "/tmp/coral-config/workspaces/default/sources/github/manifest.yaml"
             )
         );
         assert_eq!(
-            layout.secret_file(&workspace, "github"),
+            layout.secret_file(&workspace_name, &source_name),
             std::path::Path::new("/tmp/coral-config/workspaces/default/sources/github/secrets.env")
         );
     }
