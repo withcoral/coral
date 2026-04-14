@@ -2,7 +2,6 @@
 
 use std::sync::Arc;
 
-use datafusion::common::{Column, SchemaError};
 use datafusion::error::DataFusionError;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::prelude::{SQLOptions, SessionConfig, SessionContext};
@@ -104,13 +103,9 @@ fn datafusion_to_core(error: &DataFusionError) -> CoreError {
             CoreError::NotFound(detail.clone())
         }
         DataFusionError::Plan(detail) => CoreError::InvalidInput(detail.clone()),
-        DataFusionError::SchemaError(schema_error, _) => match schema_error.as_ref() {
-            SchemaError::FieldNotFound {
-                field,
-                valid_fields,
-            } => CoreError::InvalidInput(format_field_not_found(field, valid_fields)),
-            other => CoreError::InvalidInput(other.to_string()),
-        },
+        DataFusionError::SchemaError(schema_error, _) => {
+            CoreError::InvalidInput(schema_error.to_string())
+        }
         DataFusionError::NotImplemented(detail) => CoreError::Unimplemented(detail.clone()),
         DataFusionError::External(inner) => {
             if let Some(provider_error) = inner.downcast_ref::<ProviderQueryError>() {
@@ -122,39 +117,6 @@ fn datafusion_to_core(error: &DataFusionError) -> CoreError {
         DataFusionError::ResourcesExhausted(detail) => CoreError::Unavailable(detail.clone()),
         other => CoreError::internal(other.to_string()),
     }
-}
-
-/// Format a `SchemaError::FieldNotFound` into a concise, hint-bearing
-/// `Status` detail. The full `valid_fields` list is deliberately *not*
-/// embedded in the message — on wide manifests (e.g. `github.search_issues`
-/// with ~561 columns) that list can exceed the HTTP/2 trailer size limit
-/// and trigger a `PROTOCOL_ERROR` before the CLI ever sees the status.
-/// Callers who want the full set of valid columns can query
-/// `coral.columns`.
-fn format_field_not_found(field: &Column, valid_fields: &[Column]) -> String {
-    let missing = field.name();
-    // Match a `__`-flattened counterpart by normalizing away underscores
-    // on both sides and requiring the candidate to actually contain `__`
-    // (i.e. be a flattened nested path). Catches the common `user_login`
-    // → `user__login` typo regardless of which underscore the user
-    // wrote as single vs. double.
-    let missing_squashed = missing.replace('_', "");
-    let nested_hint = valid_fields
-        .iter()
-        .find(|c| c.name().contains("__") && c.name().replace('_', "") == missing_squashed)
-        .map(|c| {
-            format!(
-                ". Did you mean `{}`? Nested JSON paths are flattened with `__`",
-                c.name(),
-            )
-        })
-        .unwrap_or_default();
-    format!(
-        "No field named `{}` ({} valid fields; query `coral.columns` for the list{})",
-        field.quoted_flat_name(),
-        valid_fields.len(),
-        nested_hint,
-    )
 }
 
 fn provider_error_to_core(error: &ProviderQueryError) -> CoreError {
@@ -193,36 +155,16 @@ fn provider_error_to_core(error: &ProviderQueryError) -> CoreError {
 mod tests {
     use super::*;
 
-    fn col(name: &str) -> Column {
-        Column::new_unqualified(name)
-    }
-
-    #[test]
-    fn format_field_not_found_emits_nested_hint_when_typo_matches_flattened_column() {
-        let msg = format_field_not_found(
-            &col("user_login"),
-            &[col("title"), col("user__login"), col("state")],
-        );
-        assert!(msg.contains("`user__login`"), "missing hint target: {msg}");
-        assert!(
-            msg.contains("Nested JSON paths are flattened with `__`"),
-            "missing hint explanation: {msg}"
-        );
-        assert!(msg.contains("3 valid fields"));
-    }
-
-    #[test]
-    fn format_field_not_found_omits_hint_when_no_flattened_match_exists() {
-        let msg = format_field_not_found(&col("bogus"), &[col("title"), col("state")]);
-        assert!(!msg.contains("Did you mean"), "unexpected hint: {msg}");
-        assert!(msg.contains("2 valid fields"));
-    }
-
     #[test]
     fn datafusion_to_core_unwraps_context_wrapped_schema_error_to_invalid_input() {
+        use datafusion::common::{Column, SchemaError};
+
         let schema_err = Box::new(SchemaError::FieldNotFound {
-            field: Box::new(col("user_login")),
-            valid_fields: vec![col("user__login"), col("title")],
+            field: Box::new(Column::new_unqualified("user_login")),
+            valid_fields: vec![
+                Column::new_unqualified("user__login"),
+                Column::new_unqualified("title"),
+            ],
         });
         let inner = DataFusionError::SchemaError(schema_err, Box::new(None));
         let wrapped = DataFusionError::Context("wrapping context".to_string(), Box::new(inner));
@@ -231,10 +173,7 @@ mod tests {
 
         match core {
             CoreError::InvalidInput(msg) => {
-                assert!(
-                    msg.contains("`user__login`"),
-                    "expected nested-field hint in: {msg}"
-                );
+                assert!(msg.contains("user_login"), "expected field name in: {msg}");
             }
             other => panic!("expected CoreError::InvalidInput, got {other:?}"),
         }
