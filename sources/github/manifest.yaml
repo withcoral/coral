@@ -172816,8 +172816,7 @@ tables:
         type: Utf8
         nullable: true
         virtual: true
-        description: 'Setting this parameter to any value returns the objects or subtrees referenced by the tree specified
-          in :treesha.'
+        description: 'Setting this parameter to any value returns the objects or subtrees referenced by the tree'
         expr:
           kind: from_filter
           key: recursive
