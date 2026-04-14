@@ -46,7 +46,6 @@ coral source add github
 ```
 
 Coral prompts for required variables or secrets interactively. If the source is already installed, running this command again replaces its stored credentials with the new values you provide.
-Bundled installs keep the source identity plus your configured variables and secrets, then resolve the bundled manifest from the current Coral binary at runtime.
 
 ### `coral source add --file <PATH>`
 
@@ -65,6 +64,7 @@ Validate a source spec YAML file without installing it. Checks YAML syntax, JSON
 ```shellscript
 coral source lint ./my-source.yaml
 ```
+
 
 ### `coral source test <NAME>`
 

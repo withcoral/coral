@@ -102,6 +102,7 @@ impl QueryManager {
         for source in self.config_store.list_workspace_sources(workspace)? {
             match self.load_query_source(&source) {
                 Ok((query_source, _version)) => query_sources.push(query_source),
+                Err(error @ AppError::FailedPrecondition(_)) => return Err(error),
                 Err(error) => {
                     tracing::warn!(
                         source = %source.name,
@@ -124,13 +125,24 @@ impl QueryManager {
             .secret_store
             .read_source_secrets_for(&source.workspace, &source.name)?;
         let mut resolved_secrets = BTreeMap::new();
-        for secret_name in source_spec.required_secret_names() {
-            let Some(value) = stored_secrets.get(&secret_name).cloned() else {
-                return Err(AppError::FailedPrecondition(format!(
-                    "source '{}' is missing secret '{}'",
-                    source.name, secret_name
-                )));
+        let missing_secrets: Vec<String> = source_spec
+            .required_secret_names()
+            .into_iter()
+            .filter(|name| !stored_secrets.contains_key(name))
+            .collect();
+        if let Some((first, rest)) = missing_secrets.split_first() {
+            let detail = if rest.is_empty() {
+                format!("secret '{first}'")
+            } else {
+                format!("secret '{first}' and {} other(s)", rest.len())
             };
+            return Err(AppError::FailedPrecondition(format!(
+                "source '{}' is missing {detail} — re-run `coral source add {}` to update",
+                source.name, source.name
+            )));
+        }
+        for secret_name in source_spec.required_secret_names() {
+            let value = stored_secrets[&secret_name].clone();
             resolved_secrets.insert(secret_name, value);
         }
         Ok((
@@ -163,16 +175,24 @@ fn validate_required_variables(
 ) -> Result<(), AppError> {
     let inputs = collect_source_inputs_yaml(manifest_yaml)
         .map_err(|error| AppError::InvalidInput(error.to_string()))?;
-    for input in inputs {
-        if input.kind == ManifestInputKind::Variable
-            && input.required
-            && !source.variables.contains_key(&input.key)
-        {
-            return Err(AppError::FailedPrecondition(format!(
-                "source '{}' is missing variable '{}'",
-                source.name, input.key
-            )));
-        }
+    let missing: Vec<_> = inputs
+        .into_iter()
+        .filter(|input| {
+            input.kind == ManifestInputKind::Variable
+                && input.required
+                && !source.variables.contains_key(&input.key)
+        })
+        .collect();
+    if let Some((first, rest)) = missing.split_first() {
+        let detail = if rest.is_empty() {
+            format!("variable '{}'", first.key)
+        } else {
+            format!("variable '{}' and {} other(s)", first.key, rest.len())
+        };
+        return Err(AppError::FailedPrecondition(format!(
+            "source '{}' is missing {detail} — re-run `coral source add {}` to update",
+            source.name, source.name
+        )));
     }
     Ok(())
 }

@@ -1,13 +1,13 @@
 use std::fs;
 
-use coral_api::v1::{ExecuteSqlRequest, SourceSecret, SourceVariable};
-use coral_client::{batches_to_json_rows, decode_execute_sql_response, default_workspace};
+use coral_api::v1::{ExecuteSqlRequest, ListTablesRequest, SourceSecret, SourceVariable};
+use coral_client::default_workspace;
 use tonic::Request;
 
 use crate::harness::{GrpcHarness, fixture_manifest_with_inputs_yaml, fixture_manifest_yaml};
 
 #[tokio::test]
-async fn broken_source_does_not_block_healthy_sources() {
+async fn broken_source_surfaces_failed_precondition() {
     let harness = GrpcHarness::new().await;
 
     harness
@@ -42,44 +42,27 @@ async fn broken_source_does_not_block_healthy_sources() {
     )
     .expect("remove broken source secret file");
 
-    let tables = harness.list_tables().await;
+    let list_err = harness
+        .query_client()
+        .list_tables(Request::new(ListTablesRequest {
+            workspace: Some(default_workspace()),
+        }))
+        .await
+        .expect_err("list tables should fail when a source is broken");
+    assert_eq!(list_err.code(), tonic::Code::FailedPrecondition);
     assert!(
-        tables
-            .iter()
-            .any(|table| table.schema_name == "local_messages"),
-        "healthy source should remain queryable"
-    );
-    assert!(
-        !tables
-            .iter()
-            .any(|table| table.schema_name == "secured_messages"),
-        "broken source should be omitted from registered tables"
+        list_err.message().contains("missing secret 'API_TOKEN'"),
+        "error should name the missing secret, got: {}",
+        list_err.message()
     );
 
-    let healthy = harness
+    let query_err = harness
         .query_client()
         .execute_sql(Request::new(ExecuteSqlRequest {
             workspace: Some(default_workspace()),
             sql: "SELECT COUNT(*) AS n FROM local_messages.messages".to_string(),
         }))
         .await
-        .expect("healthy source query should succeed")
-        .into_inner();
-    let healthy_rows = batches_to_json_rows(
-        decode_execute_sql_response(&healthy)
-            .expect("decode healthy query")
-            .batches(),
-    )
-    .expect("healthy rows");
-    assert_eq!(healthy_rows[0]["n"], 2);
-
-    let broken = harness
-        .query_client()
-        .execute_sql(Request::new(ExecuteSqlRequest {
-            workspace: Some(default_workspace()),
-            sql: "SELECT * FROM secured_messages.messages".to_string(),
-        }))
-        .await
-        .expect_err("broken source query should fail");
-    assert_eq!(broken.code(), tonic::Code::Internal);
+        .expect_err("query should fail when a source is broken");
+    assert_eq!(query_err.code(), tonic::Code::FailedPrecondition);
 }
