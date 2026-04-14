@@ -233,25 +233,53 @@ fn eval_template(
     row: &Value,
     filters: &HashMap<String, String>,
 ) -> Value {
-    let mut result = template.to_owned();
-    for (key, expr) in values {
-        let raw = eval_expr(expr, row, filters)
-            .and_then(|v| to_utf8(Some(v)))
-            .unwrap_or_default();
-        // Support {key} and {key|remove:X} syntax.
-        let plain_placeholder = format!("{{{key}}}");
-        result = result.replace(&plain_placeholder, &raw);
-        let remove_prefix = format!("{{{key}|remove:");
-        if let Some(start) = result.find(&remove_prefix) {
-            let after = start + remove_prefix.len();
-            if let Some(end) = result[after..].find('}') {
-                let char_to_remove = &result[after..after + end];
-                let cleaned = raw.replace(char_to_remove, "");
-                let full_placeholder = result[start..=after + end].to_string();
-                result = result.replace(&full_placeholder, &cleaned);
+    // Pre-evaluate every key so replacements are deterministic regardless of
+    // HashMap iteration order.
+    let evaluated: HashMap<&str, String> = values
+        .iter()
+        .map(|(key, expr)| {
+            let raw = eval_expr(expr, row, filters)
+                .and_then(|v| to_utf8(Some(v)))
+                .unwrap_or_default();
+            (key.as_str(), raw)
+        })
+        .collect();
+
+    // Scan the template for `{…}` placeholders and replace them in a single
+    // left-to-right pass so that every occurrence is handled and evaluation
+    // values cannot accidentally match other placeholders.
+    let mut result = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        result.push_str(&rest[..open]);
+        let after_open = &rest[open + 1..];
+        if let Some(close) = after_open.find('}') {
+            let token = &after_open[..close];
+            if let Some((key, remove_arg)) = token.split_once("|remove:") {
+                if let Some(raw) = evaluated.get(key) {
+                    result.push_str(&raw.replace(remove_arg, ""));
+                } else {
+                    // Unknown key — preserve placeholder as-is.
+                    result.push('{');
+                    result.push_str(token);
+                    result.push('}');
+                }
+            } else if let Some(raw) = evaluated.get(token) {
+                result.push_str(raw);
+            } else {
+                // Unknown key — preserve placeholder as-is.
+                result.push('{');
+                result.push_str(token);
+                result.push('}');
             }
+            rest = &after_open[close + 1..];
+        } else {
+            // No closing brace — emit the `{` literally and continue.
+            result.push('{');
+            rest = after_open;
         }
     }
+    result.push_str(rest);
     Value::String(result)
 }
 

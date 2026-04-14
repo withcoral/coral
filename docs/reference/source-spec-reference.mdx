@@ -32,17 +32,69 @@ backend: http
 
 The `type` field on each column accepts:
 
-| Type      | Description           |
-| --------- | --------------------- |
-| `Utf8`    | UTF-8 string          |
-| `Int64`   | 64-bit signed integer |
-| `Float64` | 64-bit floating point |
-| `Boolean` | Boolean true/false    |
+| Type        | Description                              |
+| ----------- | ---------------------------------------- |
+| `Utf8`      | UTF-8 string                             |
+| `Int64`     | 64-bit signed integer                    |
+| `Float64`   | 64-bit floating point                    |
+| `Boolean`   | Boolean true/false                       |
+| `Timestamp` | UTC timestamp (microsecond precision)    |
 
 Each column also supports:
 
 - `nullable` (boolean, default `true`): whether the column can contain NULL values
 - `description` (string): human-readable description, surfaced through `coral.columns`
+
+## Column expressions
+
+The `expr` field on a column defines how to extract or compute its value from each row. When omitted, Coral uses a `path` expression matching the column name.
+
+| Kind                 | Description                                                        |
+| -------------------- | ------------------------------------------------------------------ |
+| `path`               | Extract a value by JSON path segments                              |
+| `format_timestamp`   | Convert an epoch timestamp to a `Timestamp` column                 |
+| `template`           | Build a string from a template with placeholder substitutions      |
+
+### `format_timestamp`
+
+Converts a numeric or string epoch value into microseconds for a `Timestamp` column.
+
+```yaml
+- name: created_at
+  type: Timestamp
+  expr:
+    kind: format_timestamp
+    input: seconds        # or "milliseconds"
+    expr:
+      kind: path
+      path:
+        - ts
+```
+
+| Field   | Type   | Default   | Description                                         |
+| ------- | ------ | --------- | --------------------------------------------------- |
+| `input` | string | `seconds` | Unit of the raw value: `seconds` or `milliseconds`  |
+| `expr`  | expr   | —         | Inner expression that produces the epoch value       |
+
+### `template`
+
+Builds a string by substituting `{key}` placeholders with evaluated expressions. Supports a `{key|remove:X}` modifier that strips all occurrences of `X` from the value before substitution.
+
+```yaml
+- name: permalink
+  type: Utf8
+  expr:
+    kind: template
+    template: "https://example.com/archives/{channel}/p{ts_id|remove:.}"
+    values:
+      channel:
+        kind: from_filter
+        key: channel
+      ts_id:
+        kind: path
+        path:
+          - ts
+```
 
 ## File-backed tables
 
