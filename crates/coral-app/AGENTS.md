@@ -38,3 +38,23 @@ root.
 - Prefer documenting `coral-client` as the public local entrypoint and
   `coral-app` as the internal composition root, even when bootstrap types stay
   visible for sibling crates or tests.
+
+## Layering
+
+- `bootstrap/server.rs` is the composition root. It discovers environment and
+  layout, constructs stores, managers, and validators, wires runtime context,
+  and mounts gRPC services.
+- `service.rs` files are transport adapters. They should stay thin: decode
+  tonic requests, normalize workspace and path identifiers, call managers, and
+  map app/core results into protobufs.
+- `manager.rs` files own app-level orchestration. They coordinate installed
+  state, secrets, manifests, rollback, runtime setup, and engine calls. They
+  should not know about tonic request or response types.
+- `workspaces/validator.rs` is the shared validation seam. `WorkspaceValidator`
+  owns workspace normalization and naming rules; keep it focused on validation
+  rather than wider orchestration.
+- `state/config.rs`, `state/secrets.rs`, and `storage/fs.rs` own persistence
+  and filesystem details. Managers may coordinate them, but services should not
+  reach into them directly.
+- Keep app-owned domain models transport-free. Proto mapping belongs at the
+  service edge unless there is a strong reason to centralize it.

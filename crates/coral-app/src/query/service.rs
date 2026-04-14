@@ -12,18 +12,21 @@ use tonic::{Request, Response, Status};
 
 use crate::bootstrap::{app_status, core_status};
 use crate::query::manager::{QueryManager, QueryManagerError};
-use crate::workspaces::WorkspaceManager;
+use crate::workspaces::WorkspaceValidator;
 
 #[derive(Clone)]
 pub(crate) struct QueryService {
     queries: QueryManager,
-    workspaces: WorkspaceManager,
+    workspaces: WorkspaceValidator,
 }
 impl QueryService {
-    pub(crate) fn new(query_manager: QueryManager, workspace_manager: WorkspaceManager) -> Self {
+    pub(crate) fn new(
+        query_manager: QueryManager,
+        workspace_validator: WorkspaceValidator,
+    ) -> Self {
         Self {
             queries: query_manager,
-            workspaces: workspace_manager,
+            workspaces: workspace_validator,
         }
     }
 }

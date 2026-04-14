@@ -9,12 +9,12 @@ use crate::bootstrap::AppError;
 pub const DEFAULT_WORKSPACE_ID: &str = "default";
 
 #[derive(Debug, Clone)]
-pub(crate) struct WorkspaceManager {
+pub(crate) struct WorkspaceValidator {
     default_workspace: Workspace,
     forbidden_path_chars: [char; 2],
 }
 
-impl WorkspaceManager {
+impl WorkspaceValidator {
     #[must_use]
     pub(crate) fn new() -> Self {
         Self::default()
@@ -83,7 +83,7 @@ impl WorkspaceManager {
     }
 }
 
-impl Default for WorkspaceManager {
+impl Default for WorkspaceValidator {
     fn default() -> Self {
         Self {
             default_workspace: Workspace {
@@ -103,11 +103,11 @@ fn app_error_to_status(error: AppError) -> Status {
 
 #[cfg(test)]
 mod tests {
-    use super::{DEFAULT_WORKSPACE_ID, WorkspaceManager};
+    use super::{DEFAULT_WORKSPACE_ID, WorkspaceValidator};
 
     #[test]
     fn rejects_forward_and_backward_slashes() {
-        let manager = WorkspaceManager::new();
+        let manager = WorkspaceValidator::new();
         let workspace = manager.default_workspace();
         let error = manager
             .normalize(&coral_api::v1::Workspace {
@@ -126,7 +126,7 @@ mod tests {
 
     #[test]
     fn rejects_path_traversal() {
-        let manager = WorkspaceManager::new();
+        let manager = WorkspaceValidator::new();
 
         let error = manager
             .validate_path_name("workspace name", "..")
@@ -147,7 +147,7 @@ mod tests {
 
     #[test]
     fn allows_dot_only_logical_binding_keys() {
-        let manager = WorkspaceManager::new();
+        let manager = WorkspaceValidator::new();
 
         assert_eq!(
             manager

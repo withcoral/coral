@@ -2,34 +2,39 @@
 
 use coral_api::v1::source_service_server::SourceService as SourceServiceApi;
 use coral_api::v1::{
-    Column, CreateBundledSourceRequest, DeleteSourceRequest, DiscoverSourcesRequest,
-    DiscoverSourcesResponse, GetSourceRequest, ImportSourceRequest, ListSourcesRequest,
-    ListSourcesResponse, Source, Table, ValidateSourceRequest, ValidateSourceResponse, Workspace,
+    AvailableSource, Column, CreateBundledSourceRequest, DeleteSourceRequest,
+    DiscoverSourcesRequest, DiscoverSourcesResponse, GetSourceRequest, ImportSourceRequest,
+    ListSourcesRequest, ListSourcesResponse, Source, SourceInputKind, SourceInputSpec,
+    SourceOrigin as ProtoSourceOrigin, SourceSecret, SourceVariable, Table, ValidateSourceRequest,
+    ValidateSourceResponse, Workspace,
 };
 use tonic::{Request, Response, Status};
 
 use crate::bootstrap::{app_status, core_status};
 use crate::query::manager::{QueryManager, QueryManagerError};
 use crate::sources::manager::SourceManager;
-use crate::workspaces::WorkspaceManager;
+use crate::sources::model::{
+    CandidateSource, CandidateSourceInput, CandidateSourceInputKind, InstalledSource, SourceOrigin,
+};
+use crate::workspaces::WorkspaceValidator;
 
 #[derive(Clone)]
 pub(crate) struct SourceService {
     sources: SourceManager,
     queries: QueryManager,
-    workspaces: WorkspaceManager,
+    workspaces: WorkspaceValidator,
 }
 
 impl SourceService {
     pub(crate) fn new(
         source_manager: SourceManager,
         query_manager: QueryManager,
-        workspace_manager: WorkspaceManager,
+        workspace_validator: WorkspaceValidator,
     ) -> Self {
         Self {
             sources: source_manager,
             queries: query_manager,
-            workspaces: workspace_manager,
+            workspaces: workspace_validator,
         }
     }
 }
@@ -45,7 +50,10 @@ impl SourceServiceApi for SourceService {
         let sources = self
             .sources
             .discover_sources(&workspace)
-            .map_err(app_status)?;
+            .map_err(app_status)?
+            .into_iter()
+            .map(candidate_source_to_proto)
+            .collect();
         Ok(Response::new(DiscoverSourcesResponse { sources }))
     }
 
@@ -60,7 +68,7 @@ impl SourceServiceApi for SourceService {
             .list_workspace_sources(&workspace)
             .map_err(app_status)?
             .into_iter()
-            .map(|source| source.to_source_resource())
+            .map(|source| installed_source_to_proto(&workspace, source))
             .collect();
         Ok(Response::new(ListSourcesResponse { sources }))
     }
@@ -78,7 +86,7 @@ impl SourceServiceApi for SourceService {
             .sources
             .get_source(&workspace, &source_name)
             .map_err(app_status)?;
-        Ok(Response::new(source.to_source_resource()))
+        Ok(Response::new(installed_source_to_proto(&workspace, source)))
     }
 
     async fn create_bundled_source(
@@ -86,11 +94,14 @@ impl SourceServiceApi for SourceService {
         request: Request<CreateBundledSourceRequest>,
     ) -> Result<Response<Source>, Status> {
         let request = request.into_inner();
-        let stored = self
+        let workspace = self.workspaces.require(request.workspace.as_ref())?;
+        let installed = self
             .sources
-            .create_bundled_source(&request)
+            .create_bundled_source(&workspace, &request)
             .map_err(app_status)?;
-        Ok(Response::new(stored.to_source_resource()))
+        Ok(Response::new(installed_source_to_proto(
+            &workspace, installed,
+        )))
     }
 
     async fn import_source(
@@ -98,8 +109,14 @@ impl SourceServiceApi for SourceService {
         request: Request<ImportSourceRequest>,
     ) -> Result<Response<Source>, Status> {
         let request = request.into_inner();
-        let stored = self.sources.import_source(&request).map_err(app_status)?;
-        Ok(Response::new(stored.to_source_resource()))
+        let workspace = self.workspaces.require(request.workspace.as_ref())?;
+        let installed = self
+            .sources
+            .import_source(&workspace, &request)
+            .map_err(app_status)?;
+        Ok(Response::new(installed_source_to_proto(
+            &workspace, installed,
+        )))
     }
 
     async fn delete_source(
@@ -111,7 +128,7 @@ impl SourceServiceApi for SourceService {
         let source_name = self
             .workspaces
             .status_validate_path_name("source name", &request.name)?;
-        let _stored = self
+        let _installed = self
             .sources
             .delete_source(&workspace, &source_name)
             .map_err(app_status)?;
@@ -138,7 +155,7 @@ impl SourceServiceApi for SourceService {
             .map(|table| table_to_proto(&workspace, table))
             .collect::<Vec<_>>();
         Ok(Response::new(ValidateSourceResponse {
-            source: Some(result.source.to_source_resource()),
+            source: Some(installed_source_to_proto(&workspace, result.source)),
             tables,
         }))
     }
@@ -167,5 +184,65 @@ fn table_to_proto(workspace: &Workspace, table: coral_engine::TableInfo) -> Tabl
             })
             .collect(),
         required_filters: table.required_filters,
+    }
+}
+
+fn installed_source_to_proto(workspace: &Workspace, source: InstalledSource) -> Source {
+    Source {
+        workspace: Some(workspace.clone()),
+        name: source.name,
+        version: source.version,
+        secrets: source
+            .secrets
+            .into_iter()
+            .map(|key| SourceSecret {
+                key,
+                value: String::new(),
+            })
+            .collect(),
+        variables: source
+            .variables
+            .into_iter()
+            .map(|(key, value)| SourceVariable { key, value })
+            .collect(),
+        origin: proto_source_origin(source.origin) as i32,
+    }
+}
+
+fn proto_source_origin(origin: SourceOrigin) -> ProtoSourceOrigin {
+    match origin {
+        SourceOrigin::Bundled => ProtoSourceOrigin::Bundled,
+        SourceOrigin::Imported => ProtoSourceOrigin::Imported,
+    }
+}
+
+fn candidate_source_to_proto(source: CandidateSource) -> AvailableSource {
+    AvailableSource {
+        name: source.name,
+        description: source.description,
+        version: source.version,
+        inputs: source
+            .inputs
+            .into_iter()
+            .map(candidate_source_input_to_proto)
+            .collect(),
+        installed: source.installed,
+        origin: proto_source_origin(source.origin) as i32,
+    }
+}
+
+fn candidate_source_input_to_proto(input: CandidateSourceInput) -> SourceInputSpec {
+    SourceInputSpec {
+        key: input.key,
+        kind: proto_candidate_input_kind(input.kind) as i32,
+        required: input.required,
+        default_value: input.default_value,
+    }
+}
+
+fn proto_candidate_input_kind(kind: CandidateSourceInputKind) -> SourceInputKind {
+    match kind {
+        CandidateSourceInputKind::Variable => SourceInputKind::Variable,
+        CandidateSourceInputKind::Secret => SourceInputKind::Secret,
     }
 }

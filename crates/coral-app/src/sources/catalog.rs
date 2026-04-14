@@ -2,13 +2,15 @@
 
 use std::collections::BTreeSet;
 
-use coral_api::v1::{AvailableSource, SourceInputKind, SourceInputSpec, SourceOrigin, Workspace};
 use coral_spec::{
     ManifestInputKind, ManifestInputSpec, collect_source_inputs_value, parse_source_manifest_value,
 };
 use serde_yaml::Value;
 
 use crate::bootstrap::AppError;
+use crate::sources::model::{
+    CandidateSource, CandidateSourceInput, CandidateSourceInputKind, SourceOrigin,
+};
 
 include!(concat!(env!("OUT_DIR"), "/bundled_sources.rs"));
 
@@ -18,9 +20,8 @@ pub(crate) struct BundledSourceManifest {
 }
 
 pub(crate) fn list_bundled_sources(
-    _workspace: &Workspace,
     installed_source_names: &BTreeSet<String>,
-) -> Result<Vec<AvailableSource>, AppError> {
+) -> Result<Vec<CandidateSource>, AppError> {
     let mut available = BUNDLED_SOURCES
         .iter()
         .map(|(name, manifest_yaml)| {
@@ -55,36 +56,36 @@ pub(crate) fn describe_manifest(
     manifest_yaml: &str,
     origin: SourceOrigin,
     installed: bool,
-) -> Result<AvailableSource, AppError> {
+) -> Result<CandidateSource, AppError> {
     let root: Value = serde_yaml::from_str(manifest_yaml)?;
     let manifest = parse_source_manifest_value(serde_json::to_value(&root)?)
         .map_err(|error| AppError::InvalidInput(error.to_string()))?;
     let description = manifest_description(&root);
-    Ok(AvailableSource {
+    Ok(CandidateSource {
         name: manifest.schema_name().to_string(),
         description,
         version: manifest.source_version().to_string(),
         inputs: collect_source_inputs_value(&root)
-            .map(|inputs| inputs.into_iter().map(proto_input_spec).collect())
+            .map(|inputs| inputs.into_iter().map(candidate_input_spec).collect())
             .map_err(|error| AppError::InvalidInput(error.to_string()))?,
         installed,
-        origin: origin as i32,
+        origin,
     })
 }
 
-fn proto_input_spec(input: ManifestInputSpec) -> SourceInputSpec {
-    SourceInputSpec {
+fn candidate_input_spec(input: ManifestInputSpec) -> CandidateSourceInput {
+    CandidateSourceInput {
         key: input.key,
-        kind: proto_input_kind(input.kind) as i32,
+        kind: candidate_input_kind(input.kind),
         required: input.required,
         default_value: input.default_value,
     }
 }
 
-fn proto_input_kind(kind: ManifestInputKind) -> SourceInputKind {
+fn candidate_input_kind(kind: ManifestInputKind) -> CandidateSourceInputKind {
     match kind {
-        ManifestInputKind::Variable => SourceInputKind::Variable,
-        ManifestInputKind::Secret => SourceInputKind::Secret,
+        ManifestInputKind::Variable => CandidateSourceInputKind::Variable,
+        ManifestInputKind::Secret => CandidateSourceInputKind::Secret,
     }
 }
 
@@ -99,19 +100,12 @@ fn manifest_description(root: &Value) -> String {
 mod tests {
     use std::collections::BTreeSet;
 
-    use coral_api::v1::{SourceInputKind, Workspace};
-
     use super::{describe_manifest, list_bundled_sources};
-    use crate::workspaces::WorkspaceManager;
-
-    fn default_workspace() -> Workspace {
-        WorkspaceManager::new().default_workspace()
-    }
+    use crate::sources::model::{CandidateSourceInputKind, SourceOrigin};
 
     #[test]
     fn bundled_sources_load_through_catalog() {
-        let sources =
-            list_bundled_sources(&default_workspace(), &BTreeSet::new()).expect("bundled sources");
+        let sources = list_bundled_sources(&BTreeSet::new()).expect("bundled sources");
         assert!(!sources.is_empty());
         assert!(sources.iter().any(|source| source.name == "github"));
         assert!(sources.iter().any(|source| source.name == "stripe"));
@@ -143,15 +137,15 @@ tables:
       - name: id
         type: Utf8
 "#,
-            coral_api::v1::SourceOrigin::Imported,
+            SourceOrigin::Imported,
             false,
         )
         .expect("describe manifest");
         assert_eq!(source.inputs.len(), 2);
         assert_eq!(source.inputs[0].key, "API_BASE");
-        assert_eq!(source.inputs[0].kind, SourceInputKind::Variable as i32);
+        assert_eq!(source.inputs[0].kind, CandidateSourceInputKind::Variable);
         assert_eq!(source.inputs[1].key, "API_TOKEN");
-        assert_eq!(source.inputs[1].kind, SourceInputKind::Secret as i32);
+        assert_eq!(source.inputs[1].kind, CandidateSourceInputKind::Secret);
     }
 
     #[test]
@@ -174,7 +168,7 @@ tables:
       - name: id
         type: Utf8
 "#,
-            coral_api::v1::SourceOrigin::Imported,
+            SourceOrigin::Imported,
             false,
         )
         .expect_err("legacy env input should fail");
@@ -201,7 +195,7 @@ tables:
       - name: id
         type: Utf8
 ",
-            coral_api::v1::SourceOrigin::Imported,
+            SourceOrigin::Imported,
             false,
         )
         .expect_err("legacy schema field should fail");

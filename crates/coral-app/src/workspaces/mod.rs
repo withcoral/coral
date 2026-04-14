@@ -1,4 +1,4 @@
-pub(crate) mod manager;
+pub(crate) mod validator;
 
-pub use manager::DEFAULT_WORKSPACE_ID;
-pub(crate) use manager::WorkspaceManager;
+pub use validator::DEFAULT_WORKSPACE_ID;
+pub(crate) use validator::WorkspaceValidator;

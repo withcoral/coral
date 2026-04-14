@@ -19,7 +19,7 @@ use crate::query::service::QueryService;
 use crate::sources::manager::SourceManager;
 use crate::sources::service::SourceService;
 use crate::state::{AppStateLayout, ConfigStore, SecretStore};
-use crate::workspaces::WorkspaceManager;
+use crate::workspaces::WorkspaceValidator;
 
 /// Server-side bootstrap configuration for the Coral server.
 #[derive(Debug, Clone, Default)]
@@ -84,15 +84,20 @@ impl ServerBuilder {
         layout.ensure()?;
         let config_store = ConfigStore::new(layout.clone());
         let secret_store = SecretStore::new(layout.clone());
-        let source_manager =
-            SourceManager::new(config_store.clone(), secret_store.clone(), layout.clone());
+        let workspace_validator = WorkspaceValidator::new();
+        let source_manager = SourceManager::new(
+            config_store.clone(),
+            secret_store.clone(),
+            layout.clone(),
+            workspace_validator.clone(),
+        );
         let query_manager = QueryManager::new(
             config_store,
             secret_store,
             env.query_runtime_context(),
             layout,
         );
-        start_server(source_manager, query_manager).await
+        start_server(source_manager, query_manager, workspace_validator).await
     }
 }
 
@@ -161,14 +166,14 @@ impl Drop for RunningServer {
 async fn start_server(
     source_manager: SourceManager,
     query_manager: QueryManager,
+    workspace_validator: WorkspaceValidator,
 ) -> Result<RunningServer, AppError> {
-    let workspace_manager = WorkspaceManager::new();
     let source_service = SourceService::new(
         source_manager,
         query_manager.clone(),
-        workspace_manager.clone(),
+        workspace_validator.clone(),
     );
-    let query_service = QueryService::new(query_manager, workspace_manager);
+    let query_service = QueryService::new(query_manager, workspace_validator);
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
     let endpoint_uri = format!("http://{}", listener.local_addr()?);
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
@@ -204,10 +209,10 @@ mod tests {
     use crate::query::manager::QueryManager;
     use crate::sources::manager::SourceManager;
     use crate::state::{AppStateLayout, ConfigStore, SecretStore};
-    use crate::workspaces::WorkspaceManager;
+    use crate::workspaces::WorkspaceValidator;
 
     fn default_workspace() -> Workspace {
-        WorkspaceManager::new().default_workspace()
+        WorkspaceValidator::new().default_workspace()
     }
 
     #[tokio::test]
@@ -226,10 +231,12 @@ mod tests {
         .expect("write fixture");
 
         let layout = AppStateLayout::discover(Some(config_dir.clone())).expect("layout");
+        let workspace_validator = WorkspaceValidator::new();
         let source_manager = SourceManager::new(
             ConfigStore::new(layout.clone()),
             SecretStore::new(layout.clone()),
             layout.clone(),
+            workspace_validator.clone(),
         );
         let query_manager = QueryManager::new(
             ConfigStore::new(layout.clone()),
@@ -239,7 +246,7 @@ mod tests {
             },
             layout,
         );
-        let running = start_server(source_manager, query_manager)
+        let running = start_server(source_manager, query_manager, workspace_validator)
             .await
             .expect("start server");
         let channel = Endpoint::from_shared(running.endpoint_uri().to_string())

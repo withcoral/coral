@@ -10,7 +10,7 @@ use coral_engine::{
 use coral_spec::parse_source_manifest_yaml;
 
 use crate::bootstrap::AppError;
-use crate::sources::model::ManagedSource;
+use crate::sources::model::InstalledSource;
 use crate::state::{AppStateLayout, ConfigStore, SecretStore};
 
 #[derive(Debug)]
@@ -20,7 +20,7 @@ pub(crate) enum QueryManagerError {
 }
 
 pub(crate) struct ValidatedSource {
-    pub(crate) source: ManagedSource,
+    pub(crate) source: InstalledSource,
     pub(crate) tables: Vec<TableInfo>,
 }
 
@@ -84,7 +84,7 @@ impl QueryManager {
             .get_source(workspace, source_name)
             .map_err(QueryManagerError::App)?;
         let query_source = self
-            .load_query_source(&source)
+            .load_query_source(workspace, &source)
             .map_err(QueryManagerError::App)?;
         let runtime = self.runtime_provider();
         let tables = CoralQuery::test_source(&query_source, &runtime)
@@ -95,9 +95,10 @@ impl QueryManager {
     }
 
     fn load_query_sources(&self, workspace: &Workspace) -> Result<Vec<QuerySource>, AppError> {
+        let catalog = self.config_store.load_catalog()?;
         let mut query_sources = Vec::new();
-        for source in self.config_store.list_workspace_sources(workspace)? {
-            match self.load_query_source(&source) {
+        for source in catalog.workspace_sources(workspace) {
+            match self.load_query_source(workspace, &source) {
                 Ok(query_source) => query_sources.push(query_source),
                 Err(error) => {
                     tracing::warn!(
@@ -111,8 +112,12 @@ impl QueryManager {
         Ok(query_sources)
     }
 
-    fn load_query_source(&self, source: &ManagedSource) -> Result<QuerySource, AppError> {
-        let manifest_path = self.layout.manifest_file(&source.workspace, &source.name);
+    fn load_query_source(
+        &self,
+        workspace: &Workspace,
+        source: &InstalledSource,
+    ) -> Result<QuerySource, AppError> {
+        let manifest_path = self.layout.manifest_file(workspace, &source.name);
         let manifest_yaml = std::fs::read_to_string(&manifest_path)?;
         let source_spec = parse_source_manifest_yaml(&manifest_yaml)
             .map_err(|error| AppError::InvalidInput(error.to_string()))?;
@@ -133,13 +138,13 @@ impl QueryManager {
         }
         let stored_secrets = self
             .secret_store
-            .read_source_secrets_for(&source.workspace, &source.name)?;
+            .read_source_secrets_for(workspace, &source.name)?;
         let mut resolved_secrets = BTreeMap::new();
         for secret_name in source_spec.required_secret_names() {
             let Some(value) = stored_secrets.get(&secret_name).cloned() else {
                 return Err(AppError::FailedPrecondition(format!(
-                    "source '{}' is missing secret '{}'",
-                    source.name, secret_name
+                    "source '{}' is missing secret '{secret_name}'",
+                    source.name
                 )));
             };
             resolved_secrets.insert(secret_name, value);
