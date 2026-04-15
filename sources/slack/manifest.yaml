@@ -154,7 +154,7 @@ tables:
       - name: ts
         type: Timestamp
         nullable: false
-        description: Message timestamp formatted as ISO-8601 UTC
+        description: Message time from Slack `ts`, exposed as a UTC Timestamp
         expr:
           kind: format_timestamp
           input: seconds

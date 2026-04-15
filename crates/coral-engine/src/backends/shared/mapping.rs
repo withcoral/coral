@@ -258,21 +258,22 @@ fn eval_template(
             if let Some((key, remove_arg)) = token.split_once("|remove:") {
                 if let Some(raw) = evaluated.get(key) {
                     result.push_str(&raw.replace(remove_arg, ""));
+                    rest = &after_open[close + 1..];
                 } else {
-                    // Unknown key — preserve placeholder as-is.
+                    // Unknown key — treat the `{` as literal so a later valid
+                    // placeholder in the same segment can still be processed.
                     result.push('{');
-                    result.push_str(token);
-                    result.push('}');
+                    rest = after_open;
                 }
             } else if let Some(raw) = evaluated.get(token) {
                 result.push_str(raw);
+                rest = &after_open[close + 1..];
             } else {
-                // Unknown key — preserve placeholder as-is.
+                // Unknown key — treat the `{` as literal so a later valid
+                // placeholder in the same segment can still be processed.
                 result.push('{');
-                result.push_str(token);
-                result.push('}');
+                rest = after_open;
             }
-            rest = &after_open[close + 1..];
         } else {
             // No closing brace — emit the `{` literally and continue.
             result.push('{');
@@ -353,7 +354,7 @@ fn to_bool(value: Option<Value>) -> Option<bool> {
 
 #[cfg(test)]
 mod tests {
-    use super::convert_items;
+    use super::{convert_items, eval_template};
     use crate::backends::schema_from_columns;
     use coral_spec::backends::http::HttpTableSpec;
     use coral_spec::{ExprSpec, RequestSpec, parse_source_manifest_value};
@@ -536,5 +537,22 @@ mod tests {
             .downcast_ref::<StringArray>()
             .unwrap();
         assert_eq!(col.value(0), "only one");
+    }
+
+    #[test]
+    fn template_allows_literal_open_brace_before_valid_placeholder() {
+        let rendered = eval_template(
+            r#"{ "user": "{user_id}" }"#,
+            &HashMap::from([(
+                "user_id".to_string(),
+                ExprSpec::Path {
+                    path: vec!["user_id".into()],
+                },
+            )]),
+            &json!({"user_id": "U123"}),
+            &HashMap::new(),
+        );
+
+        assert_eq!(rendered, Value::String(r#"{ "user": "U123" }"#.to_string()));
     }
 }
