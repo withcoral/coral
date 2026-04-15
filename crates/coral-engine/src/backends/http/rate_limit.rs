@@ -10,6 +10,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use coral_spec::backends::http::RateLimitSpec;
 use reqwest::header::HeaderMap;
 
+const DEFAULT_FALLBACK_RETRY_AFTER: Duration = Duration::from_secs(5);
 const MAX_THROTTLE_RETRIES: usize = 2;
 const MAX_SHORT_RETRY_AFTER: Duration = Duration::from_secs(15);
 
@@ -96,7 +97,13 @@ fn classify_rate_limit(
         };
     }
 
-    let retry_after = parse_retry_after(headers, spec, now);
+    let retry_after = if is_429 {
+        parse_retry_after(headers, spec, now)
+            .or_else(|| parse_reset_in(headers, spec, now))
+            .or(Some(DEFAULT_FALLBACK_RETRY_AFTER))
+    } else {
+        parse_retry_after(headers, spec, now)
+    };
     if is_extra && retry_after.is_none() {
         // Extra status without any rate-limit signal — treat as a regular error.
         return RateLimitSignal::None;
@@ -189,6 +196,19 @@ mod tests {
             RateLimitSignal::None,
         );
 
+        // Bare 429 with no retry hints falls back to the short default retry.
+        assert_eq!(
+            classify_rate_limit(
+                reqwest::StatusCode::TOO_MANY_REQUESTS,
+                &HeaderMap::new(),
+                &spec,
+                now
+            ),
+            RateLimitSignal::Throttle {
+                retry_after: Some(DEFAULT_FALLBACK_RETRY_AFTER),
+            },
+        );
+
         // Remaining=0 with a past-epoch reset → Quota with a saturated-to-zero wait.
         let mut quota = HeaderMap::new();
         quota.insert("X-RateLimit-Remaining", HeaderValue::from_static("0"));
@@ -207,6 +227,21 @@ mod tests {
             classify_rate_limit(reqwest::StatusCode::FORBIDDEN, &throttle, &spec, now),
             RateLimitSignal::Throttle {
                 retry_after: Some(Duration::from_secs(7)),
+            },
+        );
+
+        // 429 can also recover from reset-header timing without Remaining=0.
+        let mut reset_throttle = HeaderMap::new();
+        reset_throttle.insert("X-RateLimit-Reset", HeaderValue::from_static("1700000108"));
+        assert_eq!(
+            classify_rate_limit(
+                reqwest::StatusCode::TOO_MANY_REQUESTS,
+                &reset_throttle,
+                &spec,
+                now
+            ),
+            RateLimitSignal::Throttle {
+                retry_after: Some(Duration::from_secs(8)),
             },
         );
     }
