@@ -130,8 +130,12 @@ export CORAL_CONFIG_DIR=/path/to/coral-config
 Important files include:
 
 - `config.toml` for installed-source metadata and non-secret variables
-- installed source specs under `workspaces/<workspace>/sources/...`
+- imported source specs under `workspaces/<workspace>/sources/<source>/manifest.yaml`
 - source secrets stored separately within the same local trust boundary
+
+Bundled source specs are not copied into the config directory. Coral resolves
+them from the current binary when you validate or query a bundled source, so
+upgrades pick up newer bundled manifests without re-adding the source.
 
 ## Current focus
 
