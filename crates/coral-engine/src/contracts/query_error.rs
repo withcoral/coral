@@ -258,7 +258,8 @@ mod tests {
 
     #[test]
     fn http_provider_request_500_is_retryable() {
-        let error = QueryError::http_provider_request("github", "issues", Some(500), None, None, "boom");
+        let error =
+            QueryError::http_provider_request("github", "issues", Some(500), None, None, "boom");
         assert!(error.retryable);
         assert_eq!(error.status, StatusCode::Unavailable);
     }
