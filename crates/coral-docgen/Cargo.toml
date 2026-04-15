@@ -1,0 +1,24 @@
+[package]
+name = "coral-docgen"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "coral-docgen"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+
+coral-spec.workspace = true
+
+[dev-dependencies]
+insta.workspace = true

@@ -37,6 +37,7 @@ fs2 = "0.4"
 futures = "0.3"
 glob = "0.3"
 httpdate = "1.0.3"
+insta = "1"
 jsonschema = { version = "0.18", default-features = false }
 object_store = { version = "0.12", features = ["aws"] }
 parquet = { version = "57.3.0", features = ["arrow"] }

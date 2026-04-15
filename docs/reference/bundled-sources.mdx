@@ -3,6 +3,8 @@ title: "Bundled sources"
 description: "Data sources that ship with Coral."
 ---
 
+{/* AUTO-GENERATED — DO NOT EDIT. Run `make docs-generate` to update. */}
+
 Coral supports connecting to some data sources out of the box.<br />
 If the source you need is not available, you can extend Coral by [writing a custom source spec](/guides/write-a-custom-source).
 
@@ -13,22 +15,24 @@ If the source you need is not available, you can extend Coral by [writing a cust
 
 ## Bundled data sources
 
-| Source         | Backend   | Typical use                                                      |
-| -------------- | --------- | ---------------------------------------------------------------- |
-| `clickup`      | `http`    | Tasks, spaces, folders, lists, goals, and time tracking          |
-| `datadog`      | `http`    | Monitors, incidents, logs, and APM-adjacent API data             |
-| `github`       | `http`    | Repositories, issues, pull requests, Actions, releases, and more |
-| `grafana`      | `http`    | Dashboards, panels, folders, datasources, alerts, teams, users   |
-| `incident_io`  | `http`    | Incidents, alerts, schedules, catalog, and status data           |
-| `jira`         | `http`    | Projects, issues, comments, worklogs, versions, and priorities   |
-| `launchdarkly` | `http`    | Projects, flags, environments, segments, and audit surfaces      |
-| `linear`       | `http`    | Teams, issues, projects, cycles, and initiatives                 |
-| `otel`         | `parquet` | OpenTelemetry logs and metrics exported as Parquet               |
-| `pagerduty`    | `http`    | Incidents, on-call schedules, services, users, and escalation data |
-| `sentry`       | `http`    | Projects, releases, deployments, and error monitoring data       |
-| `slack`        | `http`    | Channels, messages, and workspace users                          |
-| `statusgator`  | `http`    | Status boards, incidents, and uptime history                     |
-| `stripe`       | `http`    | Account, payments, customers, and broader Stripe API data        |
+| Source                          | Backend | Description                                                                                                                                                                                                                                                                                                                                                                   |
+| ------------------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`clickup`](#clickup)           | `http`  | Manage tasks, spaces, folders, lists, goals, and time tracking                                                                                                                                                                                                                                                                                                                |
+| [`datadog`](#datadog)           | `http`  | Monitor infrastructure, track incidents, and analyze logs and APM traces                                                                                                                                                                                                                                                                                                      |
+| [`github`](#github)             | `http`  | GitHub's v3 REST API.                                                                                                                                                                                                                                                                                                                                                         |
+| [`gitlab`](#gitlab)             | `http`  | GitLab REST API v4                                                                                                                                                                                                                                                                                                                                                            |
+| [`grafana`](#grafana)           | `http`  | Query dashboards, folders, datasources, alert rules, annotations, contact points, teams, users, and dashboard panels from Grafana (Cloud or self-hosted). Requires a service-account token with read permissions: dashboards:read, folders:read, datasources:read, alert.rules:read, annotations:read, teams:read, org.users:read (alert.provisioning:read on some versions). |
+| [`incident_io`](#incident_io)   | `http`  | incident.io incident management platform API connector for incidents, alerts, schedules, and more.                                                                                                                                                                                                                                                                            |
+| [`intercom`](#intercom)         | `http`  | Customer messaging platform for support, engagement, and marketing                                                                                                                                                                                                                                                                                                            |
+| [`launchdarkly`](#launchdarkly) | `http`  | Manage feature flags, environments, segments, and audit logs                                                                                                                                                                                                                                                                                                                  |
+| [`linear`](#linear)             | `http`  | Manage issues, projects, cycles, and initiatives across teams                                                                                                                                                                                                                                                                                                                 |
+| [`openobserve`](#openobserve)   | `http`  | Query logs, metrics, and traces stored in OpenObserve                                                                                                                                                                                                                                                                                                                         |
+| [`pagerduty`](#pagerduty)       | `http`  | The PagerDuty REST API. Please see https://developer.pagerduty.com/docs/get-started/getting-started/ for more details.                                                                                                                                                                                                                                                        |
+| [`posthog`](#posthog)           | `http`  | PostHog API autogenerated OpenAPI provider                                                                                                                                                                                                                                                                                                                                    |
+| [`sentry`](#sentry)             | `http`  | Track errors, manage releases, and monitor deployments across projects                                                                                                                                                                                                                                                                                                        |
+| [`slack`](#slack)               | `http`  | Search channels, messages, and users in your workspace                                                                                                                                                                                                                                                                                                                        |
+| [`statusgator`](#statusgator)   | `http`  | Monitor service status boards, incidents, and uptime history                                                                                                                                                                                                                                                                                                                  |
+| [`stripe`](#stripe)             | `http`  | The Stripe REST API for account and payment operations.                                                                                                                                                                                                                                                                                                                       |
 
 ## Supported data source types
 
@@ -40,6 +44,164 @@ Supported sources fall into two categories.
 ## Upgrading bundled sources
 
 To update bundled sources, upgrade the Coral binary. Coral resolves each bundled manifest from the current binary at validate or query time, so spec fixes and newly required inputs are picked up automatically, you don't need to remove and re-add the source. Your configured variables and secrets stay in local state across upgrades.
+
+## Configure a source
+
+Each source has its own set of interactive inputs — API tokens, base URLs, or
+other per-install configuration.
+
+### `clickup`
+
+`CLICKUP_API_TOKEN` (required)
+
+Create a personal token in ClickUp → Settings → Apps
+
+### `datadog`
+
+`DD_SITE` (optional)<br />
+default `datadoghq.com`
+
+Datadog site host (e.g. datadoghq.com, datadoghq.eu, us3.datadoghq.com)
+
+`DD_API_KEY` (required)
+
+Create an API key in Datadog → Organization Settings → API Keys
+
+`DD_APPLICATION_KEY` (required)
+
+Create an application key in Datadog → Organization Settings → Application Keys
+
+### `github`
+
+`GITHUB_API_BASE` (optional)<br />
+default `https://api.github.com`
+
+For GitHub Enterprise, use https://\<host\>/api/v3
+
+`GITHUB_TOKEN` (required)
+
+Run `gh auth token` or create a PAT
+
+### `gitlab`
+
+`GITLAB_API_BASE` (optional)<br />
+default `https://gitlab.com`
+
+For self-hosted GitLab, set to your instance URL
+
+`GITLAB_TOKEN` (required)
+
+Create a personal access token with `read_api` scope in GitLab → User Settings → Access Tokens
+
+### `grafana`
+
+`GRAFANA_URL` (required)
+
+Base URL of your Grafana instance (e.g. https://my-org.grafana.net)
+
+`GRAFANA_TOKEN` (required)
+
+Create a service-account token with the required read scopes
+
+### `incident_io`
+
+`INCIDENT_IO_API_KEY` (required)
+
+Create an API key in incident.io → Settings → API keys
+
+### `intercom`
+
+`INTERCOM_ACCESS_TOKEN` (required)
+
+Create an access token in Intercom → Settings → Developers → Developer Hub
+
+### `launchdarkly`
+
+`LAUNCHDARKLY_API_BASE` (optional)<br />
+default `https://app.launchdarkly.com`
+
+For self-hosted LaunchDarkly, set to your relay or app host
+
+`LAUNCHDARKLY_TOKEN` (required)
+
+Create an API access token in LaunchDarkly → Account settings → Authorization
+
+### `linear`
+
+`LINEAR_API_KEY` (required)
+
+Create a personal API key in Linear → Settings → API
+
+### `openobserve`
+
+`OPENOBSERVE_URL` (required)
+
+Base URL of your OpenObserve instance (e.g. https://api.openobserve.ai)
+
+`OPENOBSERVE_ORG` (optional)<br />
+default `default`
+
+Organization slug (defaults to `default` for single-tenant setups)
+
+`OPENOBSERVE_BASIC_AUTH` (required)
+
+Base64-encoded `email:password` credentials for Basic auth
+
+### `pagerduty`
+
+`PAGERDUTY_API_TOKEN` (required)
+
+Create an API token in PagerDuty → Integrations → API Access Keys
+
+### `posthog`
+
+`POSTHOG_API_BASE` (optional)<br />
+default `https://us.posthog.com`
+
+Use https://eu.posthog.com for EU Cloud, or your self-hosted URL
+
+`POSTHOG_API_KEY` (required)
+
+Create a personal API key in PostHog → Account → Personal API keys
+
+### `sentry`
+
+`SENTRY_ORG` (required)
+
+Your Sentry organization slug (found in the Sentry URL after `/organizations/`)
+
+`SENTRY_TOKEN` (required)
+
+Create an auth token in Sentry → User Settings → Auth Tokens
+
+### `slack`
+
+`SLACK_TOKEN` (required)
+
+Slack doesn't provide a general-purpose API for reading messages.
+Instead, you need a Slack app with a Bot User OAuth Token.
+
+If you already have a Slack app with the required scopes, you can
+find your Bot User OAuth Token on its OAuth & Permissions page. The
+required scopes are: channels:read, channels:history, groups:read,
+groups:history, users:read, users:read.email.
+
+If you don't have a Slack app, you can
+[create one with the required scopes pre-filled](https://api.slack.com/apps?new_app=1&manifest_json=%7B%22display_information%22%3A%7B%22name%22%3A%22Coral%22%2C%22description%22%3A%22Coral+data+access%22%7D%2C%22oauth_config%22%3A%7B%22scopes%22%3A%7B%22bot%22%3A%5B%22channels%3Aread%22%2C%22groups%3Aread%22%2C%22channels%3Ahistory%22%2C%22groups%3Ahistory%22%2C%22users%3Aread%22%2C%22users%3Aread.email%22%5D%7D%7D%2C%22features%22%3A%7B%22bot_user%22%3A%7B%22display_name%22%3A%22Coral%22%2C%22always_online%22%3Afalse%7D%7D%7D).
+
+For more details, see the [Slack app setup guide](https://docs.slack.dev/app-management/quickstart-app-settings).
+
+### `statusgator`
+
+`STATUSGATOR_API_TOKEN` (required)
+
+Copy your API token from StatusGator → Account Settings
+
+### `stripe`
+
+`STRIPE_API_KEY` (required)
+
+Create a restricted or secret API key in the Stripe Dashboard → Developers → API keys
 
 ## Don't see what you need?
 

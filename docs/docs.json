@@ -87,7 +87,9 @@
       },
       {
         "group": "Contributors",
-        "pages": ["contributors/architecture"]
+        "pages": [
+          "contributors/architecture"
+        ]
       }
     ]
   },

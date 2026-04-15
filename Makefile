@@ -18,3 +18,25 @@ lint-sources:
 
 fix-sources:
 	ryl --fix sources
+
+# ----------------------------------------------------------------------------
+# Source docs generation
+# ----------------------------------------------------------------------------
+# Generates the per-source MDX pages, the bundled-sources index, and the
+# Mintlify navigation from sources/*/manifest.y{a,}ml.
+#
+#   make docs-generate   # write/refresh the generated files in docs/
+#   make docs-check      # CI freshness check: non-zero exit if stale
+
+docs-generate:
+	cargo run -p coral-docgen -- \
+	  --sources-dir sources \
+	  --index docs/reference/bundled-sources.mdx \
+	  --docs-json docs/docs.json
+
+docs-check:
+	cargo run -p coral-docgen -- \
+	  --sources-dir sources \
+	  --index docs/reference/bundled-sources.mdx \
+	  --docs-json docs/docs.json \
+	  --check

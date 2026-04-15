@@ -22,6 +22,12 @@ rules:
   line-length:
     max: 150
     allow-non-breakable-inline-mappings: true
+    # The Slack hint embeds a pre-filled "create app" link whose encoded
+    # manifest JSON blob is ~470 chars with no breakable whitespace. There
+    # is no yamllint disable-line escape inside a `|` block scalar, so we
+    # exempt the file rather than drop the onboarding URL.
+    ignore: |
+      sources/slack/manifest.yaml
 
   # Every manifest is a single-document YAML file, so the `---` document-
   # start marker is pure convention. Skip it to keep files one line shorter.
