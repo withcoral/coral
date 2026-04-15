@@ -172,6 +172,8 @@ pub enum TemplateNamespace {
     Variable,
     /// A SQL filter token.
     Filter,
+    /// A row-expression sub-expression token.
+    Expr,
     /// A runtime pagination or request state token.
     State,
     /// A legacy environment token.
@@ -186,6 +188,7 @@ impl TemplateNamespace {
             "secret" => Self::Secret,
             "variable" => Self::Variable,
             "filter" => Self::Filter,
+            "expr" => Self::Expr,
             "state" => Self::State,
             "env" => Self::Env,
             other => Self::Other(other.to_string()),
@@ -239,6 +242,15 @@ mod tests {
             &TemplateNamespace::Other("custom".to_string())
         );
         assert_eq!(token.key(), "value");
+    }
+
+    #[test]
+    fn parses_expr_namespace_tokens() {
+        let template = ParsedTemplate::parse("{{expr.slug|untitled}}").expect("template");
+        let token = template.tokens().next().expect("token");
+        assert_eq!(token.namespace(), &TemplateNamespace::Expr);
+        assert_eq!(token.key(), "slug");
+        assert_eq!(token.default_value(), Some("untitled"));
     }
 
     #[test]

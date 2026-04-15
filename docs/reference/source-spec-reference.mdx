@@ -32,17 +32,109 @@ backend: http
 
 The `type` field on each column accepts:
 
-| Type      | Description           |
-| --------- | --------------------- |
-| `Utf8`    | UTF-8 string          |
-| `Int64`   | 64-bit signed integer |
-| `Float64` | 64-bit floating point |
-| `Boolean` | Boolean true/false    |
+| Type        | Description                              |
+| ----------- | ---------------------------------------- |
+| `Utf8`      | UTF-8 string                             |
+| `Int64`     | 64-bit signed integer                    |
+| `Float64`   | 64-bit floating point                    |
+| `Boolean`   | Boolean true/false                       |
+| `Timestamp` | UTC timestamp (microsecond precision)    |
 
 Each column also supports:
 
 - `nullable` (boolean, default `true`): whether the column can contain NULL values
 - `description` (string): human-readable description, surfaced through `coral.columns`
+
+## Column expressions
+
+The `expr` field on a column defines how to extract or compute its value from each row. When omitted, Coral uses a `path` expression matching the column name.
+
+| Kind                 | Description                                                        |
+| -------------------- | ------------------------------------------------------------------ |
+| `path`               | Extract a value by JSON path segments                              |
+| `format_timestamp`   | Convert an epoch timestamp to a `Timestamp` column                 |
+| `replace`            | Replace all occurrences of one substring in the rendered value     |
+| `template`           | Build a string from a template with placeholder substitutions      |
+
+### `format_timestamp`
+
+Converts a numeric or string epoch value into a `Timestamp` column.
+
+Coral stores `Timestamp` columns as epoch microseconds internally, so the rendered output has microsecond precision even when the source value is provided in seconds or milliseconds.
+
+`format_timestamp` currently accepts raw epoch inputs in `seconds` or `milliseconds`. APIs that vend only `microseconds` or `nanoseconds` are not supported by this helper yet.
+
+```yaml
+- name: created_at
+  type: Timestamp
+  expr:
+    kind: format_timestamp
+    input: seconds        # or "milliseconds"
+    expr:
+      kind: path
+      path:
+        - ts
+```
+
+| Field   | Type   | Default   | Description                                         |
+| ------- | ------ | --------- | --------------------------------------------------- |
+| `input` | string | `seconds` | Unit of the raw value: `seconds` or `milliseconds` |
+| `expr`  | expr   | —         | Inner expression that produces the epoch value     |
+
+### `replace`
+
+Evaluates an inner expression as a string and replaces all occurrences of `from` with `to`.
+
+```yaml
+- name: ts_id
+  type: Utf8
+  expr:
+    kind: replace
+    expr:
+      kind: path
+      path:
+        - ts
+    from: "."
+    to: ""
+```
+
+| Field  | Type   | Default | Description                              |
+| ------ | ------ | ------- | ---------------------------------------- |
+| `expr` | expr   | —       | Inner expression that produces a string  |
+| `from` | string | —       | Non-empty substring to replace           |
+| `to`   | string | —       | Replacement text                         |
+
+### `template`
+
+Builds a string by substituting parsed template tokens with either:
+
+- `{{expr.name}}`: a named sub-expression from `values`
+- `{{filter.name}}`: a query filter value
+
+Like other Coral templates, `|default` supplies a fallback when the value is missing at runtime.
+Column-expression templates do not support `secret`, `variable`, or `state` namespaces.
+
+```yaml
+- name: permalink
+  type: Utf8
+  expr:
+    kind: template
+    template: "https://example.com/archives/{{filter.channel}}/p{{expr.ts_id}}"
+    values:
+      ts_id:
+        kind: replace
+        expr:
+          kind: path
+          path:
+            - ts
+        from: "."
+        to: ""
+```
+
+| Field      | Type   | Default | Description                                                        |
+| ---------- | ------ | ------- | ------------------------------------------------------------------ |
+| `template` | string | —       | Parsed Coral template string using `{{expr.*}}` and `{{filter.*}}` |
+| `values`   | object | —       | Named sub-expressions referenced from `{{expr.name}}` tokens       |
 
 ## File-backed tables
 

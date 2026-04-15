@@ -46,12 +46,41 @@ pub enum AppError {
     MissingConfigDir,
 }
 
+/// Upper bound on the byte length of a `tonic::Status` message (detail).
+///
+/// gRPC `Status` details travel in HTTP/2 trailers; peers bound the total
+/// trailer set via `MAX_HEADER_LIST_SIZE` (default ~16 KiB on hyper/h2).
+/// Oversized details cause the server to emit invalid trailers and the
+/// client's h2 stack reports `PROTOCOL_ERROR` instead of surfacing the
+/// status. 4 KiB leaves ample room for other trailer entries
+/// (`grpc-status`, `grpc-status-details-bin`, `content-type`, …).
+pub(crate) const MAX_STATUS_DETAIL_BYTES: usize = 4 * 1024;
+
+/// Generic safety-net truncation for `tonic::Status` details.
+///
+/// Intentionally format-agnostic: no string heuristics on `DataFusion`
+/// error shapes, no "did you mean?" hints (those live in the structured
+/// error-conversion path where we have typed `Column` data — see
+/// `coral_engine::runtime::query`). This function's only job is to keep
+/// whatever string it's given under the trailer budget.
+fn truncate_status_detail(detail: String) -> String {
+    const MARKER: &str = "… (truncated)";
+    if detail.len() <= MAX_STATUS_DETAIL_BYTES {
+        return detail;
+    }
+    let mut cut = MAX_STATUS_DETAIL_BYTES.saturating_sub(MARKER.len());
+    while cut > 0 && !detail.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    format!("{}{MARKER}", &detail[..cut])
+}
+
 #[allow(
     clippy::needless_pass_by_value,
     reason = "used directly as a map_err adapter across tonic service handlers"
 )]
 pub(crate) fn app_status(error: AppError) -> Status {
-    Status::new(app_code(&error), error.to_string())
+    Status::new(app_code(&error), truncate_status_detail(error.to_string()))
 }
 
 #[allow(
@@ -59,7 +88,10 @@ pub(crate) fn app_status(error: AppError) -> Status {
     reason = "used directly as a map_err adapter across tonic service handlers"
 )]
 pub(crate) fn core_status(error: CoreError) -> Status {
-    Status::new(grpc_code(error.status_code()), error.to_string())
+    Status::new(
+        grpc_code(error.status_code()),
+        truncate_status_detail(error.to_string()),
+    )
 }
 
 fn grpc_code(status: StatusCode) -> Code {
@@ -89,5 +121,36 @@ fn app_code(error: &AppError) -> Code {
         | AppError::Transport(_)
         | AppError::TaskJoin(_)
         | AppError::Credentials(_) => Code::Internal,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncate_status_detail_leaves_short_detail_unchanged() {
+        let detail = "short message".to_string();
+        assert_eq!(truncate_status_detail(detail.clone()), detail);
+    }
+
+    #[test]
+    fn truncate_status_detail_caps_long_ascii_and_marks_it() {
+        let detail = "x".repeat(20 * 1024);
+        let out = truncate_status_detail(detail);
+        assert!(out.len() <= MAX_STATUS_DETAIL_BYTES);
+        assert!(out.ends_with("… (truncated)"), "missing marker: {out:?}");
+    }
+
+    #[test]
+    fn truncate_status_detail_preserves_utf8_boundaries() {
+        // Fill with a 4-byte codepoint so the raw-byte cut point is
+        // guaranteed to land mid-codepoint and must be walked backwards.
+        let detail = "𝕏".repeat(2 * 1024); // 4 bytes per char → 8 KiB total
+        let out = truncate_status_detail(detail);
+        assert!(out.len() <= MAX_STATUS_DETAIL_BYTES);
+        // Result must still be valid UTF-8 (guaranteed by String type) and
+        // end with the truncation marker.
+        assert!(out.ends_with("… (truncated)"));
     }
 }

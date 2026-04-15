@@ -142,7 +142,10 @@ fn collect_from_template(
                     token.raw_key()
                 )));
             }
-            TemplateNamespace::Filter | TemplateNamespace::State | TemplateNamespace::Other(_) => {}
+            TemplateNamespace::Filter
+            | TemplateNamespace::Expr
+            | TemplateNamespace::State
+            | TemplateNamespace::Other(_) => {}
         }
     }
     Ok(())

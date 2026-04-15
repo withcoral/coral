@@ -1,6 +1,6 @@
 //! Shared manifest validation helpers.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::common::{
     ColumnSpec, ExprSpec, FilterSpec, PaginationSpec, RequestRouteSpec, RequestSpec,
@@ -181,8 +181,71 @@ fn validate_expr(expr: &ExprSpec, known_filters: &HashSet<String>, context: &str
                 )));
             }
         }
+        ExprSpec::FormatTimestamp { expr, .. } => {
+            validate_expr(expr, known_filters, context)?;
+        }
+        ExprSpec::Replace { expr, from, .. } => {
+            if from.is_empty() {
+                return Err(ManifestError::validation(format!(
+                    "{context} has replace expression with empty 'from' value"
+                )));
+            }
+            validate_expr(expr, known_filters, context)?;
+        }
+        ExprSpec::Template { template, values } => {
+            for (key, value_expr) in values {
+                validate_expr(
+                    value_expr,
+                    known_filters,
+                    &format!("{context} template value '{key}'"),
+                )?;
+            }
+            validate_expr_template(template, values, known_filters, context)?;
+        }
         _ => {}
     }
+    Ok(())
+}
+
+fn validate_expr_template(
+    template: &ParsedTemplate,
+    values: &HashMap<String, ExprSpec>,
+    known_filters: &HashSet<String>,
+    context: &str,
+) -> Result<()> {
+    for token in template.tokens() {
+        match token.namespace() {
+            TemplateNamespace::Expr => {
+                if !values.contains_key(token.key()) {
+                    return Err(ManifestError::validation(format!(
+                        "{context} references unknown expr '{}' in template '{}'",
+                        token.key(),
+                        template.raw()
+                    )));
+                }
+            }
+            TemplateNamespace::Filter => {
+                if !known_filters.contains(token.key()) {
+                    return Err(ManifestError::validation(format!(
+                        "{context} references unknown filter '{}' in template '{}'",
+                        token.key(),
+                        template.raw()
+                    )));
+                }
+            }
+            TemplateNamespace::Secret
+            | TemplateNamespace::Variable
+            | TemplateNamespace::State
+            | TemplateNamespace::Env
+            | TemplateNamespace::Other(_) => {
+                return Err(ManifestError::validation(format!(
+                    "{context} uses unsupported expr template token '{}'",
+                    token.raw()
+                )));
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -203,7 +266,7 @@ pub(crate) fn validate_template(
                 }
             }
             TemplateNamespace::Secret | TemplateNamespace::Variable | TemplateNamespace::State => {}
-            TemplateNamespace::Env | TemplateNamespace::Other(_) => {
+            TemplateNamespace::Expr | TemplateNamespace::Env | TemplateNamespace::Other(_) => {
                 return Err(ManifestError::validation(format!(
                     "{context} uses unsupported template token '{}'",
                     token.raw()
@@ -217,13 +280,15 @@ pub(crate) fn validate_template(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use crate::common::{
-        ColumnSpec, FilterMode, FilterSpec, PaginationSpec, QueryParamSpec, RequestRouteSpec,
-        RequestSpec, ValueSourceSpec,
+        ColumnSpec, ExprSpec, FilterMode, FilterSpec, PaginationSpec, QueryParamSpec,
+        RequestRouteSpec, RequestSpec, ValueSourceSpec,
     };
     use crate::template::ParsedTemplate;
 
-    use super::validate_http_table;
+    use super::{validate_filters_and_column_exprs, validate_http_table};
 
     fn test_column() -> ColumnSpec {
         ColumnSpec {
@@ -242,6 +307,12 @@ mod tests {
             required: false,
             mode: FilterMode::Equality,
         }]
+    }
+
+    fn column_with_expr(expr: ExprSpec) -> ColumnSpec {
+        let mut column = test_column();
+        column.expr = Some(expr);
+        column
     }
 
     fn base_request() -> RequestSpec {
@@ -313,6 +384,80 @@ mod tests {
             error
                 .to_string()
                 .contains("references unknown filter 'missing'")
+        );
+    }
+
+    #[test]
+    fn validate_column_template_accepts_expr_and_filter_tokens() {
+        let column = column_with_expr(ExprSpec::Template {
+            template: ParsedTemplate::parse("{{filter.id|default-id}}/{{expr.slug|unknown}}")
+                .expect("template"),
+            values: HashMap::from([(
+                "slug".to_string(),
+                ExprSpec::Replace {
+                    expr: Box::new(ExprSpec::Path {
+                        path: vec!["name".to_string()],
+                    }),
+                    from: " ".to_string(),
+                    to: "-".to_string(),
+                },
+            )]),
+        });
+
+        validate_filters_and_column_exprs(&test_filters(), &[column], "demo", "messages")
+            .expect("expr template should validate");
+    }
+
+    #[test]
+    fn validate_column_template_rejects_unknown_expr_token() {
+        let column = column_with_expr(ExprSpec::Template {
+            template: ParsedTemplate::parse("{{expr.slug|unknown}}").expect("template"),
+            values: HashMap::new(),
+        });
+
+        let error =
+            validate_filters_and_column_exprs(&test_filters(), &[column], "demo", "messages")
+                .expect_err("unknown expr token should fail");
+
+        assert!(error.to_string().contains("references unknown expr 'slug'"));
+    }
+
+    #[test]
+    fn validate_column_template_rejects_secret_tokens() {
+        let column = column_with_expr(ExprSpec::Template {
+            template: ParsedTemplate::parse("{{secret.API_KEY}}").expect("template"),
+            values: HashMap::new(),
+        });
+
+        let error =
+            validate_filters_and_column_exprs(&test_filters(), &[column], "demo", "messages")
+                .expect_err("secret token should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("uses unsupported expr template token 'secret.API_KEY'")
+        );
+    }
+
+    #[test]
+    fn validate_replace_rejects_empty_from() {
+        let column = column_with_expr(ExprSpec::Replace {
+            expr: Box::new(ExprSpec::Path {
+                path: vec!["name".to_string()],
+            }),
+            from: String::new(),
+            to: "-".to_string(),
+        });
+
+        let error =
+            validate_filters_and_column_exprs(&test_filters(), &[column], "demo", "messages")
+                .expect_err("empty replace source should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("has replace expression with empty 'from' value")
         );
     }
 }

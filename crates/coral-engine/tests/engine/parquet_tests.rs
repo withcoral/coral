@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 
 use crate::harness::{
-    TestRuntime, assert_internal, build_source, dir_url, execution_to_rows, users_batch,
+    TestRuntime, assert_invalid_input, build_source, dir_url, execution_to_rows, users_batch,
     write_parquet_file,
 };
 
@@ -156,8 +156,5 @@ async fn missing_file_returns_error() {
     .await
     .expect_err("missing parquet source should fail");
 
-    assert_internal(
-        error,
-        "Error during planning: table 'datafusion.parquet_missing.users' not found",
-    );
+    assert_invalid_input(error, "table 'datafusion.parquet_missing.users' not found");
 }

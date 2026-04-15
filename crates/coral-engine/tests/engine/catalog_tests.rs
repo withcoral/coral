@@ -3,7 +3,7 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 
 use crate::harness::{
-    TestRuntime, assert_internal, build_source, dir_url, execution_to_rows, write_jsonl_file,
+    TestRuntime, assert_invalid_input, build_source, dir_url, execution_to_rows, write_jsonl_file,
 };
 
 fn users_manifest(dir: &std::path::Path) -> Value {
@@ -206,10 +206,7 @@ async fn query_nonexistent_schema_returns_error() {
         .await
         .expect_err("missing schema should fail");
 
-    assert_internal(
-        error,
-        "Error during planning: table 'datafusion.missing.users' not found",
-    );
+    assert_invalid_input(error, "table 'datafusion.missing.users' not found");
 }
 
 fn table_summary(table: &TableInfo) -> (String, String, String) {
