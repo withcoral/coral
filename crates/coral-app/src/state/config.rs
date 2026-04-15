@@ -160,7 +160,7 @@ impl ConfigStore {
         }
         let raw = std::fs::read_to_string(self.layout.config_file())?;
         let persisted: PersistedAppConfig = toml::from_str(&raw).map_err(AppError::from)?;
-        Ok(AppConfig::from(persisted))
+        AppConfig::try_from(persisted)
     }
 
     fn save_unlocked(&self, config: &AppConfig) -> Result<(), AppError> {
@@ -274,20 +274,22 @@ fn ensure_implicit_table(item: &mut Item) {
         .set_implicit(true);
 }
 
-impl From<PersistedAppConfig> for AppConfig {
-    fn from(value: PersistedAppConfig) -> Self {
+impl TryFrom<PersistedAppConfig> for AppConfig {
+    type Error = AppError;
+
+    fn try_from(value: PersistedAppConfig) -> Result<Self, Self::Error> {
         let mut catalog = SourceCatalog::default();
         for (workspace_name, workspace_config) in value.workspaces {
-            let workspace_name = WorkspaceName::new(workspace_name);
+            let workspace_name = WorkspaceName::parse(&workspace_name)?;
             for (source_name, source) in workspace_config.sources {
-                let source_name = SourceName::new(source_name);
+                let source_name = SourceName::parse(&source_name)?;
                 catalog.upsert_source(&workspace_name, source.into_installed_source(source_name));
             }
         }
-        Self {
+        Ok(Self {
             version: value.version,
             catalog,
-        }
+        })
     }
 }
 
@@ -335,12 +337,12 @@ mod tests {
     use crate::workspaces::WorkspaceName;
 
     fn default_workspace() -> WorkspaceName {
-        WorkspaceName::new("default".to_string())
+        WorkspaceName::default()
     }
 
     fn installed_source(name: &str) -> InstalledSource {
         InstalledSource {
-            name: SourceName::new(name.to_string()),
+            name: SourceName::parse(name).expect("source"),
             version: "1.1.4".to_string(),
             variables: BTreeMap::from([(
                 "GITHUB_API_BASE".to_string(),
@@ -406,9 +408,10 @@ secrets = ["GITHUB_TOKEN"]
 origin = "bundled"
 "#;
 
-        let config = AppConfig::from(
+        let config = AppConfig::try_from(
             toml::from_str::<PersistedAppConfig>(raw).expect("workspace-keyed config should parse"),
-        );
+        )
+        .expect("config");
         let sources = config.catalog.workspace_sources(&default_workspace());
         assert_eq!(sources.len(), 1);
         assert_eq!(sources[0].name.as_str(), "github");
@@ -432,7 +435,10 @@ origin = "bundled"
         catalog.upsert_source(&workspace_name, updated);
 
         let stored = catalog
-            .get_source(&workspace_name, &SourceName::new("github".to_string()))
+            .get_source(
+                &workspace_name,
+                &SourceName::parse("github").expect("source"),
+            )
             .expect("source should be present");
         assert_eq!(stored.version, "2.0.0");
         assert_eq!(stored.origin, SourceOrigin::Imported);
@@ -442,23 +448,61 @@ origin = "bundled"
     #[test]
     fn catalog_remove_drops_empty_workspace_bucket() {
         let default_workspace = default_workspace();
-        let other_workspace_name = WorkspaceName::new("other".to_string());
+        let other_workspace_name = WorkspaceName::parse("other").expect("workspace");
         let mut catalog = SourceCatalog::default();
         catalog.upsert_source(&default_workspace, installed_source("github"));
         catalog.upsert_source(&other_workspace_name, installed_source("slack"));
 
-        catalog.remove_source(&default_workspace, &SourceName::new("github".to_string()));
+        catalog.remove_source(
+            &default_workspace,
+            &SourceName::parse("github").expect("source"),
+        );
 
         assert!(
             catalog
-                .get_source(&default_workspace, &SourceName::new("github".to_string()))
+                .get_source(
+                    &default_workspace,
+                    &SourceName::parse("github").expect("source")
+                )
                 .is_none()
         );
         assert!(catalog.workspace_sources(&default_workspace).is_empty());
         assert!(
             catalog
-                .get_source(&other_workspace_name, &SourceName::new("slack".to_string()))
+                .get_source(
+                    &other_workspace_name,
+                    &SourceName::parse("slack").expect("source")
+                )
                 .is_some()
         );
+    }
+
+    #[test]
+    fn rejects_invalid_workspace_or_source_keys_when_loading() {
+        let invalid_workspace = r#"
+version = 1
+
+[workspaces."bad\\workspace".sources.github]
+origin = "bundled"
+"#;
+        let error = AppConfig::try_from(
+            toml::from_str::<PersistedAppConfig>(invalid_workspace)
+                .expect("quoted workspace key should parse"),
+        )
+        .expect_err("invalid workspace key should fail");
+        assert!(error.to_string().contains("workspace name"));
+
+        let invalid_source = r#"
+version = 1
+
+[workspaces.default.sources."bad\\source"]
+origin = "bundled"
+"#;
+        let error = AppConfig::try_from(
+            toml::from_str::<PersistedAppConfig>(invalid_source)
+                .expect("quoted source key should parse"),
+        )
+        .expect_err("invalid source key should fail");
+        assert!(error.to_string().contains("source name"));
     }
 }

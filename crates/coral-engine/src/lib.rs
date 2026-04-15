@@ -2,8 +2,8 @@
 //!
 //! `coral-engine` is the federated `DataFusion` engine for Coral. It owns
 //! backend-specific source adapters, backend compilation into executable
-//! providers, runtime assembly, and `SQL` execution over workspace-scoped sets
-//! of managed sources.
+//! providers, runtime assembly, and `SQL` execution over app-provided managed
+//! sources.
 //!
 //! # Primary Entry Points
 //!

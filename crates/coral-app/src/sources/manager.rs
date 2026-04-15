@@ -16,14 +16,13 @@ use crate::sources::model::{
 };
 use crate::state::{AppStateLayout, ConfigStore, SecretStore};
 use crate::storage::fs;
-use crate::workspaces::{WorkspaceName, WorkspaceValidator};
+use crate::workspaces::WorkspaceName;
 
 #[derive(Clone)]
 pub(crate) struct SourceManager {
     config_store: ConfigStore,
     secret_store: SecretStore,
     layout: AppStateLayout,
-    workspace_validator: WorkspaceValidator,
 }
 
 struct ValidatedBindings {
@@ -49,13 +48,11 @@ impl SourceManager {
         config_store: ConfigStore,
         secret_store: SecretStore,
         layout: AppStateLayout,
-        workspace_validator: WorkspaceValidator,
     ) -> Self {
         Self {
             config_store,
             secret_store,
             layout,
-            workspace_validator,
         }
     }
 
@@ -98,20 +95,12 @@ impl SourceManager {
     pub(crate) fn create_bundled_source(
         &self,
         workspace_name: &WorkspaceName,
+        bundled_name: &SourceName,
         request: &CreateBundledSourceRequest,
     ) -> Result<InstalledSource, AppError> {
-        let bundled_name = SourceName::new(
-            self.workspace_validator
-                .validate_path_name("source name", &request.name)?,
-        );
-        let bundled = load_bundled_source(&bundled_name)?;
+        let bundled = load_bundled_source(bundled_name)?;
         let candidate = self.describe_bundled_source(workspace_name, &bundled.manifest_yaml)?;
-        let bindings = validate_bindings(
-            &self.workspace_validator,
-            &candidate,
-            &request.variables,
-            &request.secrets,
-        )?;
+        let bindings = validate_bindings(&candidate, &request.variables, &request.secrets)?;
         self.persist_source(
             workspace_name,
             PersistSourceRequest {
@@ -131,12 +120,7 @@ impl SourceManager {
         let mut candidate =
             describe_manifest(&request.manifest_yaml, SourceOrigin::Imported, false)?;
         candidate.installed = self.source_exists(workspace_name, &candidate.name)?;
-        let bindings = validate_bindings(
-            &self.workspace_validator,
-            &candidate,
-            &request.variables,
-            &request.secrets,
-        )?;
+        let bindings = validate_bindings(&candidate, &request.variables, &request.secrets)?;
         self.persist_source(
             workspace_name,
             PersistSourceRequest {
@@ -201,10 +185,7 @@ impl SourceManager {
         workspace_name: &WorkspaceName,
         request: PersistSourceRequest<'_>,
     ) -> Result<InstalledSource, AppError> {
-        let source_name = SourceName::new(
-            self.workspace_validator
-                .validate_path_name("source name", request.candidate.name.as_str())?,
-        );
+        let source_name = request.candidate.name.clone();
         let previous = self.load_source_rollback_state(workspace_name, &source_name)?;
         if let Err(error) =
             self.persist_manifest_artifact(workspace_name, &source_name, request.manifest_yaml)
@@ -365,13 +346,12 @@ impl SourceManager {
 }
 
 fn validate_bindings(
-    workspace_validator: &WorkspaceValidator,
     candidate: &CandidateSource,
     variables: &[SourceVariable],
     secrets: &[SourceSecret],
 ) -> Result<ValidatedBindings, AppError> {
-    let variable_values = collect_unique_variables(workspace_validator, variables)?;
-    let secret_values = collect_unique_secrets(workspace_validator, secrets)?;
+    let variable_values = collect_unique_variables(variables)?;
+    let secret_values = collect_unique_secrets(secrets)?;
     let expected_variables = candidate
         .inputs
         .iter()
@@ -429,12 +409,11 @@ fn validate_bindings(
 }
 
 fn collect_unique_variables(
-    workspace_validator: &WorkspaceValidator,
     variables: &[SourceVariable],
 ) -> Result<BTreeMap<String, String>, AppError> {
     let mut values = BTreeMap::new();
     for variable in variables {
-        let key = workspace_validator.validate_name("source variable key", &variable.key)?;
+        let key = normalize_binding_key("source variable key", &variable.key)?;
         if values.insert(key.clone(), variable.value.clone()).is_some() {
             return Err(AppError::InvalidInput(format!(
                 "source variable '{key}' is repeated"
@@ -444,13 +423,10 @@ fn collect_unique_variables(
     Ok(values)
 }
 
-fn collect_unique_secrets(
-    workspace_validator: &WorkspaceValidator,
-    secrets: &[SourceSecret],
-) -> Result<BTreeMap<String, String>, AppError> {
+fn collect_unique_secrets(secrets: &[SourceSecret]) -> Result<BTreeMap<String, String>, AppError> {
     let mut values = BTreeMap::new();
     for secret in secrets {
-        let key = workspace_validator.validate_name("source secret key", &secret.key)?;
+        let key = normalize_binding_key("source secret key", &secret.key)?;
         if values.insert(key.clone(), secret.value.clone()).is_some() {
             return Err(AppError::InvalidInput(format!(
                 "source secret '{key}' is repeated"
@@ -458,6 +434,19 @@ fn collect_unique_secrets(
         }
     }
     Ok(values)
+}
+
+fn normalize_binding_key(label: &str, value: &str) -> Result<String, AppError> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::InvalidInput(format!("missing {label}")));
+    }
+    if trimmed.contains('/') || trimmed.contains('\\') {
+        return Err(AppError::InvalidInput(format!(
+            "{label} must not contain '/' or '\\\\'"
+        )));
+    }
+    Ok(trimmed.to_string())
 }
 
 fn cleanup_empty_parent(root: &std::path::Path, path: Option<&std::path::Path>) {
@@ -484,13 +473,14 @@ mod tests {
     use coral_api::v1::{ImportSourceRequest, SourceSecret, SourceVariable};
     use tempfile::TempDir;
 
-    use super::SourceManager;
+    use super::{SourceManager, normalize_binding_key};
     use crate::sources::SourceName;
     use crate::state::{AppStateLayout, ConfigStore, SecretStore};
-    use crate::workspaces::{WorkspaceName, WorkspaceValidator};
+    use crate::transport::workspace_to_proto;
+    use crate::workspaces::WorkspaceName;
 
     fn default_workspace() -> WorkspaceName {
-        WorkspaceValidator::new().default_workspace()
+        WorkspaceName::default()
     }
 
     fn manifest_with_secret() -> String {
@@ -529,10 +519,9 @@ tables:
             ConfigStore::new(layout.clone()),
             SecretStore::new(layout.clone()),
             layout.clone(),
-            WorkspaceValidator::new(),
         );
 
-        let source_name = SourceName::new("secured_messages".to_string());
+        let source_name = SourceName::parse("secured_messages").expect("source");
         let source_dir = layout.source_dir(&default_workspace(), &source_name);
         std::fs::create_dir_all(&source_dir).expect("create source dir");
         std::fs::create_dir(source_dir.join("secrets.env"))
@@ -542,7 +531,7 @@ tables:
             .import_source(
                 &default_workspace(),
                 &ImportSourceRequest {
-                    workspace: Some(default_workspace().to_proto()),
+                    workspace: Some(workspace_to_proto(&default_workspace())),
                     manifest_yaml: manifest_with_secret(),
                     variables: vec![SourceVariable {
                         key: "API_BASE".to_string(),
@@ -575,6 +564,14 @@ tables:
                 .expect("list sources")
                 .is_empty(),
             "source config should not be persisted after rollback"
+        );
+    }
+
+    #[test]
+    fn logical_binding_keys_allow_dot_segments() {
+        assert_eq!(
+            normalize_binding_key("source variable key", "..").expect("key"),
+            ".."
         );
     }
 }

@@ -31,12 +31,13 @@ pub(crate) fn list_bundled_sources(
     let mut candidates = BUNDLED_SOURCES
         .iter()
         .map(|(name, manifest_yaml)| {
+            let bundled_name = SourceName::parse(name)?;
             let mut candidate = describe_manifest(
                 manifest_yaml,
                 SourceOrigin::Bundled,
-                installed_source_names.contains(&SourceName::new((*name).to_string())),
+                installed_source_names.contains(&bundled_name),
             )?;
-            candidate.name = SourceName::new((*name).to_string());
+            candidate.name = bundled_name;
             Ok(candidate)
         })
         .collect::<Result<Vec<_>, AppError>>()?;
@@ -93,7 +94,7 @@ pub(crate) fn describe_manifest(
     let (manifest, inputs) = parse_manifest_and_inputs(manifest_yaml)
         .map_err(|error| AppError::InvalidInput(error.to_string()))?;
     Ok(CandidateSource {
-        name: SourceName::new(manifest.schema_name().to_string()),
+        name: SourceName::parse(manifest.schema_name())?,
         description: manifest.description().to_string(),
         version: manifest.source_version().to_string(),
         inputs: inputs.into_iter().map(candidate_input_spec).collect(),
@@ -133,12 +134,12 @@ mod tests {
         assert!(
             sources
                 .iter()
-                .any(|source| source.name == SourceName::new("github".to_string()))
+                .any(|source| source.name == SourceName::parse("github").expect("source"))
         );
         assert!(
             sources
                 .iter()
-                .any(|source| source.name == SourceName::new("stripe".to_string()))
+                .any(|source| source.name == SourceName::parse("stripe").expect("source"))
         );
         assert!(sources.iter().all(|source| !source.version.is_empty()));
     }

@@ -1,22 +1,37 @@
 use std::fmt;
 
-use coral_api::v1::Workspace;
+use crate::bootstrap::AppError;
+
+/// Canonical default workspace name used across local Coral surfaces.
+pub const DEFAULT_WORKSPACE_ID: &str = "default";
 
 /// App-owned identity for one validated workspace name.
 ///
 /// `coral-app` keeps workspace identity as this narrow type throughout app
-/// state, managers, and layout code so those layers do not depend on the gRPC
-/// `Workspace` message shape. Protobuf workspaces are normalized into
-/// `WorkspaceName` at the service edge, and only converted back when preparing
-/// transport responses.
+/// state, managers, and layout code so those layers do not depend on transport
+/// message shapes. Strings are normalized into `WorkspaceName` at persistence
+/// and service edges before app logic runs.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct WorkspaceName(String);
 
 impl WorkspaceName {
-    /// Wrap an already-validated workspace name for app-internal use.
-    #[must_use]
-    pub(crate) fn new(name: String) -> Self {
-        Self(name)
+    /// Parse and validate a workspace name for app-internal use.
+    pub(crate) fn parse(name: &str) -> Result<Self, AppError> {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            return Err(AppError::InvalidInput("missing workspace name".to_string()));
+        }
+        if trimmed.contains('/') || trimmed.contains('\\') {
+            return Err(AppError::InvalidInput(
+                "workspace name must not contain '/' or '\\\\'".to_string(),
+            ));
+        }
+        if trimmed == "." || trimmed == ".." {
+            return Err(AppError::InvalidInput(
+                "workspace name must not be '.' or '..'".to_string(),
+            ));
+        }
+        Ok(Self(trimmed.to_string()))
     }
 
     /// Borrow the normalized workspace name for filesystem and persistence
@@ -25,19 +40,44 @@ impl WorkspaceName {
     pub(crate) fn as_str(&self) -> &str {
         &self.0
     }
-
-    /// Project the app-owned identity back into the gRPC transport type at the
-    /// service boundary.
-    #[must_use]
-    pub(crate) fn to_proto(&self) -> Workspace {
-        Workspace {
-            name: self.0.clone(),
-        }
-    }
 }
 
 impl fmt::Display for WorkspaceName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
+    }
+}
+
+impl Default for WorkspaceName {
+    fn default() -> Self {
+        Self(DEFAULT_WORKSPACE_ID.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DEFAULT_WORKSPACE_ID, WorkspaceName};
+
+    #[test]
+    fn parses_default_workspace_name() {
+        assert_eq!(WorkspaceName::default().as_str(), DEFAULT_WORKSPACE_ID);
+    }
+
+    #[test]
+    fn rejects_forward_and_backward_slashes() {
+        let error = WorkspaceName::parse(r"bad\workspace").expect_err("workspace should fail");
+        assert!(error.to_string().contains("'/' or '\\\\'"));
+
+        let error = WorkspaceName::parse("bad/workspace").expect_err("workspace should fail");
+        assert!(error.to_string().contains("'/' or '\\\\'"));
+    }
+
+    #[test]
+    fn rejects_path_traversal() {
+        let error = WorkspaceName::parse("..").expect_err("'..' should be rejected");
+        assert!(error.to_string().contains("'.' or '..'"));
+
+        let error = WorkspaceName::parse(" . ").expect_err("'.' should be rejected");
+        assert!(error.to_string().contains("'.' or '..'"));
     }
 }

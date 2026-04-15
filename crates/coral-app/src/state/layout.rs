@@ -98,8 +98,8 @@ mod tests {
     #[test]
     fn derives_top_level_config_and_source_artifact_paths() {
         let layout = AppStateLayout::discover(Some("/tmp/coral-config".into())).expect("layout");
-        let workspace_name = WorkspaceName::new("default".to_string());
-        let source_name = SourceName::new("github".to_string());
+        let workspace_name = WorkspaceName::parse("default").expect("workspace");
+        let source_name = SourceName::parse("github").expect("source");
 
         assert_eq!(
             layout.config_file(),
