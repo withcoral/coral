@@ -41,6 +41,8 @@ name: local_messages
 version: 0.1.0
 dsl_version: 3
 backend: jsonl
+test_queries:
+  - SELECT COUNT(*) AS n FROM local_messages.messages
 tables:
   - name: messages
     description: Demo messages
@@ -57,6 +59,8 @@ tables:
 ```
 
 Replace `/absolute/path/to/demo-data/` with the real absolute path on your machine.
+
+The optional top-level `test_queries` field lets you declare read-only SQL checks that Coral runs during `coral source test`. Coral preserves the order you write, allows duplicates, and reports each query result individually.
 
 ### 3. Add and validate
 

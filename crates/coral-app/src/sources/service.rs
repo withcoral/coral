@@ -182,26 +182,30 @@ impl SourceServiceApi for SourceService {
             .validate_source(&workspace_name, &source_name)
             .await
             .map_err(query_status)?;
-        let tables = result
-            .outcome
-            .tables
+        let coral_engine::SourceValidationOutcome {
+            tables,
+            query_tests,
+            declared_query_count,
+            passed_query_count,
+            failed_query_count,
+            all_query_tests_passed,
+        } = result.outcome;
+        let tables = tables
             .into_iter()
             .map(|table| table_to_proto(&workspace_name, table))
             .collect::<Vec<_>>();
-        let query_tests = result
-            .outcome
-            .query_tests
+        let query_tests = query_tests
             .into_iter()
             .map(query_test_result_to_proto)
-            .collect();
+            .collect::<Vec<_>>();
         Ok(Response::new(ValidateSourceResponse {
             source: Some(installed_source_to_proto(&workspace_name, result.source)),
             tables,
             query_tests,
-            declared_query_count: result.outcome.declared_query_count,
-            passed_query_count: result.outcome.passed_query_count,
-            failed_query_count: result.outcome.failed_query_count,
-            all_query_tests_passed: result.outcome.all_query_tests_passed,
+            declared_query_count,
+            passed_query_count,
+            failed_query_count,
+            all_query_tests_passed,
         }))
     }
 }

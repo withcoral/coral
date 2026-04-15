@@ -119,11 +119,17 @@ impl QueryTestResult {
 /// Structured outcome for validating one source and its optional test queries.
 #[derive(Debug, Clone)]
 pub struct SourceValidationOutcome {
+    /// Tables exposed by the validated source.
     pub tables: Vec<super::TableInfo>,
+    /// One result per declared validation query, in manifest order.
     pub query_tests: Vec<QueryTestResult>,
+    /// Total number of declared validation queries.
     pub declared_query_count: u32,
+    /// Number of validation queries that executed successfully.
     pub passed_query_count: u32,
+    /// Number of validation queries that failed.
     pub failed_query_count: u32,
+    /// Whether every declared validation query passed.
     pub all_query_tests_passed: bool,
 }
 

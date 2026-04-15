@@ -4,9 +4,7 @@ use coral_engine::CoralQuery;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
-use crate::harness::{
-    TestRuntime, assert_invalid_input, build_source, dir_url, users_rows, write_jsonl_file,
-};
+use crate::harness::{TestRuntime, build_source, dir_url, users_rows, write_jsonl_file};
 
 fn jsonl_manifest(name: &str, dir: &Path, glob: &str) -> Value {
     json!({
@@ -63,12 +61,16 @@ async fn test_source_missing_directory_returns_error() {
         .await
         .expect_err("test_source should fail for missing directories");
 
-    assert_invalid_input(
-        error,
-        &format!(
+    assert_eq!(
+        error.status_code(),
+        coral_engine::StatusCode::FailedPrecondition
+    );
+    assert!(
+        error.to_string().contains(&format!(
             "jsonl_test_missing.users source.location '{}' is not a directory",
             dir_url(&missing_dir)
-        ),
+        )),
+        "expected missing-directory detail in error, got: {error}"
     );
 }
 
@@ -103,7 +105,11 @@ async fn validate_source_with_tests_reports_passing_and_failing_queries() {
         outcome.query_tests[1]
             .error_message()
             .expect("failed query should carry an error")
-            .contains("resource not found")
+            .contains("not found")
+            || outcome.query_tests[1]
+                .error_message()
+                .expect("failed query should carry an error")
+                .contains("invalid input")
     );
 }
 

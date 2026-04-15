@@ -77,7 +77,10 @@ impl QueryRuntimeAdapter {
             .collect()
     }
 
-    pub(crate) fn registration_failure(&self, source_name: &str) -> Option<&SourceRegistrationFailure> {
+    pub(crate) fn registration_failure(
+        &self,
+        source_name: &str,
+    ) -> Option<&SourceRegistrationFailure> {
         self.failures
             .iter()
             .find(|failure| failure.schema_name == source_name)

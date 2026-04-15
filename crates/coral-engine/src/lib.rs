@@ -129,10 +129,138 @@ impl CoralQuery {
         source: &QuerySource,
         runtime: &dyn QueryRuntimeProvider,
     ) -> Result<Vec<TableInfo>, CoreError> {
+<<<<<<< HEAD
         Ok(
             runtime::query::build_runtime(std::slice::from_ref(source), runtime)
                 .await?
                 .list_tables(Some(source.source_name())),
         )
+||||||| parent of a604639 (Preserve source test_queries implementation progress before team relaunch)
+        Ok(
+            Self::validate_source_with_tests(source, runtime, &[])
+                .await?
+                .tables,
+        )
+=======
+        Ok(Self::validate_source_with_tests(source, runtime, &[])
+            .await?
+            .tables)
+>>>>>>> a604639 (Preserve source test_queries implementation progress before team relaunch)
     }
+<<<<<<< HEAD
+||||||| parent of a604639 (Preserve source test_queries implementation progress before team relaunch)
+
+    /// Validates one source and then executes any declared validation queries.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if the source cannot be initialized or enumerated.
+    /// Query-test failures are reported in the returned outcome instead of
+    /// failing the whole call.
+    pub async fn validate_source_with_tests(
+        source: &QuerySource,
+        runtime: &dyn QueryRuntimeProvider,
+        test_queries: &[String],
+    ) -> Result<SourceValidationOutcome, CoreError> {
+        let query_runtime = runtime::query::build_runtime(std::slice::from_ref(source), runtime)
+            .await?;
+        let tables = query_runtime.list_tables(Some(source.source_name()));
+        if tables.is_empty() {
+            if let Some(failure) = query_runtime.registration_failure(source.source_name()) {
+                return Err(CoreError::FailedPrecondition(failure.detail.clone()));
+            }
+            return Err(CoreError::FailedPrecondition(format!(
+                "source '{}' did not become queryable during validation",
+                source.source_name()
+            )));
+        }
+
+        let mut query_tests = Vec::with_capacity(test_queries.len());
+        for sql in test_queries {
+            match query_runtime.execute_sql(sql).await {
+                Ok(execution) => query_tests.push(QueryTestResult::new(
+                    sql.clone(),
+                    true,
+                    Some(execution.row_count() as u64),
+                    None,
+                )),
+                Err(error) => {
+                    let error_message = match &error {
+                        CoreError::InvalidInput(detail)
+                            if runtime::query::is_non_read_only_sql_error(detail) =>
+                        {
+                            "test query must be read-only SQL".to_string()
+                        }
+                        _ => error.to_string(),
+                    };
+                    query_tests.push(QueryTestResult::new(
+                        sql.clone(),
+                        false,
+                        None,
+                        Some(error_message),
+                    ));
+                }
+            }
+        }
+
+        Ok(SourceValidationOutcome::new(tables, query_tests))
+    }
+=======
+
+    /// Validates one source and then executes any declared validation queries.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if the source cannot be initialized or enumerated.
+    /// Query-test failures are reported in the returned outcome instead of
+    /// failing the whole call.
+    pub async fn validate_source_with_tests(
+        source: &QuerySource,
+        runtime: &dyn QueryRuntimeProvider,
+        test_queries: &[String],
+    ) -> Result<SourceValidationOutcome, CoreError> {
+        let query_runtime =
+            runtime::query::build_runtime(std::slice::from_ref(source), runtime).await?;
+        let tables = query_runtime.list_tables(Some(source.source_name()));
+        if tables.is_empty() {
+            if let Some(failure) = query_runtime.registration_failure(source.source_name()) {
+                return Err(CoreError::FailedPrecondition(failure.detail.clone()));
+            }
+            return Err(CoreError::FailedPrecondition(format!(
+                "source '{}' did not become queryable during validation",
+                source.source_name()
+            )));
+        }
+
+        let mut query_tests = Vec::with_capacity(test_queries.len());
+        for sql in test_queries {
+            match query_runtime.execute_sql(sql).await {
+                Ok(execution) => query_tests.push(QueryTestResult::new(
+                    sql.clone(),
+                    true,
+                    Some(execution.row_count() as u64),
+                    None,
+                )),
+                Err(error) => {
+                    let error_message = match &error {
+                        CoreError::InvalidInput(detail)
+                            if runtime::query::is_non_read_only_sql_error(detail) =>
+                        {
+                            "test query must be read-only SQL".to_string()
+                        }
+                        _ => error.to_string(),
+                    };
+                    query_tests.push(QueryTestResult::new(
+                        sql.clone(),
+                        false,
+                        None,
+                        Some(error_message),
+                    ));
+                }
+            }
+        }
+
+        Ok(SourceValidationOutcome::new(tables, query_tests))
+    }
+>>>>>>> a604639 (Preserve source test_queries implementation progress before team relaunch)
 }

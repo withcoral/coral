@@ -198,7 +198,10 @@ pub(crate) fn fixture_manifest_yaml(root: &Path) -> String {
     fixture_manifest_with_test_queries_yaml(root, &[])
 }
 
-pub(crate) fn fixture_manifest_with_test_queries_yaml(root: &Path, test_queries: &[&str]) -> String {
+pub(crate) fn fixture_manifest_with_test_queries_yaml(
+    root: &Path,
+    test_queries: &[&str],
+) -> String {
     let data_dir = root.join("fixture-data");
     fs::create_dir_all(&data_dir).expect("create data dir");
     fs::write(

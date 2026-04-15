@@ -94,8 +94,8 @@ impl QueryManager {
             &runtime,
             query_source.source_spec().test_queries(),
         )
-            .await
-            .map_err(QueryManagerError::Core)?;
+        .await
+        .map_err(QueryManagerError::Core)?;
         let mut source = source;
         source.version = version;
 

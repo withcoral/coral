@@ -125,6 +125,9 @@ mod tests {
         assert_eq!(proto.sql, "SELECT 1");
         assert!(!proto.passed);
         assert_eq!(proto.row_count, None);
-        assert_eq!(proto.error_message.as_deref(), Some("failed precondition: boom"));
+        assert_eq!(
+            proto.error_message.as_deref(),
+            Some("failed precondition: boom")
+        );
     }
 }

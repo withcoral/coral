@@ -74,3 +74,79 @@ fn source_test_errors_when_required_secret_is_missing() {
         "expected missing secret error in stderr, got: {stderr}"
     );
 }
+
+#[test]
+fn source_test_exits_non_zero_when_query_tests_fail() {
+    let config_dir = tempdir().expect("failed to create temp dir");
+    let source_dir = config_dir
+        .path()
+        .join("workspaces")
+        .join("default")
+        .join("sources")
+        .join("local_messages");
+    std::fs::create_dir_all(source_dir.join("fixture-data")).expect("create source dir");
+    std::fs::write(
+        source_dir.join("fixture-data/messages.jsonl"),
+        r#"{"type":"user","text":"hello"}
+"#,
+    )
+    .expect("write fixture data");
+    std::fs::write(
+        source_dir.join("manifest.yaml"),
+        r#"
+name: local_messages
+version: 0.1.0
+dsl_version: 3
+backend: jsonl
+test_queries:
+  - SELECT * FROM local_messages.missing
+tables:
+  - name: messages
+    description: fixture messages
+    source:
+      location: file://FIXTURE_ROOT/
+      glob: "**/*.jsonl"
+    columns:
+      - name: type
+        type: Utf8
+      - name: text
+        type: Utf8
+"#
+        .replace(
+            "file://FIXTURE_ROOT/",
+            &format!("file://{}/", source_dir.join("fixture-data").display()),
+        ),
+    )
+    .expect("write manifest");
+    std::fs::write(
+        config_dir.path().join("config.toml"),
+        r#"
+        [workspaces.default.sources.local_messages]
+        version = "0.1.0"
+        variables = {}
+        secrets = []
+        origin = "imported"
+    "#,
+    )
+    .expect("failed to write config");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_coral"))
+        .arg("source")
+        .arg("test")
+        .arg("local_messages")
+        .env("CORAL_CONFIG_DIR", config_dir.path())
+        .output()
+        .expect("failed to run coral source test");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "expected non-zero exit status");
+    assert!(
+        stdout.contains("Query tests"),
+        "expected query-test summary in stdout, got: {stdout}"
+    );
+    assert!(
+        stderr.contains("1 of 1 validation query failed"),
+        "expected strict failure in stderr, got: {stderr}"
+    );
+}
