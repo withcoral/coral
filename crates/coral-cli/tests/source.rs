@@ -245,4 +245,3 @@ tables:
         "expected no stderr output, got: {stderr}"
     );
 }
-
