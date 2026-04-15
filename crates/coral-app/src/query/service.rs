@@ -4,14 +4,12 @@ use arrow::datatypes::SchemaRef;
 use arrow::ipc::writer::StreamWriter;
 use arrow::record_batch::RecordBatch;
 use coral_api::v1::query_service_server::QueryService as QueryServiceApi;
-use coral_api::v1::{
-    Column, ExecuteSqlRequest, ExecuteSqlResponse, ListTablesRequest, ListTablesResponse, Table,
-    Workspace,
-};
+use coral_api::v1::{ExecuteSqlRequest, ExecuteSqlResponse, ListTablesRequest, ListTablesResponse};
 use tonic::{Request, Response, Status};
 
-use crate::bootstrap::{app_status, core_status};
-use crate::query::manager::{QueryManager, QueryManagerError};
+use crate::bootstrap::core_status;
+use crate::query::manager::QueryManager;
+use crate::transport::{query_status, table_to_proto};
 use crate::workspaces::WorkspaceManager;
 
 #[derive(Clone)]
@@ -68,32 +66,6 @@ impl QueryServiceApi for QueryService {
             row_count: i64::try_from(execution.row_count()).unwrap_or(i64::MAX),
         };
         Ok(Response::new(response))
-    }
-}
-
-fn query_status(error: QueryManagerError) -> Status {
-    match error {
-        QueryManagerError::App(error) => app_status(error),
-        QueryManagerError::Core(error) => core_status(error),
-    }
-}
-
-fn table_to_proto(workspace: &Workspace, table: coral_engine::TableInfo) -> Table {
-    Table {
-        workspace: Some(workspace.clone()),
-        schema_name: table.schema_name,
-        name: table.table_name,
-        description: table.description,
-        columns: table
-            .columns
-            .into_iter()
-            .map(|column| Column {
-                name: column.name,
-                data_type: column.data_type,
-                nullable: column.nullable,
-            })
-            .collect(),
-        required_filters: table.required_filters,
     }
 }
 

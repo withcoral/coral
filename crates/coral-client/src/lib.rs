@@ -17,6 +17,7 @@
 mod client;
 mod error;
 pub mod local;
+mod status_error;
 
 use std::io::Cursor;
 
@@ -31,6 +32,9 @@ pub use client::{
     AppClient, ClientBuilder, DEFAULT_WORKSPACE_ID, QueryClient, SourceClient, default_workspace,
 };
 pub use error::{ClientError, QueryResultError};
+pub use status_error::{
+    CORAL_ERROR_DOMAIN, CoralQueryError, DecodedStatusError, decode_status_error,
+};
 
 /// Fully decoded unary query response.
 #[derive(Debug, Clone)]

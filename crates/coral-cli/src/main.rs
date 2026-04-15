@@ -5,6 +5,13 @@
     clippy::print_stderr,
     reason = "CLI intentionally renders user-facing output"
 )]
+#![cfg_attr(
+    test,
+    allow(
+        unused_crate_dependencies,
+        reason = "Dev-dependencies (e.g. tempfile) are only consumed by integration tests under `tests/`."
+    )
+)]
 
 mod branding;
 mod onboard;
@@ -15,10 +22,13 @@ use std::path::PathBuf;
 use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 use coral_api::v1::ExecuteSqlRequest;
 use coral_client::{
-    ClientBuilder, decode_execute_sql_response, default_workspace, format_batches_json,
+    AppClient, ClientBuilder, decode_execute_sql_response, default_workspace, format_batches_json,
     format_batches_table,
 };
 use tonic::Request;
+
+#[cfg(test)]
+use tempfile as _;
 
 #[derive(Debug, Parser)]
 #[command(name = "coral", version, arg_required_else_help = true)]
@@ -81,6 +91,8 @@ enum SourceCommand {
     List,
     /// Add a new source
     Add(SourceAddArgs),
+    /// Lint manifest file
+    Lint { file: PathBuf },
     /// Test connectivity for a source
     Test {
         /// Name of the source to test
@@ -144,39 +156,14 @@ async fn main() -> Result<(), anyhow::Error> {
                     }
                 }
             }
-            SourceCommand::Add(SourceAddArgs { name, file }) => {
-                source_ops::require_interactive()?;
-                let response = match (name, file) {
-                    (Some(name), None) => {
-                        let bundled_name = source_ops::source_name_arg(Some(&name))?;
-                        let discover = source_ops::discover_sources(&app).await?;
-                        let available = discover
-                            .into_iter()
-                            .find(|source| source.name == bundled_name)
-                            .ok_or_else(|| {
-                                anyhow::anyhow!("unknown bundled source '{bundled_name}'")
-                            })?;
-                        let inputs = available
-                            .inputs
-                            .iter()
-                            .map(source_ops::manifest_input_from_proto)
-                            .collect::<Result<Vec<_>, _>>()?;
-                        let (variables, secrets) = source_ops::prompt_for_inputs(&inputs)?;
-                        source_ops::add_bundled_source(&app, &available.name, variables, secrets)
-                            .await?
-                    }
-                    (None, Some(file)) => {
-                        let (manifest_yaml, inputs) = source_ops::load_manifest_inputs(&file)?;
-                        let (variables, secrets) = source_ops::prompt_for_inputs(&inputs)?;
-                        source_ops::import_source(&app, manifest_yaml, variables, secrets).await?
-                    }
-                    _ => unreachable!("clap enforces exactly one of name or file"),
-                };
-                println!("Added source {}", response.name);
+            SourceCommand::Add(args) => run_source_add(&app, args).await?,
+            SourceCommand::Lint { file } => {
+                source_ops::load_validated_manifest_file(&file)?;
+                println!("Manifest is valid");
             }
             SourceCommand::Test { name } => {
-                let response = source_ops::validate_source(&app, &name).await?;
-                source_ops::print_validation_success(&response)?;
+                source_ops::validate_and_print(&app, &name, source_ops::TableDisplayLimit::All)
+                    .await?;
             }
             SourceCommand::Remove { name } => {
                 source_ops::delete_source(&app, &name).await?;
@@ -203,5 +190,41 @@ fn print_batches(
         OutputFormat::Json => format_batches_json(batches)?,
     };
     println!("{output}");
+    Ok(())
+}
+
+async fn run_source_add(app: &AppClient, args: SourceAddArgs) -> Result<(), anyhow::Error> {
+    source_ops::require_interactive()?;
+    let SourceAddArgs { name, file } = args;
+    let response = match (name, file) {
+        (Some(name), None) => {
+            let bundled_name = source_ops::source_name_arg(Some(&name))?;
+            let discover = source_ops::discover_sources(app).await?;
+            let available = discover
+                .into_iter()
+                .find(|source| source.name == bundled_name)
+                .ok_or_else(|| anyhow::anyhow!("unknown bundled source '{bundled_name}'"))?;
+            let inputs = available
+                .inputs
+                .iter()
+                .map(source_ops::manifest_input_from_proto)
+                .collect::<Result<Vec<_>, _>>()?;
+            let (variables, secrets) = source_ops::prompt_for_inputs(&inputs)?;
+            source_ops::add_bundled_source(app, &available.name, variables, secrets).await?
+        }
+        (None, Some(file)) => {
+            let (manifest_yaml, _, inputs) = source_ops::load_validated_manifest_file(&file)?;
+            let (variables, secrets) = source_ops::prompt_for_inputs(&inputs)?;
+            source_ops::import_source(app, manifest_yaml, variables, secrets).await?
+        }
+        _ => unreachable!("clap enforces exactly one of name or file"),
+    };
+    println!("Added source {}", response.name);
+    if let Err(err) =
+        source_ops::validate_and_print(app, &response.name, source_ops::TableDisplayLimit::DEFAULT)
+            .await
+    {
+        eprintln!("Warning: validation failed: {err}");
+    }
     Ok(())
 }

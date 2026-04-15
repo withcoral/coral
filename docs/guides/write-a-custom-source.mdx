@@ -12,10 +12,11 @@ A source spec tells Coral how to connect to an API or read a local dataset, what
 Source authoring works well as an agent-driven workflow. Point your coding agent at the Coral CLI and the [source spec reference](/reference/source-spec-reference), give it the API docs or describe the endpoints you want, and let it iterate:
 
 1. The agent writes or updates the source spec YAML
-2. Adds it with `coral source add --file ./my-source.yaml`
-3. Validates with `coral source test my_source`
-4. Inspects `coral.tables` and `coral.columns` to check the shape
-5. Refines and repeats until the tables look right
+2. Lints the file with `coral source lint ./my-source.yaml` to catch errors before installing
+3. Adds it with `coral source add --file ./my-source.yaml`
+4. Validates with `coral source test my_source`
+5. Inspects `coral.tables` and `coral.columns` to check the shape
+6. Refines and repeats until the tables look right
 
 ## Example: local JSONL source
 
@@ -119,6 +120,7 @@ For the full set of HTTP response, pagination, auth, and column fields, see [HTT
 
 ## Tips
 
+- **Lint before installing.** Run `coral source lint ./my-source.yaml` to catch schema and semantic errors without touching your workspace.
 - **Start small.** Begin with one table and a few columns. Validate with `coral source test`, check `coral.columns`, then expand.
 - **Use `coral.tables` and `coral.columns`.** They show you exactly what Coral sees after adding a source — including required filters and column metadata.
 - **Look at bundled sources for patterns.** The bundled source specs in the repo under `sources/` are working examples of HTTP pagination, response parsing, auth, and variables.

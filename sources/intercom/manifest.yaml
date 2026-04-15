@@ -1,8 +1,8 @@
-dsl_version: 3
 name: intercom
 version: 0.1.0
-description: Customer messaging platform for support, engagement, and marketing
+dsl_version: 3
 backend: http
+description: Customer messaging platform for support, engagement, and marketing
 base_url: https://api.intercom.io
 auth:
   required_secrets:
@@ -250,7 +250,6 @@ tables:
           path:
             - avatar
             - image_url
-
   - name: companies
     description: Companies in the workspace
     request:
@@ -382,7 +381,6 @@ tables:
           kind: path
           path:
             - last_request_at
-
   - name: conversations
     description: Conversations in the workspace
     request:
@@ -655,7 +653,6 @@ tables:
           path:
             - statistics
             - count_assignments
-
   - name: admins
     description: Admins and team members in the workspace
     request:
@@ -746,7 +743,6 @@ tables:
           kind: path
           path:
             - avatar
-
   - name: tags
     description: Tags in the workspace
     request:
@@ -772,7 +768,6 @@ tables:
           kind: path
           path:
             - name
-
   - name: teams
     description: Teams in the workspace
     request:
@@ -807,7 +802,6 @@ tables:
           path:
             - admin_ids
           separator: ", "
-
   - name: segments
     description: Segments in the workspace
     request:
@@ -869,7 +863,6 @@ tables:
           kind: path
           path:
             - updated_at
-
   - name: data_attributes
     description: Data attributes for contacts, companies, and conversations
     filters:
@@ -985,7 +978,6 @@ tables:
           kind: path
           path:
             - updated_at
-
   - name: collections
     description: Help Center collections
     request:
@@ -1084,7 +1076,6 @@ tables:
           kind: path
           path:
             - updated_at
-
   - name: articles
     description: Help Center articles
     request:
@@ -1191,7 +1182,6 @@ tables:
           kind: path
           path:
             - updated_at
-
   - name: ticket_types
     description: Ticket types in the workspace
     request:

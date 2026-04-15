@@ -2,15 +2,16 @@
 
 use coral_api::v1::source_service_server::SourceService as SourceServiceApi;
 use coral_api::v1::{
-    Column, CreateBundledSourceRequest, DeleteSourceRequest, DiscoverSourcesRequest,
+    CreateBundledSourceRequest, DeleteSourceRequest, DiscoverSourcesRequest,
     DiscoverSourcesResponse, GetSourceRequest, ImportSourceRequest, ListSourcesRequest,
-    ListSourcesResponse, Source, Table, ValidateSourceRequest, ValidateSourceResponse, Workspace,
+    ListSourcesResponse, Source, ValidateSourceRequest, ValidateSourceResponse,
 };
 use tonic::{Request, Response, Status};
 
-use crate::bootstrap::{app_status, core_status};
-use crate::query::manager::{QueryManager, QueryManagerError};
+use crate::bootstrap::app_status;
+use crate::query::manager::QueryManager;
 use crate::sources::manager::SourceManager;
+use crate::transport::{query_status, table_to_proto};
 use crate::workspaces::WorkspaceManager;
 
 #[derive(Clone)]
@@ -141,31 +142,5 @@ impl SourceServiceApi for SourceService {
             source: Some(result.source.to_source_resource()),
             tables,
         }))
-    }
-}
-
-fn query_status(error: QueryManagerError) -> Status {
-    match error {
-        QueryManagerError::App(error) => app_status(error),
-        QueryManagerError::Core(error) => core_status(error),
-    }
-}
-
-fn table_to_proto(workspace: &Workspace, table: coral_engine::TableInfo) -> Table {
-    Table {
-        workspace: Some(workspace.clone()),
-        schema_name: table.schema_name,
-        name: table.table_name,
-        description: table.description,
-        columns: table
-            .columns
-            .into_iter()
-            .map(|column| Column {
-                name: column.name,
-                data_type: column.data_type,
-                nullable: column.nullable,
-            })
-            .collect(),
-        required_filters: table.required_filters,
     }
 }

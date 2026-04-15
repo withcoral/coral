@@ -14,11 +14,10 @@ use serde_json::Value;
 use std::collections::HashSet;
 use url::Url;
 
-use crate::common::{build_source_manifest_common, parse_manifest_data_type};
+use crate::common::parse_manifest_data_type;
 use crate::{
-    ColumnSpec, FilterSpec, ManifestDataType, ManifestError, ParsedTemplate, Result, SourceBackend,
+    ColumnSpec, FilterSpec, ManifestDataType, ManifestError, Result, SourceBackend,
     SourceManifestCommon, TableCommon, validate_columns, validate_filters_and_column_exprs,
-    validate_manifest_top_level,
 };
 
 /// Validated top-level manifest for a `Parquet`-backed source.
@@ -42,7 +41,7 @@ struct RawFileSourceManifest {
     name: String,
     version: String,
     #[serde(default)]
-    description: Option<String>,
+    description: String,
     backend: SourceBackend,
     tables: Vec<RawFileTableSpec>,
 }
@@ -149,20 +148,6 @@ impl FileSourceSpec {
     }
 
     fn validate_common(&self, schema: &str, table: &str) -> Result<()> {
-        if self.location.trim().is_empty() {
-            return Err(ManifestError::validation(format!(
-                "{schema}.{table} source.location must be non-empty"
-            )));
-        }
-
-        if let Some(glob) = &self.glob
-            && glob.trim().is_empty()
-        {
-            return Err(ManifestError::validation(format!(
-                "{schema}.{table} source.glob must be non-empty"
-            )));
-        }
-
         let mut seen_partitions = HashSet::new();
         for partition in &self.partitions {
             if !seen_partitions.insert(partition.name.clone()) {
@@ -270,60 +255,42 @@ impl RawFileTableSpec {
 
 impl ParquetSourceManifest {
     pub(crate) fn parse_manifest_value(value: Value) -> Result<Self> {
-        let empty_base_url = ParsedTemplate::default();
         let raw: RawFileSourceManifest =
             serde_json::from_value(value).map_err(ManifestError::deserialize)?;
         let RawFileSourceManifest {
             dsl_version,
             name,
             version,
-            description: _description,
+            description,
             backend: _backend,
             tables,
         } = raw;
-        let common = build_source_manifest_common(dsl_version, name, version);
+        let common = SourceManifestCommon::new(dsl_version, name, version, description);
         let tables = tables
             .into_iter()
             .map(|table| table.into_validated_parquet(&common.name))
             .collect::<Result<Vec<_>>>()?;
-        validate_manifest_top_level(
-            common.dsl_version,
-            &common.name,
-            &common.name,
-            SourceBackend::Parquet,
-            &empty_base_url,
-            tables.len(),
-        )?;
         Ok(Self { common, tables })
     }
 }
 
 impl JsonlSourceManifest {
     pub(crate) fn parse_manifest_value(value: Value) -> Result<Self> {
-        let empty_base_url = ParsedTemplate::default();
         let raw: RawFileSourceManifest =
             serde_json::from_value(value).map_err(ManifestError::deserialize)?;
         let RawFileSourceManifest {
             dsl_version,
             name,
             version,
-            description: _description,
+            description,
             backend: _backend,
             tables,
         } = raw;
-        let common = build_source_manifest_common(dsl_version, name, version);
+        let common = SourceManifestCommon::new(dsl_version, name, version, description);
         let tables = tables
             .into_iter()
             .map(|table| table.into_validated_jsonl(&common.name))
             .collect::<Result<Vec<_>>>()?;
-        validate_manifest_top_level(
-            common.dsl_version,
-            &common.name,
-            &common.name,
-            SourceBackend::Jsonl,
-            &empty_base_url,
-            tables.len(),
-        )?;
         Ok(Self { common, tables })
     }
 }

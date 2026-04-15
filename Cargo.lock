@@ -796,6 +796,7 @@ dependencies = [
  "coral-mcp",
  "coral-spec",
  "dialoguer",
+ "tempfile",
  "tokio",
  "tonic",
 ]
@@ -810,6 +811,7 @@ dependencies = [
  "serde_json",
  "thiserror",
  "tonic",
+ "tonic-types",
 ]
 
 [[package]]
@@ -3732,6 +3734,7 @@ version = "1.0.149"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "83fc039473c5595ace860d8c4fafa220ff474b3fc6bfdb4293327f1a37e94d86"
 dependencies = [
+ "indexmap",
  "itoa",
  "memchr",
  "serde",
@@ -4254,6 +4257,17 @@ dependencies = [
  "syn",
  "tempfile",
  "tonic-build",
+]
+
+[[package]]
+name = "tonic-types"
+version = "0.14.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2a875a902255423d34c1f20838ab374126db8eb41625b7947a1d54113b0b7399"
+dependencies = [
+ "prost",
+ "prost-types",
+ "tonic",
 ]
 
 [[package]]
