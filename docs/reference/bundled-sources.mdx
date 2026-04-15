@@ -36,10 +36,9 @@ Supported sources fall into two categories.
 - **HTTP API** — Coral translates SQL queries into paginated HTTP requests against a provider's REST API.
 - **File-backed** — Coral reads local Parquet or JSONL files directly.
 
-## Upgrade behavior
+## Upgrading bundled sources
 
-When you install a bundled source, Coral stores its source identity plus your configured variables and secrets in local state. The bundled manifest itself is resolved from the current Coral binary when you validate or query the source. That means upgrading Coral can pick up bundled-source fixes or new required inputs without requiring you to remove and re-add the source.
-
+To update bundled sources, upgrade the Coral binary. Coral resolves each bundled manifest from the current binary at validate or query time, so spec fixes and newly required inputs are picked up automatically, you don't need to remove and re-add the source. Your configured variables and secrets stay in local state across upgrades.
 ## Don't see what you need?
 
 The bundled set is growing. If your data source is not listed, [write a custom source](/guides/write-a-custom-source), or reach out to us via [Discord](https://discord.gg/h9aun8KpFF) or [GitHub](https://github.com/withcoral/coral/issues).
