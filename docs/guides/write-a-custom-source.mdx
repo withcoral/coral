@@ -79,6 +79,26 @@ coral sql "
 "
 ```
 
+## How to verify and validate
+
+When you add `test_queries` to a source spec, treat them as a lightweight validation contract for that source.
+
+1. Run `coral source lint ./my-source.yaml` before installing the source.
+2. Add or update the source with `coral source add --file ./my-source.yaml`.
+3. Run `coral source test <source_name>` and confirm:
+   - the source still exposes the expected tables
+   - each declared `test_queries` entry runs in manifest order
+   - successful queries show a pass status and optional row count
+   - failing queries surface a readable error message
+4. Run one or two real `coral sql` queries against the new tables to confirm the shape is useful beyond the validation checks.
+
+If you are validating a credentialed source end-to-end, it is useful to try both:
+
+- a correctly configured source, which should pass table validation and all declared query tests
+- an intentionally misconfigured source, which should still reach `coral source test` but exit non-zero when its declared query tests fail
+
+This gives you confidence that the source spec works in the happy path and that `test_queries` catch broken credentials or runtime regressions in a predictable way.
+
 ## Example: HTTP API source
 
 To connect an HTTP API, the source spec declares the base URL, auth, endpoints, and response shape.

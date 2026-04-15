@@ -75,6 +75,31 @@ async fn test_source_missing_directory_returns_error() {
 }
 
 #[tokio::test]
+async fn validate_source_with_tests_fails_when_source_never_registers() {
+    let temp = TempDir::new().expect("temp dir");
+    let missing_dir = temp.path().join("missing");
+    let source = build_source(jsonl_manifest(
+        "jsonl_test_missing",
+        &missing_dir,
+        "**/*.jsonl",
+    ));
+    let queries = vec!["SELECT * FROM jsonl_test_missing.users".to_string()];
+
+    let error = CoralQuery::validate_source_with_tests(&source, &TestRuntime, &queries)
+        .await
+        .expect_err("validate_source_with_tests should fail when the source never registers");
+
+    assert_eq!(
+        error.status_code(),
+        coral_engine::StatusCode::FailedPrecondition
+    );
+    assert!(
+        error.to_string().contains("is not a directory"),
+        "expected skipped-registration detail in error, got: {error}"
+    );
+}
+
+#[tokio::test]
 async fn validate_source_with_tests_reports_passing_and_failing_queries() {
     let temp = TempDir::new().expect("temp dir");
     write_jsonl_file(temp.path(), "users.jsonl", &users_rows());
