@@ -168,6 +168,7 @@ async fn main() -> Result<(), anyhow::Error> {
                     &bootstrap.app,
                     &name,
                     source_ops::TableDisplayLimit::All,
+                    source_ops::ValidationSeverityMode::Strict,
                 )
                 .await?;
             }
@@ -230,8 +231,13 @@ async fn run_source_add(
     };
     println!("Added source {}", response.name);
     if let Err(err) =
-        source_ops::validate_and_print(app, &response.name, source_ops::TableDisplayLimit::DEFAULT)
-            .await
+        source_ops::validate_and_print(
+            app,
+            &response.name,
+            source_ops::TableDisplayLimit::DEFAULT,
+            source_ops::ValidationSeverityMode::WarnOnly,
+        )
+        .await
     {
         eprintln!("Warning: validation failed: {err}");
     }

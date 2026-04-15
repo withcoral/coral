@@ -17,7 +17,9 @@ use crate::sources::manager::SourceManager;
 use crate::sources::model::{
     CandidateSource, CandidateSourceInput, CandidateSourceInputKind, InstalledSource, SourceOrigin,
 };
-use crate::transport::{query_status, table_to_proto, workspace_to_proto};
+use crate::transport::{
+    query_status, query_test_result_to_proto, table_to_proto, workspace_to_proto,
+};
 use crate::workspaces::WorkspaceName;
 
 #[derive(Clone)]
@@ -181,13 +183,25 @@ impl SourceServiceApi for SourceService {
             .await
             .map_err(query_status)?;
         let tables = result
+            .outcome
             .tables
             .into_iter()
             .map(|table| table_to_proto(&workspace_name, table))
             .collect::<Vec<_>>();
+        let query_tests = result
+            .outcome
+            .query_tests
+            .into_iter()
+            .map(query_test_result_to_proto)
+            .collect();
         Ok(Response::new(ValidateSourceResponse {
             source: Some(installed_source_to_proto(&workspace_name, result.source)),
             tables,
+            query_tests,
+            declared_query_count: result.outcome.declared_query_count,
+            passed_query_count: result.outcome.passed_query_count,
+            failed_query_count: result.outcome.failed_query_count,
+            all_query_tests_passed: result.outcome.all_query_tests_passed,
         }))
     }
 }

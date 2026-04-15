@@ -65,6 +65,86 @@ impl QuerySource {
     }
 }
 
+/// One source-spec validation query executed during source validation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueryTestResult {
+    sql: String,
+    passed: bool,
+    row_count: Option<u64>,
+    error_message: Option<String>,
+}
+
+impl QueryTestResult {
+    #[must_use]
+    /// Builds one query-test result entry.
+    pub fn new(
+        sql: impl Into<String>,
+        passed: bool,
+        row_count: Option<u64>,
+        error_message: Option<String>,
+    ) -> Self {
+        Self {
+            sql: sql.into(),
+            passed,
+            row_count,
+            error_message,
+        }
+    }
+
+    #[must_use]
+    /// Returns the SQL text that was executed.
+    pub fn sql(&self) -> &str {
+        &self.sql
+    }
+
+    #[must_use]
+    /// Returns whether the query executed successfully.
+    pub fn passed(&self) -> bool {
+        self.passed
+    }
+
+    #[must_use]
+    /// Returns the optional row count captured for successful queries.
+    pub fn row_count(&self) -> Option<u64> {
+        self.row_count
+    }
+
+    #[must_use]
+    /// Returns the error message for failed queries, when present.
+    pub fn error_message(&self) -> Option<&str> {
+        self.error_message.as_deref()
+    }
+}
+
+/// Structured outcome for validating one source and its optional test queries.
+#[derive(Debug, Clone)]
+pub struct SourceValidationOutcome {
+    pub tables: Vec<super::TableInfo>,
+    pub query_tests: Vec<QueryTestResult>,
+    pub declared_query_count: u32,
+    pub passed_query_count: u32,
+    pub failed_query_count: u32,
+    pub all_query_tests_passed: bool,
+}
+
+impl SourceValidationOutcome {
+    #[must_use]
+    /// Builds one structured source-validation outcome.
+    pub fn new(tables: Vec<super::TableInfo>, query_tests: Vec<QueryTestResult>) -> Self {
+        let declared_query_count = query_tests.len() as u32;
+        let passed_query_count = query_tests.iter().filter(|test| test.passed).count() as u32;
+        let failed_query_count = declared_query_count.saturating_sub(passed_query_count);
+        Self {
+            tables,
+            query_tests,
+            declared_query_count,
+            passed_query_count,
+            failed_query_count,
+            all_query_tests_passed: failed_query_count == 0,
+        }
+    }
+}
+
 /// App-owned non-secret runtime inputs needed while compiling sources.
 #[derive(Debug, Clone, Default)]
 pub struct QueryRuntimeContext {

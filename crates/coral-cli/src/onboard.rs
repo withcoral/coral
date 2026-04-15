@@ -158,6 +158,7 @@ async fn run_installed_source_menu(
                 app,
                 &source.name,
                 source_ops::TableDisplayLimit::DEFAULT,
+                source_ops::ValidationSeverityMode::Strict,
             )
             .await?;
         }
@@ -175,6 +176,7 @@ async fn run_installed_source_menu(
                 app,
                 &result.name,
                 source_ops::TableDisplayLimit::DEFAULT,
+                source_ops::ValidationSeverityMode::WarnOnly,
             )
             .await?;
         }
@@ -196,7 +198,13 @@ async fn run_add_bundled_source(
     let (variables, secrets) = source_ops::prompt_for_inputs(&inputs)?;
     let result = source_ops::add_bundled_source(app, &source.name, variables, secrets).await?;
     println!("Added source {}", result.name);
-    source_ops::validate_and_print(app, &result.name, source_ops::TableDisplayLimit::DEFAULT).await
+    source_ops::validate_and_print(
+        app,
+        &result.name,
+        source_ops::TableDisplayLimit::DEFAULT,
+        source_ops::ValidationSeverityMode::WarnOnly,
+    )
+    .await
 }
 
 async fn run_next_steps(

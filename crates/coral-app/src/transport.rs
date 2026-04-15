@@ -1,6 +1,6 @@
 //! Shared gRPC transport helpers for app-owned services.
 
-use coral_api::v1::{Column, Table, Workspace};
+use coral_api::v1::{Column, QueryTestResult, Table, Workspace};
 use tonic::Status;
 
 use crate::bootstrap::{app_status, core_status};
@@ -46,15 +46,24 @@ pub(crate) fn table_to_proto(
     }
 }
 
+pub(crate) fn query_test_result_to_proto(result: coral_engine::QueryTestResult) -> QueryTestResult {
+    QueryTestResult {
+        sql: result.sql().to_string(),
+        passed: result.passed(),
+        row_count: result.row_count(),
+        error_message: result.error_message().map(ToString::to_string),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use tonic::Code;
 
-    use super::{query_status, table_to_proto, workspace_to_proto};
+    use super::{query_status, query_test_result_to_proto, table_to_proto, workspace_to_proto};
     use crate::bootstrap::AppError;
     use crate::query::manager::QueryManagerError;
     use crate::workspaces::WorkspaceName;
-    use coral_engine::{ColumnInfo, CoreError, TableInfo};
+    use coral_engine::{ColumnInfo, CoreError, QueryTestResult as EngineQueryTestResult, TableInfo};
 
     #[test]
     fn query_status_maps_app_errors() {
@@ -102,5 +111,20 @@ mod tests {
         assert_eq!(proto.columns[0].data_type, "Int64");
         assert!(!proto.columns[0].nullable);
         assert_eq!(proto.required_filters, vec!["org_id"]);
+    }
+
+    #[test]
+    fn query_test_result_to_proto_preserves_result_metadata() {
+        let proto = query_test_result_to_proto(EngineQueryTestResult::new(
+            "SELECT 1",
+            false,
+            None,
+            Some("failed precondition: boom".to_string()),
+        ));
+
+        assert_eq!(proto.sql, "SELECT 1");
+        assert!(!proto.passed);
+        assert_eq!(proto.row_count, None);
+        assert_eq!(proto.error_message.as_deref(), Some("failed precondition: boom"));
     }
 }

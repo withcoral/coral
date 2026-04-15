@@ -101,3 +101,4 @@ pub use template::{ParsedTemplate, TemplateNamespace, TemplatePart, TemplateToke
 pub(crate) use validate::{
     validate_columns, validate_filters_and_column_exprs, validate_http_table,
 };
+pub(crate) use common::validate_test_queries;

@@ -26,6 +26,19 @@ pub(crate) enum TableDisplayLimit {
     Max(usize),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ValidationSeverityMode {
+    Strict,
+    WarnOnly,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ValidationFollowUp {
+    None,
+    Warn(String),
+    Fail(String),
+}
+
 impl TableDisplayLimit {
     /// The default truncation used after `source add` and during onboarding.
     pub(crate) const DEFAULT: Self = Self::Max(MAX_TABLES_PER_SCHEMA);
@@ -201,9 +214,18 @@ pub(crate) async fn validate_and_print(
     app: &AppClient,
     source_name: &str,
     limit: TableDisplayLimit,
+    severity_mode: ValidationSeverityMode,
 ) -> Result<(), anyhow::Error> {
     let response = validate_source(app, source_name).await?;
-    print_validation_pretty(&response, limit)
+    print_validation_pretty(&response, limit)?;
+    match validation_follow_up(&response, severity_mode) {
+        ValidationFollowUp::None => Ok(()),
+        ValidationFollowUp::Warn(message) => {
+            eprintln!("Warning: {message}");
+            Ok(())
+        }
+        ValidationFollowUp::Fail(message) => Err(anyhow::anyhow!(message)),
+    }
 }
 
 pub(crate) fn print_validation_pretty(
@@ -266,9 +288,71 @@ pub(crate) fn print_validation_pretty(
             );
         }
     }
+
+    if response.declared_query_count > 0 {
+        println!("    {}", style("Query tests").bold());
+        println!(
+            "    {}",
+            style(format!(
+                "{} declared · {} passed · {} failed",
+                response.declared_query_count,
+                response.passed_query_count,
+                response.failed_query_count
+            ))
+            .dim()
+        );
+        for test in &response.query_tests {
+            println!();
+            let status = if test.passed {
+                style("✓").green()
+            } else {
+                style("✗").red()
+            };
+            println!("    {} {}", status, style(test.sql.trim()).bold());
+            match (test.passed, test.row_count, test.error_message.as_deref()) {
+                (true, Some(row_count), _) => println!(
+                    "      {}",
+                    style(format!(
+                        "{row_count} row{}",
+                        if row_count == 1 { "" } else { "s" }
+                    ))
+                    .dim()
+                ),
+                (false, _, Some(error_message)) => {
+                    println!("      {}", style(error_message).yellow())
+                }
+                _ => {}
+            }
+        }
+    }
     println!();
 
     Ok(())
+}
+
+fn validation_follow_up(
+    response: &ValidateSourceResponse,
+    severity_mode: ValidationSeverityMode,
+) -> ValidationFollowUp {
+    if response.declared_query_count == 0 || response.all_query_tests_passed {
+        return ValidationFollowUp::None;
+    }
+
+    let failure_count = response.failed_query_count.max(1);
+    let message = format!(
+        "{} of {} validation quer{} failed",
+        failure_count,
+        response.declared_query_count.max(failure_count),
+        if response.declared_query_count == 1 {
+            "y"
+        } else {
+            "ies"
+        }
+    );
+    match severity_mode {
+        ValidationSeverityMode::Strict => ValidationFollowUp::Fail(message),
+        ValidationSeverityMode::WarnOnly => ValidationFollowUp::Warn(message),
+    }
 }
 
 fn prompt_variable(input: &ManifestInputSpec) -> Result<Option<SourceVariable>, anyhow::Error> {
@@ -340,9 +424,12 @@ pub(crate) fn finalize_input_value(
 
 #[cfg(test)]
 mod tests {
+    use coral_api::v1::ValidateSourceResponse;
     use coral_spec::{ManifestInputKind, ManifestInputSpec};
 
-    use super::finalize_input_value;
+    use super::{
+        ValidationFollowUp, ValidationSeverityMode, finalize_input_value, validation_follow_up,
+    };
 
     #[test]
     fn empty_optional_input_is_omitted_for_server_side_defaults() {
@@ -372,5 +459,59 @@ mod tests {
         let error = finalize_input_value(&input, String::new(), "source secret")
             .expect_err("required empty input should fail");
         assert!(error.to_string().contains("missing required source secret"));
+    }
+
+    #[test]
+    fn validation_follow_up_is_none_when_all_query_tests_pass() {
+        let response = ValidateSourceResponse {
+            source: None,
+            tables: Vec::new(),
+            query_tests: Vec::new(),
+            declared_query_count: 1,
+            passed_query_count: 1,
+            failed_query_count: 0,
+            all_query_tests_passed: true,
+        };
+
+        assert_eq!(
+            validation_follow_up(&response, ValidationSeverityMode::Strict),
+            ValidationFollowUp::None
+        );
+    }
+
+    #[test]
+    fn validation_follow_up_is_error_in_strict_mode() {
+        let response = ValidateSourceResponse {
+            source: None,
+            tables: Vec::new(),
+            query_tests: Vec::new(),
+            declared_query_count: 2,
+            passed_query_count: 1,
+            failed_query_count: 1,
+            all_query_tests_passed: false,
+        };
+
+        assert_eq!(
+            validation_follow_up(&response, ValidationSeverityMode::Strict),
+            ValidationFollowUp::Fail("1 of 2 validation queries failed".to_string())
+        );
+    }
+
+    #[test]
+    fn validation_follow_up_is_warning_in_warn_only_mode() {
+        let response = ValidateSourceResponse {
+            source: None,
+            tables: Vec::new(),
+            query_tests: Vec::new(),
+            declared_query_count: 1,
+            passed_query_count: 0,
+            failed_query_count: 1,
+            all_query_tests_passed: false,
+        };
+
+        assert_eq!(
+            validation_follow_up(&response, ValidationSeverityMode::WarnOnly),
+            ValidationFollowUp::Warn("1 of 1 validation query failed".to_string())
+        );
     }
 }

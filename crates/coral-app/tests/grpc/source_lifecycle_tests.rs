@@ -11,8 +11,8 @@ use tonic::Request;
 
 use crate::harness::{
     FailingHttpFixture, GrpcHarness, fixture_manifest_with_inputs_yaml,
-    fixture_manifest_with_required_inputs_yaml, fixture_manifest_yaml, invalid_manifest_yaml,
-    source_dir,
+    fixture_manifest_with_required_inputs_yaml, fixture_manifest_with_test_queries_yaml,
+    fixture_manifest_yaml, invalid_manifest_yaml, source_dir,
 };
 
 #[tokio::test]
@@ -197,12 +197,50 @@ async fn validate_source_returns_tables() {
     assert_eq!(validated.tables[0].schema_name, "local_messages");
     assert_eq!(validated.tables[0].name, "messages");
     assert!(validated.tables[0].required_filters.is_empty());
+    assert!(validated.query_tests.is_empty());
+    assert_eq!(validated.declared_query_count, 0);
+    assert_eq!(validated.passed_query_count, 0);
+    assert_eq!(validated.failed_query_count, 0);
+    assert!(validated.all_query_tests_passed);
 
     let rows = harness
         .execute_sql_rows("SELECT type, text FROM local_messages.messages ORDER BY text")
         .await;
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0]["text"], "hello");
+}
+
+#[tokio::test]
+async fn validate_source_returns_query_test_results_without_unary_error() {
+    let harness = GrpcHarness::new().await;
+    let manifest_yaml = fixture_manifest_with_test_queries_yaml(
+        harness.temp_path(),
+        &[
+            "SELECT COUNT(*) AS n FROM local_messages.messages",
+            "SELECT * FROM local_messages.missing",
+        ],
+    );
+    harness
+        .import_source(manifest_yaml, Vec::new(), Vec::new())
+        .await;
+
+    let validated = harness.validate_source("local_messages").await;
+    assert_eq!(validated.tables.len(), 1);
+    assert_eq!(validated.declared_query_count, 2);
+    assert_eq!(validated.passed_query_count, 1);
+    assert_eq!(validated.failed_query_count, 1);
+    assert!(!validated.all_query_tests_passed);
+    assert_eq!(validated.query_tests.len(), 2);
+    assert!(validated.query_tests[0].passed);
+    assert_eq!(validated.query_tests[0].row_count, Some(1));
+    assert!(!validated.query_tests[1].passed);
+    assert!(
+        validated.query_tests[1]
+            .error_message
+            .as_deref()
+            .expect("failed query should have an error")
+            .contains("resource not found")
+    );
 }
 
 #[tokio::test]
@@ -271,6 +309,99 @@ async fn validate_source_with_unreachable_api_returns_declared_tables() {
     assert_eq!(validated.tables.len(), 1);
     assert_eq!(validated.tables[0].schema_name, "unreachable_messages");
     assert_eq!(validated.tables[0].name, "messages");
+    assert!(validated.query_tests.is_empty());
+    assert!(validated.all_query_tests_passed);
+}
+
+#[tokio::test]
+async fn validate_source_with_unreachable_api_and_test_queries_returns_query_failures() {
+    let harness = GrpcHarness::new().await;
+    let failing_http = FailingHttpFixture::new().await;
+    harness
+        .import_source(
+            failing_http.manifest_yaml_with_test_queries(&[
+                "SELECT * FROM unreachable_messages.messages",
+            ]),
+            Vec::new(),
+            Vec::new(),
+        )
+        .await;
+
+    let validated = harness.validate_source("unreachable_messages").await;
+    assert_eq!(validated.tables.len(), 1);
+    assert_eq!(validated.query_tests.len(), 1);
+    assert_eq!(validated.failed_query_count, 1);
+    assert!(!validated.all_query_tests_passed);
+    assert!(
+        validated.query_tests[0]
+            .error_message
+            .as_deref()
+            .expect("failed query should carry an error")
+            .contains("failed precondition")
+            || validated.query_tests[0]
+                .error_message
+                .as_deref()
+                .expect("failed query should carry an error")
+                .contains("unavailable")
+    );
+}
+
+#[tokio::test]
+async fn validate_source_with_non_read_only_test_query_returns_stable_query_error() {
+    let harness = GrpcHarness::new().await;
+    let manifest_yaml = fixture_manifest_with_test_queries_yaml(
+        harness.temp_path(),
+        &["SET datafusion.execution.batch_size = 1"],
+    );
+    harness
+        .import_source(manifest_yaml, Vec::new(), Vec::new())
+        .await;
+
+    let validated = harness.validate_source("local_messages").await;
+    assert_eq!(validated.query_tests.len(), 1);
+    assert_eq!(validated.failed_query_count, 1);
+    assert_eq!(
+        validated.query_tests[0].error_message.as_deref(),
+        Some("test query must be read-only SQL")
+    );
+}
+
+#[tokio::test]
+async fn validate_source_skipped_registration_returns_unary_failed_precondition() {
+    let harness = GrpcHarness::new().await;
+    let missing_dir = harness.temp_path().join("missing");
+    let manifest_yaml = serde_yaml::to_string(&serde_json::json!({
+        "name": "missing_messages",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "jsonl",
+        "tables": [{
+            "name": "messages",
+            "description": "Missing messages",
+            "source": {
+                "location": format!("file://{}/", missing_dir.display()),
+                "glob": "**/*.jsonl",
+            },
+            "columns": [
+                {"name": "type", "type": "Utf8"},
+            ],
+        }],
+    }))
+    .expect("serialize manifest yaml");
+    harness
+        .import_source(manifest_yaml, Vec::new(), Vec::new())
+        .await;
+
+    let error = harness
+        .source_client()
+        .validate_source(Request::new(ValidateSourceRequest {
+            workspace: Some(default_workspace()),
+            name: "missing_messages".to_string(),
+        }))
+        .await
+        .expect_err("validation should fail when the source never registers");
+    assert_eq!(error.code(), tonic::Code::FailedPrecondition);
+    assert!(error.message().contains("is not a directory"));
 }
 
 #[tokio::test]

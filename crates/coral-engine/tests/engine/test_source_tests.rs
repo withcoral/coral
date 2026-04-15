@@ -50,7 +50,6 @@ async fn test_source_lists_registered_tables() {
 }
 
 #[tokio::test]
-#[ignore = "TODO: re-enable when test_source behavior is aligned with the source lint command"]
 async fn test_source_missing_directory_returns_error() {
     let temp = TempDir::new().expect("temp dir");
     let missing_dir = temp.path().join("missing");
@@ -60,8 +59,6 @@ async fn test_source_missing_directory_returns_error() {
         "**/*.jsonl",
     ));
 
-    // TODO: Re-enable this once source validation semantics are aligned with
-    // the source lint command instead of returning Ok([]) for skipped sources.
     let error = CoralQuery::test_source(&source, &TestRuntime)
         .await
         .expect_err("test_source should fail for missing directories");
@@ -72,5 +69,62 @@ async fn test_source_missing_directory_returns_error() {
             "jsonl_test_missing.users source.location '{}' is not a directory",
             dir_url(&missing_dir)
         ),
+    );
+}
+
+#[tokio::test]
+async fn validate_source_with_tests_reports_passing_and_failing_queries() {
+    let temp = TempDir::new().expect("temp dir");
+    write_jsonl_file(temp.path(), "users.jsonl", &users_rows());
+    let source = build_source(jsonl_manifest(
+        "jsonl_test_source",
+        temp.path(),
+        "**/*.jsonl",
+    ));
+    let queries = vec![
+        "SELECT * FROM jsonl_test_source.users".to_string(),
+        "SELECT * FROM jsonl_test_source.missing".to_string(),
+    ];
+
+    let outcome = CoralQuery::validate_source_with_tests(&source, &TestRuntime, &queries)
+        .await
+        .expect("validate_source_with_tests should succeed");
+
+    assert_eq!(outcome.tables.len(), 1);
+    assert_eq!(outcome.declared_query_count, 2);
+    assert_eq!(outcome.passed_query_count, 1);
+    assert_eq!(outcome.failed_query_count, 1);
+    assert!(!outcome.all_query_tests_passed);
+    assert_eq!(outcome.query_tests.len(), 2);
+    assert!(outcome.query_tests[0].passed());
+    assert_eq!(outcome.query_tests[0].row_count(), Some(3));
+    assert!(!outcome.query_tests[1].passed());
+    assert!(
+        outcome.query_tests[1]
+            .error_message()
+            .expect("failed query should carry an error")
+            .contains("resource not found")
+    );
+}
+
+#[tokio::test]
+async fn validate_source_with_tests_maps_non_read_only_queries_to_stable_error() {
+    let temp = TempDir::new().expect("temp dir");
+    write_jsonl_file(temp.path(), "users.jsonl", &users_rows());
+    let source = build_source(jsonl_manifest(
+        "jsonl_test_source",
+        temp.path(),
+        "**/*.jsonl",
+    ));
+    let queries = vec!["SET datafusion.execution.batch_size = 1".to_string()];
+
+    let outcome = CoralQuery::validate_source_with_tests(&source, &TestRuntime, &queries)
+        .await
+        .expect("validate_source_with_tests should succeed");
+
+    assert_eq!(outcome.failed_query_count, 1);
+    assert_eq!(
+        outcome.query_tests[0].error_message(),
+        Some("test query must be read-only SQL")
     );
 }
