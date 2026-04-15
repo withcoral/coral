@@ -48,6 +48,7 @@ Notes:
 - Coral preserves the order exactly as you write it.
 - Coral allows duplicate entries.
 - Each query result is reported individually during `coral source test`.
+- `coral source add` and `coral onboard` surface post-install validation issues as warnings; `coral source test` is the strict pass/fail command.
 - Keep these queries read-only. Statements such as `CREATE`, `COPY`, `INSERT`,
   `UPDATE`, `DELETE`, or `SET` are reported as failed validation queries.
 

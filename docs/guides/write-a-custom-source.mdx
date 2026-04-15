@@ -69,7 +69,7 @@ coral source add --file ./local-messages.yaml
 coral source test local_messages
 ```
 
-`coral source add --file` validates immediately after install, but it treats failing `test_queries` as warnings so the source still lands in your workspace. Use `coral source test <NAME>` when you want strict pass/fail verification.
+`coral source add --file` validates immediately after install. Post-install validation issues, including failing `test_queries`, are printed as warnings so the source still lands in your workspace. Use `coral source test <NAME>` when you want strict pass/fail verification.
 
 ### 4. Query it
 

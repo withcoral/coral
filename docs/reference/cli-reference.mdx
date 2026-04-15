@@ -48,7 +48,7 @@ coral source add github
 ```
 
 Coral prompts for required variables or secrets interactively. If the source is already installed, running this command again replaces its stored credentials with the new values you provide.
-After installation, it automatically validates the connection, prints the discovered tables, and runs any optional top-level `test_queries` declared in the source spec. Query-test failures are reported as warnings here so the source remains installed and re-runnable.
+After installation, it automatically validates the connection, prints the discovered tables, and runs any optional top-level `test_queries` declared in the source spec. Any post-install validation issue is reported as a warning here so the source remains installed and re-runnable.
 
 ### `coral source add --file <PATH>`
 
@@ -58,7 +58,7 @@ Add a custom source spec from a YAML file.
 coral source add --file ./local-messages.yaml
 ```
 
-Like `source add`, this automatically validates, prints discovered tables, and warns if declared `test_queries` fail after install.
+Like `source add`, this automatically validates, prints discovered tables, and warns about post-install validation issues instead of rolling the source back.
 
 ### `coral source lint <FILE>`
 
@@ -94,6 +94,8 @@ Run the guided source setup flow.
 ```shellscript
 coral onboard
 ```
+
+The onboarding wizard uses the same warn-only post-install validation behavior as `coral source add`: Coral validates the source after install, runs any declared `test_queries`, and keeps the source installed if that validation reports warnings. Use the wizard's explicit **Validate** action or `coral source test <NAME>` when you want strict pass/fail validation.
 
 ## `coral mcp-stdio`
 
