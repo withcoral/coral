@@ -143,9 +143,10 @@ fn validate_mapping(map: &Map<String, Value>, declared: &BTreeSet<String>) -> Re
         return Ok(());
     }
 
-    let key = map.get("key").and_then(Value::as_str).ok_or_else(|| {
-        ManifestError::validation("manifest 'input' value source is missing key")
-    })?;
+    let key = map
+        .get("key")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ManifestError::validation("manifest 'input' value source is missing key"))?;
     if !declared.contains(key) {
         return Err(ManifestError::validation(format!(
             "manifest input '{key}' is referenced but not declared under top-level inputs"
@@ -251,7 +252,7 @@ auth:
       from: input
       key: GITHUB_TOKEN
 tables: []
-"#;
+";
         let inputs = collect(manifest).expect("inputs");
         assert_eq!(inputs.len(), 1);
         assert_eq!(inputs[0].kind, ManifestInputKind::Secret);
@@ -259,14 +260,14 @@ tables: []
 
     #[test]
     fn manifests_without_inputs_block_are_allowed() {
-        let manifest = r#"
+        let manifest = r"
 name: demo
 version: 1.0.0
 dsl_version: 3
 backend: http
 base_url: https://api.github.com
 tables: []
-"#;
+";
         let inputs = collect(manifest).expect("no inputs is fine");
         assert!(inputs.is_empty());
     }
@@ -335,7 +336,7 @@ tables: []
 
     #[test]
     fn secret_defaults_are_rejected() {
-        let manifest = r#"
+        let manifest = r"
 name: demo
 version: 1.0.0
 dsl_version: 3
@@ -345,9 +346,8 @@ inputs:
     kind: secret
     default: abc123
 tables: []
-"#;
+";
         let error = collect(manifest).expect_err("secret default");
         assert!(error.to_string().contains("must not declare a default"));
     }
-
 }

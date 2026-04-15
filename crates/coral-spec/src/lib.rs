@@ -94,7 +94,9 @@ pub use common::{
 pub use error::{ManifestError, Result};
 pub use inputs::{ManifestInputKind, ManifestInputSpec};
 pub use loader::load_manifest_path;
-pub use parser::{ValidatedSourceManifest, parse_source_manifest_value, parse_source_manifest_yaml};
+pub use parser::{
+    ValidatedSourceManifest, parse_source_manifest_value, parse_source_manifest_yaml,
+};
 pub use template::{ParsedTemplate, TemplateNamespace, TemplatePart, TemplateToken};
 pub(crate) use validate::{
     validate_columns, validate_filters_and_column_exprs, validate_http_table,

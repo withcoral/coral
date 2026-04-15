@@ -269,4 +269,3 @@ pub(crate) fn test_http_table_spec(
         pagination: PaginationSpec::default(),
     }
 }
-
