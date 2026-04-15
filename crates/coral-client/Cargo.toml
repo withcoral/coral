@@ -14,6 +14,7 @@ arrow.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tonic.workspace = true
+tonic-types.workspace = true
 
 coral-api.workspace = true
 coral-app.workspace = true

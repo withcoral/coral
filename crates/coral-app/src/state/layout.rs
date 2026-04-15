@@ -1,12 +1,12 @@
 //! Derives and creates the filesystem layout used by the local app.
 
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use directories::ProjectDirs;
 
 use crate::bootstrap::AppError;
 use crate::sources::SourceName;
+use crate::storage::fs::ensure_dir;
 use crate::workspaces::WorkspaceName;
 
 pub(crate) const INSTALLED_MANIFEST_FILE_NAME: &str = "manifest.yaml";
@@ -37,8 +37,8 @@ impl AppStateLayout {
     }
 
     pub(crate) fn ensure(&self) -> Result<(), std::io::Error> {
-        fs::create_dir_all(&self.config_dir)?;
-        fs::create_dir_all(self.state_lock.parent().unwrap_or_else(|| Path::new(".")))?;
+        ensure_dir(&self.config_dir)?;
+        ensure_dir(self.state_lock.parent().unwrap_or_else(|| Path::new(".")))?;
         Ok(())
     }
 
