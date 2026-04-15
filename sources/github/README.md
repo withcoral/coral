@@ -1,6 +1,6 @@
 # GitHub Connector
 
-**Version:** 1.1.6
+**Version:** 1.1.5
 **Source:** OpenAPI-generated from GitHub's v3 REST API spec
 **Backend:** HTTP
 **Tables:** 369
