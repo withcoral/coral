@@ -467,10 +467,14 @@ fn slack_messages_manifest(base_url: &str) -> Value {
                     "nullable": false,
                     "expr": {
                         "kind": "template",
-                        "template": "https://slack.com/archives/{channel}/p{ts_id|remove:.}",
+                        "template": "https://slack.com/archives/{{filter.channel}}/p{{expr.ts_id}}",
                         "values": {
-                            "channel": { "kind": "from_filter", "key": "channel" },
-                            "ts_id": { "kind": "path", "path": ["ts"] }
+                            "ts_id": {
+                                "kind": "replace",
+                                "expr": { "kind": "path", "path": ["ts"] },
+                                "from": ".",
+                                "to": ""
+                            }
                         }
                     }
                 }

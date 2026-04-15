@@ -13,7 +13,9 @@ use serde_json::Value;
 
 use crate::backends::arrow_type_for_column;
 use crate::backends::shared::json_path::get_path_value;
-use coral_spec::{ColumnSpec, ExprSpec, TimestampInput};
+use coral_spec::{
+    ColumnSpec, ExprSpec, ParsedTemplate, TemplateNamespace, TemplatePart, TimestampInput,
+};
 
 #[allow(
     clippy::implicit_hasher,
@@ -180,9 +182,11 @@ fn eval_expr(expr: &ExprSpec, row: &Value, filters: &HashMap<String, String>) ->
         ExprSpec::FormatTimestamp { expr, input } => {
             eval_format_timestamp(expr, input, row, filters)
         }
-        ExprSpec::Template { template, values } => {
-            Some(eval_template(template, values, row, filters))
+        ExprSpec::Replace { expr, from, to } => {
+            let raw = to_utf8(eval_expr(expr, row, filters))?;
+            Some(Value::String(raw.replace(from, to)))
         }
+        ExprSpec::Template { template, values } => eval_template(template, values, row, filters),
     }
 }
 
@@ -228,60 +232,52 @@ fn parse_epoch_micros(s: &str, input: &TimestampInput) -> Option<i64> {
 }
 
 fn eval_template(
-    template: &str,
+    template: &ParsedTemplate,
     values: &HashMap<String, ExprSpec>,
     row: &Value,
     filters: &HashMap<String, String>,
-) -> Value {
+) -> Option<Value> {
     // Pre-evaluate every key so replacements are deterministic regardless of
     // HashMap iteration order.
-    let evaluated: HashMap<&str, String> = values
+    let evaluated: HashMap<&str, Option<String>> = values
         .iter()
         .map(|(key, expr)| {
-            let raw = eval_expr(expr, row, filters)
-                .and_then(|v| to_utf8(Some(v)))
-                .unwrap_or_default();
+            let raw = eval_expr(expr, row, filters).and_then(|v| to_utf8(Some(v)));
             (key.as_str(), raw)
         })
         .collect();
 
-    // Scan the template for `{…}` placeholders and replace them in a single
-    // left-to-right pass so that every occurrence is handled and evaluation
-    // values cannot accidentally match other placeholders.
-    let mut result = String::with_capacity(template.len());
-    let mut rest = template;
-    while let Some(open) = rest.find('{') {
-        result.push_str(&rest[..open]);
-        let after_open = &rest[open + 1..];
-        if let Some(close) = after_open.find('}') {
-            let token = &after_open[..close];
-            if let Some((key, remove_arg)) = token.split_once("|remove:") {
-                if let Some(raw) = evaluated.get(key) {
-                    result.push_str(&raw.replace(remove_arg, ""));
-                    rest = &after_open[close + 1..];
-                } else {
-                    // Unknown key — treat the `{` as literal so a later valid
-                    // placeholder in the same segment can still be processed.
-                    result.push('{');
-                    rest = after_open;
+    let mut result = String::with_capacity(template.raw().len());
+    for part in template.parts() {
+        match part {
+            TemplatePart::Literal(part) => result.push_str(part),
+            TemplatePart::Token(token) => match token.namespace() {
+                TemplateNamespace::Expr => {
+                    let rendered = evaluated
+                        .get(token.key())
+                        .and_then(Clone::clone)
+                        .or_else(|| token.default_value().map(ToString::to_string))
+                        .unwrap_or_default();
+                    result.push_str(&rendered);
                 }
-            } else if let Some(raw) = evaluated.get(token) {
-                result.push_str(raw);
-                rest = &after_open[close + 1..];
-            } else {
-                // Unknown key — treat the `{` as literal so a later valid
-                // placeholder in the same segment can still be processed.
-                result.push('{');
-                rest = after_open;
-            }
-        } else {
-            // No closing brace — emit the `{` literally and continue.
-            result.push('{');
-            rest = after_open;
+                TemplateNamespace::Filter => {
+                    let rendered = filters
+                        .get(token.key())
+                        .cloned()
+                        .or_else(|| token.default_value().map(ToString::to_string))
+                        .unwrap_or_default();
+                    result.push_str(&rendered);
+                }
+                TemplateNamespace::Secret
+                | TemplateNamespace::Variable
+                | TemplateNamespace::State
+                | TemplateNamespace::Env
+                | TemplateNamespace::Other(_) => return None,
+            },
         }
     }
-    result.push_str(rest);
-    Value::String(result)
+
+    Some(Value::String(result))
 }
 
 fn value_to_string_for_join(value: &Value) -> Option<String> {
@@ -357,7 +353,7 @@ mod tests {
     use super::{convert_items, eval_template};
     use crate::backends::schema_from_columns;
     use coral_spec::backends::http::HttpTableSpec;
-    use coral_spec::{ExprSpec, RequestSpec, parse_source_manifest_value};
+    use coral_spec::{ExprSpec, ParsedTemplate, RequestSpec, parse_source_manifest_value};
     use datafusion::arrow::array::{Array, StringArray};
     use serde_json::{Value, json};
     use std::collections::HashMap;
@@ -409,6 +405,12 @@ mod tests {
                 "kind": "if_present",
                 "check": expr_json(check),
                 "then_value": then_value,
+            }),
+            ExprSpec::Replace { expr, from, to } => json!({
+                "kind": "replace",
+                "expr": expr_json(expr),
+                "from": from,
+                "to": to,
             }),
             ExprSpec::JoinTagValues {
                 path,
@@ -540,19 +542,67 @@ mod tests {
     }
 
     #[test]
-    fn template_allows_literal_open_brace_before_valid_placeholder() {
+    fn replace_expr_rewrites_string_values() {
+        let table = table_with_expr(
+            "slug",
+            &ExprSpec::Replace {
+                expr: Box::new(ExprSpec::Path {
+                    path: vec!["title".into()],
+                }),
+                from: " ".into(),
+                to: "-".into(),
+            },
+        );
+        let schema = schema_from_columns(table.columns(), "test", table.name()).unwrap();
+        let items = vec![serde_json::json!({"title": "hello world"})];
+        let batch = convert_items(table.columns(), schema, &HashMap::new(), &items).unwrap();
+        let col = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(col.value(0), "hello-world");
+    }
+
+    #[test]
+    fn template_renders_expr_and_filter_tokens_with_defaults() {
         let rendered = eval_template(
-            r#"{ "user": "{user_id}" }"#,
+            &ParsedTemplate::parse("{{filter.org|default-org}}/{{expr.slug|untitled}}")
+                .expect("template"),
             &HashMap::from([(
-                "user_id".to_string(),
-                ExprSpec::Path {
-                    path: vec!["user_id".into()],
+                "slug".to_string(),
+                ExprSpec::Replace {
+                    expr: Box::new(ExprSpec::Path {
+                        path: vec!["title".into()],
+                    }),
+                    from: " ".into(),
+                    to: "-".into(),
                 },
             )]),
-            &json!({"user_id": "U123"}),
+            &json!({"title": "hello world"}),
+            &HashMap::from([("org".to_string(), "acme".to_string())]),
+        );
+
+        assert_eq!(
+            rendered,
+            Some(Value::String("acme/hello-world".to_string()))
+        );
+    }
+
+    #[test]
+    fn template_uses_default_for_missing_expr_value() {
+        let rendered = eval_template(
+            &ParsedTemplate::parse("{{expr.slug|untitled}}").expect("template"),
+            &HashMap::from([(
+                "slug".to_string(),
+                ExprSpec::Path {
+                    path: vec!["missing".into()],
+                },
+            )]),
+            &json!({"title": "hello world"}),
             &HashMap::new(),
         );
 
-        assert_eq!(rendered, Value::String(r#"{ "user": "U123" }"#.to_string()));
+        assert_eq!(rendered, Some(Value::String("untitled".to_string())));
     }
 }

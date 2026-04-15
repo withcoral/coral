@@ -168,15 +168,16 @@ tables:
         description: Deep link to the message in Slack
         expr:
           kind: template
-          template: "https://slack.com/archives/{channel}/p{ts_id|remove:.}"
+          template: "https://slack.com/archives/{{filter.channel}}/p{{expr.ts_id}}"
           values:
-            channel:
-              kind: from_filter
-              key: channel
             ts_id:
-              kind: path
-              path:
-                - ts
+              kind: replace
+              expr:
+                kind: path
+                path:
+                  - ts
+              from: "."
+              to: ""
       - name: thread_ts
         type: Utf8
         nullable: true

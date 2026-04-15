@@ -53,6 +53,7 @@ The `expr` field on a column defines how to extract or compute its value from ea
 | -------------------- | ------------------------------------------------------------------ |
 | `path`               | Extract a value by JSON path segments                              |
 | `format_timestamp`   | Convert an epoch timestamp to a `Timestamp` column                 |
+| `replace`            | Replace all occurrences of one substring in the rendered value     |
 | `template`           | Build a string from a template with placeholder substitutions      |
 
 ### `format_timestamp`
@@ -80,25 +81,60 @@ Coral stores `Timestamp` columns as epoch microseconds internally, so the render
 | `input` | string | `seconds` | Unit of the raw value: `seconds` or `milliseconds` |
 | `expr`  | expr   | —         | Inner expression that produces the epoch value     |
 
+### `replace`
+
+Evaluates an inner expression as a string and replaces all occurrences of `from` with `to`.
+
+```yaml
+- name: ts_id
+  type: Utf8
+  expr:
+    kind: replace
+    expr:
+      kind: path
+      path:
+        - ts
+    from: "."
+    to: ""
+```
+
+| Field  | Type   | Default | Description                              |
+| ------ | ------ | ------- | ---------------------------------------- |
+| `expr` | expr   | —       | Inner expression that produces a string  |
+| `from` | string | —       | Non-empty substring to replace           |
+| `to`   | string | —       | Replacement text                         |
+
 ### `template`
 
-Builds a string by substituting `{key}` placeholders with evaluated expressions. Supports a `{key|remove:X}` modifier that strips all occurrences of `X` from the value before substitution.
+Builds a string by substituting parsed template tokens with either:
+
+- `{{expr.name}}`: a named sub-expression from `values`
+- `{{filter.name}}`: a query filter value
+
+Like other Coral templates, `|default` supplies a fallback when the value is missing at runtime.
+Column-expression templates do not support `secret`, `variable`, or `state` namespaces.
 
 ```yaml
 - name: permalink
   type: Utf8
   expr:
     kind: template
-    template: "https://example.com/archives/{channel}/p{ts_id|remove:.}"
+    template: "https://example.com/archives/{{filter.channel}}/p{{expr.ts_id}}"
     values:
-      channel:
-        kind: from_filter
-        key: channel
       ts_id:
-        kind: path
-        path:
-          - ts
+        kind: replace
+        expr:
+          kind: path
+          path:
+            - ts
+        from: "."
+        to: ""
 ```
+
+| Field      | Type   | Default | Description                                                        |
+| ---------- | ------ | ------- | ------------------------------------------------------------------ |
+| `template` | string | —       | Parsed Coral template string using `{{expr.*}}` and `{{filter.*}}` |
+| `values`   | object | —       | Named sub-expressions referenced from `{{expr.name}}` tokens       |
 
 ## File-backed tables
 

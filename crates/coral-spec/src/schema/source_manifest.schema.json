@@ -510,6 +510,17 @@
         {
           "type": "object",
           "additionalProperties": false,
+          "required": ["kind", "expr", "from", "to"],
+          "properties": {
+            "kind": { "const": "replace" },
+            "expr": { "$ref": "#/$defs/expr" },
+            "from": { "type": "string", "minLength": 1 },
+            "to": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
           "required": ["kind"],
           "properties": {
             "kind": { "const": "current_row" }

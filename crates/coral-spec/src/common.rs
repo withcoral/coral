@@ -598,8 +598,13 @@ pub enum ExprSpec {
         #[serde(default)]
         input: TimestampInput,
     },
+    Replace {
+        expr: Box<ExprSpec>,
+        from: String,
+        to: String,
+    },
     Template {
-        template: String,
+        template: ParsedTemplate,
         values: HashMap<String, ExprSpec>,
     },
 }
