@@ -1,8 +1,7 @@
-//! Engine-internal structured query error with user- and agent-facing hints.
+//! Structured query error type for provider failures.
 //!
-//! This type is **not** re-exported from the `coral-engine` crate root.
-//! The app boundary converts it to AIP-193 standard error details;
-//! consumers outside the engine see only `coral-client::CoralQueryError`.
+//! Internal to `coral-engine`; the app layer converts these into
+//! AIP-193 error details before they cross the gRPC boundary.
 
 use std::collections::HashMap;
 
@@ -254,7 +253,7 @@ mod tests {
         assert!(!error.retryable);
         let hint = error.hint.as_ref().expect("401 should have a hint");
         assert!(hint.contains("coral source add github"));
-        assert!(hint.contains("coral source import"));
+        assert!(hint.contains("coral source add --file"));
     }
 
     #[test]

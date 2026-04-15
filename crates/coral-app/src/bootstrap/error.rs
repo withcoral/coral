@@ -6,6 +6,10 @@ use tonic_types::{ErrorDetail, StatusExt as _};
 
 use crate::state::CredentialsError;
 
+/// Coral error domain for `google.rpc.ErrorInfo`.
+/// Matches `coral_client::CORAL_ERROR_DOMAIN`.
+const CORAL_ERROR_DOMAIN: &str = "coral.withcoral.com";
+
 /// Errors surfaced by the local application layer.
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
@@ -94,7 +98,7 @@ pub(crate) fn core_status(error: CoreError) -> Status {
             let mut details: Vec<ErrorDetail> =
                 vec![ErrorDetail::ErrorInfo(tonic_types::ErrorInfo::new(
                     sqe.reason(),
-                    "coral.withcoral.com",
+                    CORAL_ERROR_DOMAIN,
                     sqe.metadata().clone(),
                 ))];
             if sqe.retryable() {
