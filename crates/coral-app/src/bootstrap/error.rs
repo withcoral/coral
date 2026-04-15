@@ -95,22 +95,47 @@ pub(crate) fn app_status(error: AppError) -> Status {
 pub(crate) fn core_status(error: CoreError) -> Status {
     match error {
         CoreError::Structured(sqe) => {
-            let mut details: Vec<ErrorDetail> =
-                vec![ErrorDetail::ErrorInfo(tonic_types::ErrorInfo::new(
-                    sqe.reason(),
-                    CORAL_ERROR_DOMAIN,
-                    sqe.metadata().clone(),
-                ))];
+            let mut metadata = sqe.metadata().clone();
+            metadata.insert("summary".to_string(), sqe.summary().to_string());
+            if !sqe.detail().is_empty() {
+                metadata.insert("detail".to_string(), sqe.detail().to_string());
+            }
+            if let Some(hint) = sqe.hint() {
+                metadata.insert("hint".to_string(), hint.to_string());
+            }
+
+            let mut details: Vec<ErrorDetail> = vec![ErrorDetail::ErrorInfo(
+                tonic_types::ErrorInfo::new(sqe.reason(), CORAL_ERROR_DOMAIN, metadata),
+            )];
             if sqe.retryable() {
                 details.push(ErrorDetail::RetryInfo(tonic_types::RetryInfo::new(None)));
             }
-            Status::with_error_details_vec(grpc_code(sqe.status()), sqe.plain_message(), details)
+
+            let plain = render_plain_message(sqe.summary(), sqe.detail(), sqe.hint());
+            Status::with_error_details_vec(
+                grpc_code(sqe.status()),
+                truncate_status_detail(plain),
+                details,
+            )
         }
         other => Status::new(
             grpc_code(other.status_code()),
             truncate_status_detail(other.to_string()),
         ),
     }
+}
+
+fn render_plain_message(summary: &str, detail: &str, hint: Option<&str>) -> String {
+    let mut message = summary.to_string();
+    if !detail.is_empty() {
+        message.push('\n');
+        message.push_str(detail);
+    }
+    if let Some(hint) = hint {
+        message.push_str("\nHint: ");
+        message.push_str(hint);
+    }
+    message
 }
 
 fn grpc_code(status: StatusCode) -> Code {

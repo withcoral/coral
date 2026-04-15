@@ -201,20 +201,6 @@ impl QueryError {
         }
         error
     }
-
-    /// Renders a plain-text message preserving the summary, detail, and hint.
-    pub(crate) fn to_plain_message(&self) -> String {
-        let mut message = self.summary.clone();
-        if !self.detail.is_empty() {
-            message.push('\n');
-            message.push_str(&self.detail);
-        }
-        if let Some(hint) = &self.hint {
-            message.push_str("\nHint: ");
-            message.push_str(hint);
-        }
-        message
-    }
 }
 
 #[cfg(test)]
@@ -291,15 +277,5 @@ mod tests {
         );
         assert!(error.detail.contains("[GET] https://api.github.com/issues"));
         assert!(!error.detail.contains("page=3"));
-    }
-
-    #[test]
-    fn to_plain_message_includes_summary_detail_and_hint() {
-        let error =
-            QueryError::missing_required_filter("github", "issues", "repo", "missing filter");
-        let text = error.to_plain_message();
-        assert!(text.contains(&error.summary));
-        assert!(text.contains("missing filter"));
-        assert!(text.contains("Hint: "));
     }
 }

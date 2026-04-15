@@ -387,7 +387,7 @@ async fn api_returns_500() {
             assert!(sqe.retryable());
             assert_eq!(sqe.metadata().get("http_status").unwrap(), "500");
             assert_eq!(sqe.metadata().get("source").unwrap(), "http_500");
-            assert!(sqe.plain_message().contains("boom"));
+            assert!(sqe.detail().contains("boom"));
         }
         other => panic!("unexpected 500 error variant: {other:?}"),
     }
@@ -416,13 +416,8 @@ async fn api_returns_401() {
             assert!(!sqe.retryable());
             assert_eq!(sqe.metadata().get("http_status").unwrap(), "401");
             assert_eq!(sqe.metadata().get("source").unwrap(), "http_401");
-            assert!(
-                sqe.metadata()
-                    .get("hint")
-                    .unwrap()
-                    .contains("coral source add http_401")
-            );
-            assert!(sqe.plain_message().contains("unauthorized"));
+            assert!(sqe.hint().unwrap().contains("coral source add http_401"));
+            assert!(sqe.detail().contains("unauthorized"));
         }
         other => panic!("unexpected 401 error variant: {other:?}"),
     }
@@ -580,13 +575,8 @@ async fn missing_required_filter_surfaces_structured_error() {
             assert_eq!(sqe.metadata().get("schema").unwrap(), "http_required");
             assert_eq!(sqe.metadata().get("table").unwrap(), "users");
             assert_eq!(sqe.metadata().get("field").unwrap(), "id");
-            assert!(sqe.plain_message().contains("WHERE id"));
-            assert!(
-                sqe.metadata()
-                    .get("hint")
-                    .unwrap()
-                    .contains("coral.columns")
-            );
+            assert!(sqe.summary().contains("WHERE id"));
+            assert!(sqe.hint().unwrap().contains("coral.columns"));
         }
         other => panic!("unexpected missing-filter error variant: {other:?}"),
     }
