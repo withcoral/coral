@@ -6,6 +6,7 @@ use std::sync::Mutex;
 
 use coral_api::v1::query_service_server::QueryServiceServer;
 use coral_api::v1::source_service_server::SourceServiceServer;
+use coral_api::{HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
@@ -175,8 +176,12 @@ async fn start_server(
 
     let task = tokio::spawn(async move {
         Server::builder()
+            .http2_max_header_list_size(HTTP2_MAX_HEADER_LIST_SIZE)
             .add_service(SourceServiceServer::new(source_service))
-            .add_service(QueryServiceServer::new(query_service))
+            .add_service(
+                QueryServiceServer::new(query_service)
+                    .max_encoding_message_size(QUERY_RESPONSE_MAX_MESSAGE_SIZE),
+            )
             .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
                 let _ = shutdown_rx.await;
             })
@@ -195,6 +200,7 @@ mod tests {
     use coral_api::v1::query_service_client::QueryServiceClient;
     use coral_api::v1::source_service_client::SourceServiceClient;
     use coral_api::v1::{ExecuteSqlRequest, ImportSourceRequest, Workspace};
+    use coral_api::{HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE};
     use coral_engine::QueryRuntimeContext;
     use tempfile::TempDir;
     use tonic::Request;
@@ -244,11 +250,13 @@ mod tests {
             .expect("start server");
         let channel = Endpoint::from_shared(running.endpoint_uri().to_string())
             .expect("endpoint")
+            .http2_max_header_list_size(HTTP2_MAX_HEADER_LIST_SIZE)
             .connect()
             .await
             .expect("connect");
         let mut source_client = SourceServiceClient::new(channel.clone());
-        let mut query_client = QueryServiceClient::new(channel);
+        let mut query_client = QueryServiceClient::new(channel)
+            .max_decoding_message_size(QUERY_RESPONSE_MAX_MESSAGE_SIZE);
 
         source_client
             .import_source(Request::new(ImportSourceRequest {
@@ -290,5 +298,161 @@ tables:
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0]["text"], "hello");
         assert_eq!(rows[1]["text"], "world");
+    }
+
+    /// an `ExecuteSql` response larger than
+    /// the previous tonic 4 MB default must round-trip cleanly. Before the
+    /// fix, this query failed with `h2 protocol error … PROTOCOL_ERROR`.
+    #[tokio::test]
+    async fn execute_sql_response_above_default_4mb_limit_round_trips() {
+        let temp = TempDir::new().expect("temp dir");
+        let config_dir = temp.path().join("coral-config");
+
+        let layout = AppStateLayout::discover(Some(config_dir.clone())).expect("layout");
+        let source_manager = SourceManager::new(
+            ConfigStore::new(layout.clone()),
+            SecretStore::new(layout.clone()),
+            layout.clone(),
+        );
+        let query_manager = QueryManager::new(
+            ConfigStore::new(layout.clone()),
+            SecretStore::new(layout.clone()),
+            QueryRuntimeContext { home_dir: None },
+            layout,
+        );
+        let running = start_server(source_manager, query_manager)
+            .await
+            .expect("start server");
+        let channel = Endpoint::from_shared(running.endpoint_uri().to_string())
+            .expect("endpoint")
+            .http2_max_header_list_size(HTTP2_MAX_HEADER_LIST_SIZE)
+            .connect()
+            .await
+            .expect("connect");
+        let mut query_client = QueryServiceClient::new(channel)
+            .max_decoding_message_size(QUERY_RESPONSE_MAX_MESSAGE_SIZE);
+
+        // No underscore separator — DataFusion's SQL parser is conservative
+        // about numeric literal formats.
+        let sql = "SELECT repeat('x', 5000000) AS pad";
+        let response = query_client
+            .execute_sql(Request::new(ExecuteSqlRequest {
+                workspace: Some(default_workspace()),
+                sql: sql.to_string(),
+            }))
+            .await
+            .expect("execute_sql >4MB response")
+            .into_inner();
+
+        // Prove the payload actually crossed the old 4 MB ceiling — without
+        // this check the test could silently start passing for the wrong
+        // reason if `repeat` ever returned a smaller value.
+        assert!(
+            response.arrow_ipc_stream.len() > 4 * 1024 * 1024,
+            "regression payload was {} bytes; expected >4MB",
+            response.arrow_ipc_stream.len()
+        );
+
+        let result = coral_client::decode_execute_sql_response(&response).expect("decode");
+        assert_eq!(result.row_count(), 1);
+    }
+
+    /// an invalid column against a wide manifest must surface as a clean `tonic::Status`,
+    /// not a transport-level `h2 protocol error`. Pre-fix, `DataFusion`'s
+    /// "Valid fields are …" error enumerating ~600 field names
+    /// overflowed HTTP/2 trailers; the CLI saw `PROTOCOL_ERROR` instead
+    /// of the intended status.
+    ///
+    /// Also verifies the behavior change: wrapped `SchemaError` now maps
+    /// to `Code::InvalidArgument` (via `find_root()`), not `Code::Internal`.
+    #[tokio::test]
+    async fn invalid_column_on_wide_manifest_returns_clean_status() {
+        use std::fmt::Write as _;
+
+        use crate::bootstrap::MAX_STATUS_DETAIL_BYTES;
+
+        let temp = TempDir::new().expect("temp dir");
+        let config_dir = temp.path().join("coral-config");
+        let data_dir = temp.path().join("wide-data");
+        std::fs::create_dir_all(&data_dir).expect("create data dir");
+        // No rows needed — the test cares only about schema width.
+        let location = format!("file://{}/", data_dir.display());
+
+        let mut manifest = String::new();
+        manifest.push_str("name: wide_demo\n");
+        manifest.push_str("version: 0.1.0\n");
+        manifest.push_str("dsl_version: 3\n");
+        manifest.push_str("backend: jsonl\n");
+        manifest.push_str("tables:\n");
+        manifest.push_str("  - name: wide\n");
+        manifest.push_str("    description: Wide fixture\n");
+        manifest.push_str("    source:\n");
+        writeln!(manifest, "      location: {location}").expect("write to String");
+        manifest.push_str("      glob: \"**/*.jsonl\"\n");
+        manifest.push_str("    columns:\n");
+        for i in 0..600 {
+            writeln!(manifest, "      - name: col_{i:04}\n        type: Utf8")
+                .expect("write to String");
+        }
+
+        let layout = AppStateLayout::discover(Some(config_dir.clone())).expect("layout");
+        let source_manager = SourceManager::new(
+            ConfigStore::new(layout.clone()),
+            SecretStore::new(layout.clone()),
+            layout.clone(),
+        );
+        let query_manager = QueryManager::new(
+            ConfigStore::new(layout.clone()),
+            SecretStore::new(layout.clone()),
+            QueryRuntimeContext { home_dir: None },
+            layout,
+        );
+        let running = start_server(source_manager, query_manager)
+            .await
+            .expect("start server");
+        let channel = Endpoint::from_shared(running.endpoint_uri().to_string())
+            .expect("endpoint")
+            .http2_max_header_list_size(HTTP2_MAX_HEADER_LIST_SIZE)
+            .connect()
+            .await
+            .expect("connect");
+        let mut source_client = SourceServiceClient::new(channel.clone());
+        let mut query_client = QueryServiceClient::new(channel)
+            .max_decoding_message_size(QUERY_RESPONSE_MAX_MESSAGE_SIZE);
+
+        source_client
+            .import_source(Request::new(ImportSourceRequest {
+                workspace: Some(default_workspace()),
+                manifest_yaml: manifest,
+                variables: Vec::new(),
+                secrets: Vec::new(),
+            }))
+            .await
+            .expect("import wide source");
+
+        let status = query_client
+            .execute_sql(Request::new(ExecuteSqlRequest {
+                workspace: Some(default_workspace()),
+                sql: "SELECT bogus_column FROM wide_demo.wide LIMIT 0".to_string(),
+            }))
+            .await
+            .expect_err("expected gRPC Status, not a transport-level PROTOCOL_ERROR");
+
+        assert_eq!(
+            status.code(),
+            tonic::Code::InvalidArgument,
+            "wrapped schema error should map to InvalidArgument via find_root(); message = {:?}",
+            status.message()
+        );
+        assert!(
+            status.message().len() <= MAX_STATUS_DETAIL_BYTES,
+            "status message was {} bytes; truncator should have clipped it to <= {MAX_STATUS_DETAIL_BYTES}",
+            status.message().len(),
+        );
+        assert!(
+            status.message().contains("No field named"),
+            "missing expected schema-error head in: {:?}",
+            status.message()
+        );
     }
 }

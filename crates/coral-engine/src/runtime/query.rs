@@ -2,7 +2,6 @@
 
 use std::sync::Arc;
 
-use datafusion::common::SchemaError;
 use datafusion::error::DataFusionError;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::prelude::{SQLOptions, SessionConfig, SessionContext};
@@ -27,7 +26,7 @@ pub(crate) async fn build_runtime(
         RuntimeEnvBuilder::new()
             .with_object_list_cache_limit(0)
             .build()
-            .map_err(datafusion_to_core)?,
+            .map_err(|err| datafusion_to_core(&err))?,
     );
     let ctx = Arc::new(SessionContext::new_with_config_rt(
         session_config,
@@ -48,8 +47,9 @@ pub(crate) async fn build_runtime(
     }
     let registration = register_sources(&ctx, compiled_sources)
         .await
-        .map_err(datafusion_to_core)?;
-    catalog::register(&ctx, &registration.active_sources).map_err(datafusion_to_core)?;
+        .map_err(|err| datafusion_to_core(&err))?;
+    catalog::register(&ctx, &registration.active_sources)
+        .map_err(|err| datafusion_to_core(&err))?;
     let tables = catalog::collect_tables(&registration.active_sources);
     for failure in &failures {
         tracing::warn!(
@@ -76,9 +76,9 @@ impl QueryRuntimeAdapter {
             .ctx
             .sql_with_options(sql, read_only_sql_options())
             .await
-            .map_err(datafusion_to_core)?;
+            .map_err(|err| datafusion_to_core(&err))?;
         let arrow_schema = Arc::new(df.schema().as_arrow().clone());
-        let batches = df.collect().await.map_err(datafusion_to_core)?;
+        let batches = df.collect().await.map_err(|err| datafusion_to_core(&err))?;
         Ok(QueryExecution::new(arrow_schema, batches))
     }
 }
@@ -90,23 +90,28 @@ fn read_only_sql_options() -> SQLOptions {
         .with_allow_statements(false)
 }
 
-fn datafusion_to_core(error: DataFusionError) -> CoreError {
-    match error {
+fn datafusion_to_core(error: &DataFusionError) -> CoreError {
+    // Unwrap Context/Shared/Diagnostic wrappers so wrapped schema errors
+    // get classified by their root variant instead of all landing in the
+    // `Internal` bucket. Without `find_root()`, `SELECT bogus FROM wide`
+    // surfaces as `CoreError::Internal` because DataFusion wraps the
+    // SchemaError in `Context`/`Execution`, hiding the structured variant
+    // from the match arms below.
+    match error.find_root() {
         DataFusionError::SQL(detail, _) => CoreError::InvalidInput(detail.to_string()),
-        DataFusionError::Plan(detail) => CoreError::InvalidInput(detail),
-        DataFusionError::SchemaError(schema_error, _) => match schema_error.as_ref() {
-            SchemaError::FieldNotFound { field, .. } => CoreError::NotFound(field.to_string()),
-            _ => CoreError::InvalidInput(schema_error.to_string()),
-        },
-        DataFusionError::NotImplemented(detail) => CoreError::Unimplemented(detail),
+        DataFusionError::Plan(detail) => CoreError::InvalidInput(detail.clone()),
+        DataFusionError::SchemaError(schema_error, _) => {
+            CoreError::InvalidInput(schema_error.to_string())
+        }
+        DataFusionError::NotImplemented(detail) => CoreError::Unimplemented(detail.clone()),
         DataFusionError::External(inner) => {
             if let Some(provider_error) = inner.downcast_ref::<ProviderQueryError>() {
                 return provider_error_to_core(provider_error);
             }
             CoreError::internal(inner.to_string())
         }
-        DataFusionError::ObjectStore(error) => CoreError::Unavailable(error.to_string()),
-        DataFusionError::ResourcesExhausted(detail) => CoreError::Unavailable(detail),
+        DataFusionError::ObjectStore(err) => CoreError::Unavailable(err.to_string()),
+        DataFusionError::ResourcesExhausted(detail) => CoreError::Unavailable(detail.clone()),
         other => CoreError::internal(other.to_string()),
     }
 }
@@ -140,5 +145,34 @@ fn provider_error_to_core(error: &ProviderQueryError) -> CoreError {
             )),
             _ => CoreError::FailedPrecondition(detail.clone()),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn datafusion_to_core_unwraps_context_wrapped_schema_error_to_invalid_input() {
+        use datafusion::common::{Column, SchemaError};
+
+        let schema_err = Box::new(SchemaError::FieldNotFound {
+            field: Box::new(Column::new_unqualified("user_login")),
+            valid_fields: vec![
+                Column::new_unqualified("user__login"),
+                Column::new_unqualified("title"),
+            ],
+        });
+        let inner = DataFusionError::SchemaError(schema_err, Box::new(None));
+        let wrapped = DataFusionError::Context("wrapping context".to_string(), Box::new(inner));
+
+        let core = datafusion_to_core(&wrapped);
+
+        match core {
+            CoreError::InvalidInput(msg) => {
+                assert!(msg.contains("user_login"), "expected field name in: {msg}");
+            }
+            other => panic!("expected CoreError::InvalidInput, got {other:?}"),
+        }
     }
 }

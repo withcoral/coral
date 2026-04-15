@@ -152,13 +152,32 @@ tables:
           path:
             - text
       - name: ts
+        type: Timestamp
+        nullable: false
+        description: Message time from Slack `ts`, exposed as a UTC Timestamp
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr:
+            kind: path
+            path:
+              - ts
+      - name: permalink
         type: Utf8
         nullable: false
-        description: Message timestamp (Slack ts format)
+        description: Deep link to the message in Slack
         expr:
-          kind: path
-          path:
-            - ts
+          kind: template
+          template: "https://slack.com/archives/{{filter.channel}}/p{{expr.ts_id}}"
+          values:
+            ts_id:
+              kind: replace
+              expr:
+                kind: path
+                path:
+                  - ts
+              from: "."
+              to: ""
       - name: thread_ts
         type: Utf8
         nullable: true

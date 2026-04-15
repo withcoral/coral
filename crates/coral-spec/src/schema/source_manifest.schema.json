@@ -359,7 +359,7 @@
         "name": { "type": "string", "minLength": 1 },
         "type": {
           "type": "string",
-          "enum": ["Utf8", "Int64", "Boolean", "Float64"]
+          "enum": ["Utf8", "Int64", "Boolean", "Float64", "Timestamp"]
         },
         "nullable": { "type": "boolean" },
         "virtual": { "type": "boolean" },
@@ -510,9 +510,43 @@
         {
           "type": "object",
           "additionalProperties": false,
+          "required": ["kind", "expr", "from", "to"],
+          "properties": {
+            "kind": { "const": "replace" },
+            "expr": { "$ref": "#/$defs/expr" },
+            "from": { "type": "string", "minLength": 1 },
+            "to": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
           "required": ["kind"],
           "properties": {
             "kind": { "const": "current_row" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "expr"],
+          "properties": {
+            "kind": { "const": "format_timestamp" },
+            "expr": { "$ref": "#/$defs/expr" },
+            "input": { "type": "string", "enum": ["seconds", "milliseconds"] }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "template", "values"],
+          "properties": {
+            "kind": { "const": "template" },
+            "template": { "type": "string", "minLength": 1 },
+            "values": {
+              "type": "object",
+              "additionalProperties": { "$ref": "#/$defs/expr" }
+            }
           }
         }
       ]

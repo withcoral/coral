@@ -5,14 +5,17 @@ use std::sync::Arc;
 
 use datafusion::arrow::array::{
     Array, BooleanArray, Float64Array, Int64Array, RecordBatch, StringArray,
+    TimestampMicrosecondArray,
 };
-use datafusion::arrow::datatypes::{DataType, SchemaRef};
+use datafusion::arrow::datatypes::{DataType, SchemaRef, TimeUnit};
 use datafusion::error::{DataFusionError, Result};
 use serde_json::Value;
 
 use crate::backends::arrow_type_for_column;
 use crate::backends::shared::json_path::get_path_value;
-use coral_spec::{ColumnSpec, ExprSpec};
+use coral_spec::{
+    ColumnSpec, ExprSpec, ParsedTemplate, TemplateNamespace, TemplatePart, TimestampInput,
+};
 
 #[allow(
     clippy::implicit_hasher,
@@ -64,6 +67,14 @@ pub(crate) fn convert_items(
                     .iter()
                     .map(|row| to_f64(eval_expr(&expr, row, filters)))
                     .collect();
+                arrays.push(Arc::new(array));
+            }
+            DataType::Timestamp(TimeUnit::Microsecond, Some(ref tz)) if tz.as_ref() == "+00:00" => {
+                let array: TimestampMicrosecondArray = items
+                    .iter()
+                    .map(|row| to_i64(eval_expr(&expr, row, filters)))
+                    .collect();
+                let array = array.with_timezone("+00:00");
                 arrays.push(Arc::new(array));
             }
             other => {
@@ -168,7 +179,105 @@ fn eval_expr(expr: &ExprSpec, row: &Value, filters: &HashMap<String, String>) ->
             }
         }
         ExprSpec::CurrentRow => Some(row.clone()),
+        ExprSpec::FormatTimestamp { expr, input } => {
+            eval_format_timestamp(expr, input, row, filters)
+        }
+        ExprSpec::Replace { expr, from, to } => {
+            let raw = to_utf8(eval_expr(expr, row, filters))?;
+            Some(Value::String(raw.replace(from, to)))
+        }
+        ExprSpec::Template { template, values } => eval_template(template, values, row, filters),
     }
+}
+
+/// Evaluate a `FormatTimestamp` expression, returning epoch **microseconds** as
+/// a `Value::Number` suitable for an Arrow `TimestampMicrosecondArray`.
+fn eval_format_timestamp(
+    expr: &ExprSpec,
+    input: &TimestampInput,
+    row: &Value,
+    filters: &HashMap<String, String>,
+) -> Option<Value> {
+    let value = eval_expr(expr, row, filters)?;
+    let micros = match &value {
+        Value::String(s) => parse_epoch_micros(s, input),
+        Value::Number(n) => {
+            // serde_json stores numbers as f64 internally, so precision may
+            // already be reduced. Try the string representation first to
+            // recover as much precision as possible.
+            let s = n.to_string();
+            parse_epoch_micros(&s, input)
+        }
+        _ => None,
+    }?;
+    Some(Value::Number(micros.into()))
+}
+
+/// Parse a timestamp string into epoch microseconds without intermediate
+/// floating-point arithmetic, preserving full microsecond precision.
+fn parse_epoch_micros(s: &str, input: &TimestampInput) -> Option<i64> {
+    let (int_str, frac_str) = s.split_once('.').unwrap_or((s, ""));
+    let whole: i64 = int_str.parse().ok()?;
+    let frac_width: usize = match input {
+        TimestampInput::Seconds => 6,
+        TimestampInput::Milliseconds => 3,
+    };
+    let padded = format!("{frac_str:0<frac_width$}");
+    let frac: i64 = padded[..frac_width].parse().ok()?;
+    let multiplier: i64 = match input {
+        TimestampInput::Seconds => 1_000_000,
+        TimestampInput::Milliseconds => 1_000,
+    };
+    Some(whole * multiplier + frac)
+}
+
+fn eval_template(
+    template: &ParsedTemplate,
+    values: &HashMap<String, ExprSpec>,
+    row: &Value,
+    filters: &HashMap<String, String>,
+) -> Option<Value> {
+    // Pre-evaluate every key so replacements are deterministic regardless of
+    // HashMap iteration order.
+    let evaluated: HashMap<&str, Option<String>> = values
+        .iter()
+        .map(|(key, expr)| {
+            let raw = eval_expr(expr, row, filters).and_then(|v| to_utf8(Some(v)));
+            (key.as_str(), raw)
+        })
+        .collect();
+
+    let mut result = String::with_capacity(template.raw().len());
+    for part in template.parts() {
+        match part {
+            TemplatePart::Literal(part) => result.push_str(part),
+            TemplatePart::Token(token) => match token.namespace() {
+                TemplateNamespace::Expr => {
+                    let rendered = evaluated
+                        .get(token.key())
+                        .and_then(Clone::clone)
+                        .or_else(|| token.default_value().map(ToString::to_string))
+                        .unwrap_or_default();
+                    result.push_str(&rendered);
+                }
+                TemplateNamespace::Filter => {
+                    let rendered = filters
+                        .get(token.key())
+                        .cloned()
+                        .or_else(|| token.default_value().map(ToString::to_string))
+                        .unwrap_or_default();
+                    result.push_str(&rendered);
+                }
+                TemplateNamespace::Secret
+                | TemplateNamespace::Variable
+                | TemplateNamespace::State
+                | TemplateNamespace::Env
+                | TemplateNamespace::Other(_) => return None,
+            },
+        }
+    }
+
+    Some(Value::String(result))
 }
 
 fn value_to_string_for_join(value: &Value) -> Option<String> {
@@ -241,10 +350,10 @@ fn to_bool(value: Option<Value>) -> Option<bool> {
 
 #[cfg(test)]
 mod tests {
-    use super::convert_items;
+    use super::{convert_items, eval_template};
     use crate::backends::schema_from_columns;
     use coral_spec::backends::http::HttpTableSpec;
-    use coral_spec::{ExprSpec, RequestSpec, parse_source_manifest_value};
+    use coral_spec::{ExprSpec, ParsedTemplate, RequestSpec, parse_source_manifest_value};
     use datafusion::arrow::array::{Array, StringArray};
     use serde_json::{Value, json};
     use std::collections::HashMap;
@@ -296,6 +405,12 @@ mod tests {
                 "kind": "if_present",
                 "check": expr_json(check),
                 "then_value": then_value,
+            }),
+            ExprSpec::Replace { expr, from, to } => json!({
+                "kind": "replace",
+                "expr": expr_json(expr),
+                "from": from,
+                "to": to,
             }),
             ExprSpec::JoinTagValues {
                 path,
@@ -424,5 +539,70 @@ mod tests {
             .downcast_ref::<StringArray>()
             .unwrap();
         assert_eq!(col.value(0), "only one");
+    }
+
+    #[test]
+    fn replace_expr_rewrites_string_values() {
+        let table = table_with_expr(
+            "slug",
+            &ExprSpec::Replace {
+                expr: Box::new(ExprSpec::Path {
+                    path: vec!["title".into()],
+                }),
+                from: " ".into(),
+                to: "-".into(),
+            },
+        );
+        let schema = schema_from_columns(table.columns(), "test", table.name()).unwrap();
+        let items = vec![serde_json::json!({"title": "hello world"})];
+        let batch = convert_items(table.columns(), schema, &HashMap::new(), &items).unwrap();
+        let col = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(col.value(0), "hello-world");
+    }
+
+    #[test]
+    fn template_renders_expr_and_filter_tokens_with_defaults() {
+        let rendered = eval_template(
+            &ParsedTemplate::parse("{{filter.org|default-org}}/{{expr.slug|untitled}}")
+                .expect("template"),
+            &HashMap::from([(
+                "slug".to_string(),
+                ExprSpec::Replace {
+                    expr: Box::new(ExprSpec::Path {
+                        path: vec!["title".into()],
+                    }),
+                    from: " ".into(),
+                    to: "-".into(),
+                },
+            )]),
+            &json!({"title": "hello world"}),
+            &HashMap::from([("org".to_string(), "acme".to_string())]),
+        );
+
+        assert_eq!(
+            rendered,
+            Some(Value::String("acme/hello-world".to_string()))
+        );
+    }
+
+    #[test]
+    fn template_uses_default_for_missing_expr_value() {
+        let rendered = eval_template(
+            &ParsedTemplate::parse("{{expr.slug|untitled}}").expect("template"),
+            &HashMap::from([(
+                "slug".to_string(),
+                ExprSpec::Path {
+                    path: vec!["missing".into()],
+                },
+            )]),
+            &json!({"title": "hello world"}),
+            &HashMap::new(),
+        );
+
+        assert_eq!(rendered, Some(Value::String("untitled".to_string())));
     }
 }
