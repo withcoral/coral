@@ -52,10 +52,9 @@ pub(crate) fn convert_items(
                 arrays.push(Arc::new(array));
             }
             DataType::Boolean => {
-                // Preserve prior behavior: missing bool values are rendered as false.
                 let array: BooleanArray = items
                     .iter()
-                    .map(|row| Some(to_bool(eval_expr(&expr, row, filters)).unwrap_or(false)))
+                    .map(|row| to_bool(eval_expr(&expr, row, filters)))
                     .collect();
                 arrays.push(Arc::new(array));
             }
@@ -245,11 +244,11 @@ mod tests {
     use crate::backends::schema_from_columns;
     use coral_spec::backends::http::HttpTableSpec;
     use coral_spec::{ExprSpec, RequestSpec, parse_source_manifest_value};
-    use datafusion::arrow::array::{Array, StringArray};
+    use datafusion::arrow::array::{Array, BooleanArray, StringArray};
     use serde_json::{Value, json};
     use std::collections::HashMap;
 
-    fn table_with_expr(name: &str, expr: &ExprSpec) -> HttpTableSpec {
+    fn table_with_expr(name: &str, data_type: &str, expr: &ExprSpec) -> HttpTableSpec {
         parse_source_manifest_value(serde_json::json!({
             "dsl_version": 3,
             "name": "test",
@@ -262,7 +261,7 @@ mod tests {
                 "request": request_json(&RequestSpec::default()),
                 "columns": [{
                     "name": name,
-                    "type": "Utf8",
+                    "type": data_type,
                     "expr": expr_json(expr),
                 }]
             }]
@@ -319,6 +318,7 @@ mod tests {
     fn if_present_returns_value_when_check_succeeds() {
         let table = table_with_expr(
             "label",
+            "Utf8",
             &ExprSpec::IfPresent {
                 check: Box::new(ExprSpec::Path {
                     path: vec!["status".into()],
@@ -346,6 +346,7 @@ mod tests {
     fn if_present_treats_explicit_null_as_absent() {
         let table = table_with_expr(
             "label",
+            "Utf8",
             &ExprSpec::IfPresent {
                 check: Box::new(ExprSpec::Path {
                     path: vec!["status".into()],
@@ -368,6 +369,7 @@ mod tests {
     fn join_tag_values_concatenates_matching_items() {
         let table = table_with_expr(
             "texts",
+            "Utf8",
             &ExprSpec::JoinTagValues {
                 path: vec!["content".into()],
                 key: "text".into(),
@@ -404,6 +406,7 @@ mod tests {
     fn join_tag_values_single_match_no_separator() {
         let table = table_with_expr(
             "text",
+            "Utf8",
             &ExprSpec::JoinTagValues {
                 path: vec!["content".into()],
                 key: "text".into(),
@@ -424,5 +427,36 @@ mod tests {
             .downcast_ref::<StringArray>()
             .unwrap();
         assert_eq!(col.value(0), "only one");
+    }
+
+    #[test]
+    fn boolean_columns_preserve_nulls_and_false_values() {
+        let table = table_with_expr(
+            "enabled",
+            "Boolean",
+            &ExprSpec::Path {
+                path: vec!["enabled".into()],
+            },
+        );
+        let schema = schema_from_columns(table.columns(), "test", table.name()).unwrap();
+        let items = vec![
+            serde_json::json!({"enabled": true}),
+            serde_json::json!({"enabled": false}),
+            serde_json::json!({"enabled": null}),
+            serde_json::json!({}),
+            serde_json::json!({"enabled": "not-a-bool"}),
+        ];
+        let batch = convert_items(table.columns(), schema, &HashMap::new(), &items).unwrap();
+        assert_eq!(batch.num_rows(), 5);
+        let col = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<BooleanArray>()
+            .unwrap();
+        assert!(col.value(0));
+        assert!(!col.value(1));
+        assert!(col.is_null(2));
+        assert!(col.is_null(3));
+        assert!(col.is_null(4));
     }
 }
