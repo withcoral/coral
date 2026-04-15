@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use datafusion::error::{DataFusionError, Result};
 use reqwest::header::HeaderMap;
@@ -440,7 +440,6 @@ async fn execute_request(
             response.headers(),
             rate_limit,
             throttle_retries,
-            SystemTime::now(),
         ) {
             RateLimitDecision::Continue => {}
             RateLimitDecision::Retry(wait) => {

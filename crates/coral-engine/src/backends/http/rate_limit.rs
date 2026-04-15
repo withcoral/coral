@@ -20,9 +20,8 @@ pub(super) fn check_rate_limit(
     headers: &HeaderMap,
     spec: &RateLimitSpec,
     throttle_retries: usize,
-    now: SystemTime,
 ) -> RateLimitDecision {
-    let signal = classify_rate_limit(status, headers, spec, now);
+    let signal = classify_rate_limit(status, headers, spec, SystemTime::now());
     decide_retry(signal, throttle_retries)
 }
 
