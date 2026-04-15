@@ -521,13 +521,9 @@ fn parse_retry_after(headers: &HeaderMap, now: SystemTime) -> Option<u64> {
 
 fn parse_rate_limit_reset(headers: &HeaderMap, now: SystemTime) -> Option<u64> {
     let value = headers.get("X-RateLimit-Reset")?.to_str().ok()?.trim();
-    let parsed = value.parse::<u64>().ok()?;
+    let reset_epoch = value.parse::<u64>().ok()?;
     let now_epoch = now.duration_since(UNIX_EPOCH).ok()?.as_secs();
-    Some(if parsed > now_epoch {
-        parsed.saturating_sub(now_epoch)
-    } else {
-        parsed
-    })
+    Some(reset_epoch.saturating_sub(now_epoch))
 }
 
 fn http_method_label(method: HttpMethod) -> &'static str {
@@ -1064,7 +1060,7 @@ fn extract_next_link_url(
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, HashMap};
-    use std::time::Duration;
+    use std::time::{Duration, UNIX_EPOCH};
 
     use reqwest::header::{HeaderMap, HeaderValue};
     use serde_json::json;
@@ -1074,7 +1070,7 @@ mod tests {
     use super::{
         HttpSourceClient, PageState, RequestSpec as HttpRequestSpec, apply_pagination_query_pairs,
         execute_request, extract_next_link_url, extract_rows, join_url, normalize_base_url,
-        page_is_exhausted, resolve_value_source,
+        page_is_exhausted, rate_limit_wait_secs, resolve_value_source,
     };
     use coral_spec::PaginationMode;
     use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec};
@@ -1587,5 +1583,22 @@ mod tests {
 
         assert!(error.to_string().contains("timed out"));
         task.abort();
+    }
+
+    #[test]
+    fn stale_rate_limit_reset_epoch_should_not_wait() {
+        // When X-RateLimit-Reset is an epoch timestamp that already passed,
+        // the rate-limit window has reset — we should retry immediately.
+        let mut headers = HeaderMap::new();
+        let now = UNIX_EPOCH + Duration::from_secs(1_700_000_100);
+
+        // Reset happened 1 second ago (epoch 1_700_000_099)
+        headers.insert("X-RateLimit-Reset", HeaderValue::from_static("1700000099"));
+
+        let wait = rate_limit_wait_secs(&headers, now);
+        assert_eq!(
+            wait, 0,
+            "past epoch means reset already happened; wait should be 0"
+        );
     }
 }

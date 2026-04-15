@@ -1,0 +1,39 @@
+// Project-local debug tasks
+//
+// For more documentation on how to configure debug tasks,
+// see: https://zed.dev/docs/debugger
+[
+  {
+    "label": "Build & Debug `coral`",
+    "adapter": "CodeLLDB",
+    "build": {
+      "command": "cargo",
+      "args": ["build"],
+    },
+    // sourceLanguages is required for CodeLLDB (not GDB) when using Rust
+    "sourceLanguages": ["rust"],
+  },
+  {
+    "label": "Build & Debug `coral sql`",
+    "adapter": "CodeLLDB",
+    "build": {
+      "command": "cargo",
+      "args": ["build"],
+    },
+    // Normally, when you use cargo build or cargo test as the build command, Zed can infer the path to the output
+    // binary. But if you want to pass args, it seems you need to specify a program, too.
+    "program": "$ZED_WORKTREE_ROOT/target/debug/coral",
+    "args": ["sql", "select * from linear.projects"],
+    "request": "launch",
+    // sourceLanguages is required for CodeLLDB (not GDB) when using Rust
+    "sourceLanguages": ["rust"],
+  },
+  {
+    "label": "Attach to running process",
+    "adapter": "CodeLLDB",
+    "request": "attach",
+    "pid": "$ZED_PICK_PID",
+    // sourceLanguages is required for CodeLLDB (not GDB) when using Rust
+    "sourceLanguages": ["rust"],
+  },
+]

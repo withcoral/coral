@@ -47,11 +47,12 @@ For black-box CLI tests, contributors can enable the hidden `--server` override 
 
 Shared client library used by both `coral-cli` and `coral-mcp`.
 
-| Owns               | Details                                           |
-| ------------------ | ------------------------------------------------- |
-| Local transport    | `ClientBuilder` starts a local server or connects to a remote endpoint |
-| Result decoding    | Arrow IPC → record batches                        |
-| Formatting helpers | `format_batches_table`, `format_batches_json`     |
+| Owns               | Details                                                                              |
+| ------------------ | ------------------------------------------------------------------------------------ |
+| Local transport    | `ClientBuilder` starts a local server or connects to a remote endpoint               |
+| Result decoding    | Arrow IPC → record batches                                                           |
+| Error decoding     | Decodes AIP-193 `ErrorInfo` from `tonic::Status` details (`status_error.rs`)         |
+| Formatting helpers | `format_batches_table`, `format_batches_json`                                        |
 
 ### `coral-app`
 

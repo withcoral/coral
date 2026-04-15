@@ -1,4 +1,4 @@
-//! Bundled source catalog and source-spec description helpers.
+//! Bundled source catalog and installed-manifest resolution helpers.
 
 use std::collections::BTreeSet;
 
@@ -6,12 +6,20 @@ use coral_api::v1::{AvailableSource, SourceInputKind, SourceInputSpec, SourceOri
 use coral_spec::{ManifestInputKind, ManifestInputSpec, parse_manifest_and_inputs};
 
 use crate::bootstrap::AppError;
+use crate::sources::model::{ManagedSource, ManagedSourceOrigin};
+use crate::state::AppStateLayout;
 
 include!(concat!(env!("OUT_DIR"), "/bundled_sources.rs"));
 
 #[derive(Debug, Clone)]
 pub(crate) struct BundledSourceManifest {
     pub(crate) manifest_yaml: String,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct InstalledSourceManifest {
+    pub(crate) manifest_yaml: String,
+    pub(crate) available: AvailableSource,
 }
 
 pub(crate) fn list_bundled_sources(
@@ -45,6 +53,32 @@ pub(crate) fn load_bundled_source(name: &str) -> Result<BundledSourceManifest, A
     };
     Ok(BundledSourceManifest {
         manifest_yaml: (*manifest_yaml).to_string(),
+    })
+}
+
+/// Resolve the effective installed manifest and verify it still matches the
+/// installed source identity in app state.
+pub(crate) fn resolve_installed_manifest(
+    source: &ManagedSource,
+    layout: &AppStateLayout,
+) -> Result<InstalledSourceManifest, AppError> {
+    let manifest_yaml = match source.origin {
+        ManagedSourceOrigin::Bundled => load_bundled_source(&source.name)?.manifest_yaml,
+        ManagedSourceOrigin::Imported => {
+            std::fs::read_to_string(layout.manifest_file(&source.workspace, &source.name))?
+        }
+    };
+    let mut available = describe_manifest(&manifest_yaml, source.origin.to_proto(), false)?;
+    if available.name != source.name {
+        return Err(AppError::FailedPrecondition(format!(
+            "installed source '{}' does not match manifest name '{}'",
+            source.name, available.name
+        )));
+    }
+    available.installed = true;
+    Ok(InstalledSourceManifest {
+        manifest_yaml,
+        available,
     })
 }
 
