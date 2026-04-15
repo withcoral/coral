@@ -98,7 +98,10 @@ pub(crate) fn core_status(error: CoreError) -> Status {
             let mut metadata = sqe.metadata().clone();
             metadata.insert("summary".to_string(), sqe.summary().to_string());
             if !sqe.detail().is_empty() {
-                metadata.insert("detail".to_string(), sqe.detail().to_string());
+                metadata.insert(
+                    "detail".to_string(),
+                    truncate_status_detail(sqe.detail().to_string()),
+                );
             }
             if let Some(hint) = sqe.hint() {
                 metadata.insert("hint".to_string(), hint.to_string());
