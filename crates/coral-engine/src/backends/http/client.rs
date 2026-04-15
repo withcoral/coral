@@ -85,15 +85,6 @@ impl HttpSourceClient {
     ) -> Result<Self> {
         let auth = &manifest.auth;
 
-        for key in &auth.required_secrets {
-            if !source_secrets.contains_key(key) {
-                return Err(DataFusionError::Execution(format!(
-                    "{} source requires credential {}",
-                    manifest.common.name, key
-                )));
-            }
-        }
-
         for header in &auth.headers {
             let resolved = resolve_value_source(
                 &header.value,
@@ -1305,7 +1296,14 @@ mod tests {
             "backend": "http",
             "base_url": "https://api.example.com",
             "auth": {
-                "required_secrets": ["API_KEY"]
+                "headers": [{
+                    "name": "Authorization",
+                    "from": "template",
+                    "template": "Bearer {{input.API_KEY}}"
+                }]
+            },
+            "inputs": {
+                "API_KEY": { "kind": "secret" }
             },
             "tables": [{
                 "name": "items",
@@ -1325,7 +1323,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("alpha source requires credential API_KEY")
+                .contains("missing source input 'API_KEY' for template token")
         );
     }
 

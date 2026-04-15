@@ -154,22 +154,13 @@ impl HttpSourceManifest {
     /// Returns the source secrets required by this manifest.
     ///
     /// In the new input model, every declared input with `kind: secret` is
-    /// required (secrets cannot carry defaults), so the required set is just
-    /// the secret-kind subset of `declared_inputs` plus any names explicitly
-    /// listed in `auth.required_secrets`.
+    /// required because secrets cannot carry defaults.
     pub fn required_secret_names(&self) -> BTreeSet<String> {
-        let mut secret_names = self
-            .auth
-            .required_secrets
+        self.declared_inputs
             .iter()
-            .cloned()
-            .collect::<BTreeSet<_>>();
-        for input in &self.declared_inputs {
-            if input.kind == ManifestInputKind::Secret {
-                secret_names.insert(input.key.clone());
-            }
-        }
-        secret_names
+            .filter(|input| input.kind == ManifestInputKind::Secret)
+            .map(|input| input.key.clone())
+            .collect()
     }
 }
 

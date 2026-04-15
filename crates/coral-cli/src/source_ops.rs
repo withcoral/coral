@@ -333,9 +333,6 @@ pub(crate) fn finalize_input_value(
     if !value.is_empty() {
         return Ok(Some(value));
     }
-    if !input.default_value.is_empty() {
-        return Ok(Some(input.default_value.clone()));
-    }
     if input.required {
         return Err(anyhow::anyhow!(
             "missing required {kind_label} '{}'",
@@ -352,7 +349,7 @@ mod tests {
     use super::finalize_input_value;
 
     #[test]
-    fn empty_input_uses_default_value() {
+    fn empty_optional_input_is_omitted_for_server_side_defaults() {
         let input = ManifestInputSpec {
             key: "API_BASE".to_string(),
             kind: ManifestInputKind::Variable,
@@ -362,8 +359,8 @@ mod tests {
         };
         assert_eq!(
             finalize_input_value(&input, String::new(), "source variable")
-                .expect("default should apply"),
-            Some("https://example.com".to_string())
+                .expect("empty optional input should be omitted"),
+            None
         );
     }
 

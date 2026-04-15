@@ -32,6 +32,21 @@
       }
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "backend": { "const": "http" }
+        },
+        "required": ["backend"]
+      },
+      "else": {
+        "not": {
+          "required": ["inputs"]
+        }
+      }
+    }
+  ],
   "$defs": {
     "inputs": {
       "type": "object",
@@ -65,10 +80,6 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "required_secrets": {
-          "type": "array",
-          "items": { "type": "string", "minLength": 1 }
-        },
         "headers": {
           "type": "array",
           "items": { "$ref": "#/$defs/header" }
