@@ -99,9 +99,6 @@ fn datafusion_to_core(error: &DataFusionError) -> CoreError {
     // from the match arms below.
     match error.find_root() {
         DataFusionError::SQL(detail, _) => CoreError::InvalidInput(detail.to_string()),
-        DataFusionError::Plan(detail) if detail.contains("not found") => {
-            CoreError::NotFound(detail.clone())
-        }
         DataFusionError::Plan(detail) => CoreError::InvalidInput(detail.clone()),
         DataFusionError::SchemaError(schema_error, _) => {
             CoreError::InvalidInput(schema_error.to_string())
