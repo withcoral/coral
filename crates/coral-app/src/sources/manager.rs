@@ -446,6 +446,16 @@ fn normalize_binding_key(label: &str, value: &str) -> Result<String, AppError> {
             "{label} must not contain '/' or '\\\\'"
         )));
     }
+    if trimmed.contains('=') || trimmed.contains('\n') || trimmed.contains('\r') {
+        return Err(AppError::InvalidInput(format!(
+            "{label} must not contain '=', '\\n', or '\\r'"
+        )));
+    }
+    if trimmed.starts_with('#') {
+        return Err(AppError::InvalidInput(format!(
+            "{label} must not start with '#'"
+        )));
+    }
     Ok(trimmed.to_string())
 }
 
@@ -573,5 +583,28 @@ tables:
             normalize_binding_key("source variable key", "..").expect("key"),
             ".."
         );
+    }
+
+    #[test]
+    fn rejects_env_file_breaking_binding_keys() {
+        let error = normalize_binding_key("source secret key", "API=TOKEN")
+            .expect_err("'=' should be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("must not contain '=', '\\n', or '\\r'")
+        );
+
+        let error = normalize_binding_key("source secret key", "API\nTOKEN")
+            .expect_err("newlines should be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("must not contain '=', '\\n', or '\\r'")
+        );
+
+        let error = normalize_binding_key("source secret key", " #comment")
+            .expect_err("leading comment markers should be rejected");
+        assert!(error.to_string().contains("must not start with '#'"));
     }
 }

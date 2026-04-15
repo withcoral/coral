@@ -44,17 +44,18 @@ root.
 ## Layering
 
 - `bootstrap/server.rs` is the composition root. It discovers environment and
-  layout, constructs stores, managers, and validators, wires runtime context,
-  and mounts gRPC services.
+  layout, constructs stores and managers, wires runtime context, and mounts
+  gRPC services.
 - `service.rs` files are transport adapters. They should stay thin: decode
   tonic requests, normalize workspace and path identifiers, call managers, and
   map app/core results into protobufs.
 - `manager.rs` files own app-level orchestration. They coordinate installed
   state, secrets, manifests, rollback, runtime setup, and engine calls. They
   should not know about tonic request or response types.
-- `workspaces/validator.rs` is the shared validation seam. `WorkspaceValidator`
-  owns workspace normalization and naming rules; keep it focused on validation
-  rather than wider orchestration.
+- `workspaces/name.rs` and `sources/name.rs` own the checked app-local identity
+  types. Parse `WorkspaceName` and `SourceName` at persistence and service
+  boundaries so managers and state/layout code stay transport-free and do not
+  pass raw identifier strings around internally.
 - `state/config.rs`, `state/secrets.rs`, and `storage/fs.rs` own persistence
   and filesystem details. Managers may coordinate them, but services should not
   reach into them directly.
