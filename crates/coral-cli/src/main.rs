@@ -6,17 +6,18 @@
     clippy::print_stderr,
     reason = "CLI intentionally renders user-facing output and the package includes test-only dependencies."
 )]
+mod bootstrap;
 mod branding;
 mod onboard;
 mod source_ops;
 
 use std::path::PathBuf;
 
+use bootstrap::bootstrap;
 use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 use coral_api::v1::ExecuteSqlRequest;
 use coral_client::{
-    ClientBuilder, decode_execute_sql_response, default_workspace, format_batches_json,
-    format_batches_table,
+    decode_execute_sql_response, default_workspace, format_batches_json, format_batches_table,
 };
 use tonic::Request;
 
@@ -27,10 +28,6 @@ use tempfile as _;
 #[command(name = "coral", version, arg_required_else_help = true)]
 /// A local-first SQL interface for APIs, files, and other data sources.
 struct Cli {
-    #[cfg(feature = "cli-test-server")]
-    #[arg(long, global = true, hide = true)]
-    server: Option<String>,
-
     #[command(subcommand)]
     command: Command,
 }
@@ -111,21 +108,12 @@ enum OutputFormat {
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
     let cli = Cli::parse();
-
-    #[cfg(feature = "cli-test-server")]
-    let app = {
-        let mut builder = ClientBuilder::new();
-        if let Some(uri) = &cli.server {
-            builder.endpoint(uri);
-        }
-        builder.build().await?
-    };
-    #[cfg(not(feature = "cli-test-server"))]
-    let app = ClientBuilder::new().build().await?;
+    let bootstrap = bootstrap().await?;
 
     match cli.command {
         Command::Sql(args) => {
-            let response = app
+            let response = bootstrap
+                .app
                 .query_client()
                 .execute_sql(Request::new(ExecuteSqlRequest {
                     workspace: Some(default_workspace()),
@@ -138,7 +126,7 @@ async fn main() -> Result<(), anyhow::Error> {
         }
         Command::Source(args) => match args.command {
             SourceCommand::Discover => {
-                let sources = source_ops::discover_sources(&app).await?;
+                let sources = source_ops::discover_sources(&bootstrap.app).await?;
                 if sources.is_empty() {
                     println!("No bundled sources available.");
                 } else {
@@ -153,7 +141,7 @@ async fn main() -> Result<(), anyhow::Error> {
                 }
             }
             SourceCommand::List => {
-                let sources = source_ops::list_sources(&app).await?;
+                let sources = source_ops::list_sources(&bootstrap.app).await?;
                 if sources.is_empty() {
                     println!("No sources configured.");
                 } else {
@@ -163,25 +151,29 @@ async fn main() -> Result<(), anyhow::Error> {
                     }
                 }
             }
-            SourceCommand::Add(args) => run_source_add(&app, args).await?,
+            SourceCommand::Add(args) => run_source_add(&bootstrap.app, args).await?,
             SourceCommand::Lint { file } => {
                 source_ops::load_validated_manifest_file(&file)?;
                 println!("Manifest is valid");
             }
             SourceCommand::Test { name } => {
-                source_ops::validate_and_print(&app, &name, source_ops::TableDisplayLimit::All)
-                    .await?;
+                source_ops::validate_and_print(
+                    &bootstrap.app,
+                    &name,
+                    source_ops::TableDisplayLimit::All,
+                )
+                .await?;
             }
             SourceCommand::Remove { name } => {
-                source_ops::delete_source(&app, &name).await?;
+                source_ops::delete_source(&bootstrap.app, &name).await?;
                 println!("Removed source {name}");
             }
         },
         Command::Onboard => {
-            onboard::run(&app).await?;
+            onboard::run(&bootstrap.app).await?;
         }
         Command::McpStdio => {
-            coral_mcp::run_stdio_with_client(app).await?;
+            coral_mcp::run_stdio_with_client(bootstrap.app).await?;
         }
     }
 

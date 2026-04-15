@@ -2,7 +2,7 @@
 //!
 //! `coral-client` intentionally stays narrow today. It owns:
 //!
-//! - local bootstrap into the generated gRPC transport surface
+//! - endpoint dialing into the generated gRPC transport surface
 //! - lightweight shared Arrow IPC decoding helpers
 //! - lightweight shared result-format rendering used by CLI and MCP
 //!
@@ -11,8 +11,8 @@
 //! the transport/bootstrap seam here.
 //!
 //! For tests or embedding scenarios that need explicit control over local server
-//! configuration, use [`local`] rather than treating those bootstrap seams as
-//! the default client surface.
+//! configuration or lifecycle, use [`local`] rather than treating those
+//! bootstrap seams as the default client surface.
 
 mod client;
 mod error;
@@ -28,9 +28,7 @@ use arrow::util::pretty::pretty_format_batches;
 use coral_api::v1::ExecuteSqlResponse;
 use serde_json::Value;
 
-pub use client::{
-    AppClient, ClientBuilder, DEFAULT_WORKSPACE_ID, QueryClient, SourceClient, default_workspace,
-};
+pub use client::{AppClient, DEFAULT_WORKSPACE_ID, QueryClient, SourceClient, default_workspace};
 pub use error::{ClientError, QueryResultError};
 pub use status_error::{
     CORAL_ERROR_DOMAIN, CoralQueryError, DecodedStatusError, decode_status_error,

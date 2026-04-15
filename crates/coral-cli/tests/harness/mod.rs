@@ -193,7 +193,7 @@ impl MockServer {
 
     pub(crate) fn cmd(&self) -> Command {
         let mut cmd = Command::cargo_bin("coral").expect("cargo bin");
-        cmd.args(["--server", &self.endpoint_uri]);
+        cmd.env("CORAL_ENDPOINT", &self.endpoint_uri);
         cmd
     }
 

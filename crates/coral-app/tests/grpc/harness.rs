@@ -8,7 +8,7 @@ use coral_api::v1::{
 use coral_client::{
     AppClient, QueryClient, SourceClient, batches_to_json_rows, decode_execute_sql_response,
     default_workspace,
-    local::{ServerBuilder, connect_running_server},
+    local::{RunningServer, ServerBuilder},
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -18,6 +18,7 @@ pub(crate) struct GrpcHarness {
     temp_dir: TempDir,
     config_dir: PathBuf,
     app: AppClient,
+    _server: RunningServer,
 }
 
 pub(crate) struct FailingHttpFixture {
@@ -38,11 +39,19 @@ impl GrpcHarness {
     }
 
     async fn start_with_parts(temp_dir: TempDir, config_dir: PathBuf) -> Self {
-        let app = local_client(&config_dir).await;
+        let server = ServerBuilder::new()
+            .with_config_dir(&config_dir)
+            .start()
+            .await
+            .expect("start server");
+        let app = AppClient::connect(server.endpoint_uri())
+            .await
+            .expect("connect client");
         Self {
             temp_dir,
             config_dir,
             app,
+            _server: server,
         }
     }
 
@@ -301,15 +310,4 @@ pub(crate) fn source_dir(config_dir: &Path, source_name: &str) -> PathBuf {
         .join("default")
         .join("sources")
         .join(source_name)
-}
-
-async fn local_client(config_dir: impl Into<PathBuf>) -> AppClient {
-    let server = ServerBuilder::new()
-        .with_config_dir(config_dir)
-        .start()
-        .await
-        .expect("start server");
-    connect_running_server(server)
-        .await
-        .expect("connect client")
 }

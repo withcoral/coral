@@ -2,10 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use coral_api::v1::ImportSourceRequest;
-use coral_client::{
-    AppClient, SourceClient, default_workspace,
-    local::{ServerBuilder, connect_running_server},
-};
+use coral_client::{AppClient, SourceClient, default_workspace, local::ServerBuilder};
 use rmcp::{ServiceExt, model::CallToolRequestParams};
 use serde_json::{Map, Value, json};
 use tempfile::TempDir;
@@ -56,17 +53,6 @@ fn json_object(value: &Value) -> Map<String, Value> {
     value.as_object().cloned().expect("json object")
 }
 
-async fn local_client(config_dir: impl Into<PathBuf>) -> AppClient {
-    let server = ServerBuilder::new()
-        .with_config_dir(config_dir)
-        .start()
-        .await
-        .expect("start server");
-    connect_running_server(server)
-        .await
-        .expect("connect client")
-}
-
 async fn add_demo_source(source_client: &mut SourceClient, manifest_yaml: String) {
     source_client
         .import_source(Request::new(ImportSourceRequest {
@@ -88,7 +74,14 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
     let temp = TempDir::new().expect("temp dir");
     let manifest_path = write_fixture_manifest(temp.path());
     let manifest_yaml = fs::read_to_string(&manifest_path).expect("read manifest");
-    let app = local_client(temp.path().join("coral-config")).await;
+    let _server = ServerBuilder::new()
+        .with_config_dir(temp.path().join("coral-config"))
+        .start()
+        .await
+        .expect("start server");
+    let app = AppClient::connect(_server.endpoint_uri())
+        .await
+        .expect("connect client");
     let mut source_client = app.source_client();
 
     let (server_transport, client_transport) = tokio::io::duplex(4096);

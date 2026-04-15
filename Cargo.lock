@@ -824,6 +824,7 @@ dependencies = [
  "coral-spec",
  "dialoguer",
  "tempfile",
+ "thiserror",
  "tokio",
  "tokio-stream",
  "tonic",

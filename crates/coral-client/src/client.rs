@@ -33,91 +33,28 @@ pub type SourceClient = SourceServiceClient<Channel>;
 /// wrapping it in a higher-level SDK surface.
 pub type QueryClient = QueryServiceClient<Channel>;
 
-/// Builder for the public Coral client handle.
-///
-/// By default, builds a client backed by a local in-process Coral server.
-/// Use [`ClientBuilder::endpoint`] to connect to a remote server instead.
-#[derive(Debug, Clone, Default)]
-pub struct ClientBuilder {
-    endpoint: Option<String>,
-}
-
-impl ClientBuilder {
-    #[must_use]
-    /// Creates a builder that targets a local in-process Coral server.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Targets a remote Coral server at the given endpoint URI instead of
-    /// starting a local server.
-    pub fn endpoint(&mut self, uri: impl Into<String>) -> &mut Self {
-        self.endpoint = Some(uri.into());
-        self
-    }
-
-    /// Builds the [`AppClient`].
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ClientError`] if server startup or client connection fails.
-    pub async fn build(&self) -> Result<AppClient, ClientError> {
-        if let Some(uri) = &self.endpoint {
-            let (source_client, query_client) = connect_clients(uri).await?;
-            Ok(AppClient {
-                source_client,
-                query_client,
-                _backend: Backend::Remote,
-            })
-        } else {
-            let server = coral_app::ServerBuilder::new().start().await?;
-            let (source_client, query_client) = connect_clients(server.endpoint_uri()).await?;
-            Ok(AppClient {
-                source_client,
-                query_client,
-                _backend: Backend::Local { _server: server },
-            })
-        }
-    }
-}
-
 /// Public Coral client handle.
 ///
-/// Wraps the generated gRPC clients and optionally owns the local server
-/// lifetime. Callers interact with the same `AppClient` regardless of whether
-/// the backend is a local in-process server or a remote endpoint.
-///
-/// Construct via [`ClientBuilder`].
+/// Wraps the generated gRPC clients for a Coral endpoint.
 pub struct AppClient {
     source_client: SourceClient,
     query_client: QueryClient,
-    _backend: Backend,
-}
-
-enum Backend {
-    Local { _server: coral_app::RunningServer },
-    Remote,
 }
 
 impl AppClient {
-    /// Connects to an already-running local Coral server, taking ownership of
-    /// its lifetime.
+    /// Connects to a Coral endpoint.
     ///
-    /// This is the opt-in escape hatch for callers that need explicit control
-    /// over local server configuration. Prefer [`ClientBuilder`] unless a
-    /// caller needs to customise the [`coral_app::ServerBuilder`].
+    /// This is intentionally pure transport: callers that start a local server
+    /// must keep the returned `RunningServer` alive themselves.
     ///
     /// # Errors
     ///
     /// Returns [`ClientError`] if the gRPC clients cannot connect.
-    pub async fn from_running_server(
-        server: coral_app::RunningServer,
-    ) -> Result<Self, ClientError> {
-        let (source_client, query_client) = connect_clients(server.endpoint_uri()).await?;
+    pub async fn connect(endpoint_uri: &str) -> Result<Self, ClientError> {
+        let (source_client, query_client) = connect_clients(endpoint_uri).await?;
         Ok(Self {
             source_client,
             query_client,
-            _backend: Backend::Local { _server: server },
         })
     }
 
