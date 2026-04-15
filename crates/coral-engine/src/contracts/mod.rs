@@ -3,7 +3,7 @@
 mod catalog;
 mod error;
 mod query;
-pub(crate) mod query_error;
+mod query_error;
 
 pub use catalog::{ColumnInfo, TableInfo};
 pub use error::{CoreError, StatusCode, StructuredQueryError};

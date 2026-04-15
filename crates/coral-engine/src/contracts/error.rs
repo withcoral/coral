@@ -1,8 +1,8 @@
 //! Stable transport-neutral error contract for `coral-engine`.
 
-use std::collections::HashMap;
-
 use thiserror::Error;
+
+pub use super::query_error::StructuredQueryError;
 
 /// Errors surfaced by the query layer.
 #[derive(Debug, Clone, Error)]
@@ -25,109 +25,9 @@ pub enum CoreError {
     /// The service failed internally.
     #[error("internal: {0}")]
     Internal(String),
-    /// A structured query failure produced at the engine or backend layer.
-    ///
-    /// Construction is restricted to `coral-engine` via the `pub(crate)`
-    /// constructor on [`StructuredQueryError`]. The app boundary reads
-    /// the plain Rust data via getters and encodes it as AIP-193 standard
-    /// error details.
+    /// A structured query failure with first-class semantic fields.
     #[error("{_0}")]
     Structured(Box<StructuredQueryError>),
-}
-
-/// Opaque wrapper around a structured query failure.
-///
-/// Fields are private. External crates read them via getters; only
-/// `coral-engine` can construct instances (the constructor is `pub(crate)`).
-/// All fields are plain Rust data — no protobuf types — so `coral-engine`
-/// stays transport-neutral. The app boundary owns transport encoding
-/// (AIP-193 wire format) and plain-text rendering.
-#[derive(Debug, Clone)]
-pub struct StructuredQueryError {
-    reason: String,
-    summary: String,
-    detail: String,
-    hint: Option<String>,
-    retryable: bool,
-    status: StatusCode,
-    metadata: HashMap<String, String>,
-}
-
-impl StructuredQueryError {
-    pub(crate) fn new(
-        reason: &str,
-        summary: String,
-        detail: String,
-        hint: Option<String>,
-        retryable: bool,
-        status: StatusCode,
-        metadata: HashMap<String, String>,
-    ) -> Self {
-        Self {
-            reason: reason.to_string(),
-            summary,
-            detail,
-            hint,
-            retryable,
-            status,
-            metadata,
-        }
-    }
-
-    /// Machine-readable error reason (e.g. `"MISSING_REQUIRED_FILTER"`).
-    #[must_use]
-    pub fn reason(&self) -> &str {
-        &self.reason
-    }
-
-    /// One-line error summary.
-    #[must_use]
-    pub fn summary(&self) -> &str {
-        &self.summary
-    }
-
-    /// Longer explanation (may be empty).
-    #[must_use]
-    pub fn detail(&self) -> &str {
-        &self.detail
-    }
-
-    /// Actionable recovery guidance.
-    #[must_use]
-    pub fn hint(&self) -> Option<&str> {
-        self.hint.as_deref()
-    }
-
-    /// Whether the error is transient (maps to `RetryInfo` presence).
-    #[must_use]
-    pub fn retryable(&self) -> bool {
-        self.retryable
-    }
-
-    /// Transport-neutral status code.
-    #[must_use]
-    pub fn status(&self) -> StatusCode {
-        self.status
-    }
-
-    /// Additional key-value metadata (source, table, field, `http_status`, etc.).
-    #[must_use]
-    pub fn metadata(&self) -> &HashMap<String, String> {
-        &self.metadata
-    }
-}
-
-impl std::fmt::Display for StructuredQueryError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.summary)?;
-        if !self.detail.is_empty() {
-            write!(f, "\n{}", self.detail)?;
-        }
-        if let Some(hint) = &self.hint {
-            write!(f, "\nHint: {hint}")?;
-        }
-        Ok(())
-    }
 }
 
 impl CoreError {

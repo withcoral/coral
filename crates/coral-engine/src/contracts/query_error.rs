@@ -1,22 +1,87 @@
 //! Structured query error type for provider failures.
 //!
-//! Internal to `coral-engine`; the app layer converts these into
-//! AIP-193 error details before they cross the gRPC boundary.
+//! `StructuredQueryError` is the canonical error shape that crosses the
+//! engine boundary. The app layer reads it via getters and encodes it
+//! as AIP-193 error details for the wire.
 
 use std::collections::HashMap;
 
 use super::error::StatusCode;
 
-/// Engine-internal structured query error.
+/// Structured query failure with first-class semantic fields.
+///
+/// External crates read fields via getters. The constructors are public
+/// so the engine runtime can build instances directly.
 #[derive(Debug, Clone)]
-pub(crate) struct QueryError {
-    pub(crate) reason: &'static str,
-    pub(crate) summary: String,
-    pub(crate) detail: String,
-    pub(crate) hint: Option<String>,
-    pub(crate) retryable: bool,
-    pub(crate) metadata: HashMap<String, String>,
-    pub(crate) status: StatusCode,
+pub struct StructuredQueryError {
+    reason: String,
+    summary: String,
+    detail: String,
+    hint: Option<String>,
+    retryable: bool,
+    status: StatusCode,
+    metadata: HashMap<String, String>,
+}
+
+impl std::fmt::Display for StructuredQueryError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.summary)?;
+        if !self.detail.is_empty() {
+            write!(f, "\n{}", self.detail)?;
+        }
+        if let Some(hint) = &self.hint {
+            write!(f, "\nHint: {hint}")?;
+        }
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Getters
+// ---------------------------------------------------------------------------
+
+impl StructuredQueryError {
+    /// Machine-readable error reason (e.g. `"MISSING_REQUIRED_FILTER"`).
+    #[must_use]
+    pub fn reason(&self) -> &str {
+        &self.reason
+    }
+
+    /// One-line error summary.
+    #[must_use]
+    pub fn summary(&self) -> &str {
+        &self.summary
+    }
+
+    /// Longer explanation (may be empty).
+    #[must_use]
+    pub fn detail(&self) -> &str {
+        &self.detail
+    }
+
+    /// Actionable recovery guidance.
+    #[must_use]
+    pub fn hint(&self) -> Option<&str> {
+        self.hint.as_deref()
+    }
+
+    /// Whether the error is transient (maps to `RetryInfo` presence).
+    #[must_use]
+    pub fn retryable(&self) -> bool {
+        self.retryable
+    }
+
+    /// Transport-neutral status code.
+    #[must_use]
+    pub fn status(&self) -> StatusCode {
+        self.status
+    }
+
+    /// Additional key-value metadata (source, table, field, `http_status`, etc.).
+    #[must_use]
+    pub fn metadata(&self) -> &HashMap<String, String> {
+        &self.metadata
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -72,7 +137,7 @@ fn enrich_provider_detail(detail: &str, method: Option<&str>, url: Option<&str>)
 // Constructors
 // ---------------------------------------------------------------------------
 
-impl QueryError {
+impl StructuredQueryError {
     pub(crate) fn missing_required_filter(
         schema: impl Into<String>,
         table: impl Into<String>,
@@ -87,7 +152,7 @@ impl QueryError {
         metadata.insert("table".to_string(), table.clone());
         metadata.insert("field".to_string(), field.clone());
         Self {
-            reason: "MISSING_REQUIRED_FILTER",
+            reason: "MISSING_REQUIRED_FILTER".to_string(),
             summary: format!("{schema}.{table} requires `WHERE {field} = <constant>`"),
             detail: detail.into(),
             hint: Some(format!(
@@ -187,19 +252,15 @@ impl QueryError {
             metadata.insert("url".to_string(), u.clone());
         }
 
-        let mut error = Self {
-            reason,
+        Self {
+            reason: reason.to_string(),
             summary,
             detail,
-            hint: None,
+            hint,
             retryable: is_retryable,
             metadata,
             status,
-        };
-        if let Some(h) = hint {
-            error.hint = Some(h);
         }
-        error
     }
 }
 
@@ -209,24 +270,24 @@ mod tests {
 
     #[test]
     fn missing_required_filter_sets_reason_and_metadata() {
-        let error = QueryError::missing_required_filter(
+        let error = StructuredQueryError::missing_required_filter(
             "github",
             "issues",
             "repo",
             "missing required filter",
         );
-        assert_eq!(error.reason, "MISSING_REQUIRED_FILTER");
-        assert_eq!(error.metadata.get("schema").unwrap(), "github");
-        assert_eq!(error.metadata.get("table").unwrap(), "issues");
-        assert_eq!(error.metadata.get("field").unwrap(), "repo");
-        assert!(error.summary.contains("repo"));
-        assert!(error.hint.is_some());
-        assert_eq!(error.status, StatusCode::FailedPrecondition);
+        assert_eq!(error.reason(), "MISSING_REQUIRED_FILTER");
+        assert_eq!(error.metadata().get("schema").unwrap(), "github");
+        assert_eq!(error.metadata().get("table").unwrap(), "issues");
+        assert_eq!(error.metadata().get("field").unwrap(), "repo");
+        assert!(error.summary().contains("repo"));
+        assert!(error.hint().is_some());
+        assert_eq!(error.status(), StatusCode::FailedPrecondition);
     }
 
     #[test]
     fn http_provider_request_401_includes_both_install_paths() {
-        let error = QueryError::http_provider_request(
+        let error = StructuredQueryError::http_provider_request(
             "github",
             "issues",
             Some(401),
@@ -234,25 +295,31 @@ mod tests {
             Some("https://api.github.com/repos/coral/coral/issues".to_string()),
             "Bad credentials",
         );
-        assert_eq!(error.reason, "PROVIDER_REQUEST_FAILED");
-        assert_eq!(error.metadata.get("http_status").unwrap(), "401");
-        assert!(!error.retryable);
-        let hint = error.hint.as_ref().expect("401 should have a hint");
+        assert_eq!(error.reason(), "PROVIDER_REQUEST_FAILED");
+        assert_eq!(error.metadata().get("http_status").unwrap(), "401");
+        assert!(!error.retryable());
+        let hint = error.hint().expect("401 should have a hint");
         assert!(hint.contains("coral source add github"));
         assert!(hint.contains("coral source add --file"));
     }
 
     #[test]
     fn http_provider_request_500_is_retryable() {
-        let error =
-            QueryError::http_provider_request("github", "issues", Some(500), None, None, "boom");
-        assert!(error.retryable);
-        assert_eq!(error.status, StatusCode::Unavailable);
+        let error = StructuredQueryError::http_provider_request(
+            "github",
+            "issues",
+            Some(500),
+            None,
+            None,
+            "boom",
+        );
+        assert!(error.retryable());
+        assert_eq!(error.status(), StatusCode::Unavailable);
     }
 
     #[test]
     fn http_provider_request_redacts_secret_query_params_from_url() {
-        let error = QueryError::http_provider_request(
+        let error = StructuredQueryError::http_provider_request(
             "datadog",
             "events",
             Some(500),
@@ -260,14 +327,17 @@ mod tests {
             Some("https://api.datadoghq.eu/api/v1/events?api_key=SECRET".to_string()),
             "boom",
         );
-        let url = error.metadata.get("url").expect("url should be sanitized");
+        let url = error
+            .metadata()
+            .get("url")
+            .expect("url should be sanitized");
         assert_eq!(url, "https://api.datadoghq.eu/api/v1/events");
-        assert!(!error.detail.contains("SECRET"));
+        assert!(!error.detail().contains("SECRET"));
     }
 
     #[test]
     fn http_provider_request_detail_preserves_method_and_sanitized_url() {
-        let error = QueryError::http_provider_request(
+        let error = StructuredQueryError::http_provider_request(
             "github",
             "issues",
             Some(500),
@@ -275,7 +345,25 @@ mod tests {
             Some("https://api.github.com/issues?page=3".to_string()),
             "upstream boom",
         );
-        assert!(error.detail.contains("[GET] https://api.github.com/issues"));
-        assert!(!error.detail.contains("page=3"));
+        assert!(
+            error
+                .detail()
+                .contains("[GET] https://api.github.com/issues")
+        );
+        assert!(!error.detail().contains("page=3"));
+    }
+
+    #[test]
+    fn display_renders_full_message() {
+        let error = StructuredQueryError::missing_required_filter(
+            "github",
+            "issues",
+            "repo",
+            "missing filter",
+        );
+        let text = error.to_string();
+        assert!(text.contains(&error.summary));
+        assert!(text.contains("missing filter"));
+        assert!(text.contains("Hint: "));
     }
 }
