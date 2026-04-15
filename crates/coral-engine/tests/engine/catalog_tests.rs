@@ -128,6 +128,31 @@ async fn coral_columns_returns_metadata() {
 }
 
 #[tokio::test]
+async fn coral_columns_default_row_order_matches_ordinal_position() {
+    let (_temp, sources) = build_catalog_sources();
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &sources,
+            &TestRuntime,
+            "SELECT column_name, ordinal_position \
+             FROM coral.columns WHERE schema_name = 'alpha' AND table_name = 'users'",
+        )
+        .await
+        .expect("catalog query should succeed"),
+    );
+
+    assert_eq!(
+        rows,
+        vec![
+            json!({"column_name": "id", "ordinal_position": 0}),
+            json!({"column_name": "team_id", "ordinal_position": 1}),
+            json!({"column_name": "name", "ordinal_position": 2}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn list_tables_matches_catalog() {
     let (_temp, sources) = build_catalog_sources();
 

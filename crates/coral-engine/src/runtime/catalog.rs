@@ -166,10 +166,10 @@ fn build_columns_table(active_sources: &[RegisteredSource]) -> Result<MemTable> 
         .collect::<Vec<_>>();
 
     rows.sort_by(|left, right| {
-        (&left.schema_name, &left.table_name, &left.column_name).cmp(&(
+        (&left.schema_name, &left.table_name, left.ordinal_position).cmp(&(
             &right.schema_name,
             &right.table_name,
-            &right.column_name,
+            right.ordinal_position,
         ))
     });
 
