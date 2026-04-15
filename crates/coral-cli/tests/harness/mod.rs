@@ -195,6 +195,11 @@ impl MockServerConfig {
         self
     }
 
+    pub(crate) fn with_execute_sql(mut self, response: ExecuteSqlResponse) -> Self {
+        self.execute_sql = MockResult::ok(response);
+        self
+    }
+
     pub(crate) fn with_execute_sql_error(mut self, code: Code, message: impl Into<String>) -> Self {
         self.execute_sql = MockResult::err(code, message);
         self
@@ -210,7 +215,7 @@ impl MockServerConfig {
     }
 }
 
-fn encode_arrow_ipc_stream(
+pub(crate) fn encode_arrow_ipc_stream(
     schema: &Schema,
     batches: &[RecordBatch],
 ) -> Result<Vec<u8>, arrow::error::ArrowError> {
