@@ -103,7 +103,7 @@ impl QueryError {
         clippy::needless_pass_by_value,
         reason = "method and url are conditionally moved into the metadata HashMap"
     )]
-    pub(crate) fn provider_request(
+    pub(crate) fn http_provider_request(
         source: impl Into<String>,
         table: impl Into<String>,
         http_status: Option<u16>,
@@ -239,8 +239,8 @@ mod tests {
     }
 
     #[test]
-    fn provider_request_401_includes_both_install_paths() {
-        let error = QueryError::provider_request(
+    fn http_provider_request_401_includes_both_install_paths() {
+        let error = QueryError::http_provider_request(
             "github",
             "issues",
             Some(401),
@@ -257,15 +257,15 @@ mod tests {
     }
 
     #[test]
-    fn provider_request_500_is_retryable() {
-        let error = QueryError::provider_request("github", "issues", Some(500), None, None, "boom");
+    fn http_provider_request_500_is_retryable() {
+        let error = QueryError::http_provider_request("github", "issues", Some(500), None, None, "boom");
         assert!(error.retryable);
         assert_eq!(error.status, StatusCode::Unavailable);
     }
 
     #[test]
-    fn provider_request_redacts_secret_query_params_from_url() {
-        let error = QueryError::provider_request(
+    fn http_provider_request_redacts_secret_query_params_from_url() {
+        let error = QueryError::http_provider_request(
             "datadog",
             "events",
             Some(500),
@@ -279,8 +279,8 @@ mod tests {
     }
 
     #[test]
-    fn provider_request_detail_preserves_method_and_sanitized_url() {
-        let error = QueryError::provider_request(
+    fn http_provider_request_detail_preserves_method_and_sanitized_url() {
+        let error = QueryError::http_provider_request(
             "github",
             "issues",
             Some(500),
