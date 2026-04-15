@@ -238,7 +238,7 @@ tables: []
 
     #[test]
     fn from_input_value_source_resolves_against_declarations() {
-        let manifest = r#"
+        let manifest = r"
 name: demo
 version: 1.0.0
 dsl_version: 3
