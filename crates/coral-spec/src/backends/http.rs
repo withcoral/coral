@@ -34,8 +34,6 @@ pub struct RateLimitSpec {
     pub remaining_header: Option<String>,
     #[serde(default)]
     pub reset_header: Option<String>,
-    #[serde(default)]
-    pub fallback_delay_seconds: Option<u64>,
 }
 
 /// Validated top-level manifest for an HTTP-backed source.

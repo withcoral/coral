@@ -6,9 +6,8 @@ description: GitHub's v3 REST API.
 base_url: "{{variable.GITHUB_API_BASE|https://api.github.com}}"
 rate_limit:
   extra_statuses: [403]
-  remaining_header: X-RateLimit-Remaining
-  reset_header: X-RateLimit-Reset
-  fallback_delay_seconds: 60
+  remaining_header: x-ratelimit-remaining
+  reset_header: x-ratelimit-reset
 auth:
   headers:
     - name: Authorization

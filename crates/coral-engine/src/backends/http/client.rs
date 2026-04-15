@@ -2,13 +2,14 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime};
 
 use datafusion::error::{DataFusionError, Result};
 use reqwest::header::HeaderMap;
 use serde_json::{Map, Value, json};
 
 use crate::backends::http::ProviderQueryError;
+use crate::backends::http::rate_limit::{RateLimitDecision, check_rate_limit};
 use crate::backends::shared::json_path::get_path_value;
 use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec, RateLimitSpec};
 use coral_spec::{
@@ -16,10 +17,7 @@ use coral_spec::{
     TemplatePart, ValidatedPagination, ValidatedPaginationMode, ValueSourceSpec,
 };
 
-const DEFAULT_RETRY_WAIT_SECS: u64 = 5;
 const DEFAULT_MAX_PAGES: usize = 10_000;
-const MAX_RATE_LIMIT_RETRIES: usize = 5;
-const MAX_RATE_LIMIT_WAIT_SECS: u64 = 300;
 const DEFAULT_HTTP_REQUEST_TIMEOUT_SECS: u64 = 30;
 
 /// Executes manifest-driven HTTP requests for one registered source.
@@ -380,7 +378,7 @@ async fn execute_request(
         link_header_require_results,
     } = request;
     let mut server_error_retries = 0usize;
-    let mut rate_limit_retries = 0usize;
+    let mut throttle_retries = 0usize;
     loop {
         let method_label = http_method_label(method);
         let mut request = build_http_request(http, method, url);
@@ -437,17 +435,30 @@ async fn execute_request(
             )
         })?;
 
-        if let Some(wait) = check_rate_limit(
+        match check_rate_limit(
             response.status(),
             response.headers(),
             rate_limit,
-            rate_limit_retries,
-            method_label,
-            &logged_url,
-        )? {
-            rate_limit_retries += 1;
-            tokio::time::sleep(wait).await;
-            continue;
+            throttle_retries,
+            SystemTime::now(),
+        ) {
+            RateLimitDecision::Continue => {}
+            RateLimitDecision::Retry(wait) => {
+                throttle_retries += 1;
+                tokio::time::sleep(wait).await;
+                continue;
+            }
+            RateLimitDecision::Fail(error) => {
+                return Err(DataFusionError::External(Box::new(
+                    ProviderQueryError::RateLimited {
+                        source_schema: source_schema.to_string(),
+                        table: table_name.to_string(),
+                        method: Some(method_label.to_string()),
+                        url: Some(logged_url),
+                        detail: error.to_string(),
+                    },
+                )));
+            }
         }
 
         if response.status().is_server_error() && server_error_retries < 2 {
@@ -508,93 +519,6 @@ fn request_error(
     DataFusionError::Execution(format!(
         "source API {stage} failed for {method_label} {logged_url}: {error}"
     ))
-}
-
-fn check_rate_limit(
-    status: reqwest::StatusCode,
-    headers: &HeaderMap,
-    spec: &RateLimitSpec,
-    retries: usize,
-    method_label: &str,
-    logged_url: &str,
-) -> Result<Option<Duration>, DataFusionError> {
-    let is_rate_limited = is_rate_limited_status(status, headers, spec);
-    if !is_rate_limited {
-        return Ok(None);
-    }
-    if retries >= MAX_RATE_LIMIT_RETRIES {
-        return Err(DataFusionError::Execution(format!(
-            "source API request hit rate limit too many times for {method_label} {logged_url}"
-        )));
-    }
-    let wait_secs = rate_limit_wait_secs(headers, spec, SystemTime::now());
-    Ok(Some(Duration::from_secs(wait_secs)))
-}
-
-fn is_rate_limited_status(
-    status: reqwest::StatusCode,
-    headers: &HeaderMap,
-    spec: &RateLimitSpec,
-) -> bool {
-    if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-        return true;
-    }
-
-    if !spec.extra_statuses.contains(&status.as_u16()) {
-        return false;
-    }
-
-    has_header(
-        headers,
-        spec.retry_after_header.as_deref().unwrap_or("Retry-After"),
-    ) || spec
-        .remaining_header
-        .as_deref()
-        .is_some_and(|header| header_equals(headers, header, "0"))
-}
-
-fn rate_limit_wait_secs(headers: &HeaderMap, spec: &RateLimitSpec, now: SystemTime) -> u64 {
-    parse_retry_after(
-        headers,
-        spec.retry_after_header.as_deref().unwrap_or("Retry-After"),
-        now,
-    )
-    .or_else(|| parse_rate_limit_reset(headers, spec.reset_header.as_deref(), now))
-    .or(spec.fallback_delay_seconds)
-    .unwrap_or(DEFAULT_RETRY_WAIT_SECS)
-    .min(MAX_RATE_LIMIT_WAIT_SECS)
-}
-
-fn has_header(headers: &HeaderMap, name: &str) -> bool {
-    headers.get(name).is_some()
-}
-
-fn header_equals(headers: &HeaderMap, name: &str, expected: &str) -> bool {
-    headers
-        .get(name)
-        .and_then(|value| value.to_str().ok())
-        .map(str::trim)
-        .is_some_and(|value| value == expected)
-}
-
-fn parse_retry_after(headers: &HeaderMap, header_name: &str, now: SystemTime) -> Option<u64> {
-    let value = headers.get(header_name)?.to_str().ok()?.trim();
-    if let Ok(seconds) = value.parse::<u64>() {
-        return Some(seconds);
-    }
-    let when = httpdate::parse_http_date(value).ok()?;
-    Some(when.duration_since(now).unwrap_or_default().as_secs())
-}
-
-fn parse_rate_limit_reset(
-    headers: &HeaderMap,
-    header_name: Option<&str>,
-    now: SystemTime,
-) -> Option<u64> {
-    let value = headers.get(header_name?)?.to_str().ok()?.trim();
-    let reset_epoch = value.parse::<u64>().ok()?;
-    let now_epoch = now.duration_since(UNIX_EPOCH).ok()?.as_secs();
-    Some(reset_epoch.saturating_sub(now_epoch))
 }
 
 fn http_method_label(method: HttpMethod) -> &'static str {
@@ -1131,7 +1055,7 @@ fn extract_next_link_url(
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, HashMap};
-    use std::time::{Duration, UNIX_EPOCH};
+    use std::time::Duration;
 
     use reqwest::header::{HeaderMap, HeaderValue};
     use serde_json::json;
@@ -1140,8 +1064,8 @@ mod tests {
 
     use super::{
         HttpSourceClient, PageState, RequestSpec as HttpRequestSpec, apply_pagination_query_pairs,
-        execute_request, extract_next_link_url, extract_rows, is_rate_limited_status, join_url,
-        normalize_base_url, page_is_exhausted, rate_limit_wait_secs, resolve_value_source,
+        execute_request, extract_next_link_url, extract_rows, join_url, normalize_base_url,
+        page_is_exhausted, resolve_value_source,
     };
     use coral_spec::PaginationMode;
     use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec, RateLimitSpec};
@@ -1658,30 +1582,6 @@ mod tests {
     }
 
     #[test]
-    fn stale_rate_limit_reset_epoch_should_not_wait() {
-        // When X-RateLimit-Reset is an epoch timestamp that already passed,
-        // the rate-limit window has reset — we should retry immediately.
-        let mut headers = HeaderMap::new();
-        let now = UNIX_EPOCH + Duration::from_secs(1_700_000_100);
-
-        // Reset happened 1 second ago (epoch 1_700_000_099)
-        headers.insert("X-RateLimit-Reset", HeaderValue::from_static("1700000099"));
-
-        let wait = rate_limit_wait_secs(
-            &headers,
-            &RateLimitSpec {
-                reset_header: Some("X-RateLimit-Reset".to_string()),
-                ..RateLimitSpec::default()
-            },
-            now,
-        );
-        assert_eq!(
-            wait, 0,
-            "past epoch means reset already happened; wait should be 0"
-        );
-    }
-
-    #[test]
     fn parse_manifest_accepts_source_rate_limit_policy() {
         let manifest = parse_http_manifest(json!({
             "dsl_version": 3,
@@ -1692,8 +1592,7 @@ mod tests {
             "rate_limit": {
                 "extra_statuses": [403],
                 "remaining_header": "X-RateLimit-Remaining",
-                "reset_header": "X-RateLimit-Reset",
-                "fallback_delay_seconds": 60
+                "reset_header": "X-RateLimit-Reset"
             },
             "tables": [{
                 "name": "items",
@@ -1711,48 +1610,5 @@ mod tests {
             manifest.rate_limit.remaining_header.as_deref(),
             Some("X-RateLimit-Remaining")
         );
-    }
-
-    #[test]
-    fn github_style_403_requires_remaining_zero() {
-        let spec = RateLimitSpec {
-            extra_statuses: vec![403],
-            remaining_header: Some("X-RateLimit-Remaining".to_string()),
-            reset_header: Some("X-RateLimit-Reset".to_string()),
-            ..RateLimitSpec::default()
-        };
-
-        let mut headers = HeaderMap::new();
-        headers.insert("X-RateLimit-Reset", HeaderValue::from_static("1700000099"));
-
-        assert!(!is_rate_limited_status(
-            reqwest::StatusCode::FORBIDDEN,
-            &headers,
-            &spec
-        ));
-
-        headers.insert("X-RateLimit-Remaining", HeaderValue::from_static("0"));
-
-        assert!(is_rate_limited_status(
-            reqwest::StatusCode::FORBIDDEN,
-            &headers,
-            &spec
-        ));
-    }
-
-    #[test]
-    fn retry_after_alone_marks_extra_status_as_rate_limited() {
-        let spec = RateLimitSpec {
-            extra_statuses: vec![403],
-            ..RateLimitSpec::default()
-        };
-        let mut headers = HeaderMap::new();
-        headers.insert("Retry-After", HeaderValue::from_static("7"));
-
-        assert!(is_rate_limited_status(
-            reqwest::StatusCode::FORBIDDEN,
-            &headers,
-            &spec
-        ));
     }
 }

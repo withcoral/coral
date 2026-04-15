@@ -57,8 +57,7 @@
         },
         "retry_after_header": { "type": "string", "minLength": 1 },
         "remaining_header": { "type": "string", "minLength": 1 },
-        "reset_header": { "type": "string", "minLength": 1 },
-        "fallback_delay_seconds": { "type": "integer", "minimum": 0 }
+        "reset_header": { "type": "string", "minLength": 1 }
       }
     },
     "table": {

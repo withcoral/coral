@@ -21,4 +21,13 @@ pub(crate) enum ProviderQueryError {
         url: Option<String>,
         detail: String,
     },
+
+    #[error("{source_schema}.{table}: {detail}")]
+    RateLimited {
+        source_schema: String,
+        table: String,
+        method: Option<String>,
+        url: Option<String>,
+        detail: String,
+    },
 }

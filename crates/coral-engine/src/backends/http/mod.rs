@@ -17,6 +17,7 @@ use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec};
 pub(crate) mod client;
 pub(crate) mod error;
 pub(crate) mod provider;
+mod rate_limit;
 
 pub(crate) use client::HttpSourceClient;
 pub(crate) use error::ProviderQueryError;
