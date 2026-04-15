@@ -195,7 +195,7 @@ impl SourceServiceApi for SourceService {
             .map(|table| table_to_proto(&workspace_name, table))
             .collect::<Vec<_>>();
         let query_tests = query_tests
-            .into_iter()
+            .iter()
             .map(query_test_result_to_proto)
             .collect::<Vec<_>>();
         Ok(Response::new(ValidateSourceResponse {

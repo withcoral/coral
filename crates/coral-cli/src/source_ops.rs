@@ -319,7 +319,7 @@ pub(crate) fn print_validation_pretty(
                     .dim()
                 ),
                 (false, _, Some(error_message)) => {
-                    println!("      {}", style(error_message).yellow())
+                    println!("      {}", style(error_message).yellow());
                 }
                 _ => {}
             }

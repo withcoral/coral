@@ -137,8 +137,10 @@ impl SourceValidationOutcome {
     #[must_use]
     /// Builds one structured source-validation outcome.
     pub fn new(tables: Vec<super::TableInfo>, query_tests: Vec<QueryTestResult>) -> Self {
-        let declared_query_count = query_tests.len() as u32;
-        let passed_query_count = query_tests.iter().filter(|test| test.passed).count() as u32;
+        let declared_query_count = u32::try_from(query_tests.len()).unwrap_or(u32::MAX);
+        let passed_query_count =
+            u32::try_from(query_tests.iter().filter(|test| test.passed).count())
+                .unwrap_or(declared_query_count);
         let failed_query_count = declared_query_count.saturating_sub(passed_query_count);
         Self {
             tables,

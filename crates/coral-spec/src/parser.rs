@@ -192,7 +192,7 @@ mod tests {
     #[test]
     fn parse_source_manifest_preserves_test_query_order() {
         let manifest = parse_source_manifest_yaml(
-            r#"
+            r"
 name: demo
 version: 1.0.0
 dsl_version: 3
@@ -208,7 +208,7 @@ tables:
     columns:
       - name: kind
         type: Utf8
-"#,
+",
         )
         .expect("manifest should parse");
 

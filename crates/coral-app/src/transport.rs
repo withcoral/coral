@@ -46,7 +46,9 @@ pub(crate) fn table_to_proto(
     }
 }
 
-pub(crate) fn query_test_result_to_proto(result: coral_engine::QueryTestResult) -> QueryTestResult {
+pub(crate) fn query_test_result_to_proto(
+    result: &coral_engine::QueryTestResult,
+) -> QueryTestResult {
     QueryTestResult {
         sql: result.sql().to_string(),
         passed: result.passed(),
@@ -115,7 +117,7 @@ mod tests {
 
     #[test]
     fn query_test_result_to_proto_preserves_result_metadata() {
-        let proto = query_test_result_to_proto(EngineQueryTestResult::new(
+        let proto = query_test_result_to_proto(&EngineQueryTestResult::new(
             "SELECT 1",
             false,
             None,
