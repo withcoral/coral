@@ -60,18 +60,6 @@ pub(crate) fn assert_row_count(execution: &QueryExecution, expected: usize) {
 
 #[allow(
     dead_code,
-    reason = "retained for engine tests that may assert internal errors"
-)]
-pub(crate) fn assert_internal(error: CoreError, expected_detail: &str) {
-    assert_eq!(error.status_code(), StatusCode::Internal);
-    match error {
-        CoreError::Internal(detail) => assert_eq!(detail, expected_detail),
-        other => panic!("expected CoreError::Internal, got {other:?}"),
-    }
-}
-
-#[allow(
-    dead_code,
     reason = "retained for other engine tests that may assert invalid input"
 )]
 pub(crate) fn assert_invalid_input(error: CoreError, expected_detail: &str) {

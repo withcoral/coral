@@ -91,8 +91,18 @@ When you add `test_queries` to a source spec, treat them as a lightweight valida
    - the source still exposes the expected tables
    - each declared `test_queries` entry runs in manifest order
    - successful queries show a pass status and optional row count
+<<<<<<< HEAD
    - failing queries surface a readable error message
 4. Run one or two real `coral sql` queries against the new tables to confirm the shape is useful beyond the validation checks.
+||||||| parent of 015e4a4 (Trim minor reviewer nits from PR #107)
+   - failing queries surface the SQL text plus a readable error message
+4. Run one or two real `coral sql` queries against the new tables to confirm the shape is useful beyond the validation checks.
+5. If a query fails, fix either the source spec or the upstream credentials/configuration, then rerun `coral source test <source_name>`.
+=======
+   - failing queries surface the SQL text plus a readable error message
+4. Run real `coral sql` queries against the new tables to confirm the shape is useful beyond the validation checks.
+5. If a query fails, fix either the source spec or the upstream credentials/configuration, then rerun `coral source test <source_name>`.
+>>>>>>> 015e4a4 (Trim minor reviewer nits from PR #107)
 
 If you are validating a credentialed source end-to-end, it is useful to try both:
 
