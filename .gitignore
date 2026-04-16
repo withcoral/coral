@@ -27,4 +27,3 @@ target
 # Local task files
 tasks/
 /.github/scripts/__pycache__
-.omx/
