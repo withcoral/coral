@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use coral_engine::{
     CoralQuery, CoreError, QueryExecution, QueryRuntimeContext, QueryRuntimeProvider, QuerySource,
-    TableInfo,
+    QuerySourceOrigin, TableInfo,
 };
 use coral_spec::{ManifestInputKind, ManifestInputSpec, parse_manifest_and_inputs};
 
@@ -154,7 +154,13 @@ impl QueryManager {
             resolved_secrets.insert(secret_name, value);
         }
         Ok((
-            QuerySource::new(source_spec, source.variables.clone(), resolved_secrets),
+            QuerySource::new(
+                source_spec,
+                source.variables.clone(),
+                resolved_secrets,
+                inputs,
+                query_source_origin(source.origin),
+            ),
             installed.candidate.version,
         ))
     }
@@ -201,4 +207,11 @@ fn validate_required_variables(
         )));
     }
     Ok(())
+}
+
+fn query_source_origin(origin: crate::sources::model::SourceOrigin) -> QuerySourceOrigin {
+    match origin {
+        crate::sources::model::SourceOrigin::Bundled => QuerySourceOrigin::Bundled,
+        crate::sources::model::SourceOrigin::Imported => QuerySourceOrigin::Imported,
+    }
 }

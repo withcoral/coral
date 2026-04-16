@@ -3,10 +3,12 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-use crate::QueryRuntimeContext;
+use crate::{QueryRuntimeContext, QuerySourceOrigin};
 use async_trait::async_trait;
 use coral_spec::backends::file::PartitionColumnSpec;
-use coral_spec::{ColumnSpec, FilterSpec, ManifestDataType, TableCommon};
+use coral_spec::{
+    ColumnSpec, FilterSpec, ManifestDataType, ManifestInputKind, ManifestInputSpec, TableCommon,
+};
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use datafusion::datasource::TableProvider;
 use datafusion::error::DataFusionError;
@@ -35,6 +37,18 @@ pub(crate) struct RegisteredTable {
 pub(crate) struct RegisteredSource {
     pub(crate) schema_name: String,
     pub(crate) tables: Vec<RegisteredTable>,
+    pub(crate) variables: Vec<RegisteredSourceVariable>,
+    pub(crate) source_origin: String,
+    pub(crate) manifest_version: String,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RegisteredSourceVariable {
+    pub(crate) variable_key: String,
+    pub(crate) variable_value: String,
+    pub(crate) is_defaulted: bool,
+    pub(crate) is_required: bool,
+    pub(crate) default_value: String,
 }
 
 pub(crate) struct BackendRegistration {
@@ -46,6 +60,8 @@ pub(crate) struct BackendCompileRequest<'a> {
     pub(crate) runtime_context: &'a QueryRuntimeContext,
     pub(crate) source_secrets: BTreeMap<String, String>,
     pub(crate) source_variables: BTreeMap<String, String>,
+    pub(crate) source_inputs: Vec<ManifestInputSpec>,
+    pub(crate) source_origin: QuerySourceOrigin,
 }
 
 #[async_trait]
@@ -115,6 +131,38 @@ pub(crate) fn build_registered_table(
         columns,
         required_filters,
     }
+}
+
+pub(crate) fn build_registered_source_variables(
+    input_specs: &[ManifestInputSpec],
+    source_variables: &BTreeMap<String, String>,
+) -> Vec<RegisteredSourceVariable> {
+    let mut rows = input_specs
+        .iter()
+        .filter(|input| input.kind == ManifestInputKind::Variable)
+        .filter_map(|input| {
+            source_variables
+                .get(&input.key)
+                .map(|value| RegisteredSourceVariable {
+                    variable_key: input.key.clone(),
+                    variable_value: value.clone(),
+                    is_defaulted: false,
+                    is_required: input.required,
+                    default_value: input.default_value.clone(),
+                })
+                .or_else(|| {
+                    (!input.required).then(|| RegisteredSourceVariable {
+                        variable_key: input.key.clone(),
+                        variable_value: input.default_value.clone(),
+                        is_defaulted: true,
+                        is_required: false,
+                        default_value: input.default_value.clone(),
+                    })
+                })
+        })
+        .collect::<Vec<_>>();
+    rows.sort_by(|left, right| left.variable_key.cmp(&right.variable_key));
+    rows
 }
 
 pub(crate) fn manifest_data_type_to_arrow(data_type: ManifestDataType) -> DataType {

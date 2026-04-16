@@ -25,11 +25,16 @@ pub(crate) const SYSTEM_SCHEMA: &str = "coral";
 pub(crate) fn register(ctx: &SessionContext, active_sources: &[RegisteredSource]) -> Result<()> {
     let tables_table = build_tables_table(active_sources)?;
     let columns_table = build_columns_table(active_sources)?;
+    let source_variables_table = build_source_variables_table(active_sources)?;
 
     let mut meta_tables: HashMap<String, Arc<dyn datafusion::datasource::TableProvider>> =
         HashMap::new();
     meta_tables.insert("tables".to_string(), Arc::new(tables_table));
     meta_tables.insert("columns".to_string(), Arc::new(columns_table));
+    meta_tables.insert(
+        "source_variables".to_string(),
+        Arc::new(source_variables_table),
+    );
 
     let catalog = ctx
         .catalog("datafusion")
@@ -127,6 +132,17 @@ struct CatalogColumn {
     ordinal_position: usize,
 }
 
+struct CatalogSourceVariable {
+    schema_name: String,
+    variable_key: String,
+    variable_value: String,
+    is_defaulted: bool,
+    is_required: bool,
+    default_value: String,
+    source_origin: String,
+    manifest_version: String,
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "The metadata batch builder keeps the fixed coral.columns layout in one place."
@@ -214,6 +230,91 @@ fn build_columns_table(active_sources: &[RegisteredSource]) -> Result<MemTable> 
             Arc::new(
                 rows.iter()
                     .map(|row| Some(row.description.as_str()))
+                    .collect::<StringArray>(),
+            ),
+        ],
+    )
+    .map_err(|error| DataFusionError::ArrowError(Box::new(error), None))?;
+
+    MemTable::try_new(schema, vec![vec![batch]])
+}
+
+fn build_source_variables_table(active_sources: &[RegisteredSource]) -> Result<MemTable> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("schema_name", DataType::Utf8, false),
+        Field::new("variable_key", DataType::Utf8, false),
+        Field::new("variable_value", DataType::Utf8, false),
+        Field::new("is_defaulted", DataType::Boolean, false),
+        Field::new("is_required", DataType::Boolean, false),
+        Field::new("default_value", DataType::Utf8, false),
+        Field::new("source_origin", DataType::Utf8, false),
+        Field::new("manifest_version", DataType::Utf8, false),
+    ]));
+
+    let mut rows = active_sources
+        .iter()
+        .flat_map(|source| {
+            source
+                .variables
+                .iter()
+                .map(move |variable| CatalogSourceVariable {
+                    schema_name: source.schema_name.clone(),
+                    variable_key: variable.variable_key.clone(),
+                    variable_value: variable.variable_value.clone(),
+                    is_defaulted: variable.is_defaulted,
+                    is_required: variable.is_required,
+                    default_value: variable.default_value.clone(),
+                    source_origin: source.source_origin.clone(),
+                    manifest_version: source.manifest_version.clone(),
+                })
+        })
+        .collect::<Vec<_>>();
+
+    rows.sort_by(|left, right| {
+        (&left.schema_name, &left.variable_key).cmp(&(&right.schema_name, &right.variable_key))
+    });
+
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(
+                rows.iter()
+                    .map(|row| Some(row.schema_name.as_str()))
+                    .collect::<StringArray>(),
+            ),
+            Arc::new(
+                rows.iter()
+                    .map(|row| Some(row.variable_key.as_str()))
+                    .collect::<StringArray>(),
+            ),
+            Arc::new(
+                rows.iter()
+                    .map(|row| Some(row.variable_value.as_str()))
+                    .collect::<StringArray>(),
+            ),
+            Arc::new(
+                rows.iter()
+                    .map(|row| Some(row.is_defaulted))
+                    .collect::<BooleanArray>(),
+            ),
+            Arc::new(
+                rows.iter()
+                    .map(|row| Some(row.is_required))
+                    .collect::<BooleanArray>(),
+            ),
+            Arc::new(
+                rows.iter()
+                    .map(|row| Some(row.default_value.as_str()))
+                    .collect::<StringArray>(),
+            ),
+            Arc::new(
+                rows.iter()
+                    .map(|row| Some(row.source_origin.as_str()))
+                    .collect::<StringArray>(),
+            ),
+            Arc::new(
+                rows.iter()
+                    .map(|row| Some(row.manifest_version.as_str()))
                     .collect::<StringArray>(),
             ),
         ],

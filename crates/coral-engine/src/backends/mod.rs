@@ -6,9 +6,9 @@ use coral_spec::ValidatedSourceManifest;
 pub(crate) mod common;
 pub(crate) use common::{
     BackendCompileRequest, BackendRegistration, CompiledBackendSource, RegisteredSource,
-    RegisteredTable, arrow_type_for_column, build_registered_table, partition_columns_to_arrow,
-    registered_columns_from_schema, registered_columns_from_specs, required_filter_names,
-    schema_from_columns,
+    RegisteredTable, arrow_type_for_column, build_registered_source_variables,
+    build_registered_table, partition_columns_to_arrow, registered_columns_from_schema,
+    registered_columns_from_specs, required_filter_names, schema_from_columns,
 };
 
 pub(crate) mod http;
@@ -26,6 +26,8 @@ pub(crate) fn compile_query_source(
             runtime_context,
             source_secrets: source.secrets().clone(),
             source_variables: source.variables().clone(),
+            source_inputs: source.inputs().to_vec(),
+            source_origin: source.source_origin(),
         },
     )
 }
@@ -43,6 +45,8 @@ pub(crate) fn compile_source_manifest(
             runtime_context,
             source_secrets,
             source_variables,
+            source_inputs: Vec::new(),
+            source_origin: crate::QuerySourceOrigin::Imported,
         },
     )
 }

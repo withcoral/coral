@@ -9,10 +9,13 @@ use datafusion::datasource::TableProvider;
 use datafusion::error::Result;
 use datafusion::prelude::SessionContext;
 
+use crate::QuerySourceOrigin;
 use crate::backends::{
     BackendCompileRequest, BackendRegistration, CompiledBackendSource, RegisteredSource,
-    RegisteredTable, build_registered_table, registered_columns_from_specs, required_filter_names,
+    RegisteredTable, build_registered_source_variables, build_registered_table,
+    registered_columns_from_specs, required_filter_names,
 };
+use coral_spec::ManifestInputSpec;
 use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec};
 pub(crate) mod client;
 pub(crate) mod error;
@@ -28,17 +31,23 @@ struct HttpCompiledSource {
     manifest: HttpSourceManifest,
     source_secrets: std::collections::BTreeMap<String, String>,
     source_variables: std::collections::BTreeMap<String, String>,
+    source_inputs: Vec<ManifestInputSpec>,
+    source_origin: QuerySourceOrigin,
 }
 
 pub(crate) fn compile_source(
     manifest: HttpSourceManifest,
     source_secrets: std::collections::BTreeMap<String, String>,
     source_variables: std::collections::BTreeMap<String, String>,
+    source_inputs: Vec<ManifestInputSpec>,
+    source_origin: QuerySourceOrigin,
 ) -> Box<dyn CompiledBackendSource> {
     Box::new(HttpCompiledSource {
         manifest,
         source_secrets,
         source_variables,
+        source_inputs,
+        source_origin,
     })
 }
 
@@ -51,6 +60,8 @@ pub(crate) fn compile_manifest(
         manifest.clone(),
         request.source_secrets.clone(),
         request.source_variables.clone(),
+        request.source_inputs.clone(),
+        request.source_origin,
     )
 }
 
@@ -88,6 +99,12 @@ impl CompiledBackendSource for HttpCompiledSource {
             source: RegisteredSource {
                 schema_name: self.manifest.common.name.clone(),
                 tables: table_infos,
+                variables: build_registered_source_variables(
+                    &self.source_inputs,
+                    &self.source_variables,
+                ),
+                source_origin: self.source_origin.as_str().to_string(),
+                manifest_version: self.manifest.common.version.clone(),
             },
         })
     }

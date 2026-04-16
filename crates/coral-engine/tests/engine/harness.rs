@@ -7,9 +7,10 @@ use arrow::array::{Int64Array, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use coral_engine::{
-    CoreError, QueryExecution, QueryRuntimeContext, QueryRuntimeProvider, QuerySource, StatusCode,
+    CoreError, QueryExecution, QueryRuntimeContext, QueryRuntimeProvider, QuerySource,
+    QuerySourceOrigin, StatusCode,
 };
-use coral_spec::parse_source_manifest_value;
+use coral_spec::parse_manifest_and_inputs;
 use parquet::arrow::ArrowWriter;
 use serde_json::{Value, json};
 
@@ -37,8 +38,16 @@ pub(crate) fn build_source_with_inputs(
     variables: BTreeMap<String, String>,
     secrets: BTreeMap<String, String>,
 ) -> QuerySource {
-    let manifest = parse_source_manifest_value(value).expect("manifest should parse");
-    QuerySource::new(manifest, variables, secrets)
+    let raw = value.to_string();
+    std::mem::drop(value);
+    let (manifest, inputs) = parse_manifest_and_inputs(&raw).expect("manifest should parse");
+    QuerySource::new(
+        manifest,
+        variables,
+        secrets,
+        inputs,
+        QuerySourceOrigin::Imported,
+    )
 }
 
 pub(crate) fn execution_to_rows(execution: &QueryExecution) -> Vec<Value> {

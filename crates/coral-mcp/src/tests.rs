@@ -139,6 +139,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
     };
     assert!(initial_guide_text.contains("## Available Schemas"));
     assert!(initial_guide_text.contains("- coral: System metadata schema."));
+    assert!(initial_guide_text.contains("coral.source_variables"));
     assert!(initial_guide_text.contains("No source schemas are currently configured."));
     assert!(initial_guide_text.contains("schema_name = '<schema>'"));
 
@@ -200,6 +201,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
     };
     assert!(updated_guide_text.contains("## Available Schemas"));
     assert!(updated_guide_text.contains("- coral: System metadata schema."));
+    assert!(updated_guide_text.contains("coral.source_variables"));
     assert!(updated_guide_text.contains("- local_messages"));
     assert!(!updated_guide_text.contains("## Visible SQL Schemas"));
     assert!(updated_guide_text.contains(

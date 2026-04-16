@@ -26,12 +26,14 @@ use object_store::local::LocalFileSystem;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::file::reader::{ChunkReader, Length};
 
+use crate::QuerySourceOrigin;
 use crate::backends::{
     BackendCompileRequest, BackendRegistration, CompiledBackendSource, RegisteredSource,
-    RegisteredTable, build_registered_table, partition_columns_to_arrow,
-    registered_columns_from_schema, registered_columns_from_specs, required_filter_names,
-    schema_from_columns,
+    RegisteredTable, build_registered_source_variables, build_registered_table,
+    partition_columns_to_arrow, registered_columns_from_schema, registered_columns_from_specs,
+    required_filter_names, schema_from_columns,
 };
+use coral_spec::ManifestInputSpec;
 use coral_spec::backends::file::{FileTableSpec, ParquetSourceManifest};
 
 const DEFAULT_PARQUET_EXTENSION: &str = ".parquet";
@@ -46,15 +48,24 @@ const PARQUET_FOOTER_SIZE: u64 = 8;
 struct ParquetCompiledSource {
     manifest: ParquetSourceManifest,
     source_secrets: BTreeMap<String, String>,
+    source_inputs: Vec<ManifestInputSpec>,
+    source_variables: BTreeMap<String, String>,
+    source_origin: QuerySourceOrigin,
 }
 
 pub(crate) fn compile_source(
     manifest: ParquetSourceManifest,
     source_secrets: BTreeMap<String, String>,
+    source_inputs: Vec<ManifestInputSpec>,
+    source_variables: BTreeMap<String, String>,
+    source_origin: QuerySourceOrigin,
 ) -> Box<dyn CompiledBackendSource> {
     Box::new(ParquetCompiledSource {
         manifest,
         source_secrets,
+        source_inputs,
+        source_variables,
+        source_origin,
     })
 }
 
@@ -62,7 +73,13 @@ pub(crate) fn compile_manifest(
     manifest: &ParquetSourceManifest,
     request: &BackendCompileRequest<'_>,
 ) -> Box<dyn CompiledBackendSource> {
-    compile_source(manifest.clone(), request.source_secrets.clone())
+    compile_source(
+        manifest.clone(),
+        request.source_secrets.clone(),
+        request.source_inputs.clone(),
+        request.source_variables.clone(),
+        request.source_origin,
+    )
 }
 
 #[derive(Debug)]
@@ -239,6 +256,12 @@ impl CompiledBackendSource for ParquetCompiledSource {
             source: RegisteredSource {
                 schema_name: self.manifest.common.name.clone(),
                 tables: table_infos,
+                variables: build_registered_source_variables(
+                    &self.source_inputs,
+                    &self.source_variables,
+                ),
+                source_origin: self.source_origin.as_str().to_string(),
+                manifest_version: self.manifest.common.version.clone(),
             },
         })
     }

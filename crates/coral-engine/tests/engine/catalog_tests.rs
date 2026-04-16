@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use coral_engine::{ColumnInfo, CoralQuery, QuerySource, TableInfo};
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -78,6 +80,61 @@ fn build_catalog_sources() -> (TempDir, Vec<QuerySource>) {
     (temp, sources)
 }
 
+fn build_source_variable_sources() -> Vec<QuerySource> {
+    vec![
+        crate::harness::build_source_with_inputs(
+            json!({
+                "name": "datadog",
+                "version": "2.1.0",
+                "dsl_version": 3,
+                "backend": "http",
+                "base_url": "https://api.{{variable.DD_SITE|datadoghq.com}}",
+                "auth": {
+                    "headers": [{
+                        "name": "DD-API-KEY",
+                        "from": "secret",
+                        "key": "DD_API_KEY"
+                    }]
+                },
+                "tables": [{
+                    "name": "dashboards",
+                    "description": "Datadog dashboards",
+                    "request": { "path": "/api/v1/dashboard" },
+                    "columns": [{ "name": "id", "type": "Utf8" }]
+                }]
+            }),
+            BTreeMap::from([("DD_SITE".to_string(), "datadoghq.eu".to_string())]),
+            BTreeMap::from([("DD_API_KEY".to_string(), "secret".to_string())]),
+        ),
+        crate::harness::build_source_with_inputs(
+            json!({
+                "name": "sentry",
+                "version": "3.4.5",
+                "dsl_version": 3,
+                "backend": "http",
+                "base_url": "{{variable.SENTRY_BASE|https://sentry.io/api/0}}",
+                "auth": {
+                    "headers": [{
+                        "name": "Authorization",
+                        "from": "secret",
+                        "key": "SENTRY_TOKEN"
+                    }]
+                },
+                "tables": [{
+                    "name": "issues",
+                    "description": "Sentry issues",
+                    "request": {
+                        "path": "/organizations/{{variable.SENTRY_ORG}}/issues/"
+                    },
+                    "columns": [{ "name": "id", "type": "Utf8" }]
+                }]
+            }),
+            BTreeMap::from([("SENTRY_ORG".to_string(), "withcoral".to_string())]),
+            BTreeMap::from([("SENTRY_TOKEN".to_string(), "secret".to_string())]),
+        ),
+    ]
+}
+
 #[tokio::test]
 async fn coral_tables_lists_installed_sources() {
     let (_temp, sources) = build_catalog_sources();
@@ -123,6 +180,86 @@ async fn coral_columns_returns_metadata() {
             json!({"column_name": "id", "data_type": "Int64", "is_virtual": false, "is_required_filter": false}),
             json!({"column_name": "team_id", "data_type": "Int64", "is_virtual": false, "is_required_filter": false}),
             json!({"column_name": "name", "data_type": "Utf8", "is_virtual": false, "is_required_filter": false}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn coral_source_variables_returns_effective_values_without_secrets() {
+    let sources = build_source_variable_sources();
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &sources,
+            &TestRuntime,
+            "SELECT schema_name, variable_key, variable_value, is_defaulted, is_required, \
+             default_value, source_origin, manifest_version \
+             FROM coral.source_variables ORDER BY schema_name, variable_key",
+        )
+        .await
+        .expect("catalog query should succeed"),
+    );
+
+    assert_eq!(
+        rows,
+        vec![
+            json!({
+                "schema_name": "datadog",
+                "variable_key": "DD_SITE",
+                "variable_value": "datadoghq.eu",
+                "is_defaulted": false,
+                "is_required": false,
+                "default_value": "datadoghq.com",
+                "source_origin": "imported",
+                "manifest_version": "2.1.0"
+            }),
+            json!({
+                "schema_name": "sentry",
+                "variable_key": "SENTRY_BASE",
+                "variable_value": "https://sentry.io/api/0",
+                "is_defaulted": true,
+                "is_required": false,
+                "default_value": "https://sentry.io/api/0",
+                "source_origin": "imported",
+                "manifest_version": "3.4.5"
+            }),
+            json!({
+                "schema_name": "sentry",
+                "variable_key": "SENTRY_ORG",
+                "variable_value": "withcoral",
+                "is_defaulted": false,
+                "is_required": true,
+                "default_value": "",
+                "source_origin": "imported",
+                "manifest_version": "3.4.5"
+            }),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn coral_source_variables_joins_cleanly_with_coral_tables() {
+    let sources = build_source_variable_sources();
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &sources,
+            &TestRuntime,
+            "SELECT sv.schema_name, sv.variable_key, t.table_name \
+             FROM coral.source_variables sv \
+             JOIN coral.tables t ON t.schema_name = sv.schema_name \
+             WHERE sv.variable_key IN ('DD_SITE', 'SENTRY_ORG') \
+             ORDER BY sv.schema_name, sv.variable_key",
+        )
+        .await
+        .expect("join should succeed"),
+    );
+
+    assert_eq!(
+        rows,
+        vec![
+            json!({"schema_name": "datadog", "variable_key": "DD_SITE", "table_name": "dashboards"}),
+            json!({"schema_name": "sentry", "variable_key": "SENTRY_ORG", "table_name": "issues"}),
         ]
     );
 }
