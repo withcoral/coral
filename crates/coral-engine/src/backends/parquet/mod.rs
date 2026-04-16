@@ -334,7 +334,7 @@ fn build_object_store(
                     }
                 } else {
                     return Err(DataFusionError::Plan(format!(
-                        "parquet source '{source_schema}' must define aws_access_key_id and aws_secret_access_key, set use_instance_profile, or export AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY"
+                        "parquet source '{source_schema}' requires AWS credentials: define aws_access_key_id and aws_secret_access_key, or set use_instance_profile"
                     )));
                 }
             }

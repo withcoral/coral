@@ -19,7 +19,7 @@ impl AppEnvironment {
         Self {
             coral_config_dir_override: coral_config_dir_override(),
             user_home_dir: BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()),
-            aws_credentials: aws_env_credentials(),
+            aws_credentials: aws_credentials(),
         }
     }
 
@@ -47,7 +47,7 @@ fn coral_config_dir_override() -> Option<PathBuf> {
     clippy::disallowed_methods,
     reason = "coral-app is the single owner of process environment access."
 )]
-fn aws_env_credentials() -> AwsCredentials {
+fn aws_credentials() -> AwsCredentials {
     AwsCredentials {
         region: std::env::var("AWS_REGION")
             .ok()
