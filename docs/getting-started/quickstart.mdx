@@ -37,8 +37,12 @@ You can now query any connected source using SQL.
 Use `coral.tables` to see all available tables:
 
 ```shellscript
-coral sql "SELECT schema_name, table_name FROM coral.tables ORDER BY 1, 2"
+coral sql "SELECT schema_name, table_name, sql_table_ref FROM coral.tables ORDER BY 1, 2"
 ```
+
+If a table or column name uses mixed case or special characters, prefer the
+SQL-ready catalog fields such as `sql_table_ref`, `sql_column_ref`, and
+`sql_qualified_column_ref` when composing queries.
 
 Assuming you've connected GitHub, try listing open issues for a repo:
 

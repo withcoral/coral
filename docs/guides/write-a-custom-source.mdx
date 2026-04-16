@@ -122,5 +122,5 @@ For the full set of HTTP response, pagination, auth, and column fields, see [HTT
 
 - **Lint before installing.** Run `coral source lint ./my-source.yaml` to catch schema and semantic errors without touching your workspace.
 - **Start small.** Begin with one table and a few columns. Validate with `coral source test`, check `coral.columns`, then expand.
-- **Use `coral.tables` and `coral.columns`.** They show you exactly what Coral sees after adding a source — including required filters and column metadata.
+- **Use `coral.tables` and `coral.columns`.** They show you exactly what Coral sees after adding a source — including required filters, column metadata, and SQL-ready identifier fields such as `sql_table_ref`, `sql_column_ref`, and `sql_qualified_column_ref`.
 - **Look at bundled sources for patterns.** The bundled source specs in the repo under `sources/` are working examples of HTTP pagination, response parsing, auth, and variables.

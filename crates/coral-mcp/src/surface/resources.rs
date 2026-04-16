@@ -5,7 +5,7 @@ use coral_api::v1::{Source, Table};
 use rmcp::model::{AnnotateAble, RawResource, Resource};
 use serde_json::{Value, json};
 
-static INITIAL_INSTRUCTIONS: &str = "You are connected to Coral. Read `coral://guide` for query patterns, use `list_tables` to inspect queryable tables, and use `sql` against `coral.tables` and `coral.columns` for discovery.";
+static INITIAL_INSTRUCTIONS: &str = "You are connected to Coral. Read `coral://guide` for query patterns, use `list_tables` to inspect queryable tables, and use `sql` against `coral.tables` and `coral.columns` for discovery. Prefer SQL-ready identifier fields such as `sql_table_ref`, `sql_column_ref`, and `sql_qualified_column_ref` when composing queries.";
 static GUIDE_TEMPLATE: &str = include_str!("../guide_template.md");
 
 pub(crate) fn initial_instructions() -> &'static str {
@@ -51,13 +51,13 @@ pub(crate) fn guide_resource_content(sources: &[Source], tables: &[Table]) -> St
 
     let columns_example = first_visible_table(tables).map_or_else(
         || {
-            "SELECT column_name, data_type, is_required_filter, description \
+            "SELECT column_name, sql_column_ref, sql_qualified_column_ref, data_type, is_required_filter, description \
 FROM coral.columns WHERE schema_name = '<schema>' AND table_name = '<table>' ORDER BY ordinal_position;"
                 .to_string()
         },
         |(schema_name, table_name)| {
             format!(
-                "SELECT column_name, data_type, is_required_filter, description \
+                "SELECT column_name, sql_column_ref, sql_qualified_column_ref, data_type, is_required_filter, description \
 FROM coral.columns WHERE schema_name = '{schema_name}' AND table_name = '{table_name}' ORDER BY ordinal_position;"
             )
         },
@@ -171,6 +171,8 @@ mod tests {
         assert!(content.contains("- coral: System metadata schema."));
         assert!(content.contains("No query-visible source schemas are currently available."));
         assert!(content.contains("schema_name = '<schema>'"));
+        assert!(content.contains("sql_column_ref"));
+        assert!(content.contains("sql_table_ref"));
     }
 
     #[test]
@@ -183,6 +185,9 @@ mod tests {
         assert!(content.contains("- coral: System metadata schema."));
         assert!(content.contains("Visible source schemas:"));
         assert!(content.contains("- slack"));
-        assert!(content.contains("Fully qualify tables in SQL, for example `slack.messages`."));
+        assert!(content.contains(
+            "Always use `coral.tables.sql_table_ref`, `coral.columns.sql_column_ref`, and `coral.columns.sql_qualified_column_ref` when writing SQL. Copy them verbatim; never reconstruct or qualify identifiers yourself."
+        ));
+        assert!(content.contains("sql_qualified_column_ref"));
     }
 }

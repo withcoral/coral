@@ -49,6 +49,27 @@ fn teams_manifest(dir: &std::path::Path) -> Value {
     })
 }
 
+fn mixed_case_manifest(dir: &std::path::Path) -> Value {
+    json!({
+        "name": "hockey",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "jsonl",
+        "tables": [{
+            "name": "Master",
+            "description": "Mixed-case player fixture",
+            "source": {
+                "location": dir_url(dir),
+                "glob": "**/*.jsonl"
+            },
+            "columns": [
+                { "name": "playerID", "type": "Int64" },
+                { "name": "firstName", "type": "Utf8" }
+            ]
+        }]
+    })
+}
+
 fn build_catalog_sources() -> (TempDir, Vec<QuerySource>) {
     let temp = TempDir::new().expect("temp dir");
     let alpha_dir = temp.path().join("alpha");
@@ -75,6 +96,22 @@ fn build_catalog_sources() -> (TempDir, Vec<QuerySource>) {
         build_source(users_manifest(&alpha_dir)),
         build_source(teams_manifest(&beta_dir)),
     ];
+    (temp, sources)
+}
+
+fn build_mixed_case_source() -> (TempDir, Vec<QuerySource>) {
+    let temp = TempDir::new().expect("temp dir");
+    let hockey_dir = temp.path().join("hockey");
+    write_jsonl_file(
+        &hockey_dir,
+        "players.jsonl",
+        &[
+            json!({"playerID": 1, "firstName": "Ada"}),
+            json!({"playerID": 2, "firstName": "Grace"}),
+        ],
+    );
+
+    let sources = vec![build_source(mixed_case_manifest(&hockey_dir))];
     (temp, sources)
 }
 
@@ -123,6 +160,64 @@ async fn coral_columns_returns_metadata() {
             json!({"column_name": "id", "data_type": "Int64", "is_virtual": false, "is_required_filter": false}),
             json!({"column_name": "team_id", "data_type": "Int64", "is_virtual": false, "is_required_filter": false}),
             json!({"column_name": "name", "data_type": "Utf8", "is_virtual": false, "is_required_filter": false}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn coral_tables_exposes_sql_ready_table_refs_for_mixed_case_names() {
+    let (_temp, sources) = build_mixed_case_source();
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &sources,
+            &TestRuntime,
+            "SELECT schema_name, table_name, sql_table_ref \
+             FROM coral.tables WHERE schema_name = 'hockey'",
+        )
+        .await
+        .expect("catalog query should expose SQL-ready table refs"),
+    );
+
+    assert_eq!(
+        rows,
+        vec![json!({
+            "schema_name": "hockey",
+            "table_name": "Master",
+            "sql_table_ref": "hockey.\"Master\"",
+        })]
+    );
+}
+
+#[tokio::test]
+async fn coral_columns_exposes_sql_ready_column_refs_for_mixed_case_names() {
+    let (_temp, sources) = build_mixed_case_source();
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &sources,
+            &TestRuntime,
+            "SELECT column_name, sql_column_ref, sql_qualified_column_ref \
+             FROM coral.columns WHERE schema_name = 'hockey' AND table_name = 'Master' \
+             ORDER BY ordinal_position",
+        )
+        .await
+        .expect("catalog query should expose SQL-ready column refs"),
+    );
+
+    assert_eq!(
+        rows,
+        vec![
+            json!({
+                "column_name": "playerID",
+                "sql_column_ref": "\"playerID\"",
+                "sql_qualified_column_ref": "hockey.\"Master\".\"playerID\"",
+            }),
+            json!({
+                "column_name": "firstName",
+                "sql_column_ref": "\"firstName\"",
+                "sql_qualified_column_ref": "hockey.\"Master\".\"firstName\"",
+            }),
         ]
     );
 }

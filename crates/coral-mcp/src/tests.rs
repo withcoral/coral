@@ -148,6 +148,8 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
     assert!(initial_guide_text.contains("- coral: System metadata schema."));
     assert!(initial_guide_text.contains("No source schemas are currently configured."));
     assert!(initial_guide_text.contains("schema_name = '<schema>'"));
+    assert!(initial_guide_text.contains("sql_table_ref"));
+    assert!(initial_guide_text.contains("sql_column_ref"));
 
     add_demo_source(&mut source_client, manifest_yaml).await;
 
@@ -211,6 +213,10 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
     assert!(!updated_guide_text.contains("## Visible SQL Schemas"));
     assert!(updated_guide_text.contains(
         "FROM coral.columns WHERE schema_name = 'local_messages' AND table_name = 'messages'"
+    ));
+    assert!(updated_guide_text.contains("sql_qualified_column_ref"));
+    assert!(updated_guide_text.contains(
+        "Always use `coral.tables.sql_table_ref`, `coral.columns.sql_column_ref`, and `coral.columns.sql_qualified_column_ref`"
     ));
 
     let tables = client

@@ -96,6 +96,8 @@ impl QueryExecution {
             .iter()
             .map(|field| ColumnInfo {
                 name: field.name().clone(),
+                sql_column_ref: field.name().clone(),
+                sql_qualified_column_ref: String::new(),
                 data_type: field.data_type().to_string(),
                 nullable: field.is_nullable(),
             })

@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use datafusion::arrow::array::{BooleanArray, Int32Array, RecordBatch, StringArray};
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
+use datafusion::common::utils::quote_identifier;
 use datafusion::datasource::MemTable;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::prelude::SessionContext;
@@ -51,12 +52,19 @@ pub(crate) fn collect_tables(active_sources: &[RegisteredSource]) -> Vec<TableIn
             source.tables.iter().map(move |table| TableInfo {
                 schema_name: source.schema_name.clone(),
                 table_name: table.table_name.clone(),
+                sql_table_ref: sql_table_ref(&source.schema_name, &table.table_name),
                 description: table.description.clone(),
                 columns: table
                     .columns
                     .iter()
                     .map(|column| ColumnInfo {
                         name: column.name.clone(),
+                        sql_column_ref: sql_column_ref(&column.name),
+                        sql_qualified_column_ref: sql_qualified_column_ref(
+                            &source.schema_name,
+                            &table.table_name,
+                            &column.name,
+                        ),
                         data_type: column.data_type.clone(),
                         nullable: column.nullable,
                     })
@@ -75,6 +83,7 @@ fn build_tables_table(active_sources: &[RegisteredSource]) -> Result<MemTable> {
     let schema = Arc::new(Schema::new(vec![
         Field::new("schema_name", DataType::Utf8, false),
         Field::new("table_name", DataType::Utf8, false),
+        Field::new("sql_table_ref", DataType::Utf8, false),
         Field::new("description", DataType::Utf8, false),
         Field::new("guide", DataType::Utf8, false),
         Field::new("required_filters", DataType::Utf8, false),
@@ -87,6 +96,7 @@ fn build_tables_table(active_sources: &[RegisteredSource]) -> Result<MemTable> {
                 (
                     source.schema_name.as_str(),
                     table.table_name.as_str(),
+                    sql_table_ref(&source.schema_name, &table.table_name),
                     table.description.as_str(),
                     table.guide.as_str(),
                     table.required_filters.join(","),
@@ -102,11 +112,16 @@ fn build_tables_table(active_sources: &[RegisteredSource]) -> Result<MemTable> {
         vec![
             Arc::new(rows.iter().map(|row| Some(row.0)).collect::<StringArray>()),
             Arc::new(rows.iter().map(|row| Some(row.1)).collect::<StringArray>()),
-            Arc::new(rows.iter().map(|row| Some(row.2)).collect::<StringArray>()),
-            Arc::new(rows.iter().map(|row| Some(row.3)).collect::<StringArray>()),
             Arc::new(
                 rows.iter()
-                    .map(|row| Some(row.4.as_str()))
+                    .map(|row| Some(row.2.clone()))
+                    .collect::<StringArray>(),
+            ),
+            Arc::new(rows.iter().map(|row| Some(row.3)).collect::<StringArray>()),
+            Arc::new(rows.iter().map(|row| Some(row.4)).collect::<StringArray>()),
+            Arc::new(
+                rows.iter()
+                    .map(|row| Some(row.5.as_str()))
                     .collect::<StringArray>(),
             ),
         ],
@@ -120,6 +135,8 @@ struct CatalogColumn {
     schema_name: String,
     table_name: String,
     column_name: String,
+    sql_column_ref: String,
+    sql_qualified_column_ref: String,
     data_type: String,
     is_virtual: bool,
     is_required_filter: bool,
@@ -137,6 +154,8 @@ fn build_columns_table(active_sources: &[RegisteredSource]) -> Result<MemTable> 
         Field::new("table_name", DataType::Utf8, false),
         Field::new("ordinal_position", DataType::Int32, false),
         Field::new("column_name", DataType::Utf8, false),
+        Field::new("sql_column_ref", DataType::Utf8, false),
+        Field::new("sql_qualified_column_ref", DataType::Utf8, false),
         Field::new("data_type", DataType::Utf8, false),
         Field::new("is_virtual", DataType::Boolean, false),
         Field::new("is_required_filter", DataType::Boolean, false),
@@ -155,6 +174,12 @@ fn build_columns_table(active_sources: &[RegisteredSource]) -> Result<MemTable> 
                         schema_name: source.schema_name.clone(),
                         table_name: table.table_name.clone(),
                         column_name: column.name.clone(),
+                        sql_column_ref: sql_column_ref(&column.name),
+                        sql_qualified_column_ref: sql_qualified_column_ref(
+                            &source.schema_name,
+                            &table.table_name,
+                            &column.name,
+                        ),
                         data_type: column.data_type.clone(),
                         is_virtual: column.is_virtual,
                         is_required_filter: column.is_required_filter,
@@ -198,6 +223,16 @@ fn build_columns_table(active_sources: &[RegisteredSource]) -> Result<MemTable> 
             ),
             Arc::new(
                 rows.iter()
+                    .map(|row| Some(row.sql_column_ref.as_str()))
+                    .collect::<StringArray>(),
+            ),
+            Arc::new(
+                rows.iter()
+                    .map(|row| Some(row.sql_qualified_column_ref.as_str()))
+                    .collect::<StringArray>(),
+            ),
+            Arc::new(
+                rows.iter()
                     .map(|row| Some(row.data_type.as_str()))
                     .collect::<StringArray>(),
             ),
@@ -221,4 +256,25 @@ fn build_columns_table(active_sources: &[RegisteredSource]) -> Result<MemTable> 
     .map_err(|error| DataFusionError::ArrowError(Box::new(error), None))?;
 
     MemTable::try_new(schema, vec![vec![batch]])
+}
+
+fn sql_table_ref(schema_name: &str, table_name: &str) -> String {
+    format!(
+        "{}.{}",
+        quote_identifier(schema_name),
+        quote_identifier(table_name)
+    )
+}
+
+fn sql_column_ref(column_name: &str) -> String {
+    quote_identifier(column_name).into_owned()
+}
+
+fn sql_qualified_column_ref(schema_name: &str, table_name: &str, column_name: &str) -> String {
+    format!(
+        "{}.{}.{}",
+        quote_identifier(schema_name),
+        quote_identifier(table_name),
+        quote_identifier(column_name)
+    )
 }

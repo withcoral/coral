@@ -82,9 +82,12 @@ mod tests {
         let table = TableInfo {
             schema_name: "demo".to_string(),
             table_name: "users".to_string(),
+            sql_table_ref: "demo.users".to_string(),
             description: "User records".to_string(),
             columns: vec![ColumnInfo {
                 name: "id".to_string(),
+                sql_column_ref: "id".to_string(),
+                sql_qualified_column_ref: "demo.users.id".to_string(),
                 data_type: "Int64".to_string(),
                 nullable: false,
             }],

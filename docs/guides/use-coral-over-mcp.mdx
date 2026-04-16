@@ -202,6 +202,12 @@ Once your client is connected, ask the agent to list available tables or run a s
 
 The agent should call `list_tables` or query `coral.tables` and return the schemas from your installed sources.
 
+When an agent needs to write SQL, have it prefer the SQL-ready identifier fields
+from `coral.tables` and `coral.columns` such as `sql_table_ref`,
+`sql_column_ref`, and `sql_qualified_column_ref`. Those fields are safer to
+copy verbatim than raw `table_name` or `column_name` values when identifiers
+use mixed case or other characters that require quoting.
+
 ## Troubleshooting
 
 - **`coral` not found:** Make sure `coral` is on your `PATH`, or use the full path from `which coral` in your client config.
