@@ -71,7 +71,7 @@ pub struct QueryRuntimeContext {
     /// Current user's home directory for local path resolution.
     pub home_dir: Option<PathBuf>,
     /// AWS credential fallback for S3-backed sources.
-    pub aws: AwsCredentials,
+    pub aws_credentials: AwsCredentials,
 }
 
 /// AWS credentials resolved from the process environment by the app layer.

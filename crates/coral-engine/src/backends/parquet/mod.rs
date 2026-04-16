@@ -310,7 +310,7 @@ fn build_object_store(
             let mut builder = AmazonS3Builder::new().with_bucket_name(bucket);
 
             // Apply explicit region from source secrets, then fall back to runtime context.
-            let effective_region = region.or_else(|| runtime_context.aws.region.clone());
+            let effective_region = region.or_else(|| runtime_context.aws_credentials.region.clone());
             if let Some(r) = effective_region {
                 builder = builder.with_region(r);
             }
@@ -323,15 +323,19 @@ fn build_object_store(
                     .with_secret_access_key(secret_access_key);
             } else if !use_instance_profile {
                 if let (Some(key_id), Some(secret)) = (
-                    &runtime_context.aws.access_key_id,
-                    &runtime_context.aws.secret_access_key,
+                    &runtime_context.aws_credentials.access_key_id,
+                    &runtime_context.aws_credentials.secret_access_key,
                 ) {
                     builder = builder
                         .with_access_key_id(key_id)
                         .with_secret_access_key(secret);
-                    if let Some(token) = &runtime_context.aws.session_token {
+                    if let Some(token) = &runtime_context.aws_credentials.session_token {
                         builder = builder.with_token(token);
                     }
+                } else {
+                    return Err(DataFusionError::Plan(format!(
+                        "parquet source '{source_schema}' must define aws_access_key_id and aws_secret_access_key, set use_instance_profile, or export AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY"
+                    )));
                 }
             }
 
@@ -1056,7 +1060,7 @@ mod tests {
             ListingTableUrl::parse("s3://test-bucket/data/").expect("s3 url should parse");
         let empty_secrets = BTreeMap::new();
         let runtime_context = QueryRuntimeContext {
-            aws: AwsCredentials {
+            aws_credentials: AwsCredentials {
                 region: Some("us-east-1".to_string()),
                 access_key_id: Some("AKIAIOSFODNN7EXAMPLE".to_string()),
                 secret_access_key: Some("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY".to_string()),
@@ -1071,6 +1075,28 @@ mod tests {
             result.is_ok(),
             "build_object_store should succeed when runtime context provides AWS credentials: {:?}",
             result.err()
+        );
+    }
+
+    #[test]
+    fn build_object_store_errors_without_credentials_or_instance_profile() {
+        use super::{ListingTableUrl, build_object_store};
+
+        let table_path =
+            ListingTableUrl::parse("s3://test-bucket/data/").expect("s3 url should parse");
+        let empty_secrets = BTreeMap::new();
+        let runtime_context = QueryRuntimeContext::default();
+
+        let result =
+            build_object_store("test_source", &table_path, &empty_secrets, &runtime_context);
+        assert!(
+            result.is_err(),
+            "build_object_store should fail when no credentials are provided"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("aws_access_key_id"),
+            "error should mention required credentials: {msg}"
         );
     }
 

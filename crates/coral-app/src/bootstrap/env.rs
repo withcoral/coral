@@ -11,7 +11,7 @@ use super::consts::CORAL_CONFIG_DIR;
 pub(crate) struct AppEnvironment {
     coral_config_dir_override: Option<PathBuf>,
     user_home_dir: Option<PathBuf>,
-    aws: AwsCredentials,
+    aws_credentials: AwsCredentials,
 }
 
 impl AppEnvironment {
@@ -19,7 +19,7 @@ impl AppEnvironment {
         Self {
             coral_config_dir_override: coral_config_dir_override(),
             user_home_dir: BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()),
-            aws: aws_env_credentials(),
+            aws_credentials: aws_env_credentials(),
         }
     }
 
@@ -30,7 +30,7 @@ impl AppEnvironment {
     pub(crate) fn query_runtime_context(&self) -> QueryRuntimeContext {
         QueryRuntimeContext {
             home_dir: self.user_home_dir.clone(),
-            aws: self.aws.clone(),
+            aws_credentials: self.aws_credentials.clone(),
         }
     }
 }
