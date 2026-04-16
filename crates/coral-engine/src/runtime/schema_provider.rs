@@ -2,7 +2,7 @@
 
 use std::any::Any;
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use datafusion::catalog::SchemaProvider;
@@ -12,16 +12,14 @@ use datafusion::error::Result;
 /// Immutable schema provider backed by a fixed set of in-memory tables.
 #[derive(Debug)]
 pub(crate) struct StaticSchemaProvider {
-    tables: RwLock<HashMap<String, Arc<dyn TableProvider>>>,
+    tables: HashMap<String, Arc<dyn TableProvider>>,
 }
 
 impl StaticSchemaProvider {
     #[must_use]
     /// Builds a schema provider from the supplied table map.
     pub(crate) fn new(tables: HashMap<String, Arc<dyn TableProvider>>) -> Self {
-        Self {
-            tables: RwLock::new(tables),
-        }
+        Self { tables }
     }
 }
 
@@ -32,28 +30,56 @@ impl SchemaProvider for StaticSchemaProvider {
     }
 
     fn table_names(&self) -> Vec<String> {
-        let tables = self.tables.read().expect("tables lock poisoned");
-        let mut names: Vec<String> = tables.keys().cloned().collect();
+        let mut names: Vec<String> = self.tables.keys().cloned().collect();
         names.sort();
         names
     }
 
     async fn table(&self, name: &str) -> Result<Option<Arc<dyn TableProvider>>> {
-        let tables = self.tables.read().expect("tables lock poisoned");
-        Ok(tables.get(name).cloned())
+        Ok(self.tables.get(name).cloned())
     }
 
     fn register_table(
         &self,
-        name: String,
-        table: Arc<dyn TableProvider>,
+        _name: String,
+        _table: Arc<dyn TableProvider>,
     ) -> Result<Option<Arc<dyn TableProvider>>> {
-        let mut tables = self.tables.write().expect("tables lock poisoned");
-        Ok(tables.insert(name, table))
+        Err(datafusion::error::DataFusionError::Execution(
+            "static schema provider does not support register_table".to_string(),
+        ))
     }
 
     fn table_exist(&self, name: &str) -> bool {
-        let tables = self.tables.read().expect("tables lock poisoned");
-        tables.contains_key(name)
+        self.tables.contains_key(name)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    use datafusion::catalog::SchemaProvider;
+    use datafusion::datasource::MemTable;
+
+    use super::StaticSchemaProvider;
+
+    #[test]
+    fn rejects_runtime_table_registration() {
+        let provider = StaticSchemaProvider::new(HashMap::default());
+        let table = Arc::new(
+            MemTable::try_new(arrow::datatypes::Schema::empty().into(), vec![vec![]])
+                .expect("mem table"),
+        );
+
+        let error = provider
+            .register_table("demo".to_string(), table)
+            .expect_err("static schema provider should reject mutation");
+
+        assert!(
+            error
+                .to_string()
+                .contains("does not support register_table")
+        );
     }
 }
