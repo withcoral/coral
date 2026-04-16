@@ -42,7 +42,11 @@ use tempfile as _;
 const DEFAULT_SERVER_PORT: u16 = 1457;
 
 #[derive(Debug, Parser)]
-#[command(name = "coral", version, arg_required_else_help = true)]
+#[command(
+    name = "coral",
+    version = concat!(env!("CARGO_PKG_VERSION"), "+", env!("CORAL_GIT_SHA")),
+    arg_required_else_help = true
+)]
 /// A local-first SQL interface for APIs, files, and other data sources.
 struct Cli {
     #[command(subcommand)]
