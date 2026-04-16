@@ -831,6 +831,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tonic",
+ "tonic-types",
 ]
 
 [[package]]
