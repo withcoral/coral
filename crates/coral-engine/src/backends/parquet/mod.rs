@@ -46,15 +46,18 @@ const PARQUET_FOOTER_SIZE: u64 = 8;
 struct ParquetCompiledSource {
     manifest: ParquetSourceManifest,
     source_secrets: BTreeMap<String, String>,
+    runtime_context: crate::QueryRuntimeContext,
 }
 
 pub(crate) fn compile_source(
     manifest: ParquetSourceManifest,
     source_secrets: BTreeMap<String, String>,
+    runtime_context: crate::QueryRuntimeContext,
 ) -> Box<dyn CompiledBackendSource> {
     Box::new(ParquetCompiledSource {
         manifest,
         source_secrets,
+        runtime_context,
     })
 }
 
@@ -62,7 +65,11 @@ pub(crate) fn compile_manifest(
     manifest: &ParquetSourceManifest,
     request: &BackendCompileRequest<'_>,
 ) -> Box<dyn CompiledBackendSource> {
-    compile_source(manifest.clone(), request.source_secrets.clone())
+    compile_source(
+        manifest.clone(),
+        request.source_secrets.clone(),
+        request.runtime_context.clone(),
+    )
 }
 
 #[derive(Debug)]
@@ -89,6 +96,7 @@ impl ParquetTableProvider {
             source_schema,
             table,
             source_secrets,
+            &crate::QueryRuntimeContext::default(),
         ))
     }
 
@@ -97,9 +105,16 @@ impl ParquetTableProvider {
         source_schema: &str,
         table: FileTableSpec,
         source_secrets: &BTreeMap<String, String>,
+        runtime_context: &crate::QueryRuntimeContext,
     ) -> Result<Self> {
-        let inner =
-            Self::build_listing_table(ctx.clone(), source_schema, &table, source_secrets).await?;
+        let inner = Self::build_listing_table(
+            ctx.clone(),
+            source_schema,
+            &table,
+            source_secrets,
+            runtime_context,
+        )
+        .await?;
         Ok(Self { inner })
     }
 
@@ -108,6 +123,7 @@ impl ParquetTableProvider {
         source_schema: &str,
         table: &FileTableSpec,
         source_secrets: &BTreeMap<String, String>,
+        runtime_context: &crate::QueryRuntimeContext,
     ) -> Result<ListingTable> {
         let source = table.source.clone();
         let mut table_path = ListingTableUrl::parse(&source.location).map_err(|error| {
@@ -122,7 +138,8 @@ impl ParquetTableProvider {
             table_path = table_path.with_glob(source.parquet_glob_or_default())?;
         }
 
-        let object_store = build_object_store(source_schema, &table_path, source_secrets)?;
+        let object_store =
+            build_object_store(source_schema, &table_path, source_secrets, runtime_context)?;
         ctx.register_object_store(table_path.object_store().as_ref(), object_store);
 
         let listing_options = ListingOptions::new(Arc::new(ParquetFormat::default()))
@@ -225,6 +242,7 @@ impl CompiledBackendSource for ParquetCompiledSource {
                 &self.manifest.common.name,
                 table.clone(),
                 &self.source_secrets,
+                &self.runtime_context,
             )
             .await?;
             let schema = provider.schema();
@@ -259,6 +277,7 @@ fn build_object_store(
     source_schema: &str,
     table_path: &ListingTableUrl,
     source_secrets: &BTreeMap<String, String>,
+    runtime_context: &crate::QueryRuntimeContext,
 ) -> Result<Arc<dyn ObjectStore>> {
     match table_path.scheme() {
         "file" => Ok(Arc::new(LocalFileSystem::new())),
@@ -290,8 +309,10 @@ fn build_object_store(
 
             let mut builder = AmazonS3Builder::new().with_bucket_name(bucket);
 
-            if let Some(region) = region {
-                builder = builder.with_region(region);
+            // Apply explicit region from source secrets, then fall back to runtime context.
+            let effective_region = region.or_else(|| runtime_context.aws_region.clone());
+            if let Some(r) = effective_region {
+                builder = builder.with_region(r);
             }
 
             if let (Some(access_key_id), Some(secret_access_key)) =
@@ -301,9 +322,19 @@ fn build_object_store(
                     .with_access_key_id(access_key_id)
                     .with_secret_access_key(secret_access_key);
             } else if !use_instance_profile {
-                return Err(DataFusionError::Plan(format!(
-                    "parquet source '{source_schema}' must define aws_access_key_id and aws_secret_access_key, or set use_instance_profile"
-                )));
+                // Fall back to runtime context credentials (sourced from env vars by
+                // the app layer) so callers don't need to configure credentials
+                // explicitly when the standard AWS credential chain is available.
+                if let Some(key_id) = &runtime_context.aws_access_key_id {
+                    builder = builder.with_access_key_id(key_id);
+                    if let Some(secret) = &runtime_context.aws_secret_access_key {
+                        builder = builder.with_secret_access_key(secret);
+                    }
+                    if let Some(token) = &runtime_context.aws_session_token {
+                        builder = builder.with_token(token);
+                    }
+                }
+                // If no runtime context credentials, object_store will try instance metadata/IRSA.
             }
 
             if let Some(session_token) = session_token {

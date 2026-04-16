@@ -70,6 +70,14 @@ impl QuerySource {
 pub struct QueryRuntimeContext {
     /// Current user's home directory for local path resolution.
     pub home_dir: Option<PathBuf>,
+    /// AWS region fallback for S3-backed parquet sources.
+    pub aws_region: Option<String>,
+    /// AWS access key ID fallback for S3-backed parquet sources.
+    pub aws_access_key_id: Option<String>,
+    /// AWS secret access key fallback for S3-backed parquet sources.
+    pub aws_secret_access_key: Option<String>,
+    /// AWS session token fallback for S3-backed parquet sources.
+    pub aws_session_token: Option<String>,
 }
 
 /// Resolves app-owned runtime inputs at query time.
