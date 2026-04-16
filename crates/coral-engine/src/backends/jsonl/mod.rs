@@ -22,7 +22,7 @@ use crate::backends::{
     RegisteredTable, build_registered_source_variables, build_registered_table,
     registered_columns_from_specs, required_filter_names, schema_from_columns,
 };
-use crate::{CoreError, QueryRuntimeContext, QuerySourceOrigin};
+use crate::{CoreError, QueryRuntimeContext};
 use coral_spec::ManifestInputSpec;
 use coral_spec::backends::file::{FileTableSpec, JsonlSourceManifest};
 
@@ -52,7 +52,6 @@ struct JsonlCompiledSource {
     tables: Vec<CompiledJsonlTable>,
     source_inputs: Vec<ManifestInputSpec>,
     source_variables: std::collections::BTreeMap<String, String>,
-    source_origin: QuerySourceOrigin,
 }
 
 pub(crate) fn compile_source(
@@ -60,7 +59,6 @@ pub(crate) fn compile_source(
     runtime_context: &QueryRuntimeContext,
     source_inputs: Vec<ManifestInputSpec>,
     source_variables: std::collections::BTreeMap<String, String>,
-    source_origin: QuerySourceOrigin,
 ) -> Result<Box<dyn CompiledBackendSource>, CoreError> {
     let tables = manifest
         .tables
@@ -80,7 +78,6 @@ pub(crate) fn compile_source(
         tables,
         source_inputs,
         source_variables,
-        source_origin,
     }))
 }
 
@@ -93,7 +90,6 @@ pub(crate) fn compile_manifest(
         request.runtime_context,
         request.source_inputs.clone(),
         request.source_variables.clone(),
-        request.source_origin,
     )
 }
 
@@ -310,7 +306,6 @@ impl CompiledBackendSource for JsonlCompiledSource {
                     &self.source_inputs,
                     &self.source_variables,
                 ),
-                source_origin: self.source_origin.as_str().to_string(),
                 manifest_version: self.manifest.common.version.clone(),
             },
         })

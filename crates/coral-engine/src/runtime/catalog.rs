@@ -139,7 +139,6 @@ struct CatalogSourceVariable {
     is_defaulted: bool,
     is_required: bool,
     default_value: String,
-    source_origin: String,
     manifest_version: String,
 }
 
@@ -247,7 +246,6 @@ fn build_source_variables_table(active_sources: &[RegisteredSource]) -> Result<M
         Field::new("is_defaulted", DataType::Boolean, false),
         Field::new("is_required", DataType::Boolean, false),
         Field::new("default_value", DataType::Utf8, false),
-        Field::new("source_origin", DataType::Utf8, false),
         Field::new("manifest_version", DataType::Utf8, false),
     ]));
 
@@ -264,7 +262,6 @@ fn build_source_variables_table(active_sources: &[RegisteredSource]) -> Result<M
                     is_defaulted: variable.is_defaulted,
                     is_required: variable.is_required,
                     default_value: variable.default_value.clone(),
-                    source_origin: source.source_origin.clone(),
                     manifest_version: source.manifest_version.clone(),
                 })
         })
@@ -305,11 +302,6 @@ fn build_source_variables_table(active_sources: &[RegisteredSource]) -> Result<M
             Arc::new(
                 rows.iter()
                     .map(|row| Some(row.default_value.as_str()))
-                    .collect::<StringArray>(),
-            ),
-            Arc::new(
-                rows.iter()
-                    .map(|row| Some(row.source_origin.as_str()))
                     .collect::<StringArray>(),
             ),
             Arc::new(

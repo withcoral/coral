@@ -9,7 +9,6 @@ use datafusion::datasource::TableProvider;
 use datafusion::error::Result;
 use datafusion::prelude::SessionContext;
 
-use crate::QuerySourceOrigin;
 use crate::backends::{
     BackendCompileRequest, BackendRegistration, CompiledBackendSource, RegisteredSource,
     RegisteredTable, build_registered_source_variables, build_registered_table,
@@ -32,7 +31,6 @@ struct HttpCompiledSource {
     source_secrets: std::collections::BTreeMap<String, String>,
     source_variables: std::collections::BTreeMap<String, String>,
     source_inputs: Vec<ManifestInputSpec>,
-    source_origin: QuerySourceOrigin,
 }
 
 pub(crate) fn compile_source(
@@ -40,14 +38,12 @@ pub(crate) fn compile_source(
     source_secrets: std::collections::BTreeMap<String, String>,
     source_variables: std::collections::BTreeMap<String, String>,
     source_inputs: Vec<ManifestInputSpec>,
-    source_origin: QuerySourceOrigin,
 ) -> Box<dyn CompiledBackendSource> {
     Box::new(HttpCompiledSource {
         manifest,
         source_secrets,
         source_variables,
         source_inputs,
-        source_origin,
     })
 }
 
@@ -61,7 +57,6 @@ pub(crate) fn compile_manifest(
         request.source_secrets.clone(),
         request.source_variables.clone(),
         request.source_inputs.clone(),
-        request.source_origin,
     )
 }
 
@@ -103,7 +98,6 @@ impl CompiledBackendSource for HttpCompiledSource {
                     &self.source_inputs,
                     &self.source_variables,
                 ),
-                source_origin: self.source_origin.as_str().to_string(),
                 manifest_version: self.manifest.common.version.clone(),
             },
         })

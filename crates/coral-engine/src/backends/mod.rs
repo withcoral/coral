@@ -27,7 +27,6 @@ pub(crate) fn compile_query_source(
             source_secrets: source.secrets().clone(),
             source_variables: source.variables().clone(),
             source_inputs: source.inputs().to_vec(),
-            source_origin: source.source_origin(),
         },
     )
 }
@@ -46,7 +45,6 @@ pub(crate) fn compile_source_manifest(
             source_secrets,
             source_variables,
             source_inputs: Vec::new(),
-            source_origin: crate::QuerySourceOrigin::Imported,
         },
     )
 }

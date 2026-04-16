@@ -46,7 +46,6 @@
 //! #     BTreeMap::new(),
 //! #     BTreeMap::new(),
 //! #     Vec::new(),
-//! #     coral_engine::QuerySourceOrigin::Imported,
 //! # )];
 //! # let provider = EmptyRuntime;
 //! # async fn demo(
@@ -73,7 +72,7 @@ mod runtime;
 
 pub use contracts::{
     ColumnInfo, CoreError, QueryExecution, QueryRuntimeContext, QueryRuntimeProvider, QuerySource,
-    QuerySourceOrigin, StatusCode, TableInfo,
+    StatusCode, TableInfo,
 };
 
 /// High-level query operations for the local query engine.

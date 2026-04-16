@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-use crate::{QueryRuntimeContext, QuerySourceOrigin};
+use crate::QueryRuntimeContext;
 use async_trait::async_trait;
 use coral_spec::backends::file::PartitionColumnSpec;
 use coral_spec::{
@@ -38,7 +38,6 @@ pub(crate) struct RegisteredSource {
     pub(crate) schema_name: String,
     pub(crate) tables: Vec<RegisteredTable>,
     pub(crate) variables: Vec<RegisteredSourceVariable>,
-    pub(crate) source_origin: String,
     pub(crate) manifest_version: String,
 }
 
@@ -61,7 +60,6 @@ pub(crate) struct BackendCompileRequest<'a> {
     pub(crate) source_secrets: BTreeMap<String, String>,
     pub(crate) source_variables: BTreeMap<String, String>,
     pub(crate) source_inputs: Vec<ManifestInputSpec>,
-    pub(crate) source_origin: QuerySourceOrigin,
 }
 
 #[async_trait]

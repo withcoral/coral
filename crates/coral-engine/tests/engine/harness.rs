@@ -7,8 +7,7 @@ use arrow::array::{Int64Array, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use coral_engine::{
-    CoreError, QueryExecution, QueryRuntimeContext, QueryRuntimeProvider, QuerySource,
-    QuerySourceOrigin, StatusCode,
+    CoreError, QueryExecution, QueryRuntimeContext, QueryRuntimeProvider, QuerySource, StatusCode,
 };
 use coral_spec::parse_manifest_and_inputs;
 use parquet::arrow::ArrowWriter;
@@ -41,13 +40,7 @@ pub(crate) fn build_source_with_inputs(
     let raw = value.to_string();
     std::mem::drop(value);
     let (manifest, inputs) = parse_manifest_and_inputs(&raw).expect("manifest should parse");
-    QuerySource::new(
-        manifest,
-        variables,
-        secrets,
-        inputs,
-        QuerySourceOrigin::Imported,
-    )
+    QuerySource::new(manifest, variables, secrets, inputs)
 }
 
 pub(crate) fn execution_to_rows(execution: &QueryExecution) -> Vec<Value> {

@@ -10,26 +10,6 @@ use coral_spec::{ManifestInputSpec, ValidatedSourceManifest};
 
 use super::ColumnInfo;
 
-/// Where one query-visible source was installed from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum QuerySourceOrigin {
-    /// Source came from Coral's bundled source catalog.
-    Bundled,
-    /// Source was imported from user-supplied manifest content.
-    Imported,
-}
-
-impl QuerySourceOrigin {
-    #[must_use]
-    /// Returns the stable system-catalog string representation.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Bundled => "bundled",
-            Self::Imported => "imported",
-        }
-    }
-}
-
 /// One managed source selected into the current query runtime.
 #[derive(Debug, Clone)]
 pub struct QuerySource {
@@ -37,7 +17,6 @@ pub struct QuerySource {
     variables: BTreeMap<String, String>,
     secrets: BTreeMap<String, String>,
     inputs: Vec<ManifestInputSpec>,
-    source_origin: QuerySourceOrigin,
 }
 
 impl QuerySource {
@@ -49,14 +28,12 @@ impl QuerySource {
         variables: BTreeMap<String, String>,
         secrets: BTreeMap<String, String>,
         inputs: Vec<ManifestInputSpec>,
-        source_origin: QuerySourceOrigin,
     ) -> Self {
         Self {
             source_spec,
             variables,
             secrets,
             inputs,
-            source_origin,
         }
     }
 
@@ -94,12 +71,6 @@ impl QuerySource {
     /// Returns manifest-declared install-time inputs in manifest order.
     pub fn inputs(&self) -> &[ManifestInputSpec] {
         &self.inputs
-    }
-
-    #[must_use]
-    /// Returns where this source was installed from.
-    pub fn source_origin(&self) -> QuerySourceOrigin {
-        self.source_origin
     }
 }
 

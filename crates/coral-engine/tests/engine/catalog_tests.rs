@@ -193,7 +193,7 @@ async fn coral_source_variables_returns_effective_values_without_secrets() {
             &sources,
             &TestRuntime,
             "SELECT schema_name, variable_key, variable_value, is_defaulted, is_required, \
-             default_value, source_origin, manifest_version \
+             default_value, manifest_version \
              FROM coral.source_variables ORDER BY schema_name, variable_key",
         )
         .await
@@ -210,7 +210,6 @@ async fn coral_source_variables_returns_effective_values_without_secrets() {
                 "is_defaulted": false,
                 "is_required": false,
                 "default_value": "datadoghq.com",
-                "source_origin": "imported",
                 "manifest_version": "2.1.0"
             }),
             json!({
@@ -220,7 +219,6 @@ async fn coral_source_variables_returns_effective_values_without_secrets() {
                 "is_defaulted": true,
                 "is_required": false,
                 "default_value": "https://sentry.io/api/0",
-                "source_origin": "imported",
                 "manifest_version": "3.4.5"
             }),
             json!({
@@ -230,7 +228,6 @@ async fn coral_source_variables_returns_effective_values_without_secrets() {
                 "is_defaulted": false,
                 "is_required": true,
                 "default_value": "",
-                "source_origin": "imported",
                 "manifest_version": "3.4.5"
             }),
         ]
