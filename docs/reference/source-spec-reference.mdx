@@ -201,6 +201,28 @@ In this minimal example:
 - with the default response rules, Coral treats the selected response value directly as rows unless you configure a different `row_strategy`
 - `{{secret.API_TOKEN}}` is replaced with the secret value you provided when adding the source to Coral
 
+### HTTP rate limiting
+
+The optional `rate_limit` object gives Coral provider-specific hints for classifying rate-limit responses on HTTP sources.
+
+Coral always treats `429 Too Many Requests` as a rate-limit signal. Use `extra_statuses` when a provider also reports rate limits through another status code such as GitHub's `403 Forbidden`. Extra statuses are only treated as rate limits when the response also carries one of the configured rate-limit headers; otherwise Coral keeps treating them as ordinary provider errors.
+
+| Field                | Type            | Default         | Description                                                                 |
+| -------------------- | --------------- | --------------- | --------------------------------------------------------------------------- |
+| `extra_statuses`     | list of integers | `[]`           | Additional HTTP status codes Coral should consider as possible rate limits   |
+| `retry_after_header` | string          | `Retry-After`   | Header that carries a retry delay in seconds or HTTP-date form              |
+| `remaining_header`   | string          | —               | Header whose value `0` means the current quota is exhausted                 |
+| `reset_header`       | string          | —               | Header with the quota reset time as Unix epoch seconds                      |
+
+Example for a GitHub-style API:
+
+```yaml
+rate_limit:
+  extra_statuses: [403]
+  remaining_header: X-RateLimit-Remaining
+  reset_header: X-RateLimit-Reset
+```
+
 ### HTTP value sources
 
 Request query params, body fields, and headers support these `from` values:
