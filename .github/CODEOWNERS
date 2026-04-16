@@ -7,7 +7,7 @@ README.md @jsummerfield
 /crates/coral-app/ @jsummerfield
 /crates/coral-cli/ @jsummerfield
 /crates/coral-client/ @jsummerfield
-/crates/coral-engine/ @antonmry
+/crates/coral-engine/ @antonmry @sauldhernandez
 /crates/coral-mcp/ @Bradley-Butcher @mystic123
 /crates/coral-spec/ @iaptsiauri @antonmry
 /sources/ @iaptsiauri @antonmry
