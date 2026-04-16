@@ -310,7 +310,7 @@ fn build_object_store(
             let mut builder = AmazonS3Builder::new().with_bucket_name(bucket);
 
             // Apply explicit region from source secrets, then fall back to runtime context.
-            let effective_region = region.or_else(|| runtime_context.aws_region.clone());
+            let effective_region = region.or_else(|| runtime_context.aws.region.clone());
             if let Some(r) = effective_region {
                 builder = builder.with_region(r);
             }
@@ -322,19 +322,17 @@ fn build_object_store(
                     .with_access_key_id(access_key_id)
                     .with_secret_access_key(secret_access_key);
             } else if !use_instance_profile {
-                // Fall back to runtime context credentials (sourced from env vars by
-                // the app layer) so callers don't need to configure credentials
-                // explicitly when the standard AWS credential chain is available.
-                if let Some(key_id) = &runtime_context.aws_access_key_id {
-                    builder = builder.with_access_key_id(key_id);
-                    if let Some(secret) = &runtime_context.aws_secret_access_key {
-                        builder = builder.with_secret_access_key(secret);
-                    }
-                    if let Some(token) = &runtime_context.aws_session_token {
+                if let (Some(key_id), Some(secret)) = (
+                    &runtime_context.aws.access_key_id,
+                    &runtime_context.aws.secret_access_key,
+                ) {
+                    builder = builder
+                        .with_access_key_id(key_id)
+                        .with_secret_access_key(secret);
+                    if let Some(token) = &runtime_context.aws.session_token {
                         builder = builder.with_token(token);
                     }
                 }
-                // If no runtime context credentials, object_store will try instance metadata/IRSA.
             }
 
             if let Some(session_token) = session_token {
@@ -1046,6 +1044,33 @@ mod tests {
         assert!(
             rendered.contains("abc-123"),
             "_part_id value from hive directory should be visible"
+        );
+    }
+
+    #[test]
+    fn build_object_store_falls_back_to_runtime_context_aws_credentials() {
+        use super::{ListingTableUrl, build_object_store};
+        use crate::AwsCredentials;
+
+        let table_path =
+            ListingTableUrl::parse("s3://test-bucket/data/").expect("s3 url should parse");
+        let empty_secrets = BTreeMap::new();
+        let runtime_context = QueryRuntimeContext {
+            aws: AwsCredentials {
+                region: Some("us-east-1".to_string()),
+                access_key_id: Some("AKIAIOSFODNN7EXAMPLE".to_string()),
+                secret_access_key: Some("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY".to_string()),
+                session_token: None,
+            },
+            ..QueryRuntimeContext::default()
+        };
+
+        let result =
+            build_object_store("test_source", &table_path, &empty_secrets, &runtime_context);
+        assert!(
+            result.is_ok(),
+            "build_object_store should succeed when runtime context provides AWS credentials: {:?}",
+            result.err()
         );
     }
 

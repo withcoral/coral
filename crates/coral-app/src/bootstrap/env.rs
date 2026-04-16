@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use coral_engine::QueryRuntimeContext;
+use coral_engine::{AwsCredentials, QueryRuntimeContext};
 use directories::BaseDirs;
 
 use super::consts::CORAL_CONFIG_DIR;
@@ -11,23 +11,15 @@ use super::consts::CORAL_CONFIG_DIR;
 pub(crate) struct AppEnvironment {
     coral_config_dir_override: Option<PathBuf>,
     user_home_dir: Option<PathBuf>,
-    aws_region: Option<String>,
-    aws_access_key_id: Option<String>,
-    aws_secret_access_key: Option<String>,
-    aws_session_token: Option<String>,
+    aws: AwsCredentials,
 }
 
 impl AppEnvironment {
     pub(crate) fn discover() -> Self {
-        let (aws_region, aws_access_key_id, aws_secret_access_key, aws_session_token) =
-            aws_env_credentials();
         Self {
             coral_config_dir_override: coral_config_dir_override(),
             user_home_dir: BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()),
-            aws_region,
-            aws_access_key_id,
-            aws_secret_access_key,
-            aws_session_token,
+            aws: aws_env_credentials(),
         }
     }
 
@@ -38,10 +30,7 @@ impl AppEnvironment {
     pub(crate) fn query_runtime_context(&self) -> QueryRuntimeContext {
         QueryRuntimeContext {
             home_dir: self.user_home_dir.clone(),
-            aws_region: self.aws_region.clone(),
-            aws_access_key_id: self.aws_access_key_id.clone(),
-            aws_secret_access_key: self.aws_secret_access_key.clone(),
-            aws_session_token: self.aws_session_token.clone(),
+            aws: self.aws.clone(),
         }
     }
 }
@@ -58,19 +47,15 @@ fn coral_config_dir_override() -> Option<PathBuf> {
     clippy::disallowed_methods,
     reason = "coral-app is the single owner of process environment access."
 )]
-fn aws_env_credentials() -> (
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-) {
-    let region = std::env::var("AWS_REGION")
-        .ok()
-        .or_else(|| std::env::var("AWS_DEFAULT_REGION").ok());
-    let access_key_id = std::env::var("AWS_ACCESS_KEY_ID").ok();
-    let secret_access_key = std::env::var("AWS_SECRET_ACCESS_KEY").ok();
-    let session_token = std::env::var("AWS_SESSION_TOKEN").ok();
-    (region, access_key_id, secret_access_key, session_token)
+fn aws_env_credentials() -> AwsCredentials {
+    AwsCredentials {
+        region: std::env::var("AWS_REGION")
+            .ok()
+            .or_else(|| std::env::var("AWS_DEFAULT_REGION").ok()),
+        access_key_id: std::env::var("AWS_ACCESS_KEY_ID").ok(),
+        secret_access_key: std::env::var("AWS_SECRET_ACCESS_KEY").ok(),
+        session_token: std::env::var("AWS_SESSION_TOKEN").ok(),
+    }
 }
 
 #[cfg(test)]

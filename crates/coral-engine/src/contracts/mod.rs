@@ -6,4 +6,6 @@ mod query;
 
 pub use catalog::{ColumnInfo, TableInfo};
 pub use error::{CoreError, StatusCode};
-pub use query::{QueryExecution, QueryRuntimeContext, QueryRuntimeProvider, QuerySource};
+pub use query::{
+    AwsCredentials, QueryExecution, QueryRuntimeContext, QueryRuntimeProvider, QuerySource,
+};
