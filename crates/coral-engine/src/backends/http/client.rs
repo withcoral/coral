@@ -958,13 +958,17 @@ fn extract_rows(table: &HttpTableSpec, payload: &Value) -> Result<Vec<Value>> {
                 if let Some(pointlist) = item.get("pointlist").and_then(Value::as_array) {
                     for point in pointlist {
                         if let Some(pair) = point.as_array() {
+                            let Some(raw_timestamp) = pair.first().and_then(Value::as_f64) else {
+                                continue;
+                            };
+                            let Some(value) = pair.get(1).and_then(Value::as_f64) else {
+                                continue;
+                            };
                             #[allow(
                                 clippy::cast_possible_truncation,
                                 reason = "Series timestamps are integral epoch values that fit in i64"
                             )]
-                            let timestamp =
-                                pair.first().and_then(Value::as_f64).unwrap_or(0.0) as i64;
-                            let value = pair.get(1).and_then(Value::as_f64).unwrap_or(0.0);
+                            let timestamp = raw_timestamp as i64;
                             rows.push(json!({
                                 "metric": metric,
                                 "scope": scope,
@@ -1506,6 +1510,37 @@ mod tests {
 
         let rows = extract_rows(&table, &payload).unwrap();
         assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn series_point_list_skips_malformed_points() {
+        let table = make_table_with_row_strategy(RowStrategy::SeriesPointList, vec![]);
+        let payload = json!({
+            "series": [{
+                "metric": "system.cpu.user",
+                "scope": "host:demo",
+                "pointlist": [
+                    [1_710_000_000, 42.5],
+                    [1_710_000_060],
+                    [null, 1.0],
+                    ["1710000120", 2.0],
+                    [1_710_000_180, "3.0"],
+                    {"timestamp": 1_710_000_240, "value": 4.0}
+                ]
+            }]
+        });
+
+        let rows = extract_rows(&table, &payload).unwrap();
+
+        assert_eq!(
+            rows,
+            vec![json!({
+                "metric": "system.cpu.user",
+                "scope": "host:demo",
+                "timestamp": 1_710_000_000_i64,
+                "value": 42.5
+            })]
+        );
     }
 
     #[test]
