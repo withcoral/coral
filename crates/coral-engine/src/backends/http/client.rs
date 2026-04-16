@@ -13,8 +13,8 @@ use crate::backends::http::rate_limit::{RateLimitDecision, check_rate_limit};
 use crate::backends::shared::json_path::get_path_value;
 use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec, RateLimitSpec};
 use coral_spec::{
-    HeaderSpec, HttpMethod, PageSizeSpec, ParsedTemplate, RowStrategy, TemplateNamespace,
-    TemplatePart, ValidatedPagination, ValidatedPaginationMode, ValueSourceSpec,
+    HeaderSpec, HttpMethod, ManifestInputKind, PageSizeSpec, ParsedTemplate, RowStrategy,
+    TemplateNamespace, TemplatePart, ValidatedPagination, ValidatedPaginationMode, ValueSourceSpec,
 };
 
 const DEFAULT_MAX_PAGES: usize = 10_000;
@@ -29,8 +29,7 @@ pub(crate) struct HttpSourceClient {
     base_url: ParsedTemplate,
     auth_headers: Vec<HeaderSpec>,
     rate_limit: RateLimitSpec,
-    source_secrets: Arc<BTreeMap<String, String>>,
-    source_variables: Arc<BTreeMap<String, String>>,
+    resolved_inputs: Arc<BTreeMap<String, String>>,
 }
 
 impl std::fmt::Debug for HttpSourceClient {
@@ -65,8 +64,7 @@ struct RequestSpec<'a> {
     rate_limit: &'a RateLimitSpec,
     filters: &'a HashMap<String, String>,
     state: &'a HashMap<String, String>,
-    source_secrets: &'a BTreeMap<String, String>,
-    source_variables: &'a BTreeMap<String, String>,
+    resolved_inputs: &'a BTreeMap<String, String>,
     allow_404_empty: bool,
     link_header_require_results: bool,
 }
@@ -84,14 +82,14 @@ impl HttpSourceClient {
         source_variables: BTreeMap<String, String>,
     ) -> Result<Self> {
         let auth = &manifest.auth;
+        let resolved_inputs = build_resolved_inputs(manifest, &source_secrets, &source_variables);
 
         for header in &auth.headers {
             let resolved = resolve_value_source(
                 &header.value,
                 &HashMap::new(),
                 &HashMap::new(),
-                &source_secrets,
-                &source_variables,
+                &resolved_inputs,
             )?;
             if resolved.is_none() {
                 return Err(DataFusionError::Execution(format!(
@@ -119,8 +117,7 @@ impl HttpSourceClient {
             base_url: manifest.base_url.clone(),
             auth_headers: manifest.auth.headers.clone(),
             rate_limit: manifest.rate_limit.clone(),
-            source_secrets: Arc::new(source_secrets),
-            source_variables: Arc::new(source_variables),
+            resolved_inputs: Arc::new(resolved_inputs),
         })
     }
 
@@ -178,8 +175,7 @@ impl HttpSourceClient {
                 &self.base_url,
                 filters,
                 &pagination_state_values(&state),
-                self.source_secrets.as_ref(),
-                self.source_variables.as_ref(),
+                self.resolved_inputs.as_ref(),
             )?;
             let base_url = normalize_base_url(&base_url);
             let following_link_header = matches!(
@@ -198,8 +194,7 @@ impl HttpSourceClient {
                     &active_request.path,
                     filters,
                     &pagination_state_values(&state),
-                    self.source_secrets.as_ref(),
-                    self.source_variables.as_ref(),
+                    self.resolved_inputs.as_ref(),
                 )?;
                 join_url(&base_url, &rendered_path)?
             };
@@ -211,8 +206,7 @@ impl HttpSourceClient {
                     active_request,
                     filters,
                     &state,
-                    self.source_secrets.as_ref(),
-                    self.source_variables.as_ref(),
+                    self.resolved_inputs.as_ref(),
                 )?;
                 apply_pagination_query_pairs(
                     &mut query_pairs,
@@ -226,8 +220,7 @@ impl HttpSourceClient {
                     active_request,
                     filters,
                     &state,
-                    self.source_secrets.as_ref(),
-                    self.source_variables.as_ref(),
+                    self.resolved_inputs.as_ref(),
                 )?;
                 apply_pagination_body_fields(&mut body, table, &pagination, &state, page_size)?;
                 (query_pairs, body)
@@ -250,8 +243,7 @@ impl HttpSourceClient {
                     rate_limit: &self.rate_limit,
                     filters,
                     state: &pagination_values,
-                    source_secrets: self.source_secrets.as_ref(),
-                    source_variables: self.source_variables.as_ref(),
+                    resolved_inputs: self.resolved_inputs.as_ref(),
                     allow_404_empty: table.response.allow_404_empty,
                     link_header_require_results: pagination.link_header_require_results,
                 },
@@ -363,8 +355,7 @@ async fn execute_request(
         rate_limit,
         filters,
         state,
-        source_secrets,
-        source_variables,
+        resolved_inputs,
         allow_404_empty,
         link_header_require_results,
     } = request;
@@ -375,30 +366,20 @@ async fn execute_request(
         let mut request = build_http_request(http, method, url);
 
         for header in auth_headers {
-            let value = resolve_value_source(
-                &header.value,
-                filters,
-                state,
-                source_secrets,
-                source_variables,
-            )?
-            .ok_or_else(|| {
-                DataFusionError::Execution(format!(
-                    "missing value for auth header '{}'",
-                    header.name
-                ))
-            })?;
+            let value = resolve_value_source(&header.value, filters, state, resolved_inputs)?
+                .ok_or_else(|| {
+                    DataFusionError::Execution(format!(
+                        "missing value for auth header '{}'",
+                        header.name
+                    ))
+                })?;
             request = request.header(&header.name, value_to_string(&value));
         }
 
         for header in table_headers {
-            if let Some(value) = resolve_value_source(
-                &header.value,
-                filters,
-                state,
-                source_secrets,
-                source_variables,
-            )? {
+            if let Some(value) =
+                resolve_value_source(&header.value, filters, state, resolved_inputs)?
+            {
                 request = request.header(&header.name, value_to_string(&value));
             }
         }
@@ -533,20 +514,13 @@ fn build_query_pairs(
     request: &coral_spec::RequestSpec,
     filters: &HashMap<String, String>,
     state: &PageState,
-    source_secrets: &BTreeMap<String, String>,
-    source_variables: &BTreeMap<String, String>,
+    resolved_inputs: &BTreeMap<String, String>,
 ) -> Result<Vec<(String, String)>> {
     let state_values = pagination_state_values(state);
     let mut params = Vec::new();
 
     for param in &request.query {
-        let value = resolve_value_source(
-            &param.value,
-            filters,
-            &state_values,
-            source_secrets,
-            source_variables,
-        )?;
+        let value = resolve_value_source(&param.value, filters, &state_values, resolved_inputs)?;
         if let Some(value) = value {
             params.push((param.name.clone(), value_to_string(&value)));
         }
@@ -601,8 +575,7 @@ fn build_request_body(
     request: &coral_spec::RequestSpec,
     filters: &HashMap<String, String>,
     state: &PageState,
-    source_secrets: &BTreeMap<String, String>,
-    source_variables: &BTreeMap<String, String>,
+    resolved_inputs: &BTreeMap<String, String>,
 ) -> Result<Option<Value>> {
     if request.body.is_empty() {
         return Ok(None);
@@ -612,13 +585,9 @@ fn build_request_body(
     let mut root = Value::Object(Map::new());
 
     for field in &request.body {
-        if let Some(value) = resolve_value_source(
-            &field.value,
-            filters,
-            &state_values,
-            source_secrets,
-            source_variables,
-        )? {
+        if let Some(value) =
+            resolve_value_source(&field.value, filters, &state_values, resolved_inputs)?
+        {
             set_path_value(&mut root, &field.path, value)?;
         }
     }
@@ -684,13 +653,11 @@ fn resolve_value_source(
     value: &ValueSourceSpec,
     filters: &HashMap<String, String>,
     state: &HashMap<String, String>,
-    source_secrets: &BTreeMap<String, String>,
-    source_variables: &BTreeMap<String, String>,
+    resolved_inputs: &BTreeMap<String, String>,
 ) -> Result<Option<Value>> {
     match value {
         ValueSourceSpec::Template { template } => {
-            let rendered =
-                render_template(template, filters, state, source_secrets, source_variables)?;
+            let rendered = render_template(template, filters, state, resolved_inputs)?;
             Ok(Some(Value::String(rendered)))
         }
         ValueSourceSpec::Literal { value } => Ok(Some(value.clone())),
@@ -711,11 +678,7 @@ fn resolve_value_source(
             };
             Ok(value)
         }
-        ValueSourceSpec::Input { key } => Ok(source_secrets
-            .get(key)
-            .or_else(|| source_variables.get(key))
-            .cloned()
-            .map(Value::String)),
+        ValueSourceSpec::Input { key } => Ok(resolved_inputs.get(key).cloned().map(Value::String)),
         ValueSourceSpec::State { key } => Ok(state.get(key).map(|v| Value::String(v.clone()))),
         ValueSourceSpec::NowEpochMinusSeconds { seconds } => {
             #[allow(
@@ -746,8 +709,7 @@ fn render_template(
     template: &ParsedTemplate,
     filters: &HashMap<String, String>,
     state: &HashMap<String, String>,
-    source_secrets: &BTreeMap<String, String>,
-    source_variables: &BTreeMap<String, String>,
+    resolved_inputs: &BTreeMap<String, String>,
 ) -> Result<String> {
     let mut out = String::with_capacity(template.raw().len());
     for part in template.parts() {
@@ -757,8 +719,7 @@ fn render_template(
                 token,
                 filters,
                 state,
-                source_secrets,
-                source_variables,
+                resolved_inputs,
             )?),
         }
     }
@@ -769,15 +730,13 @@ fn resolve_template_token(
     token: &coral_spec::TemplateToken,
     filters: &HashMap<String, String>,
     state: &HashMap<String, String>,
-    source_secrets: &BTreeMap<String, String>,
-    source_variables: &BTreeMap<String, String>,
+    resolved_inputs: &BTreeMap<String, String>,
 ) -> Result<String> {
     let default = token.default_value().map(ToString::to_string);
 
     if token.namespace() == &TemplateNamespace::Input {
-        return source_secrets
+        return resolved_inputs
             .get(token.key())
-            .or_else(|| source_variables.get(token.key()))
             .cloned()
             .or(default)
             .ok_or_else(|| {
@@ -808,6 +767,27 @@ fn resolve_template_token(
         "unsupported template token '{}'",
         token.raw()
     )))
+}
+
+fn build_resolved_inputs(
+    manifest: &HttpSourceManifest,
+    source_secrets: &BTreeMap<String, String>,
+    source_variables: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    let mut resolved = BTreeMap::new();
+    for input in &manifest.declared_inputs {
+        let value = match input.kind {
+            ManifestInputKind::Secret => source_secrets.get(&input.key).cloned(),
+            ManifestInputKind::Variable => source_variables
+                .get(&input.key)
+                .cloned()
+                .or_else(|| (!input.default_value.is_empty()).then(|| input.default_value.clone())),
+        };
+        if let Some(value) = value {
+            resolved.insert(input.key.clone(), value);
+        }
+    }
+    resolved
 }
 
 fn value_to_string(value: &Value) -> String {
@@ -1229,7 +1209,7 @@ mod tests {
 
     #[test]
     fn resolve_value_source_uses_provider_scoped_credentials() {
-        let source_secrets = BTreeMap::from([("API_KEY".to_string(), "alpha-secret".to_string())]);
+        let resolved_inputs = BTreeMap::from([("API_KEY".to_string(), "alpha-secret".to_string())]);
 
         let value = resolve_value_source(
             &ValueSourceSpec::Input {
@@ -1237,12 +1217,28 @@ mod tests {
             },
             &HashMap::new(),
             &HashMap::new(),
-            &source_secrets,
-            &BTreeMap::new(),
+            &resolved_inputs,
         )
         .expect("input lookup should succeed");
 
         assert_eq!(value, Some(json!("alpha-secret")));
+    }
+
+    #[test]
+    fn resolve_value_source_uses_declared_store_without_fallback() {
+        let resolved_inputs = BTreeMap::new();
+
+        let value = resolve_value_source(
+            &ValueSourceSpec::Input {
+                key: "API_KEY".to_string(),
+            },
+            &HashMap::new(),
+            &HashMap::new(),
+            &resolved_inputs,
+        )
+        .expect("input lookup should succeed");
+
+        assert_eq!(value, None);
     }
 
     #[test]
@@ -1256,7 +1252,6 @@ mod tests {
             },
             &filters,
             &HashMap::new(),
-            &BTreeMap::new(),
             &BTreeMap::new(),
         )
         .expect("integer filter should resolve");
@@ -1275,7 +1270,6 @@ mod tests {
             },
             &filters,
             &HashMap::new(),
-            &BTreeMap::new(),
             &BTreeMap::new(),
         )
         .expect_err("invalid integer filter should fail");
@@ -1560,8 +1554,7 @@ mod tests {
         let query_pairs = Vec::new();
         let filters = HashMap::new();
         let state = HashMap::new();
-        let source_secrets = BTreeMap::new();
-        let source_variables = BTreeMap::new();
+        let resolved_inputs = BTreeMap::new();
 
         let error = execute_request(
             &http,
@@ -1579,8 +1572,7 @@ mod tests {
                 rate_limit: &RateLimitSpec::default(),
                 filters: &filters,
                 state: &state,
-                source_secrets: &source_secrets,
-                source_variables: &source_variables,
+                resolved_inputs: &resolved_inputs,
                 allow_404_empty: false,
                 link_header_require_results: false,
             },

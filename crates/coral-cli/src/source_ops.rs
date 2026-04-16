@@ -185,11 +185,7 @@ pub(crate) fn manifest_input_from_proto(
         kind,
         required: input.required,
         default_value: input.default_value.clone(),
-        hint: if input.hint.is_empty() {
-            None
-        } else {
-            Some(input.hint.clone())
-        },
+        hint: input.hint.clone().filter(|hint| !hint.is_empty()),
     })
 }
 

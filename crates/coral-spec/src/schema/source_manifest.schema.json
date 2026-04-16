@@ -32,21 +32,6 @@
       }
     }
   },
-  "allOf": [
-    {
-      "if": {
-        "properties": {
-          "backend": { "const": "http" }
-        },
-        "required": ["backend"]
-      },
-      "else": {
-        "not": {
-          "required": ["inputs"]
-        }
-      }
-    }
-  ],
   "$defs": {
     "inputs": {
       "type": "object",
@@ -62,6 +47,7 @@
           "properties": {
             "kind": { "const": "variable" },
             "default": { "type": "string" },
+            "required": { "type": "boolean" },
             "hint": { "type": "string" }
           }
         },
@@ -71,6 +57,7 @@
           "required": ["kind"],
           "properties": {
             "kind": { "const": "secret" },
+            "required": { "type": "boolean" },
             "hint": { "type": "string" }
           }
         }
