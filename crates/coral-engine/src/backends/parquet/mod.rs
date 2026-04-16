@@ -310,7 +310,8 @@ fn build_object_store(
             let mut builder = AmazonS3Builder::new().with_bucket_name(bucket);
 
             // Apply explicit region from source secrets, then fall back to runtime context.
-            let effective_region = region.or_else(|| runtime_context.aws_credentials.region.clone());
+            let effective_region =
+                region.or_else(|| runtime_context.aws_credentials.region.clone());
             if let Some(r) = effective_region {
                 builder = builder.with_region(r);
             }
