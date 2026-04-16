@@ -65,7 +65,9 @@ mod tests {
     use crate::bootstrap::AppError;
     use crate::query::manager::QueryManagerError;
     use crate::workspaces::WorkspaceName;
-    use coral_engine::{ColumnInfo, CoreError, QueryTestResult as EngineQueryTestResult, TableInfo};
+    use coral_engine::{
+        ColumnInfo, CoreError, QueryTestResult as EngineQueryTestResult, TableInfo,
+    };
 
     #[test]
     fn query_status_maps_app_errors() {

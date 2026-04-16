@@ -58,6 +58,10 @@ pub(crate) fn assert_row_count(execution: &QueryExecution, expected: usize) {
     assert_eq!(execution_to_rows(execution).len(), expected);
 }
 
+#[allow(
+    dead_code,
+    reason = "retained for engine tests that may assert internal errors"
+)]
 pub(crate) fn assert_internal(error: CoreError, expected_detail: &str) {
     assert_eq!(error.status_code(), StatusCode::Internal);
     match error {
