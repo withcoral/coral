@@ -4,9 +4,15 @@
     reason = "Integration test crates only use a small subset of the package dependencies."
 )]
 
+mod harness;
+
 use tempfile::tempdir;
 
 use std::process::Command;
+
+use coral_api::v1::{QueryTestResult, Source, SourceOrigin, ValidateSourceResponse, Workspace};
+
+use harness::MockServer;
 
 #[test]
 fn source_test_errors_when_required_secret_is_missing() {
@@ -75,72 +81,42 @@ fn source_test_errors_when_required_secret_is_missing() {
     );
 }
 
-#[test]
-fn source_test_exits_non_zero_when_query_tests_fail() {
-    let config_dir = tempdir().expect("failed to create temp dir");
-    let source_dir = config_dir
-        .path()
-        .join("workspaces")
-        .join("default")
-        .join("sources")
-        .join("local_messages");
-    std::fs::create_dir_all(source_dir.join("fixture-data")).expect("create source dir");
-    std::fs::write(
-        source_dir.join("fixture-data/messages.jsonl"),
-        r#"{"type":"user","text":"hello"}
-"#,
-    )
-    .expect("write fixture data");
-    std::fs::write(
-        source_dir.join("manifest.yaml"),
-        r#"
-name: local_messages
-version: 0.1.0
-dsl_version: 3
-backend: jsonl
-test_queries:
-  - SELECT * FROM local_messages.missing
-tables:
-  - name: messages
-    description: fixture messages
-    source:
-      location: file://FIXTURE_ROOT/
-      glob: "**/*.jsonl"
-    columns:
-      - name: type
-        type: Utf8
-      - name: text
-        type: Utf8
-"#
-        .replace(
-            "file://FIXTURE_ROOT/",
-            &format!("file://{}/", source_dir.join("fixture-data").display()),
-        ),
-    )
-    .expect("write manifest");
-    std::fs::write(
-        config_dir.path().join("config.toml"),
-        r#"
-        [workspaces.default.sources.local_messages]
-        version = "0.1.0"
-        variables = {}
-        secrets = []
-        origin = "imported"
-    "#,
-    )
-    .expect("failed to write config");
+#[tokio::test(flavor = "multi_thread")]
+async fn source_test_exits_non_zero_when_query_tests_fail() {
+    let server = MockServer::start_with_validate_source_response(ValidateSourceResponse {
+        source: Some(Source {
+            workspace: Some(Workspace {
+                name: "default".to_string(),
+            }),
+            name: "local_messages".to_string(),
+            version: "0.1.0".to_string(),
+            secrets: Vec::new(),
+            variables: Vec::new(),
+            origin: SourceOrigin::Imported as i32,
+        }),
+        tables: Vec::new(),
+        query_tests: vec![QueryTestResult {
+            sql: "SELECT * FROM local_messages.missing".to_string(),
+            passed: false,
+            row_count: None,
+            error_message: Some("invalid input: table not found".to_string()),
+        }],
+        declared_query_count: 1,
+        passed_query_count: 0,
+        failed_query_count: 1,
+        all_query_tests_passed: false,
+    })
+    .await;
 
-    let output = Command::new(env!("CARGO_BIN_EXE_coral"))
-        .arg("source")
-        .arg("test")
-        .arg("local_messages")
-        .env("CORAL_CONFIG_DIR", config_dir.path())
-        .output()
-        .expect("failed to run coral source test");
+    let assert = server
+        .cmd()
+        .args(["source", "test", "local_messages"])
+        .assert()
+        .failure();
+    let output = assert.get_output();
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!output.status.success(), "expected non-zero exit status");
     assert!(
         stdout.contains("Query tests"),
         "expected query-test summary in stdout, got: {stdout}"
@@ -153,77 +129,46 @@ tables:
         stderr.contains("1 of 1 validation query failed"),
         "expected strict failure in stderr, got: {stderr}"
     );
+
+    server.shutdown().await;
 }
 
-#[test]
-fn source_test_succeeds_when_query_tests_pass() {
-    let config_dir = tempdir().expect("failed to create temp dir");
-    let source_dir = config_dir
-        .path()
-        .join("workspaces")
-        .join("default")
-        .join("sources")
-        .join("local_messages");
-    std::fs::create_dir_all(source_dir.join("fixture-data")).expect("create source dir");
-    std::fs::write(
-        source_dir.join("fixture-data/messages.jsonl"),
-        r#"{"type":"user","text":"hello"}
-"#,
-    )
-    .expect("write fixture data");
-    std::fs::write(
-        source_dir.join("manifest.yaml"),
-        r#"
-name: local_messages
-version: 0.1.0
-dsl_version: 3
-backend: jsonl
-test_queries:
-  - SELECT COUNT(*) AS n FROM local_messages.messages
-tables:
-  - name: messages
-    description: fixture messages
-    source:
-      location: file://FIXTURE_ROOT/
-      glob: "**/*.jsonl"
-    columns:
-      - name: type
-        type: Utf8
-      - name: text
-        type: Utf8
-"#
-        .replace(
-            "file://FIXTURE_ROOT/",
-            &format!("file://{}/", source_dir.join("fixture-data").display()),
-        ),
-    )
-    .expect("write manifest");
-    std::fs::write(
-        config_dir.path().join("config.toml"),
-        r#"
-        [workspaces.default.sources.local_messages]
-        version = "0.1.0"
-        variables = {}
-        secrets = []
-        origin = "imported"
-    "#,
-    )
-    .expect("failed to write config");
+#[tokio::test(flavor = "multi_thread")]
+async fn source_test_succeeds_when_query_tests_pass() {
+    let server = MockServer::start_with_validate_source_response(ValidateSourceResponse {
+        source: Some(Source {
+            workspace: Some(Workspace {
+                name: "default".to_string(),
+            }),
+            name: "local_messages".to_string(),
+            version: "0.1.0".to_string(),
+            secrets: Vec::new(),
+            variables: Vec::new(),
+            origin: SourceOrigin::Imported as i32,
+        }),
+        tables: Vec::new(),
+        query_tests: vec![QueryTestResult {
+            sql: "SELECT COUNT(*) AS n FROM local_messages.messages".to_string(),
+            passed: true,
+            row_count: Some(1),
+            error_message: None,
+        }],
+        declared_query_count: 1,
+        passed_query_count: 1,
+        failed_query_count: 0,
+        all_query_tests_passed: true,
+    })
+    .await;
 
-    let output = Command::new(env!("CARGO_BIN_EXE_coral"))
-        .arg("source")
-        .arg("test")
-        .arg("local_messages")
-        .env("CORAL_CONFIG_DIR", config_dir.path())
-        .output()
-        .expect("failed to run coral source test");
+    let assert = server
+        .cmd()
+        .args(["source", "test", "local_messages"])
+        .assert()
+        .success();
+    let output = assert.get_output();
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        output.status.success(),
-        "expected zero exit status: {stderr}"
-    );
     assert!(
         stdout.contains("Query tests"),
         "expected query-test summary in stdout, got: {stdout}"
@@ -244,4 +189,6 @@ tables:
         stderr.trim().is_empty(),
         "expected no stderr output, got: {stderr}"
     );
+
+    server.shutdown().await;
 }

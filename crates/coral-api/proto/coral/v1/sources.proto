@@ -180,11 +180,11 @@ message ValidateSourceResponse {
   // Validation-query results declared by the source spec.
   repeated QueryTestResult query_tests = 3;
   // Total number of declared validation queries.
-  uint32 declared_query_count = 4;
+  uint64 declared_query_count = 4;
   // Number of validation queries that passed.
-  uint32 passed_query_count = 5;
+  uint64 passed_query_count = 5;
   // Number of validation queries that failed.
-  uint32 failed_query_count = 6;
+  uint64 failed_query_count = 6;
   // Whether every declared validation query passed.
   bool all_query_tests_passed = 7;
 }

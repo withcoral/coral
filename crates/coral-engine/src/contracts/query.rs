@@ -124,11 +124,11 @@ pub struct SourceValidationOutcome {
     /// One result per declared validation query, in manifest order.
     pub query_tests: Vec<QueryTestResult>,
     /// Total number of declared validation queries.
-    pub declared_query_count: u32,
+    pub declared_query_count: u64,
     /// Number of validation queries that executed successfully.
-    pub passed_query_count: u32,
+    pub passed_query_count: u64,
     /// Number of validation queries that failed.
-    pub failed_query_count: u32,
+    pub failed_query_count: u64,
     /// Whether every declared validation query passed.
     pub all_query_tests_passed: bool,
 }
@@ -137,9 +137,9 @@ impl SourceValidationOutcome {
     #[must_use]
     /// Builds one structured source-validation outcome.
     pub fn new(tables: Vec<super::TableInfo>, query_tests: Vec<QueryTestResult>) -> Self {
-        let declared_query_count = u32::try_from(query_tests.len()).unwrap_or(u32::MAX);
+        let declared_query_count = u64::try_from(query_tests.len()).unwrap_or(u64::MAX);
         let passed_query_count =
-            u32::try_from(query_tests.iter().filter(|test| test.passed).count()).unwrap_or(0);
+            u64::try_from(query_tests.iter().filter(|test| test.passed).count()).unwrap_or(0);
         let failed_query_count = declared_query_count.saturating_sub(passed_query_count);
         Self {
             tables,

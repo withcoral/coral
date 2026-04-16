@@ -243,9 +243,7 @@ impl CoralQuery {
                 )),
                 Err(error) => {
                     let error_message = match &error {
-                        CoreError::InvalidInput(detail)
-                            if runtime::query::is_non_read_only_sql_error(detail) =>
-                        {
+                        CoreError::InvalidInput(detail) if is_non_read_only_sql_error(detail) => {
                             "test query must be read-only SQL".to_string()
                         }
                         _ => error.to_string(),
@@ -263,4 +261,10 @@ impl CoralQuery {
         Ok(SourceValidationOutcome::new(tables, query_tests))
     }
 >>>>>>> a604639 (Preserve source test_queries implementation progress before team relaunch)
+}
+
+fn is_non_read_only_sql_error(detail: &str) -> bool {
+    detail.starts_with("DDL not supported")
+        || detail.starts_with("DML not supported")
+        || detail.starts_with("Statement not supported")
 }

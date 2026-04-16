@@ -135,12 +135,6 @@ fn provider_error_to_core(error: &ProviderQueryError) -> CoreError {
     CoreError::QueryFailure(Box::new(error.to_structured()))
 }
 
-pub(crate) fn is_non_read_only_sql_error(detail: &str) -> bool {
-    detail.starts_with("DDL not supported")
-        || detail.starts_with("DML not supported")
-        || detail.starts_with("Statement not supported")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
