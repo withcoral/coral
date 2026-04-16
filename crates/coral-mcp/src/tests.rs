@@ -74,12 +74,12 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
     let temp = TempDir::new().expect("temp dir");
     let manifest_path = write_fixture_manifest(temp.path());
     let manifest_yaml = fs::read_to_string(&manifest_path).expect("read manifest");
-    let _server = ServerBuilder::new()
+    let server = ServerBuilder::new()
         .with_config_dir(temp.path().join("coral-config"))
         .start()
         .await
         .expect("start server");
-    let app = AppClient::connect(_server.endpoint_uri())
+    let app = AppClient::connect(server.endpoint_uri())
         .await
         .expect("connect client");
     let mut source_client = app.source_client();
