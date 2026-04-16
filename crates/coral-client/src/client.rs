@@ -51,7 +51,12 @@ impl AppClient {
     ///
     /// Returns [`ClientError`] if the gRPC clients cannot connect.
     pub async fn connect(endpoint_uri: &str) -> Result<Self, ClientError> {
-        let (source_client, query_client) = connect_clients(endpoint_uri).await?;
+        let endpoint = Endpoint::from_shared(endpoint_uri.to_string())?
+            .http2_max_header_list_size(HTTP2_MAX_HEADER_LIST_SIZE);
+        let channel = endpoint.connect().await?;
+        let source_client = SourceServiceClient::new(channel.clone());
+        let query_client = QueryServiceClient::new(channel)
+            .max_decoding_message_size(QUERY_RESPONSE_MAX_MESSAGE_SIZE);
         Ok(Self {
             source_client,
             query_client,
@@ -69,14 +74,4 @@ impl AppClient {
     pub fn query_client(&self) -> QueryClient {
         self.query_client.clone()
     }
-}
-
-async fn connect_clients(endpoint_uri: &str) -> Result<(SourceClient, QueryClient), ClientError> {
-    let endpoint = Endpoint::from_shared(endpoint_uri.to_string())?
-        .http2_max_header_list_size(HTTP2_MAX_HEADER_LIST_SIZE);
-    let channel = endpoint.connect().await?;
-    let source_client = SourceServiceClient::new(channel.clone());
-    let query_client =
-        QueryServiceClient::new(channel).max_decoding_message_size(QUERY_RESPONSE_MAX_MESSAGE_SIZE);
-    Ok((source_client, query_client))
 }

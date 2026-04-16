@@ -41,7 +41,7 @@ pub(crate) async fn bootstrap() -> Result<Bootstrap, BootstrapError> {
 #[cfg(feature = "cli-test-server")]
 #[allow(
     clippy::disallowed_methods,
-    reason = "This feature-gated test hook owns the hidden CORAL_ENDPOINT bootstrap override."
+    reason = "This feature-gated test hook owns the CORAL_ENDPOINT bootstrap override."
 )]
 fn bootstrap_endpoint() -> Option<String> {
     env::var_os(CORAL_ENDPOINT_ENV)
