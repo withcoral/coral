@@ -78,11 +78,11 @@ impl HttpSourceClient {
     /// authentication header template cannot be resolved.
     pub(crate) fn from_manifest(
         manifest: &HttpSourceManifest,
-        source_secrets: BTreeMap<String, String>,
-        source_variables: BTreeMap<String, String>,
+        source_secrets: &BTreeMap<String, String>,
+        source_variables: &BTreeMap<String, String>,
     ) -> Result<Self> {
         let auth = &manifest.auth;
-        let resolved_inputs = build_resolved_inputs(manifest, &source_secrets, &source_variables);
+        let resolved_inputs = build_resolved_inputs(manifest, source_secrets, source_variables);
 
         for header in &auth.headers {
             let resolved = resolve_value_source(
@@ -1311,7 +1311,7 @@ mod tests {
         }));
         let source_secrets = BTreeMap::new();
 
-        let error = HttpSourceClient::from_manifest(&manifest, source_secrets, BTreeMap::new())
+        let error = HttpSourceClient::from_manifest(&manifest, &source_secrets, &BTreeMap::new())
             .expect_err("missing source-scoped credentials must fail");
 
         assert!(

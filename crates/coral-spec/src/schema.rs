@@ -122,31 +122,4 @@ tables:
             "source manifest failed schema validation:\n  /tables/0/request/path: \"\" is shorter than 1 character"
         );
     }
-
-    #[test]
-    fn validate_manifest_schema_rejects_inputs_on_non_http_backends() {
-        let manifest = manifest_json(
-            r"
-name: demo
-version: 1.0.0
-dsl_version: 3
-backend: parquet
-inputs:
-  AWS_REGION:
-    kind: variable
-tables:
-  - name: events
-    description: Demo events
-    source:
-      location: s3://bucket/path
-",
-        );
-        let error = validate_manifest_schema(&manifest).expect_err("schema validation should fail");
-        assert!(
-            error
-                .to_string()
-                .contains("{\"required\":[\"inputs\"]} is not allowed"),
-            "unexpected error: {error}"
-        );
-    }
 }

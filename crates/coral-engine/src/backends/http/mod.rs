@@ -67,8 +67,8 @@ impl CompiledBackendSource for HttpCompiledSource {
     async fn register(&self, _ctx: &SessionContext) -> Result<BackendRegistration> {
         let backend = HttpSourceClient::from_manifest(
             &self.manifest,
-            self.source_secrets.clone(),
-            self.source_variables.clone(),
+            &self.source_secrets,
+            &self.source_variables,
         )?;
         let mut tables: HashMap<String, Arc<dyn TableProvider>> = HashMap::new();
         let mut table_infos = Vec::with_capacity(self.manifest.tables.len());
