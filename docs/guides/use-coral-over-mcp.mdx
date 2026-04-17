@@ -202,13 +202,6 @@ Once your client is connected, ask the agent to list available tables or run a s
 
 The agent should call `list_tables` or query `coral.tables` and return the schemas from your installed sources.
 
-Agents can also read per-source configuration (for example, the Datadog site or Sentry organization slug) from the virtual `coral.inputs` table to compose absolute URLs and account-scoped identifiers. Secret values are never exposed — secret rows always have `value IS NULL`, but `is_set` reports whether the secret is configured.
-
-```sql
-SELECT value FROM coral.inputs
-WHERE schema_name = 'datadog' AND kind = 'variable' AND key = 'DD_SITE';
-```
-
 ## Troubleshooting
 
 - **`coral` not found:** Make sure `coral` is on your `PATH`, or use the full path from `which coral` in your client config.

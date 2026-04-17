@@ -205,7 +205,7 @@ In this minimal example:
 
 - `response: {}` means "use the default response rules" for an HTTP table
 - with the default response rules, Coral treats the selected response value directly as rows unless you configure a different `row_strategy`
-- `inputs` declares the install-time prompts for this source in stable authored order
+- `inputs` declares the install-time prompts for this source in stable authored order. (At runtime, these are surfaced through `coral.inputs`.)
 - `{{input.API_TOKEN}}` is resolved from the store implied by the declared input kind
 
 ### HTTP rate limiting
