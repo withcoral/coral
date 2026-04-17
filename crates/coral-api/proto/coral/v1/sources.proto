@@ -165,10 +165,10 @@ message QueryTestResult {
   string sql = 1;
   // Whether the query executed successfully.
   bool passed = 2;
-  // Optional row count captured for successful queries.
-  optional uint64 row_count = 3;
-  // Optional error message captured for failed queries.
-  optional string error_message = 4;
+  // Row count captured for the query result; zero when not reported.
+  uint64 row_count = 3;
+  // Error message captured for failed queries; empty when none.
+  string error_message = 4;
 }
 
 // Returns source details plus the tables exposed during validation.

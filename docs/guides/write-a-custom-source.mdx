@@ -42,7 +42,7 @@ version: 0.1.0
 dsl_version: 3
 backend: jsonl
 test_queries:
-  - SELECT COUNT(*) AS n FROM local_messages.messages
+  - SELECT * FROM local_messages.messages LIMIT 1
 tables:
   - name: messages
     description: Demo messages
@@ -60,7 +60,7 @@ tables:
 
 Replace `/absolute/path/to/demo-data/` with the real absolute path on your machine.
 
-The optional top-level `test_queries` field lets you declare read-only SQL checks that Coral runs during `coral source test`. Coral preserves the order you write, allows duplicates, and reports each query result individually.
+The optional top-level `test_queries` field lets you declare read-only SQL checks that Coral runs during `coral source test`. Prefer cheap `SELECT` queries that confirm the source connects correctly and the table mapping looks right.
 
 ### 3. Add and validate
 
@@ -89,6 +89,7 @@ When you add `test_queries` to a source spec, treat them as a lightweight valida
 2. Add or update the source with `coral source add --file ./my-source.yaml`.
 3. Run `coral source test <source_name>` and confirm:
    - the source still exposes the expected tables
+<<<<<<< HEAD
    - each declared `test_queries` entry runs in manifest order
    - successful queries show a pass status and optional row count
 <<<<<<< HEAD
@@ -100,6 +101,15 @@ When you add `test_queries` to a source spec, treat them as a lightweight valida
 5. If a query fails, fix either the source spec or the upstream credentials/configuration, then rerun `coral source test <source_name>`.
 =======
    - failing queries surface the SQL text plus a readable error message
+||||||| parent of b880030 (Reduce validation-doc noise and simplify query-test wire semantics)
+   - each declared `test_queries` entry runs in manifest order
+   - successful queries show a pass status and optional row count
+   - failing queries surface the SQL text plus a readable error message
+=======
+   - each declared `test_queries` entry runs successfully
+   - successful queries show a pass status and row count
+   - failing queries surface the SQL text plus an error message
+>>>>>>> b880030 (Reduce validation-doc noise and simplify query-test wire semantics)
 4. Run real `coral sql` queries against the new tables to confirm the shape is useful beyond the validation checks.
 5. If a query fails, fix either the source spec or the upstream credentials/configuration, then rerun `coral source test <source_name>`.
 >>>>>>> 015e4a4 (Trim minor reviewer nits from PR #107)
@@ -111,6 +121,14 @@ If you are validating a credentialed source end-to-end, it is useful to try both
 
 This gives you confidence that the source spec works in the happy path and that `test_queries` catch broken credentials or runtime regressions in a predictable way.
 
+<<<<<<< HEAD
+||||||| parent of b880030 (Reduce validation-doc noise and simplify query-test wire semantics)
+Use read-only SQL in `test_queries`. Coral rejects DDL, DML, and other non-read-only statements as failed validation queries instead of applying them.
+
+=======
+Use read-only SQL in `test_queries`. Prefer bounded checks such as `SELECT * FROM schema.table LIMIT 1` over expensive scans like `SELECT COUNT(*)`, especially for HTTP-backed sources or large datasets. Coral rejects DDL, DML, and other non-read-only statements as failed validation queries instead of applying them.
+
+>>>>>>> b880030 (Reduce validation-doc noise and simplify query-test wire semantics)
 ## Example: HTTP API source
 
 To connect an HTTP API, the source spec declares the base URL, auth, endpoints, and response shape.

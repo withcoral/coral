@@ -70,8 +70,8 @@ impl QuerySource {
 pub struct QueryTestResult {
     sql: String,
     passed: bool,
-    row_count: Option<u64>,
-    error_message: Option<String>,
+    row_count: u64,
+    error_message: String,
 }
 
 impl QueryTestResult {
@@ -80,14 +80,14 @@ impl QueryTestResult {
     pub fn new(
         sql: impl Into<String>,
         passed: bool,
-        row_count: Option<u64>,
-        error_message: Option<String>,
+        row_count: u64,
+        error_message: impl Into<String>,
     ) -> Self {
         Self {
             sql: sql.into(),
             passed,
             row_count,
-            error_message,
+            error_message: error_message.into(),
         }
     }
 
@@ -104,15 +104,15 @@ impl QueryTestResult {
     }
 
     #[must_use]
-    /// Returns the optional row count captured for successful queries.
-    pub fn row_count(&self) -> Option<u64> {
+    /// Returns the captured row count, or zero when not reported.
+    pub fn row_count(&self) -> u64 {
         self.row_count
     }
 
     #[must_use]
-    /// Returns the error message for failed queries, when present.
-    pub fn error_message(&self) -> Option<&str> {
-        self.error_message.as_deref()
+    /// Returns the error message for failed queries, or an empty string.
+    pub fn error_message(&self) -> &str {
+        &self.error_message
     }
 }
 

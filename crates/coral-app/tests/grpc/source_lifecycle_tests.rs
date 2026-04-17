@@ -232,13 +232,10 @@ async fn validate_source_returns_query_test_results_without_unary_error() {
     assert!(!validated.all_query_tests_passed);
     assert_eq!(validated.query_tests.len(), 2);
     assert!(validated.query_tests[0].passed);
-    assert_eq!(validated.query_tests[0].row_count, Some(1));
+    assert_eq!(validated.query_tests[0].row_count, 1);
     assert!(!validated.query_tests[1].passed);
     assert!(
-        validated.query_tests[1]
-            .error_message
-            .as_deref()
-            .is_some_and(|message| !message.is_empty()),
+        !validated.query_tests[1].error_message.is_empty(),
         "failed query should carry a non-empty error message"
     );
 }
@@ -332,10 +329,7 @@ async fn validate_source_with_unreachable_api_and_test_queries_returns_query_fai
     assert_eq!(validated.failed_query_count, 1);
     assert!(!validated.all_query_tests_passed);
     assert!(
-        validated.query_tests[0]
-            .error_message
-            .as_deref()
-            .is_some_and(|message| !message.is_empty()),
+        !validated.query_tests[0].error_message.is_empty(),
         "failed query should carry a non-empty error message"
     );
 }
@@ -355,8 +349,8 @@ async fn validate_source_with_non_read_only_test_query_returns_stable_query_erro
     assert_eq!(validated.query_tests.len(), 1);
     assert_eq!(validated.failed_query_count, 1);
     assert_eq!(
-        validated.query_tests[0].error_message.as_deref(),
-        Some("test query must be read-only SQL")
+        validated.query_tests[0].error_message,
+        "test query must be read-only SQL"
     );
 }
 

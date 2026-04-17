@@ -53,7 +53,7 @@ pub(crate) fn query_test_result_to_proto(
         sql: result.sql().to_string(),
         passed: result.passed(),
         row_count: result.row_count(),
-        error_message: result.error_message().map(ToString::to_string),
+        error_message: result.error_message().to_string(),
     }
 }
 
@@ -122,16 +122,13 @@ mod tests {
         let proto = query_test_result_to_proto(&EngineQueryTestResult::new(
             "SELECT 1",
             false,
-            None,
-            Some("failed precondition: boom".to_string()),
+            0,
+            "failed precondition: boom",
         ));
 
         assert_eq!(proto.sql, "SELECT 1");
         assert!(!proto.passed);
-        assert_eq!(proto.row_count, None);
-        assert_eq!(
-            proto.error_message.as_deref(),
-            Some("failed precondition: boom")
-        );
+        assert_eq!(proto.row_count, 0);
+        assert_eq!(proto.error_message, "failed precondition: boom");
     }
 }

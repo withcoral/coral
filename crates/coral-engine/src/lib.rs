@@ -238,8 +238,8 @@ impl CoralQuery {
                 Ok(execution) => query_tests.push(QueryTestResult::new(
                     sql.clone(),
                     true,
-                    Some(execution.row_count() as u64),
-                    None,
+                    execution.row_count() as u64,
+                    "",
                 )),
                 Err(error) => {
                     let error_message = match &error {
@@ -248,12 +248,7 @@ impl CoralQuery {
                         }
                         _ => error.to_string(),
                     };
-                    query_tests.push(QueryTestResult::new(
-                        sql.clone(),
-                        false,
-                        None,
-                        Some(error_message),
-                    ));
+                    query_tests.push(QueryTestResult::new(sql.clone(), false, 0, error_message));
                 }
             }
         }

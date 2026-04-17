@@ -98,8 +98,8 @@ async fn source_test_exits_non_zero_when_query_tests_fail() {
         query_tests: vec![QueryTestResult {
             sql: "SELECT * FROM local_messages.missing".to_string(),
             passed: false,
-            row_count: None,
-            error_message: Some("invalid input: table not found".to_string()),
+            row_count: 0,
+            error_message: "invalid input: table not found".to_string(),
         }],
         declared_query_count: 1,
         passed_query_count: 0,
@@ -150,8 +150,8 @@ async fn source_test_succeeds_when_query_tests_pass() {
         query_tests: vec![QueryTestResult {
             sql: "SELECT COUNT(*) AS n FROM local_messages.messages".to_string(),
             passed: true,
-            row_count: Some(1),
-            error_message: None,
+            row_count: 1,
+            error_message: String::new(),
         }],
         declared_query_count: 1,
         passed_query_count: 1,

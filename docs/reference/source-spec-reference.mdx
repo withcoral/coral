@@ -20,7 +20,7 @@ version: 0.1.0
 dsl_version: 3
 backend: http
 test_queries:
-  - SELECT COUNT(*) AS n FROM my_source.messages
+  - SELECT * FROM my_source.messages LIMIT 1
 ```
 
 | Field         | Description                                        |
@@ -39,16 +39,16 @@ queryable.
 
 ```yaml
 test_queries:
-  - SELECT COUNT(*) AS n FROM my_source.messages
+  - SELECT * FROM my_source.messages LIMIT 1
   - SELECT * FROM my_source.messages LIMIT 1
 ```
 
 Notes:
 
-- Coral preserves the order exactly as you write it.
 - Coral allows duplicate entries.
 - Each query result is reported individually during `coral source test`.
 - `coral source add` and `coral onboard` surface post-install validation issues as warnings; `coral source test` is the strict pass/fail command.
+- Prefer cheap read-only checks that validate connectivity and mapping logic. For example, `SELECT * FROM schema.table LIMIT 1` is usually a better fit than `SELECT COUNT(*)`.
 - Keep these queries read-only. Statements such as `CREATE`, `COPY`, `INSERT`,
   `UPDATE`, `DELETE`, or `SET` are reported as failed validation queries.
 

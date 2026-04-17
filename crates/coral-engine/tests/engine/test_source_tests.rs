@@ -124,16 +124,12 @@ async fn validate_source_with_tests_reports_passing_and_failing_queries() {
     assert!(!outcome.all_query_tests_passed);
     assert_eq!(outcome.query_tests.len(), 2);
     assert!(outcome.query_tests[0].passed());
-    assert_eq!(outcome.query_tests[0].row_count(), Some(3));
+    assert_eq!(outcome.query_tests[0].row_count(), 3);
     assert!(!outcome.query_tests[1].passed());
     assert!(
-        outcome.query_tests[1]
-            .error_message()
-            .expect("failed query should carry an error")
-            .contains("not found")
+        outcome.query_tests[1].error_message().contains("not found")
             || outcome.query_tests[1]
                 .error_message()
-                .expect("failed query should carry an error")
                 .contains("invalid input")
     );
 }
@@ -156,6 +152,6 @@ async fn validate_source_with_tests_maps_non_read_only_queries_to_stable_error()
     assert_eq!(outcome.failed_query_count, 1);
     assert_eq!(
         outcome.query_tests[0].error_message(),
-        Some("test query must be read-only SQL")
+        "test query must be read-only SQL"
     );
 }

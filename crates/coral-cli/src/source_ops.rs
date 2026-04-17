@@ -309,19 +309,18 @@ pub(crate) fn print_validation_pretty(
                 style("✗").red()
             };
             println!("    {} {}", status, style(test.sql.trim()).bold());
-            match (test.passed, test.row_count, test.error_message.as_deref()) {
-                (true, Some(row_count), _) => println!(
+            if test.passed {
+                let row_count = test.row_count;
+                println!(
                     "      {}",
                     style(format!(
                         "{row_count} row{}",
                         if row_count == 1 { "" } else { "s" }
                     ))
                     .dim()
-                ),
-                (false, _, Some(error_message)) => {
-                    println!("      {}", style(error_message).yellow());
-                }
-                _ => {}
+                );
+            } else if !test.error_message.is_empty() {
+                println!("      {}", style(test.error_message.as_str()).yellow());
             }
         }
     }
