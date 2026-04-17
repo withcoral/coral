@@ -64,14 +64,30 @@
       ]
     },
     "auth": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "headers": {
-          "type": "array",
-          "items": { "$ref": "#/$defs/header" }
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type"],
+          "properties": {
+            "type": { "const": "ApiKeyAuthenticator" },
+            "headers": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/header" }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "username", "password"],
+          "properties": {
+            "type": { "const": "BasicHttpAuthenticator" },
+            "username": { "type": "string", "minLength": 1 },
+            "password": { "type": "string", "minLength": 1 }
+          }
         }
-      }
+      ]
     },
     "rate_limit": {
       "type": "object",
