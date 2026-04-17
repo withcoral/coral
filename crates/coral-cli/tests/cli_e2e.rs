@@ -25,6 +25,14 @@ fn nonempty_lines(output: &str) -> Vec<&str> {
         .collect()
 }
 
+fn assert_default_workspace(workspace: Option<&coral_api::v1::Workspace>) {
+    assert_eq!(
+        workspace.map(|w| w.name.as_str()),
+        Some("default"),
+        "expected default workspace, got {workspace:?}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn sql_command_renders_table_output() {
     let server = MockServer::start().await;
@@ -38,6 +46,11 @@ async fn sql_command_renders_table_output() {
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
     assert!(stdout.contains("value"), "expected column header: {stdout}");
     assert!(stdout.contains('1'), "expected row value: {stdout}");
+
+    let requests = server.execute_sql_requests();
+    assert_eq!(requests.len(), 1, "expected one execute_sql call");
+    assert_eq!(requests[0].sql, "select 1 as value");
+    assert_default_workspace(requests[0].workspace.as_ref());
 
     server.shutdown().await;
 }
@@ -55,6 +68,10 @@ async fn source_list_renders_configured_sources() {
         "expected configured source list"
     );
 
+    let requests = server.list_sources_requests();
+    assert_eq!(requests.len(), 1, "expected one list_sources call");
+    assert_default_workspace(requests[0].workspace.as_ref());
+
     server.shutdown().await;
 }
 
@@ -71,6 +88,11 @@ async fn sql_command_renders_json_output() {
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
     assert_eq!(stdout.trim(), "[{\"value\":1}]", "expected JSON rows");
 
+    let requests = server.execute_sql_requests();
+    assert_eq!(requests.len(), 1, "expected one execute_sql call");
+    assert_eq!(requests[0].sql, "select 1 as value");
+    assert_default_workspace(requests[0].workspace.as_ref());
+
     server.shutdown().await;
 }
 
@@ -86,6 +108,10 @@ async fn source_discover_renders_available_sources() {
         vec!["github\t1.0.0\tinstalled", "slack\t2.1.0\tavailable"],
         "expected discover source list"
     );
+
+    let requests = server.discover_sources_requests();
+    assert_eq!(requests.len(), 1, "expected one discover_sources call");
+    assert_default_workspace(requests[0].workspace.as_ref());
 
     server.shutdown().await;
 }
@@ -108,6 +134,10 @@ async fn source_discover_renders_empty_state() {
         "expected empty state"
     );
 
+    let requests = server.discover_sources_requests();
+    assert_eq!(requests.len(), 1, "expected one discover_sources call");
+    assert_default_workspace(requests[0].workspace.as_ref());
+
     server.shutdown().await;
 }
 
@@ -128,6 +158,10 @@ async fn source_list_renders_empty_state() {
         "No sources configured.",
         "expected empty state"
     );
+
+    let requests = server.list_sources_requests();
+    assert_eq!(requests.len(), 1, "expected one list_sources call");
+    assert_default_workspace(requests[0].workspace.as_ref());
 
     server.shutdown().await;
 }
@@ -157,6 +191,11 @@ async fn source_test_renders_validation_summary() {
         "expected pull_requests table: {stdout}"
     );
 
+    let requests = server.validate_source_requests();
+    assert_eq!(requests.len(), 1, "expected one validate_source call");
+    assert_eq!(requests[0].name, "github");
+    assert_default_workspace(requests[0].workspace.as_ref());
+
     server.shutdown().await;
 }
 
@@ -176,6 +215,11 @@ async fn source_remove_reports_removed_source() {
         "Removed source github",
         "expected remove confirmation"
     );
+
+    let requests = server.delete_source_requests();
+    assert_eq!(requests.len(), 1, "expected one delete_source call");
+    assert_eq!(requests[0].name, "github");
+    assert_default_workspace(requests[0].workspace.as_ref());
 
     server.shutdown().await;
 }
@@ -199,6 +243,10 @@ async fn sql_command_surfaces_server_errors() {
         "expected server error in stderr: {stderr}"
     );
 
+    let requests = server.execute_sql_requests();
+    assert_eq!(requests.len(), 1, "expected one execute_sql call");
+    assert_eq!(requests[0].sql, "select 1 as value");
+
     server.shutdown().await;
 }
 
@@ -221,6 +269,10 @@ async fn source_test_surfaces_validation_errors() {
         stderr.contains("mock validate failure"),
         "expected validation error in stderr: {stderr}"
     );
+
+    let requests = server.validate_source_requests();
+    assert_eq!(requests.len(), 1, "expected one validate_source call");
+    assert_eq!(requests[0].name, "github");
 
     server.shutdown().await;
 }
@@ -287,6 +339,11 @@ async fn sql_table_output_renders_multiple_columns_and_rows() {
     assert!(lines[6].starts_with('+'), "bottom border: {}", lines[6]);
     assert_eq!(lines.len(), 7, "expected 7 lines, got: {stdout}");
 
+    let requests = server.execute_sql_requests();
+    assert_eq!(requests.len(), 1, "expected one execute_sql call");
+    assert_eq!(requests[0].sql, "select id, name from users");
+    assert_default_workspace(requests[0].workspace.as_ref());
+
     server.shutdown().await;
 }
 
@@ -317,21 +374,25 @@ async fn sql_json_output_renders_multiple_rows() {
         .success();
 
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
-    let json = stdout.trim();
-    assert!(
-        json.starts_with('[') && json.ends_with(']'),
-        "expected JSON array: {json}"
-    );
-    assert!(
-        json.contains("\"id\":1") && json.contains("\"name\":\"alice\""),
-        "row 1: {json}"
-    );
+    let rows: Vec<serde_json::Map<String, serde_json::Value>> =
+        serde_json::from_str(stdout.trim()).expect("sql --format json should emit a JSON array");
+
+    assert_eq!(rows.len(), 2, "expected two rows: {rows:?}");
+    assert_eq!(rows[0].get("id"), Some(&serde_json::json!(1)));
+    assert_eq!(rows[0].get("name"), Some(&serde_json::json!("alice")));
+    assert_eq!(rows[1].get("id"), Some(&serde_json::json!(2)));
     // Arrow JSON omits null fields rather than emitting "name":null.
-    assert!(json.contains("\"id\":2"), "row 2 id: {json}");
-    assert!(
-        !json.contains("\"id\":2,\"name\""),
-        "null name should be omitted: {json}"
+    assert_eq!(
+        rows[1].len(),
+        1,
+        "null name should be omitted from row 2: {:?}",
+        rows[1]
     );
+
+    let requests = server.execute_sql_requests();
+    assert_eq!(requests.len(), 1, "expected one execute_sql call");
+    assert_eq!(requests[0].sql, "select id, name from users");
+    assert_default_workspace(requests[0].workspace.as_ref());
 
     server.shutdown().await;
 }
@@ -373,6 +434,11 @@ async fn sql_table_output_renders_empty_result() {
         "expected 4 lines (no data rows), got: {stdout}"
     );
 
+    let requests = server.execute_sql_requests();
+    assert_eq!(requests.len(), 1, "expected one execute_sql call");
+    assert_eq!(requests[0].sql, "select id, name from empty_table");
+    assert_default_workspace(requests[0].workspace.as_ref());
+
     server.shutdown().await;
 }
 
@@ -394,6 +460,11 @@ async fn sql_json_output_renders_empty_result() {
 
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
     assert_eq!(stdout.trim(), "[]", "expected empty JSON array");
+
+    let requests = server.execute_sql_requests();
+    assert_eq!(requests.len(), 1, "expected one execute_sql call");
+    assert_eq!(requests[0].sql, "select id from empty_table");
+    assert_default_workspace(requests[0].workspace.as_ref());
 
     server.shutdown().await;
 }

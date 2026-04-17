@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use arrow::array::Int64Array;
 use arrow::datatypes::{DataType, Field, Schema};
@@ -215,6 +215,19 @@ impl MockServerConfig {
     }
 }
 
+#[derive(Default)]
+struct Captured {
+    execute_sql: Mutex<Vec<ExecuteSqlRequest>>,
+    list_tables: Mutex<Vec<ListTablesRequest>>,
+    discover_sources: Mutex<Vec<DiscoverSourcesRequest>>,
+    list_sources: Mutex<Vec<ListSourcesRequest>>,
+    get_source: Mutex<Vec<GetSourceRequest>>,
+    create_bundled_source: Mutex<Vec<CreateBundledSourceRequest>>,
+    import_source: Mutex<Vec<ImportSourceRequest>>,
+    delete_source: Mutex<Vec<DeleteSourceRequest>>,
+    validate_source: Mutex<Vec<ValidateSourceRequest>>,
+}
+
 pub(crate) fn encode_arrow_ipc_stream(
     schema: &Schema,
     batches: &[RecordBatch],
@@ -233,21 +246,32 @@ pub(crate) fn encode_arrow_ipc_stream(
 #[derive(Clone)]
 struct MockQueryService {
     config: Arc<MockServerConfig>,
+    captured: Arc<Captured>,
 }
 
 #[tonic::async_trait]
 impl QueryService for MockQueryService {
     async fn list_tables(
         &self,
-        _request: Request<ListTablesRequest>,
+        request: Request<ListTablesRequest>,
     ) -> Result<Response<ListTablesResponse>, Status> {
+        self.captured
+            .list_tables
+            .lock()
+            .expect("list_tables capture")
+            .push(request.into_inner());
         Ok(Response::new(ListTablesResponse { tables: Vec::new() }))
     }
 
     async fn execute_sql(
         &self,
-        _request: Request<ExecuteSqlRequest>,
+        request: Request<ExecuteSqlRequest>,
     ) -> Result<Response<ExecuteSqlResponse>, Status> {
+        self.captured
+            .execute_sql
+            .lock()
+            .expect("execute_sql capture")
+            .push(request.into_inner());
         Ok(Response::new(
             self.config.execute_sql.clone().into_tonic_result()?,
         ))
@@ -257,14 +281,20 @@ impl QueryService for MockQueryService {
 #[derive(Clone)]
 struct MockSourceService {
     config: Arc<MockServerConfig>,
+    captured: Arc<Captured>,
 }
 
 #[tonic::async_trait]
 impl SourceService for MockSourceService {
     async fn discover_sources(
         &self,
-        _request: Request<DiscoverSourcesRequest>,
+        request: Request<DiscoverSourcesRequest>,
     ) -> Result<Response<DiscoverSourcesResponse>, Status> {
+        self.captured
+            .discover_sources
+            .lock()
+            .expect("discover_sources capture")
+            .push(request.into_inner());
         Ok(Response::new(
             self.config.discover_sources.clone().into_tonic_result()?,
         ))
@@ -272,8 +302,13 @@ impl SourceService for MockSourceService {
 
     async fn list_sources(
         &self,
-        _request: Request<ListSourcesRequest>,
+        request: Request<ListSourcesRequest>,
     ) -> Result<Response<ListSourcesResponse>, Status> {
+        self.captured
+            .list_sources
+            .lock()
+            .expect("list_sources capture")
+            .push(request.into_inner());
         Ok(Response::new(
             self.config.list_sources.clone().into_tonic_result()?,
         ))
@@ -281,37 +316,62 @@ impl SourceService for MockSourceService {
 
     async fn get_source(
         &self,
-        _request: Request<GetSourceRequest>,
+        request: Request<GetSourceRequest>,
     ) -> Result<Response<Source>, Status> {
+        self.captured
+            .get_source
+            .lock()
+            .expect("get_source capture")
+            .push(request.into_inner());
         Ok(Response::new(mock_source()))
     }
 
     async fn create_bundled_source(
         &self,
-        _request: Request<CreateBundledSourceRequest>,
+        request: Request<CreateBundledSourceRequest>,
     ) -> Result<Response<Source>, Status> {
+        self.captured
+            .create_bundled_source
+            .lock()
+            .expect("create_bundled_source capture")
+            .push(request.into_inner());
         Ok(Response::new(mock_source()))
     }
 
     async fn import_source(
         &self,
-        _request: Request<ImportSourceRequest>,
+        request: Request<ImportSourceRequest>,
     ) -> Result<Response<Source>, Status> {
+        self.captured
+            .import_source
+            .lock()
+            .expect("import_source capture")
+            .push(request.into_inner());
         Ok(Response::new(mock_source()))
     }
 
     async fn delete_source(
         &self,
-        _request: Request<DeleteSourceRequest>,
+        request: Request<DeleteSourceRequest>,
     ) -> Result<Response<()>, Status> {
+        self.captured
+            .delete_source
+            .lock()
+            .expect("delete_source capture")
+            .push(request.into_inner());
         self.config.delete_source.clone().into_tonic_result()?;
         Ok(Response::new(()))
     }
 
     async fn validate_source(
         &self,
-        _request: Request<ValidateSourceRequest>,
+        request: Request<ValidateSourceRequest>,
     ) -> Result<Response<ValidateSourceResponse>, Status> {
+        self.captured
+            .validate_source
+            .lock()
+            .expect("validate_source capture")
+            .push(request.into_inner());
         Ok(Response::new(
             self.config.validate_source.clone().into_tonic_result()?,
         ))
@@ -322,6 +382,7 @@ pub(crate) struct MockServer {
     endpoint_uri: String,
     shutdown_tx: Option<oneshot::Sender<()>>,
     task: JoinHandle<Result<(), tonic::transport::Error>>,
+    captured: Arc<Captured>,
 }
 
 impl MockServer {
@@ -336,12 +397,20 @@ impl MockServer {
         let endpoint_uri = format!("http://{}", listener.local_addr().expect("local addr"));
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let config = Arc::new(config);
+        let captured = Arc::new(Captured::default());
+        let query_captured = Arc::clone(&captured);
+        let source_captured = Arc::clone(&captured);
+        let query_config = Arc::clone(&config);
         let task = tokio::spawn(async move {
             Server::builder()
                 .add_service(QueryServiceServer::new(MockQueryService {
-                    config: Arc::clone(&config),
+                    config: query_config,
+                    captured: query_captured,
                 }))
-                .add_service(SourceServiceServer::new(MockSourceService { config }))
+                .add_service(SourceServiceServer::new(MockSourceService {
+                    config,
+                    captured: source_captured,
+                }))
                 .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
                     let _ = shutdown_rx.await;
                 })
@@ -351,6 +420,7 @@ impl MockServer {
             endpoint_uri,
             shutdown_tx: Some(shutdown_tx),
             task,
+            captured,
         }
     }
 
@@ -358,6 +428,46 @@ impl MockServer {
         let mut cmd = Command::cargo_bin("coral").expect("cargo bin");
         cmd.env("CORAL_ENDPOINT", &self.endpoint_uri);
         cmd
+    }
+
+    pub(crate) fn execute_sql_requests(&self) -> Vec<ExecuteSqlRequest> {
+        self.captured
+            .execute_sql
+            .lock()
+            .expect("execute_sql capture")
+            .clone()
+    }
+
+    pub(crate) fn discover_sources_requests(&self) -> Vec<DiscoverSourcesRequest> {
+        self.captured
+            .discover_sources
+            .lock()
+            .expect("discover_sources capture")
+            .clone()
+    }
+
+    pub(crate) fn list_sources_requests(&self) -> Vec<ListSourcesRequest> {
+        self.captured
+            .list_sources
+            .lock()
+            .expect("list_sources capture")
+            .clone()
+    }
+
+    pub(crate) fn validate_source_requests(&self) -> Vec<ValidateSourceRequest> {
+        self.captured
+            .validate_source
+            .lock()
+            .expect("validate_source capture")
+            .clone()
+    }
+
+    pub(crate) fn delete_source_requests(&self) -> Vec<DeleteSourceRequest> {
+        self.captured
+            .delete_source
+            .lock()
+            .expect("delete_source capture")
+            .clone()
     }
 
     pub(crate) async fn shutdown(mut self) {

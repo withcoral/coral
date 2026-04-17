@@ -823,6 +823,7 @@ dependencies = [
  "coral-mcp",
  "coral-spec",
  "dialoguer",
+ "serde_json",
  "tempfile",
  "thiserror",
  "tokio",
