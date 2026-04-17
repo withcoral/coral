@@ -85,50 +85,26 @@ coral sql "
 
 When you add `test_queries` to a source spec, treat them as a lightweight validation contract for that source.
 
-1. Run `coral source lint ./my-source.yaml` before installing the source.
+1. Run `coral source lint ./my-source.yaml` first. It catches schema and semantic issues without touching your workspace or asking for secrets.
 2. Add or update the source with `coral source add --file ./my-source.yaml`.
-3. Run `coral source test <source_name>` and confirm:
-   - the source still exposes the expected tables
-<<<<<<< HEAD
-   - each declared `test_queries` entry runs in manifest order
-   - successful queries show a pass status and optional row count
-<<<<<<< HEAD
-   - failing queries surface a readable error message
-4. Run one or two real `coral sql` queries against the new tables to confirm the shape is useful beyond the validation checks.
-||||||| parent of 015e4a4 (Trim minor reviewer nits from PR #107)
-   - failing queries surface the SQL text plus a readable error message
-4. Run one or two real `coral sql` queries against the new tables to confirm the shape is useful beyond the validation checks.
-5. If a query fails, fix either the source spec or the upstream credentials/configuration, then rerun `coral source test <source_name>`.
-=======
-   - failing queries surface the SQL text plus a readable error message
-||||||| parent of b880030 (Reduce validation-doc noise and simplify query-test wire semantics)
-   - each declared `test_queries` entry runs in manifest order
-   - successful queries show a pass status and optional row count
-   - failing queries surface the SQL text plus a readable error message
-=======
+3. Confirm the install-time validation output:
+   - the source exposes the expected tables
    - each declared `test_queries` entry runs successfully
    - successful queries show a pass status and row count
    - failing queries surface the SQL text plus an error message
->>>>>>> b880030 (Reduce validation-doc noise and simplify query-test wire semantics)
 4. Run real `coral sql` queries against the new tables to confirm the shape is useful beyond the validation checks.
-5. If a query fails, fix either the source spec or the upstream credentials/configuration, then rerun `coral source test <source_name>`.
->>>>>>> 015e4a4 (Trim minor reviewer nits from PR #107)
+5. If you want a strict rerun later, or you are debugging a failure, run `coral source test <source_name>`.
+6. If a query fails, fix either the source spec or the upstream credentials/configuration, then rerun `coral source test <source_name>`.
 
 If you are validating a credentialed source end-to-end, it is useful to try both:
 
 - a correctly configured source, which should pass table validation and all declared query tests
-- an intentionally misconfigured source, which should still reach `coral source test` but exit non-zero when its declared query tests fail
+- an intentionally misconfigured source, which should still install but fail `coral source test` with a non-zero exit code
 
 This gives you confidence that the source spec works in the happy path and that `test_queries` catch broken credentials or runtime regressions in a predictable way.
 
-<<<<<<< HEAD
-||||||| parent of b880030 (Reduce validation-doc noise and simplify query-test wire semantics)
-Use read-only SQL in `test_queries`. Coral rejects DDL, DML, and other non-read-only statements as failed validation queries instead of applying them.
-
-=======
 Use read-only SQL in `test_queries`. Prefer bounded checks such as `SELECT * FROM schema.table LIMIT 1` over expensive scans like `SELECT COUNT(*)`, especially for HTTP-backed sources or large datasets. Coral rejects DDL, DML, and other non-read-only statements as failed validation queries instead of applying them.
 
->>>>>>> b880030 (Reduce validation-doc noise and simplify query-test wire semantics)
 ## Example: HTTP API source
 
 To connect an HTTP API, the source spec declares the base URL, auth, endpoints, and response shape.
@@ -182,7 +158,7 @@ For the full set of HTTP response, pagination, auth, and column fields, see [HTT
 
 ## Tips
 
-- **Lint before installing.** Run `coral source lint ./my-source.yaml` to catch schema and semantic errors without touching your workspace.
+- **Lint before installing.** `coral source lint ./my-source.yaml` is a fast local precheck because it does not install the source or require credentials.
 - **Start small.** Begin with one table and a few columns. Validate with `coral source test`, check `coral.columns` and `coral.inputs`, then expand.
 - **Use `coral.tables`, `coral.columns`, and `coral.inputs`.** They show you exactly what Coral sees after adding a source — including required filters and column metadata.
 - **Look at bundled sources for patterns.** The bundled source specs in the repo under `sources/` are working examples of HTTP pagination, response parsing, auth, and inputs.

@@ -48,7 +48,7 @@ coral source add github
 ```
 
 Coral prompts for required variables or secrets interactively. If the source is already installed, running this command again replaces its stored credentials with the new values you provide.
-After installation, it automatically validates the connection, prints the discovered tables, and runs any optional top-level `test_queries` declared in the source spec. Any post-install validation issue is reported as a warning here so the source remains installed and re-runnable.
+After installation, it prints the discovered tables and runs any optional top-level `test_queries` declared in the source spec to validate the connection. Any post-install validation issue is reported as a warning here so the source remains installed and re-runnable.
 
 ### `coral source add --file <PATH>`
 
