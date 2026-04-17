@@ -185,7 +185,7 @@ pub(crate) fn manifest_input_from_proto(
         kind,
         required: input.required,
         default_value: input.default_value.clone(),
-        hint: input.hint.clone(),
+        hint: (!input.hint.is_empty()).then(|| input.hint.clone()),
     })
 }
 
