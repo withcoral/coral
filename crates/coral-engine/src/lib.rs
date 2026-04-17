@@ -71,7 +71,13 @@ mod runtime;
 
 pub use contracts::{
     ColumnInfo, CoreError, QueryExecution, QueryRuntimeContext, QueryRuntimeProvider, QuerySource,
+<<<<<<< HEAD
     StatusCode, StructuredQueryError, TableInfo,
+||||||| parent of 68e2039 (Make validation-query results explicit success/failure variants)
+    QueryTestResult, SourceValidationOutcome, StatusCode, TableInfo,
+=======
+    QueryTestOutcome, QueryTestResult, SourceValidationOutcome, StatusCode, TableInfo,
+>>>>>>> 68e2039 (Make validation-query results explicit success/failure variants)
 };
 
 /// High-level query operations for the local query engine.
@@ -235,11 +241,9 @@ impl CoralQuery {
         let mut query_tests = Vec::with_capacity(test_queries.len());
         for sql in test_queries {
             match query_runtime.execute_sql(sql).await {
-                Ok(execution) => query_tests.push(QueryTestResult::new(
+                Ok(execution) => query_tests.push(QueryTestResult::success(
                     sql.clone(),
-                    true,
                     execution.row_count() as u64,
-                    "",
                 )),
                 Err(error) => {
                     let error_message = match &error {
@@ -248,7 +252,7 @@ impl CoralQuery {
                         }
                         _ => error.to_string(),
                     };
-                    query_tests.push(QueryTestResult::new(sql.clone(), false, 0, error_message));
+                    query_tests.push(QueryTestResult::failure(sql.clone(), error_message));
                 }
             }
         }

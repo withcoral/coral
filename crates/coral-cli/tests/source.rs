@@ -10,7 +10,10 @@ use tempfile::tempdir;
 
 use std::process::Command;
 
-use coral_api::v1::{QueryTestResult, Source, SourceOrigin, ValidateSourceResponse, Workspace};
+use coral_api::v1::{
+    QueryTestFailure, QueryTestResult, QueryTestSuccess, Source, SourceOrigin,
+    ValidateSourceResponse, Workspace, query_test_result,
+};
 
 use harness::MockServer;
 
@@ -97,9 +100,9 @@ async fn source_test_exits_non_zero_when_query_tests_fail() {
         tables: Vec::new(),
         query_tests: vec![QueryTestResult {
             sql: "SELECT * FROM local_messages.missing".to_string(),
-            passed: false,
-            row_count: 0,
-            error_message: "invalid input: table not found".to_string(),
+            outcome: Some(query_test_result::Outcome::Failure(QueryTestFailure {
+                error_message: "invalid input: table not found".to_string(),
+            })),
         }],
         declared_query_count: 1,
         passed_query_count: 0,
@@ -149,9 +152,9 @@ async fn source_test_succeeds_when_query_tests_pass() {
         tables: Vec::new(),
         query_tests: vec![QueryTestResult {
             sql: "SELECT COUNT(*) AS n FROM local_messages.messages".to_string(),
-            passed: true,
-            row_count: 1,
-            error_message: String::new(),
+            outcome: Some(query_test_result::Outcome::Success(QueryTestSuccess {
+                row_count: 1,
+            })),
         }],
         declared_query_count: 1,
         passed_query_count: 1,

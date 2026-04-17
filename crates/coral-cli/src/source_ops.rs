@@ -4,8 +4,9 @@ use std::path::Path;
 
 use coral_api::v1::{
     AvailableSource, CreateBundledSourceRequest, DeleteSourceRequest, DiscoverSourcesRequest,
-    ImportSourceRequest, ListSourcesRequest, Source, SourceInputKind, SourceInputSpec,
-    SourceOrigin, SourceSecret, SourceVariable, ValidateSourceRequest, ValidateSourceResponse,
+    ImportSourceRequest, ListSourcesRequest, QueryTestFailure, QueryTestSuccess, Source,
+    SourceInputKind, SourceInputSpec, SourceOrigin, SourceSecret, SourceVariable,
+    ValidateSourceRequest, ValidateSourceResponse, query_test_result,
 };
 use coral_client::{AppClient, default_workspace};
 use coral_spec::{
@@ -303,24 +304,29 @@ pub(crate) fn print_validation_pretty(
         );
         for test in &response.query_tests {
             println!();
-            let status = if test.passed {
+            let status = if matches!(test.outcome, Some(query_test_result::Outcome::Success(_))) {
                 style("✓").green()
             } else {
                 style("✗").red()
             };
             println!("    {} {}", status, style(test.sql.trim()).bold());
-            if test.passed {
-                let row_count = test.row_count;
-                println!(
-                    "      {}",
-                    style(format!(
-                        "{row_count} row{}",
-                        if row_count == 1 { "" } else { "s" }
-                    ))
-                    .dim()
-                );
-            } else if !test.error_message.is_empty() {
-                println!("      {}", style(test.error_message.as_str()).yellow());
+            match &test.outcome {
+                Some(query_test_result::Outcome::Success(QueryTestSuccess { row_count })) => {
+                    println!(
+                        "      {}",
+                        style(format!(
+                            "{row_count} row{}",
+                            if *row_count == 1 { "" } else { "s" }
+                        ))
+                        .dim()
+                    );
+                }
+                Some(query_test_result::Outcome::Failure(QueryTestFailure { error_message })) => {
+                    if !error_message.is_empty() {
+                        println!("      {}", style(error_message.as_str()).yellow());
+                    }
+                }
+                None => {}
             }
         }
     }

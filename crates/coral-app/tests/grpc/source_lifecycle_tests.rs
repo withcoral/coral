@@ -2,8 +2,9 @@ use std::fs;
 
 use coral_api::v1::{
     CreateBundledSourceRequest, DeleteSourceRequest, DiscoverSourcesRequest, ExecuteSqlRequest,
-    GetSourceRequest, ImportSourceRequest, ListTablesRequest, SourceOrigin, SourceSecret,
-    SourceVariable, ValidateSourceRequest, Workspace,
+    GetSourceRequest, ImportSourceRequest, ListTablesRequest, QueryTestFailure, QueryTestSuccess,
+    SourceOrigin, SourceSecret, SourceVariable, ValidateSourceRequest, Workspace,
+    query_test_result,
 };
 use coral_client::default_workspace;
 use tempfile::TempDir;
@@ -231,13 +232,15 @@ async fn validate_source_returns_query_test_results_without_unary_error() {
     assert_eq!(validated.failed_query_count, 1);
     assert!(!validated.all_query_tests_passed);
     assert_eq!(validated.query_tests.len(), 2);
-    assert!(validated.query_tests[0].passed);
-    assert_eq!(validated.query_tests[0].row_count, 1);
-    assert!(!validated.query_tests[1].passed);
-    assert!(
-        !validated.query_tests[1].error_message.is_empty(),
-        "failed query should carry a non-empty error message"
-    );
+    assert!(matches!(
+        &validated.query_tests[0].outcome,
+        Some(query_test_result::Outcome::Success(QueryTestSuccess { row_count })) if *row_count == 1
+    ));
+    assert!(matches!(
+        &validated.query_tests[1].outcome,
+        Some(query_test_result::Outcome::Failure(QueryTestFailure { error_message }))
+            if !error_message.is_empty()
+    ));
 }
 
 #[tokio::test]
@@ -328,10 +331,11 @@ async fn validate_source_with_unreachable_api_and_test_queries_returns_query_fai
     assert_eq!(validated.query_tests.len(), 1);
     assert_eq!(validated.failed_query_count, 1);
     assert!(!validated.all_query_tests_passed);
-    assert!(
-        !validated.query_tests[0].error_message.is_empty(),
-        "failed query should carry a non-empty error message"
-    );
+    assert!(matches!(
+        &validated.query_tests[0].outcome,
+        Some(query_test_result::Outcome::Failure(QueryTestFailure { error_message }))
+            if !error_message.is_empty()
+    ));
 }
 
 #[tokio::test]
@@ -348,10 +352,11 @@ async fn validate_source_with_non_read_only_test_query_returns_stable_query_erro
     let validated = harness.validate_source("local_messages").await;
     assert_eq!(validated.query_tests.len(), 1);
     assert_eq!(validated.failed_query_count, 1);
-    assert_eq!(
-        validated.query_tests[0].error_message,
-        "test query must be read-only SQL"
-    );
+    assert!(matches!(
+        &validated.query_tests[0].outcome,
+        Some(query_test_result::Outcome::Failure(QueryTestFailure { error_message }))
+            if error_message == "test query must be read-only SQL"
+    ));
 }
 
 #[tokio::test]

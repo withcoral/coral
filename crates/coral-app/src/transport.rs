@@ -1,6 +1,9 @@
 //! Shared gRPC transport helpers for app-owned services.
 
-use coral_api::v1::{Column, QueryTestResult, Table, Workspace};
+use coral_api::v1::{
+    Column, QueryTestFailure, QueryTestResult, QueryTestSuccess, Table, Workspace,
+    query_test_result,
+};
 use tonic::Status;
 
 use crate::bootstrap::{app_status, core_status};
@@ -49,16 +52,27 @@ pub(crate) fn table_to_proto(
 pub(crate) fn query_test_result_to_proto(
     result: &coral_engine::QueryTestResult,
 ) -> QueryTestResult {
+    let outcome = match result.outcome() {
+        coral_engine::QueryTestOutcome::Success { row_count } => {
+            Some(query_test_result::Outcome::Success(QueryTestSuccess {
+                row_count: *row_count,
+            }))
+        }
+        coral_engine::QueryTestOutcome::Failure { error_message } => {
+            Some(query_test_result::Outcome::Failure(QueryTestFailure {
+                error_message: error_message.clone(),
+            }))
+        }
+    };
     QueryTestResult {
         sql: result.sql().to_string(),
-        passed: result.passed(),
-        row_count: result.row_count(),
-        error_message: result.error_message().to_string(),
+        outcome,
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use coral_api::v1::{QueryTestFailure, query_test_result};
     use tonic::Code;
 
     use super::{query_status, query_test_result_to_proto, table_to_proto, workspace_to_proto};
@@ -119,16 +133,16 @@ mod tests {
 
     #[test]
     fn query_test_result_to_proto_preserves_result_metadata() {
-        let proto = query_test_result_to_proto(&EngineQueryTestResult::new(
+        let proto = query_test_result_to_proto(&EngineQueryTestResult::failure(
             "SELECT 1",
-            false,
-            0,
             "failed precondition: boom",
         ));
 
         assert_eq!(proto.sql, "SELECT 1");
-        assert!(!proto.passed);
-        assert_eq!(proto.row_count, 0);
-        assert_eq!(proto.error_message, "failed precondition: boom");
+        assert!(matches!(
+            proto.outcome,
+            Some(query_test_result::Outcome::Failure(QueryTestFailure { error_message }))
+                if error_message == "failed precondition: boom"
+        ));
     }
 }

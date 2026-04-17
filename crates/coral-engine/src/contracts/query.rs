@@ -69,25 +69,42 @@ impl QuerySource {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueryTestResult {
     sql: String,
-    passed: bool,
-    row_count: u64,
-    error_message: String,
+    outcome: QueryTestOutcome,
+}
+
+/// Outcome metadata for one validation query execution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QueryTestOutcome {
+    /// Query executed successfully and produced a row count.
+    Success {
+        /// Row count captured for the successful query.
+        row_count: u64,
+    },
+    /// Query failed and produced an error message.
+    Failure {
+        /// Error message captured for the failed query.
+        error_message: String,
+    },
 }
 
 impl QueryTestResult {
     #[must_use]
-    /// Builds one query-test result entry.
-    pub fn new(
-        sql: impl Into<String>,
-        passed: bool,
-        row_count: u64,
-        error_message: impl Into<String>,
-    ) -> Self {
+    /// Builds one successful query-test result entry.
+    pub fn success(sql: impl Into<String>, row_count: u64) -> Self {
         Self {
             sql: sql.into(),
-            passed,
-            row_count,
-            error_message: error_message.into(),
+            outcome: QueryTestOutcome::Success { row_count },
+        }
+    }
+
+    #[must_use]
+    /// Builds one failed query-test result entry.
+    pub fn failure(sql: impl Into<String>, error_message: impl Into<String>) -> Self {
+        Self {
+            sql: sql.into(),
+            outcome: QueryTestOutcome::Failure {
+                error_message: error_message.into(),
+            },
         }
     }
 
@@ -100,19 +117,31 @@ impl QueryTestResult {
     #[must_use]
     /// Returns whether the query executed successfully.
     pub fn passed(&self) -> bool {
-        self.passed
+        matches!(self.outcome, QueryTestOutcome::Success { .. })
     }
 
     #[must_use]
-    /// Returns the captured row count, or zero when not reported.
-    pub fn row_count(&self) -> u64 {
-        self.row_count
+    /// Returns the captured row count for successful queries.
+    pub fn row_count(&self) -> Option<u64> {
+        match self.outcome {
+            QueryTestOutcome::Success { row_count } => Some(row_count),
+            QueryTestOutcome::Failure { .. } => None,
+        }
     }
 
     #[must_use]
-    /// Returns the error message for failed queries, or an empty string.
-    pub fn error_message(&self) -> &str {
-        &self.error_message
+    /// Returns the error message for failed queries, when present.
+    pub fn error_message(&self) -> Option<&str> {
+        match &self.outcome {
+            QueryTestOutcome::Success { .. } => None,
+            QueryTestOutcome::Failure { error_message } => Some(error_message),
+        }
+    }
+
+    #[must_use]
+    /// Returns the outcome metadata for this query test.
+    pub fn outcome(&self) -> &QueryTestOutcome {
+        &self.outcome
     }
 }
 
@@ -139,7 +168,7 @@ impl SourceValidationOutcome {
     pub fn new(tables: Vec<super::TableInfo>, query_tests: Vec<QueryTestResult>) -> Self {
         let declared_query_count = u64::try_from(query_tests.len()).unwrap_or(u64::MAX);
         let passed_query_count =
-            u64::try_from(query_tests.iter().filter(|test| test.passed).count()).unwrap_or(0);
+            u64::try_from(query_tests.iter().filter(|test| test.passed()).count()).unwrap_or(0);
         let failed_query_count = declared_query_count.saturating_sub(passed_query_count);
         Self {
             tables,

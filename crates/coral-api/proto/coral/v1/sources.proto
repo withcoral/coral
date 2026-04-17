@@ -159,16 +159,29 @@ message ValidateSourceRequest {
   string name = 2;
 }
 
+// Success details for one validation query.
+message QueryTestSuccess {
+  // Row count captured for the successful query.
+  uint64 row_count = 1;
+}
+
+// Failure details for one validation query.
+message QueryTestFailure {
+  // Error message captured for the failed query.
+  string error_message = 1;
+}
+
 // One validation query executed for a source.
 message QueryTestResult {
   // SQL text declared by the source spec.
   string sql = 1;
-  // Whether the query executed successfully.
-  bool passed = 2;
-  // Row count captured for the query result; zero when not reported.
-  uint64 row_count = 3;
-  // Error message captured for failed queries; empty when none.
-  string error_message = 4;
+  // Outcome of the validation query.
+  oneof outcome {
+    // Successful query execution metadata.
+    QueryTestSuccess success = 2;
+    // Failed query execution metadata.
+    QueryTestFailure failure = 3;
+  }
 }
 
 // Returns source details plus the tables exposed during validation.
