@@ -296,17 +296,18 @@ fn http_manifest_with_inputs() -> Value {
     })
 }
 
-fn build_demo_source(
-    variables: &[(&str, &str)],
-    secrets: &[(&str, &str)],
-) -> QuerySource {
+fn build_demo_source(variables: &[(&str, &str)], secrets: &[(&str, &str)]) -> QuerySource {
     let to_map = |items: &[(&str, &str)]| -> BTreeMap<String, String> {
         items
             .iter()
             .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
             .collect()
     };
-    build_source_with_inputs(http_manifest_with_inputs(), to_map(variables), to_map(secrets))
+    build_source_with_inputs(
+        http_manifest_with_inputs(),
+        to_map(variables),
+        to_map(secrets),
+    )
 }
 
 #[tokio::test]
@@ -426,7 +427,10 @@ async fn coral_inputs_reports_explicit_empty_variable_as_set() {
         .expect("catalog query should succeed"),
     );
 
-    assert_eq!(rows, vec![json!({"key": "ACCOUNT_ID", "value": "", "is_set": true})]);
+    assert_eq!(
+        rows,
+        vec![json!({"key": "ACCOUNT_ID", "value": "", "is_set": true})]
+    );
 }
 
 #[tokio::test]

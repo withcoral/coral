@@ -161,7 +161,9 @@ fn build_inputs_table(active_sources: &[RegisteredSource]) -> Result<MemTable> {
         })
         .collect();
 
-    rows.sort_by(|left, right| (&left.schema_name, &left.key).cmp(&(&right.schema_name, &right.key)));
+    rows.sort_by(|left, right| {
+        (&left.schema_name, &left.key).cmp(&(&right.schema_name, &right.key))
+    });
 
     let batch = RecordBatch::try_new(
         schema.clone(),
