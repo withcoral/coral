@@ -2,7 +2,9 @@ name: github
 version: 1.1.5
 dsl_version: 3
 backend: http
-description: GitHub's v3 REST API.
+description: |
+  Query repositories, issues, pull requests, workflows, organizations,
+  users, teams, and API metadata from GitHub (Cloud or Enterprise).
 base_url: "{{input.GITHUB_API_BASE}}"
 rate_limit:
   extra_statuses: [403]
@@ -12,10 +14,18 @@ inputs:
   GITHUB_API_BASE:
     kind: variable
     default: https://api.github.com
-    hint: For GitHub Enterprise, use https://<host>/api/v3
+    hint: |
+      Base URL for the GitHub REST API. Keep the default for GitHub
+      Cloud; for GitHub Enterprise Server, use
+      `https://<host>/api/v3`.
   GITHUB_TOKEN:
     kind: secret
-    hint: Run `gh auth token` or create a PAT
+    hint: |
+      If you're already authenticated in GitHub CLI, run
+      `gh auth token`, or create a new personal access token (PAT).
+      Grant read access to the repositories and organizations you plan
+      to query; some admin tables require elevated scopes.
+      See [GitHub PAT docs](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens).
 auth:
   headers:
     - name: Authorization
