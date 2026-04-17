@@ -146,73 +146,36 @@ fn flatten_for_table_cell(input: &str) -> String {
     out
 }
 
-/// Escape MDX-hostile characters (`{`, `}`, `<`, `>`) in plain prose without
-/// disturbing markdown code spans or fenced code blocks.
+/// Escape MDX-hostile characters (`{`, `}`, `<`, `>`) in plain prose.
 ///
-/// Content inside backtick code spans and ```...``` fences is emitted
-/// verbatim because MDX does not interpret JSX inside code.
+/// Hints and descriptions are expected to be short prose — sentences with
+/// optional inline code spans and markdown links. Content inside backtick
+/// code spans is emitted verbatim since MDX does not interpret JSX inside
+/// code. Fenced code blocks are deliberately **not** supported: hints that
+/// need one should be rewritten as prose.
 pub(crate) fn escape_mdx(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
-    let mut chars = input.chars().peekable();
-    let mut in_fence = false;
-    // Track whether we're at the start of a line for fence detection.
-    let mut at_line_start = true;
+    let mut chars = input.chars();
 
     while let Some(ch) = chars.next() {
-        // Detect a ``` fence opening/closing at the start of a line.
-        if at_line_start && ch == '`' {
-            let mut backticks = 1;
-            while matches!(chars.peek(), Some('`')) {
-                chars.next();
-                backticks += 1;
-            }
-            for _ in 0..backticks {
-                out.push('`');
-            }
-            if backticks >= 3 {
-                in_fence = !in_fence;
-            }
-            at_line_start = false;
-            continue;
-        }
-
-        if in_fence {
-            out.push(ch);
-            at_line_start = ch == '\n';
-            continue;
-        }
-
         match ch {
             '`' => {
                 // Inline code span: copy verbatim until the matching backtick
                 // or end of line.
                 out.push('`');
-                let mut closed_by_newline = false;
                 for next in chars.by_ref() {
                     out.push(next);
-                    if next == '`' {
-                        break;
-                    }
-                    if next == '\n' {
-                        closed_by_newline = true;
+                    if next == '`' || next == '\n' {
                         break;
                     }
                 }
-                at_line_start = closed_by_newline;
-                continue;
             }
             '{' => out.push_str("\\{"),
             '}' => out.push_str("\\}"),
             '<' => out.push_str("\\<"),
             '>' => out.push_str("\\>"),
-            '\n' => {
-                out.push('\n');
-                at_line_start = true;
-                continue;
-            }
             other => out.push(other),
         }
-        at_line_start = false;
     }
     out
 }
@@ -338,15 +301,6 @@ tables:
         assert_eq!(
             escape_mdx(input),
             "Use `{{input.X}}` to reference input [X](https://x.example)."
-        );
-    }
-
-    #[test]
-    fn escape_mdx_preserves_fenced_code_blocks() {
-        let input = "Intro.\n\n```yaml\nkey: <placeholder>\nother: {var}\n```\n\nAfter <host>.";
-        assert_eq!(
-            escape_mdx(input),
-            "Intro.\n\n```yaml\nkey: <placeholder>\nother: {var}\n```\n\nAfter \\<host\\>.",
         );
     }
 
