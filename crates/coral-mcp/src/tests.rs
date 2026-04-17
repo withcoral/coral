@@ -2,8 +2,15 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use coral_api::v1::ImportSourceRequest;
-use coral_client::{AppClient, SourceClient, default_workspace, local::ServerBuilder};
-use rmcp::{ServiceExt, model::CallToolRequestParams};
+use coral_client::{
+    AppClient, SourceClient, default_workspace,
+    local::{RunningServer, ServerBuilder},
+};
+use rmcp::{
+    RoleClient, ServiceExt,
+    model::{CallToolRequestParams, ReadResourceRequestParams},
+    service::RunningService,
+};
 use serde_json::{Map, Value, json};
 use tempfile::TempDir;
 use tonic::Request;
@@ -65,15 +72,31 @@ async fn add_demo_source(source_client: &mut SourceClient, manifest_yaml: String
         .expect("add source");
 }
 
-#[tokio::test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "This end-to-end MCP test intentionally verifies discovery refresh, guide rendering, success, and failure recovery in one session."
-)]
-async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
-    let temp = TempDir::new().expect("temp dir");
-    let manifest_path = write_fixture_manifest(temp.path());
-    let manifest_yaml = fs::read_to_string(&manifest_path).expect("read manifest");
+struct TestSession {
+    source_client: SourceClient,
+    client: RunningService<RoleClient, ()>,
+    app_server: RunningServer,
+    mcp_server_task: tokio::task::JoinHandle<Result<(), Box<dyn std::error::Error + Send + Sync>>>,
+}
+
+impl TestSession {
+    async fn shutdown(self) {
+        let Self {
+            client,
+            app_server,
+            mcp_server_task,
+            ..
+        } = self;
+        client.cancel().await.expect("cancel client");
+        mcp_server_task
+            .await
+            .expect("join mcp task")
+            .expect("mcp server result");
+        app_server.shutdown().await.expect("shutdown app server");
+    }
+}
+
+async fn start_session(temp: &TempDir) -> TestSession {
     let server = ServerBuilder::new()
         .with_config_dir(temp.path().join("coral-config"))
         .start()
@@ -82,15 +105,43 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
     let app = AppClient::connect(server.endpoint_uri())
         .await
         .expect("connect client");
-    let mut source_client = app.source_client();
+    let source_client = app.source_client();
 
     let (server_transport, client_transport) = tokio::io::duplex(4096);
-    let server_handle = tokio::spawn(async move {
+    let mcp_server_task = tokio::spawn(async move {
         let server = CoralMcpServer::new(&app).serve(server_transport).await?;
         server.waiting().await?;
         Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
     });
     let client = ().serve(client_transport).await.expect("start rmcp client");
+    TestSession {
+        source_client,
+        client,
+        app_server: server,
+        mcp_server_task,
+    }
+}
+
+fn text_content(result: &rmcp::model::ReadResourceResult) -> &str {
+    match &result.contents[0] {
+        rmcp::model::ResourceContents::TextResourceContents { text, .. } => text,
+        other @ rmcp::model::ResourceContents::BlobResourceContents { .. } => {
+            panic!("unexpected resource contents: {other:?}")
+        }
+    }
+}
+
+#[tokio::test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "This focused session test still verifies multiple discovery and resource refresh assertions in one end-to-end flow."
+)]
+async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
+    let temp = TempDir::new().expect("temp dir");
+    let manifest_path = write_fixture_manifest(temp.path());
+    let manifest_yaml = fs::read_to_string(&manifest_path).expect("read manifest");
+    let mut session = start_session(&temp).await;
+    let client = &session.client;
 
     let initial_tools = client.list_all_tools().await.expect("initial tools");
     assert_eq!(
@@ -128,21 +179,16 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
     );
 
     let initial_guide = client
-        .read_resource(rmcp::model::ReadResourceRequestParams::new("coral://guide"))
+        .read_resource(ReadResourceRequestParams::new("coral://guide"))
         .await
         .expect("initial guide");
-    let initial_guide_text = match &initial_guide.contents[0] {
-        rmcp::model::ResourceContents::TextResourceContents { text, .. } => text,
-        other @ rmcp::model::ResourceContents::BlobResourceContents { .. } => {
-            panic!("unexpected guide contents: {other:?}")
-        }
-    };
+    let initial_guide_text = text_content(&initial_guide);
     assert!(initial_guide_text.contains("## Available Schemas"));
     assert!(initial_guide_text.contains("- coral: System metadata schema."));
     assert!(initial_guide_text.contains("No source schemas are currently configured."));
     assert!(initial_guide_text.contains("schema_name = '<schema>'"));
 
-    add_demo_source(&mut source_client, manifest_yaml).await;
+    add_demo_source(&mut session.source_client, manifest_yaml).await;
 
     let updated_tools = client.list_all_tools().await.expect("updated tools");
     assert!(
@@ -173,31 +219,19 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
     );
 
     let tables_resource = client
-        .read_resource(rmcp::model::ReadResourceRequestParams::new(
-            "coral://tables",
-        ))
+        .read_resource(ReadResourceRequestParams::new("coral://tables"))
         .await
         .expect("read tables resource");
-    let tables_text = match &tables_resource.contents[0] {
-        rmcp::model::ResourceContents::TextResourceContents { text, .. } => text,
-        other @ rmcp::model::ResourceContents::BlobResourceContents { .. } => {
-            panic!("unexpected resource contents: {other:?}")
-        }
-    };
+    let tables_text = text_content(&tables_resource);
     let tables_json =
         serde_json::from_str::<serde_json::Value>(tables_text).expect("parse tables resource");
     assert_eq!(tables_json["tables"][0]["name"], "local_messages.messages");
 
     let updated_guide = client
-        .read_resource(rmcp::model::ReadResourceRequestParams::new("coral://guide"))
+        .read_resource(ReadResourceRequestParams::new("coral://guide"))
         .await
         .expect("updated guide");
-    let updated_guide_text = match &updated_guide.contents[0] {
-        rmcp::model::ResourceContents::TextResourceContents { text, .. } => text,
-        other @ rmcp::model::ResourceContents::BlobResourceContents { .. } => {
-            panic!("unexpected guide contents: {other:?}")
-        }
-    };
+    let updated_guide_text = text_content(&updated_guide);
     assert!(updated_guide_text.contains("## Available Schemas"));
     assert!(updated_guide_text.contains("- coral: System metadata schema."));
     assert!(updated_guide_text.contains("- local_messages"));
@@ -215,6 +249,19 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
         "local_messages.messages"
     );
     assert_eq!(tables.is_error, Some(false));
+
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn mcp_tool_error_does_not_end_session() {
+    let temp = TempDir::new().expect("temp dir");
+    let manifest_path = write_fixture_manifest(temp.path());
+    let manifest_yaml = fs::read_to_string(&manifest_path).expect("read manifest");
+    let mut session = start_session(&temp).await;
+    let client = &session.client;
+
+    add_demo_source(&mut session.source_client, manifest_yaml).await;
 
     let sql = client
         .call_tool(
@@ -263,9 +310,5 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
     );
     assert_eq!(tables_after_error.is_error, Some(false));
 
-    client.cancel().await.expect("cancel client");
-    server_handle
-        .await
-        .expect("join server")
-        .expect("server result");
+    session.shutdown().await;
 }

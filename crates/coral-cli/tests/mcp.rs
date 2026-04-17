@@ -1,0 +1,166 @@
+#![allow(
+    missing_docs,
+    unused_crate_dependencies,
+    reason = "Integration tests only use a subset of the package dependency graph."
+)]
+#![cfg(feature = "cli-test-server")]
+
+mod harness;
+
+use harness::MockServer;
+use rmcp::{
+    RoleClient, ServiceExt,
+    model::{CallToolRequestParams, ReadResourceRequestParams},
+    service::RunningService,
+    transport::{ConfigureCommandExt, TokioChildProcess},
+};
+use serde_json::{Map, Value, json};
+
+fn json_object(value: &Value) -> Map<String, Value> {
+    value.as_object().cloned().expect("json object")
+}
+
+async fn start_mcp_client(
+    server: &MockServer,
+) -> Result<RunningService<RoleClient, ()>, Box<dyn std::error::Error>> {
+    let transport = TokioChildProcess::new(
+        tokio::process::Command::new(env!("CARGO_BIN_EXE_coral")).configure(|cmd| {
+            cmd.arg("mcp-stdio")
+                .env("CORAL_ENDPOINT", server.endpoint_uri());
+        }),
+    )?;
+    let client = ().serve(transport).await?;
+    Ok(client)
+}
+
+fn text_content(result: &rmcp::model::ReadResourceResult) -> &str {
+    match &result.contents[0] {
+        rmcp::model::ResourceContents::TextResourceContents { text, .. } => text,
+        other @ rmcp::model::ResourceContents::BlobResourceContents { .. } => {
+            panic!("unexpected resource contents: {other:?}")
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_stdio_lists_tools_and_resources() -> Result<(), Box<dyn std::error::Error>> {
+    let server = MockServer::start().await;
+    let client = start_mcp_client(&server).await?;
+
+    let tools = client.list_all_tools().await?;
+    assert_eq!(
+        tools
+            .iter()
+            .map(|tool| tool.name.as_ref())
+            .collect::<Vec<_>>(),
+        vec!["sql", "list_tables"]
+    );
+    assert!(
+        tools[0]
+            .description
+            .as_deref()
+            .expect("sql description")
+            .contains("1 visible SQL schema(s) are currently available")
+    );
+    assert!(
+        tools[1]
+            .description
+            .as_deref()
+            .expect("list_tables description")
+            .contains("1 table(s) are currently visible")
+    );
+
+    let resources = client.list_all_resources().await?;
+    assert_eq!(
+        resources
+            .iter()
+            .map(|resource| resource.uri.as_str())
+            .collect::<Vec<_>>(),
+        vec!["coral://guide", "coral://tables"]
+    );
+
+    let guide = client
+        .read_resource(ReadResourceRequestParams::new("coral://guide"))
+        .await?;
+    let guide_text = text_content(&guide);
+    assert!(guide_text.contains("## Available Schemas"));
+    assert!(guide_text.contains("- local_messages"));
+    assert!(guide_text.contains(
+        "FROM coral.columns WHERE schema_name = 'local_messages' AND table_name = 'messages'"
+    ));
+
+    let tables = client
+        .read_resource(ReadResourceRequestParams::new("coral://tables"))
+        .await?;
+    let tables_json: Value = serde_json::from_str(text_content(&tables))?;
+    assert_eq!(tables_json["tables"][0]["name"], "local_messages.messages");
+
+    client.cancel().await?;
+    server.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_stdio_sql_and_list_tables_return_structured_content()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = MockServer::start().await;
+    let client = start_mcp_client(&server).await?;
+
+    let tables = client
+        .call_tool(CallToolRequestParams::new("list_tables"))
+        .await?;
+    assert_eq!(tables.is_error, Some(false));
+    assert_eq!(
+        tables.structured_content.expect("structured content")["tables"][0]["name"],
+        "local_messages.messages"
+    );
+
+    let sql = client
+        .call_tool(
+            CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
+                "sql": "SELECT text FROM local_messages.messages ORDER BY text"
+            }))),
+        )
+        .await?;
+    assert_eq!(sql.is_error, Some(false));
+    assert_eq!(
+        sql.structured_content.expect("structured content")["rows"][0]["text"],
+        "hello"
+    );
+
+    client.cancel().await?;
+    server.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_stdio_tool_errors_do_not_end_the_session() -> Result<(), Box<dyn std::error::Error>> {
+    let server = MockServer::start().await;
+    let client = start_mcp_client(&server).await?;
+
+    let invalid_sql = client
+        .call_tool(
+            CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
+                "sql": "DELETE FROM local_messages.messages"
+            }))),
+        )
+        .await?;
+    assert_eq!(invalid_sql.is_error, Some(true));
+    assert_eq!(
+        invalid_sql.structured_content.expect("structured content")["error"]["summary"],
+        "Query request is invalid"
+    );
+
+    let tables = client
+        .call_tool(CallToolRequestParams::new("list_tables"))
+        .await?;
+    assert_eq!(tables.is_error, Some(false));
+    assert_eq!(
+        tables.structured_content.expect("structured content")["tables"][0]["name"],
+        "local_messages.messages"
+    );
+
+    client.cancel().await?;
+    server.shutdown().await;
+    Ok(())
+}

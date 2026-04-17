@@ -31,5 +31,7 @@ coral-mcp.workspace = true
 
 [dev-dependencies]
 assert_cmd.workspace = true
+rmcp = { workspace = true, features = ["transport-child-process"] }
+serde_json.workspace = true
 tempfile.workspace = true
 tokio-stream.workspace = true
