@@ -38,7 +38,9 @@ pub(crate) struct RegisteredInput {
     pub(crate) key: String,
     pub(crate) kind: ManifestInputKind,
     pub(crate) required: bool,
-    pub(crate) default_value: Option<String>,
+    /// Mirrors [`ManifestInputSpec::default_value`]: empty string means
+    /// "no default declared". The catalog layer maps empty to SQL `NULL`.
+    pub(crate) default_value: String,
     pub(crate) hint: Option<String>,
     /// Resolved value for variables. Unconditionally `None` for secrets.
     pub(crate) resolved_value: Option<String>,
@@ -132,23 +134,19 @@ pub(crate) fn build_registered_inputs(
     declared
         .iter()
         .map(|input| {
-            let default_value = if input.default_value.is_empty() {
-                None
-            } else {
-                Some(input.default_value.clone())
-            };
             let (resolved_value, is_set) = match input.kind {
                 ManifestInputKind::Variable => {
-                    let resolved = variables
-                        .get(&input.key)
-                        .cloned()
-                        .or_else(|| default_value.clone());
+                    let explicit = variables.get(&input.key).cloned();
+                    let has_default = !input.default_value.is_empty();
+                    let resolved = explicit
+                        .clone()
+                        .or_else(|| has_default.then(|| input.default_value.clone()));
                     // Variable is "set" if the user explicitly configured the
                     // key (even with an empty string — HTTP input resolution
                     // and required-variable validation both treat the key's
                     // presence as authoritative) or the manifest provides a
                     // non-empty default.
-                    let is_set = variables.contains_key(&input.key) || default_value.is_some();
+                    let is_set = explicit.is_some() || has_default;
                     (resolved, is_set)
                 }
                 ManifestInputKind::Secret => (None, secret_keys.contains(&input.key)),
@@ -161,7 +159,7 @@ pub(crate) fn build_registered_inputs(
                 key: input.key.clone(),
                 kind: input.kind,
                 required: input.required,
-                default_value,
+                default_value: input.default_value.clone(),
                 hint: input.hint.clone(),
                 resolved_value,
                 is_set,

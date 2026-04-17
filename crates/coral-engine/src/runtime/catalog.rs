@@ -124,7 +124,8 @@ struct CatalogInput {
     key: String,
     kind: &'static str,
     value: Option<String>,
-    default_value: Option<String>,
+    /// Empty string (= "no default declared" in the spec) renders as SQL NULL.
+    default_value: String,
     hint: Option<String>,
     required: bool,
     is_set: bool,
@@ -190,7 +191,13 @@ fn build_inputs_table(active_sources: &[RegisteredSource]) -> Result<MemTable> {
             ),
             Arc::new(
                 rows.iter()
-                    .map(|row| row.default_value.as_deref())
+                    .map(|row| {
+                        if row.default_value.is_empty() {
+                            None
+                        } else {
+                            Some(row.default_value.as_str())
+                        }
+                    })
                     .collect::<StringArray>(),
             ),
             Arc::new(
