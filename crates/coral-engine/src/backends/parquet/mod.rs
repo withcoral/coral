@@ -239,6 +239,7 @@ impl CompiledBackendSource for ParquetCompiledSource {
             source: RegisteredSource {
                 schema_name: self.manifest.common.name.clone(),
                 tables: table_infos,
+                inputs: Vec::new(),
             },
         })
     }

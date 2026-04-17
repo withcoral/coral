@@ -11,7 +11,8 @@ use datafusion::prelude::SessionContext;
 
 use crate::backends::{
     BackendCompileRequest, BackendRegistration, CompiledBackendSource, RegisteredSource,
-    RegisteredTable, build_registered_table, registered_columns_from_specs, required_filter_names,
+    RegisteredTable, build_registered_inputs, build_registered_table,
+    registered_columns_from_specs, required_filter_names,
 };
 use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec};
 pub(crate) mod client;
@@ -83,11 +84,19 @@ impl CompiledBackendSource for HttpCompiledSource {
             table_infos.push(registered_table(table));
         }
 
+        let secret_keys = self.source_secrets.keys().cloned().collect();
+        let inputs = build_registered_inputs(
+            &self.manifest.declared_inputs,
+            &self.source_variables,
+            &secret_keys,
+        );
+
         Ok(BackendRegistration {
             tables,
             source: RegisteredSource {
                 schema_name: self.manifest.common.name.clone(),
                 tables: table_infos,
+                inputs,
             },
         })
     }
