@@ -19,8 +19,7 @@ use crate::{
     AuthSpec, ColumnSpec, FilterSpec, ManifestError, ManifestInputKind, ManifestInputSpec,
     PaginationSpec, ParsedTemplate, RequestRouteSpec, RequestSpec, ResponseSpec, Result,
     SourceBackend, SourceManifestCommon, TableCommon, inputs::collect_source_inputs_value,
-    validate_http_table, validate_test_queries,
-    validate::validate_template,
+    validate::validate_template, validate_http_table, validate_test_queries,
 };
 
 /// Provider-specific response hints for classifying and delaying rate-limit retries.
