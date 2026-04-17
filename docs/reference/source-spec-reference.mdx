@@ -31,7 +31,7 @@ test_queries:
 | `backend`     | How data is fetched: `http`, `jsonl`, or `parquet` |
 | `test_queries` | Optional read-only SQL checks Coral runs during `coral source test` |
 
-## Validation queries
+## Test queries
 
 Use the optional top-level `test_queries` field when you want Coral to run one
 or more read-only SQL checks after the source validates and its tables become
@@ -40,12 +40,10 @@ queryable.
 ```yaml
 test_queries:
   - SELECT * FROM my_source.messages LIMIT 1
-  - SELECT * FROM my_source.messages LIMIT 1
 ```
 
 Notes:
 
-- Coral allows duplicate entries.
 - Each query result is reported individually during `coral source test`.
 - `coral source add` and `coral onboard` surface post-install validation issues as warnings; `coral source test` is the strict pass/fail command.
 - Prefer cheap read-only checks that validate connectivity and mapping logic. For example, `SELECT * FROM schema.table LIMIT 1` is usually a better fit than `SELECT COUNT(*)`.

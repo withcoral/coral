@@ -58,8 +58,6 @@ Add a custom source spec from a YAML file.
 coral source add --file ./local-messages.yaml
 ```
 
-Like `source add`, this automatically validates, prints discovered tables, and warns about post-install validation issues instead of rolling the source back.
-
 ### `coral source lint <FILE>`
 
 Validate a source spec YAML file without installing it. Checks YAML syntax, JSON schema conformance, and semantic rules such as duplicate columns or references to unknown filters.
@@ -77,8 +75,6 @@ coral source test github
 coral source test local_messages
 ```
 
-Unlike `source add`, this command is strict: it returns a non-zero exit code when any declared query test fails so you can use it in verification and CI workflows.
-
 ### `coral source remove <NAME>`
 
 Remove an installed source.
@@ -94,8 +90,6 @@ Run the guided source setup flow.
 ```shellscript
 coral onboard
 ```
-
-The onboarding wizard uses the same warn-only post-install validation behavior as `coral source add`: Coral validates the source after install, runs any declared `test_queries`, and keeps the source installed if that validation reports warnings. Use the wizard's explicit **Validate** action or `coral source test <NAME>` when you want strict pass/fail validation.
 
 ## `coral mcp-stdio`
 
