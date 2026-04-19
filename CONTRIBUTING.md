@@ -78,14 +78,14 @@ Source manifests under `sources/*/manifest.yaml` are checked with
 [`ryl`](https://github.com/owenlamont/ryl), a Rust-native yamllint port.
 Config lives in `.yamllint.yaml` at the repo root.
 
+Install `ryl` once with `cargo install ryl`, then:
+
 ```bash
-make yaml-lint   # check — run this before pushing changes to sources/
-make yaml-fix    # auto-apply safe fixes in place
+make lint-sources   # check — run this before pushing changes to sources/
+make fix-sources    # auto-apply safe fixes in place
 ```
 
-`ryl` is installed automatically on first invocation via
-`cargo install ryl --locked --version <pinned>` (version pinned in the
-`Makefile`). The same pinned version runs in CI.
+CI installs `ryl` the same way and runs `make lint-sources`.
 
 ## Repo layout
 
