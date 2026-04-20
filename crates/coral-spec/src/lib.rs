@@ -96,7 +96,7 @@ pub use common::{
     TableCommon, TimestampInput, ValidatedPagination, ValidatedPaginationMode, ValueSourceSpec,
 };
 pub use error::{ManifestError, Result};
-pub use inputs::{ManifestInputKind, ManifestInputSpec};
+pub use inputs::{ManifestInputKind, ManifestInputSpec, resolve_inputs};
 pub use loader::load_manifest_path;
 pub use parser::{
     ValidatedSourceManifest, parse_source_manifest_value, parse_source_manifest_yaml,

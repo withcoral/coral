@@ -15,7 +15,7 @@ use crate::backends::shared::json_path::get_path_value;
 use crate::backends::shared::template::{render_template, resolve_value_source, value_to_string};
 use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec, RateLimitSpec};
 use coral_spec::{
-    AuthSpec, HeaderSpec, HttpMethod, ManifestInputKind, PageSizeSpec, ParsedTemplate, RowStrategy,
+    AuthSpec, HeaderSpec, HttpMethod, PageSizeSpec, ParsedTemplate, RowStrategy,
     ValidatedPagination, ValidatedPaginationMode,
 };
 
@@ -86,7 +86,8 @@ impl HttpSourceClient {
         source_secrets: &BTreeMap<String, String>,
         source_variables: &BTreeMap<String, String>,
     ) -> Result<Self> {
-        let resolved_inputs = build_resolved_inputs(manifest, source_secrets, source_variables);
+        let resolved_inputs =
+            coral_spec::resolve_inputs(&manifest.declared_inputs, source_secrets, source_variables);
 
         let request_timeout = Duration::from_secs(DEFAULT_HTTP_REQUEST_TIMEOUT_SECS);
         let http = reqwest::Client::builder()
@@ -641,7 +642,6 @@ fn page_is_exhausted(rows_on_page: usize, page_size: Option<usize>) -> bool {
     rows_on_page == 0 || page_size.is_some_and(|requested| rows_on_page < requested)
 }
 
-
 fn pagination_state_values(state: &PageState) -> HashMap<String, String> {
     let mut values = HashMap::new();
     values.insert("page".to_string(), state.page.to_string());
@@ -650,27 +650,6 @@ fn pagination_state_values(state: &PageState) -> HashMap<String, String> {
         values.insert("cursor".to_string(), cursor.clone());
     }
     values
-}
-
-fn build_resolved_inputs(
-    manifest: &HttpSourceManifest,
-    source_secrets: &BTreeMap<String, String>,
-    source_variables: &BTreeMap<String, String>,
-) -> BTreeMap<String, String> {
-    let mut resolved = BTreeMap::new();
-    for input in &manifest.declared_inputs {
-        let value = match input.kind {
-            ManifestInputKind::Secret => source_secrets.get(&input.key).cloned(),
-            ManifestInputKind::Variable => source_variables
-                .get(&input.key)
-                .cloned()
-                .or_else(|| (!input.default_value.is_empty()).then(|| input.default_value.clone())),
-        };
-        if let Some(value) = value {
-            resolved.insert(input.key.clone(), value);
-        }
-    }
-    resolved
 }
 
 fn build_logged_url(url: &str, query_pairs: &[(String, String)]) -> String {
