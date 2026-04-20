@@ -7,7 +7,10 @@
 use std::time::SystemTime;
 
 use aws_credential_types::Credentials;
-use aws_sigv4::http_request::{SignableBody, SignableRequest, SigningSettings, sign as sigv4_sign};
+use aws_sigv4::http_request::{
+    PayloadChecksumKind, PercentEncodingMode, SignableBody, SignableRequest, SigningSettings,
+    UriPathNormalizationMode, sign as sigv4_sign,
+};
 use aws_sigv4::sign::v4;
 use datafusion::error::{DataFusionError, Result};
 use reqwest::header::{HeaderName, HeaderValue};
@@ -16,6 +19,19 @@ use coral_spec::AwsSigV4Spec;
 
 use crate::backends::http::auth::{AuthContext, Authenticator, EMPTY_MAP};
 use crate::backends::shared::template::render_template;
+
+/// Per-service SigV4 settings. Most AWS APIs accept the library defaults,
+/// but S3 needs path normalization disabled, single percent-encoding, and the
+/// `X-Amz-Content-Sha256` header enabled to avoid `SignatureDoesNotMatch`.
+fn signing_settings_for(service: &str) -> SigningSettings {
+    let mut settings = SigningSettings::default();
+    if matches!(service, "s3" | "s3-outposts") {
+        settings.percent_encoding_mode = PercentEncodingMode::Single;
+        settings.uri_path_normalization_mode = UriPathNormalizationMode::Disabled;
+        settings.payload_checksum_kind = PayloadChecksumKind::XAmzSha256;
+    }
+    settings
+}
 
 impl Authenticator for AwsSigV4Spec {
     fn auth(&self, ctx: &AuthContext<'_>) -> Result<Vec<(HeaderName, HeaderValue)>> {
@@ -53,7 +69,7 @@ impl Authenticator for AwsSigV4Spec {
             .region(&region)
             .name(&self.service)
             .time(SystemTime::now())
-            .settings(SigningSettings::default())
+            .settings(signing_settings_for(&self.service))
             .build()
             .map_err(|error| {
                 DataFusionError::Execution(format!("failed to build SigV4 signing params: {error}"))
