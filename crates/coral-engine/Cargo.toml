@@ -12,6 +12,7 @@ workspace = true
 [dependencies]
 async-trait.workspace = true
 arrow.workspace = true
+base64.workspace = true
 bytes.workspace = true
 datafusion.workspace = true
 futures.workspace = true
