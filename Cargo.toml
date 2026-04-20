@@ -27,6 +27,8 @@ assert_cmd = "2"
 anyhow = "1"
 arrow = "57.3.0"
 async-trait = "0.1"
+aws-credential-types = "1.2"
+aws-sigv4 = "1.4"
 base64 = "0.22"
 bytes = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
