@@ -9,7 +9,7 @@ use reqwest::header::HeaderMap;
 use serde_json::{Map, Value, json};
 
 use crate::backends::http::ProviderQueryError;
-use crate::backends::http::auth::resolve_auth_headers;
+use crate::backends::http::auth::{AuthContext, Authenticator, EMPTY_MAP, resolve_auth_headers};
 use crate::backends::http::rate_limit::{RateLimitDecision, check_rate_limit};
 use crate::backends::shared::json_path::get_path_value;
 use crate::backends::shared::template::{render_template, resolve_value_source, value_to_string};
@@ -88,6 +88,7 @@ impl HttpSourceClient {
     ) -> Result<Self> {
         let resolved_inputs =
             coral_spec::resolve_inputs(&manifest.declared_inputs, source_secrets, source_variables);
+        validate_source_scoped_http_config(manifest, &resolved_inputs)?;
 
         let request_timeout = Duration::from_secs(DEFAULT_HTTP_REQUEST_TIMEOUT_SECS);
         let http = reqwest::Client::builder()
@@ -324,6 +325,64 @@ impl HttpSourceClient {
 
         Ok(all_rows)
     }
+}
+
+fn validate_source_scoped_http_config(
+    manifest: &HttpSourceManifest,
+    resolved_inputs: &BTreeMap<String, String>,
+) -> Result<()> {
+    let base_url = render_template(&manifest.base_url, &EMPTY_MAP, &EMPTY_MAP, resolved_inputs)
+        .map_err(|error| {
+            DataFusionError::Execution(format!(
+                "{} source base_url could not be resolved: {error}",
+                manifest.common.name
+            ))
+        })?;
+    let url = reqwest::Url::parse(&normalize_base_url(&base_url)).map_err(|error| {
+        DataFusionError::Execution(format!(
+            "{} source base_url '{base_url}' is not a valid URL: {error}",
+            manifest.common.name
+        ))
+    })?;
+    let mut request = reqwest::Request::new(reqwest::Method::GET, url);
+
+    for header in &manifest.request_headers {
+        let resolved =
+            resolve_value_source(&header.value, &EMPTY_MAP, &EMPTY_MAP, resolved_inputs)?;
+        let Some(value) = resolved else {
+            return Err(DataFusionError::Execution(format!(
+                "{} source request header '{}' could not be resolved",
+                manifest.common.name, header.name
+            )));
+        };
+        let name =
+            reqwest::header::HeaderName::try_from(header.name.as_str()).map_err(|error| {
+                DataFusionError::Execution(format!(
+                    "{} source request header name '{}' is invalid: {error}",
+                    manifest.common.name, header.name
+                ))
+            })?;
+        let header_value = reqwest::header::HeaderValue::try_from(value_to_string(&value).as_str())
+            .map_err(|error| {
+                DataFusionError::Execution(format!(
+                    "{} source request header '{}' value is invalid: {error}",
+                    manifest.common.name, header.name
+                ))
+            })?;
+        request.headers_mut().append(name, header_value);
+    }
+
+    let ctx = AuthContext {
+        request: &request,
+        resolved_inputs,
+    };
+    let _ = manifest.auth.auth(&ctx).map_err(|error| {
+        DataFusionError::Execution(format!(
+            "{} source auth could not be resolved: {error}",
+            manifest.common.name
+        ))
+    })?;
+    Ok(())
 }
 
 #[allow(
@@ -875,9 +934,9 @@ mod tests {
     use tokio::task::JoinHandle;
 
     use super::{
-        AuthSpec, PageState, RequestSpec as HttpRequestSpec, apply_pagination_query_pairs,
-        execute_request, extract_next_link_url, extract_rows, join_url, normalize_base_url,
-        page_is_exhausted, resolve_value_source,
+        AuthSpec, HttpSourceClient, PageState, RequestSpec as HttpRequestSpec,
+        apply_pagination_query_pairs, execute_request, extract_next_link_url, extract_rows,
+        join_url, normalize_base_url, page_is_exhausted, resolve_value_source,
     };
     use coral_spec::PaginationMode;
     use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec, RateLimitSpec};
@@ -1130,6 +1189,48 @@ mod tests {
             error
                 .to_string()
                 .contains("filter 'start_time' value 'not-a-number' is not a valid i64")
+        );
+    }
+
+    #[test]
+    fn backend_client_requires_source_scoped_inputs_during_registration() {
+        let manifest = parse_http_manifest(json!({
+            "dsl_version": 3,
+            "name": "alpha",
+            "version": "0.1.0",
+            "backend": "http",
+            "base_url": "https://api.example.com",
+            "auth": {
+                "type": "ApiKeyAuth",
+                "header": "Authorization",
+                "api_token": "Bearer {{input.API_KEY}}"
+            },
+            "request_headers": [{
+                "name": "X-Api-Key",
+                "from": "input",
+                "key": "API_KEY"
+            }],
+            "inputs": {
+                "API_KEY": { "kind": "secret" }
+            },
+            "tables": [{
+                "name": "items",
+                "description": "items",
+                "request": { "path": "/items" },
+                "columns": [{
+                    "name": "id",
+                    "type": "Utf8"
+                }]
+            }]
+        }));
+
+        let error = HttpSourceClient::from_manifest(&manifest, &BTreeMap::new(), &BTreeMap::new())
+            .expect_err("missing source-scoped input must fail during registration");
+
+        assert!(
+            error
+                .to_string()
+                .contains("missing source input 'API_KEY' for template token")
         );
     }
 
