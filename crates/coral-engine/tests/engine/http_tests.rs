@@ -346,11 +346,9 @@ async fn auth_headers_sent_correctly() {
         "API_TOKEN": { "kind": "secret" }
     });
     manifest["auth"] = json!({
-        "headers": [{
-            "name": "Authorization",
-            "from": "template",
-            "template": "Bearer {{input.API_TOKEN}}"
-        }]
+        "type": "ApiKeyAuth",
+        "header": "Authorization",
+        "api_token": "Bearer {{input.API_TOKEN}}"
     });
     let source = build_source_with_secrets(manifest, [("API_TOKEN", "secret-token")]);
 
