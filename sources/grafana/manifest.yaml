@@ -18,10 +18,9 @@ inputs:
     hint: Create a service-account token with the required read scopes
 base_url: "{{input.GRAFANA_URL}}"
 auth:
-  headers:
-    - name: Authorization
-      from: template
-      template: Bearer {{input.GRAFANA_TOKEN}}
+  type: ApiKeyAuth
+  header: Authorization
+  api_token: "Bearer {{input.GRAFANA_TOKEN}}"
 
 tables:
   - name: dashboards

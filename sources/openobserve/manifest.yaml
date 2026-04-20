@@ -11,15 +11,17 @@ inputs:
     kind: variable
     default: default
     hint: Organization slug (defaults to `default` for single-tenant setups)
-  OPENOBSERVE_BASIC_AUTH:
+  OPENOBSERVE_USERNAME:
     kind: secret
-    hint: Base64-encoded `email:password` credentials for Basic auth
+    hint: OpenObserve account email
+  OPENOBSERVE_PASSWORD:
+    kind: secret
+    hint: OpenObserve account password
 base_url: "{{input.OPENOBSERVE_URL}}"
 auth:
-  headers:
-    - name: Authorization
-      from: template
-      template: "Basic {{input.OPENOBSERVE_BASIC_AUTH}}"
+  type: BasicHttpAuth
+  username: "{{input.OPENOBSERVE_USERNAME}}"
+  password: "{{input.OPENOBSERVE_PASSWORD}}"
 
 tables:
   - name: streams

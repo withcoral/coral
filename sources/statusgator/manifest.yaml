@@ -9,13 +9,13 @@ inputs:
     hint: Copy your API token from StatusGator → Account Settings
 base_url: "https://statusgator.com/api/v3"
 auth:
-  headers:
-    - name: Authorization
-      from: template
-      template: "Bearer {{input.STATUSGATOR_API_TOKEN}}"
-    - name: Accept
-      from: literal
-      value: application/json
+  type: ApiKeyAuth
+  header: Authorization
+  api_token: "Bearer {{input.STATUSGATOR_API_TOKEN}}"
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
 tables:
   - name: boards
     description: StatusGator monitoring boards

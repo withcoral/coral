@@ -13,13 +13,13 @@ inputs:
     hint: Create an API access token in LaunchDarkly → Account settings → Authorization
 base_url: "{{input.LAUNCHDARKLY_API_BASE}}"
 auth:
-  headers:
-    - name: Authorization
-      from: input
-      key: LAUNCHDARKLY_TOKEN
-    - name: Content-Type
-      from: literal
-      value: application/json
+  type: ApiKeyAuth
+  header: Authorization
+  api_token: "{{input.LAUNCHDARKLY_TOKEN}}"
+request_headers:
+  - name: Content-Type
+    from: literal
+    value: application/json
 tables:
   - name: projects
     description: LaunchDarkly projects visible to the authenticated token

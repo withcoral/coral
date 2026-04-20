@@ -17,19 +17,16 @@ inputs:
     kind: secret
     hint: Run `gh auth token` or create a PAT
 auth:
-  headers:
-    - name: Authorization
-      from: template
-      template: Bearer {{input.GITHUB_TOKEN}}
-    - name: Accept
-      from: literal
-      value: application/vnd.github+json
-    - name: X-GitHub-Api-Version
-      from: literal
-      value: "2022-11-28"
-    - name: User-Agent
-      from: literal
-      value: coral
+  type: ApiKeyAuth
+  header: Authorization
+  api_token: "Bearer {{input.GITHUB_TOKEN}}"
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/vnd.github+json
+  - name: X-GitHub-Api-Version
+    from: literal
+    value: "2022-11-28"
 tables:
   - name: accepted_assignments
     description: List accepted assignments for an assignment

@@ -9,16 +9,16 @@ inputs:
     hint: Create an access token in Intercom → Settings → Developers → Developer Hub
 base_url: https://api.intercom.io
 auth:
-  headers:
-    - name: Authorization
-      from: template
-      template: Bearer {{input.INTERCOM_ACCESS_TOKEN}}
-    - name: Intercom-Version
-      from: literal
-      value: "2.11"
-    - name: Accept
-      from: literal
-      value: application/json
+  type: ApiKeyAuth
+  header: Authorization
+  api_token: "Bearer {{input.INTERCOM_ACCESS_TOKEN}}"
+request_headers:
+  - name: Intercom-Version
+    from: literal
+    value: "2.11"
+  - name: Accept
+    from: literal
+    value: application/json
 tables:
   - name: contacts
     description: Contacts (users and leads) in the workspace
