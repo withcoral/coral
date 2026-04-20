@@ -23,6 +23,7 @@ pub(crate) struct CandidateSourceInput {
     pub(crate) kind: CandidateSourceInputKind,
     pub(crate) required: bool,
     pub(crate) default_value: String,
+    pub(crate) hint: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -84,12 +84,20 @@ name: demo_api
 version: 0.1.0
 dsl_version: 3
 backend: http
-base_url: "{{variable.API_BASE|https://api.example.com}}"
+inputs:
+  API_BASE:
+    kind: variable
+    default: https://api.example.com
+    hint: Base URL for the API
+  API_TOKEN:
+    kind: secret
+    hint: Bearer token for the API
+base_url: "{{input.API_BASE}}"
 auth:
   headers:
     - name: Authorization
       from: template
-      template: Bearer {{secret.API_TOKEN}}
+      template: Bearer {{input.API_TOKEN}}
 tables:
   - name: messages
     description: Messages from the API
@@ -114,7 +122,7 @@ tables:
         type: Utf8
 ```
 
-When you run `coral source add --file`, Coral prompts for the variable and secret values interactively.
+When you run `coral source add --file`, Coral prompts for the declared `inputs` interactively. `kind: variable` values go to source variables; `kind: secret` values go to the secret store.
 
 For the full set of HTTP response, pagination, auth, and column fields, see [HTTP-backed tables](/reference/source-spec-reference#http-backed-tables).
 
@@ -123,4 +131,4 @@ For the full set of HTTP response, pagination, auth, and column fields, see [HTT
 - **Lint before installing.** Run `coral source lint ./my-source.yaml` to catch schema and semantic errors without touching your workspace.
 - **Start small.** Begin with one table and a few columns. Validate with `coral source test`, check `coral.columns`, then expand.
 - **Use `coral.tables` and `coral.columns`.** They show you exactly what Coral sees after adding a source — including required filters and column metadata.
-- **Look at bundled sources for patterns.** The bundled source specs in the repo under `sources/` are working examples of HTTP pagination, response parsing, auth, and variables.
+- **Look at bundled sources for patterns.** The bundled source specs in the repo under `sources/` are working examples of HTTP pagination, response parsing, auth, and inputs.

@@ -67,8 +67,8 @@ impl CompiledBackendSource for HttpCompiledSource {
     async fn register(&self, _ctx: &SessionContext) -> Result<BackendRegistration> {
         let backend = HttpSourceClient::from_manifest(
             &self.manifest,
-            self.source_secrets.clone(),
-            self.source_variables.clone(),
+            &self.source_secrets,
+            &self.source_variables,
         )?;
         let mut tables: HashMap<String, Arc<dyn TableProvider>> = HashMap::new();
         let mut table_infos = Vec::with_capacity(self.manifest.tables.len());
@@ -107,18 +107,21 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn required_secret_names_include_template_secret_tokens_without_defaults() {
+    fn required_secret_names_come_from_declared_secret_inputs() {
         let manifest = parse_source_manifest_value(json!({
             "dsl_version": 3,
             "name": "github",
             "version": "1.0.0",
             "backend": "http",
             "base_url": "https://api.github.com",
+            "inputs": {
+                "GITHUB_TOKEN": { "kind": "secret" }
+            },
             "auth": {
                 "headers": [{
                     "name": "Authorization",
                     "from": "template",
-                    "template": "Bearer {{secret.GITHUB_TOKEN}}"
+                    "template": "Bearer {{input.GITHUB_TOKEN}}"
                 }]
             },
             "tables": [{
@@ -137,32 +140,20 @@ mod tests {
     }
 
     #[test]
-    fn required_secret_names_skip_template_and_explicit_defaults() {
+    fn required_secret_names_exclude_variable_inputs() {
         let manifest = parse_source_manifest_value(json!({
             "dsl_version": 3,
             "name": "alpha",
             "version": "0.1.0",
             "backend": "http",
             "base_url": "https://api.example.com",
-            "auth": {
-                "headers": [{
-                    "name": "Authorization",
-                    "from": "template",
-                    "template": "Bearer {{secret.API_TOKEN|default-token}}"
-                }]
+            "inputs": {
+                "API_BASE": { "kind": "variable", "default": "https://api.example.com" }
             },
             "tables": [{
                 "name": "items",
                 "description": "Items",
-                "request": {
-                    "path": "/items",
-                    "headers": [{
-                        "name": "X-Api-Key",
-                        "from": "secret",
-                        "key": "API_KEY",
-                        "default": "default-key"
-                    }]
-                },
+                "request": { "path": "/items" },
                 "columns": [{ "name": "id", "type": "Utf8" }]
             }]
         }))

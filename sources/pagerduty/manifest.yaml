@@ -3,12 +3,16 @@ name: pagerduty
 version: 2.0.0
 description: The PagerDuty REST API. Please see https://developer.pagerduty.com/docs/get-started/getting-started/ for more details.
 backend: http
+inputs:
+  PAGERDUTY_API_TOKEN:
+    kind: secret
+    hint: Create an API token in PagerDuty → Integrations → API Access Keys
 base_url: https://api.pagerduty.com
 auth:
   headers:
     - name: Authorization
       from: template
-      template: Token token={{secret.PAGERDUTY_API_TOKEN}}
+      template: Token token={{input.PAGERDUTY_API_TOKEN}}
 tables:
   - name: abilities
     description: List abilities

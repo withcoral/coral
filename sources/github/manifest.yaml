@@ -3,16 +3,24 @@ version: 1.1.5
 dsl_version: 3
 backend: http
 description: GitHub's v3 REST API.
-base_url: "{{variable.GITHUB_API_BASE|https://api.github.com}}"
+base_url: "{{input.GITHUB_API_BASE}}"
 rate_limit:
   extra_statuses: [403]
   remaining_header: x-ratelimit-remaining
   reset_header: x-ratelimit-reset
+inputs:
+  GITHUB_API_BASE:
+    kind: variable
+    default: https://api.github.com
+    hint: For GitHub Enterprise, use https://<host>/api/v3
+  GITHUB_TOKEN:
+    kind: secret
+    hint: Run `gh auth token` or create a PAT
 auth:
   headers:
     - name: Authorization
       from: template
-      template: Bearer {{secret.GITHUB_TOKEN}}
+      template: Bearer {{input.GITHUB_TOKEN}}
     - name: Accept
       from: literal
       value: application/vnd.github+json

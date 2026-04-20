@@ -3,12 +3,16 @@ name: incident_io
 version: 1.0.0
 description: incident.io incident management platform API connector for incidents, alerts, schedules, and more.
 backend: http
+inputs:
+  INCIDENT_IO_API_KEY:
+    kind: secret
+    hint: Create an API key in incident.io → Settings → API keys
 base_url: https://api.incident.io
 auth:
   headers:
     - name: Authorization
       from: template
-      template: Bearer {{secret.INCIDENT_IO_API_KEY}}
+      template: Bearer {{input.INCIDENT_IO_API_KEY}}
 tables:
   - name: actions
     description: List

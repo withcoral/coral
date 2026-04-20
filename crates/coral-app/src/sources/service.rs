@@ -242,6 +242,7 @@ fn candidate_source_input_to_proto(input: CandidateSourceInput) -> SourceInputSp
         kind: proto_candidate_input_kind(input.kind) as i32,
         required: input.required,
         default_value: input.default_value,
+        hint: input.hint,
     }
 }
 

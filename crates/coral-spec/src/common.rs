@@ -66,8 +66,6 @@ pub enum ManifestDataType {
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct AuthSpec {
     #[serde(default)]
-    pub required_secrets: Vec<String>,
-    #[serde(default)]
     pub headers: Vec<HeaderSpec>,
 }
 
@@ -205,15 +203,8 @@ pub enum ValueSourceSpec {
         #[serde(default)]
         default: Option<i64>,
     },
-    Secret {
+    Input {
         key: String,
-        #[serde(default)]
-        default: Option<String>,
-    },
-    Variable {
-        key: String,
-        #[serde(default)]
-        default: Option<String>,
     },
     State {
         key: String,

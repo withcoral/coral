@@ -3,12 +3,16 @@ version: 1.0.0
 dsl_version: 3
 backend: http
 description: Monitor service status boards, incidents, and uptime history
+inputs:
+  STATUSGATOR_API_TOKEN:
+    kind: secret
+    hint: Copy your API token from StatusGator → Account Settings
 base_url: "https://statusgator.com/api/v3"
 auth:
   headers:
     - name: Authorization
       from: template
-      template: "Bearer {{secret.STATUSGATOR_API_TOKEN}}"
+      template: "Bearer {{input.STATUSGATOR_API_TOKEN}}"
     - name: Accept
       from: literal
       value: application/json

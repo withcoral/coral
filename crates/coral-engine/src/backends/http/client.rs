@@ -13,8 +13,8 @@ use crate::backends::http::rate_limit::{RateLimitDecision, check_rate_limit};
 use crate::backends::shared::json_path::get_path_value;
 use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec, RateLimitSpec};
 use coral_spec::{
-    HeaderSpec, HttpMethod, PageSizeSpec, ParsedTemplate, RowStrategy, TemplateNamespace,
-    TemplatePart, ValidatedPagination, ValidatedPaginationMode, ValueSourceSpec,
+    HeaderSpec, HttpMethod, ManifestInputKind, PageSizeSpec, ParsedTemplate, RowStrategy,
+    TemplateNamespace, TemplatePart, ValidatedPagination, ValidatedPaginationMode, ValueSourceSpec,
 };
 
 const DEFAULT_MAX_PAGES: usize = 10_000;
@@ -29,8 +29,7 @@ pub(crate) struct HttpSourceClient {
     base_url: ParsedTemplate,
     auth_headers: Vec<HeaderSpec>,
     rate_limit: RateLimitSpec,
-    source_secrets: Arc<BTreeMap<String, String>>,
-    source_variables: Arc<BTreeMap<String, String>>,
+    resolved_inputs: Arc<BTreeMap<String, String>>,
 }
 
 impl std::fmt::Debug for HttpSourceClient {
@@ -65,8 +64,7 @@ struct RequestSpec<'a> {
     rate_limit: &'a RateLimitSpec,
     filters: &'a HashMap<String, String>,
     state: &'a HashMap<String, String>,
-    source_secrets: &'a BTreeMap<String, String>,
-    source_variables: &'a BTreeMap<String, String>,
+    resolved_inputs: &'a BTreeMap<String, String>,
     allow_404_empty: bool,
     link_header_require_results: bool,
 }
@@ -80,27 +78,18 @@ impl HttpSourceClient {
     /// authentication header template cannot be resolved.
     pub(crate) fn from_manifest(
         manifest: &HttpSourceManifest,
-        source_secrets: BTreeMap<String, String>,
-        source_variables: BTreeMap<String, String>,
+        source_secrets: &BTreeMap<String, String>,
+        source_variables: &BTreeMap<String, String>,
     ) -> Result<Self> {
         let auth = &manifest.auth;
-
-        for key in &auth.required_secrets {
-            if !source_secrets.contains_key(key) {
-                return Err(DataFusionError::Execution(format!(
-                    "{} source requires credential {}",
-                    manifest.common.name, key
-                )));
-            }
-        }
+        let resolved_inputs = build_resolved_inputs(manifest, source_secrets, source_variables);
 
         for header in &auth.headers {
             let resolved = resolve_value_source(
                 &header.value,
                 &HashMap::new(),
                 &HashMap::new(),
-                &source_secrets,
-                &source_variables,
+                &resolved_inputs,
             )?;
             if resolved.is_none() {
                 return Err(DataFusionError::Execution(format!(
@@ -128,8 +117,7 @@ impl HttpSourceClient {
             base_url: manifest.base_url.clone(),
             auth_headers: manifest.auth.headers.clone(),
             rate_limit: manifest.rate_limit.clone(),
-            source_secrets: Arc::new(source_secrets),
-            source_variables: Arc::new(source_variables),
+            resolved_inputs: Arc::new(resolved_inputs),
         })
     }
 
@@ -187,8 +175,7 @@ impl HttpSourceClient {
                 &self.base_url,
                 filters,
                 &pagination_state_values(&state),
-                self.source_secrets.as_ref(),
-                self.source_variables.as_ref(),
+                self.resolved_inputs.as_ref(),
             )?;
             let base_url = normalize_base_url(&base_url);
             let following_link_header = matches!(
@@ -207,8 +194,7 @@ impl HttpSourceClient {
                     &active_request.path,
                     filters,
                     &pagination_state_values(&state),
-                    self.source_secrets.as_ref(),
-                    self.source_variables.as_ref(),
+                    self.resolved_inputs.as_ref(),
                 )?;
                 join_url(&base_url, &rendered_path)?
             };
@@ -220,8 +206,7 @@ impl HttpSourceClient {
                     active_request,
                     filters,
                     &state,
-                    self.source_secrets.as_ref(),
-                    self.source_variables.as_ref(),
+                    self.resolved_inputs.as_ref(),
                 )?;
                 apply_pagination_query_pairs(
                     &mut query_pairs,
@@ -235,8 +220,7 @@ impl HttpSourceClient {
                     active_request,
                     filters,
                     &state,
-                    self.source_secrets.as_ref(),
-                    self.source_variables.as_ref(),
+                    self.resolved_inputs.as_ref(),
                 )?;
                 apply_pagination_body_fields(&mut body, table, &pagination, &state, page_size)?;
                 (query_pairs, body)
@@ -259,8 +243,7 @@ impl HttpSourceClient {
                     rate_limit: &self.rate_limit,
                     filters,
                     state: &pagination_values,
-                    source_secrets: self.source_secrets.as_ref(),
-                    source_variables: self.source_variables.as_ref(),
+                    resolved_inputs: self.resolved_inputs.as_ref(),
                     allow_404_empty: table.response.allow_404_empty,
                     link_header_require_results: pagination.link_header_require_results,
                 },
@@ -372,8 +355,7 @@ async fn execute_request(
         rate_limit,
         filters,
         state,
-        source_secrets,
-        source_variables,
+        resolved_inputs,
         allow_404_empty,
         link_header_require_results,
     } = request;
@@ -384,30 +366,20 @@ async fn execute_request(
         let mut request = build_http_request(http, method, url);
 
         for header in auth_headers {
-            let value = resolve_value_source(
-                &header.value,
-                filters,
-                state,
-                source_secrets,
-                source_variables,
-            )?
-            .ok_or_else(|| {
-                DataFusionError::Execution(format!(
-                    "missing value for auth header '{}'",
-                    header.name
-                ))
-            })?;
+            let value = resolve_value_source(&header.value, filters, state, resolved_inputs)?
+                .ok_or_else(|| {
+                    DataFusionError::Execution(format!(
+                        "missing value for auth header '{}'",
+                        header.name
+                    ))
+                })?;
             request = request.header(&header.name, value_to_string(&value));
         }
 
         for header in table_headers {
-            if let Some(value) = resolve_value_source(
-                &header.value,
-                filters,
-                state,
-                source_secrets,
-                source_variables,
-            )? {
+            if let Some(value) =
+                resolve_value_source(&header.value, filters, state, resolved_inputs)?
+            {
                 request = request.header(&header.name, value_to_string(&value));
             }
         }
@@ -542,20 +514,13 @@ fn build_query_pairs(
     request: &coral_spec::RequestSpec,
     filters: &HashMap<String, String>,
     state: &PageState,
-    source_secrets: &BTreeMap<String, String>,
-    source_variables: &BTreeMap<String, String>,
+    resolved_inputs: &BTreeMap<String, String>,
 ) -> Result<Vec<(String, String)>> {
     let state_values = pagination_state_values(state);
     let mut params = Vec::new();
 
     for param in &request.query {
-        let value = resolve_value_source(
-            &param.value,
-            filters,
-            &state_values,
-            source_secrets,
-            source_variables,
-        )?;
+        let value = resolve_value_source(&param.value, filters, &state_values, resolved_inputs)?;
         if let Some(value) = value {
             params.push((param.name.clone(), value_to_string(&value)));
         }
@@ -610,8 +575,7 @@ fn build_request_body(
     request: &coral_spec::RequestSpec,
     filters: &HashMap<String, String>,
     state: &PageState,
-    source_secrets: &BTreeMap<String, String>,
-    source_variables: &BTreeMap<String, String>,
+    resolved_inputs: &BTreeMap<String, String>,
 ) -> Result<Option<Value>> {
     if request.body.is_empty() {
         return Ok(None);
@@ -621,13 +585,9 @@ fn build_request_body(
     let mut root = Value::Object(Map::new());
 
     for field in &request.body {
-        if let Some(value) = resolve_value_source(
-            &field.value,
-            filters,
-            &state_values,
-            source_secrets,
-            source_variables,
-        )? {
+        if let Some(value) =
+            resolve_value_source(&field.value, filters, &state_values, resolved_inputs)?
+        {
             set_path_value(&mut root, &field.path, value)?;
         }
     }
@@ -693,13 +653,11 @@ fn resolve_value_source(
     value: &ValueSourceSpec,
     filters: &HashMap<String, String>,
     state: &HashMap<String, String>,
-    source_secrets: &BTreeMap<String, String>,
-    source_variables: &BTreeMap<String, String>,
+    resolved_inputs: &BTreeMap<String, String>,
 ) -> Result<Option<Value>> {
     match value {
         ValueSourceSpec::Template { template } => {
-            let rendered =
-                render_template(template, filters, state, source_secrets, source_variables)?;
+            let rendered = render_template(template, filters, state, resolved_inputs)?;
             Ok(Some(Value::String(rendered)))
         }
         ValueSourceSpec::Literal { value } => Ok(Some(value.clone())),
@@ -720,16 +678,7 @@ fn resolve_value_source(
             };
             Ok(value)
         }
-        ValueSourceSpec::Secret { key, default } => Ok(source_secrets
-            .get(key)
-            .cloned()
-            .map(Value::String)
-            .or_else(|| default.clone().map(Value::String))),
-        ValueSourceSpec::Variable { key, default } => Ok(source_variables
-            .get(key)
-            .cloned()
-            .map(Value::String)
-            .or_else(|| default.clone().map(Value::String))),
+        ValueSourceSpec::Input { key } => Ok(resolved_inputs.get(key).cloned().map(Value::String)),
         ValueSourceSpec::State { key } => Ok(state.get(key).map(|v| Value::String(v.clone()))),
         ValueSourceSpec::NowEpochMinusSeconds { seconds } => {
             #[allow(
@@ -760,8 +709,7 @@ fn render_template(
     template: &ParsedTemplate,
     filters: &HashMap<String, String>,
     state: &HashMap<String, String>,
-    source_secrets: &BTreeMap<String, String>,
-    source_variables: &BTreeMap<String, String>,
+    resolved_inputs: &BTreeMap<String, String>,
 ) -> Result<String> {
     let mut out = String::with_capacity(template.raw().len());
     for part in template.parts() {
@@ -771,8 +719,7 @@ fn render_template(
                 token,
                 filters,
                 state,
-                source_secrets,
-                source_variables,
+                resolved_inputs,
             )?),
         }
     }
@@ -783,19 +730,18 @@ fn resolve_template_token(
     token: &coral_spec::TemplateToken,
     filters: &HashMap<String, String>,
     state: &HashMap<String, String>,
-    source_secrets: &BTreeMap<String, String>,
-    source_variables: &BTreeMap<String, String>,
+    resolved_inputs: &BTreeMap<String, String>,
 ) -> Result<String> {
     let default = token.default_value().map(ToString::to_string);
 
-    if token.namespace() == &TemplateNamespace::Secret {
-        return source_secrets
+    if token.namespace() == &TemplateNamespace::Input {
+        return resolved_inputs
             .get(token.key())
             .cloned()
             .or(default)
             .ok_or_else(|| {
                 DataFusionError::Execution(format!(
-                    "missing source secret '{}' for template token",
+                    "missing source input '{}' for template token",
                     token.key()
                 ))
             });
@@ -811,16 +757,6 @@ fn resolve_template_token(
             });
     }
 
-    if token.namespace() == &TemplateNamespace::Variable {
-        return source_variables
-            .get(token.key())
-            .cloned()
-            .or(default)
-            .ok_or_else(|| {
-                DataFusionError::Execution(format!("missing source variable '{}'", token.key()))
-            });
-    }
-
     if token.namespace() == &TemplateNamespace::State {
         return state.get(token.key()).cloned().or(default).ok_or_else(|| {
             DataFusionError::Execution(format!("missing state value '{}'", token.key()))
@@ -831,6 +767,27 @@ fn resolve_template_token(
         "unsupported template token '{}'",
         token.raw()
     )))
+}
+
+fn build_resolved_inputs(
+    manifest: &HttpSourceManifest,
+    source_secrets: &BTreeMap<String, String>,
+    source_variables: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    let mut resolved = BTreeMap::new();
+    for input in &manifest.declared_inputs {
+        let value = match input.kind {
+            ManifestInputKind::Secret => source_secrets.get(&input.key).cloned(),
+            ManifestInputKind::Variable => source_variables
+                .get(&input.key)
+                .cloned()
+                .or_else(|| (!input.default_value.is_empty()).then(|| input.default_value.clone())),
+        };
+        if let Some(value) = value {
+            resolved.insert(input.key.clone(), value);
+        }
+    }
+    resolved
 }
 
 fn value_to_string(value: &Value) -> String {
@@ -958,13 +915,17 @@ fn extract_rows(table: &HttpTableSpec, payload: &Value) -> Result<Vec<Value>> {
                 if let Some(pointlist) = item.get("pointlist").and_then(Value::as_array) {
                     for point in pointlist {
                         if let Some(pair) = point.as_array() {
+                            let Some(raw_timestamp) = pair.first().and_then(Value::as_f64) else {
+                                continue;
+                            };
+                            let Some(value) = pair.get(1).and_then(Value::as_f64) else {
+                                continue;
+                            };
                             #[allow(
                                 clippy::cast_possible_truncation,
                                 reason = "Series timestamps are integral epoch values that fit in i64"
                             )]
-                            let timestamp =
-                                pair.first().and_then(Value::as_f64).unwrap_or(0.0) as i64;
-                            let value = pair.get(1).and_then(Value::as_f64).unwrap_or(0.0);
+                            let timestamp = raw_timestamp as i64;
                             rows.push(json!({
                                 "metric": metric,
                                 "scope": scope,
@@ -1150,15 +1111,9 @@ mod tests {
                 "key": key,
                 "default": default,
             }),
-            ValueSourceSpec::Variable { key, default } => json!({
-                "from": "variable",
+            ValueSourceSpec::Input { key } => json!({
+                "from": "input",
                 "key": key,
-                "default": default,
-            }),
-            ValueSourceSpec::Secret { key, default } => json!({
-                "from": "secret",
-                "key": key,
-                "default": default,
             }),
             ValueSourceSpec::Template { template } => json!({
                 "from": "template",
@@ -1254,21 +1209,36 @@ mod tests {
 
     #[test]
     fn resolve_value_source_uses_provider_scoped_credentials() {
-        let source_secrets = BTreeMap::from([("API_KEY".to_string(), "alpha-secret".to_string())]);
+        let resolved_inputs = BTreeMap::from([("API_KEY".to_string(), "alpha-secret".to_string())]);
 
         let value = resolve_value_source(
-            &ValueSourceSpec::Secret {
+            &ValueSourceSpec::Input {
                 key: "API_KEY".to_string(),
-                default: None,
             },
             &HashMap::new(),
             &HashMap::new(),
-            &source_secrets,
-            &BTreeMap::new(),
+            &resolved_inputs,
         )
-        .expect("secret lookup should succeed");
+        .expect("input lookup should succeed");
 
         assert_eq!(value, Some(json!("alpha-secret")));
+    }
+
+    #[test]
+    fn resolve_value_source_uses_declared_store_without_fallback() {
+        let resolved_inputs = BTreeMap::new();
+
+        let value = resolve_value_source(
+            &ValueSourceSpec::Input {
+                key: "API_KEY".to_string(),
+            },
+            &HashMap::new(),
+            &HashMap::new(),
+            &resolved_inputs,
+        )
+        .expect("input lookup should succeed");
+
+        assert_eq!(value, None);
     }
 
     #[test]
@@ -1282,7 +1252,6 @@ mod tests {
             },
             &filters,
             &HashMap::new(),
-            &BTreeMap::new(),
             &BTreeMap::new(),
         )
         .expect("integer filter should resolve");
@@ -1301,7 +1270,6 @@ mod tests {
             },
             &filters,
             &HashMap::new(),
-            &BTreeMap::new(),
             &BTreeMap::new(),
         )
         .expect_err("invalid integer filter should fail");
@@ -1322,7 +1290,14 @@ mod tests {
             "backend": "http",
             "base_url": "https://api.example.com",
             "auth": {
-                "required_secrets": ["API_KEY"]
+                "headers": [{
+                    "name": "Authorization",
+                    "from": "template",
+                    "template": "Bearer {{input.API_KEY}}"
+                }]
+            },
+            "inputs": {
+                "API_KEY": { "kind": "secret" }
             },
             "tables": [{
                 "name": "items",
@@ -1336,13 +1311,13 @@ mod tests {
         }));
         let source_secrets = BTreeMap::new();
 
-        let error = HttpSourceClient::from_manifest(&manifest, source_secrets, BTreeMap::new())
+        let error = HttpSourceClient::from_manifest(&manifest, &source_secrets, &BTreeMap::new())
             .expect_err("missing source-scoped credentials must fail");
 
         assert!(
             error
                 .to_string()
-                .contains("alpha source requires credential API_KEY")
+                .contains("missing source input 'API_KEY' for template token")
         );
     }
 
@@ -1509,6 +1484,37 @@ mod tests {
     }
 
     #[test]
+    fn series_point_list_skips_malformed_points() {
+        let table = make_table_with_row_strategy(RowStrategy::SeriesPointList, vec![]);
+        let payload = json!({
+            "series": [{
+                "metric": "system.cpu.user",
+                "scope": "host:demo",
+                "pointlist": [
+                    [1_710_000_000, 42.5],
+                    [1_710_000_060],
+                    [null, 1.0],
+                    ["1710000120", 2.0],
+                    [1_710_000_180, "3.0"],
+                    {"timestamp": 1_710_000_240, "value": 4.0}
+                ]
+            }]
+        });
+
+        let rows = extract_rows(&table, &payload).unwrap();
+
+        assert_eq!(
+            rows,
+            vec![json!({
+                "metric": "system.cpu.user",
+                "scope": "host:demo",
+                "timestamp": 1_710_000_000_i64,
+                "value": 42.5
+            })]
+        );
+    }
+
+    #[test]
     fn parse_manifest_accepts_dict_entries_row_strategy() {
         let manifest = parse_http_manifest(json!({
             "dsl_version": 3,
@@ -1548,8 +1554,7 @@ mod tests {
         let query_pairs = Vec::new();
         let filters = HashMap::new();
         let state = HashMap::new();
-        let source_secrets = BTreeMap::new();
-        let source_variables = BTreeMap::new();
+        let resolved_inputs = BTreeMap::new();
 
         let error = execute_request(
             &http,
@@ -1567,8 +1572,7 @@ mod tests {
                 rate_limit: &RateLimitSpec::default(),
                 filters: &filters,
                 state: &state,
-                source_secrets: &source_secrets,
-                source_variables: &source_variables,
+                resolved_inputs: &resolved_inputs,
                 allow_404_empty: false,
                 link_header_require_results: false,
             },

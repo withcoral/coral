@@ -215,8 +215,8 @@ async fn run_source_add(
             source_ops::add_bundled_source(app, &available.name, variables, secrets).await?
         }
         (None, Some(file)) => {
-            let (manifest_yaml, _, inputs) = source_ops::load_validated_manifest_file(&file)?;
-            let (variables, secrets) = source_ops::prompt_for_inputs(&inputs)?;
+            let (manifest_yaml, manifest) = source_ops::load_validated_manifest_file(&file)?;
+            let (variables, secrets) = source_ops::prompt_for_inputs(manifest.declared_inputs())?;
             source_ops::import_source(app, manifest_yaml, variables, secrets).await?
         }
         _ => unreachable!("clap enforces exactly one of name or file"),

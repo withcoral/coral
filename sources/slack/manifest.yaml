@@ -3,12 +3,16 @@ version: 2.0.0
 dsl_version: 3
 backend: http
 description: Search channels, messages, and users in your workspace
+inputs:
+  SLACK_TOKEN:
+    kind: secret
+    hint: Create a user or bot token in a Slack app (https://api.slack.com/apps)
 base_url: https://slack.com
 auth:
   headers:
     - name: Authorization
       from: template
-      template: Bearer {{secret.SLACK_TOKEN}}
+      template: Bearer {{input.SLACK_TOKEN}}
 tables:
   - name: channels
     description: Slack channels with topic, purpose, and member count

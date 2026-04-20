@@ -3,11 +3,19 @@ version: 2.0.0
 dsl_version: 3
 backend: http
 description: Manage feature flags, environments, segments, and audit logs
-base_url: "{{variable.LAUNCHDARKLY_API_BASE|https://app.launchdarkly.com}}"
+inputs:
+  LAUNCHDARKLY_API_BASE:
+    kind: variable
+    default: https://app.launchdarkly.com
+    hint: For self-hosted LaunchDarkly, set to your relay or app host
+  LAUNCHDARKLY_TOKEN:
+    kind: secret
+    hint: Create an API access token in LaunchDarkly → Account settings → Authorization
+base_url: "{{input.LAUNCHDARKLY_API_BASE}}"
 auth:
   headers:
     - name: Authorization
-      from: secret
+      from: input
       key: LAUNCHDARKLY_TOKEN
     - name: Content-Type
       from: literal

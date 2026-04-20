@@ -175,12 +175,18 @@ name: demo_api
 version: 0.1.0
 dsl_version: 3
 backend: http
-base_url: https://api.example.com
+inputs:
+  API_BASE:
+    kind: variable
+    default: https://api.example.com
+  API_TOKEN:
+    kind: secret
+base_url: "{{input.API_BASE}}"
 auth:
   headers:
     - name: Authorization
       from: template
-      template: Bearer {{secret.API_TOKEN}}
+      template: Bearer {{input.API_TOKEN}}
 tables:
   - name: messages
     description: Messages from the demo API
@@ -199,7 +205,8 @@ In this minimal example:
 
 - `response: {}` means "use the default response rules" for an HTTP table
 - with the default response rules, Coral treats the selected response value directly as rows unless you configure a different `row_strategy`
-- `{{secret.API_TOKEN}}` is replaced with the secret value you provided when adding the source to Coral
+- `inputs` declares the install-time prompts for this source in stable authored order
+- `{{input.API_TOKEN}}` is resolved from the store implied by the declared input kind
 
 ### HTTP rate limiting
 
@@ -230,11 +237,10 @@ Request query params, body fields, and headers support these `from` values:
 | `from` value | Description |
 | ------------ | ----------- |
 | `literal` | Use the manifest-authored JSON value directly |
-| `template` | Render a string template with `variable`, `secret`, `filter`, or `state` tokens |
+| `template` | Render a string template with `input`, `filter`, or `state` tokens |
 | `filter` | Read a SQL filter as a string |
 | `filter_int` | Read a SQL filter and serialize it as a JSON integer |
-| `variable` | Read a non-secret source variable |
-| `secret` | Read a source secret |
+| `input` | Read a manifest-declared source input (variable/secret) by key |
 | `state` | Read pagination/runtime state |
 | `now_epoch_minus_seconds` | Emit the current Unix epoch seconds minus the configured offset |
 
@@ -323,20 +329,35 @@ pagination:
     query_param: per_page
 ```
 
-## Variables and secrets
+## Source inputs
 
-Source specs can reference values that Coral prompts for when you add a source:
+HTTP source specs can declare install-time inputs under a top-level `inputs` map:
 
 - **Variables**: non-secret configuration like base URLs or organization IDs
 - **Secrets**: API keys or bearer tokens
 
 ```yaml
-base_url: "{{variable.API_BASE|https://api.example.com}}"
+inputs:
+  API_BASE:
+    kind: variable
+    default: https://api.example.com
+    hint: Base URL for the API
+  API_TOKEN:
+    kind: secret
+    hint: API bearer token
+
+base_url: "{{input.API_BASE}}"
 auth:
   headers:
     - name: Authorization
       from: template
-      template: Bearer {{secret.API_TOKEN}}
+      template: Bearer {{input.API_TOKEN}}
 ```
 
-The `|https://api.example.com` syntax provides a default value when the variable is not set.
+Rules:
+
+- `kind: variable` values are stored with source variables
+- `kind: secret` values are stored with source secrets
+- `default` is allowed only for variables
+- `hint` is optional and shown while Coral prompts for the input
+- references elsewhere in the manifest use `{{input.KEY}}` templates or `from: input`

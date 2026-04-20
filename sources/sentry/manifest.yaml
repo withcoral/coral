@@ -3,18 +3,25 @@ version: 2.0.0
 dsl_version: 3
 backend: http
 description: Track errors, manage releases, and monitor deployments across projects
+inputs:
+  SENTRY_ORG:
+    kind: variable
+    hint: Your Sentry organization slug (found in the Sentry URL after `/organizations/`)
+  SENTRY_TOKEN:
+    kind: secret
+    hint: Create an auth token in Sentry → User Settings → Auth Tokens
 base_url: https://sentry.io
 auth:
   headers:
     - name: Authorization
       from: template
-      template: Bearer {{secret.SENTRY_TOKEN}}
+      template: Bearer {{input.SENTRY_TOKEN}}
 tables:
   - name: projects
     description: Sentry projects in the organization
     request:
       method: GET
-      path: /api/0/organizations/{{variable.SENTRY_ORG}}/projects/
+      path: /api/0/organizations/{{input.SENTRY_ORG}}/projects/
       query: []
     response: {}
     pagination:
@@ -73,7 +80,7 @@ tables:
     description: Sentry issues across projects
     request:
       method: GET
-      path: /api/0/organizations/{{variable.SENTRY_ORG}}/issues/
+      path: /api/0/organizations/{{input.SENTRY_ORG}}/issues/
       query:
         - name: project
           from: filter
@@ -167,7 +174,7 @@ tables:
     description: Individual events for a specific issue
     request:
       method: GET
-      path: /api/0/organizations/{{variable.SENTRY_ORG}}/issues/{{filter.issue_id}}/events/
+      path: /api/0/organizations/{{input.SENTRY_ORG}}/issues/{{filter.issue_id}}/events/
       query: []
     response: {}
     pagination:
@@ -374,7 +381,7 @@ tables:
     description: Teams in the organization
     request:
       method: GET
-      path: /api/0/organizations/{{variable.SENTRY_ORG}}/teams/
+      path: /api/0/organizations/{{input.SENTRY_ORG}}/teams/
       query: []
     response: {}
     pagination:
@@ -441,7 +448,7 @@ tables:
     description: Organization members
     request:
       method: GET
-      path: /api/0/organizations/{{variable.SENTRY_ORG}}/members/
+      path: /api/0/organizations/{{input.SENTRY_ORG}}/members/
       query: []
     response: {}
     pagination:
@@ -528,7 +535,7 @@ tables:
     description: Organization releases
     request:
       method: GET
-      path: /api/0/organizations/{{variable.SENTRY_ORG}}/releases/
+      path: /api/0/organizations/{{input.SENTRY_ORG}}/releases/
       query: []
     response: {}
     pagination:
@@ -611,7 +618,7 @@ tables:
     description: Deployments for a release version
     request:
       method: GET
-      path: /api/0/organizations/{{variable.SENTRY_ORG}}/releases/{{filter.version}}/deploys/
+      path: /api/0/organizations/{{input.SENTRY_ORG}}/releases/{{filter.version}}/deploys/
       query: []
     response: {}
     pagination:
@@ -680,7 +687,7 @@ tables:
     description: Files for a release version
     request:
       method: GET
-      path: /api/0/organizations/{{variable.SENTRY_ORG}}/releases/{{filter.version}}/files/
+      path: /api/0/organizations/{{input.SENTRY_ORG}}/releases/{{filter.version}}/files/
       query: []
     response: {}
     pagination:
@@ -730,7 +737,7 @@ tables:
     description: Recent events for a specific project
     request:
       method: GET
-      path: /api/0/projects/{{variable.SENTRY_ORG}}/{{filter.project}}/events/
+      path: /api/0/projects/{{input.SENTRY_ORG}}/{{filter.project}}/events/
       query: []
     response: {}
     pagination:
@@ -832,7 +839,7 @@ tables:
     fetch_limit_default: 1000
     request:
       method: GET
-      path: /api/0/organizations/{{variable.SENTRY_ORG}}/events/
+      path: /api/0/organizations/{{input.SENTRY_ORG}}/events/
       query:
         - name: referrer
           from: literal

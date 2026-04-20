@@ -1,19 +1,24 @@
+#![allow(
+    dead_code,
+    reason = "Integration test crates share this harness, but each target only uses a subset of the helpers."
+)]
+
 use std::sync::{Arc, Mutex};
 
 use arrow::array::Int64Array;
+use arrow::array::StringArray;
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::ipc::writer::StreamWriter;
 use arrow::record_batch::RecordBatch;
 use assert_cmd::Command;
 use coral_api::v1::query_service_server::{QueryService, QueryServiceServer};
 use coral_api::v1::source_service_server::{SourceService, SourceServiceServer};
-use coral_api::v1::{AvailableSource, Table};
 use coral_api::v1::{
-    CreateBundledSourceRequest, DeleteSourceRequest, DiscoverSourcesRequest,
-    DiscoverSourcesResponse, ExecuteSqlRequest, ExecuteSqlResponse, GetSourceRequest,
-    ImportSourceRequest, ListSourcesRequest, ListSourcesResponse, ListTablesRequest,
-    ListTablesResponse, Source, SourceInputKind, SourceInputSpec, SourceOrigin,
-    ValidateSourceRequest, ValidateSourceResponse, Workspace,
+    AvailableSource, Column, CreateBundledSourceRequest, DeleteSourceRequest,
+    DiscoverSourcesRequest, DiscoverSourcesResponse, ExecuteSqlRequest, ExecuteSqlResponse,
+    GetSourceRequest, ImportSourceRequest, ListSourcesRequest, ListSourcesResponse,
+    ListTablesRequest, ListTablesResponse, Source, SourceInputKind, SourceInputSpec, SourceOrigin,
+    Table, ValidateSourceRequest, ValidateSourceResponse, Workspace,
 };
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
@@ -50,17 +55,50 @@ fn mock_table(schema_name: &str, name: &str) -> Table {
     }
 }
 
-fn mock_sql_response() -> ExecuteSqlResponse {
-    let schema = Schema::new(vec![Field::new("value", DataType::Int64, false)]);
-    let batch = RecordBatch::try_new(
-        Arc::new(schema.clone()),
-        vec![Arc::new(Int64Array::from(vec![1_i64]))],
-    )
-    .expect("build record batch");
+fn mock_visible_table() -> Table {
+    Table {
+        workspace: Some(workspace()),
+        schema_name: "local_messages".to_string(),
+        name: "messages".to_string(),
+        description: "Fixture messages".to_string(),
+        columns: vec![
+            Column {
+                name: "type".to_string(),
+                data_type: "Utf8".to_string(),
+                nullable: false,
+            },
+            Column {
+                name: "text".to_string(),
+                data_type: "Utf8".to_string(),
+                nullable: false,
+            },
+        ],
+        required_filters: Vec::new(),
+    }
+}
+
+fn mock_sql_response(sql: &str) -> ExecuteSqlResponse {
+    let (schema, batch, row_count) = if sql.contains("local_messages.messages") {
+        let schema = Schema::new(vec![Field::new("text", DataType::Utf8, false)]);
+        let batch = RecordBatch::try_new(
+            Arc::new(schema.clone()),
+            vec![Arc::new(StringArray::from(vec!["hello", "world"]))],
+        )
+        .expect("build text batch");
+        (schema, batch, 2)
+    } else {
+        let schema = Schema::new(vec![Field::new("value", DataType::Int64, false)]);
+        let batch = RecordBatch::try_new(
+            Arc::new(schema.clone()),
+            vec![Arc::new(Int64Array::from(vec![1_i64]))],
+        )
+        .expect("build value batch");
+        (schema, batch, 1)
+    };
 
     ExecuteSqlResponse {
         arrow_ipc_stream: encode_arrow_ipc_stream(&schema, &[batch]).expect("encode arrow ipc"),
-        row_count: 1,
+        row_count,
     }
 }
 
@@ -76,6 +114,7 @@ fn mock_discover_response() -> DiscoverSourcesResponse {
                     kind: SourceInputKind::Secret as i32,
                     required: true,
                     default_value: String::new(),
+                    hint: None,
                 }],
                 installed: true,
                 origin: SourceOrigin::Bundled as i32,
@@ -146,7 +185,7 @@ impl<T> MockResult<T> {
 
 #[derive(Clone)]
 pub(crate) struct MockServerConfig {
-    execute_sql: MockResult<ExecuteSqlResponse>,
+    execute_sql_override: Option<MockResult<ExecuteSqlResponse>>,
     discover_sources: MockResult<DiscoverSourcesResponse>,
     list_sources: MockResult<ListSourcesResponse>,
     validate_source: MockResult<ValidateSourceResponse>,
@@ -156,7 +195,7 @@ pub(crate) struct MockServerConfig {
 impl Default for MockServerConfig {
     fn default() -> Self {
         Self {
-            execute_sql: MockResult::ok(mock_sql_response()),
+            execute_sql_override: None,
             discover_sources: MockResult::ok(mock_discover_response()),
             list_sources: MockResult::ok(ListSourcesResponse {
                 sources: vec![
@@ -196,12 +235,12 @@ impl MockServerConfig {
     }
 
     pub(crate) fn with_execute_sql(mut self, response: ExecuteSqlResponse) -> Self {
-        self.execute_sql = MockResult::ok(response);
+        self.execute_sql_override = Some(MockResult::ok(response));
         self
     }
 
     pub(crate) fn with_execute_sql_error(mut self, code: Code, message: impl Into<String>) -> Self {
-        self.execute_sql = MockResult::err(code, message);
+        self.execute_sql_override = Some(MockResult::err(code, message));
         self
     }
 
@@ -260,21 +299,36 @@ impl QueryService for MockQueryService {
             .lock()
             .expect("list_tables capture")
             .push(request.into_inner());
-        Ok(Response::new(ListTablesResponse { tables: Vec::new() }))
+        Ok(Response::new(ListTablesResponse {
+            tables: vec![mock_visible_table()],
+        }))
     }
 
     async fn execute_sql(
         &self,
         request: Request<ExecuteSqlRequest>,
     ) -> Result<Response<ExecuteSqlResponse>, Status> {
+        let request = request.into_inner();
         self.captured
             .execute_sql
             .lock()
             .expect("execute_sql capture")
-            .push(request.into_inner());
-        Ok(Response::new(
-            self.config.execute_sql.clone().into_tonic_result()?,
-        ))
+            .push(request.clone());
+        let sql = request.sql;
+        if sql
+            .trim_start()
+            .to_ascii_uppercase()
+            .starts_with("DELETE FROM")
+        {
+            return Err(Status::invalid_argument("DML not supported: DELETE"));
+        }
+
+        let response = match self.config.execute_sql_override.clone() {
+            Some(result) => result.into_tonic_result()?,
+            None => mock_sql_response(&sql),
+        };
+
+        Ok(Response::new(response))
     }
 }
 
@@ -424,6 +478,10 @@ impl MockServer {
         }
     }
 
+    #[allow(
+        dead_code,
+        reason = "Integration test crates share this harness, but each target only uses the helpers it needs."
+    )]
     pub(crate) fn cmd(&self) -> Command {
         let mut cmd = Command::cargo_bin("coral").expect("cargo bin");
         cmd.env("CORAL_ENDPOINT", &self.endpoint_uri);
@@ -468,6 +526,14 @@ impl MockServer {
             .lock()
             .expect("delete_source capture")
             .clone()
+    }
+
+    #[allow(
+        dead_code,
+        reason = "Integration test crates share this harness, but each target only uses the helpers it needs."
+    )]
+    pub(crate) fn endpoint_uri(&self) -> &str {
+        &self.endpoint_uri
     }
 
     pub(crate) async fn shutdown(mut self) {

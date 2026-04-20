@@ -3,12 +3,16 @@ name: stripe
 version: 2026-03-25.dahlia
 description: The Stripe REST API for account and payment operations.
 backend: http
+inputs:
+  STRIPE_API_KEY:
+    kind: secret
+    hint: Create a restricted or secret API key in the Stripe Dashboard → Developers → API keys
 base_url: https://api.stripe.com
 auth:
   headers:
     - name: Authorization
       from: template
-      template: Bearer {{secret.STRIPE_API_KEY}}
+      template: Bearer {{input.STRIPE_API_KEY}}
 tables:
   - name: account
     description: Retrieve account

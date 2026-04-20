@@ -3,12 +3,20 @@ name: gitlab
 version: v4
 description: GitLab REST API v4
 backend: http
-base_url: '{{variable.GITLAB_API_BASE|https://gitlab.com}}'
+inputs:
+  GITLAB_API_BASE:
+    kind: variable
+    default: https://gitlab.com
+    hint: For self-hosted GitLab, set to your instance URL
+  GITLAB_TOKEN:
+    kind: secret
+    hint: Create a personal access token with `read_api` scope in GitLab → User Settings → Access Tokens
+base_url: '{{input.GITLAB_API_BASE}}'
 auth:
   headers:
     - name: PRIVATE-TOKEN
       from: template
-      template: '{{secret.GITLAB_TOKEN}}'
+      template: '{{input.GITLAB_TOKEN}}'
 tables:
   - name: access_requests
     description: Gets a list of access requests for a group.
