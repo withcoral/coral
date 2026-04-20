@@ -23,8 +23,44 @@ jobs:
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
           repositories: coral
 
-      - uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4.4.1
+      - name: Run release-please
+        id: rp
+        uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4.4.1
         with:
           config-file: .release-please-config.json
           manifest-file: .release-please-manifest.json
           token: ${{ steps.github-app-token.outputs.token }}
+
+      # When release-please opens or updates a release PR, Cargo.toml's
+      # [workspace.package].version changes but Cargo.lock's entries for
+      # our workspace crates still point at the old version. `make
+      # rust-checks` uses --locked, so we regenerate the lockfile on the
+      # PR branch to keep it in sync.
+      - name: Check out release PR branch
+        if: steps.rp.outputs.pr
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ fromJSON(steps.rp.outputs.pr).headBranchName }}
+          token: ${{ steps.github-app-token.outputs.token }}
+          persist-credentials: true
+
+      - name: Install Rust toolchain
+        if: steps.rp.outputs.pr
+        run: rustup show
+
+      - name: Sync Cargo.lock to new workspace version
+        if: steps.rp.outputs.pr
+        env:
+          PR_BRANCH: ${{ fromJSON(steps.rp.outputs.pr).headBranchName }}
+        run: |
+          set -euo pipefail
+          cargo update --workspace
+          if git diff --quiet -- Cargo.lock; then
+            echo "Cargo.lock already up to date."
+            exit 0
+          fi
+          git config user.name "release-please[bot]"
+          git config user.email "release-please[bot]@users.noreply.github.com"
+          git add Cargo.lock
+          git commit -m "chore: sync Cargo.lock"
+          git push origin "HEAD:${PR_BRANCH}"

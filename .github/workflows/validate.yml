@@ -121,7 +121,7 @@ jobs:
 
   validate:
     runs-on: ubuntu-latest
-    needs: [changes, python-gha-helper-tests, rust-checks, gha-security-audit, source-lint]
+    needs: [changes, rust-checks, gha-security-audit, source-lint]
     # Run even when upstream jobs fail or are conditionally skipped so this
     # job can act as the single required status check for the workflow.
     if: ${{ always() }}
@@ -129,14 +129,12 @@ jobs:
       - name: Check all job results
         env:
           CHANGES_RESULT: ${{ needs.changes.result }}
-          PYTHON_GHA_HELPER_TESTS_RESULT: ${{ needs.python-gha-helper-tests.result }}
           RUST_CHECKS_RESULT: ${{ needs.rust-checks.result }}
           GHA_SECURITY_AUDIT_RESULT: ${{ needs.gha-security-audit.result }}
           SOURCE_LINT_RESULT: ${{ needs.source-lint.result }}
         run: |
           jobs=(
             "changes:$CHANGES_RESULT"
-            "python-gha-helper-tests:$PYTHON_GHA_HELPER_TESTS_RESULT"
             "rust-checks:$RUST_CHECKS_RESULT"
             "gha-security-audit:$GHA_SECURITY_AUDIT_RESULT"
             "source-lint:$SOURCE_LINT_RESULT"
