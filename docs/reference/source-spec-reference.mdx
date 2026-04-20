@@ -183,10 +183,9 @@ inputs:
     kind: secret
 base_url: "{{input.API_BASE}}"
 auth:
-  headers:
-    - name: Authorization
-      from: template
-      template: Bearer {{input.API_TOKEN}}
+  type: ApiKeyAuth
+  header: Authorization
+  api_token: "Bearer {{input.API_TOKEN}}"
 tables:
   - name: messages
     description: Messages from the demo API
@@ -207,6 +206,91 @@ In this minimal example:
 - with the default response rules, Coral treats the selected response value directly as rows unless you configure a different `row_strategy`
 - `inputs` declares the install-time prompts for this source in stable authored order
 - `{{input.API_TOKEN}}` is resolved from the store implied by the declared input kind
+
+### HTTP authentication
+
+The top-level `auth:` block on an HTTP source is a tagged union — pick one shape via `type:`. Four built-in variants cover the common cases.
+
+#### `ApiKeyAuth` — single token in a single header
+
+Most APIs fall here (Bearer tokens, `Token <x>`, simple API keys, etc.).
+
+```yaml
+auth:
+  type: ApiKeyAuth
+  header: Authorization
+  api_token: "Bearer {{input.API_TOKEN}}"
+```
+
+The `api_token` field is a templated string; interpolate the token from an input. The header name itself is a literal.
+
+#### `BasicHttpAuth` — user + password, base64-encoded at runtime
+
+Coral computes `Basic <base64(user:pass)>` from plaintext inputs. Do **not** pre-encode — supply the raw values.
+
+```yaml
+auth:
+  type: BasicHttpAuth
+  username: "{{input.ACCOUNT_EMAIL}}"
+  password: "{{input.ACCOUNT_PASSWORD}}"
+```
+
+#### `CustomHeadersAuth` — freeform list of auth headers
+
+Use when one token + one header isn't enough (dual API keys, proprietary header schemes, etc.). Values use the same `ValueSourceSpec` shape as other header fields.
+
+```yaml
+auth:
+  type: CustomHeadersAuth
+  headers:
+    - name: DD-API-KEY
+      from: input
+      key: DD_API_KEY
+    - name: DD-APPLICATION-KEY
+      from: input
+      key: DD_APPLICATION_KEY
+```
+
+#### `CustomAuth` — compiled-in signers for schemes that need dynamic logic
+
+For authenticators that can't be expressed as templated headers — e.g. AWS SigV4 signatures that depend on the full request body and timestamp. Pick the impl with `authenticator:`.
+
+```yaml
+auth:
+  type: CustomAuth
+  authenticator: aws_sigv4
+  service: logs
+  region: "{{input.AWS_REGION}}"
+  access_key_id: "{{input.AWS_ACCESS_KEY_ID}}"
+  secret_access_key: "{{input.AWS_SECRET_ACCESS_KEY}}"
+  session_token: "{{input.AWS_SESSION_TOKEN}}"   # optional, for STS credentials
+```
+
+Currently available authenticators:
+
+| `authenticator:` | Purpose | Required fields |
+|------------------|---------|-----------------|
+| `aws_sigv4` | AWS Signature Version 4 | `service`, `region`, `access_key_id`, `secret_access_key` (+ optional `session_token`) |
+
+### Request headers
+
+Generic per-source HTTP headers — declare them at the top level under `request_headers:` and Coral attaches them to every outbound request for the source. Typical uses: content negotiation (`Accept`), API version pinning (`X-API-Version`), feature flags, tracing hints, or anything the upstream API requires that isn't conveyed by `auth`.
+
+```yaml
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/vnd.github+json
+  - name: X-GitHub-Api-Version
+    from: literal
+    value: "2022-11-28"
+```
+
+Values use the same `from:` shapes as other manifest fields (`literal`, `template`, `input`, etc.), so you can also thread secrets or variables through a request header when needed.
+
+<Note>
+Coral always sets a `User-Agent` header identifying itself on every outbound request. Do not declare `User-Agent` in `request_headers:` — it is managed by the HTTP client and your entry would collide with Coral's own value.
+</Note>
 
 ### HTTP rate limiting
 
@@ -348,10 +432,9 @@ inputs:
 
 base_url: "{{input.API_BASE}}"
 auth:
-  headers:
-    - name: Authorization
-      from: template
-      template: Bearer {{input.API_TOKEN}}
+  type: ApiKeyAuth
+  header: Authorization
+  api_token: "Bearer {{input.API_TOKEN}}"
 ```
 
 Rules:
