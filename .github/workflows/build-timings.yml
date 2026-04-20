@@ -63,6 +63,28 @@ jobs:
           path: build-output.txt
           retention-days: 30
 
+      - name: Prune stale Rust caches
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for prefix in coral-build coral-validate coral-source-lint; do
+            echo "--- Pruning $prefix ---"
+            stale=$(gh cache list --repo "$GITHUB_REPOSITORY" \
+              --key "v0-rust-${prefix}-" \
+              --sort created_at --order desc \
+              --json key --jq '.[1:][].key')
+            if [ -z "$stale" ]; then
+              echo "Nothing to prune"
+              continue
+            fi
+            for key in $stale; do
+              echo "Deleting: $key"
+              gh cache delete "$key" --repo "$GITHUB_REPOSITORY"
+            done
+          done
+
       - name: Check cache quota usage
         if: always()
         env:
