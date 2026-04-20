@@ -33,7 +33,7 @@ pub enum AuthSpec {
     /// Freeform list of auth headers for sources that don't fit the
     /// single-token shape (e.g. dual-key providers).
     CustomHeadersAuth(CustomHeadersAuthSpec),
-    /// Authenticator that needs compiled-in signing logic (e.g. AWS SigV4).
+    /// Authenticator that needs compiled-in signing logic (e.g. AWS `SigV4`).
     /// The `authenticator` tag selects which built-in impl runs.
     CustomAuth(CustomAuthSpec),
 }
@@ -46,6 +46,7 @@ impl Default for AuthSpec {
 
 /// Strict single-header API-key authenticator.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ApiKeyAuthSpec {
     pub header: String,
     pub api_token: ParsedTemplate,
@@ -53,6 +54,7 @@ pub struct ApiKeyAuthSpec {
 
 /// HTTP Basic authenticator with separate username and password templates.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BasicHttpAuthSpec {
     pub username: ParsedTemplate,
     pub password: ParsedTemplate,
@@ -60,6 +62,7 @@ pub struct BasicHttpAuthSpec {
 
 /// Freeform authenticator that injects an arbitrary list of headers.
 #[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct CustomHeadersAuthSpec {
     #[serde(default)]
     pub headers: Vec<HeaderSpec>,
@@ -74,8 +77,9 @@ pub enum CustomAuthSpec {
     AwsSigV4(AwsSigV4Spec),
 }
 
-/// AWS SigV4 request signer configuration.
+/// AWS `SigV4` request signer configuration.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AwsSigV4Spec {
     /// AWS service code used in the signing scope (e.g. `logs`, `s3`, `cloudtrail`).
     pub service: String,
@@ -85,7 +89,7 @@ pub struct AwsSigV4Spec {
     pub access_key_id: ParsedTemplate,
     /// IAM secret access key.
     pub secret_access_key: ParsedTemplate,
-    /// Optional STS session token for temporary credentials.
+    /// Optional STS session token for temporary (STS-issued) credentials.
     #[serde(default)]
     pub session_token: Option<ParsedTemplate>,
 }
