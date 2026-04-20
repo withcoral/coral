@@ -8,6 +8,7 @@
   "packages": {
     ".": {
       "package-name": "coral",
+      "bootstrap-sha": "51de7ec4e927d627e02ada30d258921eb258d8e8",
       "extra-files": ["Cargo.toml"]
     }
   }
