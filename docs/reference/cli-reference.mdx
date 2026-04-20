@@ -68,7 +68,7 @@ coral source lint ./my-source.yaml
 
 ### `coral source test <NAME>`
 
-Validate that an installed source can initialize, expose tables, and run any optional top-level `test_queries` declared in its source spec. The command exits non-zero when one or more declared query tests fail.
+Validate that an installed source can initialize, expose tables, and run any optional top-level `test_queries` declared in its source spec. The command errors when one or more declared query tests fail.
 
 ```shellscript
 coral source test github
