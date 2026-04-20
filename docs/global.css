@@ -28,6 +28,6 @@ pre {
 
 /* Keep only the icon for GitHub and Discord navbar links. */
 a[href="https://github.com/withcoral/coral"] span,
-a[href="https://discord.gg/h9aun8KpFF"] span {
+a[href="https://withcoral.com/discord"] span {
   display: none !important;
 }
