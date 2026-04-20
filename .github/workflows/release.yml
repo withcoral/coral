@@ -1,13 +1,12 @@
 name: Release
 on:
-  push:
-    branches: [main]
-    paths: [Cargo.toml]
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
-      target_ref:
-        description: "Optional commit SHA or ref from main history to release"
-        required: false
+      tag:
+        description: "Existing tag to (re)build and upload artifacts for (e.g. v0.1.4)"
+        required: true
         type: string
 permissions:
   contents: read
@@ -16,34 +15,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  prepare:
-    runs-on: ubuntu-latest
-    outputs:
-      should_release: ${{ steps.meta.outputs.should_release }}
-      version: ${{ steps.meta.outputs.version }}
-      build_ref: ${{ steps.meta.outputs.build_ref }}
-      tag_name: ${{ steps.meta.outputs.tag_name }}
-      release_name: ${{ steps.meta.outputs.release_name }}
-      artifact_prefix: ${{ steps.meta.outputs.artifact_prefix }}
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Set up Python
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
-        with:
-          python-version-file: .github/scripts/.python-version
-      - name: Prepare release metadata
-        id: meta
-        env:
-          PUSH_BEFORE_SHA: ${{ github.event.before }}
-          TARGET_REF: ${{ inputs.target_ref }}
-        run: python3 .github/scripts/prepare_release.py
-
   build:
-    needs: prepare
-    if: needs.prepare.outputs.should_release == 'true'
     strategy:
       matrix:
         include:
@@ -57,10 +29,12 @@ jobs:
           - target: aarch64-apple-darwin
             os: macos-latest
     runs-on: ${{ matrix.os }}
+    env:
+      TAG_NAME: ${{ github.event.release.tag_name || inputs.tag }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
-          ref: ${{ needs.prepare.outputs.build_ref }}
+          ref: ${{ env.TAG_NAME }}
           persist-credentials: false
       - name: Install Rust toolchain
         run: rustup show
@@ -83,51 +57,49 @@ jobs:
           fi
       - name: Package
         run: |
-          archive="${NEEDS_PREPARE_OUTPUTS_ARTIFACT_PREFIX}-${{ matrix.target }}.tar.gz"
+          archive="coral-${{ matrix.target }}.tar.gz"
           cd "target/${{ matrix.target }}/release"
           tar czf "../../../${archive}" coral
           cd ../../../
-        env:
-          NEEDS_PREPARE_OUTPUTS_ARTIFACT_PREFIX: ${{ needs.prepare.outputs.artifact_prefix }}
       - name: Upload artifact
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: ${{ needs.prepare.outputs.artifact_prefix }}-${{ matrix.target }}
-          path: ${{ needs.prepare.outputs.artifact_prefix }}-${{ matrix.target }}.tar.gz
+          name: coral-${{ matrix.target }}
+          path: coral-${{ matrix.target }}.tar.gz
+
   checksums:
-    needs: [prepare, build]
-    if: needs.prepare.outputs.should_release == 'true'
+    needs: build
     runs-on: ubuntu-latest
     steps:
       - name: Download artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          pattern: ${{ needs.prepare.outputs.artifact_prefix }}-*
+          pattern: coral-*
           path: artifacts
           merge-multiple: true
       - name: Generate checksums
         run: |
           cd artifacts
-          sha256sum ${NEEDS_PREPARE_OUTPUTS_ARTIFACT_PREFIX}-*.tar.gz > checksums.sha256
-        env:
-          NEEDS_PREPARE_OUTPUTS_ARTIFACT_PREFIX: ${{ needs.prepare.outputs.artifact_prefix }}
+          sha256sum coral-*.tar.gz > checksums.sha256
       - name: Upload checksums
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: ${{ needs.prepare.outputs.artifact_prefix }}-checksums
+          name: checksums
           path: artifacts/checksums.sha256
+
   publish-version:
-    needs: [prepare, checksums]
-    if: needs.prepare.outputs.should_release == 'true'
+    needs: checksums
     environment: release
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      TAG_NAME: ${{ github.event.release.tag_name || inputs.tag }}
     steps:
       - name: Download artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          pattern: ${{ needs.prepare.outputs.artifact_prefix }}-*
+          pattern: "{coral-*,checksums}"
           path: artifacts
           merge-multiple: true
 
@@ -141,35 +113,30 @@ jobs:
             coral
             homebrew-tap
 
-      - name: Create GitHub release
+      - name: Upload artifacts to GitHub release
         env:
-          ARTIFACT_PREFIX: ${{ needs.prepare.outputs.artifact_prefix }}
-          BUILD_REF: ${{ needs.prepare.outputs.build_ref }}
           GH_TOKEN: ${{ steps.github-app-token.outputs.token }}
-          RELEASE_NAME: ${{ needs.prepare.outputs.release_name }}
-          TAG_NAME: ${{ needs.prepare.outputs.tag_name }}
         run: |
           set -euo pipefail
-          gh release create "$TAG_NAME" \
-            artifacts/${ARTIFACT_PREFIX}-*.tar.gz \
+          gh release upload "$TAG_NAME" \
+            artifacts/coral-*.tar.gz \
             artifacts/checksums.sha256 \
             --repo "$GITHUB_REPOSITORY" \
-            --target "$BUILD_REF" \
-            --title "$RELEASE_NAME" \
-            --generate-notes
+            --clobber
 
       # Dispatch the tap workflow after publishing the release:
       # https://octokit.github.io/rest.js/v22/#repos-create-dispatch-event
       - name: Trigger Homebrew tap bump
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
-          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          RELEASE_VERSION: ${{ env.TAG_NAME }}
         with:
           github-token: ${{ steps.github-app-token.outputs.token }}
           script: |
+            const version = process.env.RELEASE_VERSION.replace(/^v/, "");
             await github.rest.repos.createDispatchEvent({
               owner: "withcoral",
               repo: "homebrew-tap",
               event_type: "coral-release",
-              client_payload: { version: process.env.RELEASE_VERSION },
+              client_payload: { version },
             });
