@@ -103,11 +103,23 @@
         },
         {
           "type": "object",
-          "additionalProperties": true,
-          "required": ["type", "authenticator"],
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "authenticator",
+            "service",
+            "region",
+            "access_key_id",
+            "secret_access_key"
+          ],
           "properties": {
             "type": { "const": "CustomAuth" },
-            "authenticator": { "type": "string", "minLength": 1 }
+            "authenticator": { "const": "aws_sigv4" },
+            "service": { "type": "string", "minLength": 1 },
+            "region": { "type": "string", "minLength": 1 },
+            "access_key_id": { "type": "string", "minLength": 1 },
+            "secret_access_key": { "type": "string", "minLength": 1 },
+            "session_token": { "type": "string", "minLength": 1 }
           }
         }
       ]

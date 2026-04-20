@@ -8,7 +8,7 @@
 //! the variable or secret store. Manifests that take no interactive inputs
 //! may omit the block entirely.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Map, Value};
 
@@ -39,6 +39,38 @@ pub struct ManifestInputSpec {
     pub default_value: String,
     /// Optional authored hint shown to the user when collecting the input.
     pub hint: Option<String>,
+}
+
+/// Merge user-provided source secrets and variables with declared input
+/// defaults into one runtime-ready input map.
+///
+/// The map that comes out is what `{{input.KEY}}` template tokens and
+/// `from: input` value sources resolve against at render time. A declared
+/// input is present in the result only if the caller supplied a value
+/// (secrets via `source_secrets`, variables via `source_variables`) or — for
+/// variables — the manifest itself declared a non-empty default. Required
+/// inputs without a supplied value remain absent, so later template rendering
+/// surfaces the gap as a clear missing-input error.
+#[must_use]
+pub fn resolve_inputs(
+    declared: &[ManifestInputSpec],
+    source_secrets: &BTreeMap<String, String>,
+    source_variables: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    let mut resolved = BTreeMap::new();
+    for input in declared {
+        let value = match input.kind {
+            ManifestInputKind::Secret => source_secrets.get(&input.key).cloned(),
+            ManifestInputKind::Variable => source_variables
+                .get(&input.key)
+                .cloned()
+                .or_else(|| (!input.default_value.is_empty()).then(|| input.default_value.clone())),
+        };
+        if let Some(value) = value {
+            resolved.insert(input.key.clone(), value);
+        }
+    }
+    resolved
 }
 
 /// Collect interactive source inputs from an already-parsed manifest value.
