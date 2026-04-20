@@ -27,8 +27,6 @@ jobs:
         id: rp
         uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4.4.1
         with:
-          config-file: .release-please-config.json
-          manifest-file: .release-please-manifest.json
           token: ${{ steps.github-app-token.outputs.token }}
 
       # When release-please opens or updates a release PR, Cargo.toml's
