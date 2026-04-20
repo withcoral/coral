@@ -1,12 +1,14 @@
 //! Shared internal backend contracts and registry-visible metadata.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 use crate::QueryRuntimeContext;
 use async_trait::async_trait;
 use coral_spec::backends::file::PartitionColumnSpec;
-use coral_spec::{ColumnSpec, FilterSpec, ManifestDataType, TableCommon};
+use coral_spec::{
+    ColumnSpec, FilterSpec, ManifestDataType, ManifestInputKind, ManifestInputSpec, TableCommon,
+};
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use datafusion::datasource::TableProvider;
 use datafusion::error::DataFusionError;
@@ -32,9 +34,24 @@ pub(crate) struct RegisteredTable {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct RegisteredInput {
+    pub(crate) key: String,
+    pub(crate) kind: ManifestInputKind,
+    pub(crate) required: bool,
+    /// Mirrors [`ManifestInputSpec::default_value`]: empty string means
+    /// "no default declared". The catalog layer maps empty to SQL `NULL`.
+    pub(crate) default_value: String,
+    pub(crate) hint: Option<String>,
+    /// Resolved value for variables. Unconditionally `None` for secrets.
+    pub(crate) resolved_value: Option<String>,
+    pub(crate) is_set: bool,
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct RegisteredSource {
     pub(crate) schema_name: String,
     pub(crate) tables: Vec<RegisteredTable>,
+    pub(crate) inputs: Vec<RegisteredInput>,
 }
 
 pub(crate) struct BackendRegistration {
@@ -99,6 +116,54 @@ pub(crate) fn registered_columns_from_schema(
             is_virtual: false,
             is_required_filter: required_filters.iter().any(|filter| filter == field.name()),
             description: String::new(),
+        })
+        .collect()
+}
+
+/// Build registry-visible input metadata.
+///
+/// Takes the manifest-declared inputs, the resolved non-secret variables map,
+/// and the set of configured secret keys. Secret *values* are never consumed
+/// here — only their keys — so the catalog layer has no path to leak secret
+/// values.
+pub(crate) fn build_registered_inputs(
+    declared: &[ManifestInputSpec],
+    variables: &BTreeMap<String, String>,
+    secret_keys: &BTreeSet<String>,
+) -> Vec<RegisteredInput> {
+    declared
+        .iter()
+        .map(|input| {
+            let (resolved_value, is_set) = match input.kind {
+                ManifestInputKind::Variable => {
+                    let explicit = variables.get(&input.key).cloned();
+                    let has_default = !input.default_value.is_empty();
+                    let resolved = explicit
+                        .clone()
+                        .or_else(|| has_default.then(|| input.default_value.clone()));
+                    // Variable is "set" if the user explicitly configured the
+                    // key (even with an empty string — HTTP input resolution
+                    // and required-variable validation both treat the key's
+                    // presence as authoritative) or the manifest provides a
+                    // non-empty default.
+                    let is_set = explicit.is_some() || has_default;
+                    (resolved, is_set)
+                }
+                ManifestInputKind::Secret => (None, secret_keys.contains(&input.key)),
+            };
+            debug_assert!(
+                !(matches!(input.kind, ManifestInputKind::Secret) && resolved_value.is_some()),
+                "secret inputs must never carry a resolved value"
+            );
+            RegisteredInput {
+                key: input.key.clone(),
+                kind: input.kind,
+                required: input.required,
+                default_value: input.default_value.clone(),
+                hint: input.hint.clone(),
+                resolved_value,
+                is_set,
+            }
         })
         .collect()
 }

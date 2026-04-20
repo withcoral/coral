@@ -19,8 +19,8 @@ use crate::backends::shared::json_exec::{Converter, Fetcher, JsonExec, RowFetche
 use crate::backends::shared::mapping::convert_items;
 use crate::backends::{
     BackendCompileRequest, BackendRegistration, CompiledBackendSource, RegisteredSource,
-    RegisteredTable, build_registered_table, registered_columns_from_specs, required_filter_names,
-    schema_from_columns,
+    RegisteredTable, build_registered_inputs, build_registered_table,
+    registered_columns_from_specs, required_filter_names, schema_from_columns,
 };
 use crate::{CoreError, QueryRuntimeContext};
 use coral_spec::backends::file::{FileTableSpec, JsonlSourceManifest};
@@ -49,10 +49,14 @@ pub(crate) struct CompiledJsonlTable {
 struct JsonlCompiledSource {
     manifest: JsonlSourceManifest,
     tables: Vec<CompiledJsonlTable>,
+    source_secrets: std::collections::BTreeMap<String, String>,
+    source_variables: std::collections::BTreeMap<String, String>,
 }
 
 pub(crate) fn compile_source(
     manifest: JsonlSourceManifest,
+    source_secrets: std::collections::BTreeMap<String, String>,
+    source_variables: std::collections::BTreeMap<String, String>,
     runtime_context: &QueryRuntimeContext,
 ) -> Result<Box<dyn CompiledBackendSource>, CoreError> {
     let tables = manifest
@@ -68,14 +72,24 @@ pub(crate) fn compile_source(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    Ok(Box::new(JsonlCompiledSource { manifest, tables }))
+    Ok(Box::new(JsonlCompiledSource {
+        manifest,
+        tables,
+        source_secrets,
+        source_variables,
+    }))
 }
 
 pub(crate) fn compile_manifest(
     manifest: &JsonlSourceManifest,
     request: &BackendCompileRequest<'_>,
 ) -> Result<Box<dyn CompiledBackendSource>, CoreError> {
-    compile_source(manifest.clone(), request.runtime_context)
+    compile_source(
+        manifest.clone(),
+        request.source_secrets.clone(),
+        request.source_variables.clone(),
+        request.runtime_context,
+    )
 }
 
 /// A table provider backed by newline-delimited `JSON` (`JSONL`) files on the local
@@ -282,11 +296,15 @@ impl CompiledBackendSource for JsonlCompiledSource {
             table_infos.push(metadata);
         }
 
+        let secret_keys = self.source_secrets.keys().cloned().collect();
+        let inputs = build_registered_inputs(&[], &self.source_variables, &secret_keys);
+
         Ok(BackendRegistration {
             tables,
             source: RegisteredSource {
                 schema_name: self.manifest.common.name.clone(),
                 tables: table_infos,
+                inputs,
             },
         })
     }
