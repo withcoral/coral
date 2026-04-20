@@ -851,6 +851,7 @@ version = "0.1.3"
 dependencies = [
  "arrow",
  "async-trait",
+ "base64",
  "bytes",
  "coral-spec",
  "datafusion",
