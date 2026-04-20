@@ -9,6 +9,5 @@
     ".": {
       "package-name": "coral"
     }
-  },
-  "plugins": ["cargo-workspace"]
+  }
 }
