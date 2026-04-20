@@ -33,6 +33,9 @@ pub enum AuthSpec {
     /// Freeform list of auth headers for sources that don't fit the
     /// single-token shape (e.g. dual-key providers).
     CustomHeadersAuth(CustomHeadersAuthSpec),
+    /// Authenticator that needs compiled-in signing logic (e.g. AWS SigV4).
+    /// The `authenticator` tag selects which built-in impl runs.
+    CustomAuth(CustomAuthSpec),
 }
 
 impl Default for AuthSpec {
@@ -60,6 +63,31 @@ pub struct BasicHttpAuthSpec {
 pub struct CustomHeadersAuthSpec {
     #[serde(default)]
     pub headers: Vec<HeaderSpec>,
+}
+
+/// Dispatches to a compiled-in authenticator impl by name.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "authenticator")]
+pub enum CustomAuthSpec {
+    /// AWS Signature Version 4 signing for AWS APIs.
+    #[serde(rename = "aws_sigv4")]
+    AwsSigV4(AwsSigV4Spec),
+}
+
+/// AWS SigV4 request signer configuration.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AwsSigV4Spec {
+    /// AWS service code used in the signing scope (e.g. `logs`, `s3`, `cloudtrail`).
+    pub service: String,
+    /// AWS region (e.g. `us-east-1`).
+    pub region: ParsedTemplate,
+    /// IAM access key ID.
+    pub access_key_id: ParsedTemplate,
+    /// IAM secret access key.
+    pub secret_access_key: ParsedTemplate,
+    /// Optional STS session token for temporary credentials.
+    #[serde(default)]
+    pub session_token: Option<ParsedTemplate>,
 }
 
 /// Provider-specific response hints for classifying and delaying rate-limit retries.
