@@ -100,6 +100,15 @@
               "items": { "$ref": "#/$defs/header" }
             }
           }
+        },
+        {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["type", "authenticator"],
+          "properties": {
+            "type": { "const": "CustomAuth" },
+            "authenticator": { "type": "string", "minLength": 1 }
+          }
         }
       ]
     },
