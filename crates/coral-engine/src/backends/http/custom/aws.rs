@@ -20,7 +20,7 @@ use coral_spec::AwsSigV4Spec;
 use crate::backends::http::auth::{AuthContext, Authenticator, EMPTY_MAP};
 use crate::backends::shared::template::render_template;
 
-/// Per-service SigV4 settings. Most AWS APIs accept the library defaults,
+/// Per-service `SigV4` settings. Most AWS APIs accept the library defaults,
 /// but S3 needs path normalization disabled, single percent-encoding, and the
 /// `X-Amz-Content-Sha256` header enabled to avoid `SignatureDoesNotMatch`.
 fn signing_settings_for(service: &str) -> SigningSettings {

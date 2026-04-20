@@ -1194,7 +1194,7 @@ mod tests {
 
     #[test]
     fn backend_client_requires_source_scoped_inputs_during_registration() {
-        let manifest = parse_http_manifest(json!({
+        let auth_manifest = parse_http_manifest(json!({
             "dsl_version": 3,
             "name": "alpha",
             "version": "0.1.0",
@@ -1205,6 +1205,25 @@ mod tests {
                 "header": "Authorization",
                 "api_token": "Bearer {{input.API_KEY}}"
             },
+            "inputs": {
+                "API_KEY": { "kind": "secret" }
+            },
+            "tables": [{
+                "name": "items",
+                "description": "items",
+                "request": { "path": "/items" },
+                "columns": [{
+                    "name": "id",
+                    "type": "Utf8"
+                }]
+            }]
+        }));
+        let header_manifest = parse_http_manifest(json!({
+            "dsl_version": 3,
+            "name": "alpha",
+            "version": "0.1.0",
+            "backend": "http",
+            "base_url": "https://api.example.com",
             "request_headers": [{
                 "name": "X-Api-Key",
                 "from": "input",
@@ -1224,14 +1243,25 @@ mod tests {
             }]
         }));
 
-        let error = HttpSourceClient::from_manifest(&manifest, &BTreeMap::new(), &BTreeMap::new())
-            .expect_err("missing source-scoped input must fail during registration");
+        for (manifest, expected_detail) in [
+            (
+                auth_manifest,
+                "missing source input 'API_KEY' for template token",
+            ),
+            (
+                header_manifest,
+                "alpha source request header 'X-Api-Key' could not be resolved",
+            ),
+        ] {
+            let error =
+                HttpSourceClient::from_manifest(&manifest, &BTreeMap::new(), &BTreeMap::new())
+                    .expect_err("missing source-scoped input must fail during registration");
 
-        assert!(
-            error
-                .to_string()
-                .contains("missing source input 'API_KEY' for template token")
-        );
+            assert!(
+                error.to_string().contains(expected_detail),
+                "expected error to contain '{expected_detail}', got: {error}"
+            );
+        }
     }
 
     #[test]
