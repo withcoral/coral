@@ -14,6 +14,10 @@
     "inputs": { "$ref": "#/$defs/inputs" },
     "base_url": { "type": "string", "minLength": 1 },
     "auth": { "$ref": "#/$defs/auth" },
+    "request_headers": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/header" }
+    },
     "rate_limit": { "$ref": "#/$defs/rate_limit" },
     "tables": {
       "type": "array",
@@ -68,13 +72,11 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["type"],
+          "required": ["type", "header", "api_token"],
           "properties": {
-            "type": { "const": "ApiKeyAuthenticator" },
-            "headers": {
-              "type": "array",
-              "items": { "$ref": "#/$defs/header" }
-            }
+            "type": { "const": "ApiKeyAuth" },
+            "header": { "type": "string", "minLength": 1 },
+            "api_token": { "type": "string", "minLength": 1 }
           }
         },
         {
@@ -82,9 +84,21 @@
           "additionalProperties": false,
           "required": ["type", "username", "password"],
           "properties": {
-            "type": { "const": "BasicHttpAuthenticator" },
+            "type": { "const": "BasicHttpAuth" },
             "username": { "type": "string", "minLength": 1 },
             "password": { "type": "string", "minLength": 1 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type"],
+          "properties": {
+            "type": { "const": "CustomHeadersAuth" },
+            "headers": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/header" }
+            }
           }
         }
       ]
