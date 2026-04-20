@@ -22,10 +22,9 @@ fn source_test_errors_when_required_secret_is_missing() {
       TEST_API_KEY:
         kind: secret
     auth:
-      headers:
-        - name: Authorization
-          from: template
-          template: "{{input.TEST_API_KEY}}"
+      type: ApiKeyAuth
+      header: Authorization
+      api_token: "{{input.TEST_API_KEY}}"
     tables:
       - name: dummy
         description: dummy table
