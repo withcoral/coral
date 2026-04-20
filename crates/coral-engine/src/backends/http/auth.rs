@@ -150,8 +150,12 @@ pub(crate) fn resolve_auth_headers(
         request: &built,
         resolved_inputs,
     })?;
+    // `insert` (not `append`) so the computed auth value is authoritative —
+    // any header already attached to the built request under the same name
+    // (from `request_headers:`, per-request headers, or reqwest defaults) is
+    // replaced rather than duplicated.
     for (name, value) in headers {
-        built.headers_mut().append(name, value);
+        built.headers_mut().insert(name, value);
     }
     Ok(built)
 }
