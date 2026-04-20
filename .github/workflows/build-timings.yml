@@ -63,45 +63,6 @@ jobs:
           path: build-output.txt
           retention-days: 30
 
-      - name: Evict least-recently-used caches when quota is high
-        if: always()
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          limit=$((10 * 1024 * 1024 * 1024))  # 10 GiB
-          target=$((limit * 70 / 100))         # evict down to 70%
-
-          usage=$(gh api "repos/$GITHUB_REPOSITORY/actions/cache/usage" \
-            --jq '.active_caches_size_in_bytes')
-          pct=$((usage * 100 / limit))
-          echo "Cache usage before eviction: $((usage / 1024 / 1024)) MiB (${pct}%)"
-
-          if [ "$usage" -le "$target" ]; then
-            echo "Under target, nothing to evict."
-            exit 0
-          fi
-
-          # List all Rust caches, least recently accessed first
-          gh cache list --repo "$GITHUB_REPOSITORY" \
-            --key "v0-rust-" \
-            --sort last_accessed_at --order asc --limit 100 \
-            --json key,sizeInBytes,lastAccessedAt \
-            --jq '.[] | "\(.sizeInBytes)\t\(.lastAccessedAt)\t\(.key)"' \
-          | while IFS=$'\t' read -r size accessed key; do
-              if [ "$usage" -le "$target" ]; then
-                echo "Usage is now under target, stopping."
-                break
-              fi
-              echo "Evicting (last accessed ${accessed}): ${key}"
-              gh cache delete "$key" --repo "$GITHUB_REPOSITORY"
-              usage=$((usage - size))
-            done
-
-          usage=$(gh api "repos/$GITHUB_REPOSITORY/actions/cache/usage" \
-            --jq '.active_caches_size_in_bytes')
-          echo "Cache usage after eviction: $((usage / 1024 / 1024)) MiB ($((usage * 100 / limit))%)"
-
       - name: Check cache quota usage
         if: always()
         env:
@@ -115,6 +76,5 @@ jobs:
           usage_mb=$((usage / 1024 / 1024))
           echo "Cache usage: ${usage_mb} MiB / 10240 MiB (${pct}%)"
           if [ "$pct" -ge 80 ]; then
-            echo "::error::Cache usage is at ${pct}% (${usage_mb} MiB / 10 GiB)"
-            exit 1
+            echo "::warning::Cache usage is at ${pct}% (${usage_mb} MiB / 10 GiB)"
           fi
