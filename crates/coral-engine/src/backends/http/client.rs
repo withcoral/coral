@@ -4,19 +4,19 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
-use base64::Engine as _;
-use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use datafusion::error::{DataFusionError, Result};
 use reqwest::header::HeaderMap;
 use serde_json::{Map, Value, json};
 
 use crate::backends::http::ProviderQueryError;
+use crate::backends::http::auth::resolve_auth_headers;
 use crate::backends::http::rate_limit::{RateLimitDecision, check_rate_limit};
 use crate::backends::shared::json_path::get_path_value;
+use crate::backends::shared::template::{render_template, resolve_value_source, value_to_string};
 use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec, RateLimitSpec};
 use coral_spec::{
     AuthSpec, HeaderSpec, HttpMethod, ManifestInputKind, PageSizeSpec, ParsedTemplate, RowStrategy,
-    TemplateNamespace, TemplatePart, ValidatedPagination, ValidatedPaginationMode, ValueSourceSpec,
+    ValidatedPagination, ValidatedPaginationMode,
 };
 
 const DEFAULT_MAX_PAGES: usize = 10_000;
@@ -87,28 +87,6 @@ impl HttpSourceClient {
         source_variables: &BTreeMap<String, String>,
     ) -> Result<Self> {
         let resolved_inputs = build_resolved_inputs(manifest, source_secrets, source_variables);
-
-        resolve_auth_headers(&manifest.auth, &resolved_inputs).map_err(|error| {
-            DataFusionError::Execution(format!(
-                "{} source auth could not be resolved: {error}",
-                manifest.common.name
-            ))
-        })?;
-
-        for header in &manifest.request_headers {
-            let resolved = resolve_value_source(
-                &header.value,
-                &HashMap::new(),
-                &HashMap::new(),
-                &resolved_inputs,
-            )?;
-            if resolved.is_none() {
-                return Err(DataFusionError::Execution(format!(
-                    "{} source request header '{}' could not be resolved",
-                    manifest.common.name, header.name
-                )));
-            }
-        }
 
         let request_timeout = Duration::from_secs(DEFAULT_HTTP_REQUEST_TIMEOUT_SECS);
         let http = reqwest::Client::builder()
@@ -380,10 +358,6 @@ async fn execute_request(
         let method_label = http_method_label(method);
         let mut request = build_http_request(http, method, url);
 
-        for (name, value) in resolve_auth_headers(auth, resolved_inputs)? {
-            request = request.header(name, value);
-        }
-
         for header in request_headers {
             if let Some(value) =
                 resolve_value_source(&header.value, filters, state, resolved_inputs)?
@@ -413,7 +387,9 @@ async fn execute_request(
             .and_then(|b| serde_json::to_string_pretty(b).ok())
             .filter(|s| !s.is_empty());
 
-        let response = request.send().await.map_err(|error| {
+        let built = resolve_auth_headers(auth, request, resolved_inputs)?;
+
+        let response = http.execute(built).await.map_err(|error| {
             request_error(
                 "request",
                 method_label,
@@ -665,108 +641,6 @@ fn page_is_exhausted(rows_on_page: usize, page_size: Option<usize>) -> bool {
     rows_on_page == 0 || page_size.is_some_and(|requested| rows_on_page < requested)
 }
 
-fn resolve_auth_headers(
-    auth: &AuthSpec,
-    resolved_inputs: &BTreeMap<String, String>,
-) -> Result<Vec<(String, String)>> {
-    let empty_filters: HashMap<String, String> = HashMap::new();
-    let empty_state: HashMap<String, String> = HashMap::new();
-    match auth {
-        AuthSpec::ApiKeyAuth(spec) => {
-            let token = render_template(
-                &spec.api_token,
-                &empty_filters,
-                &empty_state,
-                resolved_inputs,
-            )?;
-            Ok(vec![(spec.header.clone(), token)])
-        }
-        AuthSpec::BasicHttpAuth(spec) => {
-            let username = render_template(
-                &spec.username,
-                &empty_filters,
-                &empty_state,
-                resolved_inputs,
-            )?;
-            let password = render_template(
-                &spec.password,
-                &empty_filters,
-                &empty_state,
-                resolved_inputs,
-            )?;
-            let encoded = BASE64_STANDARD.encode(format!("{username}:{password}"));
-            Ok(vec![(
-                "Authorization".to_string(),
-                format!("Basic {encoded}"),
-            )])
-        }
-        AuthSpec::CustomHeadersAuth(spec) => {
-            let mut out = Vec::with_capacity(spec.headers.len());
-            for header in &spec.headers {
-                let resolved = resolve_value_source(
-                    &header.value,
-                    &empty_filters,
-                    &empty_state,
-                    resolved_inputs,
-                )?
-                .ok_or_else(|| {
-                    DataFusionError::Execution(format!(
-                        "missing value for auth header '{}'",
-                        header.name
-                    ))
-                })?;
-                out.push((header.name.clone(), value_to_string(&resolved)));
-            }
-            Ok(out)
-        }
-    }
-}
-
-fn resolve_value_source(
-    value: &ValueSourceSpec,
-    filters: &HashMap<String, String>,
-    state: &HashMap<String, String>,
-    resolved_inputs: &BTreeMap<String, String>,
-) -> Result<Option<Value>> {
-    match value {
-        ValueSourceSpec::Template { template } => {
-            let rendered = render_template(template, filters, state, resolved_inputs)?;
-            Ok(Some(Value::String(rendered)))
-        }
-        ValueSourceSpec::Literal { value } => Ok(Some(value.clone())),
-        ValueSourceSpec::Filter { key, default } => Ok(filters
-            .get(key)
-            .map(|v| Value::String(v.clone()))
-            .or_else(|| default.clone())),
-        ValueSourceSpec::FilterInt { key, default } => {
-            let value = if let Some(filter) = filters.get(key) {
-                let parsed = filter.parse::<i64>().map_err(|error| {
-                    DataFusionError::Execution(format!(
-                        "filter '{key}' value '{filter}' is not a valid i64: {error}"
-                    ))
-                })?;
-                Some(json!(parsed))
-            } else {
-                default.map(|value| json!(value))
-            };
-            Ok(value)
-        }
-        ValueSourceSpec::Input { key } => Ok(resolved_inputs.get(key).cloned().map(Value::String)),
-        ValueSourceSpec::State { key } => Ok(state.get(key).map(|v| Value::String(v.clone()))),
-        ValueSourceSpec::NowEpochMinusSeconds { seconds } => {
-            #[allow(
-                clippy::cast_possible_wrap,
-                reason = "Current Unix epoch seconds fit within i64 for centuries"
-            )]
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs() as i64;
-            let value = now.saturating_sub(*seconds);
-            Ok(Some(json!(value)))
-        }
-    }
-}
 
 fn pagination_state_values(state: &PageState) -> HashMap<String, String> {
     let mut values = HashMap::new();
@@ -776,70 +650,6 @@ fn pagination_state_values(state: &PageState) -> HashMap<String, String> {
         values.insert("cursor".to_string(), cursor.clone());
     }
     values
-}
-
-fn render_template(
-    template: &ParsedTemplate,
-    filters: &HashMap<String, String>,
-    state: &HashMap<String, String>,
-    resolved_inputs: &BTreeMap<String, String>,
-) -> Result<String> {
-    let mut out = String::with_capacity(template.raw().len());
-    for part in template.parts() {
-        match part {
-            TemplatePart::Literal(part) => out.push_str(part),
-            TemplatePart::Token(token) => out.push_str(&resolve_template_token(
-                token,
-                filters,
-                state,
-                resolved_inputs,
-            )?),
-        }
-    }
-    Ok(out)
-}
-
-fn resolve_template_token(
-    token: &coral_spec::TemplateToken,
-    filters: &HashMap<String, String>,
-    state: &HashMap<String, String>,
-    resolved_inputs: &BTreeMap<String, String>,
-) -> Result<String> {
-    let default = token.default_value().map(ToString::to_string);
-
-    if token.namespace() == &TemplateNamespace::Input {
-        return resolved_inputs
-            .get(token.key())
-            .cloned()
-            .or(default)
-            .ok_or_else(|| {
-                DataFusionError::Execution(format!(
-                    "missing source input '{}' for template token",
-                    token.key()
-                ))
-            });
-    }
-
-    if token.namespace() == &TemplateNamespace::Filter {
-        return filters
-            .get(token.key())
-            .cloned()
-            .or(default)
-            .ok_or_else(|| {
-                DataFusionError::Execution(format!("missing filter '{}'", token.key()))
-            });
-    }
-
-    if token.namespace() == &TemplateNamespace::State {
-        return state.get(token.key()).cloned().or(default).ok_or_else(|| {
-            DataFusionError::Execution(format!("missing state value '{}'", token.key()))
-        });
-    }
-
-    Err(DataFusionError::Execution(format!(
-        "unsupported template token '{}'",
-        token.raw()
-    )))
 }
 
 fn build_resolved_inputs(
@@ -861,16 +671,6 @@ fn build_resolved_inputs(
         }
     }
     resolved
-}
-
-fn value_to_string(value: &Value) -> String {
-    match value {
-        Value::Null => String::new(),
-        Value::Bool(v) => v.to_string(),
-        Value::Number(v) => v.to_string(),
-        Value::String(v) => v.clone(),
-        Value::Array(_) | Value::Object(_) => serde_json::to_string(value).unwrap_or_default(),
-    }
 }
 
 fn build_logged_url(url: &str, query_pairs: &[(String, String)]) -> String {
@@ -1096,9 +896,9 @@ mod tests {
     use tokio::task::JoinHandle;
 
     use super::{
-        AuthSpec, HttpSourceClient, PageState, RequestSpec as HttpRequestSpec,
-        apply_pagination_query_pairs, execute_request, extract_next_link_url, extract_rows,
-        join_url, normalize_base_url, page_is_exhausted, resolve_value_source,
+        AuthSpec, PageState, RequestSpec as HttpRequestSpec, apply_pagination_query_pairs,
+        execute_request, extract_next_link_url, extract_rows, join_url, normalize_base_url,
+        page_is_exhausted, resolve_value_source,
     };
     use coral_spec::PaginationMode;
     use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec, RateLimitSpec};
@@ -1351,44 +1151,6 @@ mod tests {
             error
                 .to_string()
                 .contains("filter 'start_time' value 'not-a-number' is not a valid i64")
-        );
-    }
-
-    #[test]
-    fn backend_client_requires_source_scoped_credentials() {
-        let manifest = parse_http_manifest(json!({
-            "dsl_version": 3,
-            "name": "alpha",
-            "version": "0.1.0",
-            "backend": "http",
-            "base_url": "https://api.example.com",
-            "auth": {
-                "type": "ApiKeyAuth",
-                "header": "Authorization",
-                "api_token": "Bearer {{input.API_KEY}}"
-            },
-            "inputs": {
-                "API_KEY": { "kind": "secret" }
-            },
-            "tables": [{
-                "name": "items",
-                "description": "items",
-                "request": { "path": "/items" },
-                "columns": [{
-                    "name": "id",
-                    "type": "Utf8"
-                }]
-            }]
-        }));
-        let source_secrets = BTreeMap::new();
-
-        let error = HttpSourceClient::from_manifest(&manifest, &source_secrets, &BTreeMap::new())
-            .expect_err("missing source-scoped credentials must fail");
-
-        assert!(
-            error
-                .to_string()
-                .contains("missing source input 'API_KEY' for template token")
         );
     }
 

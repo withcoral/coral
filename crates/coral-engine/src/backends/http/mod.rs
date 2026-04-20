@@ -14,7 +14,9 @@ use crate::backends::{
     RegisteredTable, build_registered_table, registered_columns_from_specs, required_filter_names,
 };
 use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec};
+pub(crate) mod auth;
 pub(crate) mod client;
+pub(crate) mod custom;
 pub(crate) mod error;
 pub(crate) mod provider;
 mod rate_limit;

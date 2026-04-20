@@ -85,7 +85,10 @@ mod schema;
 mod template;
 mod validate;
 
-pub use backends::http::{ApiKeyAuthSpec, AuthSpec, BasicHttpAuthSpec, CustomHeadersAuthSpec};
+pub use backends::http::{
+    ApiKeyAuthSpec, AuthSpec, AwsSigV4Spec, BasicHttpAuthSpec, CustomAuthSpec,
+    CustomHeadersAuthSpec,
+};
 pub use common::{
     BodyFieldSpec, ColumnSpec, ExprSpec, FilterMode, FilterSpec, HeaderSpec, HttpMethod,
     ManifestDataType, PageSizeSpec, PaginationMode, PaginationSpec, QueryParamSpec,
