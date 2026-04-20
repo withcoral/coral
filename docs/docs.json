@@ -75,10 +75,7 @@
       },
       {
         "group": "Guides",
-        "pages": [
-          "guides/use-coral-over-mcp",
-          "guides/write-a-custom-source"
-        ]
+        "pages": ["guides/use-coral-over-mcp", "guides/write-a-custom-source"]
       },
       {
         "group": "Reference",
@@ -105,6 +102,9 @@
       "apiKey": "phc_vgjDFiUbVgKPsKQL3wKPwsG3z7KnH4hgLi6n57PX7HEs",
       "apiHost": "https://eu.posthog.com",
       "sessionRecording": false
+    },
+    "ga4": {
+      "measurementId": "G-MZ1LQREJTK"
     }
   },
   "thumbnails": {
