@@ -268,9 +268,44 @@ auth:
 
 Currently available authenticators:
 
-| `authenticator:` | Purpose | Required fields |
-|------------------|---------|-----------------|
-| `aws_sigv4` | AWS Signature Version 4 | `service`, `region`, `access_key_id`, `secret_access_key` (+ optional `session_token`) |
+| `authenticator:` | Purpose |
+|------------------|---------|
+| `aws_sigv4` | AWS Signature Version 4 — signs every outbound request over the canonical method, URL, headers, and body |
+
+##### `aws_sigv4` fields
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `service` | yes | AWS service code used in the signing scope. Not metadata — SigV4 derives the signing key from `HMAC(region, service)`, and AWS validates that the scope matches the endpoint being called. Wrong code → `403 SignatureDoesNotMatch`. Common values: `s3`, `logs` (CloudWatch Logs), `cloudtrail`, `ce` (Cost Explorer), `sts`, `ec2`, `lambda`, `dynamodb`, `monitoring` (CloudWatch Metrics), `events` (EventBridge). Each source manifest sets the value matching its target API. |
+| `region` | yes | AWS region in the standard short form (`us-east-1`, `eu-west-2`, …). Templated string — typically `{{input.AWS_REGION}}` so the same manifest can serve multiple regions. |
+| `access_key_id` | yes | IAM access key ID. Accepts both long-lived user keys and STS-issued temporary keys. Templated — usually sourced from a secret input. |
+| `secret_access_key` | yes | IAM secret access key paired with `access_key_id`. Templated — usually sourced from a secret input. |
+| `session_token` | no | STS session token. Include when `access_key_id` / `secret_access_key` are temporary credentials (AssumeRole, MFA, federated sessions, etc.). Coral emits it as the `X-Amz-Security-Token` header. Omit for long-lived IAM user keys. |
+
+Example — signing requests against CloudWatch Logs with temporary STS credentials:
+
+```yaml
+inputs:
+  AWS_REGION:
+    kind: variable
+    default: us-east-1
+  AWS_ACCESS_KEY_ID:
+    kind: secret
+  AWS_SECRET_ACCESS_KEY:
+    kind: secret
+  AWS_SESSION_TOKEN:
+    kind: secret
+auth:
+  type: CustomAuth
+  authenticator: aws_sigv4
+  service: logs
+  region: "{{input.AWS_REGION}}"
+  access_key_id: "{{input.AWS_ACCESS_KEY_ID}}"
+  secret_access_key: "{{input.AWS_SECRET_ACCESS_KEY}}"
+  session_token: "{{input.AWS_SESSION_TOKEN}}"
+```
+
+Coral does not fetch credentials dynamically (IMDS, EC2 instance profile, `~/.aws/credentials`, SSO, etc.) — static values must flow in through inputs.
 
 ### Request headers
 
