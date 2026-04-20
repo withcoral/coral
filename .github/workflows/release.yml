@@ -57,36 +57,34 @@ jobs:
           fi
       - name: Package
         run: |
-          archive="coral-${TAG_NAME}-${{ matrix.target }}.tar.gz"
+          archive="coral-${{ matrix.target }}.tar.gz"
           cd "target/${{ matrix.target }}/release"
           tar czf "../../../${archive}" coral
           cd ../../../
       - name: Upload artifact
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: coral-${{ env.TAG_NAME }}-${{ matrix.target }}
-          path: coral-${{ env.TAG_NAME }}-${{ matrix.target }}.tar.gz
+          name: coral-${{ matrix.target }}
+          path: coral-${{ matrix.target }}.tar.gz
 
   checksums:
     needs: build
     runs-on: ubuntu-latest
-    env:
-      TAG_NAME: ${{ github.event.release.tag_name || inputs.tag }}
     steps:
       - name: Download artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          pattern: coral-${{ env.TAG_NAME }}-*
+          pattern: coral-*
           path: artifacts
           merge-multiple: true
       - name: Generate checksums
         run: |
           cd artifacts
-          sha256sum coral-${TAG_NAME}-*.tar.gz > checksums.sha256
+          sha256sum coral-*.tar.gz > checksums.sha256
       - name: Upload checksums
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: coral-${{ env.TAG_NAME }}-checksums
+          name: checksums
           path: artifacts/checksums.sha256
 
   publish-version:
@@ -101,7 +99,7 @@ jobs:
       - name: Download artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          pattern: coral-${{ env.TAG_NAME }}-*
+          pattern: "{coral-*,checksums}"
           path: artifacts
           merge-multiple: true
 
@@ -121,7 +119,7 @@ jobs:
         run: |
           set -euo pipefail
           gh release upload "$TAG_NAME" \
-            artifacts/coral-${TAG_NAME}-*.tar.gz \
+            artifacts/coral-*.tar.gz \
             artifacts/checksums.sha256 \
             --repo "$GITHUB_REPOSITORY" \
             --clobber
