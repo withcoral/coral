@@ -2,7 +2,7 @@ dsl_version: 3
 name: openobserve
 version: 0.1.0
 backend: http
-description: |
+description: >-
   Query streams, logs, metrics, and traces from OpenObserve (Cloud or
   self-hosted).
 inputs:

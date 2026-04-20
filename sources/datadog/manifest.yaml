@@ -2,7 +2,7 @@ name: datadog
 version: 2.0.0
 dsl_version: 3
 backend: http
-description: |
+description: >-
   Query monitors, events, incidents, dashboards, hosts, services, APM
   dependencies, downtimes, SLOs, synthetic tests, users, logs, spans,
   and metrics from Datadog.

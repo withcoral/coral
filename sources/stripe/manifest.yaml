@@ -1,7 +1,7 @@
 dsl_version: 3
 name: stripe
 version: 2026-03-25.dahlia
-description: |
+description: >-
   Query customers, charges, subscriptions, invoices, payments, products,
   prices, refunds, disputes, payouts, balance transactions, and events
   from Stripe.

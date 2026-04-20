@@ -2,7 +2,7 @@ name: intercom
 version: 0.1.0
 dsl_version: 3
 backend: http
-description: |
+description: >-
   Query contacts, companies, conversations, admins, tags, teams,
   segments, data attributes, collections, articles, and ticket types
   from Intercom.

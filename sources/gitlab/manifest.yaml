@@ -1,7 +1,7 @@
 dsl_version: 3
 name: gitlab
 version: v4
-description: |
+description: >-
   Query projects, groups, issues, merge requests, pipelines,
   deployments, packages, users, and instance metadata from GitLab
   (Cloud or self-hosted).

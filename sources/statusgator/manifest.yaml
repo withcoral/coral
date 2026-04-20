@@ -2,7 +2,7 @@ name: statusgator
 version: 1.0.0
 dsl_version: 3
 backend: http
-description: |
+description: >-
   Query status boards, monitors, incidents, history, service
   components, subscribers, users, and monitoring regions from
   StatusGator.

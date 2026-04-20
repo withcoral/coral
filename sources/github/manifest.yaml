@@ -2,7 +2,7 @@ name: github
 version: 1.1.5
 dsl_version: 3
 backend: http
-description: |
+description: >-
   Query repositories, issues, pull requests, workflows, organizations,
   users, teams, and API metadata from GitHub (Cloud or Enterprise).
 base_url: "{{input.GITHUB_API_BASE}}"

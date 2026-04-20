@@ -1,7 +1,7 @@
 dsl_version: 3
 name: clickup
 version: '2.0'
-description: |
+description: >-
   Query tasks, spaces, folders, lists, goals, time entries, comments, views,
   tags, custom fields, teams, and users from ClickUp.
 backend: http

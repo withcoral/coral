@@ -2,7 +2,8 @@ name: slack
 version: 2.0.0
 dsl_version: 3
 backend: http
-description: Query channels, messages, and users from your Slack workspace.
+description: >-
+  Query channels, messages, and users from your Slack workspace.
 inputs:
   SLACK_TOKEN:
     kind: secret

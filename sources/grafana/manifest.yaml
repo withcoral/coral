@@ -2,7 +2,7 @@ name: grafana
 version: 0.1.0
 dsl_version: 3
 backend: http
-description: |
+description: >-
   Query dashboards, folders, datasources, alert rules, annotations,
   contact points, teams, users, and dashboard panels from Grafana
   (Cloud or self-hosted).
