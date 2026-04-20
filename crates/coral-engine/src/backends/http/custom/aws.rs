@@ -4,45 +4,38 @@
 //! requests using the `aws-sigv4` crate. Configured from [`AwsSigV4Spec`]
 //! and signs over the live request via [`AuthContext`].
 
-use std::collections::HashMap;
 use std::time::SystemTime;
 
 use aws_credential_types::Credentials;
-use aws_sigv4::http_request::{
-    SignableBody, SignableRequest, SigningSettings, sign as sigv4_sign,
-};
+use aws_sigv4::http_request::{SignableBody, SignableRequest, SigningSettings, sign as sigv4_sign};
 use aws_sigv4::sign::v4;
 use datafusion::error::{DataFusionError, Result};
+use reqwest::header::{HeaderName, HeaderValue};
 
 use coral_spec::AwsSigV4Spec;
 
-use crate::backends::http::auth::{AuthContext, Authenticator};
+use crate::backends::http::auth::{AuthContext, Authenticator, EMPTY_MAP};
 use crate::backends::shared::template::render_template;
 
 impl Authenticator for AwsSigV4Spec {
-    fn auth(&self, ctx: &AuthContext<'_>) -> Result<Vec<(String, String)>> {
-        let empty_filters: HashMap<String, String> = HashMap::new();
-        let empty_state: HashMap<String, String> = HashMap::new();
-        let region =
-            render_template(&self.region, &empty_filters, &empty_state, ctx.resolved_inputs)?;
+    fn auth(&self, ctx: &AuthContext<'_>) -> Result<Vec<(HeaderName, HeaderValue)>> {
+        let region = render_template(&self.region, &EMPTY_MAP, &EMPTY_MAP, ctx.resolved_inputs)?;
         let access_key_id = render_template(
             &self.access_key_id,
-            &empty_filters,
-            &empty_state,
+            &EMPTY_MAP,
+            &EMPTY_MAP,
             ctx.resolved_inputs,
         )?;
         let secret_access_key = render_template(
             &self.secret_access_key,
-            &empty_filters,
-            &empty_state,
+            &EMPTY_MAP,
+            &EMPTY_MAP,
             ctx.resolved_inputs,
         )?;
         let session_token = self
             .session_token
             .as_ref()
-            .map(|template| {
-                render_template(template, &empty_filters, &empty_state, ctx.resolved_inputs)
-            })
+            .map(|template| render_template(template, &EMPTY_MAP, &EMPTY_MAP, ctx.resolved_inputs))
             .transpose()?
             .filter(|value| !value.is_empty());
 
@@ -63,34 +56,52 @@ impl Authenticator for AwsSigV4Spec {
             .settings(SigningSettings::default())
             .build()
             .map_err(|error| {
-                DataFusionError::Execution(format!(
-                    "failed to build SigV4 signing params: {error}"
-                ))
+                DataFusionError::Execution(format!("failed to build SigV4 signing params: {error}"))
             })?
             .into();
 
-        let header_refs = ctx
-            .headers
-            .iter()
-            .map(|(name, value)| (name.as_str(), value.as_str()));
-        let body = SignableBody::Bytes(ctx.body.unwrap_or(&[]));
-        let signable = SignableRequest::new(ctx.method.as_str(), ctx.url, header_refs, body)
-            .map_err(|error| {
+        let headers = ctx.headers();
+        let mut header_refs = Vec::with_capacity(headers.len());
+        for (name, value) in headers {
+            let value_str = value.to_str().map_err(|error| {
                 DataFusionError::Execution(format!(
-                    "failed to build SigV4 signable request: {error}"
+                    "header '{name}' is not valid ASCII, cannot sign with SigV4: {error}"
                 ))
             })?;
+            header_refs.push((name.as_str(), value_str));
+        }
+        let body = SignableBody::Bytes(ctx.body().unwrap_or(&[]));
+        let signable = SignableRequest::new(
+            ctx.method().as_str(),
+            ctx.url().as_str(),
+            header_refs.iter().copied(),
+            body,
+        )
+        .map_err(|error| {
+            DataFusionError::Execution(format!("failed to build SigV4 signable request: {error}"))
+        })?;
 
         let (instructions, _signature) = sigv4_sign(signable, &signing_params)
-            .map_err(|error| {
-                DataFusionError::Execution(format!("SigV4 signing failed: {error}"))
-            })?
+            .map_err(|error| DataFusionError::Execution(format!("SigV4 signing failed: {error}")))?
             .into_parts();
 
         let (headers, _params) = instructions.into_parts();
-        Ok(headers
-            .into_iter()
-            .map(|header| (header.name().to_string(), header.value().to_string()))
-            .collect())
+        let mut out = Vec::with_capacity(headers.len());
+        for header in headers {
+            let name = HeaderName::try_from(header.name()).map_err(|error| {
+                DataFusionError::Execution(format!(
+                    "SigV4 returned invalid header name '{}': {error}",
+                    header.name()
+                ))
+            })?;
+            let value = HeaderValue::try_from(header.value()).map_err(|error| {
+                DataFusionError::Execution(format!(
+                    "SigV4 returned invalid header value for '{}': {error}",
+                    header.name()
+                ))
+            })?;
+            out.push((name, value));
+        }
+        Ok(out)
     }
 }
