@@ -9,11 +9,17 @@
 //! interpolation semantics.
 
 use std::collections::{BTreeMap, HashMap};
+use std::sync::LazyLock;
 
 use datafusion::error::{DataFusionError, Result};
 use serde_json::{Value, json};
 
 use coral_spec::{ParsedTemplate, TemplateNamespace, TemplatePart, TemplateToken, ValueSourceSpec};
+
+/// Shared empty filter/state map for source-scoped rendering (auth,
+/// registration-time validation). Lives next to [`render_template`] /
+/// [`resolve_value_source`] so each call site doesn't allocate its own.
+pub(crate) static EMPTY_MAP: LazyLock<HashMap<String, String>> = LazyLock::new(HashMap::new);
 
 /// Resolve one declarative value source into an optional JSON value.
 pub(crate) fn resolve_value_source(
@@ -137,5 +143,60 @@ pub(crate) fn value_to_string(value: &Value) -> String {
         Value::Number(v) => v.to_string(),
         Value::String(v) => v.clone(),
         Value::Array(_) | Value::Object(_) => serde_json::to_string(value).unwrap_or_default(),
+    }
+}
+
+/// Verify every `{{input.X}}` token referenced by `template` has a usable
+/// value in `resolved_inputs` (or a token-level default). Filter / state
+/// tokens are tolerated — those resolve at request time, not registration.
+///
+/// Used for source-registration preflight of templates that may reference
+/// per-request context, so the check is deliberately narrower than
+/// [`render_template`].
+pub(crate) fn validate_input_dependencies(
+    template: &ParsedTemplate,
+    resolved_inputs: &BTreeMap<String, String>,
+) -> Result<()> {
+    for part in template.parts() {
+        if let TemplatePart::Token(token) = part
+            && token.namespace() == &TemplateNamespace::Input
+            && token.default_value().is_none()
+            && !resolved_inputs.contains_key(token.key())
+        {
+            return Err(DataFusionError::Execution(format!(
+                "missing source input '{}' for template token",
+                token.key()
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Same input-only validation as [`validate_input_dependencies`], but applied
+/// to a [`ValueSourceSpec`]. Literal / filter / state / filter_int /
+/// now_epoch_minus_seconds variants have no input dependencies and are
+/// short-circuited.
+pub(crate) fn validate_value_source_inputs(
+    value: &ValueSourceSpec,
+    resolved_inputs: &BTreeMap<String, String>,
+) -> Result<()> {
+    match value {
+        ValueSourceSpec::Template { template } => {
+            validate_input_dependencies(template, resolved_inputs)
+        }
+        ValueSourceSpec::Input { key } => {
+            if resolved_inputs.contains_key(key) {
+                Ok(())
+            } else {
+                Err(DataFusionError::Execution(format!(
+                    "missing source input '{key}' for `from: input` value source"
+                )))
+            }
+        }
+        ValueSourceSpec::Literal { .. }
+        | ValueSourceSpec::Filter { .. }
+        | ValueSourceSpec::FilterInt { .. }
+        | ValueSourceSpec::State { .. }
+        | ValueSourceSpec::NowEpochMinusSeconds { .. } => Ok(()),
     }
 }

@@ -17,8 +17,8 @@ use reqwest::header::{HeaderName, HeaderValue};
 
 use coral_spec::AwsSigV4Spec;
 
-use crate::backends::http::auth::{AuthContext, Authenticator, EMPTY_MAP};
-use crate::backends::shared::template::render_template;
+use crate::backends::http::auth::{AuthContext, Authenticator};
+use crate::backends::shared::template::{EMPTY_MAP, render_template};
 
 /// Per-service `SigV4` settings. Most AWS APIs accept the library defaults,
 /// but S3 needs path normalization disabled, single percent-encoding, and the

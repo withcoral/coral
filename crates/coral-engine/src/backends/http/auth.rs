@@ -6,8 +6,7 @@
 //! [`AuthContext`]; dynamic variants (AWS `SigV4` and future signers) sign over
 //! them.
 
-use std::collections::{BTreeMap, HashMap};
-use std::sync::LazyLock;
+use std::collections::BTreeMap;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
@@ -16,12 +15,9 @@ use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 
 use coral_spec::{AuthSpec, BasicAuthSpec, CustomAuthSpec, HeaderAuthSpec};
 
-use crate::backends::shared::template::{render_template, resolve_value_source, value_to_string};
-
-/// Empty filter and state maps — auth is source-scoped and has no per-request
-/// context. Shared by every [`Authenticator`] impl so each doesn't allocate
-/// its own empty maps.
-pub(crate) static EMPTY_MAP: LazyLock<HashMap<String, String>> = LazyLock::new(HashMap::new);
+use crate::backends::shared::template::{
+    EMPTY_MAP, render_template, resolve_value_source, value_to_string,
+};
 
 /// Context passed to [`Authenticator::auth`]. Wraps the fully-built
 /// `reqwest::Request` so authenticators can read whatever parts they need

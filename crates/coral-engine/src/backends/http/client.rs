@@ -9,10 +9,13 @@ use reqwest::header::HeaderMap;
 use serde_json::{Map, Value, json};
 
 use crate::backends::http::ProviderQueryError;
-use crate::backends::http::auth::{AuthContext, Authenticator, EMPTY_MAP, resolve_auth_headers};
+use crate::backends::http::auth::{AuthContext, Authenticator, resolve_auth_headers};
 use crate::backends::http::rate_limit::{RateLimitDecision, check_rate_limit};
 use crate::backends::shared::json_path::get_path_value;
-use crate::backends::shared::template::{render_template, resolve_value_source, value_to_string};
+use crate::backends::shared::template::{
+    render_template, resolve_value_source, validate_input_dependencies,
+    validate_value_source_inputs, value_to_string,
+};
 use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec, RateLimitSpec};
 use coral_spec::{
     AuthSpec, HeaderSpec, HttpMethod, PageSizeSpec, ParsedTemplate, RowStrategy,
@@ -331,47 +334,30 @@ fn validate_source_scoped_http_config(
     manifest: &HttpSourceManifest,
     resolved_inputs: &BTreeMap<String, String>,
 ) -> Result<()> {
-    let base_url = render_template(&manifest.base_url, &EMPTY_MAP, &EMPTY_MAP, resolved_inputs)
-        .map_err(|error| {
-            DataFusionError::Execution(format!(
-                "{} source base_url could not be resolved: {error}",
-                manifest.common.name
-            ))
-        })?;
-    let url = reqwest::Url::parse(&normalize_base_url(&base_url)).map_err(|error| {
+    // `base_url` and `request_headers` may legitimately reference
+    // `{{filter.X}}` / `{{state.X}}` tokens that only resolve per-request.
+    // Validate input dependencies only — runtime will handle the rest.
+    validate_input_dependencies(&manifest.base_url, resolved_inputs).map_err(|error| {
         DataFusionError::Execution(format!(
-            "{} source base_url '{base_url}' is not a valid URL: {error}",
+            "{} source base_url could not be resolved: {error}",
             manifest.common.name
         ))
     })?;
-    let mut request = reqwest::Request::new(reqwest::Method::GET, url);
-
     for header in &manifest.request_headers {
-        let resolved =
-            resolve_value_source(&header.value, &EMPTY_MAP, &EMPTY_MAP, resolved_inputs)?;
-        let Some(value) = resolved else {
-            return Err(DataFusionError::Execution(format!(
-                "{} source request header '{}' could not be resolved",
+        validate_value_source_inputs(&header.value, resolved_inputs).map_err(|error| {
+            DataFusionError::Execution(format!(
+                "{} source request header '{}' could not be resolved: {error}",
                 manifest.common.name, header.name
-            )));
-        };
-        let name =
-            reqwest::header::HeaderName::try_from(header.name.as_str()).map_err(|error| {
-                DataFusionError::Execution(format!(
-                    "{} source request header name '{}' is invalid: {error}",
-                    manifest.common.name, header.name
-                ))
-            })?;
-        let header_value = reqwest::header::HeaderValue::try_from(value_to_string(&value).as_str())
-            .map_err(|error| {
-                DataFusionError::Execution(format!(
-                    "{} source request header '{}' value is invalid: {error}",
-                    manifest.common.name, header.name
-                ))
-            })?;
-        request.headers_mut().append(name, header_value);
+            ))
+        })?;
     }
 
+    // Auth is source-scoped — `Authenticator::auth` always runs against
+    // empty filters/state at runtime too, so signing a synthetic request
+    // here exercises the same template-resolution contract as real fetches.
+    let validation_url = reqwest::Url::parse("http://preflight.invalid/")
+        .expect("static preflight URL must parse");
+    let request = reqwest::Request::new(reqwest::Method::GET, validation_url);
     let ctx = AuthContext {
         request: &request,
         resolved_inputs,
