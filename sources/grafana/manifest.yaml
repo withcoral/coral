@@ -26,6 +26,9 @@ auth:
       from: template
       template: Bearer {{input.GRAFANA_TOKEN}}
 
+test_queries:
+  - SELECT * FROM grafana.datasources LIMIT 1
+
 tables:
   - name: dashboards
     description: Grafana dashboards listed via the search API
