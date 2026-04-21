@@ -199,10 +199,6 @@ async fn validate_source_returns_tables() {
     assert_eq!(validated.tables[0].name, "messages");
     assert!(validated.tables[0].required_filters.is_empty());
     assert!(validated.query_tests.is_empty());
-    assert_eq!(validated.declared_query_count, 0);
-    assert_eq!(validated.passed_query_count, 0);
-    assert_eq!(validated.failed_query_count, 0);
-    assert!(validated.all_query_tests_passed);
 
     let rows = harness
         .execute_sql_rows("SELECT type, text FROM local_messages.messages ORDER BY text")
@@ -227,10 +223,6 @@ async fn validate_source_returns_query_test_results_without_unary_error() {
 
     let validated = harness.validate_source("local_messages").await;
     assert_eq!(validated.tables.len(), 1);
-    assert_eq!(validated.declared_query_count, 2);
-    assert_eq!(validated.passed_query_count, 1);
-    assert_eq!(validated.failed_query_count, 1);
-    assert!(!validated.all_query_tests_passed);
     assert_eq!(validated.query_tests.len(), 2);
     assert!(matches!(
         &validated.query_tests[0].outcome,
@@ -310,7 +302,6 @@ async fn validate_source_with_unreachable_api_returns_declared_tables() {
     assert_eq!(validated.tables[0].schema_name, "unreachable_messages");
     assert_eq!(validated.tables[0].name, "messages");
     assert!(validated.query_tests.is_empty());
-    assert!(validated.all_query_tests_passed);
 }
 
 #[tokio::test]
@@ -329,8 +320,6 @@ async fn validate_source_with_unreachable_api_and_test_queries_returns_query_fai
     let validated = harness.validate_source("unreachable_messages").await;
     assert_eq!(validated.tables.len(), 1);
     assert_eq!(validated.query_tests.len(), 1);
-    assert_eq!(validated.failed_query_count, 1);
-    assert!(!validated.all_query_tests_passed);
     assert!(matches!(
         &validated.query_tests[0].outcome,
         Some(query_test_result::Outcome::Failure(QueryTestFailure { error_message }))
@@ -351,7 +340,6 @@ async fn validate_source_with_non_read_only_test_query_returns_stable_query_erro
 
     let validated = harness.validate_source("local_messages").await;
     assert_eq!(validated.query_tests.len(), 1);
-    assert_eq!(validated.failed_query_count, 1);
     assert!(matches!(
         &validated.query_tests[0].outcome,
         Some(query_test_result::Outcome::Failure(QueryTestFailure { error_message }))

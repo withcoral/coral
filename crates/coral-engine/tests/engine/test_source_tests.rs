@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use coral_engine::{CoralQuery, QueryTestOutcome};
+use coral_engine::CoralQuery;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
@@ -75,7 +75,7 @@ async fn test_source_missing_directory_returns_error() {
 }
 
 #[tokio::test]
-async fn validate_source_with_tests_fails_when_source_never_registers() {
+async fn validate_source_fails_when_source_never_registers() {
     let temp = TempDir::new().expect("temp dir");
     let missing_dir = temp.path().join("missing");
     let source = build_source(jsonl_manifest(
@@ -85,9 +85,9 @@ async fn validate_source_with_tests_fails_when_source_never_registers() {
     ));
     let queries = vec!["SELECT * FROM jsonl_test_missing.users".to_string()];
 
-    let error = CoralQuery::validate_source_with_tests(&source, &TestRuntime, &queries)
+    let error = CoralQuery::validate_source(&source, &TestRuntime, &queries)
         .await
-        .expect_err("validate_source_with_tests should fail when the source never registers");
+        .expect_err("validate_source should fail when the source never registers");
 
     assert_eq!(
         error.status_code(),
@@ -100,7 +100,7 @@ async fn validate_source_with_tests_fails_when_source_never_registers() {
 }
 
 #[tokio::test]
-async fn validate_source_with_tests_reports_passing_and_failing_queries() {
+async fn validate_source_reports_passing_and_failing_queries() {
     let temp = TempDir::new().expect("temp dir");
     write_jsonl_file(temp.path(), "users.jsonl", &users_rows());
     let source = build_source(jsonl_manifest(
@@ -113,37 +113,33 @@ async fn validate_source_with_tests_reports_passing_and_failing_queries() {
         "SELECT * FROM jsonl_test_source.missing".to_string(),
     ];
 
-    let outcome = CoralQuery::validate_source_with_tests(&source, &TestRuntime, &queries)
+    let report = CoralQuery::validate_source(&source, &TestRuntime, &queries)
         .await
-        .expect("validate_source_with_tests should succeed");
+        .expect("validate_source should succeed");
 
-    assert_eq!(outcome.tables.len(), 1);
-    assert_eq!(outcome.declared_query_count, 2);
-    assert_eq!(outcome.passed_query_count, 1);
-    assert_eq!(outcome.failed_query_count, 1);
-    assert!(!outcome.all_query_tests_passed);
-    assert_eq!(outcome.query_tests.len(), 2);
-    assert!(outcome.query_tests[0].passed());
-    assert_eq!(outcome.query_tests[0].row_count(), Some(3));
-    assert!(!outcome.query_tests[1].passed());
+    assert_eq!(report.tables.len(), 1);
+    assert_eq!(report.query_tests.len(), 2);
+    assert!(report.query_tests[0].passed());
+    assert_eq!(report.query_tests[0].row_count(), Some(3));
+    assert!(!report.query_tests[1].passed());
     assert!(
-        outcome.query_tests[1]
+        report.query_tests[1]
             .error_message()
             .expect("failed query should carry an error")
             .contains("not found")
-            || outcome.query_tests[1]
+            || report.query_tests[1]
                 .error_message()
                 .expect("failed query should carry an error")
                 .contains("invalid input")
     );
     assert!(matches!(
-        outcome.query_tests[0].outcome(),
-        QueryTestOutcome::Success { row_count } if *row_count == 3
+        report.query_tests[0].result(),
+        Ok(success) if success.row_count() == 3
     ));
 }
 
 #[tokio::test]
-async fn validate_source_with_tests_maps_non_read_only_queries_to_stable_error() {
+async fn validate_source_maps_non_read_only_queries_to_stable_error() {
     let temp = TempDir::new().expect("temp dir");
     write_jsonl_file(temp.path(), "users.jsonl", &users_rows());
     let source = build_source(jsonl_manifest(
@@ -153,13 +149,12 @@ async fn validate_source_with_tests_maps_non_read_only_queries_to_stable_error()
     ));
     let queries = vec!["SET datafusion.execution.batch_size = 1".to_string()];
 
-    let outcome = CoralQuery::validate_source_with_tests(&source, &TestRuntime, &queries)
+    let report = CoralQuery::validate_source(&source, &TestRuntime, &queries)
         .await
-        .expect("validate_source_with_tests should succeed");
+        .expect("validate_source should succeed");
 
-    assert_eq!(outcome.failed_query_count, 1);
     assert_eq!(
-        outcome.query_tests[0].error_message(),
+        report.query_tests[0].error_message(),
         Some("test query must be read-only SQL")
     );
 }

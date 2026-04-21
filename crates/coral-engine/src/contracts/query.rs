@@ -69,22 +69,35 @@ impl QuerySource {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueryTestResult {
     sql: String,
-    outcome: QueryTestOutcome,
+    result: Result<QueryTestSuccess, QueryTestFailure>,
 }
 
-/// Outcome metadata for one validation query execution.
+/// Success metadata for one validation query execution.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum QueryTestOutcome {
-    /// Query executed successfully and produced a row count.
-    Success {
-        /// Row count captured for the successful query.
-        row_count: u64,
-    },
-    /// Query failed and produced an error message.
-    Failure {
-        /// Error message captured for the failed query.
-        error_message: String,
-    },
+pub struct QueryTestSuccess {
+    row_count: u64,
+}
+
+impl QueryTestSuccess {
+    #[must_use]
+    /// Returns the row count captured for the successful query.
+    pub fn row_count(&self) -> u64 {
+        self.row_count
+    }
+}
+
+/// Failure details for one validation query execution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueryTestFailure {
+    error_message: String,
+}
+
+impl QueryTestFailure {
+    #[must_use]
+    /// Returns the error message captured for the failed query.
+    pub fn error_message(&self) -> &str {
+        &self.error_message
+    }
 }
 
 impl QueryTestResult {
@@ -93,7 +106,7 @@ impl QueryTestResult {
     pub fn success(sql: impl Into<String>, row_count: u64) -> Self {
         Self {
             sql: sql.into(),
-            outcome: QueryTestOutcome::Success { row_count },
+            result: Ok(QueryTestSuccess { row_count }),
         }
     }
 
@@ -102,9 +115,9 @@ impl QueryTestResult {
     pub fn failure(sql: impl Into<String>, error_message: impl Into<String>) -> Self {
         Self {
             sql: sql.into(),
-            outcome: QueryTestOutcome::Failure {
+            result: Err(QueryTestFailure {
                 error_message: error_message.into(),
-            },
+            }),
         }
     }
 
@@ -117,66 +130,46 @@ impl QueryTestResult {
     #[must_use]
     /// Returns whether the query executed successfully.
     pub fn passed(&self) -> bool {
-        matches!(self.outcome, QueryTestOutcome::Success { .. })
+        self.result.is_ok()
     }
 
     #[must_use]
     /// Returns the captured row count for successful queries.
     pub fn row_count(&self) -> Option<u64> {
-        match self.outcome {
-            QueryTestOutcome::Success { row_count } => Some(row_count),
-            QueryTestOutcome::Failure { .. } => None,
-        }
+        self.result.as_ref().ok().map(QueryTestSuccess::row_count)
     }
 
     #[must_use]
     /// Returns the error message for failed queries, when present.
     pub fn error_message(&self) -> Option<&str> {
-        match &self.outcome {
-            QueryTestOutcome::Success { .. } => None,
-            QueryTestOutcome::Failure { error_message } => Some(error_message),
-        }
+        self.result
+            .as_ref()
+            .err()
+            .map(QueryTestFailure::error_message)
     }
 
-    #[must_use]
-    /// Returns the outcome metadata for this query test.
-    pub fn outcome(&self) -> &QueryTestOutcome {
-        &self.outcome
+    /// Returns the execution result metadata for this query test.
+    pub fn result(&self) -> &Result<QueryTestSuccess, QueryTestFailure> {
+        &self.result
     }
 }
 
-/// Structured outcome for validating one source and its optional test queries.
+/// Structured report for validating one source and its optional test queries.
 #[derive(Debug, Clone)]
-pub struct SourceValidationOutcome {
+pub struct SourceValidationReport {
     /// Tables exposed by the validated source.
     pub tables: Vec<super::TableInfo>,
     /// One result per declared validation query, in manifest order.
     pub query_tests: Vec<QueryTestResult>,
-    /// Total number of declared validation queries.
-    pub declared_query_count: u64,
-    /// Number of validation queries that executed successfully.
-    pub passed_query_count: u64,
-    /// Number of validation queries that failed.
-    pub failed_query_count: u64,
-    /// Whether every declared validation query passed.
-    pub all_query_tests_passed: bool,
 }
 
-impl SourceValidationOutcome {
+impl SourceValidationReport {
     #[must_use]
-    /// Builds one structured source-validation outcome.
+    /// Builds one structured source-validation report.
     pub fn new(tables: Vec<super::TableInfo>, query_tests: Vec<QueryTestResult>) -> Self {
-        let declared_query_count = u64::try_from(query_tests.len()).unwrap_or(u64::MAX);
-        let passed_query_count =
-            u64::try_from(query_tests.iter().filter(|test| test.passed()).count()).unwrap_or(0);
-        let failed_query_count = declared_query_count.saturating_sub(passed_query_count);
         Self {
             tables,
             query_tests,
-            declared_query_count,
-            passed_query_count,
-            failed_query_count,
-            all_query_tests_passed: failed_query_count == 0,
         }
     }
 }

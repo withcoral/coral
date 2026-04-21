@@ -70,10 +70,6 @@ fn default_validate_source_response() -> ValidateSourceResponse {
         source: Some(mock_source()),
         tables: Vec::new(),
         query_tests: Vec::new(),
-        declared_query_count: 0,
-        passed_query_count: 0,
-        failed_query_count: 0,
-        all_query_tests_passed: true,
     }
 }
 

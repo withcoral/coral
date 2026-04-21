@@ -40,6 +40,13 @@ enum ValidationFollowUp {
     Fail(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct QueryTestCounts {
+    declared: usize,
+    passed: usize,
+    failed: usize,
+}
+
 impl TableDisplayLimit {
     /// The default truncation used after `source add` and during onboarding.
     pub(crate) const DEFAULT: Self = Self::Max(MAX_TABLES_PER_SCHEMA);
@@ -229,6 +236,19 @@ pub(crate) async fn validate_and_print(
     }
 }
 
+pub(crate) async fn validate_and_warn(
+    app: &AppClient,
+    source_name: &str,
+    limit: TableDisplayLimit,
+) -> Result<(), anyhow::Error> {
+    if let Err(err) =
+        validate_and_print(app, source_name, limit, ValidationSeverityMode::WarnOnly).await
+    {
+        eprintln!("Warning: validation failed: {err}");
+    }
+    Ok(())
+}
+
 pub(crate) fn print_validation_pretty(
     response: &ValidateSourceResponse,
     limit: TableDisplayLimit,
@@ -290,15 +310,14 @@ pub(crate) fn print_validation_pretty(
         }
     }
 
-    if response.declared_query_count > 0 {
+    let query_test_counts = query_test_counts(response);
+    if query_test_counts.declared > 0 {
         println!("    {}", style("Query tests").bold());
         println!(
             "    {}",
             style(format!(
                 "{} declared · {} passed · {} failed",
-                response.declared_query_count,
-                response.passed_query_count,
-                response.failed_query_count
+                query_test_counts.declared, query_test_counts.passed, query_test_counts.failed
             ))
             .dim()
         );
@@ -339,16 +358,17 @@ fn validation_follow_up(
     response: &ValidateSourceResponse,
     severity_mode: ValidationSeverityMode,
 ) -> ValidationFollowUp {
-    if response.declared_query_count == 0 || response.all_query_tests_passed {
+    let query_test_counts = query_test_counts(response);
+    if query_test_counts.declared == 0 || query_test_counts.failed == 0 {
         return ValidationFollowUp::None;
     }
 
-    let failure_count = response.failed_query_count.max(1);
+    let failure_count = query_test_counts.failed.max(1);
     let message = format!(
         "{} of {} validation quer{} failed",
         failure_count,
-        response.declared_query_count.max(failure_count),
-        if response.declared_query_count == 1 {
+        query_test_counts.declared.max(failure_count),
+        if query_test_counts.declared == 1 {
             "y"
         } else {
             "ies"
@@ -357,6 +377,20 @@ fn validation_follow_up(
     match severity_mode {
         ValidationSeverityMode::Strict => ValidationFollowUp::Fail(message),
         ValidationSeverityMode::WarnOnly => ValidationFollowUp::Warn(message),
+    }
+}
+
+fn query_test_counts(response: &ValidateSourceResponse) -> QueryTestCounts {
+    let declared = response.query_tests.len();
+    let passed = response
+        .query_tests
+        .iter()
+        .filter(|test| matches!(test.outcome, Some(query_test_result::Outcome::Success(_))))
+        .count();
+    QueryTestCounts {
+        declared,
+        passed,
+        failed: declared.saturating_sub(passed),
     }
 }
 
@@ -471,11 +505,12 @@ mod tests {
         let response = ValidateSourceResponse {
             source: None,
             tables: Vec::new(),
-            query_tests: Vec::new(),
-            declared_query_count: 1,
-            passed_query_count: 1,
-            failed_query_count: 0,
-            all_query_tests_passed: true,
+            query_tests: vec![coral_api::v1::QueryTestResult {
+                sql: "SELECT 1".to_string(),
+                outcome: Some(coral_api::v1::query_test_result::Outcome::Success(
+                    coral_api::v1::QueryTestSuccess { row_count: 1 },
+                )),
+            }],
         };
 
         assert_eq!(
@@ -489,11 +524,22 @@ mod tests {
         let response = ValidateSourceResponse {
             source: None,
             tables: Vec::new(),
-            query_tests: Vec::new(),
-            declared_query_count: 2,
-            passed_query_count: 1,
-            failed_query_count: 1,
-            all_query_tests_passed: false,
+            query_tests: vec![
+                coral_api::v1::QueryTestResult {
+                    sql: "SELECT 1".to_string(),
+                    outcome: Some(coral_api::v1::query_test_result::Outcome::Success(
+                        coral_api::v1::QueryTestSuccess { row_count: 1 },
+                    )),
+                },
+                coral_api::v1::QueryTestResult {
+                    sql: "SELECT missing".to_string(),
+                    outcome: Some(coral_api::v1::query_test_result::Outcome::Failure(
+                        coral_api::v1::QueryTestFailure {
+                            error_message: "missing".to_string(),
+                        },
+                    )),
+                },
+            ],
         };
 
         assert_eq!(
@@ -507,11 +553,14 @@ mod tests {
         let response = ValidateSourceResponse {
             source: None,
             tables: Vec::new(),
-            query_tests: Vec::new(),
-            declared_query_count: 1,
-            passed_query_count: 0,
-            failed_query_count: 1,
-            all_query_tests_passed: false,
+            query_tests: vec![coral_api::v1::QueryTestResult {
+                sql: "SELECT missing".to_string(),
+                outcome: Some(coral_api::v1::query_test_result::Outcome::Failure(
+                    coral_api::v1::QueryTestFailure {
+                        error_message: "missing".to_string(),
+                    },
+                )),
+            }],
         };
 
         assert_eq!(

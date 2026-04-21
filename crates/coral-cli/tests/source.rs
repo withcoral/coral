@@ -104,10 +104,6 @@ async fn source_test_exits_non_zero_when_query_tests_fail() {
                 error_message: "invalid input: table not found".to_string(),
             })),
         }],
-        declared_query_count: 1,
-        passed_query_count: 0,
-        failed_query_count: 1,
-        all_query_tests_passed: false,
     })
     .await;
 
@@ -156,10 +152,6 @@ async fn source_test_succeeds_when_query_tests_pass() {
                 row_count: 1,
             })),
         }],
-        declared_query_count: 1,
-        passed_query_count: 1,
-        failed_query_count: 0,
-        all_query_tests_passed: true,
     })
     .await;
 

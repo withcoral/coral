@@ -192,14 +192,6 @@ message ValidateSourceResponse {
   repeated Table tables = 2;
   // Validation-query results declared by the source spec.
   repeated QueryTestResult query_tests = 3;
-  // Total number of declared validation queries.
-  uint64 declared_query_count = 4;
-  // Number of validation queries that passed.
-  uint64 passed_query_count = 5;
-  // Number of validation queries that failed.
-  uint64 failed_query_count = 6;
-  // Whether every declared validation query passed.
-  bool all_query_tests_passed = 7;
 }
 
 // Source registration and validation APIs.

@@ -1,8 +1,8 @@
 //! Shared gRPC transport helpers for app-owned services.
 
 use coral_api::v1::{
-    Column, QueryTestFailure, QueryTestResult, QueryTestSuccess, Table, Workspace,
-    query_test_result,
+    Column, QueryTestFailure, QueryTestResult, QueryTestSuccess, Source, Table,
+    ValidateSourceResponse, Workspace, query_test_result,
 };
 use tonic::Status;
 
@@ -52,21 +52,36 @@ pub(crate) fn table_to_proto(
 pub(crate) fn query_test_result_to_proto(
     result: &coral_engine::QueryTestResult,
 ) -> QueryTestResult {
-    let outcome = match result.outcome() {
-        coral_engine::QueryTestOutcome::Success { row_count } => {
-            Some(query_test_result::Outcome::Success(QueryTestSuccess {
-                row_count: *row_count,
-            }))
-        }
-        coral_engine::QueryTestOutcome::Failure { error_message } => {
-            Some(query_test_result::Outcome::Failure(QueryTestFailure {
-                error_message: error_message.clone(),
-            }))
-        }
+    let outcome = match result.result() {
+        Ok(success) => Some(query_test_result::Outcome::Success(QueryTestSuccess {
+            row_count: success.row_count(),
+        })),
+        Err(failure) => Some(query_test_result::Outcome::Failure(QueryTestFailure {
+            error_message: failure.error_message().to_string(),
+        })),
     };
     QueryTestResult {
         sql: result.sql().to_string(),
         outcome,
+    }
+}
+
+pub(crate) fn validate_source_response_to_proto(
+    source: Source,
+    workspace_name: &WorkspaceName,
+    report: coral_engine::SourceValidationReport,
+) -> ValidateSourceResponse {
+    let coral_engine::SourceValidationReport {
+        tables,
+        query_tests,
+    } = report;
+    ValidateSourceResponse {
+        source: Some(source),
+        tables: tables
+            .into_iter()
+            .map(|table| table_to_proto(workspace_name, table))
+            .collect(),
+        query_tests: query_tests.iter().map(query_test_result_to_proto).collect(),
     }
 }
 
