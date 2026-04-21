@@ -94,7 +94,7 @@ pub(crate) fn app_status(error: AppError) -> Status {
 )]
 pub(crate) fn core_status(error: CoreError) -> Status {
     match error {
-        CoreError::Structured(sqe) => {
+        CoreError::QueryFailure(sqe) => {
             let mut metadata = sqe.metadata().clone();
             metadata.insert("summary".to_string(), sqe.summary().to_string());
             if !sqe.detail().is_empty() {

@@ -382,7 +382,7 @@ async fn api_returns_500() {
 
     assert_eq!(error.status_code(), StatusCode::Unavailable);
     match &error {
-        CoreError::Structured(sqe) => {
+        CoreError::QueryFailure(sqe) => {
             assert_eq!(sqe.reason(), "PROVIDER_REQUEST_FAILED");
             assert!(sqe.retryable());
             assert_eq!(sqe.metadata().get("http_status").unwrap(), "500");
@@ -411,7 +411,7 @@ async fn api_returns_401() {
 
     assert_eq!(error.status_code(), StatusCode::FailedPrecondition);
     match &error {
-        CoreError::Structured(sqe) => {
+        CoreError::QueryFailure(sqe) => {
             assert_eq!(sqe.reason(), "PROVIDER_REQUEST_FAILED");
             assert!(!sqe.retryable());
             assert_eq!(sqe.metadata().get("http_status").unwrap(), "401");
@@ -569,7 +569,7 @@ async fn missing_required_filter_surfaces_structured_error() {
 
     assert_eq!(error.status_code(), StatusCode::FailedPrecondition);
     match &error {
-        CoreError::Structured(sqe) => {
+        CoreError::QueryFailure(sqe) => {
             assert_eq!(sqe.reason(), "MISSING_REQUIRED_FILTER");
             assert!(!sqe.retryable());
             assert_eq!(sqe.metadata().get("schema").unwrap(), "http_required");

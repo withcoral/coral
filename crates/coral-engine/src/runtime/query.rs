@@ -117,7 +117,7 @@ fn datafusion_to_core(error: &DataFusionError) -> CoreError {
 }
 
 fn provider_error_to_core(error: &ProviderQueryError) -> CoreError {
-    CoreError::Structured(Box::new(error.to_structured()))
+    CoreError::QueryFailure(Box::new(error.to_structured()))
 }
 
 #[cfg(test)]

@@ -27,7 +27,7 @@ pub enum CoreError {
     Internal(String),
     /// A structured query failure with first-class semantic fields.
     #[error("{_0}")]
-    Structured(Box<StructuredQueryError>),
+    QueryFailure(Box<StructuredQueryError>),
 }
 
 impl CoreError {
@@ -47,7 +47,7 @@ impl CoreError {
             Self::Unavailable(_) => StatusCode::Unavailable,
             Self::Unimplemented(_) => StatusCode::Unimplemented,
             Self::Internal(_) => StatusCode::Internal,
-            Self::Structured(sqe) => sqe.status(),
+            Self::QueryFailure(sqe) => sqe.status(),
         }
     }
 }
