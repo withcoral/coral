@@ -20,6 +20,7 @@ If the source you need is not available, you can extend Coral by [writing a cust
 | `github`       | `http`    | Repositories, issues, pull requests, Actions, releases, and more |
 | `grafana`      | `http`    | Dashboards, panels, folders, datasources, alerts, teams, users   |
 | `incident_io`  | `http`    | Incidents, alerts, schedules, catalog, and status data           |
+| `jira`         | `http`    | Projects, issues, comments, worklogs, versions, and priorities   |
 | `launchdarkly` | `http`    | Projects, flags, environments, segments, and audit surfaces      |
 | `linear`       | `http`    | Teams, issues, projects, cycles, and initiatives                 |
 | `otel`         | `parquet` | OpenTelemetry logs and metrics exported as Parquet               |
@@ -39,6 +40,7 @@ Supported sources fall into two categories.
 ## Upgrading bundled sources
 
 To update bundled sources, upgrade the Coral binary. Coral resolves each bundled manifest from the current binary at validate or query time, so spec fixes and newly required inputs are picked up automatically, you don't need to remove and re-add the source. Your configured variables and secrets stay in local state across upgrades.
+
 ## Don't see what you need?
 
 The bundled set is growing. If your data source is not listed, [write a custom source](/guides/write-a-custom-source), or reach out to us via [Discord](https://withcoral.com/discord) or [GitHub](https://github.com/withcoral/coral/issues).

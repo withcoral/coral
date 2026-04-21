@@ -21,6 +21,24 @@ Before setting up a client, make sure you have [connected at least one source](/
 
 Clients see the same installed sources and query results as `coral sql`. You set up sources with the CLI, then agents query them over MCP.
 
+## Per-source configuration
+
+Agents can inspect non-secret source configuration through `coral.inputs`.
+This is useful for composing absolute URLs or account-scoped identifiers from
+saved source variables such as a Datadog site or Jira base URL. Secret values
+are never exposed: secret rows always return `value = NULL`, while `is_set`
+shows whether a secret has been configured.
+
+```sql
+-- Look up a variable value
+SELECT value FROM coral.inputs
+WHERE schema_name = 'datadog' AND kind = 'variable' AND key = 'DD_SITE';
+
+-- Check which secrets are configured without revealing them
+SELECT schema_name, key FROM coral.inputs
+WHERE kind = 'secret' AND is_set;
+```
+
 ## Client setup
 
 Coral uses stdio transport. If a client supports a command-based install flow, point it at `coral mcp-stdio`. If a client needs a full path, run `which coral` and use that path in the config instead of `coral`.
