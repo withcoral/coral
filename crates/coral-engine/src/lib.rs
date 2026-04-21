@@ -94,9 +94,9 @@ impl CoralQuery {
         runtime: &dyn QueryRuntimeProvider,
         schema_filter: Option<&str>,
     ) -> Result<Vec<TableInfo>, CoreError> {
-        runtime::query::build_runtime(sources, runtime)
+        Ok(runtime::query::build_runtime(sources, runtime)
             .await?
-            .list_tables(schema_filter)
+            .list_tables(schema_filter))
     }
 
     /// Executes one `SQL` statement over the provided source set.
