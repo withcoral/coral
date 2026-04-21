@@ -21,24 +21,6 @@ Before setting up a client, make sure you have [connected at least one source](/
 
 Clients see the same installed sources and query results as `coral sql`. You set up sources with the CLI, then agents query them over MCP.
 
-## Per-source configuration
-
-Agents can inspect non-secret source configuration through `coral.inputs`.
-This is useful for composing absolute URLs or account-scoped identifiers from
-saved source variables such as a Datadog site or Jira base URL. Secret values
-are never exposed: secret rows always return `value = NULL`, while `is_set`
-shows whether a secret has been configured.
-
-```sql
--- Look up a variable value
-SELECT value FROM coral.inputs
-WHERE schema_name = 'datadog' AND kind = 'variable' AND key = 'DD_SITE';
-
--- Check which secrets are configured without revealing them
-SELECT schema_name, key FROM coral.inputs
-WHERE kind = 'secret' AND is_set;
-```
-
 ## Client setup
 
 Coral uses stdio transport. If a client supports a command-based install flow, point it at `coral mcp-stdio`. If a client needs a full path, run `which coral` and use that path in the config instead of `coral`.
@@ -193,6 +175,23 @@ Once your client is connected, ask the agent to list available tables or run a s
 > "Run a small Coral query against `coral.tables`."
 
 The agent should call `list_tables` or query `coral.tables` and return the schemas from your installed sources.
+
+If you need to inspect saved source configuration, query `coral.inputs`. This
+is useful for composing absolute URLs or account-scoped identifiers from
+non-secret source variables such as a Datadog site or Jira base URL. Secret
+values are never exposed: secret rows always return `value IS NULL`, while
+`is_set` shows whether a secret has been configured. For the underlying source
+input model, see the [source inputs reference](/reference/source-spec-reference#source-inputs).
+
+```sql
+-- Look up a variable value
+SELECT value FROM coral.inputs
+WHERE schema_name = 'datadog' AND kind = 'variable' AND key = 'DD_SITE';
+
+-- Check which secrets are configured without revealing them
+SELECT schema_name, key FROM coral.inputs
+WHERE kind = 'secret' AND is_set;
+```
 
 ## Troubleshooting
 
