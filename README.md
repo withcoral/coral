@@ -1,4 +1,4 @@
-# Coral
+![Coral cover](./docs/images/cover.png)
 
 One SQL interface over APIs, files, and live sources — built for agents.
 
