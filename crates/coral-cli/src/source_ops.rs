@@ -4,8 +4,9 @@ use std::path::Path;
 
 use coral_api::v1::{
     AvailableSource, CreateBundledSourceRequest, DeleteSourceRequest, DiscoverSourcesRequest,
-    ImportSourceRequest, ListSourcesRequest, Source, SourceInputKind, SourceInputSpec,
-    SourceOrigin, SourceSecret, SourceVariable, ValidateSourceRequest, ValidateSourceResponse,
+    ImportSourceRequest, ListSourcesRequest, QueryTestFailure, QueryTestSuccess, Source,
+    SourceInputKind, SourceInputSpec, SourceOrigin, SourceSecret, SourceVariable,
+    ValidateSourceRequest, ValidateSourceResponse, query_test_result,
 };
 use coral_client::{AppClient, default_workspace};
 use coral_spec::{
@@ -24,6 +25,26 @@ pub(crate) enum TableDisplayLimit {
     All,
     /// Show at most this many tables per schema, with a summary for the rest.
     Max(usize),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ValidationSeverityMode {
+    Strict,
+    WarnOnly,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ValidationFollowUp {
+    None,
+    Warn(String),
+    Fail(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct QueryTestCounts {
+    declared: usize,
+    passed: usize,
+    failed: usize,
 }
 
 impl TableDisplayLimit {
@@ -201,9 +222,31 @@ pub(crate) async fn validate_and_print(
     app: &AppClient,
     source_name: &str,
     limit: TableDisplayLimit,
+    severity_mode: ValidationSeverityMode,
 ) -> Result<(), anyhow::Error> {
     let response = validate_source(app, source_name).await?;
-    print_validation_pretty(&response, limit)
+    print_validation_pretty(&response, limit)?;
+    match validation_follow_up(&response, severity_mode) {
+        ValidationFollowUp::None => Ok(()),
+        ValidationFollowUp::Warn(message) => {
+            eprintln!("Warning: {message}");
+            Ok(())
+        }
+        ValidationFollowUp::Fail(message) => Err(anyhow::anyhow!(message)),
+    }
+}
+
+pub(crate) async fn validate_and_warn(
+    app: &AppClient,
+    source_name: &str,
+    limit: TableDisplayLimit,
+) -> Result<(), anyhow::Error> {
+    if let Err(err) =
+        validate_and_print(app, source_name, limit, ValidationSeverityMode::WarnOnly).await
+    {
+        eprintln!("Warning: validation failed: {err}");
+    }
+    Ok(())
 }
 
 pub(crate) fn print_validation_pretty(
@@ -266,9 +309,89 @@ pub(crate) fn print_validation_pretty(
             );
         }
     }
+
+    let query_test_counts = query_test_counts(response);
+    if query_test_counts.declared > 0 {
+        println!("    {}", style("Query tests").bold());
+        println!(
+            "    {}",
+            style(format!(
+                "{} declared · {} passed · {} failed",
+                query_test_counts.declared, query_test_counts.passed, query_test_counts.failed
+            ))
+            .dim()
+        );
+        for test in &response.query_tests {
+            println!();
+            let status = if matches!(test.outcome, Some(query_test_result::Outcome::Success(_))) {
+                style("✓").green()
+            } else {
+                style("✗").red()
+            };
+            println!("    {} {}", status, style(test.sql.trim()).bold());
+            match &test.outcome {
+                Some(query_test_result::Outcome::Success(QueryTestSuccess { row_count })) => {
+                    println!(
+                        "      {}",
+                        style(format!(
+                            "{row_count} row{}",
+                            if *row_count == 1 { "" } else { "s" }
+                        ))
+                        .dim()
+                    );
+                }
+                Some(query_test_result::Outcome::Failure(QueryTestFailure { error_message })) => {
+                    if !error_message.is_empty() {
+                        println!("      {}", style(error_message.as_str()).yellow());
+                    }
+                }
+                None => {}
+            }
+        }
+    }
     println!();
 
     Ok(())
+}
+
+fn validation_follow_up(
+    response: &ValidateSourceResponse,
+    severity_mode: ValidationSeverityMode,
+) -> ValidationFollowUp {
+    let query_test_counts = query_test_counts(response);
+    if query_test_counts.declared == 0 || query_test_counts.failed == 0 {
+        return ValidationFollowUp::None;
+    }
+
+    let failure_count = query_test_counts.failed.max(1);
+    let message = format!(
+        "{} of {} validation quer{} failed",
+        failure_count,
+        query_test_counts.declared.max(failure_count),
+        if query_test_counts.declared == 1 {
+            "y"
+        } else {
+            "ies"
+        }
+    );
+    match severity_mode {
+        ValidationSeverityMode::Strict => ValidationFollowUp::Fail(message),
+        ValidationSeverityMode::WarnOnly => ValidationFollowUp::Warn(message),
+    }
+}
+
+fn query_test_counts(response: &ValidateSourceResponse) -> QueryTestCounts {
+    let declared = response.query_tests.len();
+    let passed = response
+        .query_tests
+        .iter()
+        .filter(|test| matches!(test.outcome, Some(query_test_result::Outcome::Success(_))))
+        .count();
+    QueryTestCounts {
+        declared,
+        passed,
+        failed: declared.saturating_sub(passed),
+    }
 }
 
 fn prompt_variable(input: &ManifestInputSpec) -> Result<Option<SourceVariable>, anyhow::Error> {
@@ -340,9 +463,12 @@ pub(crate) fn finalize_input_value(
 
 #[cfg(test)]
 mod tests {
+    use coral_api::v1::ValidateSourceResponse;
     use coral_spec::{ManifestInputKind, ManifestInputSpec};
 
-    use super::finalize_input_value;
+    use super::{
+        ValidationFollowUp, ValidationSeverityMode, finalize_input_value, validation_follow_up,
+    };
 
     #[test]
     fn empty_optional_input_is_omitted_for_server_side_defaults() {
@@ -372,5 +498,74 @@ mod tests {
         let error = finalize_input_value(&input, String::new(), "source secret")
             .expect_err("required empty input should fail");
         assert!(error.to_string().contains("missing required source secret"));
+    }
+
+    #[test]
+    fn validation_follow_up_is_none_when_all_query_tests_pass() {
+        let response = ValidateSourceResponse {
+            source: None,
+            tables: Vec::new(),
+            query_tests: vec![coral_api::v1::QueryTestResult {
+                sql: "SELECT 1".to_string(),
+                outcome: Some(coral_api::v1::query_test_result::Outcome::Success(
+                    coral_api::v1::QueryTestSuccess { row_count: 1 },
+                )),
+            }],
+        };
+
+        assert_eq!(
+            validation_follow_up(&response, ValidationSeverityMode::Strict),
+            ValidationFollowUp::None
+        );
+    }
+
+    #[test]
+    fn validation_follow_up_is_error_in_strict_mode() {
+        let response = ValidateSourceResponse {
+            source: None,
+            tables: Vec::new(),
+            query_tests: vec![
+                coral_api::v1::QueryTestResult {
+                    sql: "SELECT 1".to_string(),
+                    outcome: Some(coral_api::v1::query_test_result::Outcome::Success(
+                        coral_api::v1::QueryTestSuccess { row_count: 1 },
+                    )),
+                },
+                coral_api::v1::QueryTestResult {
+                    sql: "SELECT missing".to_string(),
+                    outcome: Some(coral_api::v1::query_test_result::Outcome::Failure(
+                        coral_api::v1::QueryTestFailure {
+                            error_message: "missing".to_string(),
+                        },
+                    )),
+                },
+            ],
+        };
+
+        assert_eq!(
+            validation_follow_up(&response, ValidationSeverityMode::Strict),
+            ValidationFollowUp::Fail("1 of 2 validation queries failed".to_string())
+        );
+    }
+
+    #[test]
+    fn validation_follow_up_is_warning_in_warn_only_mode() {
+        let response = ValidateSourceResponse {
+            source: None,
+            tables: Vec::new(),
+            query_tests: vec![coral_api::v1::QueryTestResult {
+                sql: "SELECT missing".to_string(),
+                outcome: Some(coral_api::v1::query_test_result::Outcome::Failure(
+                    coral_api::v1::QueryTestFailure {
+                        error_message: "missing".to_string(),
+                    },
+                )),
+            }],
+        };
+
+        assert_eq!(
+            validation_follow_up(&response, ValidationSeverityMode::WarnOnly),
+            ValidationFollowUp::Warn("1 of 1 validation query failed".to_string())
+        );
     }
 }

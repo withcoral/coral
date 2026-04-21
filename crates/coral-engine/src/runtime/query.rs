@@ -15,6 +15,7 @@ use crate::{CoreError, QueryExecution, QueryRuntimeProvider, QuerySource, TableI
 pub(crate) struct QueryRuntimeAdapter {
     ctx: Arc<SessionContext>,
     tables: Vec<TableInfo>,
+    failures: Vec<SourceRegistrationFailure>,
 }
 
 pub(crate) async fn build_runtime(
@@ -51,6 +52,7 @@ pub(crate) async fn build_runtime(
     catalog::register(&ctx, &registration.active_sources)
         .map_err(|err| datafusion_to_core(&err))?;
     let tables = catalog::collect_tables(&registration.active_sources);
+    failures.extend(registration.failures);
     for failure in &failures {
         tracing::warn!(
             source = %failure.schema_name,
@@ -59,7 +61,11 @@ pub(crate) async fn build_runtime(
         );
     }
 
-    Ok(QueryRuntimeAdapter { ctx, tables })
+    Ok(QueryRuntimeAdapter {
+        ctx,
+        tables,
+        failures,
+    })
 }
 
 impl QueryRuntimeAdapter {
@@ -69,6 +75,15 @@ impl QueryRuntimeAdapter {
             .filter(|table| source_filter.is_none_or(|value| table.schema_name == value))
             .cloned()
             .collect()
+    }
+
+    pub(crate) fn registration_failure(
+        &self,
+        source_name: &str,
+    ) -> Option<&SourceRegistrationFailure> {
+        self.failures
+            .iter()
+            .find(|failure| failure.schema_name == source_name)
     }
 
     pub(crate) async fn execute_sql(&self, sql: &str) -> Result<QueryExecution, CoreError> {

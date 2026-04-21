@@ -61,6 +61,18 @@ fn mock_table() -> Table {
     }
 }
 
+#[allow(
+    dead_code,
+    reason = "shared harness helpers are used by different integration test crates"
+)]
+fn default_validate_source_response() -> ValidateSourceResponse {
+    ValidateSourceResponse {
+        source: Some(mock_source()),
+        tables: Vec::new(),
+        query_tests: Vec::new(),
+    }
+}
+
 fn encode_arrow_ipc_stream(
     schema: &Schema,
     batches: &[RecordBatch],
@@ -129,7 +141,9 @@ impl QueryService for MockQueryService {
 }
 
 #[derive(Clone)]
-struct MockSourceService;
+struct MockSourceService {
+    validate_source_response: ValidateSourceResponse,
+}
 
 #[tonic::async_trait]
 impl SourceService for MockSourceService {
@@ -200,10 +214,7 @@ impl SourceService for MockSourceService {
         &self,
         _request: Request<ValidateSourceRequest>,
     ) -> Result<Response<ValidateSourceResponse>, Status> {
-        Ok(Response::new(ValidateSourceResponse {
-            source: Some(mock_source()),
-            tables: Vec::new(),
-        }))
+        Ok(Response::new(self.validate_source_response.clone()))
     }
 }
 
@@ -214,7 +225,17 @@ pub(crate) struct MockServer {
 }
 
 impl MockServer {
+    #[allow(
+        dead_code,
+        reason = "shared harness helpers are used by different integration test crates"
+    )]
     pub(crate) async fn start() -> Self {
+        Self::start_with_validate_source_response(default_validate_source_response()).await
+    }
+
+    pub(crate) async fn start_with_validate_source_response(
+        validate_source_response: ValidateSourceResponse,
+    ) -> Self {
         let listener = TcpListener::bind(("127.0.0.1", 0))
             .await
             .expect("bind mock server");
@@ -223,7 +244,9 @@ impl MockServer {
         let task = tokio::spawn(async move {
             Server::builder()
                 .add_service(QueryServiceServer::new(MockQueryService))
-                .add_service(SourceServiceServer::new(MockSourceService))
+                .add_service(SourceServiceServer::new(MockSourceService {
+                    validate_source_response,
+                }))
                 .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
                     let _ = shutdown_rx.await;
                 })

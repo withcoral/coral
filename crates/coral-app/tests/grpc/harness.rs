@@ -161,12 +161,17 @@ impl FailingHttpFixture {
     }
 
     pub(crate) fn manifest_yaml(&self) -> String {
+        self.manifest_yaml_with_test_queries(&[])
+    }
+
+    pub(crate) fn manifest_yaml_with_test_queries(&self, test_queries: &[&str]) -> String {
         manifest_yaml(&json!({
             "name": "unreachable_messages",
             "version": "0.1.0",
             "dsl_version": 3,
             "backend": "http",
             "base_url": self.base_url,
+            "test_queries": test_queries,
             "tables": [{
                 "name": "messages",
                 "description": "Unreachable messages",
@@ -190,6 +195,13 @@ impl Drop for FailingHttpFixture {
 }
 
 pub(crate) fn fixture_manifest_yaml(root: &Path) -> String {
+    fixture_manifest_with_test_queries_yaml(root, &[])
+}
+
+pub(crate) fn fixture_manifest_with_test_queries_yaml(
+    root: &Path,
+    test_queries: &[&str],
+) -> String {
     let data_dir = root.join("fixture-data");
     fs::create_dir_all(&data_dir).expect("create data dir");
     fs::write(
@@ -204,6 +216,7 @@ pub(crate) fn fixture_manifest_yaml(root: &Path) -> String {
         "version": "0.1.0",
         "dsl_version": 3,
         "backend": "jsonl",
+        "test_queries": test_queries,
         "tables": [{
             "name": "messages",
             "description": "Fixture messages",

@@ -18,6 +18,7 @@ use crate::common::parse_manifest_data_type;
 use crate::{
     ColumnSpec, FilterSpec, ManifestDataType, ManifestError, Result, SourceBackend,
     SourceManifestCommon, TableCommon, validate_columns, validate_filters_and_column_exprs,
+    validate_test_queries,
 };
 
 /// Validated top-level manifest for a `Parquet`-backed source.
@@ -42,6 +43,8 @@ struct RawFileSourceManifest {
     version: String,
     #[serde(default)]
     description: String,
+    #[serde(default)]
+    test_queries: Vec<String>,
     backend: SourceBackend,
     tables: Vec<RawFileTableSpec>,
 }
@@ -262,10 +265,13 @@ impl ParquetSourceManifest {
             name,
             version,
             description,
+            test_queries,
             backend: _backend,
             tables,
         } = raw;
-        let common = SourceManifestCommon::new(dsl_version, name, version, description);
+        validate_test_queries(&name, &test_queries)?;
+        let common =
+            SourceManifestCommon::new(dsl_version, name, version, description, test_queries);
         let tables = tables
             .into_iter()
             .map(|table| table.into_validated_parquet(&common.name))
@@ -283,10 +289,13 @@ impl JsonlSourceManifest {
             name,
             version,
             description,
+            test_queries,
             backend: _backend,
             tables,
         } = raw;
-        let common = SourceManifestCommon::new(dsl_version, name, version, description);
+        validate_test_queries(&name, &test_queries)?;
+        let common =
+            SourceManifestCommon::new(dsl_version, name, version, description, test_queries);
         let tables = tables
             .into_iter()
             .map(|table| table.into_validated_jsonl(&common.name))

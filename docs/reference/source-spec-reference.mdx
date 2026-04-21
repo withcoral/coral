@@ -19,6 +19,8 @@ name: my_source
 version: 0.1.0
 dsl_version: 3
 backend: http
+test_queries:
+  - SELECT * FROM my_source.messages LIMIT 1
 ```
 
 | Field         | Description                                        |
@@ -27,6 +29,26 @@ backend: http
 | `version`     | Source spec version string                         |
 | `dsl_version` | Coral source spec DSL version (currently `3`)      |
 | `backend`     | How data is fetched: `http`, `jsonl`, or `parquet` |
+| `test_queries` | Optional read-only SQL checks Coral runs during `coral source test` |
+
+## Test queries
+
+Use the optional top-level `test_queries` field when you want Coral to run one
+or more read-only SQL checks after the source validates and its tables become
+queryable.
+
+```yaml
+test_queries:
+  - SELECT * FROM my_source.messages LIMIT 1
+```
+
+Notes:
+
+- Each query result is reported individually during `coral source test`.
+- `coral source add` and `coral onboard` surface post-install validation issues as warnings; `coral source test` is the strict pass/fail command.
+- Prefer cheap read-only checks that validate connectivity and mapping logic. For example, `SELECT * FROM schema.table LIMIT 1` is usually a better fit than `SELECT COUNT(*)`.
+- Keep these queries read-only. Statements such as `CREATE`, `COPY`, `INSERT`,
+  `UPDATE`, `DELETE`, or `SET` are reported as failed validation queries.
 
 ## Column types
 

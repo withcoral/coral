@@ -19,7 +19,7 @@ use crate::{
     AuthSpec, ColumnSpec, FilterSpec, ManifestError, ManifestInputKind, ManifestInputSpec,
     PaginationSpec, ParsedTemplate, RequestRouteSpec, RequestSpec, ResponseSpec, Result,
     SourceBackend, SourceManifestCommon, TableCommon, inputs::collect_source_inputs_value,
-    validate::validate_template, validate_http_table,
+    validate::validate_template, validate_http_table, validate_test_queries,
 };
 
 /// Provider-specific response hints for classifying and delaying rate-limit retries.
@@ -55,6 +55,8 @@ struct RawHttpSourceManifest {
     version: String,
     #[serde(default)]
     description: String,
+    #[serde(default)]
+    test_queries: Vec<String>,
     backend: SourceBackend,
     #[serde(default)]
     base_url: ParsedTemplate,
@@ -203,6 +205,7 @@ impl HttpSourceManifest {
             name,
             version,
             description,
+            test_queries,
             backend: _backend,
             base_url,
             auth,
@@ -210,7 +213,9 @@ impl HttpSourceManifest {
             inputs: _inputs,
             tables,
         } = raw;
-        let common = SourceManifestCommon::new(dsl_version, name, version, description);
+        validate_test_queries(&name, &test_queries)?;
+        let common =
+            SourceManifestCommon::new(dsl_version, name, version, description, test_queries);
         let tables = tables
             .into_iter()
             .map(|table| table.into_validated(&common.name))

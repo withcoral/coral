@@ -71,7 +71,8 @@ mod runtime;
 
 pub use contracts::{
     ColumnInfo, CoreError, QueryExecution, QueryRuntimeContext, QueryRuntimeProvider, QuerySource,
-    StatusCode, StructuredQueryError, TableInfo,
+    QueryTestFailure, QueryTestResult, QueryTestSuccess, SourceValidationReport, StatusCode,
+    StructuredQueryError, TableInfo,
 };
 
 /// High-level query operations for the local query engine.
@@ -98,12 +99,12 @@ impl CoralQuery {
             .list_tables(schema_filter))
     }
 
-    /// Executes one read-only `SQL` statement against the provided sources.
+    /// Executes one `SQL` statement over the provided source set.
     ///
     /// # Errors
     ///
-    /// Returns [`CoreError::InvalidInput`] when `sql` is empty, or another
-    /// [`CoreError`] if runtime construction, planning, or execution fails.
+    /// Returns [`CoreError`] if the SQL is empty, if source compilation fails,
+    /// or if the runtime cannot execute the statement.
     pub async fn execute_sql(
         sources: &[QuerySource],
         runtime: &dyn QueryRuntimeProvider,
@@ -129,10 +130,59 @@ impl CoralQuery {
         source: &QuerySource,
         runtime: &dyn QueryRuntimeProvider,
     ) -> Result<Vec<TableInfo>, CoreError> {
-        Ok(
-            runtime::query::build_runtime(std::slice::from_ref(source), runtime)
-                .await?
-                .list_tables(Some(source.source_name())),
-        )
+        Ok(Self::validate_source(source, runtime, &[]).await?.tables)
     }
+
+    /// Validates one source and then executes any declared validation queries.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if the source cannot be initialized or enumerated.
+    /// Query-test failures are reported in the returned outcome instead of
+    /// failing the whole call.
+    pub async fn validate_source(
+        source: &QuerySource,
+        runtime: &dyn QueryRuntimeProvider,
+        test_queries: &[String],
+    ) -> Result<SourceValidationReport, CoreError> {
+        let query_runtime =
+            runtime::query::build_runtime(std::slice::from_ref(source), runtime).await?;
+        let tables = query_runtime.list_tables(Some(source.source_name()));
+        if tables.is_empty() {
+            if let Some(failure) = query_runtime.registration_failure(source.source_name()) {
+                return Err(CoreError::FailedPrecondition(failure.detail.clone()));
+            }
+            return Err(CoreError::FailedPrecondition(format!(
+                "source '{}' did not become queryable during validation",
+                source.source_name()
+            )));
+        }
+
+        let mut query_tests = Vec::with_capacity(test_queries.len());
+        for sql in test_queries {
+            match query_runtime.execute_sql(sql).await {
+                Ok(execution) => query_tests.push(QueryTestResult::success(
+                    sql.clone(),
+                    execution.row_count() as u64,
+                )),
+                Err(error) => {
+                    let error_message = match &error {
+                        CoreError::InvalidInput(detail) if is_non_read_only_sql_error(detail) => {
+                            "test query must be read-only SQL".to_string()
+                        }
+                        _ => error.to_string(),
+                    };
+                    query_tests.push(QueryTestResult::failure(sql.clone(), error_message));
+                }
+            }
+        }
+
+        Ok(SourceValidationReport::new(tables, query_tests))
+    }
+}
+
+fn is_non_read_only_sql_error(detail: &str) -> bool {
+    detail.starts_with("DDL not supported")
+        || detail.starts_with("DML not supported")
+        || detail.starts_with("Statement not supported")
 }

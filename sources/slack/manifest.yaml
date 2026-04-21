@@ -13,6 +13,8 @@ auth:
     - name: Authorization
       from: template
       template: Bearer {{input.SLACK_TOKEN}}
+test_queries:
+  - SELECT * FROM slack.channels LIMIT 1
 tables:
   - name: channels
     description: Slack channels with topic, purpose, and member count
