@@ -6,7 +6,7 @@ use coral_api::v1::{
 };
 use tonic::Status;
 
-use crate::bootstrap::{app_status, core_status};
+use crate::bootstrap::{AppError, app_status, core_status};
 use crate::query::manager::QueryManagerError;
 use crate::workspaces::WorkspaceName;
 
@@ -19,6 +19,14 @@ pub(crate) fn query_status(error: QueryManagerError) -> Status {
         QueryManagerError::App(error) => app_status(error),
         QueryManagerError::Core(error) => core_status(error),
     }
+}
+
+pub(crate) fn workspace_name_from_proto(
+    workspace: Option<&Workspace>,
+) -> Result<WorkspaceName, Status> {
+    let workspace = workspace
+        .ok_or_else(|| app_status(AppError::InvalidInput("missing workspace".to_string())))?;
+    WorkspaceName::parse(&workspace.name).map_err(app_status)
 }
 
 pub(crate) fn workspace_to_proto(workspace_name: &WorkspaceName) -> Workspace {
@@ -87,10 +95,13 @@ pub(crate) fn validate_source_response_to_proto(
 
 #[cfg(test)]
 mod tests {
-    use coral_api::v1::{QueryTestFailure, query_test_result};
+    use coral_api::v1::{QueryTestFailure, Workspace, query_test_result};
     use tonic::Code;
 
-    use super::{query_status, query_test_result_to_proto, table_to_proto, workspace_to_proto};
+    use super::{
+        query_status, query_test_result_to_proto, table_to_proto, workspace_name_from_proto,
+        workspace_to_proto,
+    };
     use crate::bootstrap::AppError;
     use crate::query::manager::QueryManagerError;
     use crate::workspaces::WorkspaceName;
@@ -116,6 +127,26 @@ mod tests {
 
         assert_eq!(status.code(), Code::Unavailable);
         assert_eq!(status.message(), "unavailable: backend down");
+    }
+
+    #[test]
+    fn workspace_name_from_proto_rejects_missing_workspace() {
+        let status = workspace_name_from_proto(None).expect_err("workspace should be required");
+
+        assert_eq!(status.code(), Code::InvalidArgument);
+        assert_eq!(status.message(), "invalid input: missing workspace");
+    }
+
+    #[test]
+    fn workspace_name_from_proto_parses_valid_workspace() {
+        let workspace = Workspace {
+            name: "default".to_string(),
+        };
+
+        let workspace_name =
+            workspace_name_from_proto(Some(&workspace)).expect("workspace should parse");
+
+        assert_eq!(workspace_name.as_str(), "default");
     }
 
     #[test]
