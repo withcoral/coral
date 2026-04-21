@@ -334,34 +334,55 @@ fn validate_source_scoped_http_config(
     manifest: &HttpSourceManifest,
     resolved_inputs: &BTreeMap<String, String>,
 ) -> Result<()> {
-    // `base_url` and `request_headers` may legitimately reference
-    // `{{filter.X}}` / `{{state.X}}` tokens that only resolve per-request.
-    // Validate input dependencies only — runtime will handle the rest.
-    validate_input_dependencies(&manifest.base_url, resolved_inputs).map_err(|error| {
-        DataFusionError::Execution(format!(
-            "{} source base_url could not be resolved: {error}",
-            manifest.common.name
-        ))
-    })?;
+    check_base_url_inputs(manifest, resolved_inputs)?;
+    check_request_header_inputs(manifest, resolved_inputs)?;
+    check_auth_inputs(manifest, resolved_inputs)?;
+    Ok(())
+}
+
+/// `base_url` may reference `{{filter.*}}` / `{{state.*}}` that only resolve
+/// per-request. Check input-token deps only — runtime renders the rest.
+fn check_base_url_inputs(
+    manifest: &HttpSourceManifest,
+    resolved_inputs: &BTreeMap<String, String>,
+) -> Result<()> {
+    validate_input_dependencies(&manifest.base_url, resolved_inputs)
+        .map_err(|e| registration_error(&manifest.common.name, "base_url", &e))
+}
+
+/// Same tolerance for filter/state tokens as `base_url`.
+fn check_request_header_inputs(
+    manifest: &HttpSourceManifest,
+    resolved_inputs: &BTreeMap<String, String>,
+) -> Result<()> {
     for header in &manifest.request_headers {
-        validate_value_source_inputs(&header.value, resolved_inputs).map_err(|error| {
-            DataFusionError::Execution(format!(
-                "{} source request header '{}' could not be resolved: {error}",
-                manifest.common.name, header.name
-            ))
+        validate_value_source_inputs(&header.value, resolved_inputs).map_err(|e| {
+            registration_error(
+                &manifest.common.name,
+                &format!("request header '{}'", header.name),
+                &e,
+            )
         })?;
     }
+    Ok(())
+}
 
+/// Auth is source-scoped — no filter/state context at runtime either, so every
+/// template dep must resolve from inputs at registration.
+fn check_auth_inputs(
+    manifest: &HttpSourceManifest,
+    resolved_inputs: &BTreeMap<String, String>,
+) -> Result<()> {
     manifest
         .auth
         .validate_inputs(resolved_inputs)
-        .map_err(|error| {
-            DataFusionError::Execution(format!(
-                "{} source auth could not be resolved: {error}",
-                manifest.common.name
-            ))
-        })?;
-    Ok(())
+        .map_err(|e| registration_error(&manifest.common.name, "auth", &e))
+}
+
+fn registration_error(source: &str, field: &str, error: &DataFusionError) -> DataFusionError {
+    DataFusionError::Execution(format!(
+        "source '{source}' {field} could not be resolved: {error}"
+    ))
 }
 
 #[allow(
@@ -1232,7 +1253,7 @@ mod tests {
             ),
             (
                 header_manifest,
-                "alpha source request header 'X-Api-Key' could not be resolved",
+                "source 'alpha' request header 'X-Api-Key' could not be resolved",
             ),
         ] {
             let error =
