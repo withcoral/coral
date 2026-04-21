@@ -1,29 +1,29 @@
 //! Structured error rendering for the `coral sql` command.
 //!
 //! Decodes AIP-193 error details via `coral_client::decode_status_error`
-//! and renders a human-readable `Error:` / `Detail:` / `Hint:` block on
-//! stderr. The `Plain` variant writes the server message verbatim.
+//! and returns a human-readable `Error:` / `Detail:` / `Hint:` block. The
+//! `Plain` variant writes the server message verbatim. This module has no
+//! side effects — callers own stderr emission and process termination.
 
 use std::fmt::Write as _;
 
 use coral_client::{CoralQueryError, DecodedStatusError, decode_status_error};
 
-/// Renders a query error to stderr and exits with code 1.
+/// Renders a `tonic::Status` as a user-facing stderr block.
 ///
 /// Structured errors produce labelled `Error:` / `Detail:` / `Hint:` lines.
 /// Plain fallback errors include the gRPC status code so distinct failure
-/// modes (transport, auth, not-found) remain distinguishable on stderr.
-/// Stdout stays empty on failure so piped scripts keep a clean contract.
-pub(crate) fn render_query_error_and_exit(status: &tonic::Status) -> ! {
+/// modes (transport, auth, not-found) remain distinguishable. The returned
+/// string always terminates with a newline.
+///
+/// The caller is responsible for writing the result to stderr and exiting
+/// with a non-zero code — keeping this function side-effect-free so the
+/// process-termination site stays in `main`.
+pub(crate) fn render_query_error(status: &tonic::Status) -> String {
     match decode_status_error(status) {
-        DecodedStatusError::Structured(error) => {
-            eprint!("{}", render_structured(&error));
-        }
-        DecodedStatusError::Plain(message) => {
-            eprint!("{}", render_plain(status.code(), &message));
-        }
+        DecodedStatusError::Structured(error) => render_structured(&error),
+        DecodedStatusError::Plain(message) => render_plain(status.code(), &message),
     }
-    std::process::exit(1)
 }
 
 fn render_plain(code: tonic::Code, message: &str) -> String {

@@ -123,7 +123,10 @@ async fn main() -> Result<(), anyhow::Error> {
                 .await
             {
                 Ok(response) => response.into_inner(),
-                Err(status) => query_error::render_query_error_and_exit(&status),
+                Err(status) => {
+                    eprint!("{}", query_error::render_query_error(&status));
+                    std::process::exit(1);
+                }
             };
             let result = decode_execute_sql_response(&response)?;
             print_batches(result.batches(), args.format)?;
