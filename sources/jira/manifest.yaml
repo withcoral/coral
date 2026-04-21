@@ -30,6 +30,8 @@ auth:
     - name: Accept
       from: literal
       value: application/json
+test_queries:
+  - SELECT * FROM jira.projects LIMIT 1
 tables:
   - name: projects
     description: Projects visible to the authenticated Jira user
