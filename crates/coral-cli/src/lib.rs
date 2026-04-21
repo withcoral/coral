@@ -106,6 +106,27 @@ enum OutputFormat {
     Json,
 }
 
+/// Typed CLI error whose stderr rendering and exit code are owned by the binary.
+#[derive(Debug, thiserror::Error)]
+#[error("cli command failed")]
+pub struct CliExitError {
+    rendered_stderr: String,
+}
+
+impl CliExitError {
+    #[must_use]
+    /// Builds a CLI error with pre-rendered stderr output.
+    pub fn new(rendered_stderr: String) -> Self {
+        Self { rendered_stderr }
+    }
+
+    #[must_use]
+    /// Returns the stderr block the binary should render before exiting.
+    pub fn rendered_stderr(&self) -> &str {
+        &self.rendered_stderr
+    }
+}
+
 /// Parses CLI arguments and runs the shared Coral CLI.
 ///
 /// # Errors
@@ -130,8 +151,7 @@ async fn run_parsed(app: AppClient, cli: Cli) -> Result<(), anyhow::Error> {
             {
                 Ok(response) => response.into_inner(),
                 Err(status) => {
-                    eprint!("{}", query_error::render_query_error(&status));
-                    std::process::exit(1);
+                    return Err(CliExitError::new(query_error::render_query_error(&status)).into());
                 }
             };
             let result = decode_execute_sql_response(&response)?;

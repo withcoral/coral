@@ -4,8 +4,12 @@ use coral_engine::{EngineExtensions, QuerySource};
 
 /// App-layer provider that selects engine extensions for one runtime build.
 pub trait EngineExtensionsProvider: Send + Sync {
-    /// Returns the engine extensions that apply to the selected sources.
-    fn extensions_for(&self, sources: &[QuerySource]) -> EngineExtensions;
+    /// Returns the extensions to install for a runtime built from exactly
+    /// `selected_sources`.
+    ///
+    /// Returned extensions may act on only a subset of those sources, but they
+    /// must be valid for the full selected-source set of this runtime build.
+    fn extensions_for(&self, selected_sources: &[QuerySource]) -> EngineExtensions;
 }
 
 /// Default OSS provider that installs no engine extensions.
@@ -13,7 +17,7 @@ pub trait EngineExtensionsProvider: Send + Sync {
 pub struct NoopEngineExtensionsProvider;
 
 impl EngineExtensionsProvider for NoopEngineExtensionsProvider {
-    fn extensions_for(&self, _sources: &[QuerySource]) -> EngineExtensions {
+    fn extensions_for(&self, _selected_sources: &[QuerySource]) -> EngineExtensions {
         EngineExtensions::default()
     }
 }
