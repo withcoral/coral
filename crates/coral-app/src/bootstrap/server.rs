@@ -353,6 +353,7 @@ tables:
             SecretStore::new(layout.clone()),
             QueryRuntimeContext { home_dir: None },
             layout,
+            Arc::new(NoopEngineExtensionsProvider),
         );
         let running = start_server(source_manager, query_manager)
             .await
@@ -440,6 +441,7 @@ tables:
             SecretStore::new(layout.clone()),
             QueryRuntimeContext { home_dir: None },
             layout,
+            Arc::new(NoopEngineExtensionsProvider),
         );
         let running = start_server(source_manager, query_manager)
             .await

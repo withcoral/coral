@@ -13,8 +13,8 @@
     )
 )]
 
-mod branding;
 mod bootstrap;
+mod branding;
 mod onboard;
 mod query_error;
 mod source_ops;
