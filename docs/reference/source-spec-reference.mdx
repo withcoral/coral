@@ -361,3 +361,35 @@ Rules:
 - `default` is allowed only for variables
 - `hint` is optional and shown while Coral prompts for the input
 - references elsewhere in the manifest use `{{input.KEY}}` templates or `from: input`
+
+At runtime, installed source inputs are also surfaced through `coral.inputs`.
+This is useful when agents or scripts need to inspect non-secret source config
+such as a Datadog site or Jira base URL and compose absolute URLs or
+account-scoped identifiers from it. Secret values are never exposed there:
+secret rows always return `value IS NULL`, while `is_set` shows whether the
+secret has been configured.
+
+`coral.inputs` includes these columns:
+
+| Column | Description |
+| ------ | ----------- |
+| `schema_name` | Source schema that owns the input |
+| `key` | Input key from the manifest |
+| `kind` | `variable` or `secret` |
+| `value` | Variable value when available; `NULL` for secrets |
+| `default_value` | Manifest-authored default for variables |
+| `hint` | Prompt hint from the manifest, if any |
+| `required` | Whether the input must be configured |
+| `is_set` | Whether Coral has a saved value for that input |
+
+Example queries:
+
+```sql
+-- Look up a variable value
+SELECT value FROM coral.inputs
+WHERE schema_name = 'datadog' AND kind = 'variable' AND key = 'DD_SITE';
+
+-- Check which secrets are configured without revealing them
+SELECT schema_name, key FROM coral.inputs
+WHERE kind = 'secret' AND is_set;
+```

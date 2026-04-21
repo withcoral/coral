@@ -176,23 +176,6 @@ Once your client is connected, ask the agent to list available tables or run a s
 
 The agent should call `list_tables` or query `coral.tables` and return the schemas from your installed sources.
 
-If you need to inspect saved source configuration, query `coral.inputs`. This
-is useful for composing absolute URLs or account-scoped identifiers from
-non-secret source variables such as a Datadog site or Jira base URL. Secret
-values are never exposed: secret rows always return `value IS NULL`, while
-`is_set` shows whether a secret has been configured. For the underlying source
-input model, see the [source inputs reference](/reference/source-spec-reference#source-inputs).
-
-```sql
--- Look up a variable value
-SELECT value FROM coral.inputs
-WHERE schema_name = 'datadog' AND kind = 'variable' AND key = 'DD_SITE';
-
--- Check which secrets are configured without revealing them
-SELECT schema_name, key FROM coral.inputs
-WHERE kind = 'secret' AND is_set;
-```
-
 ## Troubleshooting
 
 - **`coral` not found:** Make sure `coral` is on your `PATH`, or use the full path from `which coral` in your client config.
