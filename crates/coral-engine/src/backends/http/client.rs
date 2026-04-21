@@ -1201,9 +1201,12 @@ mod tests {
             "backend": "http",
             "base_url": "https://api.example.com",
             "auth": {
-                "type": "ApiKeyAuth",
-                "header": "Authorization",
-                "api_token": "Bearer {{input.API_KEY}}"
+                "type": "HeaderAuth",
+                "headers": [{
+                    "name": "Authorization",
+                    "from": "template",
+                    "template": "Bearer {{input.API_KEY}}"
+                }]
             },
             "inputs": {
                 "API_KEY": { "kind": "secret" }

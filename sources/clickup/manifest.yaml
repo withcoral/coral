@@ -9,9 +9,11 @@ inputs:
     hint: Create a personal token in ClickUp → Settings → Apps
 base_url: https://api.clickup.com/api
 auth:
-  type: ApiKeyAuth
-  header: Authorization
-  api_token: "{{input.CLICKUP_API_TOKEN}}"
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "{{input.CLICKUP_API_TOKEN}}"
 tables:
   - name: current
     description: Get running time entry

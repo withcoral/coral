@@ -9,9 +9,11 @@ inputs:
     hint: Create an API key in incident.io → Settings → API keys
 base_url: https://api.incident.io
 auth:
-  type: ApiKeyAuth
-  header: Authorization
-  api_token: "Bearer {{input.INCIDENT_IO_API_KEY}}"
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "Bearer {{input.INCIDENT_IO_API_KEY}}"
 tables:
   - name: actions
     description: List

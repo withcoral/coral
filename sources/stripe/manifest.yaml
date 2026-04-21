@@ -9,9 +9,11 @@ inputs:
     hint: Create a restricted or secret API key in the Stripe Dashboard → Developers → API keys
 base_url: https://api.stripe.com
 auth:
-  type: ApiKeyAuth
-  header: Authorization
-  api_token: "Bearer {{input.STRIPE_API_KEY}}"
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "Bearer {{input.STRIPE_API_KEY}}"
 tables:
   - name: account
     description: Retrieve account

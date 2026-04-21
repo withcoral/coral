@@ -9,9 +9,11 @@ inputs:
     hint: Create an API token in PagerDuty → Integrations → API Access Keys
 base_url: https://api.pagerduty.com
 auth:
-  type: ApiKeyAuth
-  header: Authorization
-  api_token: "Token token={{input.PAGERDUTY_API_TOKEN}}"
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "Token token={{input.PAGERDUTY_API_TOKEN}}"
 tables:
   - name: abilities
     description: List abilities

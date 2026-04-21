@@ -17,9 +17,11 @@ inputs:
     kind: secret
     hint: Run `gh auth token` or create a PAT
 auth:
-  type: ApiKeyAuth
-  header: Authorization
-  api_token: "Bearer {{input.GITHUB_TOKEN}}"
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "Bearer {{input.GITHUB_TOKEN}}"
 request_headers:
   - name: Accept
     from: literal

@@ -9,9 +9,11 @@ inputs:
     hint: Create a personal API key in Linear → Settings → API
 base_url: https://api.linear.app
 auth:
-  type: ApiKeyAuth
-  header: Authorization
-  api_token: "{{input.LINEAR_API_KEY}}"
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "{{input.LINEAR_API_KEY}}"
 tables:
   - name: teams
     description: Teams in the Linear workspace

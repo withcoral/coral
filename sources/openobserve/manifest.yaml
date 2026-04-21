@@ -19,7 +19,7 @@ inputs:
     hint: OpenObserve account password
 base_url: "{{input.OPENOBSERVE_URL}}"
 auth:
-  type: BasicHttpAuth
+  type: BasicAuth
   username: "{{input.OPENOBSERVE_USERNAME}}"
   password: "{{input.OPENOBSERVE_PASSWORD}}"
 

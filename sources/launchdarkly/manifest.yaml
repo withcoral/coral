@@ -13,9 +13,11 @@ inputs:
     hint: Create an API access token in LaunchDarkly → Account settings → Authorization
 base_url: "{{input.LAUNCHDARKLY_API_BASE}}"
 auth:
-  type: ApiKeyAuth
-  header: Authorization
-  api_token: "{{input.LAUNCHDARKLY_TOKEN}}"
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "{{input.LAUNCHDARKLY_TOKEN}}"
 request_headers:
   - name: Content-Type
     from: literal

@@ -183,9 +183,11 @@ inputs:
     kind: secret
 base_url: "{{input.API_BASE}}"
 auth:
-  type: ApiKeyAuth
-  header: Authorization
-  api_token: "Bearer {{input.API_TOKEN}}"
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "Bearer {{input.API_TOKEN}}"
 tables:
   - name: messages
     description: Messages from the demo API
@@ -209,39 +211,26 @@ In this minimal example:
 
 ### HTTP authentication
 
-The top-level `auth:` block on an HTTP source is a tagged union — pick one shape via `type:`. Four built-in variants cover the common cases.
+The top-level `auth:` block on an HTTP source is a tagged union — pick one shape via `type:`. Three built-in variants cover the common cases.
 
-#### `ApiKeyAuth` — single token in a single header
+#### `HeaderAuth` — one or more auth headers
 
-Most APIs fall here (Bearer tokens, `Token <x>`, simple API keys, etc.).
+Most APIs fall here (Bearer tokens, `Token <x>`, simple API keys, dual keys, proprietary header schemes, etc.). Values use the same `ValueSourceSpec` shape as other header fields.
 
 ```yaml
 auth:
-  type: ApiKeyAuth
-  header: Authorization
-  api_token: "Bearer {{input.API_TOKEN}}"
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "Bearer {{input.API_TOKEN}}"
 ```
 
-The `api_token` field is a templated string; interpolate the token from an input. The header name itself is a literal.
-
-#### `BasicHttpAuth` — user + password, base64-encoded at runtime
-
-Coral computes `Basic <base64(user:pass)>` from plaintext inputs. Do **not** pre-encode — supply the raw values.
+Use multiple entries when the provider needs more than one auth header.
 
 ```yaml
 auth:
-  type: BasicHttpAuth
-  username: "{{input.ACCOUNT_EMAIL}}"
-  password: "{{input.ACCOUNT_PASSWORD}}"
-```
-
-#### `CustomHeadersAuth` — freeform list of auth headers
-
-Use when one token + one header isn't enough (dual API keys, proprietary header schemes, etc.). Values use the same `ValueSourceSpec` shape as other header fields.
-
-```yaml
-auth:
-  type: CustomHeadersAuth
+  type: HeaderAuth
   headers:
     - name: DD-API-KEY
       from: input
@@ -249,6 +238,17 @@ auth:
     - name: DD-APPLICATION-KEY
       from: input
       key: DD_APPLICATION_KEY
+```
+
+#### `BasicAuth` — user + password, base64-encoded at runtime
+
+Coral computes `Basic <base64(user:pass)>` from plaintext inputs. Do **not** pre-encode — supply the raw values.
+
+```yaml
+auth:
+  type: BasicAuth
+  username: "{{input.ACCOUNT_EMAIL}}"
+  password: "{{input.ACCOUNT_PASSWORD}}"
 ```
 
 #### `CustomAuth` — compiled-in signers for schemes that need dynamic logic
@@ -467,9 +467,11 @@ inputs:
 
 base_url: "{{input.API_BASE}}"
 auth:
-  type: ApiKeyAuth
-  header: Authorization
-  api_token: "Bearer {{input.API_TOKEN}}"
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "Bearer {{input.API_TOKEN}}"
 ```
 
 Rules:

@@ -12,9 +12,11 @@ inputs:
     hint: Create an auth token in Sentry → User Settings → Auth Tokens
 base_url: https://sentry.io
 auth:
-  type: ApiKeyAuth
-  header: Authorization
-  api_token: "Bearer {{input.SENTRY_TOKEN}}"
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "Bearer {{input.SENTRY_TOKEN}}"
 tables:
   - name: projects
     description: Sentry projects in the organization

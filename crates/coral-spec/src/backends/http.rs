@@ -26,13 +26,12 @@ use crate::{
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type")]
 pub enum AuthSpec {
-    /// Single auth header carrying an API token.
-    ApiKeyAuth(ApiKeyAuthSpec),
     /// HTTP Basic authentication; runtime base64-encodes `username:password`.
-    BasicHttpAuth(BasicHttpAuthSpec),
-    /// Freeform list of auth headers for sources that don't fit the
-    /// single-token shape (e.g. dual-key providers).
-    CustomHeadersAuth(CustomHeadersAuthSpec),
+    #[serde(rename = "BasicAuth")]
+    BasicAuth(BasicAuthSpec),
+    /// Declarative list of auth headers to attach to the request.
+    #[serde(rename = "HeaderAuth")]
+    HeaderAuth(HeaderAuthSpec),
     /// Authenticator that needs compiled-in signing logic (e.g. AWS `SigV4`).
     /// The `authenticator` tag selects which built-in impl runs.
     CustomAuth(CustomAuthSpec),
@@ -40,30 +39,22 @@ pub enum AuthSpec {
 
 impl Default for AuthSpec {
     fn default() -> Self {
-        Self::CustomHeadersAuth(CustomHeadersAuthSpec::default())
+        Self::HeaderAuth(HeaderAuthSpec::default())
     }
-}
-
-/// Strict single-header API-key authenticator.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ApiKeyAuthSpec {
-    pub header: String,
-    pub api_token: ParsedTemplate,
 }
 
 /// HTTP Basic authenticator with separate username and password templates.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct BasicHttpAuthSpec {
+pub struct BasicAuthSpec {
     pub username: ParsedTemplate,
     pub password: ParsedTemplate,
 }
 
-/// Freeform authenticator that injects an arbitrary list of headers.
+/// Declarative authenticator that injects one or more headers.
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
-pub struct CustomHeadersAuthSpec {
+pub struct HeaderAuthSpec {
     #[serde(default)]
     pub headers: Vec<HeaderSpec>,
 }

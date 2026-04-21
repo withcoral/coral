@@ -16,7 +16,7 @@ inputs:
     hint: Create an application key in Datadog → Organization Settings → Application Keys
 base_url: https://api.{{input.DD_SITE}}
 auth:
-  type: CustomHeadersAuth
+  type: HeaderAuth
   headers:
     - name: DD-API-KEY
       from: input

@@ -9,9 +9,11 @@ inputs:
     hint: Create a user or bot token in a Slack app (https://api.slack.com/apps)
 base_url: https://slack.com
 auth:
-  type: ApiKeyAuth
-  header: Authorization
-  api_token: "Bearer {{input.SLACK_TOKEN}}"
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "Bearer {{input.SLACK_TOKEN}}"
 tables:
   - name: channels
     description: Slack channels with topic, purpose, and member count

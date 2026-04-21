@@ -232,9 +232,12 @@ pub(crate) fn fixture_manifest_with_inputs_yaml() -> String {
         },
         "base_url": "{{input.API_BASE}}",
         "auth": {
-            "type": "ApiKeyAuth",
-            "header": "Authorization",
-            "api_token": "Bearer {{input.API_TOKEN}}",
+            "type": "HeaderAuth",
+            "headers": [{
+                "name": "Authorization",
+                "from": "template",
+                "template": "Bearer {{input.API_TOKEN}}",
+            }],
         },
         "tables": [{
             "name": "messages",
@@ -263,9 +266,12 @@ pub(crate) fn fixture_manifest_with_required_inputs_yaml() -> String {
         },
         "base_url": "{{input.API_BASE}}",
         "auth": {
-            "type": "ApiKeyAuth",
-            "header": "Authorization",
-            "api_token": "Bearer {{input.API_TOKEN}}",
+            "type": "HeaderAuth",
+            "headers": [{
+                "name": "Authorization",
+                "from": "template",
+                "template": "Bearer {{input.API_TOKEN}}",
+            }],
         },
         "tables": [{
             "name": "messages",

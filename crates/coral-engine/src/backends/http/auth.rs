@@ -2,7 +2,7 @@
 //!
 //! Each [`AuthSpec`] variant implements [`Authenticator::auth`], returning the
 //! list of typed headers to attach to an outbound request. Static variants
-//! (API keys, Basic, raw headers) ignore the request-shaped fields on
+//! (Basic, declarative headers) ignore the request-shaped fields on
 //! [`AuthContext`]; dynamic variants (AWS `SigV4` and future signers) sign over
 //! them.
 
@@ -14,9 +14,7 @@ use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use datafusion::error::{DataFusionError, Result};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 
-use coral_spec::{
-    ApiKeyAuthSpec, AuthSpec, BasicHttpAuthSpec, CustomAuthSpec, CustomHeadersAuthSpec,
-};
+use coral_spec::{AuthSpec, BasicAuthSpec, CustomAuthSpec, HeaderAuthSpec};
 
 use crate::backends::shared::template::{render_template, resolve_value_source, value_to_string};
 
@@ -55,23 +53,7 @@ pub(crate) trait Authenticator {
     fn auth(&self, ctx: &AuthContext<'_>) -> Result<Vec<(HeaderName, HeaderValue)>>;
 }
 
-impl Authenticator for ApiKeyAuthSpec {
-    fn auth(&self, ctx: &AuthContext<'_>) -> Result<Vec<(HeaderName, HeaderValue)>> {
-        let token = render_template(&self.api_token, &EMPTY_MAP, &EMPTY_MAP, ctx.resolved_inputs)?;
-        let name = HeaderName::try_from(self.header.as_str()).map_err(|e| {
-            DataFusionError::Execution(format!("invalid auth header name '{}': {e}", self.header))
-        })?;
-        let value = HeaderValue::try_from(token.as_str()).map_err(|e| {
-            DataFusionError::Execution(format!(
-                "invalid auth header value for '{}': {e}",
-                self.header
-            ))
-        })?;
-        Ok(vec![(name, value)])
-    }
-}
-
-impl Authenticator for BasicHttpAuthSpec {
+impl Authenticator for BasicAuthSpec {
     fn auth(&self, ctx: &AuthContext<'_>) -> Result<Vec<(HeaderName, HeaderValue)>> {
         let username =
             render_template(&self.username, &EMPTY_MAP, &EMPTY_MAP, ctx.resolved_inputs)?;
@@ -85,7 +67,7 @@ impl Authenticator for BasicHttpAuthSpec {
     }
 }
 
-impl Authenticator for CustomHeadersAuthSpec {
+impl Authenticator for HeaderAuthSpec {
     fn auth(&self, ctx: &AuthContext<'_>) -> Result<Vec<(HeaderName, HeaderValue)>> {
         let mut out = Vec::with_capacity(self.headers.len());
         for header in &self.headers {
@@ -127,9 +109,8 @@ impl Authenticator for CustomAuthSpec {
 impl Authenticator for AuthSpec {
     fn auth(&self, ctx: &AuthContext<'_>) -> Result<Vec<(HeaderName, HeaderValue)>> {
         match self {
-            AuthSpec::ApiKeyAuth(spec) => spec.auth(ctx),
-            AuthSpec::BasicHttpAuth(spec) => spec.auth(ctx),
-            AuthSpec::CustomHeadersAuth(spec) => spec.auth(ctx),
+            AuthSpec::BasicAuth(spec) => spec.auth(ctx),
+            AuthSpec::HeaderAuth(spec) => spec.auth(ctx),
             AuthSpec::CustomAuth(spec) => spec.auth(ctx),
         }
     }

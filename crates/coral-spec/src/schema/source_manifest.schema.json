@@ -72,19 +72,9 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["type", "header", "api_token"],
-          "properties": {
-            "type": { "const": "ApiKeyAuth" },
-            "header": { "type": "string", "minLength": 1 },
-            "api_token": { "type": "string", "minLength": 1 }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
           "required": ["type", "username", "password"],
           "properties": {
-            "type": { "const": "BasicHttpAuth" },
+            "type": { "const": "BasicAuth" },
             "username": { "type": "string", "minLength": 1 },
             "password": { "type": "string", "minLength": 1 }
           }
@@ -94,7 +84,7 @@
           "additionalProperties": false,
           "required": ["type"],
           "properties": {
-            "type": { "const": "CustomHeadersAuth" },
+            "type": { "const": "HeaderAuth" },
             "headers": {
               "type": "array",
               "items": { "$ref": "#/$defs/header" }

@@ -120,9 +120,12 @@ mod tests {
                 "GITHUB_TOKEN": { "kind": "secret" }
             },
             "auth": {
-                "type": "ApiKeyAuth",
-                "header": "Authorization",
-                "api_token": "Bearer {{input.GITHUB_TOKEN}}"
+                "type": "HeaderAuth",
+                "headers": [{
+                    "name": "Authorization",
+                    "from": "template",
+                    "template": "Bearer {{input.GITHUB_TOKEN}}"
+                }]
             },
             "tables": [{
                 "name": "repos",
