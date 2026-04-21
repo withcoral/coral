@@ -55,7 +55,7 @@ tables:
         query_param: maxResults
     columns:
       - name: id
-        type: Int64
+        type: Utf8
         nullable: false
         description: Project ID
         expr:
@@ -128,7 +128,7 @@ tables:
             - avatarUrls
             - 48x48
       - name: category_id
-        type: Int64
+        type: Utf8
         nullable: true
         description: Project category ID
         expr:
@@ -645,9 +645,9 @@ tables:
           path:
             - overdue
       - name: project_id
-        type: Int64
+        type: Utf8
         nullable: true
-        description: Numeric project ID for the version
+        description: Project ID for the version
         expr:
           kind: path
           path:
