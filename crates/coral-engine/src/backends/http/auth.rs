@@ -16,8 +16,7 @@ use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use coral_spec::{AuthSpec, BasicAuthSpec, CustomAuthSpec, HeaderAuthSpec};
 
 use crate::backends::shared::template::{
-    EMPTY_MAP, render_template, resolve_value_source, validate_input_dependencies,
-    validate_value_source_inputs, value_to_string,
+    EMPTY_MAP, render_template, resolve_value_source, value_to_string,
 };
 
 /// Context passed to [`Authenticator::auth`]. Wraps the fully-built
@@ -70,8 +69,8 @@ impl Authenticator for BasicAuthSpec {
     }
 
     fn validate_inputs(&self, resolved_inputs: &BTreeMap<String, String>) -> Result<()> {
-        validate_input_dependencies(&self.username, resolved_inputs)?;
-        validate_input_dependencies(&self.password, resolved_inputs)?;
+        render_template(&self.username, &EMPTY_MAP, &EMPTY_MAP, resolved_inputs)?;
+        render_template(&self.password, &EMPTY_MAP, &EMPTY_MAP, resolved_inputs)?;
         Ok(())
     }
 }
@@ -108,7 +107,26 @@ impl Authenticator for HeaderAuthSpec {
 
     fn validate_inputs(&self, resolved_inputs: &BTreeMap<String, String>) -> Result<()> {
         for header in &self.headers {
-            validate_value_source_inputs(&header.value, resolved_inputs)?;
+            let resolved =
+                resolve_value_source(&header.value, &EMPTY_MAP, &EMPTY_MAP, resolved_inputs)?
+                    .ok_or_else(|| {
+                        DataFusionError::Execution(format!(
+                            "missing value for auth header '{}'",
+                            header.name
+                        ))
+                    })?;
+            HeaderName::try_from(header.name.as_str()).map_err(|e| {
+                DataFusionError::Execution(format!(
+                    "invalid auth header name '{}': {e}",
+                    header.name
+                ))
+            })?;
+            let _ = HeaderValue::try_from(value_to_string(&resolved).as_str()).map_err(|e| {
+                DataFusionError::Execution(format!(
+                    "invalid auth header value for '{}': {e}",
+                    header.name
+                ))
+            })?;
         }
         Ok(())
     }
