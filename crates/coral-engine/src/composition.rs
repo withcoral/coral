@@ -4,9 +4,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use datafusion::datasource::TableProvider;
-use datafusion::error::DataFusionError;
 
-use crate::contracts::QuerySource;
+use crate::{CoreError, contracts::QuerySource};
 
 /// One source's table providers keyed by manifest table name.
 pub type SourceTables = HashMap<String, Arc<dyn TableProvider>>;
@@ -54,8 +53,9 @@ impl SourceDecoratorError {
 
 /// Registration-time hook for wrapping or replacing a source's table providers.
 ///
-/// Decorators operate only on successfully registered source tables. They do
-/// not participate in source registration failure policy.
+/// Decorators can wrap successfully registered source tables and may also
+/// observe selected-source failures to decide whether runtime construction
+/// should abort.
 pub trait SourceDecorator: Send + Sync {
     /// Stable decorator name used in diagnostics.
     fn name(&self) -> &'static str;
@@ -92,7 +92,7 @@ pub trait SourceDecorator: Send + Sync {
     fn source_failed(
         &mut self,
         _source: &QuerySource,
-        _error: &DataFusionError,
+        _error: &CoreError,
     ) -> Result<SourceFailurePolicy, SourceDecoratorError> {
         Ok(SourceFailurePolicy::Ignore)
     }

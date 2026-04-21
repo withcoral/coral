@@ -584,7 +584,7 @@ mod tests {
     use super::ParquetTableProvider;
     use crate::backends::compile_source_manifest;
     use crate::runtime::catalog;
-    use crate::runtime::registry::{SelectedCompiledSource, register_sources_blocking};
+    use crate::runtime::registry::{CompiledQuerySource, register_sources_blocking};
     use crate::{QueryRuntimeContext, QuerySource};
     use coral_spec::backends::file::FileTableSpec;
     use coral_spec::{ValidatedSourceManifest, parse_source_manifest_value};
@@ -602,13 +602,13 @@ mod tests {
     use std::sync::Arc;
     use tempfile::tempdir;
 
-    fn compile_sources(manifests: Vec<ValidatedSourceManifest>) -> Vec<SelectedCompiledSource> {
+    fn compile_sources(manifests: Vec<ValidatedSourceManifest>) -> Vec<CompiledQuerySource> {
         manifests
             .into_iter()
             .map(|manifest| {
                 let variables = BTreeMap::new();
                 let secrets = BTreeMap::new();
-                SelectedCompiledSource {
+                CompiledQuerySource {
                     source: QuerySource::new(manifest.clone(), variables.clone(), secrets.clone()),
                     compiled: compile_source_manifest(
                         &manifest,
