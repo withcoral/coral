@@ -7,6 +7,12 @@ Coral ships with [popular data sources](/reference/bundled-sources), but you are
 
 A source spec tells Coral how to connect to an API or read a local dataset, what tables to expose, and what columns each table has. Once added, the source works exactly like a bundled one: same SQL, same `coral.tables`, `coral.columns` and `coral.inputs`, same MCP surface.
 
+<Tip>
+  Install the [Coral source spec authoring
+  skill](/getting-started/installation#skills) with `npx skills add
+  withcoral/skills` to help your coding agent write source specs.
+</Tip>
+
 ## Agent-driven authoring
 
 Source authoring works well as an agent-driven workflow. Point your coding agent at the Coral CLI and the [source spec reference](/reference/source-spec-reference), give it the API docs or describe the endpoints you want, and let it iterate:
