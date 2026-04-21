@@ -117,36 +117,7 @@ fn datafusion_to_core(error: &DataFusionError) -> CoreError {
 }
 
 fn provider_error_to_core(error: &ProviderQueryError) -> CoreError {
-    match error {
-        ProviderQueryError::MissingRequiredFilter {
-            schema,
-            table,
-            field,
-        } => CoreError::FailedPrecondition(format!(
-            "{schema}.{table} requires WHERE {field} = <constant>"
-        )),
-        ProviderQueryError::ApiRequest {
-            status,
-            detail,
-            method,
-            url,
-            ..
-        } => match status {
-            Some(429 | 500..=599) => CoreError::Unavailable(format!(
-                "{}{}{}",
-                detail,
-                method
-                    .as_ref()
-                    .map(|value| format!(" [{value}]"))
-                    .unwrap_or_default(),
-                url.as_ref()
-                    .map(|value| format!(" {value}"))
-                    .unwrap_or_default()
-            )),
-            _ => CoreError::FailedPrecondition(detail.clone()),
-        },
-        ProviderQueryError::RateLimited { .. } => CoreError::Unavailable(error.to_string()),
-    }
+    CoreError::QueryFailure(Box::new(error.to_structured()))
 }
 
 #[cfg(test)]
