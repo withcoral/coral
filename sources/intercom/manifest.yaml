@@ -25,6 +25,8 @@ auth:
     - name: Accept
       from: literal
       value: application/json
+test_queries:
+  - SELECT * FROM intercom.admins LIMIT 1
 tables:
   - name: contacts
     description: Contacts (users and leads) in the workspace
