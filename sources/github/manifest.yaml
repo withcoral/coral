@@ -30,6 +30,8 @@ auth:
     - name: User-Agent
       from: literal
       value: coral
+test_queries:
+  - SELECT * FROM github.meta LIMIT 1
 tables:
   - name: accepted_assignments
     description: List accepted assignments for an assignment
