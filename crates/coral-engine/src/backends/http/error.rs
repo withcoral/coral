@@ -2,7 +2,18 @@
 
 use std::collections::HashMap;
 
+use reqwest::StatusCode as HttpStatus;
+
 use crate::contracts::{StatusCode, StructuredQueryError};
+
+// Named bindings for the HTTP status codes the dispatch table matches
+// against. Declared as `const` so they can appear directly in match arm
+// patterns — the raw numeric literals read as magic; these do not.
+const BAD_REQUEST: u16 = HttpStatus::BAD_REQUEST.as_u16();
+const UNAUTHORIZED: u16 = HttpStatus::UNAUTHORIZED.as_u16();
+const FORBIDDEN: u16 = HttpStatus::FORBIDDEN.as_u16();
+const NOT_FOUND: u16 = HttpStatus::NOT_FOUND.as_u16();
+const TOO_MANY_REQUESTS: u16 = HttpStatus::TOO_MANY_REQUESTS.as_u16();
 
 /// Structured query-time failures for HTTP-backed tables.
 #[derive(Debug, thiserror::Error)]
@@ -90,7 +101,7 @@ impl ProviderQueryError {
             } => http_request_to_structured(
                 source_schema,
                 table,
-                Some(429),
+                Some(TOO_MANY_REQUESTS),
                 method.as_deref(),
                 url.as_deref(),
                 detail,
@@ -115,7 +126,7 @@ fn http_request_to_structured(
     let sanitized_url = url.and_then(sanitize_request_url);
 
     let (reason, summary, hint, status) = match http_status {
-        Some(400) => (
+        Some(BAD_REQUEST) => (
             "INVALID_QUERY_SHAPE",
             "Source rejected the request".to_string(),
             Some(
@@ -124,7 +135,7 @@ fn http_request_to_structured(
             ),
             StatusCode::InvalidArgument,
         ),
-        Some(401) => (
+        Some(UNAUTHORIZED) => (
             "PROVIDER_REQUEST_FAILED",
             "Source authentication failed".to_string(),
             Some(format!(
@@ -134,7 +145,7 @@ fn http_request_to_structured(
             )),
             StatusCode::FailedPrecondition,
         ),
-        Some(403) => (
+        Some(FORBIDDEN) => (
             "PROVIDER_REQUEST_FAILED",
             "Source request was rejected".to_string(),
             Some(
@@ -143,7 +154,7 @@ fn http_request_to_structured(
             ),
             StatusCode::FailedPrecondition,
         ),
-        Some(404) => (
+        Some(NOT_FOUND) => (
             "PROVIDER_REQUEST_FAILED",
             "Source resource was not found".to_string(),
             Some(
@@ -152,7 +163,7 @@ fn http_request_to_structured(
             ),
             StatusCode::NotFound,
         ),
-        Some(429) => (
+        Some(TOO_MANY_REQUESTS) => (
             "PROVIDER_REQUEST_FAILED",
             "Source rate limit exceeded".to_string(),
             Some(
@@ -160,7 +171,7 @@ fn http_request_to_structured(
             ),
             StatusCode::Unavailable,
         ),
-        Some(s) if (500..600).contains(&s) => (
+        Some(s) if is_server_error(s) => (
             "PROVIDER_REQUEST_FAILED",
             "Source server error".to_string(),
             Some(
@@ -182,7 +193,8 @@ fn http_request_to_structured(
         None => summary,
     };
     let detail = enrich_provider_detail(raw_detail, method, sanitized_url.as_deref());
-    let is_retryable = matches!(http_status, Some(429 | 500..=599));
+    let is_retryable =
+        matches!(http_status, Some(s) if s == TOO_MANY_REQUESTS || is_server_error(s));
 
     let mut metadata = HashMap::new();
     metadata.insert("source".to_string(), source.to_string());
@@ -206,6 +218,11 @@ fn http_request_to_structured(
         status,
         metadata,
     )
+}
+
+/// Returns `true` when the given status belongs to the 5xx server-error class.
+fn is_server_error(status: u16) -> bool {
+    HttpStatus::from_u16(status).is_ok_and(|code| code.is_server_error())
 }
 
 // ---------------------------------------------------------------------------
