@@ -16,7 +16,8 @@ use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use coral_spec::{AuthSpec, BasicAuthSpec, CustomAuthSpec, HeaderAuthSpec};
 
 use crate::backends::shared::template::{
-    EMPTY_MAP, render_template, resolve_value_source, value_to_string,
+    EMPTY_MAP, render_template, resolve_value_source, validate_input_dependencies,
+    validate_value_source_inputs, value_to_string,
 };
 
 /// Context passed to [`Authenticator::auth`]. Wraps the fully-built
@@ -47,6 +48,12 @@ impl<'a> AuthContext<'a> {
 
 pub(crate) trait Authenticator {
     fn auth(&self, ctx: &AuthContext<'_>) -> Result<Vec<(HeaderName, HeaderValue)>>;
+
+    /// Registration-time check: every template / value source this
+    /// authenticator depends on must resolve from `resolved_inputs` (or a
+    /// token-level default). Called before any request is issued so invalid
+    /// source configs fail import instead of first fetch.
+    fn validate_inputs(&self, resolved_inputs: &BTreeMap<String, String>) -> Result<()>;
 }
 
 impl Authenticator for BasicAuthSpec {
@@ -60,6 +67,12 @@ impl Authenticator for BasicAuthSpec {
             DataFusionError::Execution(format!("invalid Basic auth header value: {e}"))
         })?;
         Ok(vec![(reqwest::header::AUTHORIZATION, value)])
+    }
+
+    fn validate_inputs(&self, resolved_inputs: &BTreeMap<String, String>) -> Result<()> {
+        validate_input_dependencies(&self.username, resolved_inputs)?;
+        validate_input_dependencies(&self.password, resolved_inputs)?;
+        Ok(())
     }
 }
 
@@ -92,12 +105,25 @@ impl Authenticator for HeaderAuthSpec {
         }
         Ok(out)
     }
+
+    fn validate_inputs(&self, resolved_inputs: &BTreeMap<String, String>) -> Result<()> {
+        for header in &self.headers {
+            validate_value_source_inputs(&header.value, resolved_inputs)?;
+        }
+        Ok(())
+    }
 }
 
 impl Authenticator for CustomAuthSpec {
     fn auth(&self, ctx: &AuthContext<'_>) -> Result<Vec<(HeaderName, HeaderValue)>> {
         match self {
             CustomAuthSpec::AwsSigV4(spec) => spec.auth(ctx),
+        }
+    }
+
+    fn validate_inputs(&self, resolved_inputs: &BTreeMap<String, String>) -> Result<()> {
+        match self {
+            CustomAuthSpec::AwsSigV4(spec) => spec.validate_inputs(resolved_inputs),
         }
     }
 }
@@ -108,6 +134,14 @@ impl Authenticator for AuthSpec {
             AuthSpec::BasicAuth(spec) => spec.auth(ctx),
             AuthSpec::HeaderAuth(spec) => spec.auth(ctx),
             AuthSpec::CustomAuth(spec) => spec.auth(ctx),
+        }
+    }
+
+    fn validate_inputs(&self, resolved_inputs: &BTreeMap<String, String>) -> Result<()> {
+        match self {
+            AuthSpec::BasicAuth(spec) => spec.validate_inputs(resolved_inputs),
+            AuthSpec::HeaderAuth(spec) => spec.validate_inputs(resolved_inputs),
+            AuthSpec::CustomAuth(spec) => spec.validate_inputs(resolved_inputs),
         }
     }
 }

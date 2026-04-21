@@ -9,7 +9,7 @@ use reqwest::header::HeaderMap;
 use serde_json::{Map, Value, json};
 
 use crate::backends::http::ProviderQueryError;
-use crate::backends::http::auth::{AuthContext, Authenticator, resolve_auth_headers};
+use crate::backends::http::auth::{Authenticator, resolve_auth_headers};
 use crate::backends::http::rate_limit::{RateLimitDecision, check_rate_limit};
 use crate::backends::shared::json_path::get_path_value;
 use crate::backends::shared::template::{
@@ -352,22 +352,15 @@ fn validate_source_scoped_http_config(
         })?;
     }
 
-    // Auth is source-scoped — `Authenticator::auth` always runs against
-    // empty filters/state at runtime too, so signing a synthetic request
-    // here exercises the same template-resolution contract as real fetches.
-    let validation_url = reqwest::Url::parse("http://preflight.invalid/")
-        .expect("static preflight URL must parse");
-    let request = reqwest::Request::new(reqwest::Method::GET, validation_url);
-    let ctx = AuthContext {
-        request: &request,
-        resolved_inputs,
-    };
-    let _ = manifest.auth.auth(&ctx).map_err(|error| {
-        DataFusionError::Execution(format!(
-            "{} source auth could not be resolved: {error}",
-            manifest.common.name
-        ))
-    })?;
+    manifest
+        .auth
+        .validate_inputs(resolved_inputs)
+        .map_err(|error| {
+            DataFusionError::Execution(format!(
+                "{} source auth could not be resolved: {error}",
+                manifest.common.name
+            ))
+        })?;
     Ok(())
 }
 

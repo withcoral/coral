@@ -17,8 +17,10 @@ use reqwest::header::{HeaderName, HeaderValue};
 
 use coral_spec::AwsSigV4Spec;
 
+use std::collections::BTreeMap;
+
 use crate::backends::http::auth::{AuthContext, Authenticator};
-use crate::backends::shared::template::{EMPTY_MAP, render_template};
+use crate::backends::shared::template::{EMPTY_MAP, render_template, validate_input_dependencies};
 
 /// Per-service `SigV4` settings. Most AWS APIs accept the library defaults,
 /// but S3 needs path normalization disabled, single percent-encoding, and the
@@ -119,5 +121,15 @@ impl Authenticator for AwsSigV4Spec {
             out.push((name, value));
         }
         Ok(out)
+    }
+
+    fn validate_inputs(&self, resolved_inputs: &BTreeMap<String, String>) -> Result<()> {
+        validate_input_dependencies(&self.region, resolved_inputs)?;
+        validate_input_dependencies(&self.access_key_id, resolved_inputs)?;
+        validate_input_dependencies(&self.secret_access_key, resolved_inputs)?;
+        if let Some(session_token) = &self.session_token {
+            validate_input_dependencies(session_token, resolved_inputs)?;
+        }
+        Ok(())
     }
 }
