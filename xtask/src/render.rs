@@ -146,30 +146,97 @@ fn flatten_for_table_cell(input: &str) -> String {
     out
 }
 
-/// Escape MDX-hostile characters (`{`, `}`, `<`, `>`) in plain prose.
+/// Escape MDX-hostile characters (`{`, `}`, `<`, `>`) in authored prose
+/// while preserving markdown constructs whose contents the author wrote
+/// as literal text.
 ///
-/// Hints and descriptions are expected to be short prose — sentences with
-/// optional inline code spans and markdown links. Content inside backtick
-/// code spans is emitted verbatim since MDX does not interpret JSX inside
-/// code. Fenced code blocks are deliberately **not** supported: hints that
-/// need one should be rewritten as prose.
+/// Hints and descriptions are freeform markdown. We use `pulldown-cmark`
+/// to identify byte ranges that should pass through unchanged:
+///
+/// - inline code spans (`` `foo` ``),
+/// - fenced and indented code blocks,
+/// - autolinks (`<https://…>` and `<mailto:…>`),
+/// - inline link destinations (the `(…)` portion of `[text](url)`).
+///
+/// Everything else — ordinary prose, link text, emphasis, raw HTML —
+/// goes through character-level `{`/`}`/`<`/`>` escaping. Raw HTML is
+/// intentionally escaped: authors of Coral hints write `<placeholder>`
+/// as literal text, not as a JSX tag, so `\<placeholder\>` is what we
+/// want Mintlify to render.
 pub(crate) fn escape_mdx(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    let mut chars = input.chars();
+    use pulldown_cmark::{Event, LinkType, Options, Parser, Tag, TagEnd};
 
-    while let Some(ch) = chars.next() {
-        match ch {
-            '`' => {
-                // Inline code span: copy verbatim until the matching backtick
-                // or end of line.
-                out.push('`');
-                for next in chars.by_ref() {
-                    out.push(next);
-                    if next == '`' || next == '\n' {
-                        break;
+    let mut out = String::with_capacity(input.len());
+    // `cursor` marks the byte offset in `input` up to which we've already
+    // emitted output. Anything from `cursor` to the next passthrough
+    // range's start must still be escaped as prose.
+    let mut cursor: usize = 0;
+    let mut code_block_start: Option<usize> = None;
+    let mut inline_link_start: Option<usize> = None;
+
+    for (event, range) in Parser::new_ext(input, Options::empty()).into_offset_iter() {
+        match event {
+            // Inline code spans and autolinks are one-event passthroughs:
+            // emit the whole event range verbatim.
+            Event::Code(_)
+            | Event::Start(Tag::Link {
+                link_type: LinkType::Autolink | LinkType::Email,
+                ..
+            }) => {
+                emit_passthrough(input, &mut cursor, range, &mut out);
+            }
+            Event::Start(Tag::CodeBlock(_)) => code_block_start = Some(range.start),
+            Event::End(TagEnd::CodeBlock) => {
+                if let Some(start) = code_block_start.take() {
+                    emit_passthrough(input, &mut cursor, start..range.end, &mut out);
+                }
+            }
+            Event::Start(Tag::Link { .. }) => inline_link_start = Some(range.start),
+            Event::End(TagEnd::Link) => {
+                if let Some(start) = inline_link_start.take() {
+                    // Inline link: pass through just the destination, the
+                    // `](…)` segment. The text before `](` (which may
+                    // contain placeholders like `<host>`) still gets the
+                    // prose treatment.
+                    if let Some(dest) = inline_link_dest(input, start..range.end) {
+                        emit_passthrough(input, &mut cursor, dest, &mut out);
                     }
                 }
             }
+            _ => {}
+        }
+    }
+    escape_prose_into(&input[cursor..], &mut out);
+    out
+}
+
+/// Emit `input[cursor..range.start]` as escaped prose, then
+/// `input[range]` verbatim, and advance `cursor` past the range.
+fn emit_passthrough(
+    input: &str,
+    cursor: &mut usize,
+    range: std::ops::Range<usize>,
+    out: &mut String,
+) {
+    if *cursor < range.start {
+        escape_prose_into(&input[*cursor..range.start], out);
+    }
+    out.push_str(&input[range.start..range.end]);
+    *cursor = range.end;
+}
+
+/// Find the byte range of the destination in an inline link — the `](…)`
+/// tail, inclusive of the brackets. Returns `None` for reference-style
+/// links (`[text][ref]` etc.) where no `](` appears in the link span.
+fn inline_link_dest(input: &str, link: std::ops::Range<usize>) -> Option<std::ops::Range<usize>> {
+    let slice = &input[link.start..link.end];
+    let bracket_paren = slice.find("](")?;
+    Some((link.start + bracket_paren)..link.end)
+}
+
+fn escape_prose_into(slice: &str, out: &mut String) {
+    for ch in slice.chars() {
+        match ch {
             '{' => out.push_str("\\{"),
             '}' => out.push_str("\\}"),
             '<' => out.push_str("\\<"),
@@ -177,7 +244,6 @@ pub(crate) fn escape_mdx(input: &str) -> String {
             other => out.push(other),
         }
     }
-    out
 }
 
 const INDEX_FRONTMATTER: &str =
@@ -302,6 +368,69 @@ tables:
             escape_mdx(input),
             "Use `{{input.X}}` to reference input [X](https://x.example)."
         );
+    }
+
+    #[test]
+    fn escape_mdx_preserves_fenced_code_blocks_verbatim() {
+        let input = "See the config:\n\n\
+                     ```yaml\n\
+                     token: <secret>\n\
+                     key: {{input.KEY}}\n\
+                     ```\n\n\
+                     After <host>.";
+        let expected = "See the config:\n\n\
+                        ```yaml\n\
+                        token: <secret>\n\
+                        key: {{input.KEY}}\n\
+                        ```\n\n\
+                        After \\<host\\>.";
+        assert_eq!(escape_mdx(input), expected);
+    }
+
+    #[test]
+    fn escape_mdx_accepts_indented_fence_markers() {
+        // CommonMark allows up to 3 leading spaces before a fence marker.
+        let input = "Prose.\n\n   ```\n<raw>\n   ```\n\nAfter <host>.";
+        let expected = "Prose.\n\n   ```\n<raw>\n   ```\n\nAfter \\<host\\>.";
+        assert_eq!(escape_mdx(input), expected);
+    }
+
+    #[test]
+    fn escape_mdx_preserves_autolinks_verbatim() {
+        let input = "See <https://docs.example.com> and <https://other.example>.";
+        assert_eq!(
+            escape_mdx(input),
+            "See <https://docs.example.com> and <https://other.example>."
+        );
+    }
+
+    #[test]
+    fn escape_mdx_preserves_inline_link_destinations_verbatim() {
+        let input = "Use [doc](https://example.com/<token>?q={x}) for setup.";
+        assert_eq!(
+            escape_mdx(input),
+            "Use [doc](https://example.com/<token>?q={x}) for setup."
+        );
+    }
+
+    #[test]
+    fn escape_mdx_escapes_link_text_while_preserving_destination() {
+        // Link text still goes through prose escaping (so placeholder-style
+        // `<host>` in link text gets escaped); the destination in the
+        // parentheses is emitted verbatim.
+        let input = "See [the <host> guide](https://example.com/<token>).";
+        assert_eq!(
+            escape_mdx(input),
+            "See [the \\<host\\> guide](https://example.com/<token>)."
+        );
+    }
+
+    #[test]
+    fn escape_mdx_preserves_indented_code_blocks() {
+        // Four-space indent is an indented code block in CommonMark.
+        let input = "Example:\n\n    token: <secret>\n    key: {var}\n\nAfter <host>.";
+        let expected = "Example:\n\n    token: <secret>\n    key: {var}\n\nAfter \\<host\\>.";
+        assert_eq!(escape_mdx(input), expected);
     }
 
     #[test]

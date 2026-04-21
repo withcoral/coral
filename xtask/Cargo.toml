@@ -16,6 +16,7 @@ workspace = true
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+pulldown-cmark = { version = "0.13", default-features = false }
 serde_json.workspace = true
 
 coral-spec.workspace = true
