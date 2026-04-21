@@ -1,5 +1,5 @@
 [package]
-name = "coral-docgen"
+name = "xtask"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,7 +7,7 @@ rust-version.workspace = true
 publish = false
 
 [[bin]]
-name = "coral-docgen"
+name = "xtask"
 path = "src/main.rs"
 
 [lints]
@@ -21,4 +21,4 @@ serde_json.workspace = true
 coral-spec.workspace = true
 
 [dev-dependencies]
-insta.workspace = true
+insta = "1"

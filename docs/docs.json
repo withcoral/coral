@@ -75,7 +75,10 @@
       },
       {
         "group": "Guides",
-        "pages": ["guides/use-coral-over-mcp", "guides/write-a-custom-source"]
+        "pages": [
+          "guides/use-coral-over-mcp",
+          "guides/write-a-custom-source"
+        ]
       },
       {
         "group": "Reference",

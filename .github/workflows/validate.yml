@@ -59,7 +59,7 @@ jobs:
               - 'Makefile'
               - 'Cargo.toml'
               - 'Cargo.lock'
-              - 'crates/coral-docgen/**'
+              - 'xtask/**'
               - 'crates/coral-spec/**'
               - 'sources/**'
               - 'docs/**'

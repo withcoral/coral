@@ -1,5 +1,5 @@
 ---
-source: crates/coral-docgen/src/render.rs
+source: xtask/src/render.rs
 assertion_line: 357
 expression: "index_page(&[demo, minimal])"
 ---

@@ -25,7 +25,7 @@ mod render;
 /// CLI for regenerating the bundled-source docs from source manifests.
 #[derive(Debug, Parser)]
 #[command(
-    name = "coral-docgen",
+    name = "xtask",
     about = "Regenerate Coral source docs from sources/*/manifest.y{a,}ml"
 )]
 struct Cli {
@@ -54,7 +54,7 @@ fn main() -> ExitCode {
         Ok(true) => ExitCode::SUCCESS,
         Ok(false) => ExitCode::from(1),
         Err(err) => {
-            eprintln!("coral-docgen: {err:#}");
+            eprintln!("xtask: {err:#}");
             ExitCode::from(2)
         }
     }
@@ -92,7 +92,7 @@ fn check_mode(cli: &Cli, index: &str, docs_json: &str) -> bool {
     if stale.is_empty() {
         true
     } else {
-        eprintln!("coral-docgen: the following files are out of date:");
+        eprintln!("xtask: the following files are out of date:");
         for path in &stale {
             eprintln!("  {}", path.display());
         }
