@@ -68,7 +68,7 @@ message SourceInputSpec {
   // Optional manifest-declared default value.
   string default_value = 4;
   // Optional authored hint shown to the user while collecting this input.
-  optional string hint = 5;
+  string hint = 5;
 }
 
 // One bundled or imported source available for installation.
