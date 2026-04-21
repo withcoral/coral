@@ -9,6 +9,7 @@
 mod bootstrap;
 mod branding;
 mod onboard;
+mod query_error;
 mod source_ops;
 
 use std::path::PathBuf;
@@ -112,15 +113,21 @@ async fn main() -> Result<(), anyhow::Error> {
 
     match cli.command {
         Command::Sql(args) => {
-            let response = bootstrap
+            let response = match bootstrap
                 .app
                 .query_client()
                 .execute_sql(Request::new(ExecuteSqlRequest {
                     workspace: Some(default_workspace()),
                     sql: args.sql,
                 }))
-                .await?
-                .into_inner();
+                .await
+            {
+                Ok(response) => response.into_inner(),
+                Err(status) => {
+                    eprint!("{}", query_error::render_query_error(&status));
+                    std::process::exit(1);
+                }
+            };
             let result = decode_execute_sql_response(&response)?;
             print_batches(result.batches(), args.format)?;
         }
