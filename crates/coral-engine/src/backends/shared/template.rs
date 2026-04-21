@@ -173,8 +173,8 @@ pub(crate) fn validate_input_dependencies(
 }
 
 /// Same input-only validation as [`validate_input_dependencies`], but applied
-/// to a [`ValueSourceSpec`]. Literal / filter / state / filter_int /
-/// now_epoch_minus_seconds variants have no input dependencies and are
+/// to a [`ValueSourceSpec`]. Literal / filter / state / `filter_int` /
+/// `now_epoch_minus_seconds` variants have no input dependencies and are
 /// short-circuited.
 pub(crate) fn validate_value_source_inputs(
     value: &ValueSourceSpec,
