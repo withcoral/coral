@@ -18,6 +18,10 @@
     "inputs": { "$ref": "#/$defs/inputs" },
     "base_url": { "type": "string", "minLength": 1 },
     "auth": { "$ref": "#/$defs/auth" },
+    "request_headers": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/header" }
+    },
     "rate_limit": { "$ref": "#/$defs/rate_limit" },
     "tables": {
       "type": "array",
@@ -68,14 +72,39 @@
       ]
     },
     "auth": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "headers": {
-          "type": "array",
-          "items": { "$ref": "#/$defs/header" }
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "username", "password"],
+          "properties": {
+            "type": { "const": "BasicAuth" },
+            "username": { "type": "string", "minLength": 1 },
+            "password": { "type": "string", "minLength": 1 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type"],
+          "properties": {
+            "type": { "const": "HeaderAuth" },
+            "headers": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/header" }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["type", "authenticator"],
+          "properties": {
+            "type": { "const": "CustomAuth" },
+            "authenticator": { "type": "string", "minLength": 1 }
+          }
         }
-      }
+      ]
     },
     "rate_limit": {
       "type": "object",

@@ -130,6 +130,7 @@ inputs:
     hint: Bearer token for the API
 base_url: "{{input.API_BASE}}"
 auth:
+  type: HeaderAuth
   headers:
     - name: Authorization
       from: template
