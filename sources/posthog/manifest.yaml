@@ -26,6 +26,8 @@ auth:
     - name: Authorization
       from: template
       template: Bearer {{input.POSTHOG_API_KEY}}
+test_queries:
+  - SELECT * FROM posthog.organizations LIMIT 1
 tables:
   - name: actions
     description: project_actions
