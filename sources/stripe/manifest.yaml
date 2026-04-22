@@ -1,12 +1,20 @@
 dsl_version: 3
 name: stripe
 version: 2026-03-25.dahlia
-description: The Stripe REST API for account and payment operations.
+description: >-
+  Query customers, charges, subscriptions, invoices, payments, products,
+  prices, refunds, disputes, payouts, balance transactions, and events
+  from Stripe.
 backend: http
 inputs:
   STRIPE_API_KEY:
     kind: secret
-    hint: Create a restricted or secret API key in the Stripe Dashboard → Developers → API keys
+    hint: |
+      Create a restricted API key (`rk_test_` or `rk_live_`) with Read
+      permissions for the resources you plan to query.
+      You can also use secret keys (`sk_test_` or `sk_live_`), but
+      restricted keys limit access to only the required endpoints.
+      See [Stripe API key docs](https://docs.stripe.com/keys).
 base_url: https://api.stripe.com
 auth:
   headers:

@@ -2,11 +2,17 @@ name: linear
 version: 2.2.0
 dsl_version: 3
 backend: http
-description: Manage issues, projects, cycles, and initiatives across teams
+description: >-
+  Query issues, projects, cycles, initiatives, teams, users, comments,
+  labels, and attachments from Linear.
 inputs:
   LINEAR_API_KEY:
     kind: secret
-    hint: Create a personal API key in Linear → Settings → API
+    hint: |
+      Create a personal API key with the Read permission, which gives
+      read-only access to all tables. You can optionally scope the key
+      to specific teams.
+      See [Linear API key docs](https://linear.app/docs/api-and-webhooks#api-keys).
 base_url: https://api.linear.app
 auth:
   headers:

@@ -2,18 +2,36 @@ name: datadog
 version: 2.0.0
 dsl_version: 3
 backend: http
-description: Monitor infrastructure, track incidents, and analyze logs and APM traces
+description: >-
+  Query monitors, events, incidents, dashboards, hosts, services, APM
+  dependencies, downtimes, SLOs, synthetic tests, users, logs, spans,
+  and metrics from Datadog.
 inputs:
   DD_SITE:
     kind: variable
     default: datadoghq.com
-    hint: Datadog site host (e.g. datadoghq.com, datadoghq.eu, us3.datadoghq.com)
+    hint: |
+      Datadog site host for your org (for example `datadoghq.com`,
+      `datadoghq.eu`, `us3.datadoghq.com`, `us5.datadoghq.com`,
+      `ap1.datadoghq.com`, or `ddog-gov.com`).
+
+      For site and region details, see the
+      [Datadog site guide](https://docs.datadoghq.com/getting_started/site/).
   DD_API_KEY:
     kind: secret
-    hint: Create an API key in Datadog → Organization Settings → API Keys
+    hint: |
+      Use a Datadog API key. This key is required for all Datadog API
+      requests.
+
+      See [Datadog API keys](https://docs.datadoghq.com/account_management/api-app-keys/#api-keys).
   DD_APPLICATION_KEY:
     kind: secret
-    hint: Create an application key in Datadog → Organization Settings → Application Keys
+    hint: |
+      Use a Datadog application key with read access to the resources
+      you plan to query (for example monitors, incidents, logs, APM,
+      and metrics).
+
+      See [Datadog application keys](https://docs.datadoghq.com/account_management/api-app-keys/#application-keys).
 base_url: https://api.{{input.DD_SITE}}
 auth:
   headers:
@@ -196,7 +214,7 @@ tables:
         nullable: true
         description: Monitor search query virtual filter
         expr:
-          kind: 'null'
+          kind: "null"
         virtual: true
     filters:
       - name: query
@@ -299,14 +317,14 @@ tables:
         nullable: true
         description: Start time virtual filter
         expr:
-          kind: 'null'
+          kind: "null"
         virtual: true
       - name: end
         type: Utf8
         nullable: true
         description: End time virtual filter
         expr:
-          kind: 'null'
+          kind: "null"
         virtual: true
     filters:
       - name: start
@@ -698,7 +716,7 @@ tables:
         - name: env
           from: filter
           key: env
-          default: '*'
+          default: "*"
         - name: start
           from: filter
           key: start
@@ -839,7 +857,7 @@ tables:
         nullable: true
         description: Primary tag virtual filter
         expr:
-          kind: 'null'
+          kind: "null"
         virtual: true
     filters:
       - name: service
@@ -985,7 +1003,7 @@ tables:
       query:
         - name: limit
           from: literal
-          value: '1000'
+          value: "1000"
     response:
       rows_path:
         - data
@@ -1275,7 +1293,7 @@ tables:
             - query
           from: filter
           key: query
-          default: '*'
+          default: "*"
         - path:
             - filter
             - from
@@ -1406,21 +1424,21 @@ tables:
         nullable: true
         description: Start time virtual filter
         expr:
-          kind: 'null'
+          kind: "null"
         virtual: true
       - name: end
         type: Utf8
         nullable: true
         description: End time virtual filter
         expr:
-          kind: 'null'
+          kind: "null"
         virtual: true
       - name: query
         type: Utf8
         nullable: true
         description: Query virtual filter
         expr:
-          kind: 'null'
+          kind: "null"
         virtual: true
     filters:
       - name: start
@@ -1443,7 +1461,7 @@ tables:
         - name: filter[query]
           from: filter
           key: query
-          default: '*'
+          default: "*"
         - name: filter[from]
           from: filter
           key: start
@@ -1584,14 +1602,14 @@ tables:
         nullable: true
         description: End time virtual filter
         expr:
-          kind: 'null'
+          kind: "null"
         virtual: true
       - name: query
         type: Utf8
         nullable: true
         description: Query virtual filter
         expr:
-          kind: 'null'
+          kind: "null"
         virtual: true
     filters:
       - name: start
@@ -1661,21 +1679,21 @@ tables:
         nullable: true
         description: Start time virtual filter
         expr:
-          kind: 'null'
+          kind: "null"
         virtual: true
       - name: end
         type: Utf8
         nullable: true
         description: End time virtual filter
         expr:
-          kind: 'null'
+          kind: "null"
         virtual: true
       - name: query
         type: Utf8
         nullable: true
         description: Query virtual filter
         expr:
-          kind: 'null'
+          kind: "null"
         virtual: true
     filters:
       - name: query
@@ -1693,7 +1711,7 @@ tables:
         - name: q
           from: filter
           key: query
-          default: ''
+          default: ""
         - name: from
           from: now_epoch_minus_seconds
           seconds: 3600
@@ -1714,7 +1732,7 @@ tables:
         nullable: true
         description: Optional prefix query virtual filter
         expr:
-          kind: 'null'
+          kind: "null"
         virtual: true
     filters:
       - name: query

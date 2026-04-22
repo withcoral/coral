@@ -1,12 +1,20 @@
 dsl_version: 3
 name: pagerduty
 version: 2.0.0
-description: The PagerDuty REST API. Please see https://developer.pagerduty.com/docs/get-started/getting-started/ for more details.
+description: >-
+  Query incidents, services, teams, users, schedules, oncalls, escalation
+  policies, log entries, change events, status pages, and workflows from
+  PagerDuty.
 backend: http
 inputs:
   PAGERDUTY_API_TOKEN:
     kind: secret
-    hint: Create an API token in PagerDuty → Integrations → API Access Keys
+    hint: |
+      Use a read-only General Access REST API key or a personal User
+      Token REST API key. General Access keys require admin privileges
+      to create; User Token keys can be created by any user but are
+      scoped to that user's permissions.
+      See [PagerDuty API access docs](https://developer.pagerduty.com/docs/authentication).
 base_url: https://api.pagerduty.com
 auth:
   headers:

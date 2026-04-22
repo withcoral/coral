@@ -1,16 +1,25 @@
 dsl_version: 3
 name: gitlab
 version: v4
-description: GitLab REST API v4
+description: >-
+  Query projects, groups, issues, merge requests, pipelines,
+  deployments, packages, users, and instance metadata from GitLab
+  (Cloud or self-hosted).
 backend: http
 inputs:
   GITLAB_API_BASE:
     kind: variable
     default: https://gitlab.com
-    hint: For self-hosted GitLab, set to your instance URL
+    hint: |
+      Base URL of your GitLab instance. Keep the default for
+      `gitlab.com`; for self-hosted GitLab, use your instance URL
+      (for example `https://gitlab.example.com`).
   GITLAB_TOKEN:
     kind: secret
-    hint: Create a personal access token with `read_api` scope in GitLab → User Settings → Access Tokens
+    hint: |
+      Create a personal access token (PAT) with the `read_api` scope;
+      some admin tables require elevated scopes.
+      See [GitLab PAT docs](https://docs.gitlab.com/user/profile/personal_access_tokens/).
 base_url: '{{input.GITLAB_API_BASE}}'
 auth:
   headers:

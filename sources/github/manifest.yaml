@@ -18,19 +18,18 @@ inputs:
     kind: secret
     hint: Run `gh auth token` or create a PAT
 auth:
+  type: HeaderAuth
   headers:
     - name: Authorization
       from: template
       template: Bearer {{input.GITHUB_TOKEN}}
-    - name: Accept
-      from: literal
-      value: application/vnd.github+json
-    - name: X-GitHub-Api-Version
-      from: literal
-      value: "2022-11-28"
-    - name: User-Agent
-      from: literal
-      value: coral
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/vnd.github+json
+  - name: X-GitHub-Api-Version
+    from: literal
+    value: '2022-11-28'
 tables:
   - name: global_advisories
     description: List global security advisories

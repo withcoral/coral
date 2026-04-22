@@ -2,18 +2,26 @@ dsl_version: 3
 name: openobserve
 version: 0.1.0
 backend: http
-description: Query logs, metrics, and traces stored in OpenObserve
+description: >-
+  Query streams, logs, metrics, and traces from OpenObserve (Cloud or
+  self-hosted).
 inputs:
   OPENOBSERVE_URL:
     kind: variable
-    hint: Base URL of your OpenObserve instance (e.g. https://api.openobserve.ai)
+    hint: |
+      Base URL of your OpenObserve instance (for example
+      `https://api.openobserve.ai` or `http://localhost:5080`).
   OPENOBSERVE_ORG:
     kind: variable
     default: default
-    hint: Organization slug (defaults to `default` for single-tenant setups)
+    hint: |
+      Organization slug in OpenObserve. Keep the default `default` for
+      single-tenant setups.
   OPENOBSERVE_BASIC_AUTH:
     kind: secret
-    hint: Base64-encoded `email:password` credentials for Basic auth
+    hint: |
+      Base64-encoded `email:password` credentials for HTTP Basic auth.
+      Example: `echo -n 'user@example.com:password' | base64`.
 base_url: "{{input.OPENOBSERVE_URL}}"
 auth:
   headers:
