@@ -22,9 +22,7 @@ pub(crate) async fn build_runtime(
     sources: &[QuerySource],
     runtime: &dyn QueryRuntimeProvider,
 ) -> Result<QueryRuntimeAdapter, CoreError> {
-    let session_config = SessionConfig::new()
-        .with_information_schema(true)
-        .set_str("datafusion.sql_parser.dialect", "postgres");
+    let session_config = SessionConfig::new().with_information_schema(true);
     let runtime_env = Arc::new(
         RuntimeEnvBuilder::new()
             .with_object_list_cache_limit(0)

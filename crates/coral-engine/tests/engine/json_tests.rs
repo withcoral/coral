@@ -1,7 +1,7 @@
 //! Backend-agnostic coverage for the JSON UDFs registered on the engine's
 //! `SessionContext` (`json_get*`, `json_contains`, `json_length`,
-//! `json_as_text`, `->`, `->>`, `?`) and the `Json` manifest type. Uses JSONL
-//! as a lightweight vehicle; the same functions work against any backend that
+//! `json_as_text`, `->`, `->>`) and the `Json` manifest type. Uses JSONL as a
+//! lightweight vehicle; the same functions work against any backend that
 //! lands JSON in a `Utf8` column.
 
 use std::path::Path;
@@ -273,17 +273,4 @@ async fn arrow_operator_with_cast_extracts_typed_value() {
     .await;
 
     assert_eq!(rows, vec![json!({"id": 1})]);
-}
-
-#[tokio::test]
-async fn question_operator_checks_key_existence() {
-    let rows = query(
-        "json_question",
-        "SELECT id FROM json_question.events \
-         WHERE properties ? '$browser' AND NOT (properties ? 'missing') \
-         ORDER BY id",
-    )
-    .await;
-
-    assert_eq!(rows, vec![json!({"id": 1}), json!({"id": 2})]);
 }
