@@ -1,0 +1,62 @@
+---
+source: xtask/src/render.rs
+assertion_line: 357
+expression: "index_page(&[demo, minimal])"
+---
+---
+title: "Bundled sources"
+description: "Data sources that ship with Coral."
+---
+
+{/* AUTO-GENERATED — DO NOT EDIT. Run `make docs-generate` to update. */}
+
+Coral supports connecting to some data sources out of the box.<br />
+If the source you need is not available, you can extend Coral by [writing a custom source spec](/guides/write-a-custom-source).
+
+<Tip>
+  Run `coral source discover` to see the bundled sources available in your
+  build.
+</Tip>
+
+## Bundled data sources
+
+| Source | Backend | Description |
+| --- | --- | --- |
+| [`demo`](#demo) | `http` | A small demo source used in snapshot tests |
+| [`minimal`](#minimal) | `http` | Coral bundled source: minimal |
+
+## Supported data source types
+
+Supported sources fall into two categories.
+
+- **HTTP API** — Coral translates SQL queries into paginated HTTP requests against a provider's REST API.
+- **File-backed** — Coral reads local Parquet or JSONL files directly.
+
+## Upgrading bundled sources
+
+To update bundled sources, upgrade the Coral binary. Coral resolves each bundled manifest from the current binary at validate or query time, so spec fixes and newly required inputs are picked up automatically, you don't need to remove and re-add the source. Your configured variables and secrets stay in local state across upgrades.
+
+## Configure a source
+
+Each source has its own set of interactive inputs — API tokens, base URLs, or
+other per-install configuration.
+
+### `demo`
+
+`DEMO_API_BASE` (optional)<br />
+default `https://api.example.com`
+
+For self-hosted deploys, use https://\<host\>/api/v3.
+Use the `admin` account's `token` value.
+
+`DEMO_TOKEN` (required)
+
+Create an API token in Settings → Tokens
+
+### `minimal`
+
+No configuration required.
+
+## Don't see what you need?
+
+The bundled set is growing. If your data source is not listed, [write a custom source](/guides/write-a-custom-source), or reach out to us via [Discord](https://discord.gg/h9aun8KpFF) or [GitHub](https://github.com/withcoral/coral/issues).

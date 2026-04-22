@@ -6,7 +6,19 @@ description: Search channels, messages, and users in your workspace
 inputs:
   SLACK_TOKEN:
     kind: secret
-    hint: Create a user or bot token in a Slack app (https://api.slack.com/apps)
+    hint: |
+      Slack doesn't provide a general-purpose API for reading messages.
+      Instead, you need a Slack app with a Bot User OAuth Token.
+
+      If you already have a Slack app with the required scopes, you can
+      find your Bot User OAuth Token on its OAuth & Permissions page. The
+      required scopes are: channels:read, channels:history, groups:read,
+      groups:history, users:read, users:read.email.
+
+      If you don't have a Slack app, you can
+      [create one with the required scopes pre-filled](https://api.slack.com/apps?new_app=1&manifest_json=%7B%22display_information%22%3A%7B%22name%22%3A%22Coral%22%2C%22description%22%3A%22Coral+data+access%22%7D%2C%22oauth_config%22%3A%7B%22scopes%22%3A%7B%22bot%22%3A%5B%22channels%3Aread%22%2C%22groups%3Aread%22%2C%22channels%3Ahistory%22%2C%22groups%3Ahistory%22%2C%22users%3Aread%22%2C%22users%3Aread.email%22%5D%7D%7D%2C%22features%22%3A%7B%22bot_user%22%3A%7B%22display_name%22%3A%22Coral%22%2C%22always_online%22%3Afalse%7D%7D%7D).
+
+      For more details, see the [Slack app setup guide](https://docs.slack.dev/app-management/quickstart-app-settings).
 base_url: https://slack.com
 auth:
   headers:
@@ -213,14 +225,14 @@ tables:
         nullable: true
         description: Oldest timestamp filter (virtual)
         expr:
-          kind: 'null'
+          kind: "null"
         virtual: true
       - name: latest
         type: Utf8
         nullable: true
         description: Latest timestamp filter (virtual)
         expr:
-          kind: 'null'
+          kind: "null"
         virtual: true
     filters:
       - name: channel

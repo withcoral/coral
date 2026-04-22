@@ -26,6 +26,7 @@ jobs:
       github_actions: ${{ steps.filter.outputs.github_actions }}
       rust_checks: ${{ steps.filter.outputs.rust_checks }}
       source-lint: ${{ steps.filter.outputs.source-lint }}
+      docs-freshness: ${{ steps.filter.outputs.docs-freshness }}
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -53,6 +54,15 @@ jobs:
               - 'Makefile'
               - 'sources/**/*.yaml'
               - 'sources/**/*.yml'
+            docs-freshness:
+              - '.github/workflows/validate.yml'
+              - 'Makefile'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'xtask/**'
+              - 'crates/coral-spec/**'
+              - 'sources/**'
+              - 'docs/**'
 
   rust-checks:
     name: Rust checks
@@ -119,9 +129,32 @@ jobs:
       - name: Run make lint-sources
         run: make lint-sources
 
+  docs-freshness:
+    name: Docs freshness check
+    runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ needs.changes.outputs.docs-freshness == 'true' }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        run: rustup show
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          shared-key: coral-docs-freshness-${{ runner.os }}
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Run make docs-check
+        run: make docs-check
+
   validate:
     runs-on: ubuntu-latest
-    needs: [changes, rust-checks, gha-security-audit, source-lint]
+    needs: [changes, rust-checks, gha-security-audit, source-lint, docs-freshness]
     # Run even when upstream jobs fail or are conditionally skipped so this
     # job can act as the single required status check for the workflow.
     if: ${{ always() }}
@@ -132,12 +165,14 @@ jobs:
           RUST_CHECKS_RESULT: ${{ needs.rust-checks.result }}
           GHA_SECURITY_AUDIT_RESULT: ${{ needs.gha-security-audit.result }}
           SOURCE_LINT_RESULT: ${{ needs.source-lint.result }}
+          DOCS_FRESHNESS_RESULT: ${{ needs.docs-freshness.result }}
         run: |
           jobs=(
             "changes:$CHANGES_RESULT"
             "rust-checks:$RUST_CHECKS_RESULT"
             "gha-security-audit:$GHA_SECURITY_AUDIT_RESULT"
             "source-lint:$SOURCE_LINT_RESULT"
+            "docs-freshness:$DOCS_FRESHNESS_RESULT"
           )
 
           failed=0
