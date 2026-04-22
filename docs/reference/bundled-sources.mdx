@@ -67,11 +67,10 @@ For more details, see the
 
 ### `confluence`
 
-`CONFLUENCE_BASE_URL` (optional)<br />
-default `https://your-domain.atlassian.net/wiki`
+`CONFLUENCE_BASE_URL` (required)
 
-Base URL of your Confluence Cloud site (for example
-`https://acme.atlassian.net/wiki`).
+Base URL of your Atlassian Cloud site, without the `/wiki` suffix
+(for example `https://acme.atlassian.net`).
 
 `CONFLUENCE_BASIC_AUTH` (required)
 
@@ -173,8 +172,7 @@ See [Intercom authentication docs](https://developers.intercom.com/docs/build-an
 
 ### `jira`
 
-`JIRA_BASE_URL` (optional)<br />
-default `https://your-domain.atlassian.net`
+`JIRA_BASE_URL` (required)
 
 Base URL of your Jira Cloud site (for example
 `https://acme.atlassian.net`).
