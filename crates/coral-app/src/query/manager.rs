@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use coral_engine::{
     CoralQuery, CoreError, QueryExecution, QueryRuntimeContext, QueryRuntimeProvider, QuerySource,
-    TableInfo,
+    SourceValidationReport, TableInfo,
 };
 use coral_spec::{ManifestInputKind, ManifestInputSpec, parse_source_manifest_yaml};
 
@@ -23,7 +23,7 @@ pub(crate) enum QueryManagerError {
 
 pub(crate) struct ValidatedSource {
     pub(crate) source: InstalledSource,
-    pub(crate) tables: Vec<TableInfo>,
+    pub(crate) report: SourceValidationReport,
 }
 
 #[derive(Clone)]
@@ -89,13 +89,17 @@ impl QueryManager {
             .load_query_source(workspace_name, &source)
             .map_err(QueryManagerError::App)?;
         let runtime = self.runtime_provider();
-        let tables = CoralQuery::test_source(&query_source, &runtime)
-            .await
-            .map_err(QueryManagerError::Core)?;
+        let report = CoralQuery::validate_source(
+            &query_source,
+            &runtime,
+            query_source.source_spec().test_queries(),
+        )
+        .await
+        .map_err(QueryManagerError::Core)?;
         let mut source = source;
         source.version = version;
 
-        Ok(ValidatedSource { source, tables })
+        Ok(ValidatedSource { source, report })
     }
 
     fn load_query_sources(

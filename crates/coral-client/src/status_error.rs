@@ -25,19 +25,22 @@ pub enum DecodedStatusError {
 
 /// Structured Coral query error extracted from AIP-193 status details.
 ///
-/// Populated by reading `ErrorInfo` (reason, domain, metadata) and
-/// checking for `RetryInfo` presence from the server-attached details.
-/// The `message` field comes from `Status::message()`, which the server
-/// sets to the plain-text fallback rendering.
+/// First-class `summary`, `detail`, and `hint` fields are extracted from
+/// `ErrorInfo.metadata` during decoding. The remaining metadata (source,
+/// table, field, `http_status`, etc.) stays in the `metadata` map.
 pub struct CoralQueryError {
     /// Machine-readable error reason (e.g. `"MISSING_REQUIRED_FILTER"`).
     pub reason: String,
-    /// Key-value metadata from `ErrorInfo.metadata`. Contains structured
-    /// fields like `schema`, `table`, `field`, `source`, `http_status`,
-    /// `http_method`, `url`, `hint`, `detail`.
-    pub metadata: HashMap<String, String>,
+    /// One-line error summary.
+    pub summary: String,
+    /// Longer explanation (may be empty).
+    pub detail: String,
+    /// Actionable recovery guidance.
+    pub hint: Option<String>,
     /// Whether the error is transient and retrying may succeed.
     pub retryable: bool,
+    /// Additional metadata (source, table, field, `http_status`, etc.).
+    pub metadata: HashMap<String, String>,
     /// The plain-text message from `Status::message()`.
     pub message: String,
 }
@@ -76,12 +79,23 @@ pub fn decode_status_error(status: &tonic::Status) -> DecodedStatusError {
     }
 
     match error_info {
-        Some(info) => DecodedStatusError::Structured(Box::new(CoralQueryError {
-            reason: info.reason,
-            metadata: info.metadata,
-            retryable,
-            message: status.message().to_string(),
-        })),
+        Some(info) => {
+            let mut metadata = info.metadata;
+            let summary = metadata
+                .remove("summary")
+                .unwrap_or_else(|| status.message().to_string());
+            let detail = metadata.remove("detail").unwrap_or_default();
+            let hint = metadata.remove("hint");
+            DecodedStatusError::Structured(Box::new(CoralQueryError {
+                reason: info.reason,
+                summary,
+                detail,
+                hint,
+                retryable,
+                metadata,
+                message: status.message().to_string(),
+            }))
+        }
         None => DecodedStatusError::Plain(status.message().to_string()),
     }
 }
@@ -155,6 +169,10 @@ mod tests {
                 ("schema", "github"),
                 ("table", "issues"),
                 ("field", "repo"),
+                (
+                    "summary",
+                    "github.issues requires `WHERE repo = <constant>`",
+                ),
                 ("hint", "Add a constant equality filter on `repo`."),
             ],
             false,
@@ -162,14 +180,24 @@ mod tests {
         match decode_status_error(&status) {
             DecodedStatusError::Structured(err) => {
                 assert_eq!(err.reason, "MISSING_REQUIRED_FILTER");
+                assert_eq!(
+                    err.summary,
+                    "github.issues requires `WHERE repo = <constant>`"
+                );
+                assert_eq!(
+                    err.hint.as_deref(),
+                    Some("Add a constant equality filter on `repo`.")
+                );
                 assert_eq!(err.metadata.get("schema").unwrap(), "github");
                 assert_eq!(err.metadata.get("table").unwrap(), "issues");
                 assert_eq!(err.metadata.get("field").unwrap(), "repo");
                 assert!(
-                    err.metadata
-                        .get("hint")
-                        .unwrap()
-                        .contains("equality filter")
+                    !err.metadata.contains_key("summary"),
+                    "summary promoted out of metadata"
+                );
+                assert!(
+                    !err.metadata.contains_key("hint"),
+                    "hint promoted out of metadata"
                 );
                 assert!(!err.retryable);
                 assert_eq!(err.message, "test message");
@@ -195,7 +223,7 @@ mod tests {
     }
 
     #[test]
-    fn metadata_carries_all_structured_fields() {
+    fn metadata_carries_provider_fields_and_promotes_presentation() {
         let status = build_coral_status(
             "PROVIDER_REQUEST_FAILED",
             vec![
@@ -204,6 +232,7 @@ mod tests {
                 ("http_status", "401"),
                 ("http_method", "GET"),
                 ("url", "https://api.github.com/repos/coral/coral/issues"),
+                ("summary", "Source authentication failed (401)"),
                 ("hint", "Re-install the source to refresh credentials."),
                 ("detail", "bad credentials"),
             ],
@@ -211,11 +240,15 @@ mod tests {
         );
         match decode_status_error(&status) {
             DecodedStatusError::Structured(err) => {
+                assert_eq!(err.summary, "Source authentication failed (401)");
+                assert_eq!(err.detail, "bad credentials");
+                assert!(err.hint.as_deref().unwrap().contains("Re-install"));
                 assert_eq!(err.metadata.get("source").unwrap(), "github");
                 assert_eq!(err.metadata.get("http_status").unwrap(), "401");
                 assert_eq!(err.metadata.get("http_method").unwrap(), "GET");
-                assert!(err.metadata.get("hint").unwrap().contains("Re-install"));
-                assert_eq!(err.metadata.get("detail").unwrap(), "bad credentials");
+                assert!(!err.metadata.contains_key("summary"));
+                assert!(!err.metadata.contains_key("detail"));
+                assert!(!err.metadata.contains_key("hint"));
             }
             DecodedStatusError::Plain(_) => panic!("expected Structured"),
         }

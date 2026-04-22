@@ -9,6 +9,7 @@
 mod bootstrap;
 mod branding;
 mod onboard;
+mod query_error;
 mod source_ops;
 
 use std::path::PathBuf;
@@ -112,15 +113,21 @@ async fn main() -> Result<(), anyhow::Error> {
 
     match cli.command {
         Command::Sql(args) => {
-            let response = bootstrap
+            let response = match bootstrap
                 .app
                 .query_client()
                 .execute_sql(Request::new(ExecuteSqlRequest {
                     workspace: Some(default_workspace()),
                     sql: args.sql,
                 }))
-                .await?
-                .into_inner();
+                .await
+            {
+                Ok(response) => response.into_inner(),
+                Err(status) => {
+                    eprint!("{}", query_error::render_query_error(&status));
+                    std::process::exit(1);
+                }
+            };
             let result = decode_execute_sql_response(&response)?;
             print_batches(result.batches(), args.format)?;
         }
@@ -161,6 +168,7 @@ async fn main() -> Result<(), anyhow::Error> {
                     &bootstrap.app,
                     &name,
                     source_ops::TableDisplayLimit::All,
+                    source_ops::ValidationSeverityMode::Strict,
                 )
                 .await?;
             }
@@ -222,11 +230,7 @@ async fn run_source_add(
         _ => unreachable!("clap enforces exactly one of name or file"),
     };
     println!("Added source {}", response.name);
-    if let Err(err) =
-        source_ops::validate_and_print(app, &response.name, source_ops::TableDisplayLimit::DEFAULT)
-            .await
-    {
-        eprintln!("Warning: validation failed: {err}");
-    }
+    source_ops::validate_and_warn(app, &response.name, source_ops::TableDisplayLimit::DEFAULT)
+        .await?;
     Ok(())
 }

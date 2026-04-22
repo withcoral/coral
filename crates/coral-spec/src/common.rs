@@ -23,6 +23,7 @@ pub struct SourceManifestCommon {
     pub name: String,
     pub version: String,
     pub description: String,
+    pub test_queries: Vec<String>,
 }
 
 impl SourceManifestCommon {
@@ -31,14 +32,27 @@ impl SourceManifestCommon {
         name: String,
         version: String,
         description: String,
+        test_queries: Vec<String>,
     ) -> Self {
         Self {
             dsl_version,
             name,
             version,
             description,
+            test_queries,
         }
     }
+}
+
+pub(crate) fn validate_test_queries(source_name: &str, test_queries: &[String]) -> Result<()> {
+    for (index, query) in test_queries.iter().enumerate() {
+        if query.trim().is_empty() {
+            return Err(ManifestError::validation(format!(
+                "source '{source_name}' test_queries[{index}] must not be empty"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Supported source-spec backends.

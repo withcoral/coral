@@ -73,6 +73,21 @@ Coral ships as a single local CLI. Once installed, the same binary is used for s
   </Tab>
 </Tabs>
 
+## Skills
+
+Coral publishes a set of agent skills that teach your coding agent how to use Coral effectively. Install them with:
+
+```shellscript
+npx skills add withcoral/skills
+```
+
+Available skills:
+
+- **`coral`** — teaches your agent the discovery-first workflow for answering data questions with `coral sql`, including how to use `coral.tables`, `coral.columns`, and `coral.inputs`.
+- **`coral-create-source-spec`** — guides your agent through authoring or repairing a custom source spec YAML for `coral source add --file`, or adapting it into a bundled source.
+
+Browse the source at [github.com/withcoral/skills](https://github.com/withcoral/skills).
+
 ## Local state
 
 Coral stores local state in its platform-specific configuration directory. You can override that location with:

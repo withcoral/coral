@@ -76,6 +76,5 @@ jobs:
           usage_mb=$((usage / 1024 / 1024))
           echo "Cache usage: ${usage_mb} MiB / 10240 MiB (${pct}%)"
           if [ "$pct" -ge 80 ]; then
-            echo "::error::Cache usage is at ${pct}% (${usage_mb} MiB / 10 GiB)"
-            exit 1
+            echo "::warning::Cache usage is at ${pct}% (${usage_mb} MiB / 10 GiB)"
           fi

@@ -2,11 +2,18 @@ name: statusgator
 version: 1.0.0
 dsl_version: 3
 backend: http
-description: Monitor service status boards, incidents, and uptime history
+description: >-
+  Query status boards, monitors, incidents, history, service
+  components, subscribers, users, and monitoring regions from
+  StatusGator.
 inputs:
   STATUSGATOR_API_TOKEN:
     kind: secret
-    hint: Copy your API token from StatusGator → Account Settings
+    hint: |
+      Create a read-only API token from the API menu in your
+      StatusGator dashboard. Only organization admins can generate
+      tokens.
+      See [StatusGator API docs](https://statusgator.com/api/v3/docs).
 base_url: "https://statusgator.com/api/v3"
 auth:
   headers:

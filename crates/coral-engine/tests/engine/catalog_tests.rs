@@ -1,9 +1,12 @@
+use std::collections::BTreeMap;
+
 use coral_engine::{ColumnInfo, CoralQuery, QuerySource, TableInfo};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
 use crate::harness::{
-    TestRuntime, assert_invalid_input, build_source, dir_url, execution_to_rows, write_jsonl_file,
+    TestRuntime, assert_invalid_input, build_source, build_source_with_inputs, dir_url,
+    execution_to_rows, write_jsonl_file,
 };
 
 fn users_manifest(dir: &std::path::Path) -> Value {
@@ -252,4 +255,194 @@ fn table_column_names(table: &TableInfo) -> Vec<String> {
         .iter()
         .map(|column: &ColumnInfo| column.name.clone())
         .collect()
+}
+
+fn http_manifest_with_inputs() -> Value {
+    json!({
+        "name": "demo",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "inputs": {
+            "DD_SITE": {
+                "kind": "variable",
+                "default": "datadoghq.com",
+                "hint": "Datadog site host"
+            },
+            "ACCOUNT_ID": {
+                "kind": "variable",
+                "hint": "Numeric account identifier"
+            },
+            "API_TOKEN": {
+                "kind": "secret",
+                "hint": "Bearer token"
+            }
+        },
+        "base_url": "https://api.{{input.DD_SITE}}",
+        "tables": [{
+            "name": "items",
+            "description": "Example items",
+            "request": {
+                "method": "GET",
+                "path": "/api/items"
+            },
+            "response": {
+                "rows_path": ["data"]
+            },
+            "columns": [
+                { "name": "id", "type": "Int64" }
+            ]
+        }]
+    })
+}
+
+fn build_demo_source(variables: &[(&str, &str)], secrets: &[(&str, &str)]) -> QuerySource {
+    let to_map = |items: &[(&str, &str)]| -> BTreeMap<String, String> {
+        items
+            .iter()
+            .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
+            .collect()
+    };
+    build_source_with_inputs(
+        http_manifest_with_inputs(),
+        to_map(variables),
+        to_map(secrets),
+    )
+}
+
+#[tokio::test]
+async fn coral_inputs_exposes_variable_values_and_defaults() {
+    let sources = vec![build_demo_source(
+        &[("ACCOUNT_ID", "123456")],
+        &[("API_TOKEN", "secret-value")],
+    )];
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &sources,
+            &TestRuntime,
+            "SELECT key, kind, value, default_value, hint, required, is_set \
+             FROM coral.inputs WHERE schema_name = 'demo' ORDER BY key",
+        )
+        .await
+        .expect("catalog query should succeed"),
+    );
+
+    // Arrow's JSON writer omits NULL fields from object output.
+    assert_eq!(
+        rows,
+        vec![
+            json!({
+                "key": "ACCOUNT_ID",
+                "kind": "variable",
+                "value": "123456",
+                "hint": "Numeric account identifier",
+                "required": true,
+                "is_set": true,
+            }),
+            json!({
+                "key": "API_TOKEN",
+                "kind": "secret",
+                "hint": "Bearer token",
+                "required": true,
+                "is_set": true,
+            }),
+            json!({
+                "key": "DD_SITE",
+                "kind": "variable",
+                "value": "datadoghq.com",
+                "default_value": "datadoghq.com",
+                "hint": "Datadog site host",
+                "required": false,
+                "is_set": true,
+            }),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn coral_inputs_marks_unset_secrets_and_missing_variables() {
+    let sources = vec![build_demo_source(&[], &[])];
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &sources,
+            &TestRuntime,
+            "SELECT key, value, is_set FROM coral.inputs \
+             WHERE schema_name = 'demo' ORDER BY key",
+        )
+        .await
+        .expect("catalog query should succeed"),
+    );
+
+    assert_eq!(
+        rows,
+        vec![
+            json!({"key": "ACCOUNT_ID", "is_set": false}),
+            json!({"key": "API_TOKEN", "is_set": false}),
+            json!({"key": "DD_SITE", "value": "datadoghq.com", "is_set": true}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn coral_inputs_never_exposes_secret_values() {
+    // Canary: secret values must never appear in coral.inputs under any filter.
+    let sources = vec![build_demo_source(&[], &[("API_TOKEN", "ultra-secret")])];
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &sources,
+            &TestRuntime,
+            "SELECT value FROM coral.inputs WHERE kind = 'secret'",
+        )
+        .await
+        .expect("catalog query should succeed"),
+    );
+
+    assert!(!rows.is_empty(), "expected at least one secret row");
+    for row in &rows {
+        assert!(
+            row["value"].is_null(),
+            "secret value must be NULL, got {row}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn coral_inputs_reports_explicit_empty_variable_as_set() {
+    // A user-configured empty string is still "set" — HTTP input resolution
+    // and required-variable validation both treat the key's presence as
+    // authoritative. See crates/coral-app/src/sources/manager.rs.
+    let sources = vec![build_demo_source(&[("ACCOUNT_ID", "")], &[])];
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &sources,
+            &TestRuntime,
+            "SELECT key, value, is_set FROM coral.inputs \
+             WHERE schema_name = 'demo' AND key = 'ACCOUNT_ID'",
+        )
+        .await
+        .expect("catalog query should succeed"),
+    );
+
+    assert_eq!(
+        rows,
+        vec![json!({"key": "ACCOUNT_ID", "value": "", "is_set": true})]
+    );
+}
+
+#[tokio::test]
+async fn coral_inputs_empty_for_sources_without_declared_inputs() {
+    // The JSONL fixtures declare no inputs; coral.inputs should be empty.
+    let (_temp, sources) = build_catalog_sources();
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(&sources, &TestRuntime, "SELECT * FROM coral.inputs")
+            .await
+            .expect("catalog query should succeed"),
+    );
+
+    assert!(rows.is_empty(), "expected no inputs, got {rows:?}");
 }

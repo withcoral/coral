@@ -28,7 +28,7 @@ use parquet::file::reader::{ChunkReader, Length};
 
 use crate::backends::{
     BackendCompileRequest, BackendRegistration, CompiledBackendSource, RegisteredSource,
-    RegisteredTable, build_registered_table, partition_columns_to_arrow,
+    RegisteredTable, build_registered_inputs, build_registered_table, partition_columns_to_arrow,
     registered_columns_from_schema, registered_columns_from_specs, required_filter_names,
     schema_from_columns,
 };
@@ -46,15 +46,18 @@ const PARQUET_FOOTER_SIZE: u64 = 8;
 struct ParquetCompiledSource {
     manifest: ParquetSourceManifest,
     source_secrets: BTreeMap<String, String>,
+    source_variables: BTreeMap<String, String>,
 }
 
 pub(crate) fn compile_source(
     manifest: ParquetSourceManifest,
     source_secrets: BTreeMap<String, String>,
+    source_variables: BTreeMap<String, String>,
 ) -> Box<dyn CompiledBackendSource> {
     Box::new(ParquetCompiledSource {
         manifest,
         source_secrets,
+        source_variables,
     })
 }
 
@@ -62,7 +65,11 @@ pub(crate) fn compile_manifest(
     manifest: &ParquetSourceManifest,
     request: &BackendCompileRequest<'_>,
 ) -> Box<dyn CompiledBackendSource> {
-    compile_source(manifest.clone(), request.source_secrets.clone())
+    compile_source(
+        manifest.clone(),
+        request.source_secrets.clone(),
+        request.source_variables.clone(),
+    )
 }
 
 #[derive(Debug)]
@@ -234,11 +241,15 @@ impl CompiledBackendSource for ParquetCompiledSource {
             table_infos.push(metadata);
         }
 
+        let secret_keys = self.source_secrets.keys().cloned().collect();
+        let inputs = build_registered_inputs(&[], &self.source_variables, &secret_keys);
+
         Ok(BackendRegistration {
             tables,
             source: RegisteredSource {
                 schema_name: self.manifest.common.name.clone(),
                 tables: table_infos,
+                inputs,
             },
         })
     }

@@ -114,7 +114,7 @@ fn mock_discover_response() -> DiscoverSourcesResponse {
                     kind: SourceInputKind::Secret as i32,
                     required: true,
                     default_value: String::new(),
-                    hint: None,
+                    hint: String::new(),
                 }],
                 installed: true,
                 origin: SourceOrigin::Bundled as i32,
@@ -138,6 +138,7 @@ fn mock_validate_response() -> ValidateSourceResponse {
             mock_table("github", "issues"),
             mock_table("github", "pull_requests"),
         ],
+        query_tests: Vec::new(),
     }
 }
 
@@ -250,6 +251,14 @@ impl MockServerConfig {
         message: impl Into<String>,
     ) -> Self {
         self.validate_source = MockResult::err(code, message);
+        self
+    }
+
+    pub(crate) fn with_validate_source_response(
+        mut self,
+        response: ValidateSourceResponse,
+    ) -> Self {
+        self.validate_source = MockResult::ok(response);
         self
     }
 }
@@ -440,6 +449,10 @@ pub(crate) struct MockServer {
 }
 
 impl MockServer {
+    #[allow(
+        dead_code,
+        reason = "shared harness helpers are used by different integration test crates"
+    )]
     pub(crate) async fn start() -> Self {
         Self::start_with_config(MockServerConfig::default()).await
     }
@@ -476,6 +489,19 @@ impl MockServer {
             task,
             captured,
         }
+    }
+
+    #[allow(
+        dead_code,
+        reason = "shared harness helpers are used by different integration test crates"
+    )]
+    pub(crate) async fn start_with_validate_source_response(
+        validate_source_response: ValidateSourceResponse,
+    ) -> Self {
+        Self::start_with_config(
+            MockServerConfig::default().with_validate_source_response(validate_source_response),
+        )
+        .await
     }
 
     #[allow(

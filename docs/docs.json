@@ -59,7 +59,7 @@
       },
       {
         "type": "discord",
-        "href": "https://discord.gg/h9aun8KpFF"
+        "href": "https://withcoral.com/discord"
       }
     ]
   },
@@ -90,7 +90,9 @@
       },
       {
         "group": "Contributors",
-        "pages": ["contributors/architecture"]
+        "pages": [
+          "contributors/architecture"
+        ]
       }
     ]
   },
@@ -105,6 +107,9 @@
       "apiKey": "phc_vgjDFiUbVgKPsKQL3wKPwsG3z7KnH4hgLi6n57PX7HEs",
       "apiHost": "https://eu.posthog.com",
       "sessionRecording": false
+    },
+    "ga4": {
+      "measurementId": "G-MZ1LQREJTK"
     }
   },
   "thumbnails": {

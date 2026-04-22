@@ -384,8 +384,14 @@ async fn api_returns_500() {
         .expect_err("500 should fail");
 
     assert_eq!(error.status_code(), StatusCode::Unavailable);
-    match error {
-        CoreError::Unavailable(detail) => assert!(detail.contains("boom")),
+    match &error {
+        CoreError::QueryFailure(sqe) => {
+            assert_eq!(sqe.reason(), "PROVIDER_REQUEST_FAILED");
+            assert!(sqe.retryable());
+            assert_eq!(sqe.metadata().get("http_status").unwrap(), "500");
+            assert_eq!(sqe.metadata().get("source").unwrap(), "http_500");
+            assert!(sqe.detail().contains("boom"));
+        }
         other => panic!("unexpected 500 error variant: {other:?}"),
     }
 }
@@ -407,8 +413,15 @@ async fn api_returns_401() {
         .expect_err("401 should fail");
 
     assert_eq!(error.status_code(), StatusCode::FailedPrecondition);
-    match error {
-        CoreError::FailedPrecondition(detail) => assert!(detail.contains("unauthorized")),
+    match &error {
+        CoreError::QueryFailure(sqe) => {
+            assert_eq!(sqe.reason(), "PROVIDER_REQUEST_FAILED");
+            assert!(!sqe.retryable());
+            assert_eq!(sqe.metadata().get("http_status").unwrap(), "401");
+            assert_eq!(sqe.metadata().get("source").unwrap(), "http_401");
+            assert!(sqe.hint().unwrap().contains("coral source add http_401"));
+            assert!(sqe.detail().contains("unauthorized"));
+        }
         other => panic!("unexpected 401 error variant: {other:?}"),
     }
 }
@@ -532,6 +545,44 @@ async fn slack_messages_have_formatted_ts_and_permalink() {
         rows[1]["permalink"],
         "https://slack.com/archives/C123456/p1609459300000200"
     );
+}
+
+#[tokio::test]
+async fn missing_required_filter_surfaces_structured_error() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": [] })))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let mut manifest = base_http_manifest("http_required", &server.uri());
+    let table = &mut manifest["tables"][0];
+    table["filters"] = json!([{ "name": "id", "required": true }]);
+    table["request"]["query"] = json!([
+        { "name": "id", "from": "filter", "key": "id" }
+    ]);
+    let source = build_source(manifest);
+
+    let error =
+        CoralQuery::execute_sql(&[source], &TestRuntime, "SELECT * FROM http_required.users")
+            .await
+            .expect_err("query without the required filter should fail");
+
+    assert_eq!(error.status_code(), StatusCode::FailedPrecondition);
+    match &error {
+        CoreError::QueryFailure(sqe) => {
+            assert_eq!(sqe.reason(), "MISSING_REQUIRED_FILTER");
+            assert!(!sqe.retryable());
+            assert_eq!(sqe.metadata().get("schema").unwrap(), "http_required");
+            assert_eq!(sqe.metadata().get("table").unwrap(), "users");
+            assert_eq!(sqe.metadata().get("field").unwrap(), "id");
+            assert!(sqe.summary().contains("WHERE id"));
+            assert!(sqe.hint().unwrap().contains("coral.columns"));
+        }
+        other => panic!("unexpected missing-filter error variant: {other:?}"),
+    }
 }
 
 #[tokio::test]

@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use coral_spec::ManifestInputKind;
 use datafusion::arrow::array::{BooleanArray, Int32Array, RecordBatch, StringArray};
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use datafusion::datasource::MemTable;
@@ -25,11 +26,13 @@ pub(crate) const SYSTEM_SCHEMA: &str = "coral";
 pub(crate) fn register(ctx: &SessionContext, active_sources: &[RegisteredSource]) -> Result<()> {
     let tables_table = build_tables_table(active_sources)?;
     let columns_table = build_columns_table(active_sources)?;
+    let inputs_table = build_inputs_table(active_sources)?;
 
     let mut meta_tables: HashMap<String, Arc<dyn datafusion::datasource::TableProvider>> =
         HashMap::new();
     meta_tables.insert("tables".to_string(), Arc::new(tables_table));
     meta_tables.insert("columns".to_string(), Arc::new(columns_table));
+    meta_tables.insert("inputs".to_string(), Arc::new(inputs_table));
 
     let catalog = ctx
         .catalog("datafusion")
@@ -108,6 +111,109 @@ fn build_tables_table(active_sources: &[RegisteredSource]) -> Result<MemTable> {
                 rows.iter()
                     .map(|row| Some(row.4.as_str()))
                     .collect::<StringArray>(),
+            ),
+        ],
+    )
+    .map_err(|error| DataFusionError::ArrowError(Box::new(error), None))?;
+
+    MemTable::try_new(schema, vec![vec![batch]])
+}
+
+struct CatalogInput {
+    schema_name: String,
+    key: String,
+    kind: &'static str,
+    value: Option<String>,
+    /// Empty string (= "no default declared" in the spec) renders as SQL NULL.
+    default_value: String,
+    hint: Option<String>,
+    required: bool,
+    is_set: bool,
+}
+
+fn build_inputs_table(active_sources: &[RegisteredSource]) -> Result<MemTable> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("schema_name", DataType::Utf8, false),
+        Field::new("key", DataType::Utf8, false),
+        Field::new("kind", DataType::Utf8, false),
+        Field::new("value", DataType::Utf8, true),
+        Field::new("default_value", DataType::Utf8, true),
+        Field::new("hint", DataType::Utf8, true),
+        Field::new("required", DataType::Boolean, false),
+        Field::new("is_set", DataType::Boolean, false),
+    ]));
+
+    let mut rows: Vec<CatalogInput> = active_sources
+        .iter()
+        .flat_map(|source| {
+            source.inputs.iter().map(move |input| CatalogInput {
+                schema_name: source.schema_name.clone(),
+                key: input.key.clone(),
+                kind: match input.kind {
+                    ManifestInputKind::Variable => "variable",
+                    ManifestInputKind::Secret => "secret",
+                },
+                value: input.resolved_value.clone(),
+                default_value: input.default_value.clone(),
+                hint: input.hint.clone(),
+                required: input.required,
+                is_set: input.is_set,
+            })
+        })
+        .collect();
+
+    rows.sort_by(|left, right| {
+        (&left.schema_name, &left.key).cmp(&(&right.schema_name, &right.key))
+    });
+
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(
+                rows.iter()
+                    .map(|row| Some(row.schema_name.as_str()))
+                    .collect::<StringArray>(),
+            ),
+            Arc::new(
+                rows.iter()
+                    .map(|row| Some(row.key.as_str()))
+                    .collect::<StringArray>(),
+            ),
+            Arc::new(
+                rows.iter()
+                    .map(|row| Some(row.kind))
+                    .collect::<StringArray>(),
+            ),
+            Arc::new(
+                rows.iter()
+                    .map(|row| row.value.as_deref())
+                    .collect::<StringArray>(),
+            ),
+            Arc::new(
+                rows.iter()
+                    .map(|row| {
+                        if row.default_value.is_empty() {
+                            None
+                        } else {
+                            Some(row.default_value.as_str())
+                        }
+                    })
+                    .collect::<StringArray>(),
+            ),
+            Arc::new(
+                rows.iter()
+                    .map(|row| row.hint.as_deref())
+                    .collect::<StringArray>(),
+            ),
+            Arc::new(
+                rows.iter()
+                    .map(|row| Some(row.required))
+                    .collect::<BooleanArray>(),
+            ),
+            Arc::new(
+                rows.iter()
+                    .map(|row| Some(row.is_set))
+                    .collect::<BooleanArray>(),
             ),
         ],
     )

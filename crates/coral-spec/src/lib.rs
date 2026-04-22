@@ -85,6 +85,7 @@ mod schema;
 mod template;
 mod validate;
 
+pub(crate) use common::validate_test_queries;
 pub use common::{
     AuthSpec, BodyFieldSpec, ColumnSpec, ExprSpec, FilterMode, FilterSpec, HeaderSpec, HttpMethod,
     ManifestDataType, PageSizeSpec, PaginationMode, PaginationSpec, QueryParamSpec,

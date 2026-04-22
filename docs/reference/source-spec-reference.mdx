@@ -19,6 +19,8 @@ name: my_source
 version: 0.1.0
 dsl_version: 3
 backend: http
+test_queries:
+  - SELECT * FROM my_source.messages LIMIT 1
 ```
 
 | Field         | Description                                        |
@@ -27,6 +29,26 @@ backend: http
 | `version`     | Source spec version string                         |
 | `dsl_version` | Coral source spec DSL version (currently `3`)      |
 | `backend`     | How data is fetched: `http`, `jsonl`, or `parquet` |
+| `test_queries` | Optional read-only SQL checks Coral runs during `coral source test` |
+
+## Test queries
+
+Use the optional top-level `test_queries` field when you want Coral to run one
+or more read-only SQL checks after the source validates and its tables become
+queryable.
+
+```yaml
+test_queries:
+  - SELECT * FROM my_source.messages LIMIT 1
+```
+
+Notes:
+
+- Each query result is reported individually during `coral source test`.
+- `coral source add` and `coral onboard` surface post-install validation issues as warnings; `coral source test` is the strict pass/fail command.
+- Prefer cheap read-only checks that validate connectivity and mapping logic. For example, `SELECT * FROM schema.table LIMIT 1` is usually a better fit than `SELECT COUNT(*)`.
+- Keep these queries read-only. Statements such as `CREATE`, `COPY`, `INSERT`,
+  `UPDATE`, `DELETE`, or `SET` are reported as failed validation queries.
 
 ## Column types
 
@@ -205,7 +227,7 @@ In this minimal example:
 
 - `response: {}` means "use the default response rules" for an HTTP table
 - with the default response rules, Coral treats the selected response value directly as rows unless you configure a different `row_strategy`
-- `inputs` declares the install-time prompts for this source in stable authored order
+- `inputs` declares the install-time prompts for this source in stable authored order. (At runtime, these are surfaced through `coral.inputs`.)
 - `{{input.API_TOKEN}}` is resolved from the store implied by the declared input kind
 
 ### HTTP rate limiting
@@ -361,3 +383,35 @@ Rules:
 - `default` is allowed only for variables
 - `hint` is optional and shown while Coral prompts for the input
 - references elsewhere in the manifest use `{{input.KEY}}` templates or `from: input`
+
+At runtime, installed source inputs are also surfaced through `coral.inputs`.
+This is useful when agents or scripts need to inspect non-secret source config
+such as a Datadog site or Jira base URL and compose absolute URLs or
+account-scoped identifiers from it. Secret values are never exposed there:
+secret rows always return `value IS NULL`, while `is_set` shows whether the
+secret has been configured.
+
+`coral.inputs` includes these columns:
+
+| Column | Description |
+| ------ | ----------- |
+| `schema_name` | Source schema that owns the input |
+| `key` | Input key from the manifest |
+| `kind` | `variable` or `secret` |
+| `value` | Variable value when available; `NULL` for secrets |
+| `default_value` | Manifest-authored default for variables |
+| `hint` | Prompt hint from the manifest, if any |
+| `required` | Whether the input must be configured |
+| `is_set` | Whether Coral has a saved value for that input |
+
+Example queries:
+
+```sql
+-- Look up a variable value
+SELECT value FROM coral.inputs
+WHERE schema_name = 'datadog' AND kind = 'variable' AND key = 'DD_SITE';
+
+-- Check which secrets are configured without revealing them
+SELECT schema_name, key FROM coral.inputs
+WHERE kind = 'secret' AND is_set;
+```

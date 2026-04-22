@@ -2,11 +2,17 @@ name: intercom
 version: 0.1.0
 dsl_version: 3
 backend: http
-description: Customer messaging platform for support, engagement, and marketing
+description: >-
+  Query contacts, companies, conversations, admins, tags, teams,
+  segments, data attributes, collections, articles, and ticket types
+  from Intercom.
 inputs:
   INTERCOM_ACCESS_TOKEN:
     kind: secret
-    hint: Create an access token in Intercom → Settings → Developers → Developer Hub
+    hint: |
+      Create a private app and copy its access token. The token
+      provides read access to your workspace data.
+      See [Intercom authentication docs](https://developers.intercom.com/docs/build-an-integration/learn-more/authentication).
 base_url: https://api.intercom.io
 auth:
   headers:

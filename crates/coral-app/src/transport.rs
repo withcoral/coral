@@ -1,6 +1,9 @@
 //! Shared gRPC transport helpers for app-owned services.
 
-use coral_api::v1::{Column, Table, Workspace};
+use coral_api::v1::{
+    Column, QueryTestFailure, QueryTestResult, QueryTestSuccess, Source, Table,
+    ValidateSourceResponse, Workspace, query_test_result,
+};
 use tonic::Status;
 
 use crate::bootstrap::{app_status, core_status};
@@ -46,15 +49,54 @@ pub(crate) fn table_to_proto(
     }
 }
 
+pub(crate) fn query_test_result_to_proto(
+    result: &coral_engine::QueryTestResult,
+) -> QueryTestResult {
+    let outcome = match result.result() {
+        Ok(success) => Some(query_test_result::Outcome::Success(QueryTestSuccess {
+            row_count: success.row_count(),
+        })),
+        Err(failure) => Some(query_test_result::Outcome::Failure(QueryTestFailure {
+            error_message: failure.error_message().to_string(),
+        })),
+    };
+    QueryTestResult {
+        sql: result.sql().to_string(),
+        outcome,
+    }
+}
+
+pub(crate) fn validate_source_response_to_proto(
+    source: Source,
+    workspace_name: &WorkspaceName,
+    report: coral_engine::SourceValidationReport,
+) -> ValidateSourceResponse {
+    let coral_engine::SourceValidationReport {
+        tables,
+        query_tests,
+    } = report;
+    ValidateSourceResponse {
+        source: Some(source),
+        tables: tables
+            .into_iter()
+            .map(|table| table_to_proto(workspace_name, table))
+            .collect(),
+        query_tests: query_tests.iter().map(query_test_result_to_proto).collect(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use coral_api::v1::{QueryTestFailure, query_test_result};
     use tonic::Code;
 
-    use super::{query_status, table_to_proto, workspace_to_proto};
+    use super::{query_status, query_test_result_to_proto, table_to_proto, workspace_to_proto};
     use crate::bootstrap::AppError;
     use crate::query::manager::QueryManagerError;
     use crate::workspaces::WorkspaceName;
-    use coral_engine::{ColumnInfo, CoreError, TableInfo};
+    use coral_engine::{
+        ColumnInfo, CoreError, QueryTestResult as EngineQueryTestResult, TableInfo,
+    };
 
     #[test]
     fn query_status_maps_app_errors() {
@@ -102,5 +144,20 @@ mod tests {
         assert_eq!(proto.columns[0].data_type, "Int64");
         assert!(!proto.columns[0].nullable);
         assert_eq!(proto.required_filters, vec!["org_id"]);
+    }
+
+    #[test]
+    fn query_test_result_to_proto_preserves_result_metadata() {
+        let proto = query_test_result_to_proto(&EngineQueryTestResult::failure(
+            "SELECT 1",
+            "failed precondition: boom",
+        ));
+
+        assert_eq!(proto.sql, "SELECT 1");
+        assert!(matches!(
+            proto.outcome,
+            Some(query_test_result::Outcome::Failure(QueryTestFailure { error_message }))
+                if error_message == "failed precondition: boom"
+        ));
     }
 }
