@@ -190,8 +190,13 @@ async fn run_parsed(app: AppClient, cli: Cli) -> Result<(), anyhow::Error> {
                 println!("Manifest is valid");
             }
             SourceCommand::Test { name } => {
-                source_ops::validate_and_print(&app, &name, source_ops::TableDisplayLimit::All)
-                    .await?;
+                source_ops::validate_and_print(
+                    &app,
+                    &name,
+                    source_ops::TableDisplayLimit::All,
+                    source_ops::ValidationSeverityMode::Strict,
+                )
+                .await?;
             }
             SourceCommand::Remove { name } => {
                 source_ops::delete_source(&app, &name).await?;
@@ -248,11 +253,5 @@ async fn run_source_add(app: &AppClient, args: SourceAddArgs) -> Result<(), anyh
         _ => unreachable!("clap enforces exactly one of name or file"),
     };
     println!("Added source {}", response.name);
-    if let Err(err) =
-        source_ops::validate_and_print(app, &response.name, source_ops::TableDisplayLimit::DEFAULT)
-            .await
-    {
-        eprintln!("Warning: validation failed: {err}");
-    }
-    Ok(())
+    source_ops::validate_and_warn(app, &response.name, source_ops::TableDisplayLimit::DEFAULT).await
 }
