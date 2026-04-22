@@ -191,6 +191,37 @@ async fn list_tables_matches_catalog() {
 }
 
 #[tokio::test]
+async fn coral_tables_guide_uses_authored_or_generated_table_guidance() {
+    let (_temp, sources) = build_catalog_sources();
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &sources,
+            &TestRuntime,
+            "SELECT schema_name, table_name, guide FROM coral.tables ORDER BY schema_name, table_name",
+        )
+        .await
+        .expect("catalog query should succeed"),
+    );
+
+    assert_eq!(
+        rows,
+        vec![
+            json!({
+                "schema_name": "alpha",
+                "table_name": "users",
+                "guide": "No required filters."
+            }),
+            json!({
+                "schema_name": "beta",
+                "table_name": "teams",
+                "guide": "No required filters."
+            }),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn list_tables_empty_when_no_sources() {
     let tables = CoralQuery::list_tables(&[], &TestRuntime, None)
         .await

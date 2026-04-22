@@ -170,6 +170,7 @@ backend: jsonl
 tables:
   - name: messages
     description: Demo messages
+    guide: Query directly; no required filters.
     source:
       location: file:///absolute/path/to/demo-data/
       glob: "**/*.jsonl"
@@ -187,6 +188,9 @@ Notes:
 - `jsonl` currently expects `file://` locations
 - `parquet` supports `file://` and `s3://` locations
 - if you omit `glob`, Coral uses a backend-specific default
+- `guide` is optional. Coral surfaces it through `coral.tables.guide`; when you
+  omit it, Coral generates fallback guidance from the table's declared filters
+  and `fetch_limit_default`.
 
 ## HTTP-backed tables
 
@@ -212,6 +216,7 @@ auth:
 tables:
   - name: messages
     description: Messages from the demo API
+    guide: Query directly; no required filters.
     request:
       method: GET
       path: /messages

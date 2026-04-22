@@ -111,6 +111,7 @@ impl TableCommon {
         fetch_limit_default: Option<usize>,
         columns: Vec<ColumnSpec>,
     ) -> Self {
+        let guide = authored_or_default_table_guide(&guide, &filters, fetch_limit_default);
         Self {
             name,
             description,
@@ -120,6 +121,52 @@ impl TableCommon {
             columns,
         }
     }
+}
+
+fn authored_or_default_table_guide(
+    guide: &str,
+    filters: &[FilterSpec],
+    fetch_limit_default: Option<usize>,
+) -> String {
+    if !guide.trim().is_empty() {
+        return guide.to_string();
+    }
+
+    let (required_filters, optional_filters): (Vec<_>, Vec<_>) =
+        filters.iter().partition(|filter| filter.required);
+
+    let mut parts = Vec::new();
+
+    if required_filters.is_empty() {
+        parts.push("No required filters.".to_string());
+    } else {
+        parts.push(format!(
+            "Requires {} filter{}.",
+            join_filter_names(&required_filters),
+            if required_filters.len() == 1 { "" } else { "s" }
+        ));
+    }
+
+    if !optional_filters.is_empty() {
+        parts.push(format!(
+            "Optional filters: {}.",
+            join_filter_names(&optional_filters)
+        ));
+    }
+
+    if let Some(limit) = fetch_limit_default {
+        parts.push(format!("Default fetch limit: {limit} rows."));
+    }
+
+    parts.join(" ")
+}
+
+fn join_filter_names(filters: &[&FilterSpec]) -> String {
+    filters
+        .iter()
+        .map(|filter| filter.name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// How a filter value is matched against `SQL` predicates.
@@ -282,6 +329,68 @@ pub struct PaginationSpec {
     pub link_header_require_results: bool,
     #[serde(default)]
     pub max_pages: Option<usize>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FilterMode, FilterSpec, TableCommon};
+
+    fn filter(name: &str, required: bool) -> FilterSpec {
+        FilterSpec {
+            name: name.to_string(),
+            required,
+            mode: FilterMode::Equality,
+        }
+    }
+
+    #[test]
+    fn table_common_preserves_authored_guide() {
+        let table = TableCommon::new(
+            "events".to_string(),
+            "Demo events".to_string(),
+            "Use org_id and keep the window small.".to_string(),
+            vec![filter("org_id", true)],
+            Some(100),
+            vec![],
+        );
+
+        assert_eq!(table.guide, "Use org_id and keep the window small.");
+    }
+
+    #[test]
+    fn table_common_generates_fallback_guide_from_filters_and_limit() {
+        let table = TableCommon::new(
+            "events".to_string(),
+            "Demo events".to_string(),
+            String::new(),
+            vec![
+                filter("org_id", true),
+                filter("status", false),
+                filter("team_id", true),
+            ],
+            Some(250),
+            vec![],
+        );
+
+        assert_eq!(
+            table.guide,
+            "Requires org_id, team_id filters. Optional filters: status. Default fetch limit: 250 rows."
+        );
+    }
+
+    #[test]
+    fn table_common_generates_no_required_filters_fallback() {
+        let table = TableCommon::new(
+            "events".to_string(),
+            "Demo events".to_string(),
+            "   ".to_string(),
+            vec![],
+            None,
+            vec![],
+        );
+
+        assert_eq!(table.guide, "No required filters.");
+    }
 }
 
 impl Default for PaginationSpec {
