@@ -28,6 +28,9 @@ test_queries:
 tables:
   - name: current
     description: Get running time entry
+    guide: >
+      Requires team_id. Add assignee to avoid workspace-wide current-timer
+      ambiguity. Use this before history when you need the active timer_id.
     filters:
       - name: team_id
         required: true
@@ -197,6 +200,9 @@ tables:
           key: team_id
   - name: custom_item
     description: Get Custom Task Types
+    guide: >
+      Requires team_id. Use this to map custom task type IDs before filtering or
+      grouping task results.
     filters:
       - name: team_id
         required: true
@@ -261,6 +267,9 @@ tables:
           key: team_id
   - name: customroles
     description: Get Custom Roles
+    guide: >
+      Requires team_id. Set include_members=true only when auditing permissions;
+      otherwise keep the payload smaller.
     filters:
       - name: team_id
         required: true
@@ -343,6 +352,9 @@ tables:
             - team_id
   - name: field
     description: Get Folder Custom Fields
+    guide: >
+      Requires folder_id. You can switch to space_id or team_id when you need
+      broader custom field catalogs. Use list_field for list-scoped fields.
     filters:
       - name: folder_id
         required: true
@@ -404,6 +416,9 @@ tables:
           key: team_id
   - name: folder
     description: Get Folder
+    guide: >
+      Requires folder_id. Use space_folder or shared to discover folder IDs first,
+      then fetch one folder for richer metadata.
     filters:
       - name: folder_id
         required: true
@@ -493,6 +508,9 @@ tables:
             - task_count
   - name: folder_list
     description: Get Lists
+    guide: >
+      Requires folder_id. Set archived=true when reconciling old lists; otherwise
+      this stays focused on active structure.
     filters:
       - name: folder_id
         required: true
@@ -540,6 +558,9 @@ tables:
             - lists
   - name: folder_template
     description: Get Folder Templates
+    guide: >
+      Requires team_id. Use this to inventory reusable folder setups before
+      comparing live hierarchy data.
     filters:
       - name: team_id
         required: true
@@ -576,6 +597,9 @@ tables:
             - templates
   - name: get_view
     description: Get View
+    guide: >
+      Requires view_id. Use view to discover IDs first; this is the detail lookup
+      once you know the target view.
     filters:
       - name: view_id
         required: true
@@ -755,6 +779,9 @@ tables:
           key: view_id
   - name: goal
     description: Get Goal
+    guide: >
+      Requires goal_id. Use team_goal to discover IDs first, then fetch one goal
+      when you need members or key-result detail.
     filters:
       - name: goal_id
         required: true
@@ -969,6 +996,9 @@ tables:
           key: goal_id
   - name: group
     description: Get Groups
+    guide: >
+      Requires team_id. Add group_ids only when you already know the target
+      groups; otherwise this works as the workspace group catalog.
     filters:
       - name: team_id
         required: true
@@ -1081,6 +1111,9 @@ tables:
             - userid
   - name: guest
     description: Get Guest
+    guide: >
+      Requires team_id and guest_id. Use this after you already know the guest
+      identifier; bad IDs fail instead of returning empty rows.
     filters:
       - name: team_id
         required: true
@@ -1122,6 +1155,9 @@ tables:
           key: team_id
   - name: history
     description: Get time entry history
+    guide: >
+      Requires team_id and timer_id. Use current or team_time_entries to discover
+      the timer_id before drilling into its change history.
     filters:
       - name: team_id
         required: true
@@ -1165,6 +1201,9 @@ tables:
           key: timer_id
   - name: list
     description: Get List
+    guide: >
+      Requires list_id. Use folder_list or space_list to discover IDs first; this
+      returns richer list metadata than the catalog tables.
     filters:
       - name: list_id
         required: true
@@ -1451,6 +1490,9 @@ tables:
             - task_count
   - name: list_comment
     description: Get List Comments
+    guide: >
+      Requires list_id. Use start or start_id only for continuation when the
+      thread is long.
     filters:
       - name: list_id
         required: true
@@ -1513,6 +1555,9 @@ tables:
           key: start_id
   - name: list_field
     description: Get List Custom Fields
+    guide: >
+      Requires list_id. This is the best place to discover custom field IDs and
+      types before task filtering.
     filters:
       - name: list_id
         required: true
@@ -1717,6 +1762,9 @@ tables:
             - subtasks
   - name: list_member
     description: Get List Members
+    guide: >
+      Requires list_id. Useful for checking list visibility before interpreting
+      assignees or watchers on list_task rows.
     filters:
       - name: list_id
         required: true
@@ -1750,6 +1798,9 @@ tables:
           key: list_id
   - name: list_task
     description: Get Tasks
+    guide: >
+      Requires list_id. Highest-value filters are statuses, assignees, and date
+      windows. Prefer this over team_task when you already know the list.
     filters:
       - name: list_id
         required: true
@@ -2285,6 +2336,9 @@ tables:
             - watchers
   - name: list_template
     description: Get List Templates
+    guide: >
+      Requires team_id. Use this to inventory reusable list setups before
+      comparing live lists.
     filters:
       - name: team_id
         required: true
@@ -2321,6 +2375,9 @@ tables:
             - templates
   - name: plan
     description: Get Workspace Plan
+    guide: >
+      Requires team_id. Check this before relying on workspace-level features such
+      as goals, seats, or advanced time tracking.
     filters:
       - name: team_id
         required: true
@@ -2363,6 +2420,9 @@ tables:
           key: team_id
   - name: reply
     description: Get Threaded Comments
+    guide: >
+      Requires comment_id. Fetch parent comments first from task_comment,
+      list_comment, or view_comment, then use this for one thread.
     filters:
       - name: comment_id
         required: true
@@ -2394,6 +2454,9 @@ tables:
           kind: current_row
   - name: seats
     description: Get Workspace seats
+    guide: >
+      Requires team_id. Use this for workspace capacity audits; it complements
+      plan more than day-to-day task queries.
     filters:
       - name: team_id
         required: true
@@ -2490,6 +2553,9 @@ tables:
           key: team_id
   - name: shared
     description: Shared Hierarchy
+    guide: >
+      Requires team_id. Use this when users can see work outside the normal
+      space-folder-list path; the response mixes hierarchy levels.
     filters:
       - name: team_id
         required: true
@@ -2551,6 +2617,9 @@ tables:
           key: team_id
   - name: space
     description: Get Space
+    guide: >
+      Requires space_id. Use team_space to discover IDs first; this is where
+      status and feature settings become visible.
     filters:
       - name: space_id
         required: true
@@ -2624,6 +2693,9 @@ tables:
             - statuses
   - name: space_folder
     description: Get Folders
+    guide: >
+      Requires space_id. Set archived=true when reconciling old structure;
+      otherwise this is the active folder catalog for a space.
     filters:
       - name: space_id
         required: true
@@ -2743,6 +2815,9 @@ tables:
           key: space_id
   - name: space_list
     description: Get Folderless Lists
+    guide: >
+      Requires space_id. This only returns folderless lists; use folder_list for
+      lists that live inside folders.
     filters:
       - name: space_id
         required: true
@@ -2942,6 +3017,9 @@ tables:
             - task_count
   - name: tag
     description: Get Space Tags
+    guide: >
+      Requires space_id. This is for space tags, not time-entry tags. Use tags
+      when you are analyzing tracked time.
     filters:
       - name: space_id
         required: true
@@ -3001,6 +3079,9 @@ tables:
             - creator
   - name: tags
     description: Get all tags from time entries
+    guide: >
+      Requires team_id. This is for time-entry tags, not space tags, so it pairs
+      naturally with team_time_entries.
     filters:
       - name: team_id
         required: true
@@ -3061,6 +3142,10 @@ tables:
           key: team_id
   - name: task
     description: Get Task
+    guide: >
+      Requires task_id. If task_id is custom, set custom_task_ids=true and pass
+      team_id. Prefer this over broader task tables when you already know the
+      target task.
     filters:
       - name: task_id
         required: true
@@ -3545,6 +3630,9 @@ tables:
             - watchers
   - name: task_comment
     description: Get Task Comments
+    guide: >
+      Requires task_id. Use start or start_id for continuation. If task_id is
+      custom, enable custom_task_ids and team_id together.
     filters:
       - name: task_id
         required: true
@@ -3820,6 +3908,10 @@ tables:
             - user
   - name: task_ids
     description: Get Bulk Tasks' Time in Status
+    guide: >
+      Requires task_ids. Send a focused batch instead of a backlog-sized list. The
+      result shape is task-ID-specific, so treat this as a targeted diagnostic
+      table.
     filters:
       - name: task_ids
         required: true
@@ -3933,6 +4025,9 @@ tables:
           key: team_id
   - name: task_member
     description: Get Task Members
+    guide: >
+      Requires task_id. Helpful for collaborator or permission checks when
+      assignee fields alone are not enough.
     filters:
       - name: task_id
         required: true
@@ -4079,6 +4174,9 @@ tables:
             - username
   - name: task_template
     description: Get Task Templates
+    guide: >
+      Requires team_id. Use this to inventory reusable task blueprints before
+      comparing live tasks.
     filters:
       - name: team_id
         required: true
@@ -4114,6 +4212,8 @@ tables:
             - templates
   - name: team
     description: Get Authorized Workspaces
+    guide: >
+      Start here to discover workspace IDs for almost every other ClickUp table.
     request:
       method: GET
       path: /v2/team
@@ -4171,6 +4271,9 @@ tables:
             - name
   - name: team_goal
     description: Get Goals
+    guide: >
+      Requires team_id. Set include_completed=true for historical reporting;
+      otherwise this stays focused on active goals.
     filters:
       - name: team_id
         required: true
@@ -4227,6 +4330,9 @@ tables:
           key: team_id
   - name: team_space
     description: Get Spaces
+    guide: >
+      Requires team_id. Set archived=true only when you need retired spaces; this
+      is the normal entry point for hierarchy discovery.
     filters:
       - name: team_id
         required: true
@@ -4431,6 +4537,10 @@ tables:
           key: team_id
   - name: team_task
     description: Get Filtered Team Tasks
+    guide: >
+      Requires team_Id (capital I). Highest-value filters are statuses[],
+      assignees[], and date windows. Prefer list_task when you already know the
+      list.
     filters:
       - name: team_Id
         required: true
@@ -5142,6 +5252,10 @@ tables:
             - watchers
   - name: team_time_entries
     description: Get time entries within a date range
+    guide: >
+      Requires team_Id (capital I). Highest-value filters are start_date/end_date
+      and assignee. When custom_task_ids=true, you must also pass team_id, so
+      watch the two similarly named filters.
     filters:
       - name: team_Id
         required: true
@@ -5552,6 +5666,9 @@ tables:
             - wid
   - name: team_time_entry
     description: Get singular time entry
+    guide: >
+      Requires team_id and timer_id. Turn on location or approval flags only for
+      drill-downs; leave them off for routine lookups.
     filters:
       - name: team_id
         required: true
@@ -5859,6 +5976,9 @@ tables:
           key: timer_id
   - name: team_user
     description: Get User
+    guide: >
+      Requires team_id and user_id. Set include_shared=true only when debugging
+      access, since it expands the hierarchy payload.
     filters:
       - name: team_id
         required: true
@@ -6145,6 +6265,10 @@ tables:
           key: user_id
   - name: time
     description: Get tracked time
+    guide: >
+      Requires task_id. If task_id is custom, set custom_task_ids=true with
+      team_id. Use this for raw tracked intervals; time_in_status is better for
+      workflow analytics.
     filters:
       - name: task_id
         required: true
@@ -6280,6 +6404,10 @@ tables:
             - username
   - name: time_in_status
     description: Get Task's Time in Status
+    guide: >
+      Requires task_id. If task_id is custom, set custom_task_ids=true with
+      team_id. Use clickup.task_ids when you need the same metric for a small
+      batch of tasks.
     filters:
       - name: task_id
         required: true
@@ -6377,6 +6505,9 @@ tables:
             - type
   - name: user
     description: Get Authorized User
+    guide: >
+      Use this to confirm which ClickUp account the token belongs to before
+      trusting workspace-scoped results.
     request:
       method: GET
       path: /v2/user
@@ -6482,6 +6613,9 @@ tables:
             - week_start_day
   - name: view
     description: Get Workspace (Everything level) Views
+    guide: >
+      Requires team_id. Highest-value optional filters are space_id, folder_id, or
+      list_id to narrow scope. Use get_view once you need one view in full detail.
     filters:
       - name: team_id
         required: true
@@ -6556,6 +6690,9 @@ tables:
           key: list_id
   - name: view_comment
     description: Get Chat View Comments
+    guide: >
+      Requires view_id. Use start or start_id only for continuation; this is
+      discussion attached to a saved view, not task comments.
     filters:
       - name: view_id
         required: true
@@ -6693,6 +6830,9 @@ tables:
           key: view_id
   - name: view_task
     description: Get View Tasks
+    guide: >
+      Requires view_id. Results depend on the saved view definition, so treat this
+      as a curated task slice rather than a full catalog.
     filters:
       - name: view_id
         required: true
@@ -6947,6 +7087,9 @@ tables:
             - watchers
   - name: webhook
     description: Get Webhooks
+    guide: >
+      Requires team_id. Use this for integration audits; expect admin-oriented
+      metadata rather than task content.
     filters:
       - name: team_id
         required: true
