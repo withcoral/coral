@@ -13,6 +13,16 @@ pub(crate) const UNKNOWN_COLUMN_REASON: &str = "UNKNOWN_COLUMN";
 /// Wire-stable `reason` code for table-not-found errors.
 pub(crate) const TABLE_NOT_FOUND_REASON: &str = "TABLE_NOT_FOUND";
 
+/// Minimum `strsim::normalized_levenshtein` score for a "did you mean?"
+/// suggestion to surface.
+///
+/// Matches the value `datafusion-common` uses in its own `FieldNotFound`
+/// Display impl (`filter(|s| normalized_levenshtein(s, field_name) >= 0.5)`),
+/// so a user sees the same forgiveness whether the error routes through
+/// our structured enrichment path or `DataFusion`'s raw error text. Change
+/// this only if we have data justifying divergence from that baseline.
+const DID_YOU_MEAN_SIMILARITY: f64 = 0.5;
+
 /// Structure-preserving column reference used by `unknown_column`.
 ///
 /// Keeping the qualifier components separate from the bare name means the
@@ -302,7 +312,7 @@ fn unknown_column_hint(missing: &ColumnParts, valid_columns: &[ColumnParts]) -> 
         .filter_map(|candidate| {
             let score =
                 strsim::normalized_levenshtein(&candidate.name.to_lowercase(), &missing_name_lower);
-            (score >= 0.5).then_some((candidate, score))
+            (score >= DID_YOU_MEAN_SIMILARITY).then_some((candidate, score))
         })
         .max_by(|left, right| {
             left.1
@@ -318,6 +328,27 @@ fn table_not_found_hint(
     known_tables: &[TableInfo],
 ) -> Option<String> {
     let Some(schema) = schema else {
+        // Unqualified `FROM X` could not be resolved. Before falling back to
+        // the generic catalog pointer, scan every known table across every
+        // schema for a close match — if `FROM account` has `stripe.accounts`
+        // in the catalog, suggest the schema-qualified name instead of
+        // sending the user to `coral.tables`.
+        let table_lower = table.to_lowercase();
+        let best = known_tables
+            .iter()
+            .filter_map(|info| {
+                let score =
+                    strsim::normalized_levenshtein(&info.table_name.to_lowercase(), &table_lower);
+                (score >= DID_YOU_MEAN_SIMILARITY).then_some((info, score))
+            })
+            .max_by(|left, right| {
+                left.1
+                    .partial_cmp(&right.1)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+        if let Some((winner, _score)) = best {
+            return Some(did_you_mean_hint(&format_schema_table(winner)));
+        }
         return Some(
             "List available tables with `SELECT schema_name, table_name FROM coral.tables`."
                 .to_string(),
@@ -358,7 +389,7 @@ fn table_not_found_hint(
         .filter_map(|info| {
             let score =
                 strsim::normalized_levenshtein(&info.table_name.to_lowercase(), &table_lower);
-            (score >= 0.5).then_some((info, score))
+            (score >= DID_YOU_MEAN_SIMILARITY).then_some((info, score))
         })
         .max_by(|left, right| {
             left.1
@@ -540,10 +571,8 @@ mod tests {
 
     #[test]
     fn unknown_column_preserves_dotted_column_name_in_hint() {
-        // Real column is literally named `player.id`. User wrote an
-        // unquoted `demo.users.player.id`, which DataFusion splits into a
-        // 3-part relation (`demo.users.player`) plus the bare name `id`.
-        // The hint must suggest the only valid SQL: `demo.users."player.id"`.
+        // Literal-dot column (`player.id`) referenced as an unquoted
+        // 4-part path; hint must re-quote the dotted bare name.
         let valid = vec![cp(&["demo", "users"], "player.id")];
         let missing = cp(&["demo", "users", "player"], "id");
         let err = StructuredQueryError::unknown_column(&missing, &valid);
@@ -561,13 +590,10 @@ mod tests {
 
     #[test]
     fn unknown_column_matches_dotted_name_against_unqualified_reference() {
-        // Declared column is literally `player.id` on `hockey.master`.
-        // User writes `SELECT player.id FROM hockey.master`, which
-        // DataFusion parses as `relation=[player], name=id`. Neither
-        // full-flat nor bare-vs-bare match finds a hit (`player.id` !=
-        // `hockey.master.player.id`, `id` != `player.id`), but the
-        // candidate's bare name IS the user's joined form. The hint must
-        // still suggest the correctly-quoted column.
+        // User's bare `player.id` (parsed as relation=[player], name=id)
+        // matches the registered `hockey.master."player.id"` only after
+        // we join the user's relation+name to compare against the
+        // candidate's dotted bare name.
         let valid = vec![cp(&["hockey", "master"], "player.id")];
         let missing = cp(&["player"], "id");
         let err = StructuredQueryError::unknown_column(&missing, &valid);
@@ -609,13 +635,10 @@ mod tests {
         assert_eq!(err.reason(), TABLE_NOT_FOUND_REASON);
         assert_eq!(err.status(), StatusCode::NotFound);
         let hint = err.hint().expect("hint should be present");
-        // Hint must be transport-neutral: reference the engine's SQL
-        // catalog rather than a specific CLI command, so CLI / MCP / API
-        // consumers all render sensibly.
         assert!(hint.contains("coral.tables"), "got: {hint}");
         assert!(
             !hint.contains("coral source"),
-            "hint must stay transport-neutral, got: {hint}"
+            "hint must stay transport-neutral (no CLI-specific commands), got: {hint}"
         );
     }
 
@@ -666,10 +689,9 @@ mod tests {
 
     #[test]
     fn table_not_found_synthetic_public_treated_as_unqualified() {
-        // `FROM games` (bare) surfaces as `datafusion.public.games`. With no
-        // user-registered `public` source, this must collapse to an
-        // unqualified table-not-found whose hint points at `coral.tables`,
-        // not at "schema `public` is not registered".
+        // `FROM games` surfaces as `datafusion.public.games`; with no
+        // user-registered `public` source, collapse to unqualified and
+        // prefer a close cross-schema match over the catalog pointer.
         let tables = vec![table("hockey", "games")];
         let err = StructuredQueryError::table_not_found("datafusion.public.games", &tables);
 
@@ -684,17 +706,17 @@ mod tests {
             err.summary()
         );
         let hint = err.hint().expect("hint should be present");
-        assert!(hint.contains("coral.tables"), "got: {hint}");
+        assert!(
+            hint.contains("hockey.games"),
+            "unqualified miss with a close match should suggest the schema-qualified form, got: {hint}"
+        );
     }
 
     #[test]
     fn table_not_found_synthetic_public_preserves_dotted_table_name() {
-        // Manifest permits table names with embedded dots. `FROM
-        // "player.stats"` (bare, quoted) surfaces as
-        // `datafusion.public.player.stats` — a 4-part ref. The public
-        // shortcut must collapse everything after `public` into the bare
-        // name; it must NOT split on the last dot and report a nonexistent
-        // `public.player` schema.
+        // `FROM "player.stats"` → `datafusion.public.player.stats` (4
+        // parts); the public shortcut must keep everything after `public`
+        // as the bare name, not split on the last dot.
         let tables = vec![table("hockey", "player.stats")];
         let err = StructuredQueryError::table_not_found("datafusion.public.player.stats", &tables);
 
@@ -708,10 +730,11 @@ mod tests {
             "summary should show the dotted bare table, got: {}",
             err.summary()
         );
-        // Hint uses cross-schema Levenshtein (added in SOURCE-456 follow-up
-        // PR #162). On this branch it's the generic catalog pointer — PR
-        // #162 will upgrade it to a `hockey."player.stats"` suggestion.
-        err.hint().expect("hint should be present");
+        let hint = err.hint().expect("hint should be present");
+        assert!(
+            hint.contains("hockey.\"player.stats\""),
+            "hint should quote dotted table name, got: {hint}"
+        );
     }
 
     #[test]
@@ -731,9 +754,8 @@ mod tests {
 
     #[test]
     fn table_not_found_preserves_dotted_source_name() {
-        // Source name itself contains a dot: `foo.bar`. DataFusion explodes
-        // this to `datafusion.foo.bar.items`. The parser must recover
-        // schema=`foo.bar`, table=`items` — not schema=`bar`, table=`items`.
+        // Source name `foo.bar` explodes to `datafusion.foo.bar.items`;
+        // parser must recover schema=`foo.bar`, table=`items`.
         let tables = vec![table("foo.bar", "Items")];
         let err = StructuredQueryError::table_not_found("datafusion.foo.bar.items", &tables);
 
@@ -746,9 +768,6 @@ mod tests {
             Some("items")
         );
         let hint = err.hint().expect("hint should be present");
-        // Case-insensitive match surfaces `Items`; the dotted schema stays
-        // one quoted identifier, and the case-preserving table name is
-        // quoted on its own merits.
         assert!(
             hint.contains("\"foo.bar\".\"Items\""),
             "hint should quote dotted schema as one identifier, got: {hint}"
@@ -757,9 +776,8 @@ mod tests {
 
     #[test]
     fn table_not_found_dotted_source_without_matching_table_still_routes_schema() {
-        // Same dotted source but the table name is just wrong. The hint
-        // path falls through to "no close match", but schema/metadata
-        // must still name the real source.
+        // Dotted source + wrong table: schema/metadata must still name
+        // the real source even when the hint path finds no close match.
         let tables = vec![table("foo.bar", "Items")];
         let err = StructuredQueryError::table_not_found("datafusion.foo.bar.missing", &tables);
 
@@ -775,15 +793,48 @@ mod tests {
 
     #[test]
     fn table_not_found_unqualified_falls_back_to_catalog_pointer() {
-        // Pure unqualified form (no catalog prefix at all). DataFusion
-        // currently always emits a 3-part path, but the constructor
-        // accepts this shape defensively — if an upstream change ever
-        // drops the catalog prefix, this test still guards the fallback.
-        let tables = vec![table("hockey", "games")];
+        // Defensive guard for bare unqualified refs (DataFusion normally
+        // emits 3-part paths); catalog entry is distant so cross-schema
+        // Levenshtein doesn't fire and the generic pointer surfaces.
+        let tables = vec![table("hockey", "zzzzzzzzz")];
         let err = StructuredQueryError::table_not_found("games", &tables);
 
         let hint = err.hint().expect("hint should be present");
         assert!(hint.contains("coral.tables"), "got: {hint}");
+    }
+
+    #[test]
+    fn table_not_found_unqualified_cross_schema_levenshtein_suggests_match() {
+        // Bare `FROM account` against `stripe.accounts`: hint prefers
+        // the schema-qualified match over the catalog pointer; metadata
+        // stays unqualified so it reflects what the user wrote.
+        let tables = vec![table("stripe", "accounts"), table("github", "issues")];
+        let err = StructuredQueryError::table_not_found("datafusion.public.account", &tables);
+
+        let hint = err.hint().expect("hint should be present");
+        assert!(
+            hint.contains("stripe.accounts"),
+            "unqualified miss should suggest the closest schema-qualified name, got: {hint}"
+        );
+        assert_eq!(err.metadata().get("schema"), None);
+        assert_eq!(
+            err.metadata().get("table").map(String::as_str),
+            Some("account")
+        );
+    }
+
+    #[test]
+    fn table_not_found_unqualified_no_close_match_falls_back_to_catalog_pointer() {
+        // Unqualified miss with no close catalog entry: fall back to
+        // the generic catalog pointer.
+        let tables = vec![table("stripe", "subscriptions")];
+        let err = StructuredQueryError::table_not_found("datafusion.public.account", &tables);
+
+        let hint = err.hint().expect("hint should be present");
+        assert!(
+            hint.contains("coral.tables"),
+            "no-match unqualified case should fall back to catalog pointer, got: {hint}"
+        );
     }
 
     #[test]
