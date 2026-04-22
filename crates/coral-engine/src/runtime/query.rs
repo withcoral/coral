@@ -29,10 +29,9 @@ pub(crate) async fn build_runtime(
             .build()
             .map_err(|err| datafusion_to_core(&err))?,
     );
-    let ctx = Arc::new(SessionContext::new_with_config_rt(
-        session_config,
-        runtime_env,
-    ));
+    let mut ctx = SessionContext::new_with_config_rt(session_config, runtime_env);
+    datafusion_functions_json::register_all(&mut ctx).map_err(|err| datafusion_to_core(&err))?;
+    let ctx = Arc::new(ctx);
 
     let runtime_context = runtime.runtime_context();
     let mut compiled_sources = Vec::new();

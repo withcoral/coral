@@ -11,6 +11,8 @@ mod catalog_tests;
 mod harness;
 #[path = "engine/http_tests.rs"]
 mod http_tests;
+#[path = "engine/json_tests.rs"]
+mod json_tests;
 #[path = "engine/jsonl_tests.rs"]
 mod jsonl_tests;
 #[path = "engine/parquet_tests.rs"]

@@ -9011,9 +9011,11 @@ tables:
           kind: from_filter
           key: person_id
       - name: properties
-        type: Utf8
+        type: Json
         nullable: true
         virtual: false
+        description: Event properties as a JSON object. Query with `properties->>'$.key'`
+          or `json_get_str(properties, 'key')`.
         expr:
           kind: path
           path:
@@ -18466,10 +18468,11 @@ tables:
           path:
             - name
       - name: properties
-        type: Utf8
+        type: Json
         nullable: true
         virtual: false
         description: Key-value map of person properties set via $set and $set_once operations.
+          Query with `properties->>'$.key'` or `json_get_str(properties, 'key')`.
         expr:
           kind: path
           path:

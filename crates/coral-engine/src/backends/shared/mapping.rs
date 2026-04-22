@@ -638,4 +638,34 @@ mod tests {
 
         assert_eq!(rendered, Some(Value::String("untitled".to_string())));
     }
+
+    #[test]
+    fn json_type_serializes_objects_as_valid_json_strings() {
+        let table = table_with_expr(
+            "props",
+            "Json",
+            &ExprSpec::Path {
+                path: vec!["properties".into()],
+            },
+        );
+        let schema = schema_from_columns(table.columns(), "test", table.name()).unwrap();
+        let items = vec![
+            json!({"properties": {"country": "US", "count": 3}}),
+            json!({"properties": null}),
+            json!({}),
+        ];
+        let batch = convert_items(table.columns(), schema, &HashMap::new(), &items).unwrap();
+
+        let col = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(col.value(0)).unwrap(),
+            json!({"country": "US", "count": 3}),
+        );
+        assert!(col.is_null(1));
+        assert!(col.is_null(2));
+    }
 }

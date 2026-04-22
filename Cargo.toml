@@ -31,6 +31,7 @@ bytes = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
 clap = { version = "4.5", features = ["derive", "env"] }
 datafusion = "52"
+datafusion-functions-json = "0.52"
 dialoguer = "0.12"
 directories = "6"
 fs2 = "0.4"

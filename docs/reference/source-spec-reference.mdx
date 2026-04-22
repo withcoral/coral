@@ -54,18 +54,31 @@ Notes:
 
 The `type` field on each column accepts:
 
-| Type        | Description                              |
-| ----------- | ---------------------------------------- |
-| `Utf8`      | UTF-8 string                             |
-| `Int64`     | 64-bit signed integer                    |
-| `Float64`   | 64-bit floating point                    |
-| `Boolean`   | Boolean true/false                       |
-| `Timestamp` | UTC timestamp (microsecond precision)    |
+| Type        | Description                                                                                        |
+| ----------- | -------------------------------------------------------------------------------------------------- |
+| `Utf8`      | UTF-8 string                                                                                       |
+| `Int64`     | 64-bit signed integer                                                                              |
+| `Float64`   | 64-bit floating point                                                                              |
+| `Boolean`   | Boolean true/false                                                                                 |
+| `Timestamp` | UTC timestamp (microsecond precision)                                                              |
+| `Json`      | UTF-8 string containing JSON. Hint that the column is queryable with `json_get`, `->`, `->>`, etc. |
 
 Each column also supports:
 
 - `nullable` (boolean, default `true`): whether the column can contain NULL values
 - `description` (string): human-readable description, surfaced through `coral.columns`
+
+### Querying JSON columns
+
+`Json`-typed columns (and any `Utf8` column whose values happen to be JSON) can be queried with the built-in JSON functions:
+
+```sql
+SELECT id, properties->>'$browser' AS browser
+FROM posthog.events
+WHERE json_get_int(properties, 'count') > 5
+```
+
+Available: `json_get`, `json_get_str`, `json_get_int`, `json_get_float`, `json_get_bool`, `json_get_array`, `json_get_json`, `json_contains`, `json_length`, `json_as_text`, plus the `->`, `->>`, and `?` operators.
 
 ## Column expressions
 

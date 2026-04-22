@@ -14,6 +14,7 @@ async-trait.workspace = true
 arrow.workspace = true
 bytes.workspace = true
 datafusion.workspace = true
+datafusion-functions-json.workspace = true
 futures.workspace = true
 glob.workspace = true
 httpdate.workspace = true

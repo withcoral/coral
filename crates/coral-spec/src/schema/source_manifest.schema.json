@@ -396,7 +396,7 @@
         "name": { "type": "string", "minLength": 1 },
         "type": {
           "type": "string",
-          "enum": ["Utf8", "Int64", "Boolean", "Float64", "Timestamp"]
+          "enum": ["Utf8", "Int64", "Boolean", "Float64", "Timestamp", "Json"]
         },
         "nullable": { "type": "boolean" },
         "virtual": { "type": "boolean" },

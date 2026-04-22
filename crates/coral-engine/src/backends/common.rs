@@ -184,7 +184,7 @@ pub(crate) fn build_registered_table(
 
 pub(crate) fn manifest_data_type_to_arrow(data_type: ManifestDataType) -> DataType {
     match data_type {
-        ManifestDataType::Utf8 => DataType::Utf8,
+        ManifestDataType::Utf8 | ManifestDataType::Json => DataType::Utf8,
         ManifestDataType::Int64 => DataType::Int64,
         ManifestDataType::Boolean => DataType::Boolean,
         ManifestDataType::Float64 => DataType::Float64,
