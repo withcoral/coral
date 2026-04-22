@@ -41,6 +41,8 @@ auth:
     - name: DD-APPLICATION-KEY
       from: input
       key: DD_APPLICATION_KEY
+test_queries:
+  - SELECT * FROM datadog.monitors LIMIT 1
 tables:
   - name: monitors
     description: Datadog monitors with status and alert configuration.
