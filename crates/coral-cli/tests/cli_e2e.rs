@@ -554,12 +554,36 @@ async fn source_remove_rejects_invalid_name() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread")]
-async fn source_add_rejects_non_interactive() {
+async fn source_add_reports_missing_env_vars_without_interactive() {
     let server = MockServer::start().await;
 
     let assert = server
         .cmd()
         .args(["source", "add", "github"])
+        .env_remove("GITHUB_TOKEN")
+        .assert()
+        .failure();
+
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    assert!(
+        stderr.contains("missing required environment variable"),
+        "expected missing env var error: {stderr}"
+    );
+    assert!(
+        stderr.contains("GITHUB_TOKEN"),
+        "expected missing env var to name GITHUB_TOKEN: {stderr}"
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn source_add_interactive_requires_tty() {
+    let server = MockServer::start().await;
+
+    let assert = server
+        .cmd()
+        .args(["source", "add", "--interactive", "github"])
         .assert()
         .failure();
 
