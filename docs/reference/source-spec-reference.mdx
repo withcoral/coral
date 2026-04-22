@@ -45,6 +45,17 @@ Each column also supports:
 - `nullable` (boolean, default `true`): whether the column can contain NULL values
 - `description` (string): human-readable description, surfaced through `coral.columns`
 
+### Nested field naming
+
+When a column is derived from a nested object, Coral uses `__` to join path
+segments in the SQL column name.
+
+- `user__login` maps to `user.login`
+- `head__repo__full_name` maps to `head.repo.full_name`
+
+This keeps nested response structure visible in SQL while still exposing a flat
+column surface.
+
 ## Column expressions
 
 The `expr` field on a column defines how to extract or compute its value from each row. When omitted, Coral uses a `path` expression matching the column name.
