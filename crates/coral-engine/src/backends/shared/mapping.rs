@@ -267,10 +267,8 @@ fn eval_template(
                         .unwrap_or_default();
                     result.push_str(&rendered);
                 }
-                TemplateNamespace::Secret
-                | TemplateNamespace::Variable
+                TemplateNamespace::Input
                 | TemplateNamespace::State
-                | TemplateNamespace::Env
                 | TemplateNamespace::Other(_) => return None,
             },
         }

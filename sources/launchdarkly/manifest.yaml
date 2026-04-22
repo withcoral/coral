@@ -2,16 +2,31 @@ name: launchdarkly
 version: 2.0.0
 dsl_version: 3
 backend: http
-description: Manage feature flags, environments, segments, and audit logs
-base_url: "{{variable.LAUNCHDARKLY_API_BASE|https://app.launchdarkly.com}}"
+description: >-
+  Query projects, feature flags, environments, segments, members, roles,
+  and audit logs from LaunchDarkly.
+inputs:
+  LAUNCHDARKLY_API_BASE:
+    kind: variable
+    default: https://app.launchdarkly.com
+    hint: For self-hosted LaunchDarkly, set to your relay or app host
+  LAUNCHDARKLY_TOKEN:
+    kind: secret
+    hint: |
+      Create an API access token with the Reader role, which gives
+      read-only access to all tables.
+      See [LaunchDarkly API token docs](https://launchdarkly.com/docs/home/account/api-create).
+base_url: "{{input.LAUNCHDARKLY_API_BASE}}"
 auth:
   headers:
     - name: Authorization
-      from: secret
+      from: input
       key: LAUNCHDARKLY_TOKEN
     - name: Content-Type
       from: literal
       value: application/json
+test_queries:
+  - SELECT * FROM launchdarkly.projects LIMIT 1
 tables:
   - name: projects
     description: LaunchDarkly projects visible to the authenticated token

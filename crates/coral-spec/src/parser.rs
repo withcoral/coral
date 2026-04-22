@@ -10,7 +10,6 @@ use serde_json::Value;
 
 use crate::backends::file::{JsonlSourceManifest, ParquetSourceManifest};
 use crate::backends::http::HttpSourceManifest;
-use crate::inputs::collect_source_inputs_value;
 use crate::schema::validate_manifest_schema;
 use crate::{ManifestError, ManifestInputSpec, Result, SourceBackend};
 
@@ -76,6 +75,16 @@ impl ValidatedSourceManifest {
         }
     }
 
+    #[must_use]
+    /// Returns the optional top-level validation queries declared by the source spec.
+    pub fn test_queries(&self) -> &[String] {
+        match &self.inner {
+            ValidatedManifestKind::Http(manifest) => &manifest.common.test_queries,
+            ValidatedManifestKind::Parquet(manifest) => &manifest.common.test_queries,
+            ValidatedManifestKind::Jsonl(manifest) => &manifest.common.test_queries,
+        }
+    }
+
     /// Returns the set of source secrets required to compile or authenticate
     /// the source spec.
     ///
@@ -86,6 +95,15 @@ impl ValidatedSourceManifest {
         match &self.inner {
             ValidatedManifestKind::Http(manifest) => manifest.required_secret_names(),
             ValidatedManifestKind::Parquet(_) | ValidatedManifestKind::Jsonl(_) => BTreeSet::new(),
+        }
+    }
+
+    /// Returns the declared top-level inputs for this manifest in authored order.
+    #[must_use]
+    pub fn declared_inputs(&self) -> &[ManifestInputSpec] {
+        match &self.inner {
+            ValidatedManifestKind::Http(manifest) => &manifest.declared_inputs,
+            ValidatedManifestKind::Parquet(_) | ValidatedManifestKind::Jsonl(_) => &[],
         }
     }
 
@@ -117,32 +135,17 @@ impl ValidatedSourceManifest {
     }
 }
 
-/// Parse a source-spec manifest into its validated form and inputs.
-///
-/// Runs the same validation the server uses at install time. Use this for
-/// lint, add, import, and discovery. For runtime paths where inputs are
-/// not needed, use [`crate::load_manifest_path`] instead.
-///
-/// # Errors
-///
-/// Returns a [`ManifestError`] if the manifest fails validation or its
-/// input declarations are inconsistent.
-pub fn parse_manifest_and_inputs(
-    raw: &str,
-) -> Result<(ValidatedSourceManifest, Vec<ManifestInputSpec>)> {
-    let manifest_value: Value = serde_yaml::from_str(raw).map_err(ManifestError::parse_yaml)?;
-    let inputs = collect_source_inputs_value(&manifest_value)?;
-    let manifest = parse_source_manifest_value(manifest_value)?;
-    Ok((manifest, inputs))
-}
-
 /// Parse and validate a source-spec manifest from `YAML` text.
+///
+/// Runs the same validation the server uses at install time. Callers that
+/// need the declared interactive inputs can read them via
+/// [`ValidatedSourceManifest::declared_inputs`].
 ///
 /// # Errors
 ///
 /// Returns a [`ManifestError`] if the `YAML` cannot be parsed or the source
 /// spec violates any validation rules.
-pub(crate) fn parse_source_manifest_yaml(raw: &str) -> Result<ValidatedSourceManifest> {
+pub fn parse_source_manifest_yaml(raw: &str) -> Result<ValidatedSourceManifest> {
     let manifest_value: Value = serde_yaml::from_str(raw).map_err(ManifestError::parse_yaml)?;
     parse_source_manifest_value(manifest_value)
 }
@@ -180,4 +183,63 @@ fn parse_source_backend(value: &Value) -> Result<SourceBackend> {
     let backend: SourceBackend =
         serde_json::from_value(backend).map_err(ManifestError::deserialize)?;
     Ok(backend)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_source_manifest_yaml;
+
+    #[test]
+    fn parse_source_manifest_preserves_test_query_order() {
+        let manifest = parse_source_manifest_yaml(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: jsonl
+test_queries:
+  - SELECT 1
+  - SELECT 2
+tables:
+  - name: messages
+    description: Demo messages
+    source:
+      location: file:///tmp/demo/
+    columns:
+      - name: kind
+        type: Utf8
+",
+        )
+        .expect("manifest should parse");
+
+        assert_eq!(manifest.test_queries(), &["SELECT 1", "SELECT 2"]);
+    }
+
+    #[test]
+    fn parse_source_manifest_rejects_whitespace_only_test_query() {
+        let error = parse_source_manifest_yaml(
+            r#"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: jsonl
+test_queries:
+  - "   "
+tables:
+  - name: messages
+    description: Demo messages
+    source:
+      location: file:///tmp/demo/
+    columns:
+      - name: kind
+        type: Utf8
+"#,
+        )
+        .expect_err("whitespace-only query should fail");
+
+        assert_eq!(
+            error.to_string(),
+            "source 'demo' test_queries[0] must not be empty"
+        );
+    }
 }

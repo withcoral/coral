@@ -65,6 +65,115 @@ impl QuerySource {
     }
 }
 
+/// One source-spec validation query executed during source validation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueryTestResult {
+    sql: String,
+    result: Result<QueryTestSuccess, QueryTestFailure>,
+}
+
+/// Success metadata for one validation query execution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueryTestSuccess {
+    row_count: u64,
+}
+
+impl QueryTestSuccess {
+    #[must_use]
+    /// Returns the row count captured for the successful query.
+    pub fn row_count(&self) -> u64 {
+        self.row_count
+    }
+}
+
+/// Failure details for one validation query execution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueryTestFailure {
+    error_message: String,
+}
+
+impl QueryTestFailure {
+    #[must_use]
+    /// Returns the error message captured for the failed query.
+    pub fn error_message(&self) -> &str {
+        &self.error_message
+    }
+}
+
+impl QueryTestResult {
+    #[must_use]
+    /// Builds one successful query-test result entry.
+    pub fn success(sql: impl Into<String>, row_count: u64) -> Self {
+        Self {
+            sql: sql.into(),
+            result: Ok(QueryTestSuccess { row_count }),
+        }
+    }
+
+    #[must_use]
+    /// Builds one failed query-test result entry.
+    pub fn failure(sql: impl Into<String>, error_message: impl Into<String>) -> Self {
+        Self {
+            sql: sql.into(),
+            result: Err(QueryTestFailure {
+                error_message: error_message.into(),
+            }),
+        }
+    }
+
+    #[must_use]
+    /// Returns the SQL text that was executed.
+    pub fn sql(&self) -> &str {
+        &self.sql
+    }
+
+    #[must_use]
+    /// Returns whether the query executed successfully.
+    pub fn passed(&self) -> bool {
+        self.result.is_ok()
+    }
+
+    #[must_use]
+    /// Returns the captured row count for successful queries.
+    pub fn row_count(&self) -> Option<u64> {
+        self.result.as_ref().ok().map(QueryTestSuccess::row_count)
+    }
+
+    #[must_use]
+    /// Returns the error message for failed queries, when present.
+    pub fn error_message(&self) -> Option<&str> {
+        self.result
+            .as_ref()
+            .err()
+            .map(QueryTestFailure::error_message)
+    }
+
+    /// Returns the execution result metadata for this query test.
+    pub fn result(&self) -> &Result<QueryTestSuccess, QueryTestFailure> {
+        &self.result
+    }
+}
+
+/// Structured report for validating one source and its optional test queries.
+#[derive(Debug, Clone)]
+pub struct SourceValidationReport {
+    /// Tables exposed by the validated source.
+    pub tables: Vec<super::TableInfo>,
+    /// One result per declared validation query, in manifest order.
+    pub query_tests: Vec<QueryTestResult>,
+}
+
+impl SourceValidationReport {
+    #[must_use]
+    /// Builds one structured source-validation report.
+    pub fn new(tables: Vec<super::TableInfo>, query_tests: Vec<QueryTestResult>) -> Self {
+        Self {
+            tables,
+            query_tests,
+        }
+    }
+}
+
 /// App-owned non-secret runtime inputs needed while compiling sources.
 #[derive(Debug, Clone, Default)]
 pub struct QueryRuntimeContext {

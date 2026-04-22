@@ -8,7 +8,7 @@ use coral_api::v1::{
 use coral_client::{
     AppClient, QueryClient, SourceClient, batches_to_json_rows, decode_execute_sql_response,
     default_workspace,
-    local::{ServerBuilder, connect_running_server},
+    local::{RunningServer, ServerBuilder},
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -18,6 +18,7 @@ pub(crate) struct GrpcHarness {
     temp_dir: TempDir,
     config_dir: PathBuf,
     app: AppClient,
+    _server: RunningServer,
 }
 
 pub(crate) struct FailingHttpFixture {
@@ -38,11 +39,19 @@ impl GrpcHarness {
     }
 
     async fn start_with_parts(temp_dir: TempDir, config_dir: PathBuf) -> Self {
-        let app = local_client(&config_dir).await;
+        let server = ServerBuilder::new()
+            .with_config_dir(&config_dir)
+            .start()
+            .await
+            .expect("start server");
+        let app = AppClient::connect(server.endpoint_uri())
+            .await
+            .expect("connect client");
         Self {
             temp_dir,
             config_dir,
             app,
+            _server: server,
         }
     }
 
@@ -152,12 +161,17 @@ impl FailingHttpFixture {
     }
 
     pub(crate) fn manifest_yaml(&self) -> String {
+        self.manifest_yaml_with_test_queries(&[])
+    }
+
+    pub(crate) fn manifest_yaml_with_test_queries(&self, test_queries: &[&str]) -> String {
         manifest_yaml(&json!({
             "name": "unreachable_messages",
             "version": "0.1.0",
             "dsl_version": 3,
             "backend": "http",
             "base_url": self.base_url,
+            "test_queries": test_queries,
             "tables": [{
                 "name": "messages",
                 "description": "Unreachable messages",
@@ -181,6 +195,13 @@ impl Drop for FailingHttpFixture {
 }
 
 pub(crate) fn fixture_manifest_yaml(root: &Path) -> String {
+    fixture_manifest_with_test_queries_yaml(root, &[])
+}
+
+pub(crate) fn fixture_manifest_with_test_queries_yaml(
+    root: &Path,
+    test_queries: &[&str],
+) -> String {
     let data_dir = root.join("fixture-data");
     fs::create_dir_all(&data_dir).expect("create data dir");
     fs::write(
@@ -195,6 +216,7 @@ pub(crate) fn fixture_manifest_yaml(root: &Path) -> String {
         "version": "0.1.0",
         "dsl_version": 3,
         "backend": "jsonl",
+        "test_queries": test_queries,
         "tables": [{
             "name": "messages",
             "description": "Fixture messages",
@@ -217,12 +239,16 @@ pub(crate) fn fixture_manifest_with_inputs_yaml() -> String {
         "version": "0.1.0",
         "dsl_version": 3,
         "backend": "http",
-        "base_url": "{{variable.API_BASE|https://example.com}}",
+        "inputs": {
+            "API_BASE": { "kind": "variable", "default": "https://example.com" },
+            "API_TOKEN": { "kind": "secret" },
+        },
+        "base_url": "{{input.API_BASE}}",
         "auth": {
             "headers": [{
                 "name": "Authorization",
                 "from": "template",
-                "template": "Bearer {{secret.API_TOKEN}}",
+                "template": "Bearer {{input.API_TOKEN}}",
             }],
         },
         "tables": [{
@@ -246,12 +272,16 @@ pub(crate) fn fixture_manifest_with_required_inputs_yaml() -> String {
         "version": "0.1.0",
         "dsl_version": 3,
         "backend": "http",
-        "base_url": "{{variable.API_BASE}}",
+        "inputs": {
+            "API_BASE": { "kind": "variable" },
+            "API_TOKEN": { "kind": "secret" },
+        },
+        "base_url": "{{input.API_BASE}}",
         "auth": {
             "headers": [{
                 "name": "Authorization",
                 "from": "template",
-                "template": "Bearer {{secret.API_TOKEN}}",
+                "template": "Bearer {{input.API_TOKEN}}",
             }],
         },
         "tables": [{
@@ -301,15 +331,4 @@ pub(crate) fn source_dir(config_dir: &Path, source_name: &str) -> PathBuf {
         .join("default")
         .join("sources")
         .join(source_name)
-}
-
-async fn local_client(config_dir: impl Into<PathBuf>) -> AppClient {
-    let server = ServerBuilder::new()
-        .with_config_dir(config_dir)
-        .start()
-        .await
-        .expect("start server");
-    connect_running_server(server)
-        .await
-        .expect("connect client")
 }

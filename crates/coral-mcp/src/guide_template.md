@@ -14,9 +14,23 @@ SELECT schema_name, table_name, sql_table_ref, description, required_filters FRO
 {{COLUMNS_EXAMPLE}}
 ```
 
+## Per-Source Configuration
+
+Per-source config values (e.g. Datadog site, Sentry org slug, GitHub API base URL) are exposed via `coral.inputs`. Use it to compose absolute URLs or account-scoped identifiers from source variables. Secret values are never exposed — secret rows always have `value IS NULL`, but `is_set` tells you whether the secret is configured.
+
+```sql
+-- Look up a variable value
+SELECT value FROM coral.inputs
+WHERE schema_name = 'datadog' AND kind = 'variable' AND key = 'DD_SITE';
+
+-- Check which secrets are configured (without revealing values)
+SELECT schema_name, key FROM coral.inputs
+WHERE kind = 'secret' AND is_set;
+```
+
 ## Query Guidance
 
 - Always use `coral.tables.sql_table_ref`, `coral.columns.sql_column_ref`, and `coral.columns.sql_qualified_column_ref` when writing SQL. Copy them verbatim; never reconstruct or qualify identifiers yourself.
 - Check `coral.tables.required_filters` and `coral.columns.is_required_filter` before querying tables that depend on filter-only inputs.
 - Cross-source joins work with standard SQL after source scans complete.
-- `list_tables` and `coral://tables` show queryable fully qualified tables; `coral.tables` and `coral.columns` provide richer SQL metadata.
+- `list_tables` and `coral://tables` show queryable fully qualified tables; `coral.tables`, `coral.columns`, and `coral.inputs` provide richer SQL metadata.

@@ -350,7 +350,7 @@ fn validate_bindings(
     variables: &[SourceVariable],
     secrets: &[SourceSecret],
 ) -> Result<ValidatedBindings, AppError> {
-    let variable_values = collect_unique_variables(variables)?;
+    let mut variable_values = collect_unique_variables(variables)?;
     let secret_values = collect_unique_secrets(secrets)?;
     let expected_variables = candidate
         .inputs
@@ -377,6 +377,15 @@ fn validate_bindings(
             return Err(AppError::InvalidInput(format!(
                 "unknown source secret '{key}'"
             )));
+        }
+    }
+
+    for input in &candidate.inputs {
+        if input.kind == CandidateSourceInputKind::Variable
+            && !variable_values.contains_key(&input.key)
+            && !input.default_value.is_empty()
+        {
+            variable_values.insert(input.key.clone(), input.default_value.clone());
         }
     }
 
@@ -499,12 +508,18 @@ name: secured_messages
 version: 0.1.0
 dsl_version: 3
 backend: http
-base_url: "{{variable.API_BASE|https://example.com}}"
+inputs:
+  API_BASE:
+    kind: variable
+    default: https://example.com
+  API_TOKEN:
+    kind: secret
+base_url: "{{input.API_BASE}}"
 auth:
   headers:
     - name: Authorization
       from: template
-      template: Bearer {{secret.API_TOKEN}}
+      template: Bearer {{input.API_TOKEN}}
 tables:
   - name: messages
     description: Secured messages
@@ -606,5 +621,38 @@ tables:
         let error = normalize_binding_key("source secret key", " #comment")
             .expect_err("leading comment markers should be rejected");
         assert!(error.to_string().contains("must not start with '#'"));
+    }
+
+    #[test]
+    fn import_materializes_variable_defaults_server_side() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let manager = SourceManager::new(
+            ConfigStore::new(layout.clone()),
+            SecretStore::new(layout.clone()),
+            layout,
+        );
+
+        let source = manager
+            .import_source(
+                &default_workspace(),
+                &ImportSourceRequest {
+                    workspace: Some(workspace_to_proto(&default_workspace())),
+                    manifest_yaml: manifest_with_secret(),
+                    variables: vec![],
+                    secrets: vec![SourceSecret {
+                        key: "API_TOKEN".to_string(),
+                        value: "secret-token".to_string(),
+                    }],
+                },
+            )
+            .expect("import source");
+
+        assert_eq!(
+            source.variables.get("API_BASE").map(String::as_str),
+            Some("https://example.com")
+        );
     }
 }

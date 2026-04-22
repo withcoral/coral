@@ -2,6 +2,8 @@
 
 use thiserror::Error;
 
+pub use super::query_error::StructuredQueryError;
+
 /// Errors surfaced by the query layer.
 #[derive(Debug, Clone, Error)]
 pub enum CoreError {
@@ -23,6 +25,9 @@ pub enum CoreError {
     /// The service failed internally.
     #[error("internal: {0}")]
     Internal(String),
+    /// A structured query failure with first-class semantic fields.
+    #[error("{_0}")]
+    QueryFailure(Box<StructuredQueryError>),
 }
 
 impl CoreError {
@@ -42,6 +47,7 @@ impl CoreError {
             Self::Unavailable(_) => StatusCode::Unavailable,
             Self::Unimplemented(_) => StatusCode::Unimplemented,
             Self::Internal(_) => StatusCode::Internal,
+            Self::QueryFailure(sqe) => sqe.status(),
         }
     }
 }

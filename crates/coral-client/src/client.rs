@@ -33,69 +33,33 @@ pub type SourceClient = SourceServiceClient<Channel>;
 /// wrapping it in a higher-level SDK surface.
 pub type QueryClient = QueryServiceClient<Channel>;
 
-/// Builder for the public Coral client handle.
-#[derive(Debug, Clone, Default)]
-pub struct ClientBuilder;
-
-impl ClientBuilder {
-    #[must_use]
-    /// Creates a builder for the default local Coral client.
-    pub fn new() -> Self {
-        Self
-    }
-
-    /// Builds the public Coral client against an internal local gRPC server.
-    ///
-    /// This intentionally starts the local server here so callers get the real
-    /// typed gRPC boundary through the default thin local bootstrap API.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ClientError`] if local server startup or client connection
-    /// fails.
-    pub async fn build(self) -> Result<AppClient, ClientError> {
-        let running = coral_app::ServerBuilder::new().start().await?;
-        AppClient::from_running_server(running).await
-    }
-}
-
 /// Public Coral client handle.
 ///
-/// This is intentionally a light wrapper around the generated gRPC clients and
-/// the local server lifetime. It is not yet a richer domain client. Explicit
-/// server-controlled bootstrap lives in [`crate::local`].
+/// Wraps the generated gRPC clients for a Coral endpoint.
 pub struct AppClient {
     source_client: SourceClient,
     query_client: QueryClient,
-    #[allow(
-        dead_code,
-        reason = "Keeps the internal local server alive for the client lifetime."
-    )]
-    running_server: coral_app::RunningServer,
 }
 
 impl AppClient {
-    async fn connect_clients(
-        endpoint_uri: &str,
-    ) -> Result<(SourceClient, QueryClient), ClientError> {
+    /// Connects to a Coral endpoint.
+    ///
+    /// This is intentionally pure transport: callers that start a local server
+    /// must keep the returned `RunningServer` alive themselves.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] if the gRPC clients cannot connect.
+    pub async fn connect(endpoint_uri: &str) -> Result<Self, ClientError> {
         let endpoint = Endpoint::from_shared(endpoint_uri.to_string())?
             .http2_max_header_list_size(HTTP2_MAX_HEADER_LIST_SIZE);
         let channel = endpoint.connect().await?;
         let source_client = SourceServiceClient::new(channel.clone());
         let query_client = QueryServiceClient::new(channel)
             .max_decoding_message_size(QUERY_RESPONSE_MAX_MESSAGE_SIZE);
-        Ok((source_client, query_client))
-    }
-
-    pub(crate) async fn from_running_server(
-        running_server: coral_app::RunningServer,
-    ) -> Result<Self, ClientError> {
-        let (source_client, query_client) =
-            Self::connect_clients(running_server.endpoint_uri()).await?;
         Ok(Self {
             source_client,
             query_client,
-            running_server,
         })
     }
 

@@ -27,35 +27,9 @@ Coral uses stdio transport. If a client supports a command-based install flow, p
 
 <Tabs>
   <Tab title="Claude Code">
-  **CLI**
-
   ```shellscript
-  claude mcp add coral -- coral mcp-stdio
+  claude mcp add --scope user coral -- coral mcp-stdio
   ```
-
-  To install it at a different scope:
-
-  ```shellscript
-  claude mcp add coral --scope project -- coral mcp-stdio
-  claude mcp add coral --scope user -- coral mcp-stdio
-  ```
-
-  **Manual config**
-
-  Add to `.mcp.json`:
-
-  ```json
-  {
-    "mcpServers": {
-      "coral": {
-        "command": "coral",
-        "args": ["mcp-stdio"]
-      }
-    }
-  }
-  ```
-
-  `local` is the default scope and stays private to you in the current project. `project` writes shared config to `.mcp.json`, and `user` makes the server available across projects.
 </Tab>
 
   <Tab title="Codex">

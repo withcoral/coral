@@ -48,7 +48,7 @@ coral source add github
 ```
 
 Coral prompts for required variables or secrets interactively. If the source is already installed, running this command again replaces its stored credentials with the new values you provide.
-After installation, it automatically validates the connection and prints the discovered tables.
+After installation, it prints the discovered tables and runs any optional top-level `test_queries` declared in the source spec to validate the connection. Any post-install validation issue is reported as a warning here so the source remains installed and re-runnable.
 
 ### `coral source add --file <PATH>`
 
@@ -57,8 +57,6 @@ Add a custom source spec from a YAML file.
 ```shellscript
 coral source add --file ./local-messages.yaml
 ```
-
-Like `source add`, this automatically validates and prints discovered tables after install.
 
 ### `coral source lint <FILE>`
 
@@ -70,7 +68,7 @@ coral source lint ./my-source.yaml
 
 ### `coral source test <NAME>`
 
-Validate that an installed source can initialize and expose tables.
+Validate that an installed source can initialize, expose tables, and run any optional top-level `test_queries` declared in its source spec. The command errors when one or more declared query tests fail.
 
 ```shellscript
 coral source test github

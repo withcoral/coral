@@ -3,9 +3,6 @@
 /// Errors surfaced while bootstrapping a Coral client.
 #[derive(Debug, thiserror::Error)]
 pub enum ClientError {
-    /// Building the local server failed.
-    #[error(transparent)]
-    App(#[from] coral_app::AppError),
     /// Connecting the generated gRPC client failed.
     #[error(transparent)]
     Transport(#[from] tonic::transport::Error),

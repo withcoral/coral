@@ -23,10 +23,11 @@ graph TD
 A query follows this path:
 
 1. **Entry point:** a user runs `coral sql` or an agent calls the `sql` MCP tool
-2. **`coral-client`:** bootstraps a local gRPC connection to `coral-app` (starting the server if needed) and sends the request
-3. **`coral-app`:** loads installed sources from local state, delegates spec validation to `coral-spec`, and hands validated specs to `coral-engine`
-4. **`coral-engine`:** compiles specs into DataFusion table providers, registers them in a session, and executes SQL
-5. **Result:** Arrow record batches flow back through gRPC to the client, which formats them as table or JSON output (CLI) or structured MCP tool results (MCP)
+2. **Bootstrap:** the caller decides whether to start a local `coral-app` server or dial an existing endpoint
+3. **`coral-client`:** connects to that endpoint and sends the request over gRPC
+4. **`coral-app`:** loads installed sources from local state, delegates spec validation to `coral-spec`, and hands validated specs to `coral-engine`
+5. **`coral-engine`:** compiles specs into DataFusion table providers, registers them in a session, and executes SQL
+6. **Result:** Arrow record batches flow back through gRPC to the client, which formats them as table or JSON output (CLI) or structured MCP tool results (MCP)
 
 ## Crates
 
@@ -40,18 +41,20 @@ The user-facing command-line interface.
 | Interactive prompts | Variables and secrets during `source add` |
 | Output formatting | Table and JSON via `coral-client` helpers |
 
-Single file: `main.rs`. Intentionally thin, delegates all business logic to `coral-client`.
+Intentionally thin — `main.rs` owns command parsing, `bootstrap.rs` owns CLI bootstrap, and query/result helpers stay in `coral-client`.
+For black-box CLI tests, contributors can enable the `CORAL_ENDPOINT` bootstrap override with `cargo test -p coral-cli --features cli-test-server`.
 
 ### `coral-client`
 
 Shared client library used by both `coral-cli` and `coral-mcp`.
 
-| Owns               | Details                                                                                  |
-| ------------------ | ---------------------------------------------------------------------------------------- |
-| Local transport    | Starts or connects to the `coral-app` gRPC server                                       |
-| Result decoding    | Arrow IPC → record batches                                                               |
-| Error decoding     | Decodes AIP-193 `ErrorInfo` from `tonic::Status` details (`status_error.rs`)             |
-| Formatting helpers | `format_batches_table`, `format_batches_json`                                            |
+| Owns               | Details                                                                              |
+| ------------------ | ------------------------------------------------------------------------------------ |
+| Endpoint dialing   | `AppClient::connect(endpoint)` builds typed gRPC clients for an existing endpoint    |
+| Explicit local bootstrap | `local::{ServerBuilder, RunningServer}` for callers that need local server control |
+| Result decoding    | Arrow IPC → record batches                                                           |
+| Error decoding     | Decodes AIP-193 `ErrorInfo` from `tonic::Status` details (`status_error.rs`)         |
+| Formatting helpers | `format_batches_table`, `format_batches_json`                                        |
 
 ### `coral-app`
 

@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 
-use coral_spec::{ManifestInputKind, ManifestInputSpec, parse_manifest_and_inputs};
+use coral_spec::{ManifestInputKind, ManifestInputSpec, parse_source_manifest_yaml};
 
 use crate::bootstrap::AppError;
 use crate::sources::SourceName;
@@ -91,13 +91,18 @@ pub(crate) fn describe_manifest(
     origin: SourceOrigin,
     installed: bool,
 ) -> Result<CandidateSource, AppError> {
-    let (manifest, inputs) = parse_manifest_and_inputs(manifest_yaml)
+    let manifest = parse_source_manifest_yaml(manifest_yaml)
         .map_err(|error| AppError::InvalidInput(error.to_string()))?;
     Ok(CandidateSource {
         name: SourceName::parse(manifest.schema_name())?,
         description: manifest.description().to_string(),
         version: manifest.source_version().to_string(),
-        inputs: inputs.into_iter().map(candidate_input_spec).collect(),
+        inputs: manifest
+            .declared_inputs()
+            .iter()
+            .cloned()
+            .map(candidate_input_spec)
+            .collect(),
         installed,
         origin,
     })
@@ -109,6 +114,7 @@ fn candidate_input_spec(input: ManifestInputSpec) -> CandidateSourceInput {
         kind: candidate_input_kind(input.kind),
         required: input.required,
         default_value: input.default_value,
+        hint: input.hint,
     }
 }
 
@@ -145,19 +151,25 @@ mod tests {
     }
 
     #[test]
-    fn describe_manifest_extracts_variable_and_secret_inputs() {
+    fn describe_manifest_extracts_declared_inputs() {
         let source = describe_manifest(
             r#"
 name: demo
 version: 1.0.0
 dsl_version: 3
 backend: http
-base_url: "{{variable.API_BASE|https://example.com}}"
+inputs:
+  API_BASE:
+    kind: variable
+    default: https://example.com
+  API_TOKEN:
+    kind: secret
+base_url: "{{input.API_BASE}}"
 auth:
   headers:
     - name: Authorization
       from: template
-      template: Bearer {{secret.API_TOKEN}}
+      template: Bearer {{input.API_TOKEN}}
 tables:
   - name: messages
     description: Demo messages
@@ -178,33 +190,6 @@ tables:
         assert_eq!(source.inputs[0].kind, CandidateSourceInputKind::Variable);
         assert_eq!(source.inputs[1].key, "API_TOKEN");
         assert_eq!(source.inputs[1].kind, CandidateSourceInputKind::Secret);
-    }
-
-    #[test]
-    fn describe_manifest_rejects_legacy_env_inputs() {
-        let error = describe_manifest(
-            r#"
-name: demo
-version: 1.0.0
-dsl_version: 3
-backend: http
-base_url: "{{env.API_BASE}}"
-tables:
-  - name: messages
-    description: Demo messages
-    request:
-      method: GET
-      path: /messages
-    response: {}
-    columns:
-      - name: id
-        type: Utf8
-"#,
-            SourceOrigin::Imported,
-            false,
-        )
-        .expect_err("legacy env input should fail");
-        assert!(error.to_string().contains("unsupported"));
     }
 
     #[test]

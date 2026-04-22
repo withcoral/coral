@@ -103,6 +103,7 @@ fn classify_rate_limit(
             .or(Some(DEFAULT_FALLBACK_RETRY_AFTER))
     } else {
         parse_retry_after(headers, spec, now)
+            .or_else(|| parse_reset_in(headers, spec, now).filter(|wait| !wait.is_zero()))
     };
     if is_extra && retry_after.is_none() {
         // Extra status without any rate-limit signal — treat as a regular error.
@@ -227,6 +228,22 @@ mod tests {
             classify_rate_limit(reqwest::StatusCode::FORBIDDEN, &throttle, &spec, now),
             RateLimitSignal::Throttle {
                 retry_after: Some(Duration::from_secs(7)),
+            },
+        );
+
+        // 403 with a future reset-header should also throttle for providers
+        // like GitHub that use 403 for rate limiting.
+        let mut reset_throttle_403 = HeaderMap::new();
+        reset_throttle_403.insert("X-RateLimit-Reset", HeaderValue::from_static("1700000108"));
+        assert_eq!(
+            classify_rate_limit(
+                reqwest::StatusCode::FORBIDDEN,
+                &reset_throttle_403,
+                &spec,
+                now
+            ),
+            RateLimitSignal::Throttle {
+                retry_after: Some(Duration::from_secs(8)),
             },
         );
 
