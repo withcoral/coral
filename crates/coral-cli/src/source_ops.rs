@@ -21,8 +21,7 @@ const MAX_TABLES_PER_SCHEMA: usize = 9;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct ExplicitBindings {
-    variables: BTreeMap<String, String>,
-    secrets: BTreeMap<String, String>,
+    inputs: BTreeMap<String, String>,
 }
 
 /// How many tables to show per schema when pretty-printing validation results.
@@ -185,13 +184,18 @@ pub(crate) fn prompt_for_inputs(
 }
 
 pub(crate) fn collect_explicit_bindings(
-    variable_args: &[String],
-    secret_args: &[String],
+    input_args: &[String],
 ) -> Result<ExplicitBindings, anyhow::Error> {
     Ok(ExplicitBindings {
-        variables: collect_binding_args(variable_args, "source variable", "source variable key")?,
-        secrets: collect_binding_args(secret_args, "source secret", "source secret key")?,
+        inputs: collect_binding_args(input_args)?,
     })
+}
+
+pub(crate) fn interactive_resolution_allowed(
+    interactive_terminal: bool,
+    explicit_bindings: &ExplicitBindings,
+) -> bool {
+    interactive_terminal && explicit_bindings.is_empty()
 }
 
 pub(crate) fn resolve_inputs(
@@ -421,12 +425,21 @@ where
 {
     let mut variables = Vec::new();
     let mut secrets = Vec::new();
+    let declared_keys = inputs
+        .iter()
+        .map(|input| input.key.as_str())
+        .collect::<Vec<_>>();
+
+    if let Some((unknown_key, _)) = explicit_bindings.inputs.iter().find(|(key, _)| {
+        !declared_keys
+            .iter()
+            .any(|declared| declared == &key.as_str())
+    }) {
+        return Err(anyhow::anyhow!("unknown source input '{unknown_key}'"));
+    }
 
     for input in inputs {
-        let explicit_value = match input.kind {
-            ManifestInputKind::Variable => explicit_bindings.variables.get(&input.key),
-            ManifestInputKind::Secret => explicit_bindings.secrets.get(&input.key),
-        };
+        let explicit_value = explicit_bindings.inputs.get(&input.key);
         let value = if let Some(value) = explicit_value {
             finalize_input_value(input, value.clone(), input_kind_label(input.kind))?
         } else if let Some(value) = env_lookup(&input.key) {
@@ -508,20 +521,16 @@ fn print_input_hint(input: &ManifestInputSpec) {
     }
 }
 
-fn collect_binding_args(
-    args: &[String],
-    kind_label: &str,
-    key_label: &str,
-) -> Result<BTreeMap<String, String>, anyhow::Error> {
+fn collect_binding_args(args: &[String]) -> Result<BTreeMap<String, String>, anyhow::Error> {
     let mut values = BTreeMap::new();
     for raw in args {
-        let (key, value) = parse_binding_arg(key_label, raw)?;
+        let (key, value) = parse_binding_arg("source input key", raw)?;
         match values.entry(key.clone()) {
             Entry::Vacant(entry) => {
                 entry.insert(value);
             }
             Entry::Occupied(_) => {
-                return Err(anyhow::anyhow!("{kind_label} '{key}' is repeated"));
+                return Err(anyhow::anyhow!("source input '{key}' is repeated"));
             }
         }
     }
@@ -574,6 +583,12 @@ fn input_kind_label(kind: ManifestInputKind) -> &'static str {
     }
 }
 
+impl ExplicitBindings {
+    fn is_empty(&self) -> bool {
+        self.inputs.is_empty()
+    }
+}
+
 pub(crate) fn finalize_input_value(
     input: &ManifestInputSpec,
     value: String,
@@ -593,14 +608,13 @@ pub(crate) fn finalize_input_value(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
-
     use coral_api::v1::ValidateSourceResponse;
     use coral_spec::{ManifestInputKind, ManifestInputSpec};
 
     use super::{
         ExplicitBindings, ValidationFollowUp, ValidationSeverityMode, collect_explicit_bindings,
-        finalize_input_value, parse_binding_arg, resolve_inputs_with_lookup, validation_follow_up,
+        finalize_input_value, interactive_resolution_allowed, parse_binding_arg,
+        resolve_inputs_with_lookup, validation_follow_up,
     };
 
     fn variable_input(key: &str, required: bool, default_value: &str) -> ManifestInputSpec {
@@ -643,7 +657,7 @@ mod tests {
 
     #[test]
     fn parse_binding_arg_accepts_key_value_pairs() {
-        let (key, value) = parse_binding_arg("source variable key", "API_BASE=https://example.com")
+        let (key, value) = parse_binding_arg("source input key", "API_BASE=https://example.com")
             .expect("binding should parse");
         assert_eq!(key, "API_BASE");
         assert_eq!(value, "https://example.com");
@@ -651,46 +665,26 @@ mod tests {
 
     #[test]
     fn parse_binding_arg_rejects_missing_equals() {
-        let error = parse_binding_arg("source variable key", "API_BASE")
+        let error = parse_binding_arg("source input key", "API_BASE")
             .expect_err("missing equals should fail");
         assert!(
             error
                 .to_string()
-                .contains("expected KEY=VALUE for source variable key")
+                .contains("expected KEY=VALUE for source input key")
         );
     }
 
     #[test]
-    fn duplicate_variable_flags_are_rejected() {
-        let error = collect_explicit_bindings(
-            &[
-                "API_BASE=https://example.com".to_string(),
-                "API_BASE=https://override.example.com".to_string(),
-            ],
-            &[],
-        )
+    fn duplicate_input_flags_are_rejected() {
+        let error = collect_explicit_bindings(&[
+            "API_BASE=https://example.com".to_string(),
+            "API_BASE=https://override.example.com".to_string(),
+        ])
         .expect_err("duplicate variable flags should fail");
         assert!(
             error
                 .to_string()
-                .contains("source variable 'API_BASE' is repeated")
-        );
-    }
-
-    #[test]
-    fn duplicate_secret_flags_are_rejected() {
-        let error = collect_explicit_bindings(
-            &[],
-            &[
-                "API_TOKEN=first".to_string(),
-                "API_TOKEN=second".to_string(),
-            ],
-        )
-        .expect_err("duplicate secret flags should fail");
-        assert!(
-            error
-                .to_string()
-                .contains("source secret 'API_TOKEN' is repeated")
+                .contains("source input 'API_BASE' is repeated")
         );
     }
 
@@ -698,8 +692,7 @@ mod tests {
     fn explicit_binding_beats_env_value() {
         let inputs = vec![secret_input("API_TOKEN", true)];
         let explicit = ExplicitBindings {
-            variables: BTreeMap::default(),
-            secrets: [("API_TOKEN".to_string(), "flag-token".to_string())]
+            inputs: [("API_TOKEN".to_string(), "flag-token".to_string())]
                 .into_iter()
                 .collect(),
         };
@@ -752,6 +745,41 @@ mod tests {
                 .to_string()
                 .contains("missing required source secret 'API_TOKEN'")
         );
+    }
+
+    #[test]
+    fn unknown_explicit_input_is_rejected() {
+        let inputs = vec![secret_input("API_TOKEN", true)];
+        let explicit = ExplicitBindings {
+            inputs: [("UNUSED".to_string(), "value".to_string())]
+                .into_iter()
+                .collect(),
+        };
+
+        let error = resolve_inputs_with_lookup(&inputs, &explicit, false, |_| None)
+            .expect_err("unknown explicit input should fail");
+
+        assert!(error.to_string().contains("unknown source input 'UNUSED'"));
+    }
+
+    #[test]
+    fn interactive_resolution_is_disabled_when_any_input_is_provided() {
+        let explicit = ExplicitBindings {
+            inputs: [("API_TOKEN".to_string(), "value".to_string())]
+                .into_iter()
+                .collect(),
+        };
+
+        assert!(!interactive_resolution_allowed(true, &explicit));
+        assert!(!interactive_resolution_allowed(false, &explicit));
+        assert!(interactive_resolution_allowed(
+            true,
+            &ExplicitBindings::default()
+        ));
+        assert!(!interactive_resolution_allowed(
+            false,
+            &ExplicitBindings::default()
+        ));
     }
 
     #[test]

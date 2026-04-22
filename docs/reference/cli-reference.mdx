@@ -45,11 +45,11 @@ Add a bundled source or update its credentials.
 
 ```shellscript
 coral source add github
-coral source add github --secret GITHUB_TOKEN=ghp_xxx
+coral source add github --input GITHUB_TOKEN=ghp_xxx
 GITHUB_TOKEN=ghp_xxx coral source add github
 ```
 
-Use repeatable `--var KEY=VALUE` and `--secret KEY=VALUE` flags to supply inputs non-interactively. When a declared input is not set by a flag, Coral looks for an environment variable with the exact same key. If required inputs are still missing and `stdin`/`stdout` are attached to a TTY, Coral prompts for the remaining values interactively. The precedence order is: flags, then matching environment variables, then prompts.
+Use repeatable `--input KEY=VALUE` flags to supply inputs non-interactively. Coral determines whether each input is a variable or secret from the source's declared inputs at runtime. When a declared input is not set by a flag, Coral looks for an environment variable with the exact same key. Coral only prompts interactively when no `--input` flags are used and `stdin`/`stdout` are attached to a TTY. The precedence order is: `--input`, then matching environment variables, then prompts when prompting is allowed.
 
 If the source is already installed, running this command again replaces its stored credentials with the new values you provide. Non-interactive `source add` works when the source has no declared inputs, or when all required inputs are satisfied by flags or environment variables.
 After installation, it prints the discovered tables and runs any optional top-level `test_queries` declared in the source spec to validate the connection. Any post-install validation issue is reported as a warning here so the source remains installed and re-runnable.
@@ -60,7 +60,7 @@ Add a custom source spec from a YAML file.
 
 ```shellscript
 coral source add --file ./local-messages.yaml
-coral source add --file ./local-messages.yaml --var API_BASE=https://example.com
+coral source add --file ./local-messages.yaml --input API_BASE=https://example.com
 ```
 
 ### `coral source lint <FILE>`

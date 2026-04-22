@@ -276,7 +276,7 @@ async fn source_add_bundled_secret_flag_succeeds_without_tty() {
             "source",
             "add",
             "github",
-            "--secret",
+            "--input",
             "GITHUB_TOKEN=test-token",
         ])
         .assert()
@@ -322,7 +322,7 @@ async fn source_add_flag_overrides_env_value() {
             "source",
             "add",
             "github",
-            "--secret",
+            "--input",
             "GITHUB_TOKEN=flag-token",
         ])
         .env("GITHUB_TOKEN", "env-token")
@@ -353,6 +353,42 @@ async fn source_add_missing_required_input_without_tty_fails_locally() {
     );
     assert!(
         server.create_bundled_source_requests().is_empty(),
+        "request should not reach the server"
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn source_add_partial_input_still_fails_without_prompting() {
+    let server = MockServer::start().await;
+    let dir = tempdir().expect("manifest dir");
+    let manifest_path = write_manifest(
+        dir.path(),
+        "secured_messages.yaml",
+        manifest_with_bindings(),
+    );
+
+    let assert = server
+        .cmd()
+        .args([
+            "source",
+            "add",
+            "--file",
+            manifest_path.to_str().expect("utf-8 manifest path"),
+            "--input",
+            "API_BASE=https://flag.example.com",
+        ])
+        .assert()
+        .failure();
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+
+    assert!(
+        stderr.contains("missing required source secret 'API_TOKEN'"),
+        "expected missing secret error, got: {stderr}"
+    );
+    assert!(
+        server.import_source_requests().is_empty(),
         "request should not reach the server"
     );
 
@@ -401,7 +437,7 @@ async fn source_add_import_uses_flags_and_env_without_tty() {
             "add",
             "--file",
             manifest_path.to_str().expect("utf-8 manifest path"),
-            "--var",
+            "--input",
             "API_BASE=https://flag.example.com",
         ])
         .env("API_TOKEN", "env-secret")

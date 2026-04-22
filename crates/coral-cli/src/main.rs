@@ -77,13 +77,9 @@ struct SourceAddArgs {
     #[arg(long)]
     file: Option<PathBuf>,
 
-    /// Set a non-secret source variable
-    #[arg(long = "var", value_name = "KEY=VALUE")]
-    vars: Vec<String>,
-
-    /// Set a source secret
-    #[arg(long = "secret", value_name = "KEY=VALUE")]
-    secrets: Vec<String>,
+    /// Set a source input
+    #[arg(long = "input", value_name = "KEY=VALUE")]
+    inputs: Vec<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -212,14 +208,12 @@ async fn run_source_add(
     app: &coral_client::AppClient,
     args: SourceAddArgs,
 ) -> Result<(), anyhow::Error> {
-    let SourceAddArgs {
-        name,
-        file,
-        vars,
-        secrets,
-    } = args;
-    let explicit_bindings = source_ops::collect_explicit_bindings(&vars, &secrets)?;
-    let interactive_allowed = source_ops::is_interactive();
+    let SourceAddArgs { name, file, inputs } = args;
+    let explicit_bindings = source_ops::collect_explicit_bindings(&inputs)?;
+    let interactive_allowed = source_ops::interactive_resolution_allowed(
+        source_ops::is_interactive(),
+        &explicit_bindings,
+    );
     let response = match (name, file) {
         (Some(name), None) => {
             let bundled_name = source_ops::source_name_arg(Some(&name))?;
