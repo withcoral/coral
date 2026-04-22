@@ -1,6 +1,9 @@
 //! Backend-specific source implementations and compilation into runtime sources.
 
-use crate::{CoreError, QuerySource};
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use crate::{CoreError, QuerySource, RequestAuthenticator};
 use coral_spec::ValidatedSourceManifest;
 
 pub(crate) mod common;
@@ -19,6 +22,7 @@ pub(crate) mod shared;
 pub(crate) fn compile_query_source(
     source: &QuerySource,
     runtime_context: &crate::QueryRuntimeContext,
+    request_authenticators: &HashMap<String, Arc<dyn RequestAuthenticator>>,
 ) -> Result<Box<dyn CompiledBackendSource>, CoreError> {
     compile_validated_manifest(
         source.source_spec(),
@@ -26,6 +30,7 @@ pub(crate) fn compile_query_source(
             runtime_context,
             source_secrets: source.secrets().clone(),
             source_variables: source.variables().clone(),
+            request_authenticators,
         },
     )
 }
@@ -37,12 +42,14 @@ pub(crate) fn compile_source_manifest(
     source_variables: std::collections::BTreeMap<String, String>,
     runtime_context: &crate::QueryRuntimeContext,
 ) -> Result<Box<dyn CompiledBackendSource>, CoreError> {
+    let request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>> = HashMap::new();
     compile_validated_manifest(
         manifest,
         &BackendCompileRequest {
             runtime_context,
             source_secrets,
             source_variables,
+            request_authenticators: &request_authenticators,
         },
     )
 }

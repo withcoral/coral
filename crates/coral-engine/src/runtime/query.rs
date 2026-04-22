@@ -41,7 +41,11 @@ pub(crate) async fn build_runtime(
     let mut build_options: EngineExtensions = runtime.engine_extensions();
     let mut source_candidates = Vec::new();
     for source in sources {
-        match compile_query_source(source, &runtime_context) {
+        match compile_query_source(
+            source,
+            &runtime_context,
+            &build_options.request_authenticators,
+        ) {
             Ok(compiled) => {
                 source_candidates.push(SourceRegistrationCandidate::Compiled(
                     CompiledQuerySource {

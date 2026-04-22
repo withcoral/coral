@@ -245,6 +245,7 @@ pub(crate) fn fixture_manifest_with_inputs_yaml() -> String {
         },
         "base_url": "{{input.API_BASE}}",
         "auth": {
+            "type": "HeaderAuth",
             "headers": [{
                 "name": "Authorization",
                 "from": "template",
@@ -278,6 +279,7 @@ pub(crate) fn fixture_manifest_with_required_inputs_yaml() -> String {
         },
         "base_url": "{{input.API_BASE}}",
         "auth": {
+            "type": "HeaderAuth",
             "headers": [{
                 "name": "Authorization",
                 "from": "template",

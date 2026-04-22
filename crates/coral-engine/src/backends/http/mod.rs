@@ -9,12 +9,14 @@ use datafusion::datasource::TableProvider;
 use datafusion::error::Result;
 use datafusion::prelude::SessionContext;
 
+use crate::RequestAuthenticator;
 use crate::backends::{
     BackendCompileRequest, BackendRegistration, CompiledBackendSource, RegisteredSource,
     RegisteredTable, build_registered_inputs, build_registered_table,
     registered_columns_from_specs, required_filter_names,
 };
 use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec};
+pub(crate) mod auth;
 pub(crate) mod client;
 pub(crate) mod error;
 pub(crate) mod provider;
@@ -29,17 +31,20 @@ struct HttpCompiledSource {
     manifest: HttpSourceManifest,
     source_secrets: std::collections::BTreeMap<String, String>,
     source_variables: std::collections::BTreeMap<String, String>,
+    request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>>,
 }
 
 pub(crate) fn compile_source(
     manifest: HttpSourceManifest,
     source_secrets: std::collections::BTreeMap<String, String>,
     source_variables: std::collections::BTreeMap<String, String>,
+    request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>>,
 ) -> Box<dyn CompiledBackendSource> {
     Box::new(HttpCompiledSource {
         manifest,
         source_secrets,
         source_variables,
+        request_authenticators,
     })
 }
 
@@ -52,6 +57,7 @@ pub(crate) fn compile_manifest(
         manifest.clone(),
         request.source_secrets.clone(),
         request.source_variables.clone(),
+        request.request_authenticators.clone(),
     )
 }
 
@@ -70,6 +76,7 @@ impl CompiledBackendSource for HttpCompiledSource {
             &self.manifest,
             &self.source_secrets,
             &self.source_variables,
+            &self.request_authenticators,
         )?;
         let mut tables: HashMap<String, Arc<dyn TableProvider>> = HashMap::new();
         let mut table_infos = Vec::with_capacity(self.manifest.tables.len());
@@ -127,6 +134,7 @@ mod tests {
                 "GITHUB_TOKEN": { "kind": "secret" }
             },
             "auth": {
+                "type": "HeaderAuth",
                 "headers": [{
                     "name": "Authorization",
                     "from": "template",
