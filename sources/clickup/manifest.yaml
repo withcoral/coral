@@ -23,6 +23,8 @@ auth:
     - name: Authorization
       from: input
       key: CLICKUP_API_TOKEN
+test_queries:
+  - SELECT * FROM clickup.team LIMIT 1
 tables:
   - name: current
     description: Get running time entry
