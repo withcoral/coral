@@ -78,7 +78,7 @@ or local dataset and which tables and columns it exposes. A _source_ is that
 spec plus the credentials and variables you configured for it. When you run
 `coral source add github`, Coral installs the `github` source and exposes it
 at query time as the `github` SQL schema, so tables like `github.issues` and
-`github.pull_requests` become queryable. Start with the
+`github.pulls` become queryable. Start with the
 [bundled sources](https://withcoral.com/docs/reference/bundled-sources) or
 [write your own](https://withcoral.com/docs/guides/write-a-custom-source).
 
@@ -90,7 +90,7 @@ which Linear issues are tracking open GitHub pull requests:
 ```sql
 SELECT a.issue_identifier, a.url, p.state
 FROM linear.attachments a
-JOIN github.pull_requests p ON p.html_url = a.url
+JOIN github.pulls p ON p.html_url = a.url
 WHERE p.owner = 'withcoral' AND p.repo = 'coral'
 ```
 
