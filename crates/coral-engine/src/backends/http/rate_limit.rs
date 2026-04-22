@@ -187,7 +187,7 @@ mod tests {
             reset_header: Some("X-RateLimit-Reset".to_string()),
             ..RateLimitSpec::default()
         };
-        let now = UNIX_EPOCH + Duration::from_secs(1_700_000_100);
+        let now = UNIX_EPOCH + Duration::from_mins(28_333_335);
 
         // Bare 403 with no rate-limit signal is a regular auth error, not a rate limit.
         let mut bare = HeaderMap::new();
@@ -269,7 +269,7 @@ mod tests {
         assert!(matches!(
             decide_retry(
                 RateLimitSignal::Quota {
-                    reset_in: Some(Duration::from_secs(1800)),
+                    reset_in: Some(Duration::from_mins(30)),
                 },
                 0,
             ),
@@ -294,7 +294,7 @@ mod tests {
         assert!(matches!(
             decide_retry(
                 RateLimitSignal::Throttle {
-                    retry_after: Some(Duration::from_secs(60)),
+                    retry_after: Some(Duration::from_mins(1)),
                 },
                 0,
             ),

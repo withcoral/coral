@@ -340,12 +340,12 @@ pub(crate) fn print_validation_pretty(
                         .dim()
                     );
                 }
-                Some(query_test_result::Outcome::Failure(QueryTestFailure { error_message })) => {
-                    if !error_message.is_empty() {
-                        println!("      {}", style(error_message.as_str()).yellow());
-                    }
+                Some(query_test_result::Outcome::Failure(QueryTestFailure { error_message }))
+                    if !error_message.is_empty() =>
+                {
+                    println!("      {}", style(error_message.as_str()).yellow());
                 }
-                None => {}
+                Some(query_test_result::Outcome::Failure(QueryTestFailure { .. })) | None => {}
             }
         }
     }
