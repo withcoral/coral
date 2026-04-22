@@ -17,7 +17,9 @@ use tonic::transport::Server;
 use super::env::AppEnvironment;
 use super::error::AppError;
 use crate::EngineExtensionsProvider;
-use crate::NoopEngineExtensionsProvider;
+use crate::query::extensions::{
+    builtin_engine_extensions_provider, compose_engine_extensions_providers,
+};
 use crate::query::manager::QueryManager;
 use crate::query::service::QueryService;
 use crate::sources::manager::SourceManager;
@@ -43,7 +45,7 @@ impl ServerConfig {
     pub(crate) fn new() -> Self {
         Self {
             config_dir: None,
-            engine_extensions_provider: Arc::new(NoopEngineExtensionsProvider),
+            engine_extensions_provider: builtin_engine_extensions_provider(),
         }
     }
 
@@ -59,7 +61,10 @@ impl ServerConfig {
         mut self,
         engine_extensions_provider: Arc<dyn EngineExtensionsProvider>,
     ) -> Self {
-        self.engine_extensions_provider = engine_extensions_provider;
+        self.engine_extensions_provider = compose_engine_extensions_providers(
+            Arc::clone(&self.engine_extensions_provider),
+            engine_extensions_provider,
+        );
         self
     }
 }

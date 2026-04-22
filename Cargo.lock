@@ -951,11 +951,13 @@ version = "0.1.3"
 dependencies = [
  "arrow",
  "coral-api",
+ "coral-auth-aws",
  "coral-client",
  "coral-engine",
  "coral-spec",
  "directories",
  "fs2",
+ "reqwest",
  "serde",
  "serde_json",
  "serde_yaml",

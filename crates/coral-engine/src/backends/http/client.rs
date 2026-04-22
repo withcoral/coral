@@ -19,8 +19,8 @@ use crate::backends::shared::template::{
 };
 use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec, RateLimitSpec};
 use coral_spec::{
-    AuthSpec, HeaderSpec, HttpMethod, PageSizeSpec, ParsedTemplate, RowStrategy,
-    ValidatedPagination, ValidatedPaginationMode,
+    AuthSpec, HeaderSpec, HttpMethod, PageSizeSpec, ParsedTemplate, RequestRouteSpec,
+    RequestSpec as ManifestRequestSpec, RowStrategy, ValidatedPagination, ValidatedPaginationMode,
 };
 
 const DEFAULT_MAX_PAGES: usize = 10_000;
@@ -343,6 +343,7 @@ fn validate_source_scoped_http_config(
 ) -> Result<()> {
     check_base_url_inputs(manifest, resolved_inputs)?;
     check_request_header_inputs(manifest, resolved_inputs)?;
+    check_table_request_inputs(manifest, resolved_inputs)?;
     check_auth_inputs(manifest, request_authenticators, resolved_inputs)?;
     Ok(())
 }
@@ -362,14 +363,35 @@ fn check_request_header_inputs(
     manifest: &HttpSourceManifest,
     resolved_inputs: &BTreeMap<String, String>,
 ) -> Result<()> {
-    for header in &manifest.request_headers {
-        validate_value_source_inputs(&header.value, resolved_inputs).map_err(|error| {
-            registration_error(
+    validate_header_inputs(
+        &manifest.common.name,
+        "request_headers",
+        &manifest.request_headers,
+        resolved_inputs,
+    )?;
+    Ok(())
+}
+
+fn check_table_request_inputs(
+    manifest: &HttpSourceManifest,
+    resolved_inputs: &BTreeMap<String, String>,
+) -> Result<()> {
+    for table in &manifest.tables {
+        validate_request_template_inputs(
+            &manifest.common.name,
+            table.name(),
+            "request",
+            &table.request,
+            resolved_inputs,
+        )?;
+        for route in &table.requests {
+            validate_request_route_inputs(
                 &manifest.common.name,
-                &format!("request header '{}'", header.name),
-                &error,
-            )
-        })?;
+                table.name(),
+                route,
+                resolved_inputs,
+            )?;
+        }
     }
     Ok(())
 }
@@ -389,6 +411,92 @@ fn registration_error(source: &str, field: &str, error: &DataFusionError) -> Dat
     DataFusionError::Execution(format!(
         "source '{source}' {field} could not be resolved: {error}"
     ))
+}
+
+fn validate_request_route_inputs(
+    source_name: &str,
+    table_name: &str,
+    route: &RequestRouteSpec,
+    resolved_inputs: &BTreeMap<String, String>,
+) -> Result<()> {
+    let route_label = if route.when_filters.is_empty() {
+        "request route".to_string()
+    } else {
+        format!(
+            "request route for filters [{}]",
+            route.when_filters.join(", ")
+        )
+    };
+    validate_request_template_inputs(
+        source_name,
+        table_name,
+        &route_label,
+        &route.request,
+        resolved_inputs,
+    )
+}
+
+fn validate_request_template_inputs(
+    source_name: &str,
+    table_name: &str,
+    request_label: &str,
+    request: &ManifestRequestSpec,
+    resolved_inputs: &BTreeMap<String, String>,
+) -> Result<()> {
+    validate_input_dependencies(&request.path, resolved_inputs).map_err(|error| {
+        registration_error(
+            source_name,
+            &format!("table '{table_name}' {request_label} path"),
+            &error,
+        )
+    })?;
+    validate_header_inputs(
+        source_name,
+        &format!("table '{table_name}' {request_label} header"),
+        &request.headers,
+        resolved_inputs,
+    )?;
+    for param in &request.query {
+        validate_value_source_inputs(&param.value, resolved_inputs).map_err(|error| {
+            registration_error(
+                source_name,
+                &format!(
+                    "table '{table_name}' {request_label} query param '{}'",
+                    param.name
+                ),
+                &error,
+            )
+        })?;
+    }
+    for field in &request.body {
+        let field_path = if field.path.is_empty() {
+            "<root>".to_string()
+        } else {
+            field.path.join(".")
+        };
+        validate_value_source_inputs(&field.value, resolved_inputs).map_err(|error| {
+            registration_error(
+                source_name,
+                &format!("table '{table_name}' {request_label} body field '{field_path}'"),
+                &error,
+            )
+        })?;
+    }
+    Ok(())
+}
+
+fn validate_header_inputs(
+    source_name: &str,
+    context: &str,
+    headers: &[HeaderSpec],
+    resolved_inputs: &BTreeMap<String, String>,
+) -> Result<()> {
+    for header in headers {
+        validate_value_source_inputs(&header.value, resolved_inputs).map_err(|error| {
+            registration_error(source_name, &format!("{context} '{}'", header.name), &error)
+        })?;
+    }
+    Ok(())
 }
 
 #[allow(
@@ -1252,6 +1360,222 @@ mod tests {
                 .to_string()
                 .contains("missing source input 'API_KEY' for template token")
         );
+    }
+
+    #[test]
+    fn backend_client_rejects_unresolved_table_request_path_inputs() {
+        let manifest = parse_http_manifest(json!({
+            "dsl_version": 3,
+            "name": "alpha",
+            "version": "0.1.0",
+            "backend": "http",
+            "base_url": "https://api.example.com",
+            "inputs": {
+                "API_KEY": { "kind": "secret" },
+                "ACCOUNT_ID": { "kind": "variable" }
+            },
+            "tables": [{
+                "name": "items",
+                "description": "items",
+                "request": {
+                    "path": "/{{input.ACCOUNT_ID}}/items"
+                },
+                "columns": [{
+                    "name": "id",
+                    "type": "Utf8"
+                }]
+            }]
+        }));
+
+        let error = HttpSourceClient::from_manifest(
+            &manifest,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &HashMap::new(),
+        )
+        .expect_err("missing table request path inputs must fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("table 'items' request path could not be resolved")
+        );
+    }
+
+    #[test]
+    fn backend_client_rejects_unresolved_table_request_header_inputs() {
+        let manifest = parse_http_manifest(json!({
+            "dsl_version": 3,
+            "name": "alpha",
+            "version": "0.1.0",
+            "backend": "http",
+            "base_url": "https://api.example.com",
+            "inputs": {
+                "ACCOUNT_ID": { "kind": "variable" }
+            },
+            "tables": [{
+                "name": "items",
+                "description": "items",
+                "request": {
+                    "path": "/items",
+                    "headers": [{
+                        "name": "X-Account",
+                        "from": "input",
+                        "key": "ACCOUNT_ID"
+                    }]
+                },
+                "columns": [{
+                    "name": "id",
+                    "type": "Utf8"
+                }]
+            }]
+        }));
+
+        let error = HttpSourceClient::from_manifest(
+            &manifest,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &HashMap::new(),
+        )
+        .expect_err("missing table request header inputs must fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("table 'items' request header 'X-Account' could not be resolved")
+        );
+    }
+
+    #[test]
+    fn backend_client_rejects_unresolved_table_request_query_inputs() {
+        let manifest = parse_http_manifest(json!({
+            "dsl_version": 3,
+            "name": "alpha",
+            "version": "0.1.0",
+            "backend": "http",
+            "base_url": "https://api.example.com",
+            "inputs": {
+                "ACCOUNT_ID": { "kind": "variable" }
+            },
+            "tables": [{
+                "name": "items",
+                "description": "items",
+                "request": {
+                    "path": "/items",
+                    "query": [{
+                        "name": "account_id",
+                        "from": "input",
+                        "key": "ACCOUNT_ID"
+                    }]
+                },
+                "columns": [{
+                    "name": "id",
+                    "type": "Utf8"
+                }]
+            }]
+        }));
+
+        let error = HttpSourceClient::from_manifest(
+            &manifest,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &HashMap::new(),
+        )
+        .expect_err("missing table request query inputs must fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("table 'items' request query param 'account_id' could not be resolved")
+        );
+    }
+
+    #[test]
+    fn backend_client_rejects_unresolved_table_request_body_inputs() {
+        let manifest = parse_http_manifest(json!({
+            "dsl_version": 3,
+            "name": "alpha",
+            "version": "0.1.0",
+            "backend": "http",
+            "base_url": "https://api.example.com",
+            "inputs": {
+                "ACCOUNT_ID": { "kind": "variable" }
+            },
+            "tables": [{
+                "name": "items",
+                "description": "items",
+                "request": {
+                    "method": "POST",
+                    "path": "/items",
+                    "body": [{
+                        "path": ["account", "id"],
+                        "from": "input",
+                        "key": "ACCOUNT_ID"
+                    }]
+                },
+                "columns": [{
+                    "name": "id",
+                    "type": "Utf8"
+                }]
+            }]
+        }));
+
+        let error = HttpSourceClient::from_manifest(
+            &manifest,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &HashMap::new(),
+        )
+        .expect_err("missing table request body inputs must fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("table 'items' request body field 'account.id' could not be resolved")
+        );
+    }
+
+    #[test]
+    fn backend_client_rejects_unresolved_request_route_inputs() {
+        let manifest = parse_http_manifest(json!({
+            "dsl_version": 3,
+            "name": "alpha",
+            "version": "0.1.0",
+            "backend": "http",
+            "base_url": "https://api.example.com",
+            "inputs": {
+                "ACCOUNT_ID": { "kind": "variable" }
+            },
+            "tables": [{
+                "name": "items",
+                "description": "items",
+                "request": { "path": "/items" },
+                "requests": [{
+                    "when_filters": ["account_id"],
+                    "method": "GET",
+                    "path": "/{{input.ACCOUNT_ID}}/items"
+                }],
+                "filters": [{
+                    "name": "account_id"
+                }],
+                "columns": [{
+                    "name": "id",
+                    "type": "Utf8"
+                }]
+            }]
+        }));
+
+        let error = HttpSourceClient::from_manifest(
+            &manifest,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &HashMap::new(),
+        )
+        .expect_err("missing request route inputs must fail");
+
+        assert!(error.to_string().contains(
+            "table 'items' request route for filters [account_id] path could not be resolved"
+        ));
     }
 
     #[test]

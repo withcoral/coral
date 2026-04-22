@@ -231,6 +231,163 @@ In this minimal example:
 - `inputs` declares the install-time prompts for this source in stable authored order. (At runtime, these are surfaced through `coral.inputs`.)
 - `{{input.API_TOKEN}}` is resolved from the store implied by the declared input kind
 
+### HTTP authentication
+
+The top-level `auth` block declares how Coral authenticates outgoing requests. Pick one of three `type` values:
+
+| `type` | Purpose |
+| ------ | ------- |
+| `HeaderAuth` | Attach one or more declarative auth headers (Bearer tokens, API keys, pre-signed headers). |
+| `BasicAuth` | HTTP Basic. Coral base64-encodes `username:password` into `Authorization: Basic ...`. |
+| `CustomAuth` | Dispatch request signing to a runtime-registered authenticator (for schemes that must observe the built request, such as AWS SigV4). |
+
+All three resolve their inputs from declared source inputs (`{{input.KEY}}` templates or `from: input`). Auth is source-scoped — it does not see SQL filters or pagination state.
+
+#### `HeaderAuth`
+
+```yaml
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.API_TOKEN}}
+```
+
+`headers` entries share the same shape as request/table headers, but only `from: literal`, `from: template`, and `from: input` are meaningful here — filter and state tokens have no value at auth time.
+
+#### `BasicAuth`
+
+```yaml
+auth:
+  type: BasicAuth
+  username: "{{input.API_USER}}"
+  password: "{{input.API_TOKEN}}"
+```
+
+`username` and `password` are templates; `{{input.KEY}}` tokens are honored. Coral encodes them as `Authorization: Basic base64(user:pass)`.
+
+#### `CustomAuth`
+
+```yaml
+auth:
+  type: CustomAuth
+  authenticator: aws_sigv4
+  # ...authenticator-specific fields, see below
+```
+
+The `authenticator` key names a runtime-registered `RequestAuthenticator`. All other fields under `auth` are passed through as the authenticator's config. Custom authenticators receive the fully built `reqwest::Request` (method, URL, body, declared headers) before it is sent — use this type when signing depends on request contents.
+
+##### Built-in: `aws_sigv4`
+
+Signs outgoing requests with AWS Signature Version 4. Ships in the `coral-auth-aws` crate. Useful for querying AWS monitoring services via CloudWatch, CloudTrail, or any other SigV4-protected API.
+
+Example against CloudWatch Logs:
+
+```yaml
+auth:
+  type: CustomAuth
+  authenticator: aws_sigv4
+  service: logs
+  region: "{{input.AWS_REGION}}"
+  access_key_id: "{{input.AWS_ACCESS_KEY_ID}}"
+  secret_access_key: "{{input.AWS_SECRET_ACCESS_KEY}}"
+  session_token: "{{input.AWS_SESSION_TOKEN}}"   # optional, for STS/role-assumed credentials
+```
+
+| Field | Required | Notes |
+| ----- | -------- | ----- |
+| `service` | yes | AWS service code (`logs`, `monitoring`, `cloudtrail`, `execute-api`, …) |
+| `region` | yes | AWS region; templated from inputs |
+| `access_key_id` | yes | AWS access key ID |
+| `secret_access_key` | yes | AWS secret access key |
+| `session_token` | no | Omit for long-term credentials; include for STS/assumed-role sessions |
+
+**S3 note:** `service: s3` and `service: s3-outposts` switch to S3-specific signing (single percent-encoding, path normalization disabled, `X-Amz-Content-Sha256` enabled). This is required to avoid `SignatureDoesNotMatch` on bucket operations and is handled automatically.
+
+##### Registering additional custom authenticators
+
+Custom authenticators are Rust types that implement the `coral_engine::RequestAuthenticator` trait and are registered by the embedding process. End users of a Coral distribution get the set the embedder chose to ship; adding new ones requires building a custom binary.
+
+The trait looks like:
+
+```rust
+pub trait RequestAuthenticator: Send + Sync + std::fmt::Debug {
+    fn name(&self) -> &str;
+
+    fn authenticate(
+        &self,
+        auth: &coral_spec::CustomAuthSpec,
+        request: &reqwest::Request,
+        resolved_inputs: &BTreeMap<String, String>,
+    ) -> Result<Vec<(HeaderName, HeaderValue)>, RequestAuthenticatorError>;
+
+    fn validate(
+        &self,
+        auth: &coral_spec::CustomAuthSpec,
+        resolved_inputs: &BTreeMap<String, String>,
+    ) -> Result<(), RequestAuthenticatorError> { Ok(()) }
+}
+```
+
+Contract:
+
+- `name()` returns the stable dispatch key referenced by `auth.authenticator` in manifests.
+- `authenticate()` inspects the built request and returns headers to attach. It runs per-request, after all other declared headers are in place, and has access to source inputs but not to SQL filters.
+- `validate()` runs at source-registration time against resolved inputs. Use it to fail fast on missing credentials before any request is issued. Default returns `Ok(())`.
+- Config fields declared alongside `authenticator:` in the manifest arrive as `auth.config` (a `serde_json::Map`). Deserialize into your own struct with `serde_json::from_value`.
+
+Register authenticators by implementing `QueryRuntimeProvider::engine_extensions()` in your embedding:
+
+```rust
+use std::collections::HashMap;
+use std::sync::Arc;
+use coral_engine::{EngineExtensions, QueryRuntimeProvider, RequestAuthenticator};
+
+fn engine_extensions(&self) -> EngineExtensions {
+    let mut authenticators: HashMap<String, Arc<dyn RequestAuthenticator>> = HashMap::new();
+    authenticators.insert(
+        "aws_sigv4".to_string(),
+        Arc::new(coral_auth_aws::AwsSigV4Authenticator),
+    );
+    // authenticators.insert("my_custom".to_string(), Arc::new(MyCustomAuthenticator));
+
+    EngineExtensions {
+        request_authenticators: authenticators,
+        ..EngineExtensions::default()
+    }
+}
+```
+
+Manifests then reference the registered authenticator by its `name()` value:
+
+```yaml
+auth:
+  type: CustomAuth
+  authenticator: my_custom
+  # ...config consumed by MyCustomAuthenticator
+```
+
+An unregistered authenticator name fails source registration with a clear error — no silent fallback.
+
+#### Non-auth request headers
+
+Headers required on every request but not used for auth (Accept, API version, etc.) go in a top-level `request_headers:` block (sibling of `auth:`), not inside `auth.headers`:
+
+```yaml
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+  - name: X-Api-Version
+    from: literal
+    value: "2024-10-01"
+```
+
+`request_headers` resolves before auth on each request. If an auth header has the same name, it overwrites the value from `request_headers`.
+
+Coral sets `User-Agent: coral` on every outgoing request automatically — do not declare it in manifests.
+
 ### HTTP rate limiting
 
 The optional `rate_limit` object gives Coral provider-specific hints for classifying rate-limit responses on HTTP sources.
