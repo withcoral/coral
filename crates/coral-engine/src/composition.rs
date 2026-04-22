@@ -1,9 +1,10 @@
 //! Advanced composition seams for source registration.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use datafusion::datasource::TableProvider;
+use reqwest::header::{HeaderName, HeaderValue};
 
 use crate::{CoreError, contracts::QuerySource};
 
@@ -15,6 +16,8 @@ pub type SourceTables = HashMap<String, Arc<dyn TableProvider>>;
 pub struct EngineExtensions {
     /// Registration-time table decorators for the selected source set.
     pub source_decorators: Vec<Box<dyn SourceDecorator>>,
+    /// Request-time custom authenticators keyed by `auth.authenticator`.
+    pub request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>>,
 }
 
 /// Neutral policy decision for one source registration failure.
@@ -48,6 +51,64 @@ impl SourceDecoratorError {
     /// Builds a failed-precondition error.
     pub fn failed_precondition(detail: impl Into<String>) -> Self {
         Self::FailedPrecondition(detail.into())
+    }
+}
+
+/// Neutral error type for request-authenticator failures.
+#[derive(Debug, thiserror::Error)]
+pub enum RequestAuthenticatorError {
+    /// The authenticator was configured with invalid input.
+    #[error("{0}")]
+    InvalidInput(String),
+    /// The authenticator could not proceed because a precondition was unmet.
+    #[error("{0}")]
+    FailedPrecondition(String),
+}
+
+impl RequestAuthenticatorError {
+    #[must_use]
+    /// Builds an invalid-input error.
+    pub fn invalid_input(detail: impl Into<String>) -> Self {
+        Self::InvalidInput(detail.into())
+    }
+
+    #[must_use]
+    /// Builds a failed-precondition error.
+    pub fn failed_precondition(detail: impl Into<String>) -> Self {
+        Self::FailedPrecondition(detail.into())
+    }
+}
+
+/// Request-time HTTP authenticator registered through engine extensions.
+pub trait RequestAuthenticator: Send + Sync + std::fmt::Debug {
+    /// Stable authenticator name used in diagnostics and manifest dispatch.
+    fn name(&self) -> &str;
+
+    /// Returns the headers to apply to the fully built outbound request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RequestAuthenticatorError`] if the auth config is malformed
+    /// or the authenticator cannot mint request headers.
+    fn authenticate(
+        &self,
+        auth: &coral_spec::CustomAuthSpec,
+        request: &reqwest::Request,
+        resolved_inputs: &BTreeMap<String, String>,
+    ) -> Result<Vec<(HeaderName, HeaderValue)>, RequestAuthenticatorError>;
+
+    /// Performs source-registration-time validation against resolved inputs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RequestAuthenticatorError`] if the config or resolved inputs
+    /// are insufficient for the authenticator to run.
+    fn validate(
+        &self,
+        _auth: &coral_spec::CustomAuthSpec,
+        _resolved_inputs: &BTreeMap<String, String>,
+    ) -> Result<(), RequestAuthenticatorError> {
+        Ok(())
     }
 }
 
