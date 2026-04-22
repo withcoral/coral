@@ -5,7 +5,9 @@ description: "Coral is a single SQL interface for APIs, files, and other data so
 
 ![Coral cover](/images/cover.png)
 
-With Coral, agents can make fewer, more precise tool calls, as a result it is more efficient than using individual MCP servers, CLI tools or API wrappers. It has support for a number of [popular data sources](/reference/bundled-sources) bundled in, and you can easily extend it to accommodate others by writing your own [source specs](/reference/source-spec-reference). You can run SQL from the [CLI](/reference/cli-reference) or through [MCP](/guides/use-coral-over-mcp). And everything is local; your data, credentials and usage history never leave your machine.
+Agents are able to make fewer, more precise tool calls with Coral than they do with data source MCP servers, CLI tools or API wrappers. For agent read tasks, SQL has a structural advantage when query complexity exceeds what a single API call can answer. It avoids pagination through large results, has cleaner, tabular responses, can bring back specific columns, and can correlate across sources more efficiently.
+
+Coral supports a number of [popular data sources](/reference/bundled-sources) bundled in, and you can easily extend it to accommodate others by writing your own [source specs](/reference/source-spec-reference). You can run SQL from the [CLI](/reference/cli-reference) or through [MCP](/guides/use-coral-over-mcp). And everything is local; your data, credentials and usage history never leave your machine.
 
 ## Get started
 
