@@ -23,6 +23,8 @@ auth:
     - name: Accept
       from: literal
       value: application/json
+test_queries:
+  - SELECT * FROM statusgator.boards LIMIT 1
 tables:
   - name: boards
     description: StatusGator monitoring boards
