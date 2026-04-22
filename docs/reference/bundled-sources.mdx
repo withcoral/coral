@@ -24,6 +24,7 @@ If the source you need is not available, you can extend Coral by [writing a cust
 | [`grafana`](#grafana) | `http` | Query dashboards, folders, datasources, alert rules, annotations, contact points, teams, users, and dashboard panels from Grafana (Cloud or self-hosted). |
 | [`incident_io`](#incident_io) | `http` | Query incidents, alerts, escalations, schedules, status pages, workflows, teams, users, and catalog resources from incident.io. |
 | [`intercom`](#intercom) | `http` | Query contacts, companies, conversations, admins, tags, teams, segments, data attributes, collections, articles, and ticket types from Intercom. |
+| [`jira`](#jira) | `http` | Query projects, issues, comments, worklogs, versions, components, issue types, priorities, and related metadata from Jira Cloud. |
 | [`launchdarkly`](#launchdarkly) | `http` | Query projects, feature flags, environments, segments, members, roles, and audit logs from LaunchDarkly. |
 | [`linear`](#linear) | `http` | Query issues, projects, cycles, initiatives, teams, users, comments, labels, and attachments from Linear. |
 | [`openobserve`](#openobserve) | `http` | Query streams, logs, metrics, and traces from OpenObserve (Cloud or self-hosted). |
@@ -157,9 +158,17 @@ See [Intercom authentication docs](https://developers.intercom.com/docs/build-an
 `JIRA_BASE_URL` (optional)<br />
 default `https://your-domain.atlassian.net`
 
+Base URL of your Jira Cloud site (for example
+`https://acme.atlassian.net`).
+
 `JIRA_BASIC_AUTH` (required)
 
-Use https://github.com/withcoral/coral/blob/main/sources/jira/jira-auth.sh to generate JIRA_BASIC_AUTH.
+Use Base64-encoded `email:api_token` credentials for Jira Cloud
+Basic auth.
+Create an API token at
+[Atlassian API token settings](https://id.atlassian.com/manage-profile/security/api-tokens),
+then encode `email:api_token`.
+Example: `printf '%s' 'you@example.com:YOUR_JIRA_API_TOKEN' | base64`.
 
 ### `launchdarkly`
 
