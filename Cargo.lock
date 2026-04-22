@@ -971,6 +971,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "coral-auth-aws"
+version = "0.1.3"
+dependencies = [
+ "aws-credential-types",
+ "aws-sigv4",
+ "coral-engine",
+ "coral-spec",
+ "reqwest",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "coral-cli"
 version = "0.1.3"
 dependencies = [
@@ -1029,19 +1042,6 @@ dependencies = [
  "tracing",
  "urlencoding",
  "wiremock",
-]
-
-[[package]]
-name = "coral-engine-aws"
-version = "0.1.3"
-dependencies = [
- "aws-credential-types",
- "aws-sigv4",
- "coral-engine",
- "coral-spec",
- "reqwest",
- "serde",
- "serde_json",
 ]
 
 [[package]]

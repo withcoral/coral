@@ -1,5 +1,5 @@
 [package]
-name = "coral-engine-aws"
+name = "coral-auth-aws"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -1,4 +1,4 @@
-//! AWS request authenticators for `coral-engine`.
+//! AWS request authenticators for Coral sources.
 
 use std::collections::BTreeMap;
 use std::time::SystemTime;
