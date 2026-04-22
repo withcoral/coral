@@ -22,6 +22,7 @@ inputs:
       For more details, see the [Slack app setup guide](https://docs.slack.dev/app-management/quickstart-app-settings).
 base_url: https://slack.com
 auth:
+  type: HeaderAuth
   headers:
     - name: Authorization
       from: template

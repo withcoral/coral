@@ -34,6 +34,7 @@ inputs:
       See [Datadog application keys](https://docs.datadoghq.com/account_management/api-app-keys/#application-keys).
 base_url: https://api.{{input.DD_SITE}}
 auth:
+  type: HeaderAuth
   headers:
     - name: DD-API-KEY
       from: input

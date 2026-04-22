@@ -24,6 +24,7 @@ inputs:
       Example: `echo -n 'user@example.com:password' | base64`.
 base_url: "{{input.OPENOBSERVE_URL}}"
 auth:
+  type: HeaderAuth
   headers:
     - name: Authorization
       from: template

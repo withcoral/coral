@@ -23,6 +23,7 @@ inputs:
       Example: `printf '%s' 'you@example.com:YOUR_JIRA_API_TOKEN' | base64`.
 base_url: "{{input.JIRA_BASE_URL}}"
 auth:
+  type: HeaderAuth
   headers:
     - name: Authorization
       from: template

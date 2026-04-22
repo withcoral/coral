@@ -17,6 +17,7 @@ inputs:
       See [Stripe API key docs](https://docs.stripe.com/keys).
 base_url: https://api.stripe.com
 auth:
+  type: HeaderAuth
   headers:
     - name: Authorization
       from: template

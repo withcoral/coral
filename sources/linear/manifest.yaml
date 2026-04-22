@@ -15,6 +15,7 @@ inputs:
       See [Linear API key docs](https://linear.app/docs/api-and-webhooks#api-keys).
 base_url: https://api.linear.app
 auth:
+  type: HeaderAuth
   headers:
     - name: Authorization
       from: template

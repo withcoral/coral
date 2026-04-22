@@ -16,6 +16,7 @@ inputs:
       See [StatusGator API docs](https://statusgator.com/api/v3/docs).
 base_url: "https://statusgator.com/api/v3"
 auth:
+  type: HeaderAuth
   headers:
     - name: Authorization
       from: template

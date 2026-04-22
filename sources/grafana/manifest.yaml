@@ -21,6 +21,7 @@ inputs:
       See [Grafana service account docs](https://grafana.com/docs/grafana/latest/administration/service-accounts/).
 base_url: "{{input.GRAFANA_URL}}"
 auth:
+  type: HeaderAuth
   headers:
     - name: Authorization
       from: template

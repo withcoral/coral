@@ -18,6 +18,7 @@ inputs:
       See [LaunchDarkly API token docs](https://launchdarkly.com/docs/home/account/api-create).
 base_url: "{{input.LAUNCHDARKLY_API_BASE}}"
 auth:
+  type: HeaderAuth
   headers:
     - name: Authorization
       from: input

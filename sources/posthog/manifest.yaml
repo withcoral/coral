@@ -22,6 +22,7 @@ inputs:
       See [PostHog API docs](https://posthog.com/docs/api).
 base_url: "{{input.POSTHOG_API_BASE}}"
 auth:
+  type: HeaderAuth
   headers:
     - name: Authorization
       from: template

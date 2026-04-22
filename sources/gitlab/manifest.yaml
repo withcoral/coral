@@ -22,6 +22,7 @@ inputs:
       See [GitLab PAT docs](https://docs.gitlab.com/user/profile/personal_access_tokens/).
 base_url: '{{input.GITLAB_API_BASE}}'
 auth:
+  type: HeaderAuth
   headers:
     - name: PRIVATE-TOKEN
       from: template

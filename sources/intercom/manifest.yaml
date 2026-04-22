@@ -15,6 +15,7 @@ inputs:
       See [Intercom authentication docs](https://developers.intercom.com/docs/build-an-integration/learn-more/authentication).
 base_url: https://api.intercom.io
 auth:
+  type: HeaderAuth
   headers:
     - name: Authorization
       from: template

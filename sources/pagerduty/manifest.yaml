@@ -17,6 +17,7 @@ inputs:
       See [PagerDuty API access docs](https://developer.pagerduty.com/docs/authentication).
 base_url: https://api.pagerduty.com
 auth:
+  type: HeaderAuth
   headers:
     - name: Authorization
       from: template

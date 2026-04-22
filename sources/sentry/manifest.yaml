@@ -18,6 +18,7 @@ inputs:
       See [Sentry auth token docs](https://docs.sentry.io/api/guides/create-auth-token/).
 base_url: https://sentry.io
 auth:
+  type: HeaderAuth
   headers:
     - name: Authorization
       from: template

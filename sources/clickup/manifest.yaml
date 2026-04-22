@@ -19,6 +19,7 @@ inputs:
       [ClickUp authentication guide](https://developer.clickup.com/docs/authentication).
 base_url: https://api.clickup.com/api
 auth:
+  type: HeaderAuth
   headers:
     - name: Authorization
       from: input
