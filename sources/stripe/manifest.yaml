@@ -29460,7 +29460,7 @@ tables:
           path:
             - test_clock
   - name: customer_sources
-    description: <p>List sources for a specified customer.</p>
+    description: List sources for a specified customer.
     filters:
       - name: customer
         required: true
@@ -36626,7 +36626,7 @@ tables:
           kind: from_filter
           key: subscription_exposed_id
   - name: dispute
-    description: <p>Retrieve a dispute for a specified charge.</p>
+    description: Retrieve a dispute for a specified charge.
     filters:
       - name: charge
         required: true
@@ -37600,7 +37600,7 @@ tables:
           path:
             - type
   - name: domains
-    description: <p>List apple pay domains.</p>
+    description: List apple pay domains.
     filters:
       - name: domain_name
         required: false
@@ -96066,7 +96066,7 @@ tables:
           path:
             - type
   - name: source_transactions
-    description: <p>List source transactions for a given source.</p>
+    description: List source transactions for a given source.
     filters:
       - name: source
         required: true

@@ -5489,7 +5489,7 @@ tables:
         type: Utf8
         nullable: true
         virtual: false
-        description: 'RFC 5545 recurrence rules defining the repeating pattern. This must be an array containing:  <br> - Exactly one <b>RRULE</b>'
+        description: RFC 5545 recurrence rules defining the repeating pattern. This must be an array containing exactly one RRULE.
         expr:
           kind: path
           path:
@@ -5595,7 +5595,7 @@ tables:
         type: Utf8
         nullable: true
         virtual: false
-        description: 'RFC 5545 recurrence rules defining the repeating pattern. This must be an array containing:  <br> - Exactly one <b>RRULE</b>'
+        description: RFC 5545 recurrence rules defining the repeating pattern. This must be an array containing exactly one RRULE.
         expr:
           kind: path
           path:
@@ -13388,7 +13388,7 @@ tables:
         type: Utf8
         nullable: true
         virtual: false
-        description: prepared -- the invocation exists and can be referenced, but is NOT available to a Runner <br> created -- the invocation exists
+        description: prepared -- the invocation exists and can be referenced, but is not available to a Runner. created -- the invocation exists
         expr:
           kind: path
           path:
@@ -13593,7 +13593,7 @@ tables:
         type: Utf8
         nullable: true
         virtual: false
-        description: prepared -- the invocation exists and can be referenced, but is NOT available to a Runner <br> created -- the invocation exists
+        description: prepared -- the invocation exists and can be referenced, but is not available to a Runner. created -- the invocation exists
         expr:
           kind: path
           path:
