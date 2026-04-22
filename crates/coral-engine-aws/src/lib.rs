@@ -16,7 +16,7 @@ use serde::Deserialize;
 
 /// Built-in request authenticator for `auth.authenticator = "aws_sigv4"`.
 #[derive(Debug, Default)]
-pub struct AwsSigV4RequestAuthenticator;
+pub struct AwsSigV4Authenticator;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -29,7 +29,7 @@ struct AwsSigV4Config {
     session_token: Option<ParsedTemplate>,
 }
 
-impl RequestAuthenticator for AwsSigV4RequestAuthenticator {
+impl RequestAuthenticator for AwsSigV4Authenticator {
     fn name(&self) -> &'static str {
         "aws_sigv4"
     }
@@ -234,7 +234,7 @@ mod tests {
             .build()
             .expect("request should build");
 
-        let headers = AwsSigV4RequestAuthenticator
+        let headers = AwsSigV4Authenticator
             .authenticate(&auth, &request, &resolved_inputs)
             .expect("signing should succeed");
 

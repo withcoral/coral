@@ -20,12 +20,13 @@ auth:
     - name: Authorization
       from: template
       template: Bearer {{input.INTERCOM_ACCESS_TOKEN}}
-    - name: Intercom-Version
-      from: literal
-      value: "2.11"
-    - name: Accept
-      from: literal
-      value: application/json
+request_headers:
+  - name: Intercom-Version
+    from: literal
+    value: "2.11"
+  - name: Accept
+    from: literal
+    value: application/json
 test_queries:
   - SELECT * FROM intercom.admins LIMIT 1
 tables:

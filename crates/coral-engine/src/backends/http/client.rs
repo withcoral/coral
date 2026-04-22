@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use datafusion::error::{DataFusionError, Result};
-use reqwest::header::HeaderMap;
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde_json::{Map, Value, json};
 
 use crate::RequestAuthenticator;
@@ -425,20 +425,29 @@ async fn execute_request(
         let method_label = http_method_label(method);
         let mut request = build_http_request(http, method, url);
 
-        for header in request_headers {
+        let mut header_map = HeaderMap::new();
+        for header in request_headers.iter().chain(table_headers.iter()) {
             if let Some(value) =
                 resolve_value_source(&header.value, filters, state, resolved_inputs)?
             {
-                request = request.header(&header.name, value_to_string(&value));
+                let name = HeaderName::try_from(header.name.as_str()).map_err(|error| {
+                    DataFusionError::Execution(format!(
+                        "invalid request header name '{}': {error}",
+                        header.name
+                    ))
+                })?;
+                let value =
+                    HeaderValue::try_from(value_to_string(&value).as_str()).map_err(|error| {
+                        DataFusionError::Execution(format!(
+                            "invalid request header value for '{}': {error}",
+                            header.name
+                        ))
+                    })?;
+                header_map.insert(name, value);
             }
         }
-
-        for header in table_headers {
-            if let Some(value) =
-                resolve_value_source(&header.value, filters, state, resolved_inputs)?
-            {
-                request = request.header(&header.name, value_to_string(&value));
-            }
+        if !header_map.is_empty() {
+            request = request.headers(header_map);
         }
 
         if !query_pairs.is_empty() {
