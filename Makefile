@@ -1,5 +1,3 @@
-validate: rust-checks lint-sources
-
 rust-checks:
 	cargo fmt --all -- --check
 	cargo check --workspace --all-targets --all-features --locked
