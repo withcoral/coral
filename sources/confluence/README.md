@@ -3,19 +3,15 @@
 **API Version:** v2  
 **Backend:** HTTP  
 **Tables:** 13  
-**Base URL:** `https://your-domain.atlassian.net/wiki` (override with `CONFLUENCE_BASE_URL`)
+**Base URL:** set via `CONFLUENCE_BASE_URL` (e.g. `https://acme.atlassian.net`)
 
 ## Authentication
 
-Requires `CONFLUENCE_BASIC_AUTH`, which is the Base64 form of `email:api_token` for Confluence Cloud.
-
-Helper script:
+Requires `CONFLUENCE_BASIC_AUTH`, which is the Base64 form of `email:api_token` for Confluence Cloud. Create an API token at [Atlassian API token settings](https://id.atlassian.com/manage-profile/security/api-tokens), then encode:
 
 ```bash
-./sources/confluence/confluence-auth.sh you@example.com
+printf '%s' 'you@example.com:YOUR_CONFLUENCE_API_TOKEN' | base64
 ```
-
-The script prints the value Coral expects and also accepts the token as a second argument or through `CONFLUENCE_API_TOKEN`.
 
 ## Quick start
 

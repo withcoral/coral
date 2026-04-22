@@ -8,10 +8,9 @@ backend: http
 inputs:
   CONFLUENCE_BASE_URL:
     kind: variable
-    default: https://your-domain.atlassian.net/wiki
     hint: |
-      Base URL of your Confluence Cloud site (for example
-      `https://acme.atlassian.net/wiki`).
+      Base URL of your Atlassian Cloud site, without the `/wiki` suffix
+      (for example `https://acme.atlassian.net`).
   CONFLUENCE_BASIC_AUTH:
     kind: secret
     hint: |
@@ -48,7 +47,7 @@ tables:
         required: false
     request:
       method: GET
-      path: /api/v2/spaces
+      path: /wiki/api/v2/spaces
       query:
         - name: ids
           from: filter
@@ -186,7 +185,7 @@ tables:
         required: false
     request:
       method: GET
-      path: /api/v2/pages
+      path: /wiki/api/v2/pages
       query:
         - name: space-id
           from: filter
@@ -359,7 +358,7 @@ tables:
         required: false
     request:
       method: GET
-      path: /api/v2/pages/{{filter.id}}
+      path: /wiki/api/v2/pages/{{filter.id}}
       query:
         - name: body-format
           from: filter
@@ -537,7 +536,7 @@ tables:
         required: false
     request:
       method: GET
-      path: /api/v2/blogposts
+      path: /wiki/api/v2/blogposts
       query:
         - name: space-id
           from: filter
@@ -683,7 +682,7 @@ tables:
         required: false
     request:
       method: GET
-      path: /api/v2/blogposts/{{filter.id}}
+      path: /wiki/api/v2/blogposts/{{filter.id}}
       query:
         - name: body-format
           from: filter
@@ -829,7 +828,7 @@ tables:
         required: false
     request:
       method: GET
-      path: /api/v2/pages/{{filter.page_id}}/footer-comments
+      path: /wiki/api/v2/pages/{{filter.page_id}}/footer-comments
       query:
         - name: body-format
           from: filter
@@ -936,7 +935,7 @@ tables:
         required: false
     request:
       method: GET
-      path: /api/v2/pages/{{filter.page_id}}/inline-comments
+      path: /wiki/api/v2/pages/{{filter.page_id}}/inline-comments
       query:
         - name: body-format
           from: filter
@@ -1069,7 +1068,7 @@ tables:
         required: false
     request:
       method: GET
-      path: /api/v2/blogposts/{{filter.blog_post_id}}/footer-comments
+      path: /wiki/api/v2/blogposts/{{filter.blog_post_id}}/footer-comments
       query:
         - name: body-format
           from: filter
@@ -1176,7 +1175,7 @@ tables:
         required: false
     request:
       method: GET
-      path: /api/v2/blogposts/{{filter.blog_post_id}}/inline-comments
+      path: /wiki/api/v2/blogposts/{{filter.blog_post_id}}/inline-comments
       query:
         - name: body-format
           from: filter
@@ -1307,7 +1306,7 @@ tables:
         required: true
     request:
       method: GET
-      path: /api/v2/pages/{{filter.page_id}}/attachments
+      path: /wiki/api/v2/pages/{{filter.page_id}}/attachments
     response:
       rows_path:
         - results
@@ -1428,7 +1427,7 @@ tables:
         required: true
     request:
       method: GET
-      path: /api/v2/blogposts/{{filter.blog_post_id}}/attachments
+      path: /wiki/api/v2/blogposts/{{filter.blog_post_id}}/attachments
     response:
       rows_path:
         - results
@@ -1551,7 +1550,7 @@ tables:
         required: false
     request:
       method: GET
-      path: /api/v2/attachments/{{filter.id}}
+      path: /wiki/api/v2/attachments/{{filter.id}}
       query:
         - name: version
           from: filter
@@ -1724,7 +1723,7 @@ tables:
         required: false
     request:
       method: GET
-      path: /api/v2/labels
+      path: /wiki/api/v2/labels
       query:
         - name: label-id
           from: filter
