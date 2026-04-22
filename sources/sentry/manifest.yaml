@@ -22,6 +22,8 @@ auth:
     - name: Authorization
       from: template
       template: Bearer {{input.SENTRY_TOKEN}}
+test_queries:
+  - SELECT * FROM sentry.projects LIMIT 1
 tables:
   - name: projects
     description: Sentry projects in the organization
