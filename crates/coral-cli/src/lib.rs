@@ -76,6 +76,11 @@ struct SourceAddArgs {
     /// Path to a file
     #[arg(long)]
     file: Option<PathBuf>,
+
+    /// Prompt for input values interactively. When unset, values are read from
+    /// environment variables matching each input key.
+    #[arg(long)]
+    interactive: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -227,8 +232,21 @@ fn print_batches(
 }
 
 async fn run_source_add(app: &AppClient, args: SourceAddArgs) -> Result<(), anyhow::Error> {
-    source_ops::require_interactive()?;
-    let SourceAddArgs { name, file } = args;
+    let SourceAddArgs {
+        name,
+        file,
+        interactive,
+    } = args;
+    if interactive {
+        source_ops::require_interactive()?;
+    }
+    let collect = |inputs: &[coral_spec::ManifestInputSpec]| {
+        if interactive {
+            source_ops::prompt_for_inputs(inputs)
+        } else {
+            source_ops::collect_inputs_from_env(inputs)
+        }
+    };
     let response = match (name, file) {
         (Some(name), None) => {
             let bundled_name = source_ops::source_name_arg(Some(&name))?;
@@ -242,12 +260,12 @@ async fn run_source_add(app: &AppClient, args: SourceAddArgs) -> Result<(), anyh
                 .iter()
                 .map(source_ops::manifest_input_from_proto)
                 .collect::<Result<Vec<_>, _>>()?;
-            let (variables, secrets) = source_ops::prompt_for_inputs(&inputs)?;
+            let (variables, secrets) = collect(&inputs)?;
             source_ops::add_bundled_source(app, &available.name, variables, secrets).await?
         }
         (None, Some(file)) => {
             let (manifest_yaml, manifest) = source_ops::load_validated_manifest_file(&file)?;
-            let (variables, secrets) = source_ops::prompt_for_inputs(manifest.declared_inputs())?;
+            let (variables, secrets) = collect(manifest.declared_inputs())?;
             source_ops::import_source(app, manifest_yaml, variables, secrets).await?
         }
         _ => unreachable!("clap enforces exactly one of name or file"),
