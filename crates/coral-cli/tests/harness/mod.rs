@@ -1,4 +1,9 @@
-use std::sync::Arc;
+#![allow(
+    dead_code,
+    reason = "Integration test crates share this harness, but each target only uses a subset of the helpers."
+)]
+
+use std::sync::{Arc, Mutex};
 
 use arrow::array::Int64Array;
 use arrow::array::StringArray;
@@ -9,18 +14,18 @@ use assert_cmd::Command;
 use coral_api::v1::query_service_server::{QueryService, QueryServiceServer};
 use coral_api::v1::source_service_server::{SourceService, SourceServiceServer};
 use coral_api::v1::{
-    Column, CreateBundledSourceRequest, DeleteSourceRequest, DiscoverSourcesRequest,
-    DiscoverSourcesResponse, ExecuteSqlRequest, ExecuteSqlResponse, GetSourceRequest,
-    ImportSourceRequest, ListSourcesRequest, ListSourcesResponse, ListTablesRequest,
-    ListTablesResponse, Source, SourceOrigin, Table, ValidateSourceRequest, ValidateSourceResponse,
-    Workspace,
+    AvailableSource, Column, CreateBundledSourceRequest, DeleteSourceRequest,
+    DiscoverSourcesRequest, DiscoverSourcesResponse, ExecuteSqlRequest, ExecuteSqlResponse,
+    GetSourceRequest, ImportSourceRequest, ListSourcesRequest, ListSourcesResponse,
+    ListTablesRequest, ListTablesResponse, Source, SourceInputKind, SourceInputSpec, SourceOrigin,
+    Table, ValidateSourceRequest, ValidateSourceResponse, Workspace,
 };
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
-use tonic::{Request, Response, Status};
+use tonic::{Code, Request, Response, Status};
 
 fn workspace() -> Workspace {
     Workspace {
@@ -39,7 +44,18 @@ fn mock_source() -> Source {
     }
 }
 
-fn mock_table() -> Table {
+fn mock_table(schema_name: &str, name: &str) -> Table {
+    Table {
+        workspace: Some(workspace()),
+        schema_name: schema_name.to_string(),
+        name: name.to_string(),
+        description: String::new(),
+        columns: Vec::new(),
+        required_filters: Vec::new(),
+    }
+}
+
+fn mock_visible_table() -> Table {
     Table {
         workspace: Some(workspace()),
         schema_name: "local_messages".to_string(),
@@ -61,19 +77,206 @@ fn mock_table() -> Table {
     }
 }
 
-#[allow(
-    dead_code,
-    reason = "shared harness helpers are used by different integration test crates"
-)]
-fn default_validate_source_response() -> ValidateSourceResponse {
+fn mock_sql_response(sql: &str) -> ExecuteSqlResponse {
+    let (schema, batch, row_count) = if sql.contains("local_messages.messages") {
+        let schema = Schema::new(vec![Field::new("text", DataType::Utf8, false)]);
+        let batch = RecordBatch::try_new(
+            Arc::new(schema.clone()),
+            vec![Arc::new(StringArray::from(vec!["hello", "world"]))],
+        )
+        .expect("build text batch");
+        (schema, batch, 2)
+    } else {
+        let schema = Schema::new(vec![Field::new("value", DataType::Int64, false)]);
+        let batch = RecordBatch::try_new(
+            Arc::new(schema.clone()),
+            vec![Arc::new(Int64Array::from(vec![1_i64]))],
+        )
+        .expect("build value batch");
+        (schema, batch, 1)
+    };
+
+    ExecuteSqlResponse {
+        arrow_ipc_stream: encode_arrow_ipc_stream(&schema, &[batch]).expect("encode arrow ipc"),
+        row_count,
+    }
+}
+
+fn mock_discover_response() -> DiscoverSourcesResponse {
+    DiscoverSourcesResponse {
+        sources: vec![
+            AvailableSource {
+                name: "github".to_string(),
+                description: "GitHub data".to_string(),
+                version: "1.0.0".to_string(),
+                inputs: vec![SourceInputSpec {
+                    key: "GITHUB_TOKEN".to_string(),
+                    kind: SourceInputKind::Secret as i32,
+                    required: true,
+                    default_value: String::new(),
+                    hint: String::new(),
+                }],
+                installed: true,
+                origin: SourceOrigin::Bundled as i32,
+            },
+            AvailableSource {
+                name: "slack".to_string(),
+                description: "Slack data".to_string(),
+                version: "2.1.0".to_string(),
+                inputs: Vec::new(),
+                installed: false,
+                origin: SourceOrigin::Bundled as i32,
+            },
+        ],
+    }
+}
+
+fn mock_validate_response() -> ValidateSourceResponse {
     ValidateSourceResponse {
         source: Some(mock_source()),
-        tables: Vec::new(),
+        tables: vec![
+            mock_table("github", "issues"),
+            mock_table("github", "pull_requests"),
+        ],
         query_tests: Vec::new(),
     }
 }
 
-fn encode_arrow_ipc_stream(
+#[derive(Clone, Debug)]
+struct MockError {
+    code: Code,
+    message: String,
+}
+
+impl MockError {
+    fn new(code: Code, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+
+    fn status(&self) -> Status {
+        Status::new(self.code, self.message.clone())
+    }
+}
+
+#[derive(Clone)]
+enum MockResult<T> {
+    Ok(T),
+    Err(MockError),
+}
+
+impl<T> MockResult<T> {
+    fn ok(value: T) -> Self {
+        Self::Ok(value)
+    }
+
+    fn err(code: Code, message: impl Into<String>) -> Self {
+        Self::Err(MockError::new(code, message))
+    }
+
+    fn into_tonic_result(self) -> Result<T, Status> {
+        match self {
+            Self::Ok(value) => Ok(value),
+            Self::Err(error) => Err(error.status()),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct MockServerConfig {
+    execute_sql_override: Option<MockResult<ExecuteSqlResponse>>,
+    discover_sources: MockResult<DiscoverSourcesResponse>,
+    list_sources: MockResult<ListSourcesResponse>,
+    validate_source: MockResult<ValidateSourceResponse>,
+    delete_source: MockResult<()>,
+}
+
+impl Default for MockServerConfig {
+    fn default() -> Self {
+        Self {
+            execute_sql_override: None,
+            discover_sources: MockResult::ok(mock_discover_response()),
+            list_sources: MockResult::ok(ListSourcesResponse {
+                sources: vec![
+                    Source {
+                        workspace: Some(workspace()),
+                        name: "github".to_string(),
+                        version: "1.0.0".to_string(),
+                        secrets: Vec::new(),
+                        variables: Vec::new(),
+                        origin: SourceOrigin::Bundled as i32,
+                    },
+                    Source {
+                        workspace: Some(workspace()),
+                        name: "jira".to_string(),
+                        version: "2.0.0".to_string(),
+                        secrets: Vec::new(),
+                        variables: Vec::new(),
+                        origin: SourceOrigin::Imported as i32,
+                    },
+                ],
+            }),
+            validate_source: MockResult::ok(mock_validate_response()),
+            delete_source: MockResult::ok(()),
+        }
+    }
+}
+
+impl MockServerConfig {
+    pub(crate) fn with_discover_sources(mut self, response: DiscoverSourcesResponse) -> Self {
+        self.discover_sources = MockResult::ok(response);
+        self
+    }
+
+    pub(crate) fn with_list_sources(mut self, response: ListSourcesResponse) -> Self {
+        self.list_sources = MockResult::ok(response);
+        self
+    }
+
+    pub(crate) fn with_execute_sql(mut self, response: ExecuteSqlResponse) -> Self {
+        self.execute_sql_override = Some(MockResult::ok(response));
+        self
+    }
+
+    pub(crate) fn with_execute_sql_error(mut self, code: Code, message: impl Into<String>) -> Self {
+        self.execute_sql_override = Some(MockResult::err(code, message));
+        self
+    }
+
+    pub(crate) fn with_validate_source_error(
+        mut self,
+        code: Code,
+        message: impl Into<String>,
+    ) -> Self {
+        self.validate_source = MockResult::err(code, message);
+        self
+    }
+
+    pub(crate) fn with_validate_source_response(
+        mut self,
+        response: ValidateSourceResponse,
+    ) -> Self {
+        self.validate_source = MockResult::ok(response);
+        self
+    }
+}
+
+#[derive(Default)]
+struct Captured {
+    execute_sql: Mutex<Vec<ExecuteSqlRequest>>,
+    list_tables: Mutex<Vec<ListTablesRequest>>,
+    discover_sources: Mutex<Vec<DiscoverSourcesRequest>>,
+    list_sources: Mutex<Vec<ListSourcesRequest>>,
+    get_source: Mutex<Vec<GetSourceRequest>>,
+    create_bundled_source: Mutex<Vec<CreateBundledSourceRequest>>,
+    import_source: Mutex<Vec<ImportSourceRequest>>,
+    delete_source: Mutex<Vec<DeleteSourceRequest>>,
+    validate_source: Mutex<Vec<ValidateSourceRequest>>,
+}
+
+pub(crate) fn encode_arrow_ipc_stream(
     schema: &Schema,
     batches: &[RecordBatch],
 ) -> Result<Vec<u8>, arrow::error::ArrowError> {
@@ -89,16 +292,24 @@ fn encode_arrow_ipc_stream(
 }
 
 #[derive(Clone)]
-struct MockQueryService;
+struct MockQueryService {
+    config: Arc<MockServerConfig>,
+    captured: Arc<Captured>,
+}
 
 #[tonic::async_trait]
 impl QueryService for MockQueryService {
     async fn list_tables(
         &self,
-        _request: Request<ListTablesRequest>,
+        request: Request<ListTablesRequest>,
     ) -> Result<Response<ListTablesResponse>, Status> {
+        self.captured
+            .list_tables
+            .lock()
+            .expect("list_tables capture")
+            .push(request.into_inner());
         Ok(Response::new(ListTablesResponse {
-            tables: vec![mock_table()],
+            tables: vec![mock_visible_table()],
         }))
     }
 
@@ -106,7 +317,13 @@ impl QueryService for MockQueryService {
         &self,
         request: Request<ExecuteSqlRequest>,
     ) -> Result<Response<ExecuteSqlResponse>, Status> {
-        let sql = request.into_inner().sql;
+        let request = request.into_inner();
+        self.captured
+            .execute_sql
+            .lock()
+            .expect("execute_sql capture")
+            .push(request.clone());
+        let sql = request.sql;
         if sql
             .trim_start()
             .to_ascii_uppercase()
@@ -115,106 +332,112 @@ impl QueryService for MockQueryService {
             return Err(Status::invalid_argument("DML not supported: DELETE"));
         }
 
-        let (schema, batch, row_count) = if sql.contains("local_messages.messages") {
-            let schema = Schema::new(vec![Field::new("text", DataType::Utf8, false)]);
-            let batch = RecordBatch::try_new(
-                Arc::new(schema.clone()),
-                vec![Arc::new(StringArray::from(vec!["hello", "world"]))],
-            )
-            .expect("build text batch");
-            (schema, batch, 2)
-        } else {
-            let schema = Schema::new(vec![Field::new("value", DataType::Int64, false)]);
-            let batch = RecordBatch::try_new(
-                Arc::new(schema.clone()),
-                vec![Arc::new(Int64Array::from(vec![1_i64]))],
-            )
-            .expect("build value batch");
-            (schema, batch, 1)
+        let response = match self.config.execute_sql_override.clone() {
+            Some(result) => result.into_tonic_result()?,
+            None => mock_sql_response(&sql),
         };
 
-        Ok(Response::new(ExecuteSqlResponse {
-            arrow_ipc_stream: encode_arrow_ipc_stream(&schema, &[batch]).expect("encode arrow ipc"),
-            row_count,
-        }))
+        Ok(Response::new(response))
     }
 }
 
 #[derive(Clone)]
 struct MockSourceService {
-    validate_source_response: ValidateSourceResponse,
+    config: Arc<MockServerConfig>,
+    captured: Arc<Captured>,
 }
 
 #[tonic::async_trait]
 impl SourceService for MockSourceService {
     async fn discover_sources(
         &self,
-        _request: Request<DiscoverSourcesRequest>,
+        request: Request<DiscoverSourcesRequest>,
     ) -> Result<Response<DiscoverSourcesResponse>, Status> {
-        Ok(Response::new(DiscoverSourcesResponse {
-            sources: Vec::new(),
-        }))
+        self.captured
+            .discover_sources
+            .lock()
+            .expect("discover_sources capture")
+            .push(request.into_inner());
+        Ok(Response::new(
+            self.config.discover_sources.clone().into_tonic_result()?,
+        ))
     }
 
     async fn list_sources(
         &self,
-        _request: Request<ListSourcesRequest>,
+        request: Request<ListSourcesRequest>,
     ) -> Result<Response<ListSourcesResponse>, Status> {
-        Ok(Response::new(ListSourcesResponse {
-            sources: vec![
-                Source {
-                    workspace: Some(workspace()),
-                    name: "github".to_string(),
-                    version: "1.0.0".to_string(),
-                    secrets: Vec::new(),
-                    variables: Vec::new(),
-                    origin: SourceOrigin::Bundled as i32,
-                },
-                Source {
-                    workspace: Some(workspace()),
-                    name: "jira".to_string(),
-                    version: "2.0.0".to_string(),
-                    secrets: Vec::new(),
-                    variables: Vec::new(),
-                    origin: SourceOrigin::Imported as i32,
-                },
-            ],
-        }))
+        self.captured
+            .list_sources
+            .lock()
+            .expect("list_sources capture")
+            .push(request.into_inner());
+        Ok(Response::new(
+            self.config.list_sources.clone().into_tonic_result()?,
+        ))
     }
 
     async fn get_source(
         &self,
-        _request: Request<GetSourceRequest>,
+        request: Request<GetSourceRequest>,
     ) -> Result<Response<Source>, Status> {
+        self.captured
+            .get_source
+            .lock()
+            .expect("get_source capture")
+            .push(request.into_inner());
         Ok(Response::new(mock_source()))
     }
 
     async fn create_bundled_source(
         &self,
-        _request: Request<CreateBundledSourceRequest>,
+        request: Request<CreateBundledSourceRequest>,
     ) -> Result<Response<Source>, Status> {
+        self.captured
+            .create_bundled_source
+            .lock()
+            .expect("create_bundled_source capture")
+            .push(request.into_inner());
         Ok(Response::new(mock_source()))
     }
 
     async fn import_source(
         &self,
-        _request: Request<ImportSourceRequest>,
+        request: Request<ImportSourceRequest>,
     ) -> Result<Response<Source>, Status> {
+        self.captured
+            .import_source
+            .lock()
+            .expect("import_source capture")
+            .push(request.into_inner());
         Ok(Response::new(mock_source()))
     }
 
     async fn delete_source(
         &self,
-        _request: Request<DeleteSourceRequest>,
+        request: Request<DeleteSourceRequest>,
     ) -> Result<Response<()>, Status> {
+        self.captured
+            .delete_source
+            .lock()
+            .expect("delete_source capture")
+            .push(request.into_inner());
+        self.config.delete_source.clone().into_tonic_result()?;
         Ok(Response::new(()))
     }
 
     async fn validate_source(
         &self,
-        _request: Request<ValidateSourceRequest>,
+        request: Request<ValidateSourceRequest>,
     ) -> Result<Response<ValidateSourceResponse>, Status> {
-        Ok(Response::new(self.validate_source_response.clone()))
+        self.captured
+            .validate_source
+            .lock()
+            .expect("validate_source capture")
+            .push(request.into_inner());
+        Ok(Response::new(
+            self.config.validate_source.clone().into_tonic_result()?,
+        ))
     }
 }
 
@@ -222,6 +445,7 @@ pub(crate) struct MockServer {
     endpoint_uri: String,
     shutdown_tx: Option<oneshot::Sender<()>>,
     task: JoinHandle<Result<(), tonic::transport::Error>>,
+    captured: Arc<Captured>,
 }
 
 impl MockServer {
@@ -230,22 +454,29 @@ impl MockServer {
         reason = "shared harness helpers are used by different integration test crates"
     )]
     pub(crate) async fn start() -> Self {
-        Self::start_with_validate_source_response(default_validate_source_response()).await
+        Self::start_with_config(MockServerConfig::default()).await
     }
 
-    pub(crate) async fn start_with_validate_source_response(
-        validate_source_response: ValidateSourceResponse,
-    ) -> Self {
+    pub(crate) async fn start_with_config(config: MockServerConfig) -> Self {
         let listener = TcpListener::bind(("127.0.0.1", 0))
             .await
             .expect("bind mock server");
         let endpoint_uri = format!("http://{}", listener.local_addr().expect("local addr"));
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let config = Arc::new(config);
+        let captured = Arc::new(Captured::default());
+        let query_captured = Arc::clone(&captured);
+        let source_captured = Arc::clone(&captured);
+        let query_config = Arc::clone(&config);
         let task = tokio::spawn(async move {
             Server::builder()
-                .add_service(QueryServiceServer::new(MockQueryService))
+                .add_service(QueryServiceServer::new(MockQueryService {
+                    config: query_config,
+                    captured: query_captured,
+                }))
                 .add_service(SourceServiceServer::new(MockSourceService {
-                    validate_source_response,
+                    config,
+                    captured: source_captured,
                 }))
                 .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
                     let _ = shutdown_rx.await;
@@ -256,7 +487,21 @@ impl MockServer {
             endpoint_uri,
             shutdown_tx: Some(shutdown_tx),
             task,
+            captured,
         }
+    }
+
+    #[allow(
+        dead_code,
+        reason = "shared harness helpers are used by different integration test crates"
+    )]
+    pub(crate) async fn start_with_validate_source_response(
+        validate_source_response: ValidateSourceResponse,
+    ) -> Self {
+        Self::start_with_config(
+            MockServerConfig::default().with_validate_source_response(validate_source_response),
+        )
+        .await
     }
 
     #[allow(
@@ -267,6 +512,46 @@ impl MockServer {
         let mut cmd = Command::cargo_bin("coral").expect("cargo bin");
         cmd.env("CORAL_ENDPOINT", &self.endpoint_uri);
         cmd
+    }
+
+    pub(crate) fn execute_sql_requests(&self) -> Vec<ExecuteSqlRequest> {
+        self.captured
+            .execute_sql
+            .lock()
+            .expect("execute_sql capture")
+            .clone()
+    }
+
+    pub(crate) fn discover_sources_requests(&self) -> Vec<DiscoverSourcesRequest> {
+        self.captured
+            .discover_sources
+            .lock()
+            .expect("discover_sources capture")
+            .clone()
+    }
+
+    pub(crate) fn list_sources_requests(&self) -> Vec<ListSourcesRequest> {
+        self.captured
+            .list_sources
+            .lock()
+            .expect("list_sources capture")
+            .clone()
+    }
+
+    pub(crate) fn validate_source_requests(&self) -> Vec<ValidateSourceRequest> {
+        self.captured
+            .validate_source
+            .lock()
+            .expect("validate_source capture")
+            .clone()
+    }
+
+    pub(crate) fn delete_source_requests(&self) -> Vec<DeleteSourceRequest> {
+        self.captured
+            .delete_source
+            .lock()
+            .expect("delete_source capture")
+            .clone()
     }
 
     #[allow(
