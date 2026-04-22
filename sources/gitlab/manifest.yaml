@@ -26,6 +26,8 @@ auth:
     - name: PRIVATE-TOKEN
       from: template
       template: '{{input.GITLAB_TOKEN}}'
+test_queries:
+  - SELECT * FROM gitlab.all_projects LIMIT 1
 tables:
   - name: access_requests
     description: Gets a list of access requests for a group.
