@@ -223,10 +223,7 @@ async fn json_length_returns_array_length() {
 
     assert_eq!(
         rows,
-        vec![
-            json!({"id": 1, "len": 2}),
-            json!({"id": 2, "len": 1}),
-        ]
+        vec![json!({"id": 1, "len": 2}), json!({"id": 2, "len": 1}),]
     );
 }
 
