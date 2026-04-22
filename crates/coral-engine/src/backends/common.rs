@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
-use crate::QueryRuntimeContext;
+use crate::{QueryRuntimeContext, RequestAuthenticator};
 use async_trait::async_trait;
 use coral_spec::backends::file::PartitionColumnSpec;
 use coral_spec::{
@@ -63,6 +63,7 @@ pub(crate) struct BackendCompileRequest<'a> {
     pub(crate) runtime_context: &'a QueryRuntimeContext,
     pub(crate) source_secrets: BTreeMap<String, String>,
     pub(crate) source_variables: BTreeMap<String, String>,
+    pub(crate) request_authenticators: &'a HashMap<String, Arc<dyn RequestAuthenticator>>,
 }
 
 #[async_trait]

@@ -8,13 +8,19 @@ use datafusion::error::{DataFusionError, Result};
 use reqwest::header::HeaderMap;
 use serde_json::{Map, Value, json};
 
+use crate::RequestAuthenticator;
 use crate::backends::http::ProviderQueryError;
+use crate::backends::http::auth::{resolve_auth_headers, validate_auth_inputs};
 use crate::backends::http::rate_limit::{RateLimitDecision, check_rate_limit};
 use crate::backends::shared::json_path::get_path_value;
+use crate::backends::shared::template::{
+    render_template, resolve_value_source, validate_input_dependencies,
+    validate_value_source_inputs, value_to_string,
+};
 use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec, RateLimitSpec};
 use coral_spec::{
-    HeaderSpec, HttpMethod, ManifestInputKind, PageSizeSpec, ParsedTemplate, RowStrategy,
-    TemplateNamespace, TemplatePart, ValidatedPagination, ValidatedPaginationMode, ValueSourceSpec,
+    AuthSpec, HeaderSpec, HttpMethod, PageSizeSpec, ParsedTemplate, RowStrategy,
+    ValidatedPagination, ValidatedPaginationMode,
 };
 
 const DEFAULT_MAX_PAGES: usize = 10_000;
@@ -27,7 +33,9 @@ pub(crate) struct HttpSourceClient {
     request_timeout: Duration,
     source_schema: String,
     base_url: ParsedTemplate,
-    auth_headers: Vec<HeaderSpec>,
+    auth: AuthSpec,
+    request_headers: Vec<HeaderSpec>,
+    request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>>,
     rate_limit: RateLimitSpec,
     resolved_inputs: Arc<BTreeMap<String, String>>,
 }
@@ -37,7 +45,8 @@ impl std::fmt::Debug for HttpSourceClient {
         f.debug_struct("HttpSourceClient")
             .field("source_schema", &self.source_schema)
             .field("base_url", &self.base_url)
-            .field("auth_headers", &self.auth_headers)
+            .field("auth", &self.auth)
+            .field("request_headers", &self.request_headers)
             .field("rate_limit", &self.rate_limit)
             .finish_non_exhaustive()
     }
@@ -52,7 +61,9 @@ struct PageState {
 }
 
 struct RequestSpec<'a> {
-    auth_headers: &'a [HeaderSpec],
+    auth: &'a AuthSpec,
+    request_headers: &'a [HeaderSpec],
+    request_authenticators: &'a HashMap<String, Arc<dyn RequestAuthenticator>>,
     table_headers: &'a [HeaderSpec],
     table_name: &'a str,
     method: HttpMethod,
@@ -80,28 +91,16 @@ impl HttpSourceClient {
         manifest: &HttpSourceManifest,
         source_secrets: &BTreeMap<String, String>,
         source_variables: &BTreeMap<String, String>,
+        request_authenticators: &HashMap<String, Arc<dyn RequestAuthenticator>>,
     ) -> Result<Self> {
-        let auth = &manifest.auth;
-        let resolved_inputs = build_resolved_inputs(manifest, source_secrets, source_variables);
-
-        for header in &auth.headers {
-            let resolved = resolve_value_source(
-                &header.value,
-                &HashMap::new(),
-                &HashMap::new(),
-                &resolved_inputs,
-            )?;
-            if resolved.is_none() {
-                return Err(DataFusionError::Execution(format!(
-                    "{} source auth header '{}' could not be resolved",
-                    manifest.common.name, header.name
-                )));
-            }
-        }
+        let resolved_inputs =
+            coral_spec::resolve_inputs(&manifest.declared_inputs, source_secrets, source_variables);
+        validate_source_scoped_http_config(manifest, request_authenticators, &resolved_inputs)?;
 
         let request_timeout = Duration::from_secs(DEFAULT_HTTP_REQUEST_TIMEOUT_SECS);
         let http = reqwest::Client::builder()
             .timeout(request_timeout)
+            .user_agent("coral")
             .build()
             .map_err(|error| {
                 DataFusionError::Execution(format!(
@@ -115,7 +114,9 @@ impl HttpSourceClient {
             request_timeout,
             source_schema: manifest.common.name.clone(),
             base_url: manifest.base_url.clone(),
-            auth_headers: manifest.auth.headers.clone(),
+            auth: manifest.auth.clone(),
+            request_headers: manifest.request_headers.clone(),
+            request_authenticators: request_authenticators.clone(),
             rate_limit: manifest.rate_limit.clone(),
             resolved_inputs: Arc::new(resolved_inputs),
         })
@@ -231,7 +232,9 @@ impl HttpSourceClient {
                 &self.http,
                 self.request_timeout,
                 RequestSpec {
-                    auth_headers: &self.auth_headers,
+                    auth: &self.auth,
+                    request_headers: &self.request_headers,
+                    request_authenticators: &self.request_authenticators,
                     table_headers: &active_request.headers,
                     table_name: table.name(),
                     method: active_request.method,
@@ -333,6 +336,61 @@ impl HttpSourceClient {
     }
 }
 
+fn validate_source_scoped_http_config(
+    manifest: &HttpSourceManifest,
+    request_authenticators: &HashMap<String, Arc<dyn RequestAuthenticator>>,
+    resolved_inputs: &BTreeMap<String, String>,
+) -> Result<()> {
+    check_base_url_inputs(manifest, resolved_inputs)?;
+    check_request_header_inputs(manifest, resolved_inputs)?;
+    check_auth_inputs(manifest, request_authenticators, resolved_inputs)?;
+    Ok(())
+}
+
+/// `base_url` may reference `{{filter.*}}` / `{{state.*}}` that only resolve
+/// per-request. Check input-token deps only; runtime renders the rest.
+fn check_base_url_inputs(
+    manifest: &HttpSourceManifest,
+    resolved_inputs: &BTreeMap<String, String>,
+) -> Result<()> {
+    validate_input_dependencies(&manifest.base_url, resolved_inputs)
+        .map_err(|error| registration_error(&manifest.common.name, "base_url", &error))
+}
+
+/// Same tolerance for filter/state tokens as `base_url`.
+fn check_request_header_inputs(
+    manifest: &HttpSourceManifest,
+    resolved_inputs: &BTreeMap<String, String>,
+) -> Result<()> {
+    for header in &manifest.request_headers {
+        validate_value_source_inputs(&header.value, resolved_inputs).map_err(|error| {
+            registration_error(
+                &manifest.common.name,
+                &format!("request header '{}'", header.name),
+                &error,
+            )
+        })?;
+    }
+    Ok(())
+}
+
+/// Auth is source-scoped: all template dependencies must resolve from inputs
+/// before any request is issued.
+fn check_auth_inputs(
+    manifest: &HttpSourceManifest,
+    request_authenticators: &HashMap<String, Arc<dyn RequestAuthenticator>>,
+    resolved_inputs: &BTreeMap<String, String>,
+) -> Result<()> {
+    validate_auth_inputs(&manifest.auth, request_authenticators, resolved_inputs)
+        .map_err(|error| registration_error(&manifest.common.name, "auth", &error))
+}
+
+fn registration_error(source: &str, field: &str, error: &DataFusionError) -> DataFusionError {
+    DataFusionError::Execution(format!(
+        "source '{source}' {field} could not be resolved: {error}"
+    ))
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "HTTP request execution keeps retry, auth, logging, and response handling in one audited flow"
@@ -343,7 +401,9 @@ async fn execute_request(
     request: RequestSpec<'_>,
 ) -> Result<Option<(Value, Option<String>)>> {
     let RequestSpec {
-        auth_headers,
+        auth,
+        request_headers,
+        request_authenticators,
         table_headers,
         table_name,
         method,
@@ -365,15 +425,12 @@ async fn execute_request(
         let method_label = http_method_label(method);
         let mut request = build_http_request(http, method, url);
 
-        for header in auth_headers {
-            let value = resolve_value_source(&header.value, filters, state, resolved_inputs)?
-                .ok_or_else(|| {
-                    DataFusionError::Execution(format!(
-                        "missing value for auth header '{}'",
-                        header.name
-                    ))
-                })?;
-            request = request.header(&header.name, value_to_string(&value));
+        for header in request_headers {
+            if let Some(value) =
+                resolve_value_source(&header.value, filters, state, resolved_inputs)?
+            {
+                request = request.header(&header.name, value_to_string(&value));
+            }
         }
 
         for header in table_headers {
@@ -397,7 +454,9 @@ async fn execute_request(
             .and_then(|b| serde_json::to_string_pretty(b).ok())
             .filter(|s| !s.is_empty());
 
-        let response = request.send().await.map_err(|error| {
+        let built = resolve_auth_headers(auth, request, request_authenticators, resolved_inputs)?;
+
+        let response = http.execute(built).await.map_err(|error| {
             request_error(
                 "request",
                 method_label,
@@ -649,52 +708,6 @@ fn page_is_exhausted(rows_on_page: usize, page_size: Option<usize>) -> bool {
     rows_on_page == 0 || page_size.is_some_and(|requested| rows_on_page < requested)
 }
 
-fn resolve_value_source(
-    value: &ValueSourceSpec,
-    filters: &HashMap<String, String>,
-    state: &HashMap<String, String>,
-    resolved_inputs: &BTreeMap<String, String>,
-) -> Result<Option<Value>> {
-    match value {
-        ValueSourceSpec::Template { template } => {
-            let rendered = render_template(template, filters, state, resolved_inputs)?;
-            Ok(Some(Value::String(rendered)))
-        }
-        ValueSourceSpec::Literal { value } => Ok(Some(value.clone())),
-        ValueSourceSpec::Filter { key, default } => Ok(filters
-            .get(key)
-            .map(|v| Value::String(v.clone()))
-            .or_else(|| default.clone())),
-        ValueSourceSpec::FilterInt { key, default } => {
-            let value = if let Some(filter) = filters.get(key) {
-                let parsed = filter.parse::<i64>().map_err(|error| {
-                    DataFusionError::Execution(format!(
-                        "filter '{key}' value '{filter}' is not a valid i64: {error}"
-                    ))
-                })?;
-                Some(json!(parsed))
-            } else {
-                default.map(|value| json!(value))
-            };
-            Ok(value)
-        }
-        ValueSourceSpec::Input { key } => Ok(resolved_inputs.get(key).cloned().map(Value::String)),
-        ValueSourceSpec::State { key } => Ok(state.get(key).map(|v| Value::String(v.clone()))),
-        ValueSourceSpec::NowEpochMinusSeconds { seconds } => {
-            #[allow(
-                clippy::cast_possible_wrap,
-                reason = "Current Unix epoch seconds fit within i64 for centuries"
-            )]
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs() as i64;
-            let value = now.saturating_sub(*seconds);
-            Ok(Some(json!(value)))
-        }
-    }
-}
-
 fn pagination_state_values(state: &PageState) -> HashMap<String, String> {
     let mut values = HashMap::new();
     values.insert("page".to_string(), state.page.to_string());
@@ -703,101 +716,6 @@ fn pagination_state_values(state: &PageState) -> HashMap<String, String> {
         values.insert("cursor".to_string(), cursor.clone());
     }
     values
-}
-
-fn render_template(
-    template: &ParsedTemplate,
-    filters: &HashMap<String, String>,
-    state: &HashMap<String, String>,
-    resolved_inputs: &BTreeMap<String, String>,
-) -> Result<String> {
-    let mut out = String::with_capacity(template.raw().len());
-    for part in template.parts() {
-        match part {
-            TemplatePart::Literal(part) => out.push_str(part),
-            TemplatePart::Token(token) => out.push_str(&resolve_template_token(
-                token,
-                filters,
-                state,
-                resolved_inputs,
-            )?),
-        }
-    }
-    Ok(out)
-}
-
-fn resolve_template_token(
-    token: &coral_spec::TemplateToken,
-    filters: &HashMap<String, String>,
-    state: &HashMap<String, String>,
-    resolved_inputs: &BTreeMap<String, String>,
-) -> Result<String> {
-    let default = token.default_value().map(ToString::to_string);
-
-    if token.namespace() == &TemplateNamespace::Input {
-        return resolved_inputs
-            .get(token.key())
-            .cloned()
-            .or(default)
-            .ok_or_else(|| {
-                DataFusionError::Execution(format!(
-                    "missing source input '{}' for template token",
-                    token.key()
-                ))
-            });
-    }
-
-    if token.namespace() == &TemplateNamespace::Filter {
-        return filters
-            .get(token.key())
-            .cloned()
-            .or(default)
-            .ok_or_else(|| {
-                DataFusionError::Execution(format!("missing filter '{}'", token.key()))
-            });
-    }
-
-    if token.namespace() == &TemplateNamespace::State {
-        return state.get(token.key()).cloned().or(default).ok_or_else(|| {
-            DataFusionError::Execution(format!("missing state value '{}'", token.key()))
-        });
-    }
-
-    Err(DataFusionError::Execution(format!(
-        "unsupported template token '{}'",
-        token.raw()
-    )))
-}
-
-fn build_resolved_inputs(
-    manifest: &HttpSourceManifest,
-    source_secrets: &BTreeMap<String, String>,
-    source_variables: &BTreeMap<String, String>,
-) -> BTreeMap<String, String> {
-    let mut resolved = BTreeMap::new();
-    for input in &manifest.declared_inputs {
-        let value = match input.kind {
-            ManifestInputKind::Secret => source_secrets.get(&input.key).cloned(),
-            ManifestInputKind::Variable => source_variables
-                .get(&input.key)
-                .cloned()
-                .or_else(|| (!input.default_value.is_empty()).then(|| input.default_value.clone())),
-        };
-        if let Some(value) = value {
-            resolved.insert(input.key.clone(), value);
-        }
-    }
-    resolved
-}
-
-fn value_to_string(value: &Value) -> String {
-    match value {
-        Value::Null => String::new(),
-        Value::Bool(v) => v.to_string(),
-        Value::Number(v) => v.to_string(),
-        Value::String(v) => v.clone(),
-        Value::Array(_) | Value::Object(_) => serde_json::to_string(value).unwrap_or_default(),
-    }
 }
 
 fn build_logged_url(url: &str, query_pairs: &[(String, String)]) -> String {
@@ -1030,7 +948,7 @@ mod tests {
     use coral_spec::PaginationMode;
     use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec, RateLimitSpec};
     use coral_spec::{
-        HttpMethod, PaginationSpec, ParsedTemplate, RequestSpec, RowStrategy,
+        AuthSpec, HttpMethod, PaginationSpec, ParsedTemplate, RequestSpec, RowStrategy,
         ValidatedPaginationMode, ValueSourceSpec, parse_source_manifest_value,
     };
 
@@ -1290,6 +1208,7 @@ mod tests {
             "backend": "http",
             "base_url": "https://api.example.com",
             "auth": {
+                "type": "HeaderAuth",
                 "headers": [{
                     "name": "Authorization",
                     "from": "template",
@@ -1311,8 +1230,13 @@ mod tests {
         }));
         let source_secrets = BTreeMap::new();
 
-        let error = HttpSourceClient::from_manifest(&manifest, &source_secrets, &BTreeMap::new())
-            .expect_err("missing source-scoped credentials must fail");
+        let error = HttpSourceClient::from_manifest(
+            &manifest,
+            &source_secrets,
+            &BTreeMap::new(),
+            &HashMap::new(),
+        )
+        .expect_err("missing source-scoped credentials must fail");
 
         assert!(
             error
@@ -1560,7 +1484,9 @@ mod tests {
             &http,
             request_timeout,
             HttpRequestSpec {
-                auth_headers: &[],
+                auth: &AuthSpec::default(),
+                request_headers: &[],
+                request_authenticators: &HashMap::new(),
                 table_headers: &[],
                 table_name: "items",
                 method: HttpMethod::GET,

@@ -1,4 +1,11 @@
-use coral_engine::{CoralQuery, CoreError, StatusCode};
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
+use coral_engine::{
+    CoralQuery, CoreError, EngineExtensions, QueryRuntimeContext, QueryRuntimeProvider,
+    RequestAuthenticator, RequestAuthenticatorError, StatusCode,
+};
+use reqwest::header::{AUTHORIZATION, HeaderName, HeaderValue};
 use serde_json::{Value, json};
 use wiremock::matchers::{header, method, path, query_param, query_param_is_missing};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -31,6 +38,62 @@ fn base_http_manifest(name: &str, base_url: &str) -> Value {
             ]
         }]
     })
+}
+
+#[derive(Debug)]
+struct TestRequestAuthenticator;
+
+impl RequestAuthenticator for TestRequestAuthenticator {
+    fn name(&self) -> &'static str {
+        "test_signer"
+    }
+
+    fn authenticate(
+        &self,
+        auth: &coral_spec::CustomAuthSpec,
+        request: &reqwest::Request,
+        resolved_inputs: &BTreeMap<String, String>,
+    ) -> Result<Vec<(HeaderName, HeaderValue)>, RequestAuthenticatorError> {
+        let prefix = auth
+            .config
+            .get("prefix")
+            .and_then(Value::as_str)
+            .ok_or_else(|| RequestAuthenticatorError::invalid_input("missing auth prefix"))?;
+        let token = resolved_inputs
+            .get("API_TOKEN")
+            .ok_or_else(|| RequestAuthenticatorError::failed_precondition("missing API_TOKEN"))?;
+        Ok(vec![
+            (
+                AUTHORIZATION,
+                HeaderValue::from_str(&format!("{prefix} {token}")).map_err(|error| {
+                    RequestAuthenticatorError::failed_precondition(error.to_string())
+                })?,
+            ),
+            (
+                HeaderName::from_static("x-signed-path"),
+                HeaderValue::from_str(request.url().path()).map_err(|error| {
+                    RequestAuthenticatorError::failed_precondition(error.to_string())
+                })?,
+            ),
+        ])
+    }
+}
+
+struct TestAuthRuntime;
+
+impl QueryRuntimeProvider for TestAuthRuntime {
+    fn runtime_context(&self) -> QueryRuntimeContext {
+        QueryRuntimeContext::default()
+    }
+
+    fn engine_extensions(&self) -> EngineExtensions {
+        let mut extensions = EngineExtensions::default();
+        extensions.request_authenticators.insert(
+            "test_signer".to_string(),
+            Arc::new(TestRequestAuthenticator),
+        );
+        extensions
+    }
 }
 
 #[tokio::test]
@@ -346,6 +409,7 @@ async fn auth_headers_sent_correctly() {
         "API_TOKEN": { "kind": "secret" }
     });
     manifest["auth"] = json!({
+        "type": "HeaderAuth",
         "headers": [{
             "name": "Authorization",
             "from": "template",
@@ -359,6 +423,42 @@ async fn auth_headers_sent_correctly() {
             &[source],
             &TestRuntime,
             "SELECT COUNT(*) AS n FROM http_auth.users",
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(rows, vec![json!({"n": 3})]);
+}
+
+#[tokio::test]
+async fn custom_authenticator_signs_final_request() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .and(header("authorization", "Bearer secret-token"))
+        .and(header("x-signed-path", "/api/users"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": users_rows() })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut manifest = base_http_manifest("http_custom_auth", &server.uri());
+    manifest["inputs"] = json!({
+        "API_TOKEN": { "kind": "secret" }
+    });
+    manifest["auth"] = json!({
+        "type": "CustomAuth",
+        "authenticator": "test_signer",
+        "prefix": "Bearer"
+    });
+    let source = build_source_with_secrets(manifest, [("API_TOKEN", "secret-token")]);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            &TestAuthRuntime,
+            "SELECT COUNT(*) AS n FROM http_custom_auth.users",
         )
         .await
         .expect("query should succeed"),
