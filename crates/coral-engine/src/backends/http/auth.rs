@@ -69,14 +69,13 @@ impl BuiltinAuth for HeaderAuthSpec {
                     header.name
                 ))
             })?;
-            let value = HeaderValue::try_from(value_to_string(&resolved).as_str()).map_err(
-                |error| {
+            let value =
+                HeaderValue::try_from(value_to_string(&resolved).as_str()).map_err(|error| {
                     DataFusionError::Execution(format!(
                         "invalid auth header value for '{}': {error}",
                         header.name
                     ))
-                },
-            )?;
+                })?;
             out.push((name, value));
         }
         Ok(out)
