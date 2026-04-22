@@ -31,9 +31,9 @@ coral sql "SELECT table_name FROM coral.tables WHERE schema_name = 'confluence' 
 |---|---|
 | `spaces` | Visible Confluence spaces |
 | `pages` | Pages list; optional `space_id`, `status`, `title`, `body_format` |
-| `page` | Single page by ID; requires `id` |
+| `page` | Single page by ID; requires `id`; optional `body_format` |
 | `blog_posts` | Blog posts list; optional `space_id`, `status`, `body_format` |
-| `blog_post` | Single blog post by ID; requires `id` |
+| `blog_post` | Single blog post by ID; requires `id`; optional `body_format` |
 | `page_footer_comments` | Footer comments for one page; requires `page_id` |
 | `page_inline_comments` | Inline comments for one page; requires `page_id` |
 | `blog_post_footer_comments` | Footer comments for one blog post; requires `blog_post_id` |
@@ -45,13 +45,13 @@ coral sql "SELECT table_name FROM coral.tables WHERE schema_name = 'confluence' 
 
 ## Body formats
 
-`pages`, `page`, `blog_posts`, and every comment table accept an optional `body_format` filter. When set, the corresponding `body_*` column is populated; when unset, body columns are null.
+`pages`, `page`, `blog_posts`, `blog_post`, and every comment table accept an optional `body_format` filter. When set, the corresponding `body_*` column is populated; when unset, body columns are null.
 
 | `body_format`       | Column populated          |
 |---------------------|---------------------------|
 | `storage`           | `body_storage` (XHTML)    |
 | `atlas_doc_format`  | `body_atlas_doc_format` (ADF JSON) |
-| `view`              | `body_view` (rendered HTML, `page` only) |
+| `view`              | `body_view` (rendered HTML, `page` and `blog_post` only) |
 
 ## Notes
 
