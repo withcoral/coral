@@ -21,6 +21,8 @@ auth:
     - name: Authorization
       from: template
       template: Bearer {{input.STRIPE_API_KEY}}
+test_queries:
+  - SELECT * FROM stripe.account LIMIT 1
 tables:
   - name: account
     description: Retrieve account
