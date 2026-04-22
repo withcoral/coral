@@ -48,7 +48,7 @@ struct PersistedWorkspaceConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PersistedInstalledSource {
     #[serde(default)]
-    version: String,
+    version: Option<String>,
     #[serde(default)]
     variables: BTreeMap<String, String>,
     #[serde(default)]
@@ -248,13 +248,13 @@ fn render_config(config: &PersistedAppConfig) -> String {
                 *source_item = toml_edit::table();
             }
 
-            if source.version.is_empty() {
+            if let Some(version) = &source.version {
+                source_item["version"] = value(version.clone());
+            } else {
                 let source_table = source_item
                     .as_table_mut()
                     .expect("source config entry should be a table after initialization");
                 source_table.remove("version");
-            } else {
-                source_item["version"] = value(source.version.clone());
             }
             source_item["variables"] = Item::Value(render_inline_table(&source.variables));
             source_item["secrets"] = Item::Value(render_string_array(&source.secrets));
@@ -343,7 +343,7 @@ mod tests {
     fn installed_source(name: &str) -> InstalledSource {
         InstalledSource {
             name: SourceName::parse(name).expect("source"),
-            version: "1.1.4".to_string(),
+            version: Some("1.1.4".to_string()),
             variables: BTreeMap::from([(
                 "GITHUB_API_BASE".to_string(),
                 "https://api.github.com".to_string(),
@@ -382,7 +382,7 @@ mod tests {
     fn omits_empty_versions_from_rendered_source_entries() {
         let workspace_name = default_workspace();
         let mut source = installed_source("github");
-        source.version.clear();
+        source.version = None;
         source.origin = SourceOrigin::Bundled;
         let mut catalog = SourceCatalog::default();
         catalog.upsert_source(&workspace_name, source);
@@ -415,7 +415,7 @@ origin = "bundled"
         let sources = config.catalog.workspace_sources(&default_workspace());
         assert_eq!(sources.len(), 1);
         assert_eq!(sources[0].name.as_str(), "github");
-        assert_eq!(sources[0].version, "1.1.4");
+        assert_eq!(sources[0].version.as_deref(), Some("1.1.4"));
         assert_eq!(
             sources[0].variables.get("GITHUB_API_BASE"),
             Some(&"https://api.github.com".to_string())
@@ -430,7 +430,7 @@ origin = "bundled"
         catalog.upsert_source(&workspace_name, installed_source("github"));
 
         let mut updated = installed_source("github");
-        updated.version = "2.0.0".to_string();
+        updated.version = Some("2.0.0".to_string());
         updated.origin = SourceOrigin::Imported;
         catalog.upsert_source(&workspace_name, updated);
 
@@ -440,7 +440,7 @@ origin = "bundled"
                 &SourceName::parse("github").expect("source"),
             )
             .expect("source should be present");
-        assert_eq!(stored.version, "2.0.0");
+        assert_eq!(stored.version.as_deref(), Some("2.0.0"));
         assert_eq!(stored.origin, SourceOrigin::Imported);
         assert_eq!(catalog.workspace_sources(&workspace_name).len(), 1);
     }

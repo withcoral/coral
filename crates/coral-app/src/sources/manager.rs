@@ -207,8 +207,8 @@ impl SourceManager {
         };
 
         let persisted_version = match request.origin {
-            SourceOrigin::Bundled => String::new(),
-            SourceOrigin::Imported => request.candidate.version.clone(),
+            SourceOrigin::Bundled => None,
+            SourceOrigin::Imported => Some(request.candidate.version.clone()),
         };
         let stored = InstalledSource {
             name: source_name.clone(),
@@ -225,7 +225,7 @@ impl SourceManager {
             return Err(error);
         }
         let mut resolved = stored;
-        resolved.version.clone_from(&request.candidate.version);
+        resolved.version = Some(request.candidate.version.clone());
         Ok(resolved)
     }
 
@@ -329,9 +329,11 @@ impl SourceManager {
         workspace_name: &WorkspaceName,
         mut source: InstalledSource,
     ) -> Result<InstalledSource, AppError> {
-        source.version = resolve_installed_manifest(workspace_name, &source, &self.layout)?
-            .candidate
-            .version;
+        source.version = Some(
+            resolve_installed_manifest(workspace_name, &source, &self.layout)?
+                .candidate
+                .version,
+        );
         Ok(source)
     }
 

@@ -97,7 +97,7 @@ impl QueryManager {
         .await
         .map_err(QueryManagerError::Core)?;
         let mut source = source;
-        source.version = version;
+        source.version = Some(version);
 
         Ok(ValidatedSource { source, report })
     }
