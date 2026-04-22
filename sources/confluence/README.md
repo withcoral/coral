@@ -2,7 +2,7 @@
 
 **API Version:** v2  
 **Backend:** HTTP  
-**Tables:** 10  
+**Tables:** 13  
 **Base URL:** `https://your-domain.atlassian.net/wiki` (override with `CONFLUENCE_BASE_URL`)
 
 ## Authentication
@@ -33,11 +33,14 @@ coral sql "SELECT table_name FROM coral.tables WHERE schema_name = 'confluence' 
 | `pages` | Pages list; optional `space_id`, `status`, `title`, `body_format` |
 | `page` | Single page by ID; requires `id` |
 | `blog_posts` | Blog posts list; optional `space_id`, `status`, `body_format` |
+| `blog_post` | Single blog post by ID; requires `id` |
 | `page_footer_comments` | Footer comments for one page; requires `page_id` |
 | `page_inline_comments` | Inline comments for one page; requires `page_id` |
 | `blog_post_footer_comments` | Footer comments for one blog post; requires `blog_post_id` |
 | `blog_post_inline_comments` | Inline comments for one blog post; requires `blog_post_id` |
 | `page_attachments` | Attachments for one page; requires `page_id` |
+| `blog_post_attachments` | Attachments for one blog post; requires `blog_post_id` |
+| `attachment` | Single attachment by ID; requires `id` |
 | `labels` | Labels defined in Confluence |
 
 ## Body formats
@@ -49,6 +52,12 @@ coral sql "SELECT table_name FROM coral.tables WHERE schema_name = 'confluence' 
 | `storage`           | `body_storage` (XHTML)    |
 | `atlas_doc_format`  | `body_atlas_doc_format` (ADF JSON) |
 | `view`              | `body_view` (rendered HTML, `page` only) |
+
+## Notes
+
+- `confluence.blog_posts` (`GET /api/v2/blogposts`) accepts `status` values `current`, `deleted`, and `trashed`.
+- `confluence.blog_posts` with `status = 'draft'` returns `400 INVALID_REQUEST_PARAMETER`.
+- Use `confluence.blog_post` with a known `id` to fetch a specific draft blog post.
 
 ## Example queries
 

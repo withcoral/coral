@@ -522,6 +522,12 @@ tables:
           key: body_format
   - name: blog_posts
     description: Confluence blog posts visible to the authenticated user
+    guide: |
+      Confluence `GET /api/v2/blogposts` supports status values
+      `current`, `deleted`, and `trashed`. Passing `status='draft'`
+      returns a 400 `INVALID_REQUEST_PARAMETER` from the API.
+      To fetch a specific draft blog post, query `confluence.blog_post`
+      by ID.
     filters:
       - name: space_id
         required: false
@@ -659,6 +665,152 @@ tables:
           path:
             - body
             - atlas_doc_format
+            - value
+      - name: body_format
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional body format
+        expr:
+          kind: from_filter
+          key: body_format
+  - name: blog_post
+    description: A single Confluence blog post by ID
+    filters:
+      - name: id
+        required: true
+      - name: body_format
+        required: false
+    request:
+      method: GET
+      path: /api/v2/blogposts/{{filter.id}}
+      query:
+        - name: body-format
+          from: filter
+          key: body_format
+    response:
+      row_strategy: direct
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Blog post ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Blog post status
+        expr:
+          kind: path
+          path:
+            - status
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Blog post title
+        expr:
+          kind: path
+          path:
+            - title
+      - name: space_id
+        type: Utf8
+        nullable: true
+        description: Parent space ID
+        expr:
+          kind: path
+          path:
+            - spaceId
+      - name: author_id
+        type: Utf8
+        nullable: true
+        description: Author account ID
+        expr:
+          kind: path
+          path:
+            - authorId
+      - name: owner_id
+        type: Utf8
+        nullable: true
+        description: Current owner account ID
+        expr:
+          kind: path
+          path:
+            - ownerId
+      - name: last_owner_id
+        type: Utf8
+        nullable: true
+        description: Previous owner account ID
+        expr:
+          kind: path
+          path:
+            - lastOwnerId
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Creation timestamp
+        expr:
+          kind: path
+          path:
+            - createdAt
+      - name: version_number
+        type: Int64
+        nullable: true
+        description: Current version number
+        expr:
+          kind: path
+          path:
+            - version
+            - number
+      - name: version_message
+        type: Utf8
+        nullable: true
+        description: Current version message
+        expr:
+          kind: path
+          path:
+            - version
+            - message
+      - name: version_created_at
+        type: Utf8
+        nullable: true
+        description: Current version creation timestamp
+        expr:
+          kind: path
+          path:
+            - version
+            - createdAt
+      - name: body_storage
+        type: Utf8
+        nullable: true
+        description: Body in storage (XHTML) format
+        expr:
+          kind: path
+          path:
+            - body
+            - storage
+            - value
+      - name: body_atlas_doc_format
+        type: Utf8
+        nullable: true
+        description: Body in Atlassian Document Format JSON
+        expr:
+          kind: path
+          path:
+            - body
+            - atlas_doc_format
+            - value
+      - name: body_view
+        type: Utf8
+        nullable: true
+        description: Body rendered as HTML for display
+        expr:
+          kind: path
+          path:
+            - body
+            - view
             - value
       - name: body_format
         type: Utf8
@@ -1269,6 +1421,300 @@ tables:
           kind: path
           path:
             - webuiLink
+  - name: blog_post_attachments
+    description: Attachments on a specific Confluence blog post
+    filters:
+      - name: blog_post_id
+        required: true
+    request:
+      method: GET
+      path: /api/v2/blogposts/{{filter.blog_post_id}}/attachments
+    response:
+      rows_path:
+        - results
+      row_strategy: direct
+    pagination:
+      mode: link_header
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Attachment ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Attachment status
+        expr:
+          kind: path
+          path:
+            - status
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Attachment filename
+        expr:
+          kind: path
+          path:
+            - title
+      - name: blog_post_id
+        type: Utf8
+        nullable: true
+        description: ID of the blog post this attachment belongs to
+        expr:
+          kind: path
+          path:
+            - blogPostId
+      - name: media_type
+        type: Utf8
+        nullable: true
+        description: MIME type of the attachment
+        expr:
+          kind: path
+          path:
+            - mediaType
+      - name: media_type_description
+        type: Utf8
+        nullable: true
+        description: Human-readable media type description
+        expr:
+          kind: path
+          path:
+            - mediaTypeDescription
+      - name: file_id
+        type: Utf8
+        nullable: true
+        description: Underlying file ID
+        expr:
+          kind: path
+          path:
+            - fileId
+      - name: file_size
+        type: Int64
+        nullable: true
+        description: File size in bytes
+        expr:
+          kind: path
+          path:
+            - fileSize
+      - name: comment
+        type: Utf8
+        nullable: true
+        description: Attachment comment
+        expr:
+          kind: path
+          path:
+            - comment
+      - name: version_number
+        type: Int64
+        nullable: true
+        description: Current version number
+        expr:
+          kind: path
+          path:
+            - version
+            - number
+      - name: version_created_at
+        type: Utf8
+        nullable: true
+        description: Current version creation timestamp
+        expr:
+          kind: path
+          path:
+            - version
+            - createdAt
+      - name: download_link
+        type: Utf8
+        nullable: true
+        description: Download link
+        expr:
+          kind: path
+          path:
+            - downloadLink
+      - name: webui_link
+        type: Utf8
+        nullable: true
+        description: Web UI link for the attachment
+        expr:
+          kind: path
+          path:
+            - webuiLink
+  - name: attachment
+    description: A single Confluence attachment by ID
+    filters:
+      - name: id
+        required: true
+      - name: version
+        required: false
+    request:
+      method: GET
+      path: /api/v2/attachments/{{filter.id}}
+      query:
+        - name: version
+          from: filter
+          key: version
+    response:
+      row_strategy: direct
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Attachment ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Attachment status
+        expr:
+          kind: path
+          path:
+            - status
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Attachment filename
+        expr:
+          kind: path
+          path:
+            - title
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Attachment creation timestamp
+        expr:
+          kind: path
+          path:
+            - createdAt
+      - name: page_id
+        type: Utf8
+        nullable: true
+        description: Parent page ID when attached to a page
+        expr:
+          kind: path
+          path:
+            - pageId
+      - name: blog_post_id
+        type: Utf8
+        nullable: true
+        description: Parent blog post ID when attached to a blog post
+        expr:
+          kind: path
+          path:
+            - blogPostId
+      - name: custom_content_id
+        type: Utf8
+        nullable: true
+        description: Parent custom content ID when attached to custom content
+        expr:
+          kind: path
+          path:
+            - customContentId
+      - name: media_type
+        type: Utf8
+        nullable: true
+        description: MIME type of the attachment
+        expr:
+          kind: path
+          path:
+            - mediaType
+      - name: media_type_description
+        type: Utf8
+        nullable: true
+        description: Human-readable media type description
+        expr:
+          kind: path
+          path:
+            - mediaTypeDescription
+      - name: file_id
+        type: Utf8
+        nullable: true
+        description: Underlying file ID
+        expr:
+          kind: path
+          path:
+            - fileId
+      - name: file_size
+        type: Int64
+        nullable: true
+        description: File size in bytes
+        expr:
+          kind: path
+          path:
+            - fileSize
+      - name: comment
+        type: Utf8
+        nullable: true
+        description: Attachment comment
+        expr:
+          kind: path
+          path:
+            - comment
+      - name: version_number
+        type: Int64
+        nullable: true
+        description: Current version number
+        expr:
+          kind: path
+          path:
+            - version
+            - number
+      - name: version_created_at
+        type: Utf8
+        nullable: true
+        description: Current version creation timestamp
+        expr:
+          kind: path
+          path:
+            - version
+            - createdAt
+      - name: version_message
+        type: Utf8
+        nullable: true
+        description: Current version message
+        expr:
+          kind: path
+          path:
+            - version
+            - message
+      - name: version_author_id
+        type: Utf8
+        nullable: true
+        description: Current version author account ID
+        expr:
+          kind: path
+          path:
+            - version
+            - authorId
+      - name: download_link
+        type: Utf8
+        nullable: true
+        description: Download link
+        expr:
+          kind: path
+          path:
+            - downloadLink
+      - name: webui_link
+        type: Utf8
+        nullable: true
+        description: Web UI link for the attachment
+        expr:
+          kind: path
+          path:
+            - webuiLink
+      - name: version
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional specific version to fetch
+        expr:
+          kind: from_filter
+          key: version
   - name: labels
     description: Labels defined in Confluence
     filters:
