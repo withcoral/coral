@@ -25,6 +25,8 @@ auth:
     - name: Content-Type
       from: literal
       value: application/json
+test_queries:
+  - SELECT * FROM launchdarkly.projects LIMIT 1
 tables:
   - name: projects
     description: LaunchDarkly projects visible to the authenticated token
