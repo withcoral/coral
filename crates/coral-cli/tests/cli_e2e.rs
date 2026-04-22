@@ -554,7 +554,7 @@ async fn source_remove_rejects_invalid_name() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread")]
-async fn source_add_rejects_non_interactive() {
+async fn source_add_non_interactive_fails_only_when_required_input_is_missing() {
     let server = MockServer::start().await;
 
     let assert = server
@@ -565,8 +565,12 @@ async fn source_add_rejects_non_interactive() {
 
     let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
     assert!(
-        stderr.contains("requires a TTY"),
-        "expected TTY requirement error: {stderr}"
+        stderr.contains("missing required source secret 'GITHUB_TOKEN'"),
+        "expected missing input error: {stderr}"
+    );
+    assert!(
+        server.create_bundled_source_requests().is_empty(),
+        "expected no create_bundled_source RPC when required inputs are unresolved"
     );
 
     server.shutdown().await;

@@ -76,6 +76,14 @@ struct SourceAddArgs {
     /// Path to a file
     #[arg(long)]
     file: Option<PathBuf>,
+
+    /// Set a non-secret source variable
+    #[arg(long = "var", value_name = "KEY=VALUE")]
+    vars: Vec<String>,
+
+    /// Set a source secret
+    #[arg(long = "secret", value_name = "KEY=VALUE")]
+    secrets: Vec<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -204,8 +212,14 @@ async fn run_source_add(
     app: &coral_client::AppClient,
     args: SourceAddArgs,
 ) -> Result<(), anyhow::Error> {
-    source_ops::require_interactive()?;
-    let SourceAddArgs { name, file } = args;
+    let SourceAddArgs {
+        name,
+        file,
+        vars,
+        secrets,
+    } = args;
+    let explicit_bindings = source_ops::collect_explicit_bindings(&vars, &secrets)?;
+    let interactive_allowed = source_ops::is_interactive();
     let response = match (name, file) {
         (Some(name), None) => {
             let bundled_name = source_ops::source_name_arg(Some(&name))?;
@@ -219,12 +233,17 @@ async fn run_source_add(
                 .iter()
                 .map(source_ops::manifest_input_from_proto)
                 .collect::<Result<Vec<_>, _>>()?;
-            let (variables, secrets) = source_ops::prompt_for_inputs(&inputs)?;
+            let (variables, secrets) =
+                source_ops::resolve_inputs(&inputs, &explicit_bindings, interactive_allowed)?;
             source_ops::add_bundled_source(app, &available.name, variables, secrets).await?
         }
         (None, Some(file)) => {
             let (manifest_yaml, manifest) = source_ops::load_validated_manifest_file(&file)?;
-            let (variables, secrets) = source_ops::prompt_for_inputs(manifest.declared_inputs())?;
+            let (variables, secrets) = source_ops::resolve_inputs(
+                manifest.declared_inputs(),
+                &explicit_bindings,
+                interactive_allowed,
+            )?;
             source_ops::import_source(app, manifest_yaml, variables, secrets).await?
         }
         _ => unreachable!("clap enforces exactly one of name or file"),

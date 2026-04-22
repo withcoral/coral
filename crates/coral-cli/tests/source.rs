@@ -8,6 +8,7 @@ mod harness;
 
 use tempfile::tempdir;
 
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use coral_api::v1::{
@@ -16,6 +17,64 @@ use coral_api::v1::{
 };
 
 use harness::MockServer;
+
+fn write_manifest(dir: &Path, name: &str, manifest: &str) -> PathBuf {
+    let path = dir.join(name);
+    std::fs::write(&path, manifest).expect("failed to write manifest");
+    path
+}
+
+fn zero_input_manifest() -> &'static str {
+    r"
+name: local_messages
+version: 0.1.0
+dsl_version: 3
+backend: http
+base_url: https://example.com
+tables:
+  - name: messages
+    description: Messages
+    request:
+      method: GET
+      path: /messages
+      query: []
+    columns:
+      - name: id
+        type: Utf8
+        description: Message ID
+"
+}
+
+fn manifest_with_bindings() -> &'static str {
+    r#"
+name: secured_messages
+version: 0.1.0
+dsl_version: 3
+backend: http
+inputs:
+  API_BASE:
+    kind: variable
+  API_TOKEN:
+    kind: secret
+base_url: "{{input.API_BASE}}"
+auth:
+  headers:
+    - name: Authorization
+      from: template
+      template: "Bearer {{input.API_TOKEN}}"
+tables:
+  - name: messages
+    description: Messages
+    request:
+      method: GET
+      path: /messages
+      query: []
+    columns:
+      - name: id
+        type: Utf8
+        description: Message ID
+"#
+}
 
 #[test]
 fn source_test_errors_when_required_secret_is_missing() {
@@ -184,6 +243,179 @@ async fn source_test_succeeds_when_query_tests_pass() {
         stderr.trim().is_empty(),
         "expected no stderr output, got: {stderr}"
     );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn source_add_bundled_zero_input_succeeds_without_tty() {
+    let server = MockServer::start().await;
+
+    server
+        .cmd()
+        .args(["source", "add", "slack"])
+        .assert()
+        .success();
+
+    let requests = server.create_bundled_source_requests();
+    assert_eq!(requests.len(), 1, "expected one create_bundled_source call");
+    assert_eq!(requests[0].name, "slack");
+    assert!(requests[0].variables.is_empty(), "expected no variables");
+    assert!(requests[0].secrets.is_empty(), "expected no secrets");
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn source_add_bundled_secret_flag_succeeds_without_tty() {
+    let server = MockServer::start().await;
+
+    server
+        .cmd()
+        .args([
+            "source",
+            "add",
+            "github",
+            "--secret",
+            "GITHUB_TOKEN=test-token",
+        ])
+        .assert()
+        .success();
+
+    let requests = server.create_bundled_source_requests();
+    assert_eq!(requests.len(), 1, "expected one create_bundled_source call");
+    assert_eq!(requests[0].name, "github");
+    assert!(requests[0].variables.is_empty(), "expected no variables");
+    assert_eq!(requests[0].secrets.len(), 1, "expected one secret");
+    assert_eq!(requests[0].secrets[0].key, "GITHUB_TOKEN");
+    assert_eq!(requests[0].secrets[0].value, "test-token");
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn source_add_bundled_secret_env_succeeds_without_tty() {
+    let server = MockServer::start().await;
+
+    server
+        .cmd()
+        .args(["source", "add", "github"])
+        .env("GITHUB_TOKEN", "env-token")
+        .assert()
+        .success();
+
+    let requests = server.create_bundled_source_requests();
+    assert_eq!(requests.len(), 1, "expected one create_bundled_source call");
+    assert_eq!(requests[0].secrets.len(), 1, "expected one secret");
+    assert_eq!(requests[0].secrets[0].value, "env-token");
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn source_add_flag_overrides_env_value() {
+    let server = MockServer::start().await;
+
+    server
+        .cmd()
+        .args([
+            "source",
+            "add",
+            "github",
+            "--secret",
+            "GITHUB_TOKEN=flag-token",
+        ])
+        .env("GITHUB_TOKEN", "env-token")
+        .assert()
+        .success();
+
+    let requests = server.create_bundled_source_requests();
+    assert_eq!(requests.len(), 1, "expected one create_bundled_source call");
+    assert_eq!(requests[0].secrets[0].value, "flag-token");
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn source_add_missing_required_input_without_tty_fails_locally() {
+    let server = MockServer::start().await;
+
+    let assert = server
+        .cmd()
+        .args(["source", "add", "github"])
+        .assert()
+        .failure();
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+
+    assert!(
+        stderr.contains("missing required source secret 'GITHUB_TOKEN'"),
+        "expected missing secret error, got: {stderr}"
+    );
+    assert!(
+        server.create_bundled_source_requests().is_empty(),
+        "request should not reach the server"
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn source_add_import_zero_input_succeeds_without_tty() {
+    let server = MockServer::start().await;
+    let dir = tempdir().expect("manifest dir");
+    let manifest_path = write_manifest(dir.path(), "local_messages.yaml", zero_input_manifest());
+
+    server
+        .cmd()
+        .args([
+            "source",
+            "add",
+            "--file",
+            manifest_path.to_str().expect("utf-8 manifest path"),
+        ])
+        .assert()
+        .success();
+
+    let requests = server.import_source_requests();
+    assert_eq!(requests.len(), 1, "expected one import_source call");
+    assert!(requests[0].variables.is_empty(), "expected no variables");
+    assert!(requests[0].secrets.is_empty(), "expected no secrets");
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn source_add_import_uses_flags_and_env_without_tty() {
+    let server = MockServer::start().await;
+    let dir = tempdir().expect("manifest dir");
+    let manifest_path = write_manifest(
+        dir.path(),
+        "secured_messages.yaml",
+        manifest_with_bindings(),
+    );
+
+    server
+        .cmd()
+        .args([
+            "source",
+            "add",
+            "--file",
+            manifest_path.to_str().expect("utf-8 manifest path"),
+            "--var",
+            "API_BASE=https://flag.example.com",
+        ])
+        .env("API_TOKEN", "env-secret")
+        .assert()
+        .success();
+
+    let requests = server.import_source_requests();
+    assert_eq!(requests.len(), 1, "expected one import_source call");
+    assert_eq!(requests[0].variables.len(), 1, "expected one variable");
+    assert_eq!(requests[0].variables[0].key, "API_BASE");
+    assert_eq!(requests[0].variables[0].value, "https://flag.example.com");
+    assert_eq!(requests[0].secrets.len(), 1, "expected one secret");
+    assert_eq!(requests[0].secrets[0].key, "API_TOKEN");
+    assert_eq!(requests[0].secrets[0].value, "env-secret");
 
     server.shutdown().await;
 }

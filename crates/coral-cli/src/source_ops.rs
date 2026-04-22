@@ -1,4 +1,5 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, btree_map::Entry};
+use std::env;
 use std::io::{IsTerminal, stdin, stdout};
 use std::path::Path;
 
@@ -17,6 +18,12 @@ use dialoguer::{Input, Password, theme::ColorfulTheme};
 use tonic::Request;
 
 const MAX_TABLES_PER_SCHEMA: usize = 9;
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct ExplicitBindings {
+    variables: BTreeMap<String, String>,
+    secrets: BTreeMap<String, String>,
+}
 
 /// How many tables to show per schema when pretty-printing validation results.
 #[derive(Debug, Clone, Copy)]
@@ -145,10 +152,14 @@ pub(crate) async fn delete_source(app: &AppClient, name: &str) -> Result<(), any
 }
 
 pub(crate) fn require_interactive() -> Result<(), anyhow::Error> {
-    if !stdin().is_terminal() || !stdout().is_terminal() {
+    if !is_interactive() {
         return Err(anyhow::anyhow!("interactive source install requires a TTY"));
     }
     Ok(())
+}
+
+pub(crate) fn is_interactive() -> bool {
+    stdin().is_terminal() && stdout().is_terminal()
 }
 
 pub(crate) fn source_name_arg(name: Option<&str>) -> Result<String, anyhow::Error> {
@@ -170,25 +181,30 @@ pub(crate) fn source_name_arg(name: Option<&str>) -> Result<String, anyhow::Erro
 pub(crate) fn prompt_for_inputs(
     inputs: &[ManifestInputSpec],
 ) -> Result<(Vec<SourceVariable>, Vec<SourceSecret>), anyhow::Error> {
-    let mut variables = Vec::new();
-    let mut secrets = Vec::new();
+    resolve_inputs(inputs, &ExplicitBindings::default(), true)
+}
 
-    for input in inputs {
-        match input.kind {
-            ManifestInputKind::Variable => {
-                if let Some(variable) = prompt_variable(input)? {
-                    variables.push(variable);
-                }
-            }
-            ManifestInputKind::Secret => {
-                if let Some(secret) = prompt_secret(input)? {
-                    secrets.push(secret);
-                }
-            }
-        }
-    }
+pub(crate) fn collect_explicit_bindings(
+    variable_args: &[String],
+    secret_args: &[String],
+) -> Result<ExplicitBindings, anyhow::Error> {
+    Ok(ExplicitBindings {
+        variables: collect_binding_args(variable_args, "source variable", "source variable key")?,
+        secrets: collect_binding_args(secret_args, "source secret", "source secret key")?,
+    })
+}
 
-    Ok((variables, secrets))
+pub(crate) fn resolve_inputs(
+    inputs: &[ManifestInputSpec],
+    explicit_bindings: &ExplicitBindings,
+    interactive_allowed: bool,
+) -> Result<(Vec<SourceVariable>, Vec<SourceSecret>), anyhow::Error> {
+    resolve_inputs_with_lookup(
+        inputs,
+        explicit_bindings,
+        interactive_allowed,
+        env_input_value,
+    )
 }
 
 pub(crate) fn manifest_input_from_proto(
@@ -394,6 +410,54 @@ fn query_test_counts(response: &ValidateSourceResponse) -> QueryTestCounts {
     }
 }
 
+fn resolve_inputs_with_lookup<F>(
+    inputs: &[ManifestInputSpec],
+    explicit_bindings: &ExplicitBindings,
+    interactive_allowed: bool,
+    env_lookup: F,
+) -> Result<(Vec<SourceVariable>, Vec<SourceSecret>), anyhow::Error>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    let mut variables = Vec::new();
+    let mut secrets = Vec::new();
+
+    for input in inputs {
+        let explicit_value = match input.kind {
+            ManifestInputKind::Variable => explicit_bindings.variables.get(&input.key),
+            ManifestInputKind::Secret => explicit_bindings.secrets.get(&input.key),
+        };
+        let value = if let Some(value) = explicit_value {
+            finalize_input_value(input, value.clone(), input_kind_label(input.kind))?
+        } else if let Some(value) = env_lookup(&input.key) {
+            finalize_input_value(input, value, input_kind_label(input.kind))?
+        } else if interactive_allowed {
+            match input.kind {
+                ManifestInputKind::Variable => {
+                    prompt_variable(input)?.map(|variable| variable.value)
+                }
+                ManifestInputKind::Secret => prompt_secret(input)?.map(|secret| secret.value),
+            }
+        } else {
+            finalize_input_value(input, String::new(), input_kind_label(input.kind))?
+        };
+
+        match (input.kind, value) {
+            (ManifestInputKind::Variable, Some(value)) => variables.push(SourceVariable {
+                key: input.key.clone(),
+                value,
+            }),
+            (ManifestInputKind::Secret, Some(value)) => secrets.push(SourceSecret {
+                key: input.key.clone(),
+                value,
+            }),
+            (_, None) => {}
+        }
+    }
+
+    Ok((variables, secrets))
+}
+
 fn prompt_variable(input: &ManifestInputSpec) -> Result<Option<SourceVariable>, anyhow::Error> {
     let theme = ColorfulTheme::default();
     print_input_hint(input);
@@ -444,6 +508,72 @@ fn print_input_hint(input: &ManifestInputSpec) {
     }
 }
 
+fn collect_binding_args(
+    args: &[String],
+    kind_label: &str,
+    key_label: &str,
+) -> Result<BTreeMap<String, String>, anyhow::Error> {
+    let mut values = BTreeMap::new();
+    for raw in args {
+        let (key, value) = parse_binding_arg(key_label, raw)?;
+        match values.entry(key.clone()) {
+            Entry::Vacant(entry) => {
+                entry.insert(value);
+            }
+            Entry::Occupied(_) => {
+                return Err(anyhow::anyhow!("{kind_label} '{key}' is repeated"));
+            }
+        }
+    }
+    Ok(values)
+}
+
+#[allow(
+    clippy::disallowed_methods,
+    reason = "source add intentionally resolves manifest-declared inputs from the process environment."
+)]
+fn env_input_value(key: &str) -> Option<String> {
+    env::var_os(key).and_then(|value| value.into_string().ok())
+}
+
+fn parse_binding_arg(key_label: &str, raw: &str) -> Result<(String, String), anyhow::Error> {
+    let Some((raw_key, value)) = raw.split_once('=') else {
+        return Err(anyhow::anyhow!(
+            "expected KEY=VALUE for {key_label}, got '{raw}'"
+        ));
+    };
+    let key = normalize_binding_key(key_label, raw_key)?;
+    Ok((key, value.to_string()))
+}
+
+fn normalize_binding_key(key_label: &str, value: &str) -> Result<String, anyhow::Error> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(anyhow::anyhow!("missing {key_label}"));
+    }
+    if trimmed.contains('/') || trimmed.contains('\\') {
+        return Err(anyhow::anyhow!(
+            "{key_label} must not contain '/' or '\\\\'"
+        ));
+    }
+    if trimmed.contains('=') || trimmed.contains('\n') || trimmed.contains('\r') {
+        return Err(anyhow::anyhow!(
+            "{key_label} must not contain '=', '\\n', or '\\r'"
+        ));
+    }
+    if trimmed.starts_with('#') {
+        return Err(anyhow::anyhow!("{key_label} must not start with '#'"));
+    }
+    Ok(trimmed.to_string())
+}
+
+fn input_kind_label(kind: ManifestInputKind) -> &'static str {
+    match kind {
+        ManifestInputKind::Variable => "source variable",
+        ManifestInputKind::Secret => "source secret",
+    }
+}
+
 pub(crate) fn finalize_input_value(
     input: &ManifestInputSpec,
     value: String,
@@ -463,22 +593,39 @@ pub(crate) fn finalize_input_value(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use coral_api::v1::ValidateSourceResponse;
     use coral_spec::{ManifestInputKind, ManifestInputSpec};
 
     use super::{
-        ValidationFollowUp, ValidationSeverityMode, finalize_input_value, validation_follow_up,
+        ExplicitBindings, ValidationFollowUp, ValidationSeverityMode, collect_explicit_bindings,
+        finalize_input_value, parse_binding_arg, resolve_inputs_with_lookup, validation_follow_up,
     };
+
+    fn variable_input(key: &str, required: bool, default_value: &str) -> ManifestInputSpec {
+        ManifestInputSpec {
+            key: key.to_string(),
+            kind: ManifestInputKind::Variable,
+            required,
+            default_value: default_value.to_string(),
+            hint: None,
+        }
+    }
+
+    fn secret_input(key: &str, required: bool) -> ManifestInputSpec {
+        ManifestInputSpec {
+            key: key.to_string(),
+            kind: ManifestInputKind::Secret,
+            required,
+            default_value: String::new(),
+            hint: None,
+        }
+    }
 
     #[test]
     fn empty_optional_input_is_omitted_for_server_side_defaults() {
-        let input = ManifestInputSpec {
-            key: "API_BASE".to_string(),
-            kind: ManifestInputKind::Variable,
-            required: false,
-            default_value: "https://example.com".to_string(),
-            hint: None,
-        };
+        let input = variable_input("API_BASE", false, "https://example.com");
         assert_eq!(
             finalize_input_value(&input, String::new(), "source variable")
                 .expect("empty optional input should be omitted"),
@@ -488,16 +635,123 @@ mod tests {
 
     #[test]
     fn empty_required_input_without_default_is_rejected() {
-        let input = ManifestInputSpec {
-            key: "API_TOKEN".to_string(),
-            kind: ManifestInputKind::Secret,
-            required: true,
-            default_value: String::new(),
-            hint: None,
-        };
+        let input = secret_input("API_TOKEN", true);
         let error = finalize_input_value(&input, String::new(), "source secret")
             .expect_err("required empty input should fail");
         assert!(error.to_string().contains("missing required source secret"));
+    }
+
+    #[test]
+    fn parse_binding_arg_accepts_key_value_pairs() {
+        let (key, value) = parse_binding_arg("source variable key", "API_BASE=https://example.com")
+            .expect("binding should parse");
+        assert_eq!(key, "API_BASE");
+        assert_eq!(value, "https://example.com");
+    }
+
+    #[test]
+    fn parse_binding_arg_rejects_missing_equals() {
+        let error = parse_binding_arg("source variable key", "API_BASE")
+            .expect_err("missing equals should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("expected KEY=VALUE for source variable key")
+        );
+    }
+
+    #[test]
+    fn duplicate_variable_flags_are_rejected() {
+        let error = collect_explicit_bindings(
+            &[
+                "API_BASE=https://example.com".to_string(),
+                "API_BASE=https://override.example.com".to_string(),
+            ],
+            &[],
+        )
+        .expect_err("duplicate variable flags should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("source variable 'API_BASE' is repeated")
+        );
+    }
+
+    #[test]
+    fn duplicate_secret_flags_are_rejected() {
+        let error = collect_explicit_bindings(
+            &[],
+            &[
+                "API_TOKEN=first".to_string(),
+                "API_TOKEN=second".to_string(),
+            ],
+        )
+        .expect_err("duplicate secret flags should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("source secret 'API_TOKEN' is repeated")
+        );
+    }
+
+    #[test]
+    fn explicit_binding_beats_env_value() {
+        let inputs = vec![secret_input("API_TOKEN", true)];
+        let explicit = ExplicitBindings {
+            variables: BTreeMap::default(),
+            secrets: [("API_TOKEN".to_string(), "flag-token".to_string())]
+                .into_iter()
+                .collect(),
+        };
+
+        let (_, secrets) = resolve_inputs_with_lookup(&inputs, &explicit, false, |_| {
+            Some("env-token".to_string())
+        })
+        .expect("explicit binding should resolve");
+
+        assert_eq!(secrets.len(), 1);
+        assert_eq!(secrets[0].value, "flag-token");
+    }
+
+    #[test]
+    fn env_value_is_used_when_no_explicit_binding_exists() {
+        let inputs = vec![variable_input("API_BASE", true, "")];
+        let explicit = ExplicitBindings::default();
+
+        let (variables, _) = resolve_inputs_with_lookup(&inputs, &explicit, false, |key| {
+            (key == "API_BASE").then(|| "https://env.example.com".to_string())
+        })
+        .expect("env binding should resolve");
+
+        assert_eq!(variables.len(), 1);
+        assert_eq!(variables[0].value, "https://env.example.com");
+    }
+
+    #[test]
+    fn optional_input_with_empty_env_value_is_omitted() {
+        let inputs = vec![variable_input("API_BASE", false, "https://example.com")];
+        let explicit = ExplicitBindings::default();
+
+        let (variables, _) =
+            resolve_inputs_with_lookup(&inputs, &explicit, false, |_| Some(String::new()))
+                .expect("empty optional env value should be omitted");
+
+        assert!(variables.is_empty());
+    }
+
+    #[test]
+    fn required_input_with_empty_env_value_is_rejected() {
+        let inputs = vec![secret_input("API_TOKEN", true)];
+        let explicit = ExplicitBindings::default();
+
+        let error = resolve_inputs_with_lookup(&inputs, &explicit, false, |_| Some(String::new()))
+            .expect_err("empty required env value should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("missing required source secret 'API_TOKEN'")
+        );
     }
 
     #[test]

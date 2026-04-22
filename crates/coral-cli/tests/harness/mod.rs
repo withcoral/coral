@@ -546,6 +546,22 @@ impl MockServer {
             .clone()
     }
 
+    pub(crate) fn create_bundled_source_requests(&self) -> Vec<CreateBundledSourceRequest> {
+        self.captured
+            .create_bundled_source
+            .lock()
+            .expect("create_bundled_source capture")
+            .clone()
+    }
+
+    pub(crate) fn import_source_requests(&self) -> Vec<ImportSourceRequest> {
+        self.captured
+            .import_source
+            .lock()
+            .expect("import_source capture")
+            .clone()
+    }
+
     pub(crate) fn delete_source_requests(&self) -> Vec<DeleteSourceRequest> {
         self.captured
             .delete_source
