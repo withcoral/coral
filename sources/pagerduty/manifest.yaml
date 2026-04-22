@@ -21,6 +21,8 @@ auth:
     - name: Authorization
       from: template
       template: Token token={{input.PAGERDUTY_API_TOKEN}}
+test_queries:
+  - SELECT * FROM pagerduty.abilities LIMIT 1
 tables:
   - name: abilities
     description: List abilities
