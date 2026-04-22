@@ -77,9 +77,8 @@ pub(crate) async fn register_sources(
     source_decorators: &mut [Box<dyn SourceDecorator>],
 ) -> std::result::Result<SourceRegistrationResult, CoreError> {
     let catalog = ctx.catalog("datafusion").ok_or_else(|| {
-        datafusion_to_core(&DataFusionError::Plan(
-            "catalog 'datafusion' not found".to_string(),
-        ))
+        let plan_err = DataFusionError::Plan("catalog 'datafusion' not found".to_string());
+        datafusion_to_core(&plan_err, &[])
     })?;
 
     let selected_sources = sources
@@ -113,7 +112,7 @@ pub(crate) async fn register_sources(
                         ) {
                             Ok(_) => result.active_sources.push(registered_source),
                             Err(error) => {
-                                let core_error = datafusion_to_core(&error);
+                                let core_error = datafusion_to_core(&error, &[]);
                                 if handle_source_registration_failure(
                                     source_decorators,
                                     query_source,
@@ -136,7 +135,7 @@ pub(crate) async fn register_sources(
                         }
                     }
                     Err(error) => {
-                        let core_error = datafusion_to_core(&error);
+                        let core_error = datafusion_to_core(&error, &[]);
                         if handle_source_registration_failure(
                             source_decorators,
                             query_source,

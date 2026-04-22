@@ -874,6 +874,7 @@ dependencies = [
  "parquet",
  "reqwest",
  "serde_json",
+ "strsim",
  "tempfile",
  "thiserror",
  "tokio",

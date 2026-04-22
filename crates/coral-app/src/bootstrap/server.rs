@@ -486,7 +486,7 @@ tables:
             status.message().len(),
         );
         assert!(
-            status.message().contains("No field named"),
+            status.message().contains("No column named"),
             "missing expected schema-error head in: {:?}",
             status.message()
         );

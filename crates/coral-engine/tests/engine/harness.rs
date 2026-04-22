@@ -70,6 +70,28 @@ pub(crate) fn assert_invalid_input(error: CoreError, expected_detail: &str) {
     }
 }
 
+pub(crate) fn assert_table_not_found(
+    error: CoreError,
+    expected_schema: &str,
+    expected_table: &str,
+) {
+    assert_eq!(error.status_code(), StatusCode::NotFound);
+    match error {
+        CoreError::QueryFailure(sqe) => {
+            assert_eq!(sqe.reason(), "TABLE_NOT_FOUND");
+            assert_eq!(
+                sqe.metadata().get("schema").map(String::as_str),
+                Some(expected_schema)
+            );
+            assert_eq!(
+                sqe.metadata().get("table").map(String::as_str),
+                Some(expected_table)
+            );
+        }
+        other => panic!("expected CoreError::QueryFailure, got {other:?}"),
+    }
+}
+
 pub(crate) fn write_jsonl_file(dir: &Path, filename: &str, rows: &[Value]) {
     let path = dir.join(filename);
     if let Some(parent) = path.parent() {

@@ -2,7 +2,70 @@
 
 use std::collections::HashMap;
 
+use datafusion::common::utils::quote_identifier;
+
+use super::catalog::TableInfo;
 use super::error::StatusCode;
+
+/// Wire-stable `reason` code for unknown-column errors.
+pub(crate) const UNKNOWN_COLUMN_REASON: &str = "UNKNOWN_COLUMN";
+
+/// Wire-stable `reason` code for table-not-found errors.
+pub(crate) const TABLE_NOT_FOUND_REASON: &str = "TABLE_NOT_FOUND";
+
+/// Structure-preserving column reference used by `unknown_column`.
+///
+/// Keeping the qualifier components separate from the bare name means the
+/// hint builder can render a `"player.id"`-style identifier (literal dot
+/// inside the name) without any downstream logic having to guess whether a
+/// given `.` is a qualifier separator or part of the identifier.
+#[derive(Debug, Clone)]
+pub(crate) struct ColumnParts {
+    /// 0, 1, 2, or 3 qualifier segments (alias / schema.table /
+    /// catalog.schema.table) — each stored as a bare identifier.
+    pub relation: Vec<String>,
+    /// The bare column name, exactly as registered in the schema
+    /// (case-preserving, may contain embedded dots).
+    pub name: String,
+}
+
+impl ColumnParts {
+    /// Renders the reference as SQL, quoting each component individually.
+    fn quoted(&self) -> String {
+        let mut out = String::new();
+        for part in &self.relation {
+            out.push_str(&quote_identifier(part));
+            out.push('.');
+        }
+        out.push_str(&quote_identifier(&self.name));
+        out
+    }
+
+    /// Joins all components with dots, lowercased. Used for
+    /// structure-preserving case-insensitive equality: two references with
+    /// the same dotted form AND the same number of components match.
+    fn joined_lower(&self) -> String {
+        let mut out = String::new();
+        for part in &self.relation {
+            out.push_str(&part.to_lowercase());
+            out.push('.');
+        }
+        out.push_str(&self.name.to_lowercase());
+        out
+    }
+
+    /// Renders without quoting — for the user-facing summary line where
+    /// readability matters more than round-trip SQL safety.
+    fn flat_display(&self) -> String {
+        let mut out = String::new();
+        for part in &self.relation {
+            out.push_str(part);
+            out.push('.');
+        }
+        out.push_str(&self.name);
+        out
+    }
+}
 
 /// Structured query failure with first-class semantic fields.
 #[derive(Debug, Clone)]
@@ -36,6 +99,86 @@ impl StructuredQueryError {
             status,
             metadata,
         }
+    }
+
+    /// Builds a structured `UNKNOWN_COLUMN` error from a missing column and
+    /// its in-scope candidates. Callers pass both the missing reference and
+    /// each candidate as a `ColumnParts` (qualifier segments plus bare
+    /// name) so dotted identifiers round-trip without ambiguity.
+    pub(crate) fn unknown_column(missing: &ColumnParts, valid_columns: &[ColumnParts]) -> Self {
+        let hint = unknown_column_hint(missing, valid_columns);
+
+        let mut metadata = HashMap::new();
+        metadata.insert("column".to_string(), missing.flat_display());
+
+        let display_missing = missing.flat_display();
+        let detail = if valid_columns.is_empty() {
+            format!("No column matching `{display_missing}` is in scope.")
+        } else {
+            let preview: Vec<String> = valid_columns
+                .iter()
+                .take(10)
+                .map(ColumnParts::flat_display)
+                .collect();
+            format!(
+                "No column `{display_missing}` is in scope. Valid columns include: {}.",
+                preview.join(", ")
+            )
+        };
+
+        Self::new(
+            UNKNOWN_COLUMN_REASON,
+            format!("No column named `{display_missing}`"),
+            detail,
+            hint,
+            false,
+            StatusCode::InvalidArgument,
+            metadata,
+        )
+    }
+
+    /// Builds a structured `TABLE_NOT_FOUND` error.
+    ///
+    /// `catalog_qualified_ref` is the raw string `DataFusion` surfaces inside
+    /// `"table 'X' not found"` — always a dotted path under the default
+    /// catalog. `known_tables` is consulted to (a) distinguish `DataFusion`'s
+    /// synthetic `public` schema from a real user source also named `public`,
+    /// and (b) recover a correct `(schema, table)` split when the source
+    /// name itself contains a dot.
+    pub(crate) fn table_not_found(catalog_qualified_ref: &str, known_tables: &[TableInfo]) -> Self {
+        let parsed = parse_table_ref(catalog_qualified_ref, known_tables);
+
+        let (schema, table) = match &parsed {
+            ParsedTableRef::Unqualified { table } => (None, table.clone()),
+            ParsedTableRef::Qualified { schema, table } => (Some(schema.clone()), table.clone()),
+        };
+
+        let display_ref = match &schema {
+            Some(schema) => format!("{schema}.{table}"),
+            None => table.clone(),
+        };
+        let hint = table_not_found_hint(schema.as_deref(), &table, known_tables);
+
+        let mut metadata = HashMap::new();
+        if let Some(schema) = &schema {
+            metadata.insert("schema".to_string(), schema.clone());
+        }
+        metadata.insert("table".to_string(), table.clone());
+
+        let detail = match schema.as_deref() {
+            Some(schema) => format!("No table `{table}` exists in schema `{schema}`."),
+            None => format!("No table `{table}` exists in any registered schema."),
+        };
+
+        Self::new(
+            TABLE_NOT_FOUND_REASON,
+            format!("Table `{display_ref}` not found"),
+            detail,
+            hint,
+            false,
+            StatusCode::NotFound,
+            metadata,
+        )
     }
 
     /// Machine-readable error reason (e.g. `"MISSING_REQUIRED_FILTER"`).
@@ -91,5 +234,578 @@ impl std::fmt::Display for StructuredQueryError {
             write!(f, "\nHint: {hint}")?;
         }
         Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Hint builders
+// ---------------------------------------------------------------------------
+
+/// Hint template for a case-only mismatch (`Master` vs `master`, `playerID`
+/// vs `playerid`). Keeping this in one place so the wording stays
+/// consistent across column and table hints.
+fn case_sensitive_hint(suggestion: &str) -> String {
+    format!("Unquoted identifiers are lowercased. Try `{suggestion}`.")
+}
+
+/// Hint template for a Levenshtein "closest match" suggestion.
+fn did_you_mean_hint(suggestion: &str) -> String {
+    format!("Did you mean `{suggestion}`?")
+}
+
+fn unknown_column_hint(missing: &ColumnParts, valid_columns: &[ColumnParts]) -> Option<String> {
+    // Prefer a full-reference case-insensitive hit: same qualifier shape and
+    // same name, differing only in case. Reproduces the user's qualifier in
+    // the suggestion (alias vs resolved schema.table), preserving the
+    // literal identifier inside the bare name — so a declared `"player.id"`
+    // column survives round-trip.
+    let missing_key = missing.joined_lower();
+    if let Some(exact) = valid_columns
+        .iter()
+        .find(|candidate| candidate.joined_lower() == missing_key)
+    {
+        return Some(case_sensitive_hint(&exact.quoted()));
+    }
+
+    // Dotted-column case: the declared column name itself contains a dot
+    // (e.g. `"player.id"`). A user who writes `SELECT player.id FROM …`
+    // unquoted reaches us as `relation=[player], name=id`; the candidate
+    // has `relation=[schema, table], name="player.id"`. The user's full
+    // flat form (`player.id`) is what the candidate's bare name actually
+    // is — match on that so the hint quotes the real column.
+    if let Some(exact) = valid_columns
+        .iter()
+        .find(|candidate| candidate.name.to_lowercase() == missing_key)
+    {
+        return Some(case_sensitive_hint(&exact.quoted()));
+    }
+
+    // Bare-name case-insensitive fallback: the user supplied a different
+    // qualifier shape than the valid-columns list does (e.g. unqualified
+    // typo against a schema.table.column candidate). Comparing only the
+    // bare name still picks up a capitalization-only difference.
+    let missing_name_lower = missing.name.to_lowercase();
+    if let Some(exact) = valid_columns
+        .iter()
+        .find(|candidate| candidate.name.to_lowercase() == missing_name_lower)
+    {
+        return Some(case_sensitive_hint(&exact.quoted()));
+    }
+
+    // Levenshtein over bare names for typos. Lowercase both sides: the
+    // missing name arrives pre-lowercased from DataFusion's identifier
+    // normalization, but candidates keep their schema-declared casing, so
+    // a raw comparison against `playerID` would double-count case edits
+    // and reject a genuine typo of `playrID` → `playerID`.
+    let (best, _score) = valid_columns
+        .iter()
+        .filter_map(|candidate| {
+            let score =
+                strsim::normalized_levenshtein(&candidate.name.to_lowercase(), &missing_name_lower);
+            (score >= 0.5).then_some((candidate, score))
+        })
+        .max_by(|left, right| {
+            left.1
+                .partial_cmp(&right.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })?;
+    Some(did_you_mean_hint(&best.quoted()))
+}
+
+fn table_not_found_hint(
+    schema: Option<&str>,
+    table: &str,
+    known_tables: &[TableInfo],
+) -> Option<String> {
+    let Some(schema) = schema else {
+        return Some(
+            "List available tables with `SELECT schema_name, table_name FROM coral.tables`."
+                .to_string(),
+        );
+    };
+
+    let schema_lower = schema.to_lowercase();
+    let tables_in_schema: Vec<&TableInfo> = known_tables
+        .iter()
+        .filter(|info| info.schema_name.to_lowercase() == schema_lower)
+        .collect();
+
+    if tables_in_schema.is_empty() {
+        // `known_tables` only contains successfully-registered sources, so an
+        // empty schema here could mean either "not installed" or "configured
+        // but failed to register". Keep the hint transport-neutral — point
+        // at the SQL catalog so callers (CLI, MCP, gRPC) each render the
+        // action in their native surface; any adapter that wants to
+        // prescribe a specific command (e.g. `coral source list`) can
+        // enrich the hint at their layer.
+        return Some(format!(
+            "Schema `{schema}` is not currently registered. \
+             Query `SELECT DISTINCT schema_name FROM coral.tables` \
+             to see available schemas."
+        ));
+    }
+
+    let table_lower = table.to_lowercase();
+    if let Some(hit) = tables_in_schema
+        .iter()
+        .find(|info| info.table_name.to_lowercase() == table_lower)
+    {
+        return Some(case_sensitive_hint(&format_schema_table(hit)));
+    }
+
+    let (best, _score) = tables_in_schema
+        .iter()
+        .filter_map(|info| {
+            let score =
+                strsim::normalized_levenshtein(&info.table_name.to_lowercase(), &table_lower);
+            (score >= 0.5).then_some((info, score))
+        })
+        .max_by(|left, right| {
+            left.1
+                .partial_cmp(&right.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })?;
+    Some(did_you_mean_hint(&format_schema_table(best)))
+}
+
+/// Renders `schema.table` with per-component SQL quoting (dotted source
+/// names stay one quoted identifier; case-preserving names are quoted
+/// only when they would otherwise round-trip wrong).
+fn format_schema_table(info: &TableInfo) -> String {
+    format!(
+        "{}.{}",
+        quote_dotted_identifier(&info.schema_name),
+        quote_identifier(&info.table_name)
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Table-ref parsing
+// ---------------------------------------------------------------------------
+
+/// Either a truly unqualified `FROM X` or a qualified `FROM schema.table`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ParsedTableRef {
+    Unqualified { table: String },
+    Qualified { schema: String, table: String },
+}
+
+/// Recovers the user's intent from `DataFusion`'s always-3+-part error ref.
+///
+/// Bare `FROM games` surfaces as `datafusion.public.games` (the default
+/// catalog plus the synthetic `public` schema), which we classify as
+/// unqualified unless a real source named `public` exists in the catalog.
+/// For dotted source names, we try increasingly long schema candidates
+/// against the registered set so `datafusion."foo.bar".missing` is not
+/// silently sliced into `bar` / `missing`.
+fn parse_table_ref(raw: &str, known_tables: &[TableInfo]) -> ParsedTableRef {
+    let parts: Vec<&str> = raw.split('.').collect();
+
+    if parts.is_empty() {
+        return ParsedTableRef::Unqualified {
+            table: String::new(),
+        };
+    }
+    if parts.len() == 1 {
+        return ParsedTableRef::Unqualified {
+            table: parts[0].to_string(),
+        };
+    }
+
+    // Strip the default catalog prefix if present.
+    let body: Vec<&str> = if parts[0] == "datafusion" {
+        parts[1..].to_vec()
+    } else {
+        parts
+    };
+
+    match body.len() {
+        0 => ParsedTableRef::Unqualified {
+            table: String::new(),
+        },
+        1 => ParsedTableRef::Unqualified {
+            table: body[0].to_string(),
+        },
+        _ => {
+            // Synthetic `public` schema: `datafusion.public.X` comes from a
+            // bare `FROM X`. Treat as unqualified unless a real source named
+            // `public` exists (so a user who did register `public` as a
+            // schema still gets catalog-aware hints). When the table name
+            // itself contains a dot (manifest permits), the body is longer
+            // than two — `datafusion.public.player.stats` for a table named
+            // `player.stats` — and we collapse everything after `public`
+            // back into the unqualified bare name.
+            if body.len() >= 2
+                && body[0] == "public"
+                && !schema_is_registered("public", known_tables)
+            {
+                return ParsedTableRef::Unqualified {
+                    table: body[1..].join("."),
+                };
+            }
+
+            // Pick the longest contiguous prefix of `body` that matches a
+            // registered schema (case-insensitive). This recovers dotted
+            // source names like `"foo.bar"` from their exploded form.
+            for schema_len in (1..body.len()).rev() {
+                let candidate_schema = body[..schema_len].join(".");
+                if schema_is_registered(&candidate_schema, known_tables) {
+                    return ParsedTableRef::Qualified {
+                        schema: candidate_schema,
+                        table: body[schema_len..].join("."),
+                    };
+                }
+            }
+
+            // No known schema matched any prefix. Fall back to "everything
+            // but the last dot is the schema" — keeps dotted source names
+            // intact even when the source itself is missing from the
+            // catalog (so the remediation hint still names the right
+            // install target).
+            let last = body.len() - 1;
+            ParsedTableRef::Qualified {
+                schema: body[..last].join("."),
+                table: body[last].to_string(),
+            }
+        }
+    }
+}
+
+fn schema_is_registered(candidate: &str, known_tables: &[TableInfo]) -> bool {
+    let lowered = candidate.to_lowercase();
+    known_tables
+        .iter()
+        .any(|info| info.schema_name.to_lowercase() == lowered)
+}
+
+// ---------------------------------------------------------------------------
+// Identifier helpers
+// ---------------------------------------------------------------------------
+
+/// Like `quote_identifier` but accepts identifiers that themselves contain
+/// dots. A literal source name `foo.bar` quotes as `"foo.bar"`, not as
+/// `foo.bar` (which would read as a 2-component path).
+fn quote_dotted_identifier(ident: &str) -> String {
+    if ident.contains('.') {
+        let escaped = ident.replace('"', "\"\"");
+        format!("\"{escaped}\"")
+    } else {
+        quote_identifier(ident).into_owned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn table(schema: &str, name: &str) -> TableInfo {
+        TableInfo {
+            schema_name: schema.to_string(),
+            table_name: name.to_string(),
+            description: String::new(),
+            columns: vec![],
+            required_filters: vec![],
+        }
+    }
+
+    fn cp(relation: &[&str], name: &str) -> ColumnParts {
+        ColumnParts {
+            relation: relation.iter().map(ToString::to_string).collect(),
+            name: name.to_string(),
+        }
+    }
+
+    #[test]
+    fn reason_consts_match_wire_contract() {
+        // Guard against an accidental rename: these literal values are the
+        // wire contract. Changing them is a breaking change for any consumer
+        // that pattern-matches on reason codes.
+        assert_eq!(UNKNOWN_COLUMN_REASON, "UNKNOWN_COLUMN");
+        assert_eq!(TABLE_NOT_FOUND_REASON, "TABLE_NOT_FOUND");
+    }
+
+    #[test]
+    fn unknown_column_case_insensitive_match_quotes_preserved_name() {
+        let valid = vec![cp(&["g"], "playerID"), cp(&["m"], "playerID")];
+        let err = StructuredQueryError::unknown_column(&cp(&["g"], "playerid"), &valid);
+
+        assert_eq!(err.reason(), UNKNOWN_COLUMN_REASON);
+        assert_eq!(err.status(), StatusCode::InvalidArgument);
+        let hint = err.hint().expect("hint should be present");
+        assert!(
+            hint.contains("g.\"playerID\""),
+            "expected case-preserving quoted hint, got: {hint}"
+        );
+    }
+
+    #[test]
+    fn unknown_column_preserves_dotted_column_name_in_hint() {
+        // Real column is literally named `player.id`. User wrote an
+        // unquoted `demo.users.player.id`, which DataFusion splits into a
+        // 3-part relation (`demo.users.player`) plus the bare name `id`.
+        // The hint must suggest the only valid SQL: `demo.users."player.id"`.
+        let valid = vec![cp(&["demo", "users"], "player.id")];
+        let missing = cp(&["demo", "users", "player"], "id");
+        let err = StructuredQueryError::unknown_column(&missing, &valid);
+
+        let hint = err.hint().expect("hint should be present");
+        assert!(
+            hint.contains("demo.users.\"player.id\""),
+            "hint must quote the literal-dot name, got: {hint}"
+        );
+        assert!(
+            !hint.contains("demo.users.player.id"),
+            "hint must not render the unquoted 4-part form, got: {hint}"
+        );
+    }
+
+    #[test]
+    fn unknown_column_matches_dotted_name_against_unqualified_reference() {
+        // Declared column is literally `player.id` on `hockey.master`.
+        // User writes `SELECT player.id FROM hockey.master`, which
+        // DataFusion parses as `relation=[player], name=id`. Neither
+        // full-flat nor bare-vs-bare match finds a hit (`player.id` !=
+        // `hockey.master.player.id`, `id` != `player.id`), but the
+        // candidate's bare name IS the user's joined form. The hint must
+        // still suggest the correctly-quoted column.
+        let valid = vec![cp(&["hockey", "master"], "player.id")];
+        let missing = cp(&["player"], "id");
+        let err = StructuredQueryError::unknown_column(&missing, &valid);
+
+        let hint = err.hint().expect("hint should be present");
+        assert!(
+            hint.contains("hockey.master.\"player.id\""),
+            "hint must suggest the fully-qualified quoted form, got: {hint}"
+        );
+    }
+
+    #[test]
+    fn unknown_column_levenshtein_suggests_closest() {
+        let valid = vec![cp(&[], "user_login"), cp(&[], "title")];
+        let err = StructuredQueryError::unknown_column(&cp(&[], "user_llogin"), &valid);
+
+        let hint = err.hint().expect("hint should be present");
+        assert!(hint.contains("user_login"), "got: {hint}");
+    }
+
+    #[test]
+    fn unknown_column_no_candidates_has_no_hint() {
+        let err = StructuredQueryError::unknown_column(&cp(&[], "anything"), &[]);
+        assert!(err.hint().is_none());
+    }
+
+    #[test]
+    fn unknown_column_too_distant_omits_hint() {
+        let valid = vec![cp(&[], "zzzzz")];
+        let err = StructuredQueryError::unknown_column(&cp(&[], "playerID"), &valid);
+        assert!(err.hint().is_none());
+    }
+
+    #[test]
+    fn table_not_found_missing_schema_points_at_coral_tables_catalog() {
+        let tables = vec![table("github", "issues")];
+        let err = StructuredQueryError::table_not_found("datafusion.hockey.master", &tables);
+
+        assert_eq!(err.reason(), TABLE_NOT_FOUND_REASON);
+        assert_eq!(err.status(), StatusCode::NotFound);
+        let hint = err.hint().expect("hint should be present");
+        // Hint must be transport-neutral: reference the engine's SQL
+        // catalog rather than a specific CLI command, so CLI / MCP / API
+        // consumers all render sensibly.
+        assert!(hint.contains("coral.tables"), "got: {hint}");
+        assert!(
+            !hint.contains("coral source"),
+            "hint must stay transport-neutral, got: {hint}"
+        );
+    }
+
+    #[test]
+    fn table_not_found_case_insensitive_match_quotes_preserved_name() {
+        let tables = vec![table("hockey", "Master")];
+        let err = StructuredQueryError::table_not_found("datafusion.hockey.master", &tables);
+
+        let hint = err.hint().expect("hint should be present");
+        assert!(
+            hint.contains("hockey.\"Master\""),
+            "expected case-preserving quoted hint, got: {hint}"
+        );
+    }
+
+    #[test]
+    fn table_not_found_levenshtein_suggests_similar_table() {
+        let tables = vec![
+            table("hockey", "games"),
+            table("hockey", "players"),
+            table("hockey", "teams"),
+        ];
+        let err = StructuredQueryError::table_not_found("datafusion.hockey.game", &tables);
+
+        let hint = err.hint().expect("hint should be present");
+        assert!(hint.contains("hockey.games"), "got: {hint}");
+    }
+
+    #[test]
+    fn table_not_found_strips_datafusion_catalog_prefix_from_display() {
+        let tables = vec![table("hockey", "Master")];
+        let err = StructuredQueryError::table_not_found("datafusion.hockey.master", &tables);
+
+        assert!(
+            err.summary().contains("`hockey.master`"),
+            "summary should strip catalog prefix, got: {}",
+            err.summary()
+        );
+        assert_eq!(
+            err.metadata().get("schema").map(String::as_str),
+            Some("hockey")
+        );
+        assert_eq!(
+            err.metadata().get("table").map(String::as_str),
+            Some("master")
+        );
+    }
+
+    #[test]
+    fn table_not_found_synthetic_public_treated_as_unqualified() {
+        // `FROM games` (bare) surfaces as `datafusion.public.games`. With no
+        // user-registered `public` source, this must collapse to an
+        // unqualified table-not-found whose hint points at `coral.tables`,
+        // not at "schema `public` is not registered".
+        let tables = vec![table("hockey", "games")];
+        let err = StructuredQueryError::table_not_found("datafusion.public.games", &tables);
+
+        assert_eq!(err.metadata().get("schema"), None);
+        assert_eq!(
+            err.metadata().get("table").map(String::as_str),
+            Some("games")
+        );
+        assert!(
+            err.summary().contains("`games`"),
+            "summary should show the bare table, got: {}",
+            err.summary()
+        );
+        let hint = err.hint().expect("hint should be present");
+        assert!(hint.contains("coral.tables"), "got: {hint}");
+    }
+
+    #[test]
+    fn table_not_found_synthetic_public_preserves_dotted_table_name() {
+        // Manifest permits table names with embedded dots. `FROM
+        // "player.stats"` (bare, quoted) surfaces as
+        // `datafusion.public.player.stats` — a 4-part ref. The public
+        // shortcut must collapse everything after `public` into the bare
+        // name; it must NOT split on the last dot and report a nonexistent
+        // `public.player` schema.
+        let tables = vec![table("hockey", "player.stats")];
+        let err = StructuredQueryError::table_not_found("datafusion.public.player.stats", &tables);
+
+        assert_eq!(err.metadata().get("schema"), None);
+        assert_eq!(
+            err.metadata().get("table").map(String::as_str),
+            Some("player.stats")
+        );
+        assert!(
+            err.summary().contains("`player.stats`"),
+            "summary should show the dotted bare table, got: {}",
+            err.summary()
+        );
+        // Hint uses cross-schema Levenshtein (added in SOURCE-456 follow-up
+        // PR #162). On this branch it's the generic catalog pointer — PR
+        // #162 will upgrade it to a `hockey."player.stats"` suggestion.
+        err.hint().expect("hint should be present");
+    }
+
+    #[test]
+    fn table_not_found_real_public_schema_beats_synthetic_shortcut() {
+        // If a user genuinely registered a source named `public`, don't
+        // collapse the 2-part body — resolve against the catalog.
+        let tables = vec![table("public", "Reports")];
+        let err = StructuredQueryError::table_not_found("datafusion.public.reports", &tables);
+
+        assert_eq!(
+            err.metadata().get("schema").map(String::as_str),
+            Some("public")
+        );
+        let hint = err.hint().expect("hint should be present");
+        assert!(hint.contains("public.\"Reports\""), "got: {hint}");
+    }
+
+    #[test]
+    fn table_not_found_preserves_dotted_source_name() {
+        // Source name itself contains a dot: `foo.bar`. DataFusion explodes
+        // this to `datafusion.foo.bar.items`. The parser must recover
+        // schema=`foo.bar`, table=`items` — not schema=`bar`, table=`items`.
+        let tables = vec![table("foo.bar", "Items")];
+        let err = StructuredQueryError::table_not_found("datafusion.foo.bar.items", &tables);
+
+        assert_eq!(
+            err.metadata().get("schema").map(String::as_str),
+            Some("foo.bar")
+        );
+        assert_eq!(
+            err.metadata().get("table").map(String::as_str),
+            Some("items")
+        );
+        let hint = err.hint().expect("hint should be present");
+        // Case-insensitive match surfaces `Items`; the dotted schema stays
+        // one quoted identifier, and the case-preserving table name is
+        // quoted on its own merits.
+        assert!(
+            hint.contains("\"foo.bar\".\"Items\""),
+            "hint should quote dotted schema as one identifier, got: {hint}"
+        );
+    }
+
+    #[test]
+    fn table_not_found_dotted_source_without_matching_table_still_routes_schema() {
+        // Same dotted source but the table name is just wrong. The hint
+        // path falls through to "no close match", but schema/metadata
+        // must still name the real source.
+        let tables = vec![table("foo.bar", "Items")];
+        let err = StructuredQueryError::table_not_found("datafusion.foo.bar.missing", &tables);
+
+        assert_eq!(
+            err.metadata().get("schema").map(String::as_str),
+            Some("foo.bar")
+        );
+        assert_eq!(
+            err.metadata().get("table").map(String::as_str),
+            Some("missing")
+        );
+    }
+
+    #[test]
+    fn table_not_found_unqualified_falls_back_to_catalog_pointer() {
+        // Pure unqualified form (no catalog prefix at all). DataFusion
+        // currently always emits a 3-part path, but the constructor
+        // accepts this shape defensively — if an upstream change ever
+        // drops the catalog prefix, this test still guards the fallback.
+        let tables = vec![table("hockey", "games")];
+        let err = StructuredQueryError::table_not_found("games", &tables);
+
+        let hint = err.hint().expect("hint should be present");
+        assert!(hint.contains("coral.tables"), "got: {hint}");
+    }
+
+    #[test]
+    fn quote_dotted_identifier_wraps_names_with_embedded_dots() {
+        assert_eq!(quote_dotted_identifier("foo.bar"), "\"foo.bar\"");
+        assert_eq!(quote_dotted_identifier("hockey"), "hockey");
+        assert_eq!(quote_dotted_identifier("Master"), "\"Master\"");
+    }
+
+    #[test]
+    fn column_parts_quoted_escapes_each_component() {
+        assert_eq!(cp(&["g"], "playerID").quoted(), "g.\"playerID\"");
+        assert_eq!(cp(&[], "playerID").quoted(), "\"playerID\"");
+        assert_eq!(
+            cp(&["hockey", "master"], "playerID").quoted(),
+            "hockey.master.\"playerID\""
+        );
+        // Literal dot inside the bare column name stays inside one set of
+        // quotes — without this, the hint reads as a 4-component reference.
+        assert_eq!(
+            cp(&["demo", "users"], "player.id").quoted(),
+            "demo.users.\"player.id\""
+        );
     }
 }
