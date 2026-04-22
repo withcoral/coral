@@ -158,7 +158,7 @@ tables:
         type: Utf8
 ```
 
-When you run `coral source add --file`, Coral prompts for the declared `inputs` interactively. `kind: variable` values go to source variables; `kind: secret` values go to the secret store.
+When you run `coral source add --file`, Coral reads each declared `input` from an environment variable of the same name, or prompts for them when you pass `--interactive`. `kind: variable` values go to source variables; `kind: secret` values go to the secret store.
 
 For the full set of HTTP response, pagination, auth, and column fields, see [HTTP-backed tables](/reference/source-spec-reference#http-backed-tables).
 
