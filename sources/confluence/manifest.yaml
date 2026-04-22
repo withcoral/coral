@@ -346,7 +346,7 @@ tables:
         type: Utf8
         nullable: true
         virtual: true
-        description: Optional body format (storage, atlas_doc_format, view, export_view, anonymous_export_view)
+        description: Optional body format; populates the matching body_* column (storage, atlas_doc_format)
         expr:
           kind: from_filter
           key: body_format
@@ -516,7 +516,7 @@ tables:
         type: Utf8
         nullable: true
         virtual: true
-        description: Optional body format (storage, atlas_doc_format, view, export_view, anonymous_export_view)
+        description: Optional body format; populates the matching body_* column (storage, atlas_doc_format, view)
         expr:
           kind: from_filter
           key: body_format
