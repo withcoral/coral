@@ -19,6 +19,8 @@ auth:
     - name: Authorization
       from: template
       template: "{{input.LINEAR_API_KEY}}"
+test_queries:
+  - SELECT * FROM linear.users LIMIT 1
 tables:
   - name: teams
     description: Teams in the Linear workspace
