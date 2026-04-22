@@ -20,6 +20,7 @@ use coral_client::{
     AppClient, decode_execute_sql_response, default_workspace, format_batches_json,
     format_batches_table,
 };
+use dialoguer::console::measure_text_width;
 use tonic::Request;
 
 #[cfg(test)]
@@ -163,14 +164,15 @@ async fn run_parsed(app: AppClient, cli: Cli) -> Result<(), anyhow::Error> {
                 if sources.is_empty() {
                     println!("No bundled sources available.");
                 } else {
-                    for source in sources {
+                    let rows = sources.into_iter().map(|source| {
                         let status = if source.installed {
-                            "installed"
+                            "installed".to_string()
                         } else {
-                            "available"
+                            "available".to_string()
                         };
-                        println!("{}\t{}\t{}", source.name, source.version, status);
-                    }
+                        [source.name, source.version, status]
+                    });
+                    print_text_table(["Source", "Version", "Status"], rows);
                 }
             }
             SourceCommand::List => {
@@ -178,10 +180,14 @@ async fn run_parsed(app: AppClient, cli: Cli) -> Result<(), anyhow::Error> {
                 if sources.is_empty() {
                     println!("No sources configured.");
                 } else {
-                    for source in sources {
-                        let origin = source_ops::source_origin_label(source.origin);
-                        println!("{}\t{}\t{}", source.name, source.version, origin);
-                    }
+                    let rows = sources.into_iter().map(|source| {
+                        [
+                            source.name,
+                            source.version,
+                            source_ops::source_origin_label(source.origin).to_string(),
+                        ]
+                    });
+                    print_text_table(["Source", "Version", "Origin"], rows);
                 }
             }
             SourceCommand::Add(args) => run_source_add(&app, args).await?,
@@ -224,6 +230,67 @@ fn print_batches(
     };
     println!("{output}");
     Ok(())
+}
+
+fn print_text_table<const COLUMNS: usize>(
+    headers: [&str; COLUMNS],
+    rows: impl IntoIterator<Item = [String; COLUMNS]>,
+) {
+    let rows = rows.into_iter().collect::<Vec<_>>();
+    let widths = compute_column_widths(headers, &rows);
+
+    println!("{}", format_table_row(headers, &widths));
+    println!("{}", format_separator_row(&widths));
+    for row in rows {
+        println!("{}", format_table_row(row.each_ref(), &widths));
+    }
+}
+
+fn compute_column_widths<const COLUMNS: usize>(
+    headers: [&str; COLUMNS],
+    rows: &[[String; COLUMNS]],
+) -> [usize; COLUMNS] {
+    std::array::from_fn(|idx| {
+        let header_width = measure_text_width(headers[idx]);
+        let row_width = rows
+            .iter()
+            .map(|row| measure_text_width(&row[idx]))
+            .max()
+            .unwrap_or(0);
+        header_width.max(row_width)
+    })
+}
+
+fn format_table_row<const COLUMNS: usize, T>(
+    cells: [T; COLUMNS],
+    widths: &[usize; COLUMNS],
+) -> String
+where
+    T: AsRef<str>,
+{
+    cells
+        .into_iter()
+        .enumerate()
+        .map(|(idx, cell)| pad_cell(cell.as_ref(), widths[idx], idx + 1 < COLUMNS))
+        .collect::<Vec<_>>()
+        .join("  ")
+}
+
+fn format_separator_row<const COLUMNS: usize>(widths: &[usize; COLUMNS]) -> String {
+    widths
+        .iter()
+        .map(|width| "-".repeat(*width))
+        .collect::<Vec<_>>()
+        .join("  ")
+}
+
+fn pad_cell(value: &str, width: usize, pad: bool) -> String {
+    if !pad {
+        return value.to_string();
+    }
+
+    let padding = width.saturating_sub(measure_text_width(value));
+    format!("{value}{}", " ".repeat(padding))
 }
 
 async fn run_source_add(app: &AppClient, args: SourceAddArgs) -> Result<(), anyhow::Error> {

@@ -64,7 +64,12 @@ async fn source_list_renders_configured_sources() {
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
     assert_eq!(
         nonempty_lines(&stdout),
-        vec!["github\t1.0.0\tbundled", "jira\t2.0.0\timported"],
+        vec![
+            "Source  Version  Origin",
+            "------  -------  --------",
+            "github  1.0.0    bundled",
+            "jira    2.0.0    imported",
+        ],
         "expected configured source list"
     );
 
@@ -105,7 +110,12 @@ async fn source_discover_renders_available_sources() {
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
     assert_eq!(
         nonempty_lines(&stdout),
-        vec!["github\t1.0.0\tinstalled", "slack\t2.1.0\tavailable"],
+        vec![
+            "Source  Version  Status",
+            "------  -------  ---------",
+            "github  1.0.0    installed",
+            "slack   2.1.0    available",
+        ],
         "expected discover source list"
     );
 
