@@ -6,15 +6,6 @@
 /// Re-exported local server builder for explicit local bootstrap scenarios.
 pub use coral_app::ServerBuilder;
 
-/// Re-exported engine extension bundle for explicit local bootstrap scenarios.
-pub use coral_app::EngineExtensions;
-
-/// Re-exported engine extension provider trait for explicit local bootstrap scenarios.
-pub use coral_app::EngineExtensionsProvider;
-
-/// Re-exported query source type for explicit local bootstrap scenarios.
-pub use coral_app::QuerySource;
-
 /// Re-exported local server handle for explicit local bootstrap scenarios.
 pub use coral_app::RunningServer;
 

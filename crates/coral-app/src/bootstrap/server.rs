@@ -22,7 +22,7 @@ use crate::query::service::QueryService;
 use crate::sources::manager::SourceManager;
 use crate::sources::service::SourceService;
 use crate::state::{AppStateLayout, ConfigStore, SecretStore};
-use crate::{EngineExtensionsProvider, NoopEngineExtensionsProvider};
+use crate::{BuiltinEngineExtensionsProvider, EngineExtensionsProvider};
 
 /// Server-side bootstrap configuration for the Coral server.
 #[derive(Clone)]
@@ -43,7 +43,7 @@ impl ServerConfig {
     pub(crate) fn new() -> Self {
         Self {
             config_dir: None,
-            engine_extensions_provider: Arc::new(NoopEngineExtensionsProvider),
+            engine_extensions_provider: Arc::new(BuiltinEngineExtensionsProvider),
         }
     }
 

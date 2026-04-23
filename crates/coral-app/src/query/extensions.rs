@@ -2,7 +2,8 @@
 
 use std::sync::Arc;
 
-use coral_engine::{EngineExtensions, QuerySource};
+use coral_auth_aws::AwsSigV4Authenticator;
+use coral_engine::{EngineExtensions, QuerySource, RequestAuthenticator};
 
 /// App-layer provider that selects engine extensions for one runtime build.
 pub trait EngineExtensionsProvider: Send + Sync {
@@ -21,6 +22,21 @@ pub struct NoopEngineExtensionsProvider;
 impl EngineExtensionsProvider for NoopEngineExtensionsProvider {
     fn extensions_for(&self, _selected_sources: &[QuerySource]) -> EngineExtensions {
         EngineExtensions::default()
+    }
+}
+
+/// Default local app provider that installs built-in engine extensions.
+#[derive(Debug, Default)]
+pub struct BuiltinEngineExtensionsProvider;
+
+impl EngineExtensionsProvider for BuiltinEngineExtensionsProvider {
+    fn extensions_for(&self, _selected_sources: &[QuerySource]) -> EngineExtensions {
+        let mut extensions = EngineExtensions::default();
+        let authenticator = Arc::new(AwsSigV4Authenticator);
+        extensions
+            .request_authenticators
+            .insert(authenticator.name().to_string(), authenticator);
+        extensions
     }
 }
 
@@ -99,6 +115,17 @@ mod tests {
 
         assert!(extensions.source_decorators.is_empty());
         assert!(extensions.request_authenticators.is_empty());
+    }
+
+    #[test]
+    fn builtin_provider_registers_aws_sigv4() {
+        let extensions = BuiltinEngineExtensionsProvider.extensions_for(&[]);
+        let authenticator = extensions
+            .request_authenticators
+            .get("aws_sigv4")
+            .expect("builtin provider should register aws authenticator");
+
+        assert_eq!(authenticator.name(), "aws_sigv4");
     }
 
     #[test]

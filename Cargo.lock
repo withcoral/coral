@@ -962,6 +962,7 @@ version = "0.1.4"
 dependencies = [
  "arrow",
  "coral-api",
+ "coral-auth-aws",
  "coral-client",
  "coral-engine",
  "coral-spec",
@@ -1004,7 +1005,6 @@ dependencies = [
  "assert_cmd",
  "clap",
  "coral-api",
- "coral-auth-aws",
  "coral-client",
  "coral-mcp",
  "coral-spec",
