@@ -7,20 +7,15 @@
 [![Discord](https://img.shields.io/badge/chat-Discord-5865F2?logo=discord&logoColor=white)](https://withcoral.com/discord)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/withcoral/coral)
 
-One SQL interface over APIs, files, and live sources — built for agents.
-
-Coral gives agents a local-first SQL runtime over APIs, files, and other live
+Coral gives agents a local-first SQL runtime over APIs, files, and other data
 sources. Query it from the CLI, inspect schemas and tables, or expose the same
 runtime over MCP so agents can use it without bespoke tool glue.
 
-Here's coral answering the question "Which Sentry errors create the most noise in Slack, and who is working on them?"
+Here's Coral answering the question:
+
+> "Which Sentry errors create the most noise in Slack, and who is working on them?"
 
 ![coral sql demo](./docs/images/coral-sql-join.gif)
-
-> Coral is local-first today: add sources, query them through one runtime, and
-> expose that runtime to agents over MCP. We’re actively expanding the product
-> surface, including additional transports, deployment options, and broader
-> source support.
 
 ## Why Coral
 
