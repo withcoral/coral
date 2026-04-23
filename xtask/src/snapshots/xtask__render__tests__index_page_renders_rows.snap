@@ -1,6 +1,6 @@
 ---
 source: xtask/src/render.rs
-assertion_line: 357
+assertion_line: 440
 expression: "index_page(&[demo, minimal])"
 ---
 ---
@@ -22,8 +22,8 @@ If the source you need is not available, you can extend Coral by [writing a cust
 
 | Source | Backend | Description |
 | --- | --- | --- |
-| [`demo`](#demo) | `http` | A small demo source used in snapshot tests |
-| [`minimal`](#minimal) | `http` | Coral bundled source: minimal |
+| [demo](#demo) | `http` | A small demo source used in snapshot tests |
+| [minimal](#minimal) | `http` | Coral bundled source: minimal |
 
 ## Supported data source types
 

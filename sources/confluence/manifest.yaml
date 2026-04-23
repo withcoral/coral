@@ -1,7 +1,7 @@
 dsl_version: 3
 name: confluence
 version: 0.1.0
-description: |
+description: >-
   Query spaces, pages, blog posts, comments, attachments, labels, and
   related metadata from Confluence Cloud.
 backend: http

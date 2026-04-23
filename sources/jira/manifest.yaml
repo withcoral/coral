@@ -1,7 +1,7 @@
 dsl_version: 3
 name: jira
 version: 0.1.0
-description: |
+description: >-
   Query projects, issues, comments, worklogs, versions, components,
   issue types, priorities, and related metadata from Jira Cloud.
 backend: http

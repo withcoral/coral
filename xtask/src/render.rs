@@ -33,7 +33,7 @@ pub(crate) fn index_page(manifests: &[ValidatedSourceManifest]) -> String {
         };
         let _ = writeln!(
             out,
-            "| [`{name}`](#{name}) | `{}` | {description} |",
+            "| [{name}](#{name}) | `{}` | {description} |",
             backend_label(manifest),
         );
     }
