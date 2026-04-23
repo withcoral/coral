@@ -4,7 +4,7 @@ dsl_version: 3
 backend: http
 description: >-
   Query issues, projects, cycles, initiatives, teams, users, comments,
-  labels, and attachments from Linear.
+  project milestones, labels, and attachments from Linear.
 inputs:
   LINEAR_API_KEY:
     kind: secret
@@ -394,6 +394,163 @@ tables:
             - nodes
           item_path:
             - name
+  - name: project_milestones
+    description: Milestones for a specific Linear project
+    request:
+      method: POST
+      path: /graphql
+      query: []
+      body:
+        - path:
+            - query
+          from: literal
+          value: |
+            query ProjectMilestones($projectId: String!, $first: Int!, $after: String) {
+              project(id: $projectId) {
+                id
+                projectMilestones(first: $first, after: $after) {
+                  nodes {
+                    id
+                    name
+                    description
+                    progress
+                    sortOrder
+                    status
+                    targetDate
+                    createdAt
+                    updatedAt
+                    archivedAt
+                  }
+                  pageInfo {
+                    endCursor
+                  }
+                }
+              }
+            }
+        - path:
+            - variables
+            - projectId
+          from: filter
+          key: project_id
+        - path:
+            - variables
+            - first
+          from: literal
+          value: 100
+    response:
+      rows_path:
+        - data
+        - project
+        - projectMilestones
+        - nodes
+    pagination:
+      mode: cursor_body
+      cursor_body_path:
+        - variables
+        - after
+      response_cursor_path:
+        - data
+        - project
+        - projectMilestones
+        - pageInfo
+        - endCursor
+      page_size:
+        default: 100
+        max: 250
+        body_path:
+          - variables
+          - first
+    columns:
+      - name: project_id
+        type: Utf8
+        nullable: false
+        description: Project ID filter
+        expr:
+          kind: from_filter
+          key: project_id
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Project milestone ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Project milestone name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Project milestone description
+        expr:
+          kind: path
+          path:
+            - description
+      - name: progress
+        type: Float64
+        nullable: false
+        description: Project milestone progress fraction
+        expr:
+          kind: path
+          path:
+            - progress
+      - name: sort_order
+        type: Float64
+        nullable: false
+        description: Project milestone sort order
+        expr:
+          kind: path
+          path:
+            - sortOrder
+      - name: status
+        type: Utf8
+        nullable: false
+        description: Project milestone status
+        expr:
+          kind: path
+          path:
+            - status
+      - name: target_date
+        type: Utf8
+        nullable: true
+        description: Planned milestone completion date
+        expr:
+          kind: path
+          path:
+            - targetDate
+      - name: created_at
+        type: Utf8
+        nullable: false
+        description: Creation timestamp
+        expr:
+          kind: path
+          path:
+            - createdAt
+      - name: updated_at
+        type: Utf8
+        nullable: false
+        description: Updated timestamp
+        expr:
+          kind: path
+          path:
+            - updatedAt
+      - name: archived_at
+        type: Utf8
+        nullable: true
+        description: Archive timestamp
+        expr:
+          kind: path
+          path:
+            - archivedAt
+    filters:
+      - name: project_id
+        required: true
   - name: cycles
     description: Cycles in the Linear workspace
     request:
@@ -811,6 +968,10 @@ tables:
             - isGroup
   - name: issues
     description: Issues in the Linear workspace
+    filters:
+      - name: project_id
+      - name: project_milestone_id
+      - name: project_milestone_name
     request:
       method: POST
       path: /graphql
@@ -820,8 +981,8 @@ tables:
             - query
           from: literal
           value: |
-            query Issues($first: Int!, $after: String) {
-              issues(first: $first, after: $after) {
+            query Issues($filter: IssueFilter, $first: Int!, $after: String) {
+              issues(filter: $filter, first: $first, after: $after) {
                 nodes {
                   id
                   identifier
@@ -849,12 +1010,40 @@ tables:
                   project {
                     id
                   }
+                  projectMilestone {
+                    id
+                    name
+                  }
                 }
                 pageInfo {
                   endCursor
                 }
               }
             }
+        - path:
+            - variables
+            - filter
+            - project
+            - id
+            - eq
+          from: filter
+          key: project_id
+        - path:
+            - variables
+            - filter
+            - projectMilestone
+            - id
+            - eq
+          from: filter
+          key: project_milestone_id
+        - path:
+            - variables
+            - filter
+            - projectMilestone
+            - name
+            - eq
+          from: filter
+          key: project_milestone_name
         - path:
             - variables
             - first
@@ -1018,6 +1207,24 @@ tables:
           path:
             - project
             - id
+      - name: project_milestone_id
+        type: Utf8
+        nullable: true
+        description: Project milestone ID
+        expr:
+          kind: path
+          path:
+            - projectMilestone
+            - id
+      - name: project_milestone_name
+        type: Utf8
+        nullable: true
+        description: Project milestone name
+        expr:
+          kind: path
+          path:
+            - projectMilestone
+            - name
       - name: completed_at
         type: Utf8
         nullable: true

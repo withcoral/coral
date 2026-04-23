@@ -8,7 +8,6 @@ backend: http
 inputs:
   JIRA_BASE_URL:
     kind: variable
-    default: https://your-domain.atlassian.net
     hint: |
       Base URL of your Jira Cloud site (for example
       `https://acme.atlassian.net`).

@@ -1,12 +1,12 @@
 //! Backend-agnostic coverage for the JSON UDFs registered on the engine's
 //! `SessionContext` (`json_get*`, `json_contains`, `json_length`,
-//! `json_as_text`, `->`, `->>`) and the `Json` manifest type. Uses JSONL as a
+//! `json_as_text`) and the `Json` manifest type. Uses JSONL as a
 //! lightweight vehicle; the same functions work against any backend that
 //! lands JSON in a `Utf8` column.
 
 use std::path::Path;
 
-use coral_engine::CoralQuery;
+use coral_engine::{CoralQuery, CoreError};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
@@ -269,31 +269,26 @@ async fn json_as_text_renders_value_as_string() {
 }
 
 #[tokio::test]
-async fn arrow_operator_extracts_text() {
-    let rows = query(
-        "json_arrow",
-        "SELECT id, properties->>'$browser' AS browser \
-         FROM json_arrow.events ORDER BY id",
-    )
-    .await;
+async fn json_operators_are_rejected() {
+    let temp = TempDir::new().expect("temp dir");
+    write_jsonl_file(temp.path(), "events.jsonl", &events_fixture());
+    let source = build_source(events_manifest("json_ops", temp.path(), "Json"));
 
-    assert_eq!(
-        rows,
-        vec![
-            json!({"id": 1, "browser": "Firefox"}),
-            json!({"id": 2, "browser": "Chrome"}),
-        ]
-    );
-}
+    for sql in [
+        "SELECT id, properties->>'$browser' AS browser FROM json_ops.events",
+        "SELECT id FROM json_ops.events WHERE (properties->'count')::bigint > 5",
+        "SELECT id FROM json_ops.events WHERE properties ? '$browser'",
+    ] {
+        let error = CoralQuery::execute_sql(std::slice::from_ref(&source), &TestRuntime, sql)
+            .await
+            .expect_err("query should reject JSON operators");
 
-#[tokio::test]
-async fn arrow_operator_with_cast_extracts_typed_value() {
-    let rows = query(
-        "json_cast",
-        "SELECT id FROM json_cast.events \
-         WHERE (properties->'count')::bigint > 5",
-    )
-    .await;
-
-    assert_eq!(rows, vec![json!({"id": 1})]);
+        assert!(
+            matches!(
+                error,
+                CoreError::InvalidInput(_) | CoreError::Unimplemented(_) | CoreError::Internal(_)
+            ),
+            "expected a planning failure for `{sql}`, got {error:?}"
+        );
+    }
 }

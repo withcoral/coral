@@ -9014,8 +9014,8 @@ tables:
         type: Json
         nullable: true
         virtual: false
-        description: Event properties as a JSON object. Query with `properties->>'key'`
-          or `json_get_str(properties, 'key')`.
+        description: Event properties as a JSON object. Query with
+          `json_get_str(properties, 'key')`.
         expr:
           kind: path
           path:
@@ -18472,7 +18472,7 @@ tables:
         nullable: true
         virtual: false
         description: Key-value map of person properties set via $set and $set_once operations.
-          Query with `properties->>'key'` or `json_get_str(properties, 'key')`.
+          Query with `json_get_str(properties, 'key')`.
         expr:
           kind: path
           path:

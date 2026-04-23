@@ -9,6 +9,7 @@ use arrow::record_batch::RecordBatch;
 use coral_spec::ValidatedSourceManifest;
 
 use super::ColumnInfo;
+use crate::EngineExtensions;
 
 /// One managed source selected into the current query runtime.
 #[derive(Debug, Clone)]
@@ -185,6 +186,13 @@ pub struct QueryRuntimeContext {
 pub trait QueryRuntimeProvider: Send + Sync {
     /// Returns non-secret runtime inputs owned by the application layer.
     fn runtime_context(&self) -> QueryRuntimeContext;
+
+    /// Returns optional engine extensions for this runtime build.
+    ///
+    /// The default implementation returns no extensions.
+    fn engine_extensions(&self) -> EngineExtensions {
+        EngineExtensions::default()
+    }
 }
 
 /// The fully materialized result of executing one `SQL` statement.

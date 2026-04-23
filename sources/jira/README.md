@@ -3,19 +3,15 @@
 **API Version:** v3  
 **Backend:** HTTP  
 **Tables:** 11  
-**Base URL:** `https://your-domain.atlassian.net` (override with `JIRA_BASE_URL`)
+**Base URL:** set via `JIRA_BASE_URL` (e.g. `https://acme.atlassian.net`)
 
 ## Authentication
 
-Requires `JIRA_BASIC_AUTH`, which is the Base64 form of `email:api_token` for Jira Cloud.
-
-Helper script:
+Requires `JIRA_BASIC_AUTH`, which is the Base64 form of `email:api_token` for Jira Cloud. Create an API token at [Atlassian API token settings](https://id.atlassian.com/manage-profile/security/api-tokens), then encode:
 
 ```bash
-./sources/jira/jira-auth.sh you@example.com
+printf '%s' 'you@example.com:YOUR_JIRA_API_TOKEN' | base64
 ```
-
-The script prints the value Coral expects and also accepts the token as a second argument or through `JIRA_API_TOKEN`.
 
 ## Quick start
 

@@ -29,6 +29,8 @@ auth:
       from: template
       template: "Basic {{input.OPENOBSERVE_BASIC_AUTH}}"
 
+test_queries:
+  - SELECT * FROM openobserve.streams LIMIT 1
 tables:
   - name: streams
     description: List available OpenObserve streams.

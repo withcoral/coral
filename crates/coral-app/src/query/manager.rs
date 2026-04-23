@@ -1,14 +1,17 @@
 //! Query-time loading, validation, and execution over installed sources.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
+use std::sync::Mutex;
 
 use coral_engine::{
-    CoralQuery, CoreError, QueryExecution, QueryRuntimeContext, QueryRuntimeProvider, QuerySource,
-    SourceValidationReport, TableInfo,
+    CoralQuery, CoreError, EngineExtensions, QueryExecution, QueryRuntimeContext,
+    QueryRuntimeProvider, QuerySource, SourceValidationReport, TableInfo,
 };
 use coral_spec::{ManifestInputKind, ManifestInputSpec, parse_source_manifest_yaml};
 
 use crate::bootstrap::AppError;
+use crate::query::extensions::EngineExtensionsProvider;
 use crate::sources::SourceName;
 use crate::sources::catalog::resolve_installed_manifest;
 use crate::sources::model::InstalledSource;
@@ -32,6 +35,7 @@ pub(crate) struct QueryManager {
     secret_store: SecretStore,
     runtime_context: QueryRuntimeContext,
     layout: AppStateLayout,
+    engine_extensions_provider: Arc<dyn EngineExtensionsProvider>,
 }
 
 impl QueryManager {
@@ -40,12 +44,14 @@ impl QueryManager {
         secret_store: SecretStore,
         runtime_context: QueryRuntimeContext,
         layout: AppStateLayout,
+        engine_extensions_provider: Arc<dyn EngineExtensionsProvider>,
     ) -> Self {
         Self {
             config_store,
             secret_store,
             runtime_context,
             layout,
+            engine_extensions_provider,
         }
     }
 
@@ -56,7 +62,7 @@ impl QueryManager {
         let sources = self
             .load_query_sources(workspace_name)
             .map_err(QueryManagerError::App)?;
-        let runtime = self.runtime_provider();
+        let runtime = self.runtime_provider(&sources);
         CoralQuery::list_tables(&sources, &runtime, None)
             .await
             .map_err(QueryManagerError::Core)
@@ -70,7 +76,7 @@ impl QueryManager {
         let sources = self
             .load_query_sources(workspace_name)
             .map_err(QueryManagerError::App)?;
-        let runtime = self.runtime_provider();
+        let runtime = self.runtime_provider(&sources);
         CoralQuery::execute_sql(&sources, &runtime, sql)
             .await
             .map_err(QueryManagerError::Core)
@@ -88,7 +94,7 @@ impl QueryManager {
         let (query_source, version) = self
             .load_query_source(workspace_name, &source)
             .map_err(QueryManagerError::App)?;
-        let runtime = self.runtime_provider();
+        let runtime = self.runtime_provider(std::slice::from_ref(&query_source));
         let report = CoralQuery::validate_source(
             &query_source,
             &runtime,
@@ -163,21 +169,32 @@ impl QueryManager {
         ))
     }
 
-    fn runtime_provider(&self) -> RuntimeProvider {
+    fn runtime_provider(&self, sources: &[QuerySource]) -> RuntimeProvider {
         RuntimeProvider {
             runtime_context: self.runtime_context.clone(),
+            engine_extensions: Mutex::new(Some(
+                self.engine_extensions_provider.extensions_for(sources),
+            )),
         }
     }
 }
 
-#[derive(Clone)]
 struct RuntimeProvider {
     runtime_context: QueryRuntimeContext,
+    engine_extensions: Mutex<Option<EngineExtensions>>,
 }
 
 impl QueryRuntimeProvider for RuntimeProvider {
     fn runtime_context(&self) -> QueryRuntimeContext {
         self.runtime_context.clone()
+    }
+
+    fn engine_extensions(&self) -> EngineExtensions {
+        self.engine_extensions
+            .lock()
+            .expect("engine extensions mutex poisoned")
+            .take()
+            .unwrap_or_default()
     }
 }
 

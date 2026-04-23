@@ -2,6 +2,7 @@
 
 use std::net::Ipv4Addr;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::Mutex;
 
 use coral_api::v1::query_service_server::QueryServiceServer;
@@ -15,6 +16,8 @@ use tonic::transport::Server;
 
 use super::env::AppEnvironment;
 use super::error::AppError;
+use crate::EngineExtensionsProvider;
+use crate::NoopEngineExtensionsProvider;
 use crate::query::manager::QueryManager;
 use crate::query::service::QueryService;
 use crate::sources::manager::SourceManager;
@@ -22,16 +25,26 @@ use crate::sources::service::SourceService;
 use crate::state::{AppStateLayout, ConfigStore, SecretStore};
 
 /// Server-side bootstrap configuration for the Coral server.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone)]
 pub(crate) struct ServerConfig {
     config_dir: Option<PathBuf>,
+    engine_extensions_provider: Arc<dyn EngineExtensionsProvider>,
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ServerConfig {
     #[must_use]
     /// Creates the default local server configuration.
     pub(crate) fn new() -> Self {
-        Self { config_dir: None }
+        Self {
+            config_dir: None,
+            engine_extensions_provider: Arc::new(NoopEngineExtensionsProvider),
+        }
     }
 
     #[must_use]
@@ -40,10 +53,19 @@ impl ServerConfig {
         self.config_dir = Some(config_dir.into());
         self
     }
+
+    #[must_use]
+    pub(crate) fn with_engine_extensions_provider(
+        mut self,
+        engine_extensions_provider: Arc<dyn EngineExtensionsProvider>,
+    ) -> Self {
+        self.engine_extensions_provider = engine_extensions_provider;
+        self
+    }
 }
 
 /// Builder for the Coral server runtime.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct ServerBuilder {
     config: ServerConfig,
 }
@@ -61,6 +83,18 @@ impl ServerBuilder {
     /// Overrides the Coral config directory used by the local server.
     pub fn with_config_dir(mut self, config_dir: impl Into<PathBuf>) -> Self {
         self.config = self.config.with_config_dir(config_dir);
+        self
+    }
+
+    #[must_use]
+    /// Overrides the engine extensions provider used for query runtime builds.
+    pub fn with_engine_extensions_provider(
+        mut self,
+        engine_extensions_provider: Arc<dyn EngineExtensionsProvider>,
+    ) -> Self {
+        self.config = self
+            .config
+            .with_engine_extensions_provider(engine_extensions_provider);
         self
     }
 
@@ -91,6 +125,7 @@ impl ServerBuilder {
             secret_store,
             env.query_runtime_context(),
             layout,
+            Arc::clone(&self.config.engine_extensions_provider),
         );
         start_server(source_manager, query_manager).await
     }
@@ -191,6 +226,8 @@ async fn start_server(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use coral_api::v1::query_service_client::QueryServiceClient;
     use coral_api::v1::source_service_client::SourceServiceClient;
     use coral_api::v1::{ExecuteSqlRequest, ImportSourceRequest, Workspace};
@@ -201,6 +238,7 @@ mod tests {
     use tonic::transport::Endpoint;
 
     use super::start_server;
+    use crate::NoopEngineExtensionsProvider;
     use crate::query::manager::QueryManager;
     use crate::sources::manager::SourceManager;
     use crate::state::{AppStateLayout, ConfigStore, SecretStore};
@@ -239,6 +277,7 @@ mod tests {
                 home_dir: Some(fake_home.clone()),
             },
             layout,
+            Arc::new(NoopEngineExtensionsProvider),
         );
         let running = start_server(source_manager, query_manager)
             .await
@@ -314,6 +353,7 @@ tables:
             SecretStore::new(layout.clone()),
             QueryRuntimeContext { home_dir: None },
             layout,
+            Arc::new(NoopEngineExtensionsProvider),
         );
         let running = start_server(source_manager, query_manager)
             .await
@@ -401,6 +441,7 @@ tables:
             SecretStore::new(layout.clone()),
             QueryRuntimeContext { home_dir: None },
             layout,
+            Arc::new(NoopEngineExtensionsProvider),
         );
         let running = start_server(source_manager, query_manager)
             .await

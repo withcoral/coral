@@ -1,4 +1,6 @@
 disallowed-methods = [
-  { path = "std::env::var", reason = "Use config accessors in coral_app." },
-  { path = "std::env::var_os", reason = "Use config accessors in coral_app." },
+  { path = "std::env::var", reason = "Read process environment only through crate-owned env modules." },
+  { path = "std::env::var_os", reason = "Read process environment only through crate-owned env modules." },
+  { path = "std::env::vars", reason = "Read process environment only through crate-owned env modules." },
+  { path = "std::env::vars_os", reason = "Read process environment only through crate-owned env modules." },
 ]

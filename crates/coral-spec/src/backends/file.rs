@@ -11,14 +11,15 @@
 
 use serde::Deserialize;
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use url::Url;
 
 use crate::common::parse_manifest_data_type;
+use crate::inputs::collect_source_inputs_value;
 use crate::{
-    ColumnSpec, FilterSpec, ManifestDataType, ManifestError, Result, SourceBackend,
-    SourceManifestCommon, TableCommon, validate_columns, validate_filters_and_column_exprs,
-    validate_test_queries,
+    ColumnSpec, FilterSpec, ManifestDataType, ManifestError, ManifestInputKind, ManifestInputSpec,
+    Result, SourceBackend, SourceManifestCommon, TableCommon, validate_columns,
+    validate_filters_and_column_exprs, validate_test_queries,
 };
 
 /// Validated top-level manifest for a `Parquet`-backed source.
@@ -26,6 +27,7 @@ use crate::{
 pub struct ParquetSourceManifest {
     pub common: SourceManifestCommon,
     pub tables: Vec<FileTableSpec>,
+    pub declared_inputs: Vec<ManifestInputSpec>,
 }
 
 /// Validated top-level manifest for a `JSONL`-backed source.
@@ -33,6 +35,32 @@ pub struct ParquetSourceManifest {
 pub struct JsonlSourceManifest {
     pub common: SourceManifestCommon,
     pub tables: Vec<FileTableSpec>,
+    pub declared_inputs: Vec<ManifestInputSpec>,
+}
+
+impl ParquetSourceManifest {
+    /// Returns the source secrets required by this manifest.
+    ///
+    /// Every declared input with `kind: secret` is required; secrets cannot
+    /// carry defaults.
+    pub fn required_secret_names(&self) -> BTreeSet<String> {
+        required_secret_names(&self.declared_inputs)
+    }
+}
+
+impl JsonlSourceManifest {
+    /// Returns the source secrets required by this manifest.
+    pub fn required_secret_names(&self) -> BTreeSet<String> {
+        required_secret_names(&self.declared_inputs)
+    }
+}
+
+fn required_secret_names(inputs: &[ManifestInputSpec]) -> BTreeSet<String> {
+    inputs
+        .iter()
+        .filter(|input| input.kind == ManifestInputKind::Secret)
+        .map(|input| input.key.clone())
+        .collect()
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -46,6 +74,8 @@ struct RawFileSourceManifest {
     #[serde(default)]
     test_queries: Vec<String>,
     backend: SourceBackend,
+    #[serde(default)]
+    inputs: Option<Value>,
     tables: Vec<RawFileTableSpec>,
 }
 
@@ -258,6 +288,7 @@ impl RawFileTableSpec {
 
 impl ParquetSourceManifest {
     pub(crate) fn parse_manifest_value(value: Value) -> Result<Self> {
+        let declared_inputs = collect_source_inputs_value(&value)?;
         let raw: RawFileSourceManifest =
             serde_json::from_value(value).map_err(ManifestError::deserialize)?;
         let RawFileSourceManifest {
@@ -267,6 +298,7 @@ impl ParquetSourceManifest {
             description,
             test_queries,
             backend: _backend,
+            inputs: _inputs,
             tables,
         } = raw;
         validate_test_queries(&name, &test_queries)?;
@@ -276,12 +308,17 @@ impl ParquetSourceManifest {
             .into_iter()
             .map(|table| table.into_validated_parquet(&common.name))
             .collect::<Result<Vec<_>>>()?;
-        Ok(Self { common, tables })
+        Ok(Self {
+            common,
+            tables,
+            declared_inputs,
+        })
     }
 }
 
 impl JsonlSourceManifest {
     pub(crate) fn parse_manifest_value(value: Value) -> Result<Self> {
+        let declared_inputs = collect_source_inputs_value(&value)?;
         let raw: RawFileSourceManifest =
             serde_json::from_value(value).map_err(ManifestError::deserialize)?;
         let RawFileSourceManifest {
@@ -291,6 +328,7 @@ impl JsonlSourceManifest {
             description,
             test_queries,
             backend: _backend,
+            inputs: _inputs,
             tables,
         } = raw;
         validate_test_queries(&name, &test_queries)?;
@@ -300,6 +338,96 @@ impl JsonlSourceManifest {
             .into_iter()
             .map(|table| table.into_validated_jsonl(&common.name))
             .collect::<Result<Vec<_>>>()?;
-        Ok(Self { common, tables })
+        Ok(Self {
+            common,
+            tables,
+            declared_inputs,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{JsonlSourceManifest, ParquetSourceManifest};
+    use crate::ManifestInputKind;
+    use serde_json::json;
+
+    #[test]
+    fn parquet_manifest_surfaces_declared_secret_inputs() {
+        let manifest = ParquetSourceManifest::parse_manifest_value(json!({
+            "dsl_version": 3,
+            "name": "warehouse",
+            "version": "0.1.0",
+            "backend": "parquet",
+            "inputs": {
+                "api_token": { "kind": "secret" },
+                "signing_key": { "kind": "secret" },
+                "region": { "kind": "variable", "default": "us-east-1" },
+            },
+            "tables": [{
+                "name": "events",
+                "description": "Warehouse events",
+                "source": { "location": "s3://example/warehouse/" },
+                "columns": [{ "name": "id", "type": "Int64" }],
+            }],
+        }))
+        .expect("parquet manifest with inputs should parse");
+
+        let required = manifest.required_secret_names();
+        assert!(required.contains("api_token"));
+        assert!(required.contains("signing_key"));
+        assert_eq!(required.len(), 2);
+
+        let kinds: Vec<(&str, ManifestInputKind)> = manifest
+            .declared_inputs
+            .iter()
+            .map(|input| (input.key.as_str(), input.kind))
+            .collect();
+        assert!(kinds.contains(&("api_token", ManifestInputKind::Secret)));
+        assert!(kinds.contains(&("region", ManifestInputKind::Variable)));
+    }
+
+    #[test]
+    fn jsonl_manifest_surfaces_declared_secret_inputs() {
+        let manifest = JsonlSourceManifest::parse_manifest_value(json!({
+            "dsl_version": 3,
+            "name": "logs",
+            "version": "0.1.0",
+            "backend": "jsonl",
+            "inputs": {
+                "access_token": { "kind": "secret" },
+            },
+            "tables": [{
+                "name": "messages",
+                "description": "JSONL messages",
+                "source": { "location": "file:///tmp/logs/" },
+                "columns": [{ "name": "kind", "type": "Utf8" }],
+            }],
+        }))
+        .expect("jsonl manifest with inputs should parse");
+
+        let required = manifest.required_secret_names();
+        assert!(required.contains("access_token"));
+        assert_eq!(required.len(), 1);
+    }
+
+    #[test]
+    fn parquet_manifest_without_inputs_block_has_no_required_secrets() {
+        let manifest = ParquetSourceManifest::parse_manifest_value(json!({
+            "dsl_version": 3,
+            "name": "local",
+            "version": "0.1.0",
+            "backend": "parquet",
+            "tables": [{
+                "name": "events",
+                "description": "Local events",
+                "source": { "location": "file:///tmp/local/" },
+                "columns": [],
+            }],
+        }))
+        .expect("parquet manifest without inputs should parse");
+
+        assert!(manifest.required_secret_names().is_empty());
+        assert!(manifest.declared_inputs.is_empty());
     }
 }

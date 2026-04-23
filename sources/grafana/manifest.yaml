@@ -32,6 +32,10 @@ test_queries:
 tables:
   - name: dashboards
     description: Grafana dashboards listed via the search API
+    guide: >
+      Start broad, then add folder_uid or is_starred in SQL when you already
+      know the slice you want. Results are search summaries only, so use
+      dashboard_panels or the Grafana API for panel definitions.
     request:
       method: GET
       path: /api/search
@@ -152,6 +156,10 @@ tables:
       Grafana folders. Without a parent_uid filter, only root-level folders are
       returned. Pass WHERE parent_uid = '<uid>' to list the direct children of a
       specific folder; nested traversal must be performed by the caller.
+    guide: >
+      Root-folder scans work without extra filters. Add parent_uid when walking
+      a hierarchy. Queries without it only return root folders, so deeper
+      traversal must be done client-side.
     request:
       method: GET
       path: /api/folders
@@ -205,6 +213,11 @@ tables:
 
   - name: datasources
     description: Configured Grafana data sources (Prometheus, Loki, etc.)
+    guide: >
+      This table returns datasource inventory for the current Grafana org. Use
+      it for default-datasource checks and joins from
+      dashboard_panels.datasource_uid. Grafana omits secrets and other secure
+      plugin settings, so treat rows as metadata rather than full config.
     request:
       method: GET
       path: /api/datasources
@@ -320,6 +333,10 @@ tables:
 
   - name: alert_rules
     description: Unified alerting rules from the provisioning API
+    guide: >
+      This table returns every alert rule the token can read. Add folder_uid or
+      rule_group in SQL to narrow review sets. It exposes top-level rule
+      metadata only, not notification routing or full query payloads.
     request:
       method: GET
       path: /api/v1/provisioning/alert-rules
@@ -441,6 +458,12 @@ tables:
       range using epoch-millisecond integer literals (WHERE "from" = 1744502400000
       AND "to" = 1744588800000). Each call requests up to 1000 rows; the server
       may enforce its own maximum. To scan more rows, narrow the time window.
+    guide: >
+      Use this table for alert-firing and user-event history. Start with a
+      tight "from" / "to" window, then add dashboard_uid or alert_id for
+      targeted scans. Grafana expects epoch-millisecond time filters and caps
+      each call at 1000 rows, so broad history lookups must be split into
+      smaller windows.
     request:
       method: GET
       path: /api/annotations
@@ -649,6 +672,10 @@ tables:
       Per-receiver settings (Slack URL, PagerDuty integration key, email
       addresses, etc.) are not exposed — they vary by type and may contain
       credentials.
+    guide: >
+      This table lists every contact point the token can read. Add name when
+      you need one receiver family. Integration-specific settings and secrets
+      are intentionally excluded.
     request:
       method: GET
       path: /api/v1/provisioning/contact-points
@@ -705,6 +732,11 @@ tables:
 
   - name: teams
     description: Grafana teams listed via the search API (paginated)
+    guide: >
+      This table returns paginated team summaries for the current organization.
+      Coral follows the search API pagination for you. Rows are summary records
+      only, so this table will not show the actual team roster or per-resource
+      permissions.
     request:
       method: GET
       path: /api/teams/search
@@ -791,6 +823,10 @@ tables:
     description: |
       Users in the caller's Grafana organization. Useful for ownership,
       rotation, and access reviews.
+    guide: >
+      This table returns users in the current Grafana organization. Add role or
+      is_disabled in SQL for access reviews. Results do not include team
+      membership or global Grafana admin state.
     request:
       method: GET
       path: /api/org/users
@@ -875,12 +911,18 @@ tables:
   - name: dashboard_panels
     description: |
       Panels inside a single Grafana dashboard. Requires a constant equality
-      filter on dashboard_uid (WHERE dashboard_uid = '<uid>'); JOINs against
-      grafana.dashboards will not satisfy the required-filter check, so run
-      a two-step workflow (list dashboards, then query panels per UID).
+      filter on dashboard_uid (WHERE dashboard_uid = '<uid>'); non-constant
+      joins against grafana.dashboards will not satisfy the required-filter
+      check, so run a two-step workflow (list dashboards, then query panels per
+      UID).
       Only top-level panels are surfaced: panels nested inside a collapsed
       'row' panel, and the legacy (Grafana v5 and earlier) dashboard.rows[]
       layout, are not flattened.
+    guide: >
+      Requires dashboard_uid. Query grafana.dashboards first, then fan out with
+      WHERE dashboard_uid = '<uid>'. Non-constant join-derived filters do not
+      satisfy the required-filter check, and only top-level panels are
+      returned.
     request:
       method: GET
       path: /api/dashboards/uid/{{filter.dashboard_uid}}

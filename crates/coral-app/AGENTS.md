@@ -27,6 +27,9 @@ root.
 
 - Keep service handlers thin; real behavior belongs in managers or state
   helpers.
+- Keep process environment access in `src/bootstrap/env.rs` or other clearly
+  app-owned bootstrap seams. Do not read ambient process environment from
+  managers, services, or state helpers.
 - Keep `state/`, `workspaces/`, `sources/`, and `query/` as the main internal
   boundaries. Do not create new sub-boundaries unless they own durable,
   independent behavior.

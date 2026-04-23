@@ -2,13 +2,43 @@
 
 use std::sync::Arc;
 
-use datafusion::error::{DataFusionError, Result};
+use datafusion::error::{DataFusionError, Result as DataFusionResult};
 use datafusion::prelude::SessionContext;
 
-use crate::backends::{CompiledBackendSource, RegisteredSource};
+use crate::backends::{BackendRegistration, CompiledBackendSource, RegisteredSource};
+use crate::runtime::error::{datafusion_to_core, source_decorator_error_to_core};
 use crate::runtime::schema_provider::StaticSchemaProvider;
+use crate::{CoreError, QuerySource, SourceDecorator, SourceFailurePolicy};
 
 const RESERVED_SCHEMA_NAMES: &[&str] = &["coral", "coral_admin"];
+
+/// One selected query source together with its compiled backend artifact.
+///
+/// The registry needs both values at once: the compiled backend source drives
+/// registration, while the original `QuerySource` is what source decorators
+/// reason about during prepare, decoration, and failure handling.
+pub(crate) struct CompiledQuerySource {
+    pub(crate) source: QuerySource,
+    pub(crate) compiled: Box<dyn CompiledBackendSource>,
+}
+
+/// One selected source's readiness for runtime registration.
+pub(crate) enum SourceRegistrationCandidate {
+    Compiled(CompiledQuerySource),
+    CompileFailed {
+        source: QuerySource,
+        error: CoreError,
+    },
+}
+
+impl SourceRegistrationCandidate {
+    fn source(&self) -> &QuerySource {
+        match self {
+            Self::Compiled(compiled) => &compiled.source,
+            Self::CompileFailed { source, .. } => source,
+        }
+    }
+}
 
 /// Captures one source manifest that failed to initialize during registration.
 #[derive(Debug, Clone)]
@@ -25,7 +55,7 @@ pub(crate) struct SourceRegistrationResult {
     pub(crate) failures: Vec<SourceRegistrationFailure>,
 }
 
-fn check_reserved_schema(schema: &str) -> Result<()> {
+fn check_reserved_schema(schema: &str) -> DataFusionResult<()> {
     if RESERVED_SCHEMA_NAMES.contains(&schema) {
         return Err(DataFusionError::Execution(format!(
             "source schema '{schema}' is reserved and cannot be used by manifests"
@@ -43,30 +73,111 @@ fn check_reserved_schema(schema: &str) -> Result<()> {
 /// logged and skipped so the remaining sources can still be registered.
 pub(crate) async fn register_sources(
     ctx: &SessionContext,
-    sources: Vec<Box<dyn CompiledBackendSource>>,
-) -> Result<SourceRegistrationResult> {
-    let catalog = ctx
-        .catalog("datafusion")
-        .ok_or_else(|| DataFusionError::Plan("catalog 'datafusion' not found".to_string()))?;
+    sources: Vec<SourceRegistrationCandidate>,
+    source_decorators: &mut [Box<dyn SourceDecorator>],
+) -> std::result::Result<SourceRegistrationResult, CoreError> {
+    let catalog = ctx.catalog("datafusion").ok_or_else(|| {
+        datafusion_to_core(&DataFusionError::Plan(
+            "catalog 'datafusion' not found".to_string(),
+        ))
+    })?;
+
+    let selected_sources = sources
+        .iter()
+        .map(|selected| selected.source().clone())
+        .collect::<Vec<_>>();
+    prepare_source_decorators(source_decorators, &selected_sources)?;
 
     let mut result = SourceRegistrationResult::default();
     let mut seen_schemas = std::collections::HashSet::new();
 
     for source in sources {
-        let schema_name = source.schema_name().to_string();
-        let source_name = source.source_name().to_string();
+        match source {
+            SourceRegistrationCandidate::Compiled(selected_source) => {
+                let query_source = &selected_source.source;
+                let compiled_source = selected_source.compiled;
+                let schema_name = compiled_source.schema_name().to_string();
+                let source_name = compiled_source.source_name().to_string();
 
-        match register_source(ctx, &catalog, &mut seen_schemas, source.as_ref()).await {
-            Ok(active_source) => result.active_sources.push(active_source),
-            Err(error) => {
-                tracing::warn!(source = %source_name, error = %error, "skipping source");
-                result.failures.push(SourceRegistrationFailure {
-                    schema_name,
+                match register_source(ctx, &mut seen_schemas, compiled_source.as_ref()).await {
+                    Ok(registration) => {
+                        let BackendRegistration {
+                            tables,
+                            source: registered_source,
+                        } = registration;
+                        let decorated_tables =
+                            decorate_source_tables(source_decorators, query_source, tables)?;
+                        match catalog.register_schema(
+                            compiled_source.schema_name(),
+                            Arc::new(StaticSchemaProvider::new(decorated_tables)),
+                        ) {
+                            Ok(_) => result.active_sources.push(registered_source),
+                            Err(error) => {
+                                let core_error = datafusion_to_core(&error);
+                                if handle_source_registration_failure(
+                                    source_decorators,
+                                    query_source,
+                                    &core_error,
+                                )? {
+                                    return Err(core_error);
+                                }
+                                let failure = SourceRegistrationFailure {
+                                    schema_name,
+                                    detail: core_error.to_string(),
+                                };
+                                tracing::warn!(
+                                    source = %source_name,
+                                    schema_name = %failure.schema_name,
+                                    detail = %failure.detail,
+                                    "skipping source"
+                                );
+                                result.failures.push(failure);
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        let core_error = datafusion_to_core(&error);
+                        if handle_source_registration_failure(
+                            source_decorators,
+                            query_source,
+                            &core_error,
+                        )? {
+                            return Err(core_error);
+                        }
+                        let failure = SourceRegistrationFailure {
+                            schema_name,
+                            detail: core_error.to_string(),
+                        };
+                        tracing::warn!(
+                            source = %source_name,
+                            schema_name = %failure.schema_name,
+                            detail = %failure.detail,
+                            "skipping source"
+                        );
+                        result.failures.push(failure);
+                    }
+                }
+            }
+            SourceRegistrationCandidate::CompileFailed { source, error } => {
+                if handle_source_registration_failure(source_decorators, &source, &error)? {
+                    return Err(error);
+                }
+                let failure = SourceRegistrationFailure {
+                    schema_name: source.source_name().to_string(),
                     detail: error.to_string(),
-                });
+                };
+                tracing::warn!(
+                    source = %source.source_name(),
+                    schema_name = %failure.schema_name,
+                    detail = %failure.detail,
+                    "skipping source"
+                );
+                result.failures.push(failure);
             }
         }
     }
+
+    finish_source_decorators(source_decorators)?;
 
     Ok(result)
 }
@@ -74,17 +185,24 @@ pub(crate) async fn register_sources(
 #[cfg(test)]
 pub(crate) fn register_sources_blocking(
     ctx: &SessionContext,
-    sources: Vec<Box<dyn CompiledBackendSource>>,
-) -> Result<SourceRegistrationResult> {
-    futures::executor::block_on(register_sources(ctx, sources))
+    sources: Vec<CompiledQuerySource>,
+) -> std::result::Result<SourceRegistrationResult, CoreError> {
+    let mut source_decorators: Vec<Box<dyn SourceDecorator>> = Vec::new();
+    futures::executor::block_on(register_sources(
+        ctx,
+        sources
+            .into_iter()
+            .map(SourceRegistrationCandidate::Compiled)
+            .collect(),
+        source_decorators.as_mut_slice(),
+    ))
 }
 
 async fn register_source(
     ctx: &SessionContext,
-    catalog: &Arc<dyn datafusion::catalog::CatalogProvider>,
     seen_schemas: &mut std::collections::HashSet<String>,
     source: &dyn CompiledBackendSource,
-) -> Result<RegisteredSource> {
+) -> DataFusionResult<BackendRegistration> {
     check_reserved_schema(source.schema_name())?;
 
     if !seen_schemas.insert(source.schema_name().to_string()) {
@@ -94,13 +212,74 @@ async fn register_source(
         )));
     }
 
-    let registration = source.register(ctx).await?;
-    catalog.register_schema(
-        source.schema_name(),
-        Arc::new(StaticSchemaProvider::new(registration.tables)),
-    )?;
+    source.register(ctx).await
+}
 
-    Ok(registration.source)
+fn prepare_source_decorators(
+    source_decorators: &mut [Box<dyn SourceDecorator>],
+    selected_sources: &[QuerySource],
+) -> std::result::Result<(), CoreError> {
+    for decorator in source_decorators {
+        decorator
+            .prepare(selected_sources)
+            .map_err(|error| source_decorator_error(decorator.name(), &error))?;
+    }
+    Ok(())
+}
+
+fn decorate_source_tables(
+    source_decorators: &mut [Box<dyn SourceDecorator>],
+    source: &QuerySource,
+    mut tables: crate::SourceTables,
+) -> std::result::Result<crate::SourceTables, CoreError> {
+    for decorator in source_decorators {
+        tables = decorator
+            .decorate_source(source, tables)
+            .map_err(|error| source_decorator_error(decorator.name(), &error))?;
+    }
+    Ok(tables)
+}
+
+fn handle_source_registration_failure(
+    source_decorators: &mut [Box<dyn SourceDecorator>],
+    source: &QuerySource,
+    error: &CoreError,
+) -> std::result::Result<bool, CoreError> {
+    for decorator in source_decorators {
+        let policy = decorator
+            .source_failed(source, error)
+            .map_err(|decorator_error| {
+                source_decorator_error(decorator.name(), &decorator_error)
+            })?;
+        if policy == SourceFailurePolicy::Abort {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn finish_source_decorators(
+    source_decorators: &mut [Box<dyn SourceDecorator>],
+) -> std::result::Result<(), CoreError> {
+    for decorator in source_decorators {
+        decorator
+            .finish()
+            .map_err(|error| source_decorator_error(decorator.name(), &error))?;
+    }
+    Ok(())
+}
+
+fn source_decorator_error(name: &str, error: &crate::SourceDecoratorError) -> CoreError {
+    let core = source_decorator_error_to_core(error);
+    match core {
+        CoreError::InvalidInput(detail) => {
+            CoreError::InvalidInput(format!("source decorator '{name}': {detail}"))
+        }
+        CoreError::FailedPrecondition(detail) => {
+            CoreError::FailedPrecondition(format!("source decorator '{name}': {detail}"))
+        }
+        other => other,
+    }
 }
 
 #[cfg(test)]
