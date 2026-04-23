@@ -80,6 +80,8 @@ WHERE json_get_int(properties, 'count') > 5
 
 Available: `json_get`, `json_get_str`, `json_get_int`, `json_get_float`, `json_get_bool`, `json_get_array`, `json_get_json`, `json_contains`, `json_length`, `json_as_text`, plus the `->` and `->>` operators.
 
+Use plain object keys or array indexes with these functions and operators, not JSONPath syntax. For example, `properties->>'browser'` looks up the `browser` key, while `properties->>'$browser'` is only for a literal key named `$browser`.
+
 ## Column expressions
 
 The `expr` field on a column defines how to extract or compute its value from each row. When omitted, Coral uses a `path` expression matching the column name.

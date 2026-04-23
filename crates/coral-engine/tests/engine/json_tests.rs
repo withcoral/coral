@@ -116,6 +116,29 @@ async fn json_functions_also_work_on_utf8_columns() {
 }
 
 #[tokio::test]
+async fn json_string_scalars_round_trip_as_json_text() {
+    let temp = TempDir::new().expect("temp dir");
+    write_jsonl_file(
+        temp.path(),
+        "events.jsonl",
+        &[json!({"id": 1, "properties": "hello"})],
+    );
+    let source = build_source(events_manifest("json_scalar", temp.path(), "Json"));
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            &TestRuntime,
+            "SELECT id, json_as_text(properties) AS value FROM json_scalar.events",
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(rows, vec![json!({"id": 1, "value": "hello"})]);
+}
+
+#[tokio::test]
 async fn json_get_int_filters_typed_values() {
     let rows = query(
         "json_filter",
