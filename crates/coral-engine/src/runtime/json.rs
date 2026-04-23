@@ -75,10 +75,9 @@ fn optimise_json_get_cast(cast: &Cast) -> Option<Transformed<Expr>> {
     }
     let func = match &cast.data_type {
         DataType::Boolean => json_get_bool_udf(),
-        DataType::Float64
-        | DataType::Float32
-        | DataType::Decimal128(_, _)
-        | DataType::Decimal256(_, _) => json_get_float_udf(),
+        // Keep decimal casts on the normal cast path. Rewriting them to
+        // `json_get_float` would erase the requested decimal precision/scale.
+        DataType::Float64 | DataType::Float32 => json_get_float_udf(),
         DataType::Int64 | DataType::Int32 => json_get_int_udf(),
         DataType::Utf8 | DataType::Utf8View | DataType::LargeUtf8 => json_get_str_udf(),
         _ => return None,
@@ -131,5 +130,32 @@ fn extract_scalar_function(expr: &Expr) -> Option<&ScalarFunction> {
         Expr::ScalarFunction(func) => Some(func),
         Expr::Alias(alias) => extract_scalar_function(&alias.expr),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use arrow::datatypes::DataType;
+    use datafusion::common::ScalarValue;
+    use datafusion::logical_expr::expr::{Cast, Expr, ScalarFunction};
+    use datafusion_functions_json::udfs::json_get_udf;
+
+    use super::optimise_json_get_cast;
+
+    #[test]
+    fn decimal_casts_are_not_rewritten_to_float() {
+        let json_get = Expr::ScalarFunction(ScalarFunction {
+            func: json_get_udf(),
+            args: vec![
+                Expr::Literal(ScalarValue::Utf8(Some("{\"amount\": 12.34}".into())), None),
+                Expr::Literal(ScalarValue::Utf8(Some("amount".into())), None),
+            ],
+        });
+
+        let decimal128 = Cast::new(Box::new(json_get.clone()), DataType::Decimal128(18, 2));
+        let decimal256 = Cast::new(Box::new(json_get), DataType::Decimal256(18, 2));
+
+        assert!(optimise_json_get_cast(&decimal128).is_none());
+        assert!(optimise_json_get_cast(&decimal256).is_none());
     }
 }
