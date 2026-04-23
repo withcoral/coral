@@ -83,12 +83,17 @@ impl RequestAuthenticator for AwsSigV4Authenticator {
             header_refs.push((name.as_str(), value_str));
         }
 
-        let body = SignableBody::Bytes(
-            request
-                .body()
-                .and_then(|request_body| request_body.as_bytes())
-                .unwrap_or(&[]),
-        );
+        let body = match request.body() {
+            Some(request_body) => {
+                let bytes = request_body.as_bytes().ok_or_else(|| {
+                    RequestAuthenticatorError::failed_precondition(
+                        "cannot sign SigV4 request with unbuffered body".to_string(),
+                    )
+                })?;
+                SignableBody::Bytes(bytes)
+            }
+            None => SignableBody::Bytes(&[]),
+        };
         let signable = SignableRequest::new(
             request.method().as_str(),
             request.url().as_str(),

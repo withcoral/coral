@@ -56,7 +56,7 @@ pub fn resolve_inputs(
             ManifestInputKind::Variable => source_variables
                 .get(&input.key)
                 .cloned()
-                .or_else(|| (!input.default_value.is_empty()).then(|| input.default_value.clone())),
+                .or_else(|| (!input.required).then(|| input.default_value.clone())),
         };
         if let Some(value) = value {
             resolved.insert(input.key.clone(), value);
