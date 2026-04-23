@@ -46,6 +46,33 @@ Coral supports a number of [popular data sources](/reference/bundled-sources) bu
   </Step>
 </Steps>
 
+## Why Coral
+
+Most agent workflows access company data one tool at a time. That works, but it tends to create:
+
+- too many tool calls
+- repeated auth, pagination, and retry logic
+- poor cross-source reasoning
+- high token traffic
+- brittle glue code and prompts
+
+Coral gives agents one query interface instead:
+
+- query multiple live sources through SQL
+- keep workflows inspectable and scriptable
+- expose the same runtime over MCP
+- answer cross-source questions without stitching tools together by hand
+
+### Benchmark
+
+We benchmarked Coral against direct provider MCPs (Datadog, Sentry, Linear, Slack, and GitHub) for a diverse set of 82 real-world AI tasks using Claude Opus 4.6. Key findings:
+
+1. **Widespread impact on performance.** Across all tasks, Claude was 20% more accurate and 2x more cost efficient using Coral than using direct provider MCPs. With Coral, Claude also had 42% lower latency.
+2. **Highest impact on coding agent tasks.** Across the more complex tasks that typify coding agent workloads (multi-hop, higher post-processing), Claude was 31% more accurate and 3.4x more cost efficient with Coral.
+3. **More neutral impact on simpler tasks.** For simpler AI tasks, such as raw fact retrieval from knowledge bases, the results were closer, with Claude 6% more accurate and 2% more cost efficient with Coral.
+
+Full [benchmark report](https://withcoral.com/benchmarks).
+
 ## How Coral works
 
 Coral sits between you and your data sources: you (or your agent) write SQL, and Coral translates it into API calls or file reads, then returns a single query result.
