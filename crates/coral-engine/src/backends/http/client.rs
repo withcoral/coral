@@ -775,7 +775,7 @@ fn build_resolved_inputs(
     source_variables: &BTreeMap<String, String>,
 ) -> BTreeMap<String, String> {
     let mut resolved = BTreeMap::new();
-    for input in &manifest.declared_inputs {
+    for input in &manifest.common.declared_inputs {
         let value = match input.kind {
             ManifestInputKind::Secret => source_secrets.get(&input.key).cloned(),
             ManifestInputKind::Variable => source_variables

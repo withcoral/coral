@@ -86,7 +86,7 @@ impl CompiledBackendSource for HttpCompiledSource {
 
         let secret_keys = self.source_secrets.keys().cloned().collect();
         let inputs = build_registered_inputs(
-            &self.manifest.declared_inputs,
+            &self.manifest.common.declared_inputs,
             &self.source_variables,
             &secret_keys,
         );

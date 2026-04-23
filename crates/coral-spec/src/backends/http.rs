@@ -10,16 +10,16 @@
 //! they are still engine-neutral; no runtime HTTP client or execution concerns
 //! live in this crate.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::HashSet;
 
 use serde::Deserialize;
 use serde_json::Value;
 
 use crate::{
-    AuthSpec, ColumnSpec, FilterSpec, ManifestError, ManifestInputKind, ManifestInputSpec,
-    PaginationSpec, ParsedTemplate, RequestRouteSpec, RequestSpec, ResponseSpec, Result,
-    SourceBackend, SourceManifestCommon, TableCommon, inputs::collect_source_inputs_value,
-    validate::validate_template, validate_http_table, validate_test_queries,
+    AuthSpec, ColumnSpec, FilterSpec, ManifestError, PaginationSpec, ParsedTemplate,
+    RequestRouteSpec, RequestSpec, ResponseSpec, Result, SourceBackend, SourceManifestCommon,
+    TableCommon, inputs::collect_source_inputs_value, validate::validate_template,
+    validate_http_table, validate_test_queries,
 };
 
 /// Provider-specific response hints for classifying and delaying rate-limit retries.
@@ -44,7 +44,6 @@ pub struct HttpSourceManifest {
     pub auth: AuthSpec,
     pub rate_limit: RateLimitSpec,
     pub tables: Vec<HttpTableSpec>,
-    pub declared_inputs: Vec<ManifestInputSpec>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -152,20 +151,6 @@ impl HttpTableSpec {
     }
 }
 
-impl HttpSourceManifest {
-    /// Returns the source secrets required by this manifest.
-    ///
-    /// In the new input model, every declared input with `kind: secret` is
-    /// required because secrets cannot carry defaults.
-    pub fn required_secret_names(&self) -> BTreeSet<String> {
-        self.declared_inputs
-            .iter()
-            .filter(|input| input.kind == ManifestInputKind::Secret)
-            .map(|input| input.key.clone())
-            .collect()
-    }
-}
-
 impl RawHttpTableSpec {
     fn into_validated(self, schema: &str) -> Result<HttpTableSpec> {
         validate_http_table(
@@ -214,8 +199,14 @@ impl HttpSourceManifest {
             tables,
         } = raw;
         validate_test_queries(&name, &test_queries)?;
-        let common =
-            SourceManifestCommon::new(dsl_version, name, version, description, test_queries);
+        let common = SourceManifestCommon::new(
+            dsl_version,
+            name,
+            version,
+            description,
+            test_queries,
+            declared_inputs,
+        );
         let tables = tables
             .into_iter()
             .map(|table| table.into_validated(&common.name))
@@ -238,7 +229,6 @@ impl HttpSourceManifest {
             auth,
             rate_limit,
             tables,
-            declared_inputs,
         })
     }
 }

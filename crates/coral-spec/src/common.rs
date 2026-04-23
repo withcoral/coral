@@ -9,12 +9,12 @@
 //! source identity, filters, request templating, response extraction, typed
 //! columns, and pagination.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{ManifestError, ParsedTemplate, Result};
+use crate::{ManifestError, ManifestInputKind, ManifestInputSpec, ParsedTemplate, Result};
 
 /// Common top-level source metadata shared by every backend source spec.
 #[derive(Debug, Clone)]
@@ -24,6 +24,7 @@ pub struct SourceManifestCommon {
     pub version: String,
     pub description: String,
     pub test_queries: Vec<String>,
+    pub declared_inputs: Vec<ManifestInputSpec>,
 }
 
 impl SourceManifestCommon {
@@ -33,6 +34,7 @@ impl SourceManifestCommon {
         version: String,
         description: String,
         test_queries: Vec<String>,
+        declared_inputs: Vec<ManifestInputSpec>,
     ) -> Self {
         Self {
             dsl_version,
@@ -40,7 +42,20 @@ impl SourceManifestCommon {
             version,
             description,
             test_queries,
+            declared_inputs,
         }
+    }
+
+    /// Returns the source secrets required by this manifest.
+    ///
+    /// Every declared input with `kind: secret` is required; secrets cannot
+    /// carry defaults.
+    pub fn required_secret_names(&self) -> BTreeSet<String> {
+        self.declared_inputs
+            .iter()
+            .filter(|input| input.kind == ManifestInputKind::Secret)
+            .map(|input| input.key.clone())
+            .collect()
     }
 }
 

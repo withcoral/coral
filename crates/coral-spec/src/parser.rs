@@ -11,7 +11,7 @@ use serde_json::Value;
 use crate::backends::file::{JsonlSourceManifest, ParquetSourceManifest};
 use crate::backends::http::HttpSourceManifest;
 use crate::schema::validate_manifest_schema;
-use crate::{ManifestError, ManifestInputSpec, Result, SourceBackend};
+use crate::{ManifestError, ManifestInputSpec, Result, SourceBackend, SourceManifestCommon};
 
 /// Validated top-level source spec for one registered source.
 ///
@@ -46,64 +46,50 @@ impl ValidatedSourceManifest {
     }
 
     #[must_use]
+    /// Returns the backend-agnostic source metadata shared by every manifest.
+    pub fn common(&self) -> &SourceManifestCommon {
+        match &self.inner {
+            ValidatedManifestKind::Http(manifest) => &manifest.common,
+            ValidatedManifestKind::Parquet(manifest) => &manifest.common,
+            ValidatedManifestKind::Jsonl(manifest) => &manifest.common,
+        }
+    }
+
+    #[must_use]
     /// Returns the source-spec `name`, which is also the stable SQL schema name.
     pub fn schema_name(&self) -> &str {
-        match &self.inner {
-            ValidatedManifestKind::Http(manifest) => &manifest.common.name,
-            ValidatedManifestKind::Parquet(manifest) => &manifest.common.name,
-            ValidatedManifestKind::Jsonl(manifest) => &manifest.common.name,
-        }
+        &self.common().name
     }
 
     #[must_use]
     /// Returns the source-spec version string for the source.
     pub fn source_version(&self) -> &str {
-        match &self.inner {
-            ValidatedManifestKind::Http(manifest) => &manifest.common.version,
-            ValidatedManifestKind::Parquet(manifest) => &manifest.common.version,
-            ValidatedManifestKind::Jsonl(manifest) => &manifest.common.version,
-        }
+        &self.common().version
     }
 
     #[must_use]
     /// Returns the source-spec description string.
     pub fn description(&self) -> &str {
-        match &self.inner {
-            ValidatedManifestKind::Http(manifest) => &manifest.common.description,
-            ValidatedManifestKind::Parquet(manifest) => &manifest.common.description,
-            ValidatedManifestKind::Jsonl(manifest) => &manifest.common.description,
-        }
+        &self.common().description
     }
 
     #[must_use]
     /// Returns the optional top-level validation queries declared by the source spec.
     pub fn test_queries(&self) -> &[String] {
-        match &self.inner {
-            ValidatedManifestKind::Http(manifest) => &manifest.common.test_queries,
-            ValidatedManifestKind::Parquet(manifest) => &manifest.common.test_queries,
-            ValidatedManifestKind::Jsonl(manifest) => &manifest.common.test_queries,
-        }
+        &self.common().test_queries
     }
 
     /// Returns the set of source secrets required to compile or authenticate
     /// the source spec.
     #[must_use]
     pub fn required_secret_names(&self) -> BTreeSet<String> {
-        match &self.inner {
-            ValidatedManifestKind::Http(manifest) => manifest.required_secret_names(),
-            ValidatedManifestKind::Parquet(manifest) => manifest.required_secret_names(),
-            ValidatedManifestKind::Jsonl(manifest) => manifest.required_secret_names(),
-        }
+        self.common().required_secret_names()
     }
 
     /// Returns the declared top-level inputs for this manifest in authored order.
     #[must_use]
     pub fn declared_inputs(&self) -> &[ManifestInputSpec] {
-        match &self.inner {
-            ValidatedManifestKind::Http(manifest) => &manifest.declared_inputs,
-            ValidatedManifestKind::Parquet(manifest) => &manifest.declared_inputs,
-            ValidatedManifestKind::Jsonl(manifest) => &manifest.declared_inputs,
-        }
+        &self.common().declared_inputs
     }
 
     /// Returns the validated HTTP source spec when `backend: http`.
