@@ -23,6 +23,8 @@ curl -fsSL https://withcoral.com/install.sh | sh
 coral onboard
 ```
 
+![coral onboard demo](./docs/images/onboard-only.gif)
+
 Coral gives agents a local-first SQL runtime over APIs, files, and other live
 sources. Query it from the CLI, inspect schemas and tables, or expose the same
 runtime over MCP so agents can use it without bespoke tool glue.
@@ -182,6 +184,8 @@ coral sql "
   LIMIT 10
 "
 ```
+
+![coral sql query demo](./docs/images/sql-query-readme.gif)
 
 ### Next steps
 
