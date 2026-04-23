@@ -459,9 +459,11 @@ tables:
       AND "to" = 1744588800000). Each call requests up to 1000 rows; the server
       may enforce its own maximum. To scan more rows, narrow the time window.
     guide: >
-      Start with a tight "from" / "to" window, then add dashboard_uid or
-      alert_id for targeted scans. Requests cap at 1000 rows, so broad history
-      lookups must be split into smaller windows.
+      Use this table for alert-firing and user-event history. Start with a
+      tight "from" / "to" window, then add dashboard_uid or alert_id for
+      targeted scans. Grafana expects epoch-millisecond time filters and caps
+      each call at 1000 rows, so broad history lookups must be split into
+      smaller windows.
     request:
       method: GET
       path: /api/annotations
