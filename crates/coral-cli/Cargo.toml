@@ -25,7 +25,7 @@ tokio.workspace = true
 tonic.workspace = true
 
 coral-api.workspace = true
-coral-auth-aws.workspace = true
+coral-auth-aws = { path = "../auth/aws" }
 coral-client.workspace = true
 coral-spec.workspace = true
 coral-mcp.workspace = true

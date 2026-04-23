@@ -70,7 +70,6 @@ coral-app = { path = "crates/coral-app" }
 coral-cli = { path = "crates/coral-cli" }
 coral-client = { path = "crates/coral-client" }
 coral-engine = { path = "crates/coral-engine" }
-coral-auth-aws = { path = "crates/auth/aws" }
 coral-mcp = { path = "crates/coral-mcp" }
 coral-spec = { path = "crates/coral-spec" }
 
