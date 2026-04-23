@@ -1,0 +1,1780 @@
+dsl_version: 3
+name: confluence
+version: 0.1.0
+description: |
+  Query spaces, pages, blog posts, comments, attachments, labels, and
+  related metadata from Confluence Cloud.
+backend: http
+inputs:
+  CONFLUENCE_BASE_URL:
+    kind: variable
+    hint: |
+      Base URL of your Atlassian Cloud site, without the `/wiki` suffix
+      (for example `https://acme.atlassian.net`).
+  CONFLUENCE_BASIC_AUTH:
+    kind: secret
+    hint: |
+      Use Base64-encoded `email:api_token` credentials for Confluence
+      Cloud Basic auth.
+      Create an API token at
+      [Atlassian API token settings](https://id.atlassian.com/manage-profile/security/api-tokens),
+      then encode `email:api_token`.
+      Example: `printf '%s' 'you@example.com:YOUR_CONFLUENCE_API_TOKEN' | base64`.
+base_url: "{{input.CONFLUENCE_BASE_URL}}"
+auth:
+  headers:
+    - name: Authorization
+      from: template
+      template: Basic {{input.CONFLUENCE_BASIC_AUTH}}
+    - name: Accept
+      from: literal
+      value: application/json
+test_queries:
+  - SELECT * FROM confluence.spaces LIMIT 1
+tables:
+  - name: spaces
+    description: Confluence spaces visible to the authenticated user
+    filters:
+      - name: ids
+        required: false
+      - name: keys
+        required: false
+      - name: type
+        required: false
+      - name: status
+        required: false
+      - name: labels
+        required: false
+    request:
+      method: GET
+      path: /wiki/api/v2/spaces
+      query:
+        - name: ids
+          from: filter
+          key: ids
+        - name: keys
+          from: filter
+          key: keys
+        - name: type
+          from: filter
+          key: type
+        - name: status
+          from: filter
+          key: status
+        - name: labels
+          from: filter
+          key: labels
+        - name: description-format
+          from: literal
+          value: plain
+    response:
+      rows_path:
+        - results
+      row_strategy: direct
+    pagination:
+      mode: link_header
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Space ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: key
+        type: Utf8
+        nullable: true
+        description: Space key
+        expr:
+          kind: path
+          path:
+            - key
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Space name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Space type (global, personal, collaboration, knowledge_base)
+        expr:
+          kind: path
+          path:
+            - type
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Space status (current, archived)
+        expr:
+          kind: path
+          path:
+            - status
+      - name: homepage_id
+        type: Utf8
+        nullable: true
+        description: Homepage ID for the space
+        expr:
+          kind: path
+          path:
+            - homepageId
+      - name: description_plain
+        type: Utf8
+        nullable: true
+        description: Plain-text description value
+        expr:
+          kind: path
+          path:
+            - description
+            - plain
+            - value
+      - name: author_id
+        type: Utf8
+        nullable: true
+        description: Author account ID
+        expr:
+          kind: path
+          path:
+            - authorId
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Creation timestamp
+        expr:
+          kind: path
+          path:
+            - createdAt
+      - name: ids
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional comma-separated list of space IDs to filter by
+        expr:
+          kind: from_filter
+          key: ids
+      - name: keys
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional comma-separated list of space keys to filter by
+        expr:
+          kind: from_filter
+          key: keys
+      - name: labels
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional comma-separated list of label names to filter by
+        expr:
+          kind: from_filter
+          key: labels
+  - name: pages
+    description: Confluence pages visible to the authenticated user
+    filters:
+      - name: space_id
+        required: false
+      - name: status
+        required: false
+      - name: title
+        required: false
+      - name: body_format
+        required: false
+    request:
+      method: GET
+      path: /wiki/api/v2/pages
+      query:
+        - name: space-id
+          from: filter
+          key: space_id
+        - name: status
+          from: filter
+          key: status
+        - name: title
+          from: filter
+          key: title
+        - name: body-format
+          from: filter
+          key: body_format
+    response:
+      rows_path:
+        - results
+      row_strategy: direct
+    pagination:
+      mode: link_header
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Page ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Page status (current, archived, deleted, trashed, historical, draft)
+        expr:
+          kind: path
+          path:
+            - status
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Page title
+        expr:
+          kind: path
+          path:
+            - title
+      - name: space_id
+        type: Utf8
+        nullable: true
+        description: Parent space ID
+        expr:
+          kind: path
+          path:
+            - spaceId
+      - name: parent_id
+        type: Utf8
+        nullable: true
+        description: Parent page or content ID
+        expr:
+          kind: path
+          path:
+            - parentId
+      - name: parent_type
+        type: Utf8
+        nullable: true
+        description: Parent content type (page, whiteboard, database, embed, folder)
+        expr:
+          kind: path
+          path:
+            - parentType
+      - name: position
+        type: Int64
+        nullable: true
+        description: Ordinal position of the page within its parent
+        expr:
+          kind: path
+          path:
+            - position
+      - name: author_id
+        type: Utf8
+        nullable: true
+        description: Author account ID
+        expr:
+          kind: path
+          path:
+            - authorId
+      - name: owner_id
+        type: Utf8
+        nullable: true
+        description: Current owner account ID
+        expr:
+          kind: path
+          path:
+            - ownerId
+      - name: last_owner_id
+        type: Utf8
+        nullable: true
+        description: Previous owner account ID
+        expr:
+          kind: path
+          path:
+            - lastOwnerId
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Creation timestamp
+        expr:
+          kind: path
+          path:
+            - createdAt
+      - name: version_number
+        type: Int64
+        nullable: true
+        description: Current version number
+        expr:
+          kind: path
+          path:
+            - version
+            - number
+      - name: version_message
+        type: Utf8
+        nullable: true
+        description: Current version message
+        expr:
+          kind: path
+          path:
+            - version
+            - message
+      - name: version_created_at
+        type: Utf8
+        nullable: true
+        description: Current version creation timestamp
+        expr:
+          kind: path
+          path:
+            - version
+            - createdAt
+      - name: body_storage
+        type: Utf8
+        nullable: true
+        description: Body in storage (XHTML) format; populated only when body_format=storage
+        expr:
+          kind: path
+          path:
+            - body
+            - storage
+            - value
+      - name: body_atlas_doc_format
+        type: Utf8
+        nullable: true
+        description: Body in Atlassian Document Format JSON; populated only when body_format=atlas_doc_format
+        expr:
+          kind: path
+          path:
+            - body
+            - atlas_doc_format
+            - value
+      - name: body_format
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional body format; populates the matching body_* column (storage, atlas_doc_format)
+        expr:
+          kind: from_filter
+          key: body_format
+  - name: page
+    description: A single Confluence page by ID
+    filters:
+      - name: id
+        required: true
+      - name: body_format
+        required: false
+    request:
+      method: GET
+      path: /wiki/api/v2/pages/{{filter.id}}
+      query:
+        - name: body-format
+          from: filter
+          key: body_format
+    response:
+      row_strategy: direct
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Page ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Page status
+        expr:
+          kind: path
+          path:
+            - status
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Page title
+        expr:
+          kind: path
+          path:
+            - title
+      - name: space_id
+        type: Utf8
+        nullable: true
+        description: Parent space ID
+        expr:
+          kind: path
+          path:
+            - spaceId
+      - name: parent_id
+        type: Utf8
+        nullable: true
+        description: Parent content ID
+        expr:
+          kind: path
+          path:
+            - parentId
+      - name: parent_type
+        type: Utf8
+        nullable: true
+        description: Parent content type
+        expr:
+          kind: path
+          path:
+            - parentType
+      - name: position
+        type: Int64
+        nullable: true
+        description: Ordinal position within parent
+        expr:
+          kind: path
+          path:
+            - position
+      - name: author_id
+        type: Utf8
+        nullable: true
+        description: Author account ID
+        expr:
+          kind: path
+          path:
+            - authorId
+      - name: owner_id
+        type: Utf8
+        nullable: true
+        description: Current owner account ID
+        expr:
+          kind: path
+          path:
+            - ownerId
+      - name: last_owner_id
+        type: Utf8
+        nullable: true
+        description: Previous owner account ID
+        expr:
+          kind: path
+          path:
+            - lastOwnerId
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Creation timestamp
+        expr:
+          kind: path
+          path:
+            - createdAt
+      - name: version_number
+        type: Int64
+        nullable: true
+        description: Current version number
+        expr:
+          kind: path
+          path:
+            - version
+            - number
+      - name: version_message
+        type: Utf8
+        nullable: true
+        description: Current version message
+        expr:
+          kind: path
+          path:
+            - version
+            - message
+      - name: version_created_at
+        type: Utf8
+        nullable: true
+        description: Current version creation timestamp
+        expr:
+          kind: path
+          path:
+            - version
+            - createdAt
+      - name: body_storage
+        type: Utf8
+        nullable: true
+        description: Body in storage (XHTML) format
+        expr:
+          kind: path
+          path:
+            - body
+            - storage
+            - value
+      - name: body_atlas_doc_format
+        type: Utf8
+        nullable: true
+        description: Body in Atlassian Document Format JSON
+        expr:
+          kind: path
+          path:
+            - body
+            - atlas_doc_format
+            - value
+      - name: body_view
+        type: Utf8
+        nullable: true
+        description: Body rendered as HTML for display
+        expr:
+          kind: path
+          path:
+            - body
+            - view
+            - value
+      - name: body_format
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional body format; populates the matching body_* column (storage, atlas_doc_format, view)
+        expr:
+          kind: from_filter
+          key: body_format
+  - name: blog_posts
+    description: Confluence blog posts visible to the authenticated user
+    guide: |
+      Confluence `GET /api/v2/blogposts` supports status values
+      `current`, `deleted`, and `trashed`. Passing `status='draft'`
+      returns a 400 `INVALID_REQUEST_PARAMETER` from the API.
+      To fetch a specific draft blog post, query `confluence.blog_post`
+      by ID.
+    filters:
+      - name: space_id
+        required: false
+      - name: status
+        required: false
+      - name: body_format
+        required: false
+    request:
+      method: GET
+      path: /wiki/api/v2/blogposts
+      query:
+        - name: space-id
+          from: filter
+          key: space_id
+        - name: status
+          from: filter
+          key: status
+        - name: body-format
+          from: filter
+          key: body_format
+    response:
+      rows_path:
+        - results
+      row_strategy: direct
+    pagination:
+      mode: link_header
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Blog post ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Blog post status
+        expr:
+          kind: path
+          path:
+            - status
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Blog post title
+        expr:
+          kind: path
+          path:
+            - title
+      - name: space_id
+        type: Utf8
+        nullable: true
+        description: Parent space ID
+        expr:
+          kind: path
+          path:
+            - spaceId
+      - name: author_id
+        type: Utf8
+        nullable: true
+        description: Author account ID
+        expr:
+          kind: path
+          path:
+            - authorId
+      - name: owner_id
+        type: Utf8
+        nullable: true
+        description: Current owner account ID
+        expr:
+          kind: path
+          path:
+            - ownerId
+      - name: last_owner_id
+        type: Utf8
+        nullable: true
+        description: Previous owner account ID
+        expr:
+          kind: path
+          path:
+            - lastOwnerId
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Creation timestamp
+        expr:
+          kind: path
+          path:
+            - createdAt
+      - name: version_number
+        type: Int64
+        nullable: true
+        description: Current version number
+        expr:
+          kind: path
+          path:
+            - version
+            - number
+      - name: version_message
+        type: Utf8
+        nullable: true
+        description: Current version message
+        expr:
+          kind: path
+          path:
+            - version
+            - message
+      - name: version_created_at
+        type: Utf8
+        nullable: true
+        description: Current version creation timestamp
+        expr:
+          kind: path
+          path:
+            - version
+            - createdAt
+      - name: body_storage
+        type: Utf8
+        nullable: true
+        description: Body in storage (XHTML) format
+        expr:
+          kind: path
+          path:
+            - body
+            - storage
+            - value
+      - name: body_atlas_doc_format
+        type: Utf8
+        nullable: true
+        description: Body in Atlassian Document Format JSON
+        expr:
+          kind: path
+          path:
+            - body
+            - atlas_doc_format
+            - value
+      - name: body_format
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional body format
+        expr:
+          kind: from_filter
+          key: body_format
+  - name: blog_post
+    description: A single Confluence blog post by ID
+    filters:
+      - name: id
+        required: true
+      - name: body_format
+        required: false
+    request:
+      method: GET
+      path: /wiki/api/v2/blogposts/{{filter.id}}
+      query:
+        - name: body-format
+          from: filter
+          key: body_format
+    response:
+      row_strategy: direct
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Blog post ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Blog post status
+        expr:
+          kind: path
+          path:
+            - status
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Blog post title
+        expr:
+          kind: path
+          path:
+            - title
+      - name: space_id
+        type: Utf8
+        nullable: true
+        description: Parent space ID
+        expr:
+          kind: path
+          path:
+            - spaceId
+      - name: author_id
+        type: Utf8
+        nullable: true
+        description: Author account ID
+        expr:
+          kind: path
+          path:
+            - authorId
+      - name: owner_id
+        type: Utf8
+        nullable: true
+        description: Current owner account ID
+        expr:
+          kind: path
+          path:
+            - ownerId
+      - name: last_owner_id
+        type: Utf8
+        nullable: true
+        description: Previous owner account ID
+        expr:
+          kind: path
+          path:
+            - lastOwnerId
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Creation timestamp
+        expr:
+          kind: path
+          path:
+            - createdAt
+      - name: version_number
+        type: Int64
+        nullable: true
+        description: Current version number
+        expr:
+          kind: path
+          path:
+            - version
+            - number
+      - name: version_message
+        type: Utf8
+        nullable: true
+        description: Current version message
+        expr:
+          kind: path
+          path:
+            - version
+            - message
+      - name: version_created_at
+        type: Utf8
+        nullable: true
+        description: Current version creation timestamp
+        expr:
+          kind: path
+          path:
+            - version
+            - createdAt
+      - name: body_storage
+        type: Utf8
+        nullable: true
+        description: Body in storage (XHTML) format
+        expr:
+          kind: path
+          path:
+            - body
+            - storage
+            - value
+      - name: body_atlas_doc_format
+        type: Utf8
+        nullable: true
+        description: Body in Atlassian Document Format JSON
+        expr:
+          kind: path
+          path:
+            - body
+            - atlas_doc_format
+            - value
+      - name: body_view
+        type: Utf8
+        nullable: true
+        description: Body rendered as HTML for display
+        expr:
+          kind: path
+          path:
+            - body
+            - view
+            - value
+      - name: body_format
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional body format
+        expr:
+          kind: from_filter
+          key: body_format
+  - name: page_footer_comments
+    description: Footer comments on a specific Confluence page
+    filters:
+      - name: page_id
+        required: true
+      - name: body_format
+        required: false
+    request:
+      method: GET
+      path: /wiki/api/v2/pages/{{filter.page_id}}/footer-comments
+      query:
+        - name: body-format
+          from: filter
+          key: body_format
+    response:
+      rows_path:
+        - results
+      row_strategy: direct
+    pagination:
+      mode: link_header
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Comment ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Comment status
+        expr:
+          kind: path
+          path:
+            - status
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Comment title (if present)
+        expr:
+          kind: path
+          path:
+            - title
+      - name: page_id
+        type: Utf8
+        nullable: true
+        description: ID of the page this comment belongs to
+        expr:
+          kind: path
+          path:
+            - pageId
+      - name: parent_comment_id
+        type: Utf8
+        nullable: true
+        description: Parent comment ID, for threaded replies
+        expr:
+          kind: path
+          path:
+            - parentCommentId
+      - name: version_number
+        type: Int64
+        nullable: true
+        description: Current version number
+        expr:
+          kind: path
+          path:
+            - version
+            - number
+      - name: version_created_at
+        type: Utf8
+        nullable: true
+        description: Current version creation timestamp
+        expr:
+          kind: path
+          path:
+            - version
+            - createdAt
+      - name: body_storage
+        type: Utf8
+        nullable: true
+        description: Body in storage (XHTML) format
+        expr:
+          kind: path
+          path:
+            - body
+            - storage
+            - value
+      - name: body_atlas_doc_format
+        type: Utf8
+        nullable: true
+        description: Body in Atlassian Document Format JSON
+        expr:
+          kind: path
+          path:
+            - body
+            - atlas_doc_format
+            - value
+      - name: body_format
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional body format
+        expr:
+          kind: from_filter
+          key: body_format
+  - name: page_inline_comments
+    description: Inline comments on a specific Confluence page
+    filters:
+      - name: page_id
+        required: true
+      - name: body_format
+        required: false
+    request:
+      method: GET
+      path: /wiki/api/v2/pages/{{filter.page_id}}/inline-comments
+      query:
+        - name: body-format
+          from: filter
+          key: body_format
+    response:
+      rows_path:
+        - results
+      row_strategy: direct
+    pagination:
+      mode: link_header
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Comment ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Comment status
+        expr:
+          kind: path
+          path:
+            - status
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Comment title (if present)
+        expr:
+          kind: path
+          path:
+            - title
+      - name: page_id
+        type: Utf8
+        nullable: true
+        description: ID of the page this comment belongs to
+        expr:
+          kind: path
+          path:
+            - pageId
+      - name: parent_comment_id
+        type: Utf8
+        nullable: true
+        description: Parent comment ID, for threaded replies
+        expr:
+          kind: path
+          path:
+            - parentCommentId
+      - name: resolution_status
+        type: Utf8
+        nullable: true
+        description: Inline comment resolution status
+        expr:
+          kind: path
+          path:
+            - resolutionStatus
+      - name: inline_marker_ref
+        type: Utf8
+        nullable: true
+        description: Inline marker reference anchoring the comment
+        expr:
+          kind: path
+          path:
+            - properties
+            - inline-marker-ref
+      - name: inline_original_selection
+        type: Utf8
+        nullable: true
+        description: Original text the inline comment was attached to
+        expr:
+          kind: path
+          path:
+            - properties
+            - inline-original-selection
+      - name: version_number
+        type: Int64
+        nullable: true
+        description: Current version number
+        expr:
+          kind: path
+          path:
+            - version
+            - number
+      - name: version_created_at
+        type: Utf8
+        nullable: true
+        description: Current version creation timestamp
+        expr:
+          kind: path
+          path:
+            - version
+            - createdAt
+      - name: body_storage
+        type: Utf8
+        nullable: true
+        description: Body in storage (XHTML) format
+        expr:
+          kind: path
+          path:
+            - body
+            - storage
+            - value
+      - name: body_atlas_doc_format
+        type: Utf8
+        nullable: true
+        description: Body in Atlassian Document Format JSON
+        expr:
+          kind: path
+          path:
+            - body
+            - atlas_doc_format
+            - value
+      - name: body_format
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional body format
+        expr:
+          kind: from_filter
+          key: body_format
+  - name: blog_post_footer_comments
+    description: Footer comments on a specific Confluence blog post
+    filters:
+      - name: blog_post_id
+        required: true
+      - name: body_format
+        required: false
+    request:
+      method: GET
+      path: /wiki/api/v2/blogposts/{{filter.blog_post_id}}/footer-comments
+      query:
+        - name: body-format
+          from: filter
+          key: body_format
+    response:
+      rows_path:
+        - results
+      row_strategy: direct
+    pagination:
+      mode: link_header
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Comment ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Comment status
+        expr:
+          kind: path
+          path:
+            - status
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Comment title (if present)
+        expr:
+          kind: path
+          path:
+            - title
+      - name: blog_post_id
+        type: Utf8
+        nullable: true
+        description: ID of the blog post this comment belongs to
+        expr:
+          kind: path
+          path:
+            - blogPostId
+      - name: parent_comment_id
+        type: Utf8
+        nullable: true
+        description: Parent comment ID, for threaded replies
+        expr:
+          kind: path
+          path:
+            - parentCommentId
+      - name: version_number
+        type: Int64
+        nullable: true
+        description: Current version number
+        expr:
+          kind: path
+          path:
+            - version
+            - number
+      - name: version_created_at
+        type: Utf8
+        nullable: true
+        description: Current version creation timestamp
+        expr:
+          kind: path
+          path:
+            - version
+            - createdAt
+      - name: body_storage
+        type: Utf8
+        nullable: true
+        description: Body in storage (XHTML) format
+        expr:
+          kind: path
+          path:
+            - body
+            - storage
+            - value
+      - name: body_atlas_doc_format
+        type: Utf8
+        nullable: true
+        description: Body in Atlassian Document Format JSON
+        expr:
+          kind: path
+          path:
+            - body
+            - atlas_doc_format
+            - value
+      - name: body_format
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional body format
+        expr:
+          kind: from_filter
+          key: body_format
+  - name: blog_post_inline_comments
+    description: Inline comments on a specific Confluence blog post
+    filters:
+      - name: blog_post_id
+        required: true
+      - name: body_format
+        required: false
+    request:
+      method: GET
+      path: /wiki/api/v2/blogposts/{{filter.blog_post_id}}/inline-comments
+      query:
+        - name: body-format
+          from: filter
+          key: body_format
+    response:
+      rows_path:
+        - results
+      row_strategy: direct
+    pagination:
+      mode: link_header
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Comment ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Comment status
+        expr:
+          kind: path
+          path:
+            - status
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Comment title (if present)
+        expr:
+          kind: path
+          path:
+            - title
+      - name: blog_post_id
+        type: Utf8
+        nullable: true
+        description: ID of the blog post this comment belongs to
+        expr:
+          kind: path
+          path:
+            - blogPostId
+      - name: parent_comment_id
+        type: Utf8
+        nullable: true
+        description: Parent comment ID, for threaded replies
+        expr:
+          kind: path
+          path:
+            - parentCommentId
+      - name: resolution_status
+        type: Utf8
+        nullable: true
+        description: Inline comment resolution status
+        expr:
+          kind: path
+          path:
+            - resolutionStatus
+      - name: inline_marker_ref
+        type: Utf8
+        nullable: true
+        description: Inline marker reference anchoring the comment
+        expr:
+          kind: path
+          path:
+            - properties
+            - inline-marker-ref
+      - name: inline_original_selection
+        type: Utf8
+        nullable: true
+        description: Original text the inline comment was attached to
+        expr:
+          kind: path
+          path:
+            - properties
+            - inline-original-selection
+      - name: version_number
+        type: Int64
+        nullable: true
+        description: Current version number
+        expr:
+          kind: path
+          path:
+            - version
+            - number
+      - name: version_created_at
+        type: Utf8
+        nullable: true
+        description: Current version creation timestamp
+        expr:
+          kind: path
+          path:
+            - version
+            - createdAt
+      - name: body_storage
+        type: Utf8
+        nullable: true
+        description: Body in storage (XHTML) format
+        expr:
+          kind: path
+          path:
+            - body
+            - storage
+            - value
+      - name: body_atlas_doc_format
+        type: Utf8
+        nullable: true
+        description: Body in Atlassian Document Format JSON
+        expr:
+          kind: path
+          path:
+            - body
+            - atlas_doc_format
+            - value
+      - name: body_format
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional body format
+        expr:
+          kind: from_filter
+          key: body_format
+  - name: page_attachments
+    description: Attachments on a specific Confluence page
+    filters:
+      - name: page_id
+        required: true
+    request:
+      method: GET
+      path: /wiki/api/v2/pages/{{filter.page_id}}/attachments
+    response:
+      rows_path:
+        - results
+      row_strategy: direct
+    pagination:
+      mode: link_header
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Attachment ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Attachment status
+        expr:
+          kind: path
+          path:
+            - status
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Attachment filename
+        expr:
+          kind: path
+          path:
+            - title
+      - name: page_id
+        type: Utf8
+        nullable: true
+        description: ID of the page this attachment belongs to
+        expr:
+          kind: path
+          path:
+            - pageId
+      - name: media_type
+        type: Utf8
+        nullable: true
+        description: MIME type of the attachment
+        expr:
+          kind: path
+          path:
+            - mediaType
+      - name: media_type_description
+        type: Utf8
+        nullable: true
+        description: Human-readable media type description
+        expr:
+          kind: path
+          path:
+            - mediaTypeDescription
+      - name: file_id
+        type: Utf8
+        nullable: true
+        description: Underlying file ID
+        expr:
+          kind: path
+          path:
+            - fileId
+      - name: file_size
+        type: Int64
+        nullable: true
+        description: File size in bytes
+        expr:
+          kind: path
+          path:
+            - fileSize
+      - name: comment
+        type: Utf8
+        nullable: true
+        description: Attachment comment
+        expr:
+          kind: path
+          path:
+            - comment
+      - name: version_number
+        type: Int64
+        nullable: true
+        description: Current version number
+        expr:
+          kind: path
+          path:
+            - version
+            - number
+      - name: version_created_at
+        type: Utf8
+        nullable: true
+        description: Current version creation timestamp
+        expr:
+          kind: path
+          path:
+            - version
+            - createdAt
+      - name: download_link
+        type: Utf8
+        nullable: true
+        description: Download link
+        expr:
+          kind: path
+          path:
+            - downloadLink
+      - name: webui_link
+        type: Utf8
+        nullable: true
+        description: Web UI link for the attachment
+        expr:
+          kind: path
+          path:
+            - webuiLink
+  - name: blog_post_attachments
+    description: Attachments on a specific Confluence blog post
+    filters:
+      - name: blog_post_id
+        required: true
+    request:
+      method: GET
+      path: /wiki/api/v2/blogposts/{{filter.blog_post_id}}/attachments
+    response:
+      rows_path:
+        - results
+      row_strategy: direct
+    pagination:
+      mode: link_header
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Attachment ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Attachment status
+        expr:
+          kind: path
+          path:
+            - status
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Attachment filename
+        expr:
+          kind: path
+          path:
+            - title
+      - name: blog_post_id
+        type: Utf8
+        nullable: true
+        description: ID of the blog post this attachment belongs to
+        expr:
+          kind: path
+          path:
+            - blogPostId
+      - name: media_type
+        type: Utf8
+        nullable: true
+        description: MIME type of the attachment
+        expr:
+          kind: path
+          path:
+            - mediaType
+      - name: media_type_description
+        type: Utf8
+        nullable: true
+        description: Human-readable media type description
+        expr:
+          kind: path
+          path:
+            - mediaTypeDescription
+      - name: file_id
+        type: Utf8
+        nullable: true
+        description: Underlying file ID
+        expr:
+          kind: path
+          path:
+            - fileId
+      - name: file_size
+        type: Int64
+        nullable: true
+        description: File size in bytes
+        expr:
+          kind: path
+          path:
+            - fileSize
+      - name: comment
+        type: Utf8
+        nullable: true
+        description: Attachment comment
+        expr:
+          kind: path
+          path:
+            - comment
+      - name: version_number
+        type: Int64
+        nullable: true
+        description: Current version number
+        expr:
+          kind: path
+          path:
+            - version
+            - number
+      - name: version_created_at
+        type: Utf8
+        nullable: true
+        description: Current version creation timestamp
+        expr:
+          kind: path
+          path:
+            - version
+            - createdAt
+      - name: download_link
+        type: Utf8
+        nullable: true
+        description: Download link
+        expr:
+          kind: path
+          path:
+            - downloadLink
+      - name: webui_link
+        type: Utf8
+        nullable: true
+        description: Web UI link for the attachment
+        expr:
+          kind: path
+          path:
+            - webuiLink
+  - name: attachment
+    description: A single Confluence attachment by ID
+    filters:
+      - name: id
+        required: true
+      - name: version
+        required: false
+    request:
+      method: GET
+      path: /wiki/api/v2/attachments/{{filter.id}}
+      query:
+        - name: version
+          from: filter
+          key: version
+    response:
+      row_strategy: direct
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Attachment ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Attachment status
+        expr:
+          kind: path
+          path:
+            - status
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Attachment filename
+        expr:
+          kind: path
+          path:
+            - title
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Attachment creation timestamp
+        expr:
+          kind: path
+          path:
+            - createdAt
+      - name: page_id
+        type: Utf8
+        nullable: true
+        description: Parent page ID when attached to a page
+        expr:
+          kind: path
+          path:
+            - pageId
+      - name: blog_post_id
+        type: Utf8
+        nullable: true
+        description: Parent blog post ID when attached to a blog post
+        expr:
+          kind: path
+          path:
+            - blogPostId
+      - name: custom_content_id
+        type: Utf8
+        nullable: true
+        description: Parent custom content ID when attached to custom content
+        expr:
+          kind: path
+          path:
+            - customContentId
+      - name: media_type
+        type: Utf8
+        nullable: true
+        description: MIME type of the attachment
+        expr:
+          kind: path
+          path:
+            - mediaType
+      - name: media_type_description
+        type: Utf8
+        nullable: true
+        description: Human-readable media type description
+        expr:
+          kind: path
+          path:
+            - mediaTypeDescription
+      - name: file_id
+        type: Utf8
+        nullable: true
+        description: Underlying file ID
+        expr:
+          kind: path
+          path:
+            - fileId
+      - name: file_size
+        type: Int64
+        nullable: true
+        description: File size in bytes
+        expr:
+          kind: path
+          path:
+            - fileSize
+      - name: comment
+        type: Utf8
+        nullable: true
+        description: Attachment comment
+        expr:
+          kind: path
+          path:
+            - comment
+      - name: version_number
+        type: Int64
+        nullable: true
+        description: Current version number
+        expr:
+          kind: path
+          path:
+            - version
+            - number
+      - name: version_created_at
+        type: Utf8
+        nullable: true
+        description: Current version creation timestamp
+        expr:
+          kind: path
+          path:
+            - version
+            - createdAt
+      - name: version_message
+        type: Utf8
+        nullable: true
+        description: Current version message
+        expr:
+          kind: path
+          path:
+            - version
+            - message
+      - name: version_author_id
+        type: Utf8
+        nullable: true
+        description: Current version author account ID
+        expr:
+          kind: path
+          path:
+            - version
+            - authorId
+      - name: download_link
+        type: Utf8
+        nullable: true
+        description: Download link
+        expr:
+          kind: path
+          path:
+            - downloadLink
+      - name: webui_link
+        type: Utf8
+        nullable: true
+        description: Web UI link for the attachment
+        expr:
+          kind: path
+          path:
+            - webuiLink
+      - name: version
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional specific version to fetch
+        expr:
+          kind: from_filter
+          key: version
+  - name: labels
+    description: Labels defined in Confluence
+    filters:
+      - name: label_id
+        required: false
+      - name: sort
+        required: false
+    request:
+      method: GET
+      path: /wiki/api/v2/labels
+      query:
+        - name: label-id
+          from: filter
+          key: label_id
+        - name: sort
+          from: filter
+          key: sort
+    response:
+      rows_path:
+        - results
+      row_strategy: direct
+    pagination:
+      mode: link_header
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Label ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Label name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: prefix
+        type: Utf8
+        nullable: true
+        description: Label prefix (global, my, team)
+        expr:
+          kind: path
+          path:
+            - prefix
+      - name: label_id
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional specific label ID to filter by
+        expr:
+          kind: from_filter
+          key: label_id
+      - name: sort
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional sort order
+        expr:
+          kind: from_filter
+          key: sort

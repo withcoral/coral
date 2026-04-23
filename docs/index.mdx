@@ -50,7 +50,7 @@ Coral sits between you and your data sources: you (or your agent) write SQL, and
 
 A **source spec** is a YAML file that defines how to reach an API or local dataset and which tables/columns it exposes. A **source** is a data source Coral can query, created from a source spec plus your configured credentials and variables. When you run `coral source add github`, Coral installs the `github` source. At query time, Coral loads that source as the `github` SQL schema, so tables like `github.issues` and `github.pull_requests` are queryable. Start with [bundled sources](/reference/bundled-sources) or [write your own](/guides/write-a-custom-source).
 
-During `source add`, Coral prompts for declared variables and secrets (tokens, workspace IDs, file paths, etc.). These are stored locally in Coral state, with secrets kept separately from non-secret config, and used only at query time. Because each source appears as SQL tables, you can `JOIN` across sources in one statement (for example `github.issues` with `linear.attachments`), and Coral executes that locally on your machine.
+During `source add`, Coral collects each declared variable and secret (tokens, workspace IDs, file paths, etc.) from environment variables of the same name, or prompts for them interactively when you pass `--interactive`. These values are stored locally in Coral state, with secrets kept separately from non-secret config, and used only at query time. Because each source appears as SQL tables, you can `JOIN` across sources in one statement (for example `github.issues` with `linear.attachments`), and Coral executes that locally on your machine.
 
 ```mermaid actions={false}
 graph LR

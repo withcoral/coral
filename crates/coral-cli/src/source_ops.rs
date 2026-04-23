@@ -191,6 +191,65 @@ pub(crate) fn prompt_for_inputs(
     Ok((variables, secrets))
 }
 
+pub(crate) fn collect_inputs_from_env(
+    inputs: &[ManifestInputSpec],
+) -> Result<(Vec<SourceVariable>, Vec<SourceSecret>), anyhow::Error> {
+    collect_inputs_with(inputs, |key| read_env_var(key).unwrap_or_default())
+}
+
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Source input keys are user-defined by manifests; this reads each as a process env var."
+)]
+fn read_env_var(key: &str) -> Option<String> {
+    std::env::var(key).ok()
+}
+
+fn collect_inputs_with(
+    inputs: &[ManifestInputSpec],
+    mut lookup: impl FnMut(&str) -> String,
+) -> Result<(Vec<SourceVariable>, Vec<SourceSecret>), anyhow::Error> {
+    let mut variables = Vec::new();
+    let mut secrets = Vec::new();
+    let mut missing = Vec::new();
+
+    for input in inputs {
+        let raw = lookup(&input.key);
+        let value = if raw.is_empty() {
+            input.default_value.clone()
+        } else {
+            raw
+        };
+        if value.is_empty() {
+            if input.required {
+                missing.push(input.key.clone());
+            }
+            continue;
+        }
+        match input.kind {
+            ManifestInputKind::Variable => variables.push(SourceVariable {
+                key: input.key.clone(),
+                value,
+            }),
+            ManifestInputKind::Secret => secrets.push(SourceSecret {
+                key: input.key.clone(),
+                value,
+            }),
+        }
+    }
+
+    if !missing.is_empty() {
+        return Err(anyhow::anyhow!(
+            "missing required environment variable{}: {}. Set the variable{} or run with --interactive.",
+            if missing.len() == 1 { "" } else { "s" },
+            missing.join(", "),
+            if missing.len() == 1 { "" } else { "s" },
+        ));
+    }
+
+    Ok((variables, secrets))
+}
+
 pub(crate) fn manifest_input_from_proto(
     input: &SourceInputSpec,
 ) -> Result<ManifestInputSpec, anyhow::Error> {
@@ -466,9 +525,115 @@ mod tests {
     use coral_api::v1::ValidateSourceResponse;
     use coral_spec::{ManifestInputKind, ManifestInputSpec};
 
+    use std::collections::HashMap;
+
     use super::{
-        ValidationFollowUp, ValidationSeverityMode, finalize_input_value, validation_follow_up,
+        ValidationFollowUp, ValidationSeverityMode, collect_inputs_with, finalize_input_value,
+        validation_follow_up,
     };
+
+    #[test]
+    fn collect_inputs_reads_variables_and_secrets_from_lookup() {
+        let inputs = vec![
+            ManifestInputSpec {
+                key: "LINEAR_API_BASE".to_string(),
+                kind: ManifestInputKind::Variable,
+                required: false,
+                default_value: "https://api.linear.app".to_string(),
+                hint: None,
+            },
+            ManifestInputSpec {
+                key: "LINEAR_API_KEY".to_string(),
+                kind: ManifestInputKind::Secret,
+                required: true,
+                default_value: String::new(),
+                hint: None,
+            },
+        ];
+        let env: HashMap<&str, &str> = [("LINEAR_API_KEY", "lin_token")].into_iter().collect();
+        let (variables, secrets) = collect_inputs_with(&inputs, |key| {
+            env.get(key).map(|v| (*v).to_string()).unwrap_or_default()
+        })
+        .expect("should succeed");
+        assert_eq!(variables.len(), 1);
+        assert_eq!(variables[0].key, "LINEAR_API_BASE");
+        assert_eq!(variables[0].value, "https://api.linear.app");
+        assert_eq!(secrets.len(), 1);
+        assert_eq!(secrets[0].key, "LINEAR_API_KEY");
+        assert_eq!(secrets[0].value, "lin_token");
+    }
+
+    #[test]
+    fn collect_inputs_env_value_overrides_default() {
+        let inputs = vec![ManifestInputSpec {
+            key: "API_BASE".to_string(),
+            kind: ManifestInputKind::Variable,
+            required: false,
+            default_value: "https://example.com".to_string(),
+            hint: None,
+        }];
+        let (variables, _) = collect_inputs_with(&inputs, |_| "https://override.test".to_string())
+            .expect("env should override default");
+        assert_eq!(variables.len(), 1);
+        assert_eq!(variables[0].value, "https://override.test");
+    }
+
+    #[test]
+    fn collect_inputs_uses_default_when_env_empty() {
+        let inputs = vec![ManifestInputSpec {
+            key: "API_BASE".to_string(),
+            kind: ManifestInputKind::Variable,
+            required: true,
+            default_value: "https://example.com".to_string(),
+            hint: None,
+        }];
+        let (variables, secrets) = collect_inputs_with(&inputs, |_| String::new())
+            .expect("default should satisfy required");
+        assert_eq!(secrets.len(), 0);
+        assert_eq!(variables.len(), 1);
+        assert_eq!(variables[0].value, "https://example.com");
+    }
+
+    #[test]
+    fn collect_inputs_errors_on_missing_required() {
+        let inputs = vec![
+            ManifestInputSpec {
+                key: "LINEAR_API_KEY".to_string(),
+                kind: ManifestInputKind::Secret,
+                required: true,
+                default_value: String::new(),
+                hint: None,
+            },
+            ManifestInputSpec {
+                key: "OTHER_KEY".to_string(),
+                kind: ManifestInputKind::Variable,
+                required: true,
+                default_value: String::new(),
+                hint: None,
+            },
+        ];
+        let error = collect_inputs_with(&inputs, |_| String::new())
+            .expect_err("missing required inputs should fail");
+        let message = error.to_string();
+        assert!(message.contains("LINEAR_API_KEY"));
+        assert!(message.contains("OTHER_KEY"));
+        assert!(message.contains("--interactive"));
+    }
+
+    #[test]
+    fn collect_inputs_skips_optional_empty_inputs() {
+        let inputs = vec![ManifestInputSpec {
+            key: "OPTIONAL".to_string(),
+            kind: ManifestInputKind::Variable,
+            required: false,
+            default_value: String::new(),
+            hint: None,
+        }];
+        let (variables, secrets) =
+            collect_inputs_with(&inputs, |_| String::new()).expect("optional should be omitted");
+        assert!(variables.is_empty());
+        assert!(secrets.is_empty());
+    }
 
     #[test]
     fn empty_optional_input_is_omitted_for_server_side_defaults() {

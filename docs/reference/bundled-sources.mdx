@@ -18,6 +18,7 @@ If the source you need is not available, you can extend Coral by [writing a cust
 | Source | Backend | Description |
 | --- | --- | --- |
 | [`clickup`](#clickup) | `http` | Query tasks, spaces, folders, lists, goals, time entries, comments, views, tags, custom fields, teams, and users from ClickUp. |
+| [`confluence`](#confluence) | `http` | Query spaces, pages, blog posts, comments, attachments, labels, and related metadata from Confluence Cloud. |
 | [`datadog`](#datadog) | `http` | Query monitors, events, incidents, dashboards, hosts, services, APM dependencies, downtimes, SLOs, synthetic tests, users, logs, spans, and metrics from Datadog. |
 | [`github`](#github) | `http` | Query repositories, issues, pull requests, workflows, organizations, users, teams, and API metadata from GitHub (Cloud or Enterprise). |
 | [`gitlab`](#gitlab) | `http` | Query projects, groups, issues, merge requests, pipelines, deployments, packages, users, and instance metadata from GitLab (Cloud or self-hosted). |
@@ -63,6 +64,22 @@ If you're logged in to ClickUp, you can go to
 [App Settings](https://app.clickup.com/settings/apps) to find your token.
 For more details, see the
 [ClickUp authentication guide](https://developer.clickup.com/docs/authentication).
+
+### `confluence`
+
+`CONFLUENCE_BASE_URL` (required)
+
+Base URL of your Atlassian Cloud site, without the `/wiki` suffix
+(for example `https://acme.atlassian.net`).
+
+`CONFLUENCE_BASIC_AUTH` (required)
+
+Use Base64-encoded `email:api_token` credentials for Confluence
+Cloud Basic auth.
+Create an API token at
+[Atlassian API token settings](https://id.atlassian.com/manage-profile/security/api-tokens),
+then encode `email:api_token`.
+Example: `printf '%s' 'you@example.com:YOUR_CONFLUENCE_API_TOKEN' | base64`.
 
 ### `datadog`
 
@@ -155,8 +172,7 @@ See [Intercom authentication docs](https://developers.intercom.com/docs/build-an
 
 ### `jira`
 
-`JIRA_BASE_URL` (optional)<br />
-default `https://your-domain.atlassian.net`
+`JIRA_BASE_URL` (required)
 
 Base URL of your Jira Cloud site (for example
 `https://acme.atlassian.net`).
