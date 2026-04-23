@@ -9,25 +9,13 @@
 
 One SQL interface over APIs, files, and live sources — built for agents.
 
-Try it on macOS:
-
-```bash
-brew install withcoral/tap/coral
-coral onboard
-```
-
-Or on Linux:
-
-```bash
-curl -fsSL https://withcoral.com/install.sh | sh
-coral onboard
-```
-
-![coral onboard demo](./docs/images/onboard-only.gif)
-
 Coral gives agents a local-first SQL runtime over APIs, files, and other live
 sources. Query it from the CLI, inspect schemas and tables, or expose the same
 runtime over MCP so agents can use it without bespoke tool glue.
+
+Here's coral answering the question "Which Sentry errors create the most noise in Slack, and who is working on them?"
+
+![coral sql demo](./docs/images/coral-sql-join.gif)
 
 > Coral is local-first today: add sources, query them through one runtime, and
 > expose that runtime to agents over MCP. We’re actively expanding the product
@@ -51,6 +39,16 @@ Coral gives agents one query interface instead:
 - keep workflows inspectable and scriptable
 - expose the same runtime over MCP
 - answer cross-source questions without stitching tools together by hand
+
+We benchmarked Coral with direct provider MCPs (Datadog, Sentry, Linear, Slack and Github) for a diverse set of 82 real-world AI tasks using Claude Opus 4.6. Key findings:
+
+1. Widespread impact on performance. Across all tasks, Claude was 20% more accurate and 2x more cost efficient using Coral than using direct provider MCPs. With Coral, Claude also had 42% lower latency.
+
+2. Highest impact on coding agent tasks. Across the more complex tasks that typify coding agent workloads (multi-hop, higher post-processing), Claude was 31% more accurate and 3.4x more cost efficient with Coral.
+
+3. More neutral impact on simpler tasks. For simpler AI tasks, such as raw fact retrieval from knowledge bases, the results were closer, with Claude 6% more accurate and 2% more cost efficient with Coral.
+
+Full [benchmark report](https://withcoral.com/benchmarks).
 
 ## How Coral works
 
@@ -114,10 +112,7 @@ never leave your machine.
 outperforms per-source tool calls when complexity outgrows a single API call:
 Coral handles pagination, returns tabular rows instead of sprawling JSON, and
 lets the query pick just the columns it needs. Query pushdown and caching
-keep things responsive and cut unnecessary API traffic. In an 82-task
-head-to-head against direct provider MCPs, Claude Opus 4.6 via Coral was
-**31% more accurate and 70% cheaper** on complex tasks — see the
-[full methodology](https://withcoral.com/benchmarks).
+keep things responsive and cut unnecessary API traffic.
 
 For deeper internals — gRPC transport, DataFusion integration, and the crate
 layout — see the
@@ -141,9 +136,19 @@ of Coral to your first SQL query. If you prefer an interactive wizard, you can r
 
 ### 1. Install Coral
 
+On macOS:
+
 ```bash
 brew install withcoral/tap/coral
 ```
+
+Or on Linux:
+
+```bash
+curl -fsSL https://withcoral.com/install.sh | sh
+```
+
+See [all install options](https://withcoral.com/docs/getting-started/installation).
 
 ### 2. Discover bundled sources
 
