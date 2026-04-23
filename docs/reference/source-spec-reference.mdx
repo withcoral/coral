@@ -239,7 +239,7 @@ The top-level `auth` block declares how Coral authenticates outgoing requests. P
 | ------ | ------- |
 | `HeaderAuth` | Attach one or more declarative auth headers (Bearer tokens, API keys, pre-signed headers). |
 | `BasicAuth` | HTTP Basic. Coral base64-encodes `username:password` into `Authorization: Basic ...`. |
-| `CustomAuth` | Dispatch request signing to a runtime-registered authenticator (for schemes that must observe the built request, such as AWS SigV4). |
+| `CustomAuth` | Dispatch request signing to a built-in Coral authenticator (for schemes that must observe the built request, such as AWS SigV4). |
 
 All three resolve their inputs from declared source inputs (`{{input.KEY}}` templates or `from: input`). Auth is source-scoped — it does not see SQL filters or pagination state.
 
@@ -276,11 +276,11 @@ auth:
   # ...authenticator-specific fields, see below
 ```
 
-The `authenticator` key names a runtime-registered `RequestAuthenticator`. All other fields under `auth` are passed through as the authenticator's config. Custom authenticators receive the fully built `reqwest::Request` (method, URL, body, declared headers) before it is sent — use this type when signing depends on request contents.
+The `authenticator` key selects a built-in Coral authenticator. All other fields under `auth` are passed through as that authenticator's config. Use this type when signing depends on the final request contents.
 
-##### Coral CLI: `aws_sigv4`
+##### `aws_sigv4`
 
-Signs outgoing requests with AWS Signature Version 4. The Coral CLI registers this authenticator from the `coral-auth-aws` crate for its local server. Useful for querying AWS monitoring services via CloudWatch, CloudTrail, or any other SigV4-protected API.
+Signs outgoing requests with AWS Signature Version 4. Useful for querying AWS monitoring services via CloudWatch, CloudTrail, or any other SigV4-protected API.
 
 Example against CloudWatch Logs:
 
@@ -292,7 +292,6 @@ auth:
   region: "{{input.AWS_REGION}}"
   access_key_id: "{{input.AWS_ACCESS_KEY_ID}}"
   secret_access_key: "{{input.AWS_SECRET_ACCESS_KEY}}"
-  session_token: "{{input.AWS_SESSION_TOKEN}}"   # optional, for STS/role-assumed credentials
 ```
 
 | Field | Required | Notes |
@@ -303,78 +302,27 @@ auth:
 | `secret_access_key` | yes | AWS secret access key |
 | `session_token` | no | Omit for long-term credentials; include for STS/assumed-role sessions |
 
-**S3 note:** `service: s3` and `service: s3-outposts` switch to S3-specific signing (single percent-encoding, path normalization disabled, `X-Amz-Content-Sha256` enabled). This is required to avoid `SignatureDoesNotMatch` on bucket operations and is handled automatically.
-
-##### Registering additional custom authenticators
-
-Custom authenticators are Rust types that implement the `coral_engine::RequestAuthenticator` trait and are registered by the embedding process. End users of a Coral distribution get the set the embedder chose to ship; adding new ones requires building a custom binary.
-
-The trait looks like:
-
-```rust
-pub trait RequestAuthenticator: Send + Sync + std::fmt::Debug {
-    fn name(&self) -> &str;
-
-    fn authenticate(
-        &self,
-        auth: &coral_spec::CustomAuthSpec,
-        request: &reqwest::Request,
-        resolved_inputs: &BTreeMap<String, String>,
-    ) -> Result<Vec<(HeaderName, HeaderValue)>, RequestAuthenticatorError>;
-
-    fn validate(
-        &self,
-        auth: &coral_spec::CustomAuthSpec,
-        resolved_inputs: &BTreeMap<String, String>,
-    ) -> Result<(), RequestAuthenticatorError> { Ok(()) }
-}
-```
-
-Contract:
-
-- `name()` returns the stable dispatch key referenced by `auth.authenticator` in manifests.
-- `authenticate()` inspects the built request and returns headers to attach. It runs per-request, after all other declared headers are in place, and has access to source inputs but not to SQL filters.
-- `validate()` runs at source-registration time against resolved inputs. Use it to fail fast on missing credentials before any request is issued. Default returns `Ok(())`.
-- Config fields declared alongside `authenticator:` in the manifest arrive as `auth.config` (a `serde_json::Map`). Deserialize into your own struct with `serde_json::from_value`.
-
-Register authenticators by providing engine extensions when starting an embedded local server:
-
-```rust
-use std::sync::Arc;
-use coral_auth_aws::AwsSigV4Authenticator;
-use coral_client::local::{EngineExtensions, EngineExtensionsProvider, QuerySource, ServerBuilder};
-
-#[derive(Debug)]
-struct MyExtensions;
-
-impl EngineExtensionsProvider for MyExtensions {
-    fn extensions_for(&self, _selected_sources: &[QuerySource]) -> EngineExtensions {
-        let mut extensions = EngineExtensions::default();
-        extensions.request_authenticators.insert(
-            "aws_sigv4".to_string(),
-            Arc::new(AwsSigV4Authenticator),
-        );
-        // extensions.request_authenticators.insert("my_custom".to_string(), Arc::new(MyCustomAuthenticator));
-        extensions
-    }
-}
-
-let server = ServerBuilder::new()
-    .with_engine_extensions_provider(Arc::new(MyExtensions))
-    .start()
-    .await?;
-```
-
-Manifests then reference the registered authenticator by its `name()` value:
+For STS or assumed-role temporary credentials, also declare `AWS_SESSION_TOKEN` in the source's `inputs` block and include it in the authenticator config:
 
 ```yaml
+inputs:
+  # ...existing AWS_REGION, AWS_ACCESS_KEY_ID, and AWS_SECRET_ACCESS_KEY inputs
+  AWS_SESSION_TOKEN:
+    kind: secret
+    hint: AWS session token for temporary credentials.
+
 auth:
+  # ...existing aws_sigv4 config
   type: CustomAuth
-  authenticator: my_custom
-  # ...config consumed by MyCustomAuthenticator
+  authenticator: aws_sigv4
+  service: logs
+  region: "{{input.AWS_REGION}}"
+  access_key_id: "{{input.AWS_ACCESS_KEY_ID}}"
+  secret_access_key: "{{input.AWS_SECRET_ACCESS_KEY}}"
+  session_token: "{{input.AWS_SESSION_TOKEN}}"
 ```
 
-An unregistered authenticator name fails source registration with a clear error — no silent fallback.
+**S3 note:** `service: s3` and `service: s3-outposts` switch to S3-specific signing (single percent-encoding, path normalization disabled, `X-Amz-Content-Sha256` enabled). This is required to avoid `SignatureDoesNotMatch` on bucket operations and is handled automatically.
 
 #### Non-auth request headers
 
