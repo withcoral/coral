@@ -25,12 +25,12 @@ print_stdout = "warn"
 [workspace.dependencies]
 assert_cmd = "2"
 anyhow = "1"
-arrow = "57.3.0"
+arrow = "58.1.0"
 async-trait = "0.1"
 bytes = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
 clap = { version = "4.5", features = ["derive", "env"] }
-datafusion = "52"
+datafusion = "53"
 dialoguer = "0.12"
 directories = "6"
 fs2 = "0.4"
@@ -38,8 +38,8 @@ futures = "0.3"
 glob = "0.3"
 httpdate = "1.0.3"
 jsonschema = { version = "0.18", default-features = false }
-object_store = { version = "0.12", features = ["aws"] }
-parquet = { version = "57.3.0", features = ["arrow"] }
+object_store = { version = "0.13.2", features = ["aws"] }
+parquet = { version = "58.1.0", features = ["arrow"] }
 prost = "0.14.1"
 reqwest = { version = "0.12", default-features = false, features = ["charset", "http2", "json", "rustls-tls-native-roots", "system-proxy"] }
 rmcp = { version = "1.3.0", features = ["client"] }
