@@ -13,6 +13,20 @@ A source spec tells Coral how to connect to an API or read a local dataset, what
   withcoral/skills` to help your coding agent write source specs.
 </Tip>
 
+## Will this work for my source?
+
+How much effort a custom source takes depends on what you are connecting to.
+
+File-based sources (JSONL, CSV, Parquet) are the simplest case — define the file location and columns, and the source is ready to query.
+
+API-backed sources vary in difficulty. The source spec model is designed for APIs that have:
+
+- **Long-lived, non-SSO API credentials** — an API key, personal access token, or service account that does not require a browser-based login flow
+- **Structured, accessible documentation** — an OpenAPI spec, GraphQL schema, or clearly organized REST docs that describe endpoints and response shapes
+- **Real data to validate against** — actual records in the account so you can confirm the source is returning the expected results during development
+
+If you are unsure whether your API is a good candidate, ask us in [Discord](https://withcoral.com/discord) before getting started.
+
 ## Agent-driven authoring
 
 Source authoring works well as an agent-driven workflow. Point your coding agent at the Coral CLI and the [source spec reference](/reference/source-spec-reference), give it the API docs or describe the endpoints you want, and let it iterate:
