@@ -3,12 +3,6 @@ use coral_client::{
     local::{LocalServerError, RunningServer, ServerBuilder},
 };
 
-#[cfg(feature = "cli-test-server")]
-use std::env;
-
-#[cfg(feature = "cli-test-server")]
-const CORAL_ENDPOINT_ENV: &str = "CORAL_ENDPOINT";
-
 pub(crate) struct Bootstrap {
     pub(crate) app: AppClient,
     pub(crate) _server: Option<RunningServer>,
@@ -39,14 +33,8 @@ pub(crate) async fn bootstrap() -> Result<Bootstrap, BootstrapError> {
 }
 
 #[cfg(feature = "cli-test-server")]
-#[allow(
-    clippy::disallowed_methods,
-    reason = "This feature-gated test hook owns the CORAL_ENDPOINT bootstrap override."
-)]
 fn bootstrap_endpoint() -> Option<String> {
-    env::var_os(CORAL_ENDPOINT_ENV)
-        .and_then(|value| value.into_string().ok())
-        .filter(|value| !value.is_empty())
+    coral_cli::env::bootstrap_endpoint()
 }
 
 #[cfg(not(feature = "cli-test-server"))]

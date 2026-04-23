@@ -194,15 +194,7 @@ pub(crate) fn prompt_for_inputs(
 pub(crate) fn collect_inputs_from_env(
     inputs: &[ManifestInputSpec],
 ) -> Result<(Vec<SourceVariable>, Vec<SourceSecret>), anyhow::Error> {
-    collect_inputs_with(inputs, |key| read_env_var(key).unwrap_or_default())
-}
-
-#[allow(
-    clippy::disallowed_methods,
-    reason = "Source input keys are user-defined by manifests; this reads each as a process env var."
-)]
-fn read_env_var(key: &str) -> Option<String> {
-    std::env::var(key).ok()
+    collect_inputs_with(inputs, |key| crate::env::var(key).unwrap_or_default())
 }
 
 fn collect_inputs_with(

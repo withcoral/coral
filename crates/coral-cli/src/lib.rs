@@ -8,6 +8,7 @@
 )]
 
 mod branding;
+pub mod env;
 mod onboard;
 mod query_error;
 mod source_ops;

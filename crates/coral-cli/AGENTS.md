@@ -20,6 +20,9 @@
 ## Invariants
 
 - Keep the CLI thin over `coral-client` and app/query internals.
+- Keep CLI-owned process environment access in `src/env.rs`. If a command adds
+  an env-backed workflow, route it through that module instead of calling
+  `std::env::*` from arbitrary command code.
 - Decode query responses through `coral-client`; do not reimplement Arrow IPC
   handling here.
 - Keep install/import user-friendly, but move reusable behavior inward instead
