@@ -82,7 +82,7 @@ Available: `json_get`, `json_get_str`, `json_get_int`, `json_get_float`, `json_g
 
 `->` returns a JSON value that you can continue traversing or cast to a typed SQL value. `->>` returns text.
 
-Use plain object keys or array indexes with these functions and operators, not JSONPath syntax. For example, `properties->>'browser'` looks up the `browser` key, while `properties->>'$browser'` is only for a literal key named `$browser`.
+Use plain object keys or array indexes with these functions and operators. They do not accept JSONPath syntax such as `$.browser`. For example, `properties->>'browser'` looks up the `browser` key. Some sources, including PostHog, use literal keys that start with `$`, so `properties->>'$browser'` looks up the exact key name `$browser`.
 
 ## Column expressions
 
