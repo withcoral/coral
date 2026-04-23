@@ -76,8 +76,8 @@ pub enum ManifestDataType {
     Timestamp,
     /// Stored as UTF-8 containing valid JSON. Hints to users and tooling
     /// that the column is queryable with JSON functions (`json_get`,
-    /// `->`, `->>`, etc.); the JSON functions also work on plain `Utf8`
-    /// columns whose values happen to be JSON.
+    /// `json_get_str`, `json_as_text`, etc.); the JSON functions also
+    /// work on plain `Utf8` columns whose values happen to be JSON.
     Json,
 }
 
