@@ -31,6 +31,10 @@ test_queries:
 tables:
   - name: access_requests
     description: Gets a list of access requests for a group.
+    guide: >-
+      Use this table to get a list of access requests for a group. Required
+      filters: `id` (group or project ID). The same `id` works for either the
+      group or project scope.
     filters:
       - name: id
         required: true
@@ -147,6 +151,12 @@ tables:
             - web_url
   - name: all
     description: Gets group or project members viewable by the authenticated user, including inherited membership.
+    guide: >-
+      Use this table to get group or project members viewable by the
+      authenticated user, including inherited membership. Required filters:
+      `id` (group or project ID). Best optional filters: `query`, `user_id`,
+      `state`. This view includes inherited membership, and `user_id` fetches
+      one member directly.
     filters:
       - name: id
         required: true
@@ -851,6 +861,9 @@ tables:
             - web_url
   - name: allowed_agents
     description: Get current agents
+    guide: >-
+      Use this table to get current agents. Query this table directly. Usually
+      returns one small result set.
     request:
       method: GET
       path: /api/v4/job/allowed_agents
@@ -900,6 +913,10 @@ tables:
             - size
   - name: allowlist
     description: Fetch project inbound allowlist for CI_JOB_TOKEN access settings.
+    guide: >-
+      Use this table to fetch project inbound allowlist for CI_JOB_TOKEN
+      access settings. Required filters: `id` (project ID). This is a CI
+      job-token policy view, not runtime token activity.
     filters:
       - name: id
         required: true
@@ -1233,6 +1250,10 @@ tables:
             - web_url
   - name: appearance
     description: Get the current appearance
+    guide: >-
+      Use this table to inspect the instance appearance settings. Query this
+      table directly. This is a singleton instance-level read, and GitLab
+      returns 403 unless the token can access admin-only application settings.
     request:
       method: GET
       path: /api/v4/application/appearance
@@ -1384,6 +1405,11 @@ tables:
             - title
   - name: application_statistics
     description: Get the current application statistics
+    guide: >-
+      Use this table to inspect instance-wide application statistics. Query
+      this table directly. This is one aggregate row rather than raw project
+      objects, and GitLab returns 403 unless the token can read admin-only
+      application statistics.
     request:
       method: GET
       path: /api/v4/application/statistics
@@ -1498,6 +1524,10 @@ tables:
             - users
   - name: applications
     description: Get applications
+    guide: >-
+      Use this table to inspect registered GitLab applications. Query this
+      table directly. Usually returns a small result set, and GitLab returns
+      403 unless the token can access admin-only application records.
     request:
       method: GET
       path: /api/v4/applications
@@ -1553,6 +1583,11 @@ tables:
             - id
   - name: approval_state
     description: Get approval state of merge request
+    guide: >-
+      Use this table to get approval state of merge request. Required filters:
+      `id` (project ID) and `merge_request_iid` (merge request IID).
+      `merge_request_iid` is project-scoped, and this table is the
+      approval-rules snapshot rather than a review timeline.
     filters:
       - name: id
         required: true
@@ -1712,6 +1747,11 @@ tables:
             - users
   - name: approvals
     description: List approvals for merge request
+    guide: >-
+      Use this table to list approvals for merge request. Required filters:
+      `id` (project ID) and `merge_request_iid` (merge request IID). This is
+      the current approval summary for one merge request, not a review
+      timeline.
     filters:
       - name: id
         required: true
@@ -1797,6 +1837,10 @@ tables:
             - user_has_approved
   - name: associations
     description: Return personal access token associations
+    guide: >-
+      Use this table to inspect personal access token associations. Query this
+      table directly. Best optional filters: `min_access_level`. Use
+      `min_access_level` early if the unfiltered scan is slow.
     filters:
       - name: min_access_level
         required: false
@@ -1920,6 +1964,11 @@ tables:
             - user_id
   - name: attestations
     description: Fetch the list of all attestations for a specific project and artifact hash
+    guide: >-
+      Use this table to fetch the list of all attestations for a specific
+      project and artifact hash. Required filters: `id` (project ID) and
+      `subject_digest` (artifact digest). The digest must match exactly; this
+      is a direct artifact-attestation lookup.
     filters:
       - name: id
         required: true
@@ -2036,6 +2085,11 @@ tables:
             - updated_at
   - name: audit_events
     description: Get a list of audit events in this group.
+    guide: >-
+      Use this table to get a list of audit events in this group. Required
+      filters: `id` (group or project ID). Best optional filters:
+      `created_after`, `created_before`, `audit_event_id`. Set
+      `audit_event_id` to fetch one event directly.
     filters:
       - name: created_after
         required: false
@@ -2169,6 +2223,10 @@ tables:
             - id
   - name: avatar
     description: Return avatar url for a user
+    guide: >-
+      Use this table to return avatar url for a user. Required filters:
+      `email` (email address). Best optional filters: `size`. This usually
+      returns a single row for one email/size combination.
     filters:
       - name: email
         required: true
@@ -2220,6 +2278,11 @@ tables:
           key: size
   - name: award_emoji
     description: List an awardable's emoji reactions for groups
+    guide: >-
+      Use this table to list an awardable's emoji reactions for groups.
+      Required filters: `id` (group or project ID) and `epic_iid` (epic IID).
+      Best optional filters: `award_id`, `issue_iid`, `merge_request_iid`. Set
+      `award_id` to fetch one reaction directly when GitLab exposes it.
     filters:
       - name: id
         required: true
@@ -2413,6 +2476,11 @@ tables:
           key: note_id
   - name: badges
     description: Gets a list of group badges viewable by the authenticated user.
+    guide: >-
+      Use this table to get a list of group badges viewable by the
+      authenticated user. Required filters: `id` (group or project ID). Best
+      optional filters: `badge_id`, `name`. Set `badge_id` to fetch one badge
+      directly.
     filters:
       - name: id
         required: true
@@ -2522,6 +2590,10 @@ tables:
             - rendered_link_url
   - name: billable_members
     description: Gets a list of billable users of top-level group.
+    guide: >-
+      Use this table to get a list of billable users of top-level group.
+      Required filters: `id` (group ID). Best optional filters: `search`,
+      `sort`. This is only meaningful for top-level groups.
     filters:
       - name: id
         required: true
@@ -3173,6 +3245,11 @@ tables:
             - web_url
   - name: blame
     description: Get blame file from the repository
+    guide: >-
+      Use this table to get blame file from the repository. Required filters:
+      `id` (project ID), `file_path` (repository path), `ref` (Git ref),
+      `range[start]` (starting line), and `range[end]` (ending line). Keep the
+      line range tight; blame responses get noisy fast on large files.
     filters:
       - name: id
         required: true
@@ -3346,6 +3423,10 @@ tables:
           key: ref
   - name: branches
     description: Get a project repository branches
+    guide: >-
+      Use this table to get a project repository branches. Required filters:
+      `id` (project ID). Best optional filters: `search`, `regex`, `branch`.
+      Set `branch` when you want one branch directly.
     filters:
       - name: id
         required: true
@@ -3518,6 +3599,11 @@ tables:
             - web_url
   - name: bridges
     description: Get pipeline bridge jobs
+    guide: >-
+      Use this table to get pipeline bridge jobs. Required filters: `id`
+      (project ID) and `pipeline_id` (pipeline ID). Best optional filters:
+      `scope`. Use `scope` early if you only need one pipeline or job state
+      slice.
     filters:
       - name: id
         required: true
@@ -3990,6 +4076,9 @@ tables:
             - web_url
   - name: broadcast_messages
     description: Get all broadcast messages
+    guide: >-
+      Use this table to get all broadcast messages. Query this table directly.
+      Best optional filters: `id`.
     filters:
       - name: id
         required: false
@@ -4114,6 +4203,9 @@ tables:
             - theme
   - name: bulk_import_entities
     description: List all GitLab Migrations' entities
+    guide: >-
+      Use this table to list all GitLab Migrations' entities. Query this table
+      directly. Best optional filters: `status`, `sort`.
     filters:
       - name: sort
         required: false
@@ -4306,6 +4398,9 @@ tables:
             - updated_at
   - name: bulk_imports
     description: List all GitLab Migrations
+    guide: >-
+      Use this table to list all GitLab Migrations. Query this table directly.
+      Best optional filters: `status`, `sort`, `import_id`.
     filters:
       - name: sort
         required: false
@@ -4417,6 +4512,10 @@ tables:
             - updated_at
   - name: changelog
     description: Generates a changelog section for a release and returns it
+    guide: >-
+      Use this table to generate a changelog section for a release and returns
+      it. Required filters: `id` (project ID) and `version` (version string).
+      Best optional filters: `from`, `to`.
     filters:
       - name: id
         required: true
@@ -4544,6 +4643,11 @@ tables:
           key: version
   - name: changes
     description: Get single merge request changes
+    guide: >-
+      Use this table to get single merge request changes. Required filters:
+      `id` (project ID) and `merge_request_iid` (merge request IID). Best
+      optional filters: `unidiff`. Set `unidiff=true` only when you want raw
+      patch text.
     filters:
       - name: id
         required: true
@@ -5684,6 +5788,10 @@ tables:
             - work_in_progress
   - name: client_keys
     description: List project client keys
+    guide: >-
+      Use this table to list project client keys. Required filters: `id`
+      (project ID). These are error-tracking client keys for one project, not
+      deploy or SSH keys.
     filters:
       - name: id
         required: true
@@ -5734,6 +5842,10 @@ tables:
             - sentry_dsn
   - name: closed_by
     description: List merge requests closing issue
+    guide: >-
+      Use this table to list merge requests closing issue. Required filters:
+      `id` (project ID) and `issue_iid` (issue IID). This returns the merge
+      requests that close the issue, not the issue timeline.
     filters:
       - name: id
         required: true
@@ -6372,6 +6484,10 @@ tables:
             - work_in_progress
   - name: closes_issues
     description: List issues that close on merge
+    guide: >-
+      Use this table to list issues that close on merge. Required filters:
+      `id` (project ID) and `merge_request_iid` (merge request IID). This
+      returns the issues a merge request will close, not every linked issue.
     filters:
       - name: id
         required: true
@@ -6429,6 +6545,9 @@ tables:
             - note
   - name: cluster_agents
     description: List the agents for a project
+    guide: >-
+      Use this table to list the agents for a project. Required filters: `id`
+      (project ID). Best optional filters: `agent_id`.
     filters:
       - name: id
         required: true
@@ -6579,6 +6698,10 @@ tables:
             - name
   - name: clusters
     description: List group clusters
+    guide: >-
+      Use this table to list group clusters. Required filters: `id` (group or
+      project ID). Best optional filters: `cluster_id`. The same `id` works
+      for either the group or project scope.
     filters:
       - name: id
         required: true
@@ -6944,6 +7067,10 @@ tables:
             - user
   - name: comments
     description: Get a commit's comments
+    guide: >-
+      Use this table to get a commit's comments. Required filters: `id`
+      (project ID) and `sha` (commit SHA). This is the commit-comment view,
+      not merge request discussion data.
     filters:
       - name: id
         required: true
@@ -7034,6 +7161,12 @@ tables:
           key: sha
   - name: compare
     description: Compare two branches, tags, or commits
+    guide: >-
+      Use this table for compare two branches, tags, or commits. Required
+      filters: `id` (project ID), `from` (base ref), and `to` (target ref).
+      Best optional filters: `straight`, `from_project_id`, `unidiff`. Set
+      `straight=true` for a direct ref-to-ref diff, and `from_project_id` only
+      for cross-project comparisons.
     filters:
       - name: id
         required: true
@@ -7175,6 +7308,12 @@ tables:
             - web_url
   - name: conans
     description: Recipe Snapshot
+    guide: >-
+      Use this table for recipe Snapshot. Required filters: `package_name`
+      (package name), `package_version` (package version), `package_username`
+      (package username), and `package_channel` (package channel). Best
+      optional filters: `id`. This is Conan registry metadata, not package
+      file contents.
     filters:
       - name: package_name
         required: true
@@ -7258,6 +7397,10 @@ tables:
           key: id
   - name: context_commits
     description: List merge request context commits
+    guide: >-
+      Use this table to list merge request context commits. Required filters:
+      `id` (project ID) and `merge_request_iid` (merge request IID). This is
+      the review-context commit set for one merge request.
     filters:
       - name: id
         required: true
@@ -7405,6 +7548,9 @@ tables:
             - web_url
   - name: contributed_projects
     description: Get projects that a user has contributed to
+    guide: >-
+      Use this table to get projects that a user has contributed to. Required
+      filters: `user_id` (user id). Best optional filters: `sort`, `order_by`.
     filters:
       - name: user_id
         required: true
@@ -7787,6 +7933,9 @@ tables:
             - web_url
   - name: contributors
     description: Get repository contributors
+    guide: >-
+      Use this table to get repository contributors. Required filters: `id`
+      (project ID). Best optional filters: `ref`, `sort`, `order_by`.
     filters:
       - name: id
         required: true
@@ -7898,6 +8047,10 @@ tables:
           key: sort
   - name: current_job
     description: Show current job for a specific resource group
+    guide: >-
+      Use this table to show current job for a specific resource group.
+      Required filters: `id` (project ID) and `key` (resource group key). This
+      returns the job currently holding the resource-group lock.
     filters:
       - name: id
         required: true
@@ -8342,6 +8495,10 @@ tables:
             - web_url
   - name: custom_attributes
     description: Get all custom attributes on a group
+    guide: >-
+      Use this table to get all custom attributes on a group. Required
+      filters: `id` (group or project ID). Best optional filters: `key`. Set
+      `key` to fetch one custom attribute directly.
     filters:
       - name: id
         required: true
@@ -8395,6 +8552,9 @@ tables:
             - value
   - name: definitions
     description: List all feature definitions
+    guide: >-
+      Use this table to list all feature definitions. Query this table
+      directly. Usually returns one small result set.
     request:
       method: GET
       path: /api/v4/features/definitions
@@ -8490,6 +8650,10 @@ tables:
             - type
   - name: deploy_keys
     description: List all deploy keys
+    guide: >-
+      Use this table to inspect deploy keys across the instance. Query this
+      table directly. Best optional filters: `public`. GitLab returns 403
+      unless the token can access admin-level deploy key listings.
     filters:
       - name: public
         required: false
@@ -8739,6 +8903,10 @@ tables:
             - usage_type
   - name: deploy_tokens
     description: List group deploy tokens
+    guide: >-
+      Use this table to list group deploy tokens. Required filters: `id`
+      (group or project ID). Best optional filters: `token_id`, `active`. The
+      same `id` works for either the group or project scope.
     filters:
       - name: id
         required: true
@@ -8856,6 +9024,11 @@ tables:
             - username
   - name: deployments
     description: List project deployments
+    guide: >-
+      Use this table to list project deployments. Required filters: `id`
+      (project ID). Best optional filters: `environment`, `status`,
+      `updated_after`. Set `deployment_id` when you want one deployment
+      directly.
     filters:
       - name: id
         required: true
@@ -9282,6 +9455,11 @@ tables:
             - user
   - name: descendant_groups
     description: Get a list of descendant groups of this group.
+    guide: >-
+      Use this table to get a list of descendant groups of this group.
+      Required filters: `id` (group ID). Best optional filters: `search`,
+      `skip_groups`, `statistics`. This walks the full descendant tree, so
+      `statistics` is best left off unless you need counts.
     filters:
       - name: id
         required: true
@@ -10147,6 +10325,11 @@ tables:
           key: with_custom_attributes
   - name: diff
     description: Get the diff for a specific commit of a project
+    guide: >-
+      Use this table to get the diff for a specific commit of a project.
+      Required filters: `id` (project ID) and `sha` (commit SHA). Best
+      optional filters: `unidiff`. Set `unidiff=true` when you need unified
+      diff text.
     filters:
       - name: id
         required: true
@@ -10290,6 +10473,10 @@ tables:
           key: unidiff
   - name: diffs
     description: Get the merge request diffs
+    guide: >-
+      Use this table to get the merge request diffs. Required filters: `id`
+      (project ID) and `merge_request_iid` (merge request IID). Best optional
+      filters: `unidiff`. Set `unidiff=true` when you need unified diff text.
     filters:
       - name: id
         required: true
@@ -10433,6 +10620,12 @@ tables:
           key: unidiff
   - name: digest
     description: Recipe Digest
+    guide: >-
+      Use this table for recipe Digest. Required filters: `package_name`
+      (package name), `package_version` (package version), `package_username`
+      (package username), and `package_channel` (package channel). Best
+      optional filters: `id`. This is Conan registry metadata, not package
+      file contents.
     filters:
       - name: package_name
         required: true
@@ -10516,6 +10709,10 @@ tables:
           key: id
   - name: discover_cert_based_clusters
     description: Discover all descendant certificate-based clusters in a group
+    guide: >-
+      Use this table for discover all descendant certificate-based clusters in
+      a group. Required filters: `group_id` (group id). This is a
+      cluster-discovery snapshot rather than a history feed.
     filters:
       - name: group_id
         required: true
@@ -10562,6 +10759,9 @@ tables:
             - projects
   - name: discovery
     description: Discover Job Router information
+    guide: >-
+      Use this table for discover Job Router information. Query this table
+      directly. Usually returns one small result set.
     request:
       method: GET
       path: /api/v4/runners/router/discovery
@@ -10585,6 +10785,13 @@ tables:
             - server_url
   - name: download_urls
     description: Package Download Urls
+    guide: >-
+      Use this table for package Download Urls. Required filters:
+      `package_name` (package name), `package_version` (package version),
+      `package_username` (package username), `package_channel` (package
+      channel), and `conan_package_reference` (Conan package reference). Best
+      optional filters: `id`. This is Conan registry metadata, not package
+      file contents.
     filters:
       - name: package_name
         required: true
@@ -10679,6 +10886,11 @@ tables:
           key: id
   - name: draft_notes
     description: Get a list of merge request draft notes
+    guide: >-
+      Use this table to get a list of merge request draft notes. Required
+      filters: `id` (project ID) and `merge_request_iid` (merge request IID).
+      Best optional filters: `draft_note_id`. These are draft review notes and
+      may not appear in the published discussion timeline yet.
     filters:
       - name: id
         required: true
@@ -10796,6 +11008,9 @@ tables:
             - resolve_discussion
   - name: environments
     description: List environments
+    guide: >-
+      Use this table to list environments. Required filters: `id` (project
+      ID). Best optional filters: `search`, `environment_id`.
     filters:
       - name: id
         required: true
@@ -11000,6 +11215,9 @@ tables:
             - updated_at
   - name: events
     description: List a project's visible events
+    guide: >-
+      Use this table to list a project's visible events. Required filters:
+      `id` (project ID). Best optional filters: `sort`, `action`.
     filters:
       - name: id
         required: true
@@ -11558,6 +11776,9 @@ tables:
             - wiki_page
   - name: exists
     description: Get existence of a namespace
+    guide: >-
+      Use this table to get existence of a namespace. Required filters: `id`
+      (namespace ID). Best optional filters: `parent_id`.
     filters:
       - name: id
         required: true
@@ -11614,6 +11835,9 @@ tables:
             - suggests
   - name: export
     description: Get export status
+    guide: >-
+      Use this table to get export status. Required filters: `id` (project
+      ID). This is export-job metadata, not the exported archive itself.
     filters:
       - name: id
         required: true
@@ -11722,6 +11946,10 @@ tables:
             - path_with_namespace
   - name: failures
     description: Get GitLab Migration entity failures
+    guide: >-
+      Use this table to get GitLab Migration entity failures. Required
+      filters: `import_id` (import id) and `entity_id` (entity id). This
+      returns failure details for one import entity.
     filters:
       - name: import_id
         required: true
@@ -11806,6 +12034,9 @@ tables:
             - source_url
   - name: feature_flags
     description: List feature flags for a project
+    guide: >-
+      Use this table to list feature flags for a project. Required filters:
+      `id` (project ID). Best optional filters: `scope`, `feature_flag_name`.
     filters:
       - name: id
         required: true
@@ -12036,6 +12267,10 @@ tables:
             - version
   - name: feature_flags_user_lists
     description: List all feature flag user lists for a project
+    guide: >-
+      Use this table to list all feature flag user lists for a project.
+      Required filters: `id` (project ID). Best optional filters: `search`,
+      `iid`.
     filters:
       - name: id
         required: true
@@ -12153,6 +12388,9 @@ tables:
             - user_xids
   - name: features
     description: List all features
+    guide: >-
+      Use this table to list all features. Query this table directly. Usually
+      returns one small result set.
     request:
       method: GET
       path: /api/v4/features
@@ -12219,6 +12457,11 @@ tables:
             - state
   - name: file
     description: Download specific version of a module
+    guide: >-
+      Use this table to download specific version of a module. Required
+      filters: `module_namespace` (module namespace), `module_name` (module
+      name), `module_system` (module system), and `module_version` (module
+      version). Raw response content is returned in the `json` column.
     filters:
       - name: module_namespace
         required: true
@@ -12285,6 +12528,13 @@ tables:
           key: module_version
   - name: files
     description: List recipe files
+    guide: >-
+      Use this table to list recipe files. Required filters: `id` (project
+      ID), `package_name` (package name), `package_version` (package version),
+      `package_username` (package username), `package_channel` (package
+      channel), and `recipe_revision` (recipe revision). Best optional
+      filters: `conan_package_reference`, `package_revision`. This is Conan
+      registry metadata, not package file contents.
     filters:
       - name: id
         required: true
@@ -12401,6 +12651,11 @@ tables:
           key: package_revision
   - name: forks
     description: List forks of this project
+    guide: >-
+      Use this table to list forks of this project. Required filters: `id`
+      (project ID). Best optional filters: `search`, `updated_after`,
+      `updated_before`. Use the time-window filters early if you only need
+      recent activity.
     filters:
       - name: id
         required: true
@@ -14387,6 +14642,9 @@ tables:
           key: with_programming_language
   - name: freeze_periods
     description: List freeze periods
+    guide: >-
+      Use this table to list freeze periods. Required filters: `id` (project
+      ID). Best optional filters: `freeze_period_id`.
     filters:
       - name: id
         required: true
@@ -14474,6 +14732,9 @@ tables:
             - updated_at
   - name: bulk_import_entities_by_import
     description: List GitLab Migration entities
+    guide: >-
+      Use this table to list GitLab Migration entities. Required filters:
+      `import_id` (import id). Best optional filters: `status`, `entity_id`.
     filters:
       - name: import_id
         required: true
@@ -14727,6 +14988,10 @@ tables:
             - updated_at
   - name: all_deploy_tokens
     description: List all deploy tokens
+    guide: >-
+      Use this table to inspect deploy tokens across the instance. Query this
+      table directly. Best optional filters: `active`. GitLab returns 403
+      unless the token can access admin-level deploy token listings.
     filters:
       - name: active
         required: false
@@ -14818,6 +15083,9 @@ tables:
             - username
   - name: all_events
     description: List currently authenticated user's events
+    guide: >-
+      Use this table to list currently authenticated user's events. Query this
+      table directly. Best optional filters: `scope`, `sort`.
     filters:
       - name: scope
         required: false
@@ -15372,6 +15640,11 @@ tables:
             - wiki_page
   - name: all_issues
     description: Get currently authenticated user's issues
+    guide: >-
+      Use this table to get currently authenticated user's issues. Query this
+      table directly. Best optional filters: `search`, `state`, `scope`. Use
+      `state` early if you only want open or closed work; these listings get
+      large fast.
     filters:
       - name: with_labels_details
         required: false
@@ -16615,6 +16888,10 @@ tables:
           key: with_labels_details
   - name: all_merge_requests
     description: List merge requests
+    guide: >-
+      Use this table to list merge requests. Query this table directly. Best
+      optional filters: `search`, `state`, `scope`. Use `state` early if you
+      only want open or closed work; these listings get large fast.
     filters:
       - name: author_id
         required: false
@@ -17790,6 +18067,13 @@ tables:
             - work_in_progress
   - name: all_projects
     description: Get a list of visible projects for authenticated user
+    guide: >-
+      Use this table to list visible projects for the authenticated user. Query
+      this table directly. Best optional filters: `search`,
+      `last_activity_after`, `last_activity_before`. Use the last-activity
+      window early to cut large result sets, and pair `updated_after` /
+      `updated_before` with `order_by = 'updated_at'` plus `sort` when you need
+      updated-time filtering.
     filters:
       - name: order_by
         required: false
@@ -19864,6 +20148,9 @@ tables:
           key: with_programming_language
   - name: all_runners
     description: List available runners
+    guide: >-
+      Use this table to list available runners. Query this table directly.
+      Best optional filters: `status`, `scope`, `id`.
     filters:
       - name: scope
         required: false
@@ -20203,6 +20490,10 @@ tables:
           key: version_prefix
   - name: gitlab_subscription
     description: Returns the subscription for the namespace
+    guide: >-
+      Use this table to return the subscription for the namespace. Required
+      filters: `id` (namespace ID). This is effectively a singleton
+      subscription read for the instance or namespace you target.
     filters:
       - name: id
         required: true
@@ -20369,6 +20660,9 @@ tables:
             - seats_owed
   - name: group__debian_distributions
     description: Get a list of Debian Distributions
+    guide: >-
+      Use this table to get a list of Debian Distributions. Required filters:
+      `id` (group ID). Best optional filters: `codename`, `suite`.
     filters:
       - name: id
         required: true
@@ -20526,6 +20820,10 @@ tables:
             - version
   - name: group__package_npm__package_package_name_dist_tags
     description: Get all tags for a given an NPM package
+    guide: >-
+      Use this table to get all tags for a given an NPM package. Required
+      filters: `id` (group ID) and `package_name` (package name). This is npm
+      registry metadata, not package file contents.
     filters:
       - name: id
         required: true
@@ -20574,6 +20872,10 @@ tables:
           key: package_name
   - name: group__package_npm_package_name
     description: NPM registry metadata endpoint
+    guide: >-
+      Use this table for nPM registry metadata endpoint. Required filters:
+      `id` (group ID) and `package_name` (package name). This is npm registry
+      metadata, not package file contents.
     filters:
       - name: id
         required: true
@@ -20638,6 +20940,10 @@ tables:
             - versions
   - name: group__package_nuget_index
     description: The NuGet V3 Feed Service Index
+    guide: >-
+      Use this table for the NuGet V3 Feed Service Index. Required filters:
+      `id` (group ID). This is NuGet registry metadata, not package file
+      contents.
     filters:
       - name: id
         required: true
@@ -20680,6 +20986,10 @@ tables:
             - version
   - name: group__package_nuget_metadata_package_name_index
     description: The NuGet Metadata Service - Package name level
+    guide: >-
+      Use this table for the NuGet Metadata Service - Package name level.
+      Required filters: `id` (group ID) and `package_name` (package name).
+      This is NuGet registry metadata, not package file contents.
     filters:
       - name: id
         required: true
@@ -20762,6 +21072,11 @@ tables:
             - upper
   - name: group__package_nuget_metadata_package_name_package_version
     description: The NuGet Metadata Service - Package name and version level
+    guide: >-
+      Use this table for the NuGet Metadata Service - Package name and version
+      level. Required filters: `id` (group ID), `package_name` (package name),
+      and `package_version` (package version). This is NuGet registry
+      metadata, not package file contents.
     filters:
       - name: id
         required: true
@@ -20956,6 +21271,10 @@ tables:
           key: package_version
   - name: group__package_nuget_query
     description: The NuGet Search Service
+    guide: >-
+      Use this table for the NuGet Search Service. Required filters: `id`
+      (group ID). Best optional filters: `q`, `skip`. This is NuGet registry
+      metadata, not package file contents.
     filters:
       - name: id
         required: true
@@ -21168,6 +21487,10 @@ tables:
             - version
   - name: group_group_shared
     description: Get a list of shared groups this group was invited to
+    guide: >-
+      Use this table to get a list of shared groups this group was invited to.
+      Required filters: `id` (group ID). Best optional filters: `search`,
+      `sort`, `order_by`.
     filters:
       - name: id
         required: true
@@ -21961,6 +22284,10 @@ tables:
           key: with_custom_attributes
   - name: group_project_shared
     description: Get a list of shared projects in this group
+    guide: >-
+      Use this table to get a list of shared projects in this group. Required
+      filters: `id` (group ID). Best optional filters: `search`, `sort`,
+      `order_by`.
     filters:
       - name: id
         required: true
@@ -23701,6 +24028,11 @@ tables:
           key: with_merge_requests_enabled
   - name: group_projects
     description: Get a list of projects in this group.
+    guide: >-
+      Use this table to get a list of projects in this group. Required
+      filters: `id` (group ID). Best optional filters: `search`, `visibility`,
+      `include_subgroups`. Set `include_subgroups=true` only when you want
+      nested projects as well as direct children.
     filters:
       - name: id
         required: true
@@ -25519,6 +25851,10 @@ tables:
           key: with_shared
   - name: group_transfer_locations
     description: Get the groups to where the current group can be transferred to
+    guide: >-
+      Use this table to get the groups to where the current group can be
+      transferred to. Required filters: `id` (group ID). Best optional
+      filters: `search`.
     filters:
       - name: id
         required: true
@@ -26241,6 +26577,10 @@ tables:
             - wiki_access_level
   - name: group_uploads
     description: Get the list of uploads of a group
+    guide: >-
+      Use this table to get the list of uploads of a group. Required filters:
+      `id` (group or project ID). Best optional filters: `upload_id`. Raw
+      response content is returned in the `json` column.
     filters:
       - name: id
         required: true
@@ -26366,6 +26706,10 @@ tables:
             - username
   - name: groups
     description: Get a groups list
+    guide: >-
+      Use this table to get a groups list. Query this table directly. Best
+      optional filters: `search`, `visibility`, `statistics`. Start with
+      `search` or `visibility`; `statistics` makes each row heavier.
     filters:
       - name: statistics
         required: false
@@ -27440,6 +27784,10 @@ tables:
           key: with_projects
   - name: groups_allowlist
     description: Fetch project groups allowlist for CI_JOB_TOKEN access settings.
+    guide: >-
+      Use this table to fetch project groups allowlist for CI_JOB_TOKEN access
+      settings. Required filters: `id` (project ID). This is a CI job-token
+      policy view, not runtime token activity.
     filters:
       - name: id
         required: true
@@ -27773,6 +28121,10 @@ tables:
             - web_url
   - name: health
     description: Get repository health
+    guide: >-
+      Use this table to get repository health. Required filters: `id` (project
+      ID). Best optional filters: `generate`. This is effectively a singleton
+      health snapshot.
     filters:
       - name: id
         required: true
@@ -28153,6 +28505,9 @@ tables:
             - updated_at
   - name: hooks
     description: List system hooks
+    guide: >-
+      Use this table to list system hooks. Query this table directly. Best
+      optional filters: `hook_id`.
     filters:
       - name: hook_id
         required: false
@@ -28333,6 +28688,9 @@ tables:
             - url_variables
   - name: import
     description: Get a project import status
+    guide: >-
+      Use this table to get a project import status. Required filters: `id`
+      (project ID). This is import-job metadata, not imported project data.
     filters:
       - name: id
         required: true
@@ -28409,6 +28767,10 @@ tables:
             - source
   - name: indirect
     description: Get the indirect memberships of a billable user of a top-level group.
+    guide: >-
+      Use this table to get the indirect memberships of a billable user of a
+      top-level group. Required filters: `id` (group ID) and `user_id` (user
+      ID). This shows indirect billable-group memberships for one user.
     filters:
       - name: id
         required: true
@@ -28525,6 +28887,10 @@ tables:
           key: user_id
   - name: integrations
     description: List all active integrations
+    guide: >-
+      Use this table to list all active integrations. Required filters: `id`
+      (group or project ID). Best optional filters: `slug`. Set `slug` to
+      fetch one page directly.
     filters:
       - name: id
         required: true
@@ -28747,6 +29113,11 @@ tables:
             - wiki_page_events
   - name: invitations
     description: Get a list of group or project invitations viewable by the authenticated user
+    guide: >-
+      Use this table to get a list of group or project invitations viewable by
+      the authenticated user. Required filters: `id` (group or project ID).
+      Best optional filters: `query`. The same `id` works for either the group
+      or project scope.
     filters:
       - name: id
         required: true
@@ -28857,6 +29228,10 @@ tables:
             - user_name
   - name: invited_groups
     description: Get a list of invited groups in this group
+    guide: >-
+      Use this table to get a list of invited groups in this group. Required
+      filters: `id` (group or project ID). Best optional filters: `search`,
+      `relation`. The same `id` works for either the group or project scope.
     filters:
       - name: id
         required: true
@@ -29638,6 +30013,11 @@ tables:
           key: with_custom_attributes
   - name: issues
     description: Get a list of group issues
+    guide: >-
+      Use this table to get a list of group issues. Required filters: `id`
+      (group or project ID). Best optional filters: `search`, `state`,
+      `labels`. Use `search` or `state` early if you only need a small working
+      set.
     filters:
       - name: id
         required: true
@@ -31018,6 +31398,9 @@ tables:
           key: issue_iid
   - name: job
     description: Get current job using job token
+    guide: >-
+      Use this table to get current job using job token. Query this table
+      directly. Usually returns one small result set.
     request:
       method: GET
       path: /api/v4/job
@@ -31067,6 +31450,10 @@ tables:
             - size
   - name: job_token_scope
     description: Fetch CI_JOB_TOKEN access settings.
+    guide: >-
+      Use this table to fetch CI_JOB_TOKEN access settings. Required filters:
+      `id` (project ID). This is a CI job-token policy view, not runtime token
+      activity.
     filters:
       - name: id
         required: true
@@ -31108,6 +31495,11 @@ tables:
             - outbound_enabled
   - name: jobs
     description: Get a projects jobs
+    guide: >-
+      Use this table to get a projects jobs. Required filters: `id` (project
+      ID). Best optional filters: `pipeline_id`, `job_id`, `scope`. Set
+      `job_id` for one job directly, and `pipeline_id` when you only want one
+      pipeline run.
     filters:
       - name: id
         required: true
@@ -31715,6 +32107,10 @@ tables:
           key: pipeline_id
   - name: key_asc
     description: Get a Debian Distribution Key
+    guide: >-
+      Use this table to get a Debian Distribution Key. Required filters: `id`
+      (group or project ID) and `codename` (codename). The same `id` works for
+      either the group or project scope.
     filters:
       - name: id
         required: true
@@ -31821,6 +32217,9 @@ tables:
             - version
   - name: keys
     description: Get user by fingerprint of SSH key
+    guide: >-
+      Use this table to get user by fingerprint of SSH key. Required filters:
+      `fingerprint` (fingerprint). Best optional filters: `id`.
     filters:
       - name: fingerprint
         required: true
@@ -32402,6 +32801,13 @@ tables:
             - work_information
   - name: latest
     description: Get the latest recipe revision
+    guide: >-
+      Use this table to get the latest recipe revision. Required filters: `id`
+      (project ID), `package_name` (package name), `package_version` (package
+      version), `package_username` (package username), and `package_channel`
+      (package channel). Best optional filters: `recipe_revision`,
+      `conan_package_reference`. This is Conan registry metadata, not package
+      file contents.
     filters:
       - name: id
         required: true
@@ -32517,6 +32923,9 @@ tables:
           key: conan_package_reference
   - name: limit_exclusions
     description: Retrieve all limit exclusions
+    guide: >-
+      Use this table to retrieve all limit exclusions. Query this table
+      directly. Usually returns one small result set.
     request:
       method: GET
       path: /api/v4/namespaces/storage/limit_exclusions
@@ -32569,6 +32978,11 @@ tables:
             - reason
   - name: lint
     description: Validates a CI YAML configuration with a namespace
+    guide: >-
+      Use this table for validates a CI YAML configuration with a namespace.
+      Required filters: `id` (project ID). Best optional filters: `ref`,
+      `sha`. Use this for server-side CI linting before you commit config
+      changes.
     filters:
       - name: sha
         required: false
@@ -32732,6 +33146,9 @@ tables:
             - type
   - name: managers
     description: Get a list of all runner's managers
+    guide: >-
+      Use this table to get a list of all runner's managers. Required filters:
+      `id` (runner ID). This lists runner-manager nodes rather than CI jobs.
     filters:
       - name: id
         required: true
@@ -32838,6 +33255,11 @@ tables:
             - version
   - name: members
     description: Gets a list of group or project members viewable by the authenticated user.
+    guide: >-
+      Use this table to get a list of group or project members viewable by the
+      authenticated user. Required filters: `id` (group or project ID). Best
+      optional filters: `query`, `user_id`. This is the direct-members view,
+      and `user_id` fetches one member directly.
     filters:
       - name: id
         required: true
@@ -33568,6 +33990,11 @@ tables:
           key: with_saml_identity
   - name: memberships
     description: Get the direct memberships of a billable user of a top-level group.
+    guide: >-
+      Use this table to get the direct memberships of a billable user of a
+      top-level group. Required filters: `id` (group ID) and `user_id` (user
+      ID). This shows the direct memberships GitLab counts for that billable
+      user.
     filters:
       - name: id
         required: true
@@ -33684,6 +34111,10 @@ tables:
           key: user_id
   - name: merge_base
     description: Get the common ancestor between commits
+    guide: >-
+      Use this table to get the common ancestor between commits. Required
+      filters: `id` (project ID) and `refs` (refs). Provide the full ref set;
+      this returns only the shared base commit.
     filters:
       - name: id
         required: true
@@ -33837,6 +34268,11 @@ tables:
             - web_url
   - name: merge_requests
     description: List project merge requests
+    guide: >-
+      Use this table to list project merge requests. Required filters: `id`
+      (group or project ID). Best optional filters: `state`, `source_branch`,
+      `target_branch`. Set `merge_request_iid` when you want one merge request
+      directly.
     filters:
       - name: id
         required: true
@@ -35843,6 +36279,10 @@ tables:
           key: deployment_id
   - name: metadata
     description: Retrieve metadata information for this GitLab instance
+    guide: >-
+      Use this table to retrieve metadata information for this GitLab
+      instance. Query this table directly. This is effectively a singleton
+      instance-level read.
     request:
       method: GET
       path: /api/v4/metadata
@@ -35926,6 +36366,12 @@ tables:
             - version
   - name: module_version
     description: Get details about specific version of a module
+    guide: >-
+      Use this table to get details about specific version of a module.
+      Required filters: `module_namespace` (module namespace), `module_name`
+      (module name), `module_system` (module system), and `module_version`
+      (module version). This is Terraform module registry metadata, not the
+      module archive payload.
     filters:
       - name: module_namespace
         required: true
@@ -36050,6 +36496,10 @@ tables:
             - versions
   - name: module_version_info
     description: Version metadata
+    guide: >-
+      Use this table for version metadata. Required filters: `id` (project
+      ID), `module_name` (module name), and `module_version` (module version).
+      This is Go proxy metadata for one module version.
     filters:
       - name: id
         required: true
@@ -36116,6 +36566,9 @@ tables:
           key: module_version
   - name: namespaces
     description: List namespaces
+    guide: >-
+      Use this table to list namespaces. Query this table directly. Best
+      optional filters: `search`, `id`.
     filters:
       - name: search
         required: false
@@ -36394,6 +36847,12 @@ tables:
             - web_url
   - name: package_conan_conan_download_urls
     description: Recipe Download Urls
+    guide: >-
+      Use this table for recipe Download Urls. Required filters:
+      `package_name` (package name), `package_version` (package version),
+      `package_username` (package username), and `package_channel` (package
+      channel). Best optional filters: `id`. This is Conan registry metadata,
+      not package file contents.
     filters:
       - name: package_name
         required: true
@@ -36477,6 +36936,13 @@ tables:
           key: id
   - name: package_conan_conan_package_digest
     description: Package Digest
+    guide: >-
+      Use this table for package Digest. Required filters: `package_name`
+      (package name), `package_version` (package version), `package_username`
+      (package username), `package_channel` (package channel), and
+      `conan_package_reference` (Conan package reference). Best optional
+      filters: `id`. This is Conan registry metadata, not package file
+      contents.
     filters:
       - name: package_name
         required: true
@@ -36571,6 +37037,13 @@ tables:
           key: id
   - name: package_conan_conan_packages
     description: Package Snapshot
+    guide: >-
+      Use this table for package Snapshot. Required filters: `package_name`
+      (package name), `package_version` (package version), `package_username`
+      (package username), and `package_channel` (package channel), and
+      `conan_package_reference` (Conan package reference). Best optional
+      filters: `id`. Use the full Conan coordinates first; `id` only switches
+      to the project-scoped variant.
     filters:
       - name: package_name
         required: true
@@ -36665,6 +37138,10 @@ tables:
           key: id
   - name: package_files
     description: List package files
+    guide: >-
+      Use this table to list package files. Required filters: `id` (project
+      ID) and `package_id` (package id). Best optional filters: `sort`,
+      `order_by`.
     filters:
       - name: id
         required: true
@@ -36790,6 +37267,10 @@ tables:
           key: sort
   - name: package_npm__package_package_name_dist_tags
     description: Get all tags for a given an NPM package
+    guide: >-
+      Use this table to get all tags for a given an NPM package. Required
+      filters: `package_name` (package name). This is npm registry metadata,
+      not package file contents.
     filters:
       - name: package_name
         required: true
@@ -36828,6 +37309,10 @@ tables:
           key: package_name
   - name: package_npm_package_name
     description: NPM registry metadata endpoint
+    guide: >-
+      Use this table for nPM registry metadata endpoint. Required filters:
+      `package_name` (package name). This is npm registry metadata, not
+      package file contents.
     filters:
       - name: package_name
         required: true
@@ -36882,6 +37367,11 @@ tables:
             - versions
   - name: package_terraform_module_versions
     description: List versions for a module
+    guide: >-
+      Use this table to list versions for a module. Required filters:
+      `module_namespace` (module namespace), `module_name` (module name), and
+      `module_system` (module system). This is Terraform module registry
+      metadata, not the module archive payload.
     filters:
       - name: module_namespace
         required: true
@@ -36936,6 +37426,11 @@ tables:
             - modules
   - name: packages
     description: List packages within a group
+    guide: >-
+      Use this table to list packages within a group. Required filters: `id`
+      (group or project ID). Best optional filters: `package_name`,
+      `package_version`, `package_type`. Set `exclude_subgroups=true` when a
+      parent group would otherwise pull in nested package inventories.
     filters:
       - name: id
         required: true
@@ -37280,6 +37775,10 @@ tables:
           key: package_id
   - name: page_domains
     description: Get all pages domains
+    guide: >-
+      Use this table to inspect Pages domains across the instance. Query this
+      table directly. Best optional filters: `domain`. GitLab returns 403
+      unless the token can access admin-level Pages domain listings.
     filters:
       - name: domain
         required: false
@@ -37389,6 +37888,11 @@ tables:
             - verified
   - name: participants
     description: List participants for an issue
+    guide: >-
+      Use this table to list participants for an issue. Required filters: `id`
+      (project ID) and `issue_iid` (issue IID). Best optional filters:
+      `merge_request_iid`. Set `merge_request_iid` to fetch one merge request
+      directly.
     filters:
       - name: id
         required: true
@@ -37512,6 +38016,10 @@ tables:
           key: merge_request_iid
   - name: personal_access_tokens
     description: List personal access tokens
+    guide: >-
+      Use this table to list personal access tokens. Query this table
+      directly. Best optional filters: `search`, `state`, `user_id`. Use the
+      time-window filters early if you only need recent activity.
     filters:
       - name: user_id
         required: false
@@ -37764,6 +38272,11 @@ tables:
             - user_id
   - name: pipeline_refs
     description: Used by secondary runners to verify the secondary instance has the very latest version
+    guide: >-
+      Use this table for used by secondary runners to verify the secondary
+      instance has the very latest version. Required filters: `gl_repository`
+      (gl repository). This is Geo replication metadata, not regular pipeline
+      history.
     filters:
       - name: gl_repository
         required: true
@@ -37798,6 +38311,10 @@ tables:
             - pipeline_refs
   - name: pipeline_schedules
     description: Get all pipeline schedules
+    guide: >-
+      Use this table to get all pipeline schedules. Required filters: `id`
+      (project ID). Best optional filters: `pipeline_schedule_id`, `scope`.
+      Set `pipeline_schedule_id` when you want one schedule directly.
     filters:
       - name: id
         required: true
@@ -37976,6 +38493,11 @@ tables:
             - variables
   - name: pipelines
     description: Get all Pipelines of the project
+    guide: >-
+      Use this table to get all Pipelines of the project. Required filters:
+      `id` (project ID). Best optional filters: `status`, `ref`,
+      `merge_request_iid`. Set `pipeline_id` for one pipeline directly, and
+      `pipeline_schedule_id` when you are chasing scheduled runs.
     filters:
       - name: id
         required: true
@@ -38539,6 +39061,10 @@ tables:
           key: merge_request_iid
   - name: plan_limits
     description: Get current plan limits
+    guide: >-
+      Use this table to inspect instance plan limits. Query this table
+      directly. Best optional filters: `plan_name`. GitLab returns 403 unless
+      the token can access admin-level plan limit settings.
     filters:
       - name: plan_name
         required: false
@@ -38777,6 +39303,10 @@ tables:
             - web_hook_calls_mid
   - name: project_alert_management_alert_metric_images
     description: Metric Images for alert
+    guide: >-
+      Use this table for metric Images for alert. Required filters: `id`
+      (project ID) and `alert_iid` (alert iid). This returns attached
+      metric-image metadata, not the parent alert or issue itself.
     filters:
       - name: id
         required: true
@@ -38853,6 +39383,9 @@ tables:
             - url_text
   - name: project_debian_distributions
     description: Get a list of Debian Distributions
+    guide: >-
+      Use this table to get a list of Debian Distributions. Required filters:
+      `id` (project ID). Best optional filters: `codename`, `suite`.
     filters:
       - name: id
         required: true
@@ -39010,6 +39543,9 @@ tables:
             - version
   - name: project_deploy_keys
     description: List deploy keys for project
+    guide: >-
+      Use this table to list deploy keys for project. Required filters: `id`
+      (project ID). Best optional filters: `key_id`.
     filters:
       - name: id
         required: true
@@ -39271,6 +39807,10 @@ tables:
             - usage_type
   - name: project_groups
     description: Get ancestor and shared groups for a project
+    guide: >-
+      Use this table to get ancestor and shared groups for a project. Required
+      filters: `id` (project ID). Best optional filters: `search`,
+      `skip_groups`.
     filters:
       - name: id
         required: true
@@ -39409,6 +39949,9 @@ tables:
           key: with_shared
   - name: project_hooks
     description: List project hooks
+    guide: >-
+      Use this table to list project hooks. Required filters: `id` (project
+      ID). Best optional filters: `hook_id`.
     filters:
       - name: id
         required: true
@@ -39720,6 +40263,9 @@ tables:
             - wiki_page_events
   - name: project_issue_links
     description: List issue relations
+    guide: >-
+      Use this table to list issue relations. Required filters: `id` (project
+      ID) and `issue_iid` (issue IID). Best optional filters: `issue_link_id`.
     filters:
       - name: id
         required: true
@@ -41394,6 +41940,10 @@ tables:
             - weight
   - name: project_issue_metric_images
     description: Metric Images for issue
+    guide: >-
+      Use this table for metric Images for issue. Required filters: `id`
+      (project ID) and `issue_iid` (issue IID). This returns attached
+      metric-image metadata, not the parent alert or issue itself.
     filters:
       - name: id
         required: true
@@ -41469,6 +42019,11 @@ tables:
             - url_text
   - name: project_job_artifact_tree
     description: List all files in the artifacts archive
+    guide: >-
+      Use this table to list all files in the artifacts archive. Required
+      filters: `id` (project ID) and `job_id` (job ID). Best optional filters:
+      `path`, `recursive`. This is the artifact tree view, so use it to
+      inspect paths before fetching artifact content elsewhere.
     filters:
       - name: id
         required: true
@@ -41582,6 +42137,10 @@ tables:
             - type
   - name: project_merge_request_commits
     description: Get single merge request commits
+    guide: >-
+      Use this table to get single merge request commits. Required filters:
+      `id` (project ID) and `merge_request_iid` (merge request IID). This
+      lists commit membership for one merge request, not diffs or approvals.
     filters:
       - name: id
         required: true
@@ -41735,6 +42294,11 @@ tables:
             - web_url
   - name: project_merge_request_versions
     description: Get a list of merge request diff versions
+    guide: >-
+      Use this table to get a list of merge request diff versions. Required
+      filters: `id` (project ID) and `merge_request_iid` (merge request IID).
+      Best optional filters: `version_id`, `unidiff`. Use `version_id` for one
+      diff snapshot, and `unidiff=true` only for raw patch text.
     filters:
       - name: id
         required: true
@@ -41889,6 +42453,13 @@ tables:
           key: version_id
   - name: project_package_conan_conan_revision_package_revisions
     description: Get the list of package revisions
+    guide: >-
+      Use this table to get the list of package revisions. Required filters:
+      `id` (project ID), `package_name` (package name), `package_version`
+      (package version), `package_username` (package username),
+      `package_channel` (package channel), `recipe_revision` (recipe
+      revision), and `conan_package_reference` (Conan package reference). This
+      is Conan registry metadata, not package file contents.
     filters:
       - name: id
         required: true
@@ -41993,6 +42564,12 @@ tables:
             - revisions
   - name: project_package_conan_conan_revisions
     description: Get the list of revisions
+    guide: >-
+      Use this table to get the list of revisions. Required filters: `id`
+      (project ID), `package_name` (package name), `package_version` (package
+      version), `package_username` (package username), and `package_channel`
+      (package channel). This is Conan registry metadata, not package file
+      contents.
     filters:
       - name: id
         required: true
@@ -42077,6 +42654,10 @@ tables:
             - revisions
   - name: project_package_npm__package_package_name_dist_tags
     description: Get all tags for a given an NPM package
+    guide: >-
+      Use this table to get all tags for a given an NPM package. Required
+      filters: `id` (project ID) and `package_name` (package name). This is
+      npm registry metadata, not package file contents.
     filters:
       - name: id
         required: true
@@ -42125,6 +42706,10 @@ tables:
           key: package_name
   - name: project_package_npm_package_name
     description: NPM registry metadata endpoint
+    guide: >-
+      Use this table for nPM registry metadata endpoint. Required filters:
+      `id` (project ID) and `package_name` (package name). This is npm
+      registry metadata, not package file contents.
     filters:
       - name: id
         required: true
@@ -42189,6 +42774,10 @@ tables:
             - versions
   - name: project_package_nuget_download_package_name_index
     description: The NuGet Content Service - index request
+    guide: >-
+      Use this table for the NuGet Content Service - index request. Required
+      filters: `id` (project ID) and `package_name` (package name). This is
+      NuGet registry metadata, not package file contents.
     filters:
       - name: id
         required: true
@@ -42237,6 +42826,10 @@ tables:
             - versions
   - name: project_package_nuget_index
     description: The NuGet V3 Feed Service Index
+    guide: >-
+      Use this table for the NuGet V3 Feed Service Index. Required filters:
+      `id` (project ID). This is NuGet registry metadata, not package file
+      contents.
     filters:
       - name: id
         required: true
@@ -42279,6 +42872,10 @@ tables:
             - version
   - name: project_package_nuget_metadata_package_name_index
     description: The NuGet Metadata Service - Package name level
+    guide: >-
+      Use this table for the NuGet Metadata Service - Package name level.
+      Required filters: `id` (project ID) and `package_name` (package name).
+      This is NuGet registry metadata, not package file contents.
     filters:
       - name: id
         required: true
@@ -42361,6 +42958,11 @@ tables:
             - upper
   - name: project_package_nuget_metadata_package_name_package_version
     description: The NuGet Metadata Service - Package name and version level
+    guide: >-
+      Use this table for the NuGet Metadata Service - Package name and version
+      level. Required filters: `id` (project ID), `package_name` (package
+      name), and `package_version` (package version). This is NuGet registry
+      metadata, not package file contents.
     filters:
       - name: id
         required: true
@@ -42555,6 +43157,10 @@ tables:
           key: package_version
   - name: project_package_nuget_query
     description: The NuGet Search Service
+    guide: >-
+      Use this table for the NuGet Search Service. Required filters: `id`
+      (project ID). Best optional filters: `q`, `prerelease`, `take`. Start
+      with `q`; `skip` and `take` are paging controls, not content filters.
     filters:
       - name: id
         required: true
@@ -42767,6 +43373,11 @@ tables:
             - version
   - name: project_package_pipelines
     description: Get the pipelines for a single project package
+    guide: >-
+      Use this table to get the pipelines for a single project package.
+      Required filters: `id` (project ID) and `package_id` (package id). This
+      lists pipelines attached to one package, not the full project pipeline
+      history.
     filters:
       - name: id
         required: true
@@ -42888,6 +43499,10 @@ tables:
             - web_url
   - name: project_package_protection_rules
     description: Get list of package protection rules for a project
+    guide: >-
+      Use this table to get list of package protection rules for a project.
+      Required filters: `id` (project ID). This is a protection-policy view,
+      not package or registry contents.
     filters:
       - name: id
         required: true
@@ -42954,6 +43569,9 @@ tables:
             - project_id
   - name: project_page_domains
     description: Get all pages domains
+    guide: >-
+      Use this table to get all pages domains. Required filters: `id` (project
+      ID). Best optional filters: `domain`.
     filters:
       - name: id
         required: true
@@ -43085,6 +43703,11 @@ tables:
             - verified
   - name: project_pipeline_latest
     description: Gets the latest pipeline for the project branch
+    guide: >-
+      Use this table to get the latest pipeline for the project branch.
+      Required filters: `id` (project ID). Best optional filters: `ref`. This
+      returns the latest pipeline for the ref you ask for instead of full
+      history.
     filters:
       - name: id
         required: true
@@ -43446,6 +44069,11 @@ tables:
             - yaml_errors
   - name: project_pipeline_schedule_variables
     description: Get a single pipeline schedule variable
+    guide: >-
+      Use this table to get a single pipeline schedule variable. Required
+      filters: `id` (project ID), `pipeline_schedule_id` (pipeline schedule
+      id), and `key` (variable key). GitLab may mask or hide values, so do not
+      assume `value` always contains plaintext.
     filters:
       - name: id
         required: true
@@ -43556,6 +44184,10 @@ tables:
             - variable_type
   - name: project_registry_protection_repository_rules
     description: Get list of container registry protection rules for a project
+    guide: >-
+      Use this table to get list of container registry protection rules for a
+      project. Required filters: `id` (project ID). This is a
+      protection-policy view, not package or registry contents.
     filters:
       - name: id
         required: true
@@ -43614,6 +44246,10 @@ tables:
             - repository_path_pattern
   - name: project_registry_protection_tag_rules
     description: Gets a list of container protection tag rules for a project.
+    guide: >-
+      Use this table to get a list of container protection tag rules for a
+      project. Required filters: `id` (project ID). This is a
+      protection-policy view, not package or registry contents.
     filters:
       - name: id
         required: true
@@ -43672,6 +44308,10 @@ tables:
             - tag_name_pattern
   - name: project_registry_repository_tags
     description: List tags of a repository
+    guide: >-
+      Use this table to list tags of a repository. Required filters: `id`
+      (project ID) and `repository_id` (repository id). Best optional filters:
+      `tag_name`. Set `tag_name` to fetch one tag or release directly.
     filters:
       - name: id
         required: true
@@ -43794,6 +44434,10 @@ tables:
             - total_size
   - name: project_release_asset_links
     description: List links of a release
+    guide: >-
+      Use this table to list links of a release. Required filters: `id`
+      (project ID) and `tag_name` (tag name). Best optional filters:
+      `link_id`.
     filters:
       - name: id
         required: true
@@ -43884,6 +44528,10 @@ tables:
             - url
   - name: project_repository_commit_signature
     description: Get a commit's signature
+    guide: >-
+      Use this table to get a commit's signature. Required filters: `id`
+      (project ID) and `sha` (commit SHA). This returns signature metadata,
+      not the underlying commit or tag object.
     filters:
       - name: id
         required: true
@@ -43944,6 +44592,11 @@ tables:
             - signature_type
   - name: project_repository_commits
     description: Get a project repository commits
+    guide: >-
+      Use this table to get a project repository commits. Required filters:
+      `id` (project ID). Best optional filters: `ref_name`, `path`, `sha`. Set
+      `sha` for one commit directly, and add `with_stats=true` only when you
+      need additions and deletions.
     filters:
       - name: id
         required: true
@@ -44279,6 +44932,11 @@ tables:
           key: with_stats
   - name: project_repository_file_raw
     description: Get raw file contents from the repository
+    guide: >-
+      Use this table to get raw file contents from the repository. Required
+      filters: `id` (project ID) and `file_path` (repository path). Best
+      optional filters: `ref`, `lfs`. Raw file contents come back in the
+      `json` column.
     filters:
       - name: id
         required: true
@@ -44348,6 +45006,10 @@ tables:
           key: ref
   - name: project_repository_tag_signature
     description: Get a tag's signature
+    guide: >-
+      Use this table to get a tag's signature. Required filters: `id` (project
+      ID) and `tag_name` (tag name). This returns signature metadata, not the
+      underlying commit or tag object.
     filters:
       - name: id
         required: true
@@ -44400,6 +45062,10 @@ tables:
           key: tag_name
   - name: project_repository_tags
     description: Get a project repository tags
+    guide: >-
+      Use this table to get a project repository tags. Required filters: `id`
+      (project ID). Best optional filters: `search`, `tag_name`, `page_token`.
+      Set `tag_name` when you want one tag directly.
     filters:
       - name: id
         required: true
@@ -44575,6 +45241,11 @@ tables:
             - target
   - name: project_repository_tree
     description: Get a project repository tree
+    guide: >-
+      Use this table to get a project repository tree. Required filters: `id`
+      (project ID). Best optional filters: `path`, `recursive`, `ref`. Use
+      `path` to jump into one directory, and `recursive=true` only when you
+      really need the full tree.
     filters:
       - name: id
         required: true
@@ -44696,6 +45367,9 @@ tables:
             - type
   - name: project_snippets
     description: Get all project snippets
+    guide: >-
+      Use this table to get all project snippets. Required filters: `id`
+      (project ID). Best optional filters: `snippet_id`.
     filters:
       - name: id
         required: true
@@ -44872,6 +45546,10 @@ tables:
             - web_url
   - name: project_statistics
     description: Get the list of project fetch statistics for the last 30 days
+    guide: >-
+      Use this table to get the list of project fetch statistics for the last
+      30 days. Required filters: `id` (project ID). This is an aggregate
+      statistics row, not raw project objects.
     filters:
       - name: id
         required: true
@@ -44924,6 +45602,11 @@ tables:
           key: id
   - name: project_template
     description: Download a template available to this project
+    guide: >-
+      Use this table to download a template available to this project.
+      Required filters: `id` (project ID), `type` (type), and `name` (name).
+      Best optional filters: `source_template_project_id`, `project`. This
+      lists template metadata, not instantiated projects.
     filters:
       - name: id
         required: true
@@ -45091,6 +45774,10 @@ tables:
           key: type
   - name: project_templates
     description: Get a list of templates available to this project
+    guide: >-
+      Use this table to get a list of templates available to this project.
+      Required filters: `id` (project ID) and `type` (type). This lists
+      template metadata, not instantiated projects.
     filters:
       - name: id
         required: true
@@ -45148,6 +45835,10 @@ tables:
           key: type
   - name: project_terraform_state_versions
     description: Get a Terraform state version
+    guide: >-
+      Use this table to get a Terraform state version. Required filters: `id`
+      (project ID), `name` (name), and `serial` (serial). Raw response content
+      is returned in the `json` column.
     filters:
       - name: id
         required: true
@@ -45200,6 +45891,10 @@ tables:
           key: serial
   - name: project_transfer_locations
     description: Get the namespaces to where the project can be transferred
+    guide: >-
+      Use this table to get the namespaces to where the project can be
+      transferred. Required filters: `id` (project ID). Best optional filters:
+      `search`.
     filters:
       - name: id
         required: true
@@ -45285,6 +45980,10 @@ tables:
             - web_url
   - name: projects
     description: Get a user projects
+    guide: >-
+      Use this table to get a user projects. Required filters: `user_id` (user
+      id). Best optional filters: `search`, `updated_after`, `updated_before`.
+      Use the time-window filters early if you only need recent activity.
     filters:
       - name: user_id
         required: true
@@ -46036,6 +46735,9 @@ tables:
           key: with_programming_language
   - name: protected_branches
     description: Get a project's protected branches
+    guide: >-
+      Use this table to get a project's protected branches. Required filters:
+      `id` (project ID). Best optional filters: `search`, `name`.
     filters:
       - name: id
         required: true
@@ -46145,6 +46847,9 @@ tables:
             - unprotect_access_levels
   - name: protected_tags
     description: Get a project's protected tags
+    guide: >-
+      Use this table to get a project's protected tags. Required filters: `id`
+      (project ID). Best optional filters: `name`.
     filters:
       - name: id
         required: true
@@ -46254,6 +46959,11 @@ tables:
             - name
   - name: provisioned_users
     description: Get a list of users provisioned by the group
+    guide: >-
+      Use this table to get a list of users provisioned by the group. Required
+      filters: `id` (group ID). Best optional filters: `search`,
+      `created_after`, `created_before`. Use the time-window filters early if
+      you only need recent activity.
     filters:
       - name: username
         required: false
@@ -46770,6 +47480,11 @@ tables:
             - work_information
   - name: public
     description: List all public personal snippets current_user has access to
+    guide: >-
+      Use this table to list all public personal snippets current_user has
+      access to. Query this table directly. Best optional filters:
+      `created_after`, `created_before`. Use the time-window filters early if
+      you only need recent activity.
     filters:
       - name: created_after
         required: false
@@ -46955,6 +47670,11 @@ tables:
             - web_url
   - name: raw
     description: Get a raw project snippet
+    guide: >-
+      Use this table to get a raw project snippet. Required filters: `id`
+      (project ID) and `snippet_id` (snippet id). Best optional filters:
+      `ref`, `file_path`. Use `ref` to pin the file read to one branch, tag,
+      or commit.
     filters:
       - name: id
         required: true
@@ -47148,6 +47868,10 @@ tables:
           key: ref
   - name: refs
     description: Get all references a commit is pushed to
+    guide: >-
+      Use this table to get all references a commit is pushed to. Required
+      filters: `id` (project ID) and `sha` (commit SHA). Best optional
+      filters: `type`.
     filters:
       - name: id
         required: true
@@ -47211,6 +47935,11 @@ tables:
             - type
   - name: registry_repositories
     description: Get a container repository
+    guide: >-
+      Use this table to get a container repository. Required filters: `id`
+      (registry repository ID). Best optional filters: `tags`, `tags_count`,
+      `size`. Ask for tag or size expansions only when you need repository
+      detail; they make each row heavier.
     filters:
       - name: id
         required: true
@@ -47342,6 +48071,11 @@ tables:
             - tags_count
   - name: related_merge_requests
     description: List merge requests that are related to the issue
+    guide: >-
+      Use this table to list merge requests that are related to the issue.
+      Required filters: `id` (project ID) and `issue_iid` (issue IID). This
+      returns merge requests related to one issue, not just the ones that
+      close it.
     filters:
       - name: id
         required: true
@@ -47980,6 +48714,10 @@ tables:
             - work_in_progress
   - name: relation_imports
     description: Get the statuses of relation imports for specified project
+    guide: >-
+      Use this table to get the statuses of relation imports for specified
+      project. Required filters: `id` (project ID). This is relation-import
+      status metadata, not imported relationships.
     filters:
       - name: id
         required: true
@@ -48056,6 +48794,11 @@ tables:
             - source
   - name: releases
     description: List Releases
+    guide: >-
+      Use this table to list Releases. Required filters: `id` (group or
+      project ID). Best optional filters: `tag_name`, `updated_after`,
+      `updated_before`. Set `tag_name` when you want one release directly, and
+      `include_html_description=true` only for rendered markup.
     filters:
       - name: id
         required: true
@@ -48584,6 +49327,9 @@ tables:
           key: updated_before
   - name: remote_mirrors
     description: List the project's remote mirrors
+    guide: >-
+      Use this table to list the project's remote mirrors. Required filters:
+      `id` (project ID). Best optional filters: `mirror_id`.
     filters:
       - name: id
         required: true
@@ -48727,6 +49473,11 @@ tables:
             - url
   - name: render
     description: Preview a badge from a group.
+    guide: >-
+      Use this table to preview a badge from a group. Required filters: `id`
+      (group or project ID), `link_url` (link url), and `image_url` (image
+      url). The rendered result comes back in the `html` column rather than
+      raw Markdown.
     filters:
       - name: id
         required: true
@@ -48816,6 +49567,11 @@ tables:
             - rendered_link_url
   - name: repositories
     description: List registry repositories within a group
+    guide: >-
+      Use this table to list registry repositories within a group. Required
+      filters: `id` (group or project ID). Best optional filters: `tags`,
+      `tags_count`. This is a registry repository listing, so use the
+      tag-related expansions only when you need repository detail.
     filters:
       - name: id
         required: true
@@ -48952,6 +49708,10 @@ tables:
             - tags_count
   - name: resource_groups
     description: Get all resource groups for a project
+    guide: >-
+      Use this table to get all resource groups for a project. Required
+      filters: `id` (project ID). Best optional filters: `key`. Set `key` to
+      fetch one resource group directly.
     filters:
       - name: id
         required: true
@@ -49023,6 +49783,10 @@ tables:
             - updated_at
   - name: resource_milestone_events
     description: List project Issue milestone events
+    guide: >-
+      Use this table to list project Issue milestone events. Required filters:
+      `id` (project ID) and `eventable_id` (eventable id). Best optional
+      filters: `event_id`.
     filters:
       - name: id
         required: true
@@ -49260,6 +50024,10 @@ tables:
             - user
   - name: reviewers
     description: Get single merge request reviewers
+    guide: >-
+      Use this table to get single merge request reviewers. Required filters:
+      `id` (project ID) and `merge_request_iid` (merge request IID). This is
+      the reviewer-assignment view for one merge request.
     filters:
       - name: id
         required: true
@@ -49320,6 +50088,11 @@ tables:
             - user
   - name: runner_all
     description: List all runners
+    guide: >-
+      Use this table to inspect all runners visible at the instance level.
+      Query this table directly. Best optional filters: `status`, `scope`.
+      GitLab returns 403 unless the token can access admin-level runner
+      listings.
     filters:
       - name: scope
         required: false
@@ -49510,6 +50283,9 @@ tables:
           key: version_prefix
   - name: runner_jobs
     description: List runner's jobs
+    guide: >-
+      Use this table to list runner's jobs. Required filters: `id` (runner
+      ID). Best optional filters: `status`, `sort`, `order_by`.
     filters:
       - name: id
         required: true
@@ -50047,6 +50823,10 @@ tables:
             - web_url
   - name: runners
     description: List project's runners
+    guide: >-
+      Use this table to list project's runners. Required filters: `id` (group
+      or project ID). Best optional filters: `status`, `scope`. The same `id`
+      works for either the group or project scope.
     filters:
       - name: id
         required: true
@@ -50261,6 +51041,11 @@ tables:
           key: version_prefix
   - name: saml_users
     description: Get a list of SAML users of the group
+    guide: >-
+      Use this table to get a list of SAML users of the group. Required
+      filters: `id` (group ID). Best optional filters: `search`,
+      `created_after`, `created_before`. Use the time-window filters early if
+      you only need recent activity.
     filters:
       - name: username
         required: false
@@ -50777,6 +51562,9 @@ tables:
             - work_information
   - name: secure_files
     description: Get list of secure files in a project
+    guide: >-
+      Use this table to get list of secure files in a project. Required
+      filters: `id` (project ID). Best optional filters: `secure_file_id`.
     filters:
       - name: id
         required: true
@@ -50880,6 +51668,9 @@ tables:
           key: secure_file_id
   - name: self
     description: Get single personal access token
+    guide: >-
+      Use this table to get single personal access token. Query this table
+      directly. Usually returns one small result set.
     request:
       method: GET
       path: /api/v4/personal_access_tokens/self
@@ -50991,6 +51782,10 @@ tables:
             - user_id
   - name: sequence
     description: Get the sequence count of a commit SHA
+    guide: >-
+      Use this table to get the sequence count of a commit SHA. Required
+      filters: `id` (project ID) and `sha` (commit SHA). Best optional
+      filters: `first_parent`.
     filters:
       - name: id
         required: true
@@ -51049,6 +51844,10 @@ tables:
           key: sha
   - name: services
     description: List all active integrations
+    guide: >-
+      Use this table to list all active integrations. Required filters: `id`
+      (project ID). Best optional filters: `slug`. Set `slug` to fetch one
+      page directly.
     filters:
       - name: id
         required: true
@@ -51267,6 +52066,10 @@ tables:
             - wiki_page_events
   - name: settings
     description: Get Error Tracking settings
+    guide: >-
+      Use this table to get Error Tracking settings. Required filters: `id`
+      (project ID). This is effectively a singleton settings snapshot for the
+      group.
     filters:
       - name: id
         required: true
@@ -51333,6 +52136,10 @@ tables:
             - sentry_external_url
   - name: share_locations
     description: Returns group that can be shared with the given project
+    guide: >-
+      Use this table to return group that can be shared with the given
+      project. Required filters: `id` (project ID). Best optional filters:
+      `search`.
     filters:
       - name: id
         required: true
@@ -52050,6 +52857,11 @@ tables:
             - wiki_access_level
   - name: snapshot
     description: Download a (possibly inconsistent) snapshot of a repository
+    guide: >-
+      Use this table to download a (possibly inconsistent) snapshot of a
+      repository. Required filters: `id` (project ID). Best optional filters:
+      `wiki`. Set `wiki=true` for a wiki export instead of the main repository
+      snapshot.
     filters:
       - name: wiki
         required: false
@@ -52095,6 +52907,11 @@ tables:
           key: wiki
   - name: snippet_all
     description: List all snippets current_user has access to
+    guide: >-
+      Use this table to list all snippets current_user has access to. Query
+      this table directly. Best optional filters: `created_after`,
+      `created_before`. Use the time-window filters early if you only need
+      recent activity.
     filters:
       - name: created_after
         required: false
@@ -52285,6 +53102,11 @@ tables:
             - web_url
   - name: snippets
     description: Get a snippets list for an authenticated user
+    guide: >-
+      Use this table to get a snippets list for an authenticated user. Query
+      this table directly. Best optional filters: `created_after`,
+      `created_before`, `id`. Use the time-window filters early if you only
+      need recent activity.
     filters:
       - name: created_after
         required: false
@@ -52477,6 +53299,10 @@ tables:
             - web_url
   - name: ssh_certificates
     description: Get a list of Groups::SshCertificate for a Group.
+    guide: >-
+      Use this table to get a list of Groups::SshCertificate for a Group.
+      Required filters: `id` (group ID). This returns group SSH certificate
+      entries, not user SSH keys.
     filters:
       - name: id
         required: true
@@ -52532,6 +53358,11 @@ tables:
             - title
   - name: starred_projects
     description: Get projects starred by a user
+    guide: >-
+      Use this table to get projects starred by a user. Required filters:
+      `user_id` (user id). Best optional filters: `search`, `updated_after`,
+      `updated_before`. Use the time-window filters early if you only need
+      recent activity.
     filters:
       - name: user_id
         required: true
@@ -53263,6 +54094,9 @@ tables:
           key: with_programming_language
   - name: starrers
     description: Get the users who starred a project
+    guide: >-
+      Use this table to get the users who starred a project. Required filters:
+      `id` (project ID). Best optional filters: `search`.
     filters:
       - name: id
         required: true
@@ -53380,6 +54214,10 @@ tables:
             - web_url
   - name: status
     description: Relations export status
+    guide: >-
+      Use this table for relations export status. Required filters: `id`
+      (group or project ID). Best optional filters: `relation`. This is
+      export-relations status metadata, not exported relation data.
     filters:
       - name: id
         required: true
@@ -53530,6 +54368,11 @@ tables:
             - updated_at
   - name: statuses
     description: Get a commit's statuses
+    guide: >-
+      Use this table to get a commit's statuses. Required filters: `id`
+      (project ID) and `sha` (commit SHA). Best optional filters:
+      `pipeline_id`, `ref`, `name`. `pipeline_id` is the best tie-breaker when
+      one commit has many status contexts.
     filters:
       - name: id
         required: true
@@ -53736,6 +54579,9 @@ tables:
             - target_url
   - name: storage
     description: Show the storage information
+    guide: >-
+      Use this table to show the storage information. Required filters: `id`
+      (project ID). This is a storage-metadata view, not repository contents.
     filters:
       - name: id
         required: true
@@ -53794,6 +54640,11 @@ tables:
             - repository_storage
   - name: subgroups
     description: Get a list of subgroups in this group.
+    guide: >-
+      Use this table to get a list of subgroups in this group. Required
+      filters: `id` (group ID). Best optional filters: `search`, `visibility`,
+      `skip_groups`. This stays within one parent group, so use `skip_groups`
+      only when you already know children to exclude.
     filters:
       - name: id
         required: true
@@ -54659,6 +55510,11 @@ tables:
           key: with_custom_attributes
   - name: test_report
     description: Gets the test report for a given pipeline
+    guide: >-
+      Use this table to get the test report for a given pipeline. Required
+      filters: `id` (project ID) and `pipeline_id` (pipeline ID). This is the
+      detailed suite view; use `test_report_summary` first if you only need
+      totals.
     filters:
       - name: id
         required: true
@@ -54769,6 +55625,11 @@ tables:
             - total_time
   - name: test_report_summary
     description: Gets the test report summary for a given pipeline
+    guide: >-
+      Use this table to get the test report summary for a given pipeline.
+      Required filters: `id` (project ID) and `pipeline_id` (pipeline ID). Use
+      this for pipeline-level test totals; switch to `test_report` when you
+      need per-suite detail.
     filters:
       - name: id
         required: true
@@ -54911,6 +55772,11 @@ tables:
             - total
   - name: time_stats
     description: Get time tracking stats
+    guide: >-
+      Use this table to get time tracking stats. Required filters: `id`
+      (project ID) and `issue_iid` (issue IID). Best optional filters:
+      `merge_request_iid`. Set `merge_request_iid` to fetch one merge request
+      directly.
     filters:
       - name: id
         required: true
@@ -54995,6 +55861,10 @@ tables:
           key: merge_request_iid
   - name: tokens
     description: List tokens for an agent
+    guide: >-
+      Use this table to list tokens for an agent. Required filters: `id`
+      (project ID) and `agent_id` (cluster agent ID). Best optional filters:
+      `token_id`.
     filters:
       - name: id
         required: true
@@ -55101,6 +55971,9 @@ tables:
           key: token_id
   - name: topics
     description: Get topics
+    guide: >-
+      Use this table to get topics. Query this table directly. Best optional
+      filters: `search`, `id`.
     filters:
       - name: search
         required: false
@@ -55217,6 +56090,10 @@ tables:
           key: without_projects
   - name: trace
     description: Get a trace of a specific job of a project
+    guide: >-
+      Use this table to get a trace of a specific job of a project. Required
+      filters: `id` (project ID) and `job_id` (job ID). This is a direct
+      job-log lookup, and the returned trace can be very large.
     filters:
       - name: job_id
         required: true
@@ -55286,6 +56163,9 @@ tables:
             - size
   - name: triggers
     description: Get trigger tokens list
+    guide: >-
+      Use this table to get trigger tokens list. Required filters: `id`
+      (project ID). Best optional filters: `trigger_id`.
     filters:
       - name: id
         required: true
@@ -55390,6 +56270,10 @@ tables:
             - updated_at
   - name: upcoming_jobs
     description: List upcoming jobs for a specific resource group
+    guide: >-
+      Use this table to list upcoming jobs for a specific resource group.
+      Required filters: `id` (project ID) and `key` (resource group key). This
+      is the scheduled/upcoming job view, not the full job history.
     filters:
       - name: id
         required: true
@@ -55839,6 +56723,11 @@ tables:
             - web_url
   - name: uploads
     description: Download a single project upload by secret and filename
+    guide: >-
+      Use this table to download a single project upload by secret and
+      filename. Required filters: `secret` (upload secret), `filename`
+      (filename), and `id` (group or project ID). Raw response content is
+      returned in the `json` column.
     filters:
       - name: secret
         required: true
@@ -55897,6 +56786,10 @@ tables:
           key: secret
   - name: user_agent_detail
     description: Get the user agent details for a snippet
+    guide: >-
+      Use this table to get the user agent details for a snippet. Required
+      filters: `id` (project ID). Best optional filters: `issue_iid`,
+      `snippet_id`. Set `issue_iid` to fetch one issue directly.
     filters:
       - name: id
         required: true
@@ -55978,6 +56871,9 @@ tables:
           key: snippet_id
   - name: user_counts
     description: Return the user specific counts
+    guide: >-
+      Use this table to return the user specific counts. Query this table
+      directly. Usually returns one small result set.
     request:
       method: GET
       path: /api/v4/user_counts
@@ -56033,6 +56929,9 @@ tables:
             - todos
   - name: users
     description: Get the users list of a project
+    guide: >-
+      Use this table to get the users list of a project. Required filters:
+      `id` (project ID). Best optional filters: `search`, `skip_users`.
     filters:
       - name: id
         required: true
@@ -56164,6 +57063,11 @@ tables:
             - web_url
   - name: v1
     description: Get details about the latest version of a module
+    guide: >-
+      Use this table to get details about the latest version of a module.
+      Required filters: `module_namespace` (module namespace), `module_name`
+      (module name), and `module_system` (module system). This is Terraform
+      module registry metadata, not the module archive payload.
     filters:
       - name: module_namespace
         required: true
@@ -56274,6 +57178,12 @@ tables:
             - versions
   - name: variables
     description: Get project variables
+    guide: >-
+      Use this table to get project variables. Required filters: `id` (group
+      or project ID). Best optional filters: `key`,
+      `filter[environment_scope]`, `pipeline_id`. Set `key` for one variable
+      directly, and use `filter[environment_scope]` when the same key exists
+      in multiple scopes.
     filters:
       - name: id
         required: true
@@ -56418,6 +57328,10 @@ tables:
           key: pipeline_id
   - name: version
     description: Retrieves version information for the GitLab instance
+    guide: >-
+      Use this table to retrieve version information for the GitLab instance.
+      Query this table directly. This is effectively a singleton
+      instance-level read.
     request:
       method: GET
       path: /api/v4/version
@@ -56501,6 +57415,11 @@ tables:
             - version
   - name: wikis
     description: Get a list of wiki pages
+    guide: >-
+      Use this table to get a list of wiki pages. Required filters: `id`
+      (group or project ID). Best optional filters: `slug`, `with_content`,
+      `render_html`. Set `slug` for one page directly; add `with_content=true`
+      for the body and `render_html=true` for rendered markup.
     filters:
       - name: with_content
         required: false
