@@ -84,7 +84,8 @@ npx skills add withcoral/skills
 Available skills:
 
 - **`coral`** — teaches your agent the discovery-first workflow for answering data questions with `coral sql`, including how to use `coral.tables`, `coral.columns`, and `coral.inputs`.
-- **`coral-create-source-spec`** — guides your agent through authoring or repairing a custom source spec YAML for `coral source add --file`, or adapting it into a bundled source.
+- **`coral-create-source-spec`** — the current source-authoring skill. It guides your agent through drafting or repairing a custom source manifest, validating it with `coral source lint`, installing it with `coral source add --file`, and iterating with `coral source test`. When a source exposes search endpoints, use it alongside source-specific docs that explain search syntax, scoping qualifiers, and common endpoint gotchas.
+- **`create-source-manifest`** — an older alias you may still see in some agent environments. Use the same source-authoring workflow, but prefer the current Coral CLI commands and docs.
 
 Browse the source at [github.com/withcoral/skills](https://github.com/withcoral/skills).
 

@@ -5,10 +5,31 @@ description: "Schema and fields for Coral source spec YAML files."
 
 Coral is extensible through source specs. These are YAML files that describe how to connect to an API or read a local dataset.
 
+A **source spec** is the YAML you author. When that YAML is stored on disk for a bundled source or an installed custom source, it is commonly named `manifest.yaml`, so the terms **source spec** and **source manifest** are interchangeable in the Coral docs and codebase.
+
 <Tip>
   For a guided walkthrough, see [Write a custom
   source](/guides/write-a-custom-source).
 </Tip>
+
+## Authoring workflow
+
+The recommended loop for authoring sources is **Lint → Add → Test**.
+
+- `coral source lint ./my-source.yaml` (Pre-install schema check)
+- `coral source add --file ./my-source.yaml` (Installation and input prompts)
+- `coral source test my_source` (Runtime validation and `test_queries`)
+
+For a detailed walkthrough of this loop, including how to inspect system tables, see [Write a custom source](/guides/write-a-custom-source#recommended-authoring-loop).
+
+If you expose a search-style table, plan to ship companion guide content for it. The manifest can describe the endpoint, but source authors should also document the search syntax, common scoping qualifiers, surprising defaults, pagination or rate-limit behavior, and operators or parameters that commonly fail.
+
+| Command | What it proves |
+| ------- | -------------- |
+| `coral source lint` | The YAML parses and satisfies Coral's schema + semantic validation rules |
+| `coral source add --file` | Coral can install the manifest and prompt for any declared inputs |
+| `coral source test` | The installed source initializes, exposes tables, and passes any `test_queries` |
+| `coral sql` against `coral.tables` / `coral.columns` / `coral.inputs` | The installed shape matches what you intended |
 
 ## Top-level fields
 
@@ -23,13 +44,13 @@ test_queries:
   - SELECT * FROM my_source.messages LIMIT 1
 ```
 
-| Field         | Description                                        |
-| ------------- | -------------------------------------------------- |
-| `name`        | Source name, also used as the SQL schema name      |
-| `version`     | Source spec version string                         |
-| `dsl_version` | Coral source spec DSL version (currently `3`)      |
-| `backend`     | How data is fetched: `http`, `jsonl`, or `parquet` |
-| `test_queries` | Optional read-only SQL checks Coral runs during `coral source test` |
+| Field         | Description |
+| ------------- | ----------- |
+| `name`        | Stable source identifier, also used as the SQL schema name. Prefer lowercase snake_case. |
+| `version`     | Source spec version string that you update as the manifest evolves. |
+| `dsl_version` | Coral source spec DSL version. Current manifests should use `3`. |
+| `backend`     | How data is fetched: `http`, `jsonl`, or `parquet`. |
+| `test_queries` | Optional read-only SQL checks Coral runs during `coral source test`. Keep them cheap and representative. |
 
 ## Test queries
 
@@ -45,7 +66,8 @@ test_queries:
 Notes:
 
 - Each query result is reported individually during `coral source test`.
-- `coral source add` and `coral onboard` surface post-install validation issues as warnings; `coral source test` is the strict pass/fail command.
+- `test_queries` failures are **non-blocking** during `coral source add --file` and `coral onboard`; they surface as warnings so the source still lands in your workspace.
+- `coral source test` is the **strict pass/fail** command where any failing query causes a non-zero exit code.
 - Prefer cheap read-only checks that validate connectivity and mapping logic. For example, `SELECT * FROM schema.table LIMIT 1` is usually a better fit than `SELECT COUNT(*)`.
 - Keep these queries read-only. Statements such as `CREATE`, `COPY`, `INSERT`,
   `UPDATE`, `DELETE`, or `SET` are reported as failed validation queries.
@@ -187,6 +209,7 @@ Notes:
 - `jsonl` currently expects `file://` locations
 - `parquet` supports `file://` and `s3://` locations
 - if you omit `glob`, Coral uses a backend-specific default
+- standalone manifests can be named however you like (for example `./my-source.yaml`), but bundled sources conventionally live at `sources/<name>/manifest.yaml`
 
 ## HTTP-backed tables
 
@@ -378,6 +401,7 @@ auth:
 
 Rules:
 
+- declare inputs in the order you want Coral to prompt for them during `coral source add --file`
 - `kind: variable` values are stored with source variables
 - `kind: secret` values are stored with source secrets
 - `default` is allowed only for variables
