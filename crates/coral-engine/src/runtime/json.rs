@@ -19,6 +19,9 @@ use datafusion_functions_json::udfs::{
 pub(crate) fn register_json_support(
     registry: &mut dyn FunctionRegistry,
 ) -> datafusion::common::Result<()> {
+    // We intentionally do not call `datafusion_functions_json::register_all` here
+    // because it also installs the JSON expr planner, which enables `->`, `->>`,
+    // and `?`. Coral exposes JSON support through functions only.
     let functions: [Arc<ScalarUDF>; 12] = [
         json_get_udf(),
         json_get_bool_udf(),
@@ -54,6 +57,8 @@ impl FunctionRewrite for JsonFunctionRewriter {
         _schema: &DFSchema,
         _config: &ConfigOptions,
     ) -> DataFusionResult<Transformed<Expr>> {
+        // Keep the function-side conveniences from the upstream package even
+        // though we skip its operator registration.
         let transform = match &expr {
             Expr::Cast(cast) => optimise_json_get_cast(cast),
             Expr::ScalarFunction(func) => unnest_json_calls(func),
