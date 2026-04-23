@@ -114,8 +114,7 @@ Coral handles pagination, returns tabular rows instead of sprawling JSON, and
 lets the query pick just the columns it needs. Query pushdown and caching
 keep things responsive and cut unnecessary API traffic.
 
-For deeper internals — gRPC transport, DataFusion integration, and the crate
-layout — see the
+For a deeper understanding of the internals, see the
 [architecture page](https://withcoral.com/docs/contributors/architecture).
 
 ## Bundled sources
