@@ -3,14 +3,23 @@
 [![CI](https://github.com/withcoral/coral/actions/workflows/validate.yml/badge.svg)](https://github.com/withcoral/coral/actions/workflows/validate.yml)
 [![Release](https://img.shields.io/github/v/release/withcoral/coral)](https://github.com/withcoral/coral/releases)
 [![License](https://img.shields.io/github/license/withcoral/coral)](./LICENSE)
+[![Docs](https://img.shields.io/badge/docs-withcoral.com-0A7C8A)](https://withcoral.com/docs)
 [![Discord](https://img.shields.io/badge/chat-Discord-5865F2?logo=discord&logoColor=white)](https://withcoral.com/discord)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/withcoral/coral)
 
 One SQL interface over APIs, files, and live sources — built for agents.
 
-Try it:
+Try it on macOS:
 
 ```bash
 brew install withcoral/tap/coral
+coral onboard
+```
+
+Or on Linux:
+
+```bash
+curl -fsSL https://withcoral.com/install.sh | sh
 coral onboard
 ```
 
@@ -99,6 +108,15 @@ secrets declared by the source spec (API tokens, workspace IDs, file paths,
 and so on). These are stored locally and used only at query time; credentials
 never leave your machine.
 
+**Built for production.** Coral is a read layer by design. For read tasks, SQL
+outperforms per-source tool calls when complexity outgrows a single API call:
+Coral handles pagination, returns tabular rows instead of sprawling JSON, and
+lets the query pick just the columns it needs. Query pushdown and caching
+keep things responsive and cut unnecessary API traffic. In an 82-task
+head-to-head against direct provider MCPs, Claude Opus 4.6 via Coral was
+**31% more accurate and 70% cheaper** on complex tasks — see the
+[full methodology](https://withcoral.com/benchmarks).
+
 For deeper internals — gRPC transport, DataFusion integration, and the crate
 layout — see the
 [architecture page](https://withcoral.com/docs/contributors/architecture).
@@ -170,6 +188,31 @@ coral sql "
 - **[Use Coral over MCP](https://withcoral.com/docs/guides/use-coral-over-mcp)** — expose Coral to Claude Code, Cursor, or VS Code over MCP so your agent can query sources directly
 - **[Write a custom source spec](https://withcoral.com/docs/guides/write-a-custom-source)** — connect any HTTP API or local dataset that isn't bundled yet
 - **[Install Coral skills](https://withcoral.com/docs/getting-started/installation#skills)** — teach your coding agent how to use Coral
+
+## Use Coral with an agent
+
+Coral ships with a built-in MCP server so your agent can run SQL queries and
+discover schemas across your installed sources. Once you've added at least one
+source, wire Coral into your agent:
+
+```bash
+claude mcp add --scope user coral -- coral mcp-stdio   # Claude Code
+codex mcp add coral -- coral mcp-stdio                 # Codex
+```
+
+For Cursor, VS Code, Claude Desktop, OpenCode, and manual config examples,
+see [Use Coral over MCP](https://withcoral.com/docs/guides/use-coral-over-mcp).
+
+Coral also publishes a set of skills that teach your agent the
+discovery-first SQL workflow (`coral.tables`, `coral.columns`, etc.):
+
+```bash
+npx skills add withcoral/skills
+```
+
+Once connected, ask your agent to "list the tables available in Coral" or to
+run a small query — it'll call `list_tables` or `coral.tables` and see your
+installed sources.
 
 ## Local state
 
