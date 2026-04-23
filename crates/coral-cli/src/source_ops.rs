@@ -194,7 +194,15 @@ pub(crate) fn prompt_for_inputs(
 pub(crate) fn collect_inputs_from_env(
     inputs: &[ManifestInputSpec],
 ) -> Result<(Vec<SourceVariable>, Vec<SourceSecret>), anyhow::Error> {
-    collect_inputs_with(inputs, |key| crate::env::var(key).unwrap_or_default())
+    collect_inputs_with(inputs, |key| read_source_input_env(key).unwrap_or_default())
+}
+
+#[allow(
+    clippy::disallowed_methods,
+    reason = "`coral source add` reads install-time source inputs from matching environment variables."
+)]
+fn read_source_input_env(key: &str) -> Option<String> {
+    std::env::var(key).ok()
 }
 
 fn collect_inputs_with(
