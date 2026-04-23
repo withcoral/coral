@@ -227,7 +227,7 @@ In this minimal example:
 
 - `response: {}` means "use the default response rules" for an HTTP table
 - with the default response rules, Coral treats the selected response value directly as rows unless you configure a different `row_strategy`
-- `inputs` declares the install-time prompts for this source in stable authored order. (At runtime, these are surfaced through `coral.inputs`.)
+- `inputs` declares the install-time variables and secrets for this source in stable authored order. At install time, `coral source add` reads each key from an environment variable of the same name (or prompts for them when run with `--interactive`). At runtime, installed inputs are surfaced through `coral.inputs`.
 - `{{input.API_TOKEN}}` is resolved from the store implied by the declared input kind
 
 ### HTTP rate limiting
@@ -353,7 +353,7 @@ pagination:
 
 ## Source inputs
 
-HTTP source specs can declare install-time inputs under a top-level `inputs` map:
+HTTP source specs can declare the variables and secrets this source needs under a top-level `inputs` map. At install time, `coral source add` collects each input from an environment variable matching the key, or prompts interactively when you pass `--interactive`.
 
 - **Variables**: non-secret configuration like base URLs or organization IDs
 - **Secrets**: API keys or bearer tokens
@@ -381,7 +381,7 @@ Rules:
 - `kind: variable` values are stored with source variables
 - `kind: secret` values are stored with source secrets
 - `default` is allowed only for variables
-- `hint` is optional and shown while Coral prompts for the input
+- `hint` is optional and shown alongside the input during `coral source add --interactive`
 - references elsewhere in the manifest use `{{input.KEY}}` templates or `from: input`
 
 At runtime, installed source inputs are also surfaced through `coral.inputs`.
