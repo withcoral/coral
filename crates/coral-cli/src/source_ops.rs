@@ -171,7 +171,11 @@ pub(crate) async fn print_source_info(
             Ok(SourceInputKind::Secret) => "secret",
             Ok(SourceInputKind::Unspecified) | Err(_) => "unknown",
         };
-        let requirement = if input.required { "required" } else { "optional" };
+        let requirement = if input.required {
+            "required"
+        } else {
+            "optional"
+        };
         println!(
             "    {} {}",
             style(&input.key).bold(),

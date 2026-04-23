@@ -169,10 +169,7 @@ async fn source_info_renders_metadata_for_installed_source() {
         stdout.contains("installed"),
         "expected installed status: {stdout}"
     );
-    assert!(
-        stdout.contains("1.0.0"),
-        "expected version: {stdout}"
-    );
+    assert!(stdout.contains("1.0.0"), "expected version: {stdout}");
     assert!(
         stdout.contains("GitHub data"),
         "expected description: {stdout}"
@@ -181,10 +178,7 @@ async fn source_info_renders_metadata_for_installed_source() {
         stdout.contains("GITHUB_TOKEN"),
         "expected input key: {stdout}"
     );
-    assert!(
-        stdout.contains("secret"),
-        "expected input kind: {stdout}"
-    );
+    assert!(stdout.contains("secret"), "expected input kind: {stdout}");
     assert!(
         stdout.contains("required"),
         "expected input requirement: {stdout}"
@@ -235,10 +229,7 @@ async fn source_info_renders_metadata_for_available_source() {
         stdout.contains("not installed"),
         "expected not-installed status: {stdout}"
     );
-    assert!(
-        stdout.contains("2.1.0"),
-        "expected version: {stdout}"
-    );
+    assert!(stdout.contains("2.1.0"), "expected version: {stdout}");
     assert!(
         stdout.contains("Slack data"),
         "expected description: {stdout}"
