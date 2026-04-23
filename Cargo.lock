@@ -973,7 +973,7 @@ dependencies = [
 
 [[package]]
 name = "coral-auth-aws"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "aws-credential-types",
  "aws-sigv4",

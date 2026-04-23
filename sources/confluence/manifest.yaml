@@ -22,13 +22,15 @@ inputs:
       Example: `printf '%s' 'you@example.com:YOUR_CONFLUENCE_API_TOKEN' | base64`.
 base_url: "{{input.CONFLUENCE_BASE_URL}}"
 auth:
+  type: HeaderAuth
   headers:
     - name: Authorization
       from: template
       template: Basic {{input.CONFLUENCE_BASIC_AUTH}}
-    - name: Accept
-      from: literal
-      value: application/json
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
 test_queries:
   - SELECT * FROM confluence.spaces LIMIT 1
 tables:
