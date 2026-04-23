@@ -134,6 +134,60 @@ pub(crate) fn load_validated_manifest_file(
     Ok((manifest_yaml, manifest))
 }
 
+pub(crate) async fn print_source_info(
+    app: &AppClient,
+    name: &str,
+    verbose: bool,
+) -> Result<(), anyhow::Error> {
+    let canonical = source_name_arg(Some(name))?;
+    let sources = discover_sources(app).await?;
+    let source = sources
+        .into_iter()
+        .find(|source| source.name == canonical)
+        .ok_or_else(|| anyhow::anyhow!("unknown source '{canonical}'"))?;
+
+    let status = if source.installed {
+        style("installed").green().to_string()
+    } else {
+        style("not installed").dim().to_string()
+    };
+
+    println!("{}", style(&source.name).bold());
+    println!("  Status:      {status}");
+    println!("  Version:     {}", source.version);
+    if !source.description.is_empty() {
+        println!("  Description: {}", source.description);
+    }
+
+    if source.inputs.is_empty() {
+        return Ok(());
+    }
+
+    println!();
+    println!("  {}", style("Inputs").bold());
+    for input in &source.inputs {
+        let kind_label = match SourceInputKind::try_from(input.kind) {
+            Ok(SourceInputKind::Variable) => "variable",
+            Ok(SourceInputKind::Secret) => "secret",
+            Ok(SourceInputKind::Unspecified) | Err(_) => "unknown",
+        };
+        let requirement = if input.required { "required" } else { "optional" };
+        println!(
+            "    {} {}",
+            style(&input.key).bold(),
+            style(format!("({kind_label}, {requirement})")).dim()
+        );
+        if !input.default_value.is_empty() {
+            println!("      default: {}", input.default_value);
+        }
+        if verbose && !input.hint.is_empty() {
+            println!("      {}", style(&input.hint).dim());
+        }
+    }
+
+    Ok(())
+}
+
 pub(crate) async fn delete_source(app: &AppClient, name: &str) -> Result<(), anyhow::Error> {
     app.source_client()
         .delete_source(Request::new(DeleteSourceRequest {

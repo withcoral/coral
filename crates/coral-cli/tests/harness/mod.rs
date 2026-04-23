@@ -114,7 +114,7 @@ fn mock_discover_response() -> DiscoverSourcesResponse {
                     kind: SourceInputKind::Secret as i32,
                     required: true,
                     default_value: String::new(),
-                    hint: String::new(),
+                    hint: "Create a token at github.com/settings/tokens".to_string(),
                 }],
                 installed: true,
                 origin: SourceOrigin::Bundled as i32,

@@ -154,6 +154,119 @@ async fn source_discover_renders_empty_state() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn source_info_renders_metadata_for_installed_source() {
+    let server = MockServer::start().await;
+
+    let assert = server
+        .cmd()
+        .args(["source", "info", "github"])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert!(stdout.contains("github"), "expected source name: {stdout}");
+    assert!(
+        stdout.contains("installed"),
+        "expected installed status: {stdout}"
+    );
+    assert!(
+        stdout.contains("1.0.0"),
+        "expected version: {stdout}"
+    );
+    assert!(
+        stdout.contains("GitHub data"),
+        "expected description: {stdout}"
+    );
+    assert!(
+        stdout.contains("GITHUB_TOKEN"),
+        "expected input key: {stdout}"
+    );
+    assert!(
+        stdout.contains("secret"),
+        "expected input kind: {stdout}"
+    );
+    assert!(
+        stdout.contains("required"),
+        "expected input requirement: {stdout}"
+    );
+    assert!(
+        !stdout.contains("github.com/settings/tokens"),
+        "expected hint to be hidden without --verbose: {stdout}"
+    );
+
+    let requests = server.discover_sources_requests();
+    assert_eq!(requests.len(), 1, "expected one discover_sources call");
+    assert_default_workspace(requests[0].workspace.as_ref());
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn source_info_verbose_includes_input_hints() {
+    let server = MockServer::start().await;
+
+    let assert = server
+        .cmd()
+        .args(["source", "info", "github", "--verbose"])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert!(
+        stdout.contains("github.com/settings/tokens"),
+        "expected hint with --verbose: {stdout}"
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn source_info_renders_metadata_for_available_source() {
+    let server = MockServer::start().await;
+
+    let assert = server
+        .cmd()
+        .args(["source", "info", "slack"])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert!(
+        stdout.contains("not installed"),
+        "expected not-installed status: {stdout}"
+    );
+    assert!(
+        stdout.contains("2.1.0"),
+        "expected version: {stdout}"
+    );
+    assert!(
+        stdout.contains("Slack data"),
+        "expected description: {stdout}"
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn source_info_errors_for_unknown_source() {
+    let server = MockServer::start().await;
+
+    let assert = server
+        .cmd()
+        .args(["source", "info", "nope"])
+        .assert()
+        .failure();
+
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    assert!(
+        stderr.contains("unknown source 'nope'"),
+        "expected unknown source error: {stderr}"
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn source_list_renders_empty_state() {
     let server = MockServer::start_with_config(MockServerConfig::default().with_list_sources(
         ListSourcesResponse {

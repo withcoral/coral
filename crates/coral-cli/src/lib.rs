@@ -101,6 +101,14 @@ enum SourceCommand {
     Discover,
     /// List configured sources
     List,
+    /// Show metadata for a source
+    Info {
+        /// Name of the source to show info for
+        name: String,
+        /// Show additional details such as input hints
+        #[arg(short, long)]
+        verbose: bool,
+    },
     /// Add a new source
     Add(SourceAddArgs),
     /// Lint manifest file
@@ -205,6 +213,9 @@ async fn run_parsed(app: AppClient, cli: Cli) -> Result<(), anyhow::Error> {
                     });
                     print_text_table(["Source", "Version", "Origin"], rows);
                 }
+            }
+            SourceCommand::Info { name, verbose } => {
+                source_ops::print_source_info(&app, &name, verbose).await?;
             }
             SourceCommand::Add(args) => run_source_add(&app, args).await?,
             SourceCommand::Lint { file } => {
