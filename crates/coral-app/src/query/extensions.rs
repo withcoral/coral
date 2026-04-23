@@ -2,7 +2,6 @@
 
 use std::sync::Arc;
 
-use coral_auth_aws::AwsSigV4Authenticator;
 use coral_engine::{EngineExtensions, QuerySource};
 
 /// App-layer provider that selects engine extensions for one runtime build.
@@ -23,24 +22,6 @@ impl EngineExtensionsProvider for NoopEngineExtensionsProvider {
     fn extensions_for(&self, _selected_sources: &[QuerySource]) -> EngineExtensions {
         EngineExtensions::default()
     }
-}
-
-/// Default OSS provider that installs the built-in request authenticators.
-#[derive(Debug, Default)]
-pub(crate) struct BuiltinEngineExtensionsProvider;
-
-impl EngineExtensionsProvider for BuiltinEngineExtensionsProvider {
-    fn extensions_for(&self, _selected_sources: &[QuerySource]) -> EngineExtensions {
-        let mut extensions = EngineExtensions::default();
-        extensions
-            .request_authenticators
-            .insert("aws_sigv4".to_string(), Arc::new(AwsSigV4Authenticator));
-        extensions
-    }
-}
-
-pub(crate) fn builtin_engine_extensions_provider() -> Arc<dyn EngineExtensionsProvider> {
-    Arc::new(BuiltinEngineExtensionsProvider)
 }
 
 pub(crate) fn compose_engine_extensions_providers(
@@ -113,32 +94,38 @@ mod tests {
     }
 
     #[test]
-    fn builtin_provider_registers_aws_sigv4() {
-        let extensions = BuiltinEngineExtensionsProvider.extensions_for(&[]);
-        let authenticator = extensions
-            .request_authenticators
-            .get("aws_sigv4")
-            .expect("builtin aws authenticator should be registered");
+    fn noop_provider_installs_no_extensions() {
+        let extensions = NoopEngineExtensionsProvider.extensions_for(&[]);
 
-        assert_eq!(authenticator.name(), "aws_sigv4");
+        assert!(extensions.source_decorators.is_empty());
+        assert!(extensions.request_authenticators.is_empty());
     }
 
     #[test]
-    fn composed_provider_keeps_builtins_and_applies_overrides() {
+    fn composed_provider_merges_base_and_extra_authenticators() {
         let provider = CompositeEngineExtensionsProvider {
-            base: Arc::new(BuiltinEngineExtensionsProvider),
+            base: Arc::new(TestEngineExtensionsProvider {
+                key: "base",
+                name: "base",
+            }),
             extra: Arc::new(TestEngineExtensionsProvider {
-                key: "aws_sigv4",
-                name: "override",
+                key: "extra",
+                name: "extra",
             }),
         };
 
         let extensions = provider.extensions_for(&[]);
-        let authenticator = extensions
-            .request_authenticators
-            .get("aws_sigv4")
-            .expect("override should still populate aws key");
 
-        assert_eq!(authenticator.name(), "override");
+        let base_authenticator = extensions
+            .request_authenticators
+            .get("base")
+            .expect("base provider should populate base key");
+        let extra_authenticator = extensions
+            .request_authenticators
+            .get("extra")
+            .expect("extra provider should populate extra key");
+
+        assert_eq!(base_authenticator.name(), "base");
+        assert_eq!(extra_authenticator.name(), "extra");
     }
 }

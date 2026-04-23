@@ -16,15 +16,13 @@ use tonic::transport::Server;
 
 use super::env::AppEnvironment;
 use super::error::AppError;
-use crate::EngineExtensionsProvider;
-use crate::query::extensions::{
-    builtin_engine_extensions_provider, compose_engine_extensions_providers,
-};
+use crate::query::extensions::compose_engine_extensions_providers;
 use crate::query::manager::QueryManager;
 use crate::query::service::QueryService;
 use crate::sources::manager::SourceManager;
 use crate::sources::service::SourceService;
 use crate::state::{AppStateLayout, ConfigStore, SecretStore};
+use crate::{EngineExtensionsProvider, NoopEngineExtensionsProvider};
 
 /// Server-side bootstrap configuration for the Coral server.
 #[derive(Clone)]
@@ -45,7 +43,7 @@ impl ServerConfig {
     pub(crate) fn new() -> Self {
         Self {
             config_dir: None,
-            engine_extensions_provider: builtin_engine_extensions_provider(),
+            engine_extensions_provider: Arc::new(NoopEngineExtensionsProvider),
         }
     }
 

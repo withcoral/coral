@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/*", "xtask"]
+members = ["crates/coral-*", "crates/auth/*", "xtask"]
 resolver = "2"
 
 [workspace.package]
@@ -27,8 +27,6 @@ assert_cmd = "2"
 anyhow = "1"
 arrow = "57.3.0"
 async-trait = "0.1"
-aws-credential-types = "1.2"
-aws-sigv4 = "1.4"
 base64 = "0.22"
 bytes = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
@@ -72,7 +70,7 @@ coral-app = { path = "crates/coral-app" }
 coral-cli = { path = "crates/coral-cli" }
 coral-client = { path = "crates/coral-client" }
 coral-engine = { path = "crates/coral-engine" }
-coral-auth-aws = { path = "crates/coral-auth-aws" }
+coral-auth-aws = { path = "crates/auth/aws" }
 coral-mcp = { path = "crates/coral-mcp" }
 coral-spec = { path = "crates/coral-spec" }
 

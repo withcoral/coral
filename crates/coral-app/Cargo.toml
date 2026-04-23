@@ -26,7 +26,6 @@ tonic-types.workspace = true
 tracing.workspace = true
 
 coral-api.workspace = true
-coral-auth-aws.workspace = true
 coral-spec.workspace = true
 coral-engine.workspace = true
 

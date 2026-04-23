@@ -278,9 +278,9 @@ auth:
 
 The `authenticator` key names a runtime-registered `RequestAuthenticator`. All other fields under `auth` are passed through as the authenticator's config. Custom authenticators receive the fully built `reqwest::Request` (method, URL, body, declared headers) before it is sent — use this type when signing depends on request contents.
 
-##### Built-in: `aws_sigv4`
+##### Coral CLI: `aws_sigv4`
 
-Signs outgoing requests with AWS Signature Version 4. Ships in the `coral-auth-aws` crate. Useful for querying AWS monitoring services via CloudWatch, CloudTrail, or any other SigV4-protected API.
+Signs outgoing requests with AWS Signature Version 4. The Coral CLI registers this authenticator from the `coral-auth-aws` crate for its local server. Useful for querying AWS monitoring services via CloudWatch, CloudTrail, or any other SigV4-protected API.
 
 Example against CloudWatch Logs:
 
@@ -337,26 +337,32 @@ Contract:
 - `validate()` runs at source-registration time against resolved inputs. Use it to fail fast on missing credentials before any request is issued. Default returns `Ok(())`.
 - Config fields declared alongside `authenticator:` in the manifest arrive as `auth.config` (a `serde_json::Map`). Deserialize into your own struct with `serde_json::from_value`.
 
-Register authenticators by implementing `QueryRuntimeProvider::engine_extensions()` in your embedding:
+Register authenticators by providing engine extensions when starting an embedded local server:
 
 ```rust
-use std::collections::HashMap;
 use std::sync::Arc;
-use coral_engine::{EngineExtensions, QueryRuntimeProvider, RequestAuthenticator};
+use coral_auth_aws::AwsSigV4Authenticator;
+use coral_client::local::{EngineExtensions, EngineExtensionsProvider, QuerySource, ServerBuilder};
 
-fn engine_extensions(&self) -> EngineExtensions {
-    let mut authenticators: HashMap<String, Arc<dyn RequestAuthenticator>> = HashMap::new();
-    authenticators.insert(
-        "aws_sigv4".to_string(),
-        Arc::new(coral_auth_aws::AwsSigV4Authenticator),
-    );
-    // authenticators.insert("my_custom".to_string(), Arc::new(MyCustomAuthenticator));
+#[derive(Debug)]
+struct MyExtensions;
 
-    EngineExtensions {
-        request_authenticators: authenticators,
-        ..EngineExtensions::default()
+impl EngineExtensionsProvider for MyExtensions {
+    fn extensions_for(&self, _selected_sources: &[QuerySource]) -> EngineExtensions {
+        let mut extensions = EngineExtensions::default();
+        extensions.request_authenticators.insert(
+            "aws_sigv4".to_string(),
+            Arc::new(AwsSigV4Authenticator),
+        );
+        // extensions.request_authenticators.insert("my_custom".to_string(), Arc::new(MyCustomAuthenticator));
+        extensions
     }
 }
+
+let server = ServerBuilder::new()
+    .with_engine_extensions_provider(Arc::new(MyExtensions))
+    .start()
+    .await?;
 ```
 
 Manifests then reference the registered authenticator by its `name()` value:
