@@ -59,7 +59,8 @@
       },
       {
         "type": "discord",
-        "href": "https://withcoral.com/discord"
+        "_comment": "Mintlify only supports discord.gg link, so we can't use the canonical discord link here https://withcoral.com/discord",
+        "href": "https://discord.gg/h9aun8KpFF"
       }
     ]
   },
