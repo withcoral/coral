@@ -87,14 +87,12 @@ impl ValidatedSourceManifest {
 
     /// Returns the set of source secrets required to compile or authenticate
     /// the source spec.
-    ///
-    /// File-backed source specs do not currently declare secret inputs at the
-    /// source level, so they return an empty set here.
     #[must_use]
     pub fn required_secret_names(&self) -> BTreeSet<String> {
         match &self.inner {
             ValidatedManifestKind::Http(manifest) => manifest.required_secret_names(),
-            ValidatedManifestKind::Parquet(_) | ValidatedManifestKind::Jsonl(_) => BTreeSet::new(),
+            ValidatedManifestKind::Parquet(manifest) => manifest.required_secret_names(),
+            ValidatedManifestKind::Jsonl(manifest) => manifest.required_secret_names(),
         }
     }
 
@@ -103,7 +101,8 @@ impl ValidatedSourceManifest {
     pub fn declared_inputs(&self) -> &[ManifestInputSpec] {
         match &self.inner {
             ValidatedManifestKind::Http(manifest) => &manifest.declared_inputs,
-            ValidatedManifestKind::Parquet(_) | ValidatedManifestKind::Jsonl(_) => &[],
+            ValidatedManifestKind::Parquet(manifest) => &manifest.declared_inputs,
+            ValidatedManifestKind::Jsonl(manifest) => &manifest.declared_inputs,
         }
     }
 

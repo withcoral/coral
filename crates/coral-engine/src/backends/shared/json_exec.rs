@@ -38,7 +38,7 @@ pub(crate) struct JsonExec {
     source_name: String,
     table_name: String,
     projected_schema: SchemaRef,
-    props: PlanProperties,
+    props: Arc<PlanProperties>,
     fetcher: Fetcher,
     converter: Converter,
     projection: Option<Vec<usize>>,
@@ -74,12 +74,12 @@ impl JsonExec {
             })?),
             None => schema,
         };
-        let props = PlanProperties::new(
+        let props = Arc::new(PlanProperties::new(
             EquivalenceProperties::new(projected_schema.clone()),
             Partitioning::UnknownPartitioning(1),
             EmissionType::Incremental,
             Boundedness::Bounded,
-        );
+        ));
 
         Ok(Self {
             source_name: source_name.to_string(),
@@ -112,7 +112,7 @@ impl ExecutionPlan for JsonExec {
         self.projected_schema.clone()
     }
 
-    fn properties(&self) -> &PlanProperties {
+    fn properties(&self) -> &Arc<PlanProperties> {
         &self.props
     }
 
