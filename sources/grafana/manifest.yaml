@@ -911,16 +911,18 @@ tables:
   - name: dashboard_panels
     description: |
       Panels inside a single Grafana dashboard. Requires a constant equality
-      filter on dashboard_uid (WHERE dashboard_uid = '<uid>'); JOINs against
-      grafana.dashboards will not satisfy the required-filter check, so run
-      a two-step workflow (list dashboards, then query panels per UID).
+      filter on dashboard_uid (WHERE dashboard_uid = '<uid>'); non-constant
+      joins against grafana.dashboards will not satisfy the required-filter
+      check, so run a two-step workflow (list dashboards, then query panels per
+      UID).
       Only top-level panels are surfaced: panels nested inside a collapsed
       'row' panel, and the legacy (Grafana v5 and earlier) dashboard.rows[]
       layout, are not flattened.
     guide: >
       Requires dashboard_uid. Query grafana.dashboards first, then fan out with
-      WHERE dashboard_uid = '<uid>'. JOIN-derived values do not satisfy the
-      required-filter check, and only top-level panels are returned.
+      WHERE dashboard_uid = '<uid>'. Non-constant join-derived filters do not
+      satisfy the required-filter check, and only top-level panels are
+      returned.
     request:
       method: GET
       path: /api/dashboards/uid/{{filter.dashboard_uid}}
