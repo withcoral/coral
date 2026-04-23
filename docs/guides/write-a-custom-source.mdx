@@ -3,14 +3,20 @@ title: "Write a custom source spec"
 description: "Extend Coral by adding any API or dataset as a queryable source."
 ---
 
-Coral ships with [popular data sources](/reference/bundled-sources), but you are not limited to them. If the data source you need is not available out of the box, you can write a source spec in YAML and import it.
+Coral ships with [popular data sources](/reference/bundled-sources), but you are not limited to them. If the data source you need is not available out of the box, you can write a source spec in YAML and add it locally.
 
-A source spec tells Coral how to connect to an API or read a local dataset, what tables to expose, and what columns each table has. Once added, the source works exactly like a bundled one: same SQL, same `coral.tables`, `coral.columns` and `coral.inputs`, same MCP surface.
+A **source spec** is the YAML document you author. When that same YAML is stored in a bundled source directory or in Coral's workspace, it is usually named `manifest.yaml`, so you will also see it called a **source manifest**. In practice, they are the same thing: a declarative description of how Coral should connect to an API or local dataset, which tables to expose, and which columns each table has.
+
+Once added, the source works exactly like a bundled one: same SQL, same `coral.tables`, `coral.columns`, and `coral.inputs`, same MCP surface.
 
 <Tip>
-  Install the [Coral source spec authoring
-  skill](/getting-started/installation#skills) with `npx skills add
-  withcoral/skills` to help your coding agent write source specs.
+  Install the [Coral source authoring skills](/getting-started/installation#skills)
+  with `npx skills add withcoral/skills` if you want an agent to draft or
+  repair manifests for you. The current skill is
+  `coral-create-source-spec`. Some environments may also expose an older
+  alias named `create-source-manifest`; use the same authoring loop, but prefer
+  the current CLI commands: `coral source lint`, `coral source add --file`, and
+  `coral source test`.
 </Tip>
 
 ## Will this work for my source?
@@ -27,16 +33,53 @@ API-backed sources vary in difficulty. The source spec model is designed for API
 
 If you are unsure whether your API is a good candidate, ask us in [Discord](https://withcoral.com/discord) before getting started.
 
+## Choose your authoring path
+
+Use the same manifest format in both cases, but pick the workflow that matches your goal:
+
+- **Standalone custom source**: author a YAML file such as `./my-source.yaml`, then install it with `coral source add --file ./my-source.yaml`.
+- **Bundled source contribution**: edit `sources/<name>/manifest.yaml` in the Coral repo, then validate it with the repo's normal checks plus `coral source test <name>`.
+
+## Recommended authoring loop
+
+Start small and tighten the loop. A good first pass is one table, a few columns, and a cheap validation query.
+
+1. Inspect the upstream API docs or local dataset and choose one table-worthy endpoint or file shape.
+2. Create a minimal manifest with `name`, `version`, `dsl_version`, `backend`, one table, and a few typed columns.
+3. Run `coral source lint ./my-source.yaml` before installing anything.
+4. Add the source with `coral source add --file ./my-source.yaml`.
+5. Run `coral source test my_source` for strict pass/fail validation.
+6. Inspect the installed shape through Coral's system tables.
+7. Run representative `coral sql` queries against the new tables.
+8. Expand the manifest only after the first table works end to end.
+
+A practical loop looks like this:
+
+```shellscript
+coral source lint ./my-source.yaml
+coral source add --file ./my-source.yaml
+coral source test my_source
+coral sql "SELECT table_name FROM coral.tables WHERE schema_name = 'my_source'"
+coral sql "SELECT table_name, column_name, data_type, is_required_filter FROM coral.columns WHERE schema_name = 'my_source' ORDER BY table_name, column_name"
+coral sql "SELECT * FROM my_source.messages LIMIT 5"
+```
+
+That sequence tells you three different things:
+
+- `lint` catches YAML/schema mistakes before credentials or runtime behavior are involved
+- `add --file` installs the source and shows install-time warnings
+- `test` gives you a strict validation result that is easy to rerun while iterating
+
 ## Agent-driven authoring
 
 Source authoring works well as an agent-driven workflow. Point your coding agent at the Coral CLI and the [source spec reference](/reference/source-spec-reference), give it the API docs or describe the endpoints you want, and let it iterate:
 
-1. The agent writes or updates the source spec YAML
-2. Lints the file with `coral source lint ./my-source.yaml` to catch errors before installing
-3. Adds it with `coral source add --file ./my-source.yaml`
-4. Validates with `coral source test my_source`
-5. Inspects `coral.tables`, `coral.columns` and `coral.inputs` to check the shape
-6. Refines and repeats until the tables look right
+1. The agent writes or updates the source spec YAML.
+2. Lints the file with `coral source lint ./my-source.yaml` to catch errors before installing.
+3. Adds it with `coral source add --file ./my-source.yaml`.
+4. Validates with `coral source test my_source`.
+5. Inspects `coral.tables`, `coral.columns`, and `coral.inputs` to check the shape.
+6. Refines and repeats until the tables look right.
 
 ## Example: local JSONL source
 
@@ -124,6 +167,40 @@ If you are validating a credentialed source end-to-end, it is useful to try both
 This gives you confidence that the source spec works in the happy path and that `test_queries` catch broken credentials or runtime regressions in a predictable way.
 
 Use read-only SQL in `test_queries`. Prefer bounded checks such as `SELECT * FROM schema.table LIMIT 1` over expensive scans like `SELECT COUNT(*)`, especially for HTTP-backed sources or large datasets. Coral rejects DDL, DML, and other non-read-only statements as failed validation queries instead of applying them.
+
+## Document table usage with `guide`
+
+If a table needs query-writing help beyond a short description, add a `guide` field to that table in the source spec.
+
+This is especially useful for search-style endpoints or APIs with easy-to-miss constraints:
+
+- required scoping filters
+- provider-specific search syntax or qualifiers
+- defaults that change result order or breadth
+- pagination or rate-limit caveats
+- examples of the query shape users or agents should prefer
+
+```yaml
+tables:
+  - name: search_commits
+    description: Search commits
+    guide: >
+      Requires q. Always scope with repo:OWNER/NAME or org:NAME.
+      Common qualifiers: author:LOGIN, path:DIR, committer-date:>=YYYY-MM-DD.
+```
+
+Coral stores this authored text on the installed table and exposes it through `coral.tables.guide`, so both humans and agents can read it during discovery:
+
+```shellscript
+coral sql "
+  SELECT schema_name, table_name, guide
+  FROM coral.tables
+  WHERE guide <> ''
+  ORDER BY schema_name, table_name
+"
+```
+
+For MCP clients, this table-level `guide` complements `coral://guide`: agents should read `coral://guide` for the general Coral discovery workflow, then inspect `coral.tables.guide` for table-specific query advice.
 
 ## Example: HTTP API source
 
