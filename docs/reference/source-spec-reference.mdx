@@ -61,7 +61,7 @@ The `type` field on each column accepts:
 | `Float64`   | 64-bit floating point                                                                              |
 | `Boolean`   | Boolean true/false                                                                                 |
 | `Timestamp` | UTC timestamp (microsecond precision)                                                              |
-| `Json`      | UTF-8 string containing JSON. Hint that the column is queryable with `json_get`, `->`, `->>`, etc. |
+| `Json`      | UTF-8 string containing JSON. Hint that the column is queryable with JSON accessors. See "Querying JSON columns" below. |
 
 Each column also supports:
 
@@ -78,7 +78,9 @@ FROM posthog.events
 WHERE json_get_int(properties, 'count') > 5
 ```
 
-Available: `json_get`, `json_get_str`, `json_get_int`, `json_get_float`, `json_get_bool`, `json_get_array`, `json_get_json`, `json_contains`, `json_length`, `json_as_text`, plus the `->` and `->>` operators.
+Available: `json_get`, `json_get_str`, `json_get_int`, `json_get_float`, `json_get_bool`, `json_get_array`, `json_get_json`, `json_contains`, `json_length`, `json_as_text`, plus the `->` and `->>` operators. For detailed function behavior, see the [datafusion-functions-json reference](https://github.com/datafusion-contrib/datafusion-functions-json/blob/main/README.md).
+
+`->` returns a JSON value that you can continue traversing or cast to a typed SQL value. `->>` returns text.
 
 Use plain object keys or array indexes with these functions and operators, not JSONPath syntax. For example, `properties->>'browser'` looks up the `browser` key, while `properties->>'$browser'` is only for a literal key named `$browser`.
 
