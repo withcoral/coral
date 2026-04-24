@@ -18,6 +18,8 @@ If the source you need is not available, you can extend Coral by [writing a cust
 | Source | Backend | Description |
 | --- | --- | --- |
 | [clickup](#clickup) | `http` | Query tasks, spaces, folders, lists, goals, time entries, comments, views, tags, custom fields, teams, and users from ClickUp. |
+| [cloudwatch_logs](#cloudwatch_logs) | `http` | Query Amazon CloudWatch Logs groups, streams, and events. |
+| [cloudwatch_metrics](#cloudwatch_metrics) | `http` | Query Amazon CloudWatch metrics and monitoring metadata. |
 | [confluence](#confluence) | `http` | Query spaces, pages, blog posts, comments, attachments, labels, and related metadata from Confluence Cloud. |
 | [datadog](#datadog) | `http` | Query monitors, events, incidents, dashboards, hosts, services, APM dependencies, downtimes, SLOs, synthetic tests, users, logs, spans, and metrics from Datadog. |
 | [github](#github) | `http` | Query repositories, issues, pull requests, workflows, organizations, users, teams, and API metadata from GitHub (Cloud or Enterprise). |
@@ -64,6 +66,49 @@ If you're logged in to ClickUp, you can go to
 [App Settings](https://app.clickup.com/settings/apps) to find your token.
 For more details, see the
 [ClickUp authentication guide](https://developer.clickup.com/docs/authentication).
+
+### `cloudwatch_logs`
+
+`AWS_REGION` (optional)<br />
+default `us-east-1`
+
+AWS region for CloudWatch Logs API requests, for example `us-east-1`.
+
+`AWS_ENDPOINT_SUFFIX` (optional)<br />
+default `amazonaws.com`
+
+AWS endpoint DNS suffix. Keep `amazonaws.com` for standard AWS
+regions. Use the appropriate suffix for other partitions.
+
+`AWS_ACCESS_KEY_ID` (required)
+
+AWS access key ID with CloudWatch Logs read permissions.
+
+`AWS_SECRET_ACCESS_KEY` (required)
+
+AWS secret access key for SigV4 signing.
+
+### `cloudwatch_metrics`
+
+`AWS_REGION` (optional)<br />
+default `us-east-1`
+
+AWS region for CloudWatch API requests, for example `us-east-1`.
+
+`AWS_ENDPOINT_SUFFIX` (optional)<br />
+default `amazonaws.com`
+
+AWS endpoint DNS suffix. Keep `amazonaws.com` for standard AWS
+regions. Use the appropriate suffix for other partitions.
+
+`AWS_ACCESS_KEY_ID` (required)
+
+AWS access key ID with the CloudWatch read permissions needed for
+the tables you plan to query.
+
+`AWS_SECRET_ACCESS_KEY` (required)
+
+AWS secret access key for SigV4 signing.
 
 ### `confluence`
 
