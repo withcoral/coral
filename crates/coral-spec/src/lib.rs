@@ -87,10 +87,11 @@ mod validate;
 
 pub(crate) use common::validate_test_queries;
 pub use common::{
-    AuthSpec, BodyFieldSpec, ColumnSpec, ExprSpec, FilterMode, FilterSpec, HeaderSpec, HttpMethod,
-    ManifestDataType, PageSizeSpec, PaginationMode, PaginationSpec, QueryParamSpec,
-    RequestRouteSpec, RequestSpec, ResponseSpec, RowStrategy, SourceBackend, SourceManifestCommon,
-    TableCommon, TimestampInput, ValidatedPagination, ValidatedPaginationMode, ValueSourceSpec,
+    AuthSpec, BasicAuthSpec, BodyFieldSpec, ColumnSpec, ExprSpec, FilterMode, FilterSpec,
+    HeaderSpec, HttpMethod, ManifestDataType, PageSizeSpec, PaginationMode, PaginationSpec,
+    QueryParamSpec, RequestRouteSpec, RequestSpec, ResponseSpec, RowStrategy, SourceBackend,
+    SourceManifestCommon, TableCommon, TimestampInput, ValidatedPagination,
+    ValidatedPaginationMode, ValueSourceSpec,
 };
 pub use error::{ManifestError, Result};
 pub use inputs::{ManifestInputKind, ManifestInputSpec};

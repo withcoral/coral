@@ -85,7 +85,16 @@ pub enum ManifestDataType {
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct AuthSpec {
     #[serde(default)]
+    pub basic: Option<BasicAuthSpec>,
+    #[serde(default)]
     pub headers: Vec<HeaderSpec>,
+}
+
+/// Declarative HTTP Basic auth credentials for a source.
+#[derive(Debug, Clone, Deserialize)]
+pub struct BasicAuthSpec {
+    pub username: ParsedTemplate,
+    pub password: ParsedTemplate,
 }
 
 /// One request or auth header declared in the source spec.

@@ -18,6 +18,10 @@
     "inputs": { "$ref": "#/$defs/inputs" },
     "base_url": { "type": "string", "minLength": 1 },
     "auth": { "$ref": "#/$defs/auth" },
+    "headers": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/header" }
+    },
     "rate_limit": { "$ref": "#/$defs/rate_limit" },
     "tables": {
       "type": "array",
@@ -71,10 +75,20 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "basic": { "$ref": "#/$defs/basic_auth" },
         "headers": {
           "type": "array",
           "items": { "$ref": "#/$defs/header" }
         }
+      }
+    },
+    "basic_auth": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["username", "password"],
+      "properties": {
+        "username": { "type": "string", "minLength": 1 },
+        "password": { "type": "string", "minLength": 1 }
       }
     },
     "rate_limit": {

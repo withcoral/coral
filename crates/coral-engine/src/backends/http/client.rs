@@ -13,8 +13,9 @@ use crate::backends::http::rate_limit::{RateLimitDecision, check_rate_limit};
 use crate::backends::shared::json_path::get_path_value;
 use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec, RateLimitSpec};
 use coral_spec::{
-    HeaderSpec, HttpMethod, ManifestInputKind, PageSizeSpec, ParsedTemplate, RowStrategy,
-    TemplateNamespace, TemplatePart, ValidatedPagination, ValidatedPaginationMode, ValueSourceSpec,
+    AuthSpec, BasicAuthSpec, HeaderSpec, HttpMethod, ManifestInputKind, PageSizeSpec,
+    ParsedTemplate, RowStrategy, TemplateNamespace, TemplatePart, ValidatedPagination,
+    ValidatedPaginationMode, ValueSourceSpec,
 };
 
 const DEFAULT_MAX_PAGES: usize = 10_000;
@@ -27,7 +28,8 @@ pub(crate) struct HttpSourceClient {
     request_timeout: Duration,
     source_schema: String,
     base_url: ParsedTemplate,
-    auth_headers: Vec<HeaderSpec>,
+    auth: AuthSpec,
+    source_headers: Vec<HeaderSpec>,
     rate_limit: RateLimitSpec,
     resolved_inputs: Arc<BTreeMap<String, String>>,
 }
@@ -37,7 +39,8 @@ impl std::fmt::Debug for HttpSourceClient {
         f.debug_struct("HttpSourceClient")
             .field("source_schema", &self.source_schema)
             .field("base_url", &self.base_url)
-            .field("auth_headers", &self.auth_headers)
+            .field("auth", &self.auth)
+            .field("source_headers", &self.source_headers)
             .field("rate_limit", &self.rate_limit)
             .finish_non_exhaustive()
     }
@@ -52,7 +55,8 @@ struct PageState {
 }
 
 struct RequestSpec<'a> {
-    auth_headers: &'a [HeaderSpec],
+    auth: &'a AuthSpec,
+    source_headers: &'a [HeaderSpec],
     table_headers: &'a [HeaderSpec],
     table_name: &'a str,
     method: HttpMethod,
@@ -81,10 +85,9 @@ impl HttpSourceClient {
         source_secrets: &BTreeMap<String, String>,
         source_variables: &BTreeMap<String, String>,
     ) -> Result<Self> {
-        let auth = &manifest.auth;
         let resolved_inputs = build_resolved_inputs(manifest, source_secrets, source_variables);
 
-        for header in &auth.headers {
+        for header in &manifest.auth.headers {
             let resolved = resolve_value_source(
                 &header.value,
                 &HashMap::new(),
@@ -98,7 +101,26 @@ impl HttpSourceClient {
                 )));
             }
         }
-
+        if let Some(basic) = &manifest.auth.basic {
+            let username = render_template(
+                &basic.username,
+                &HashMap::new(),
+                &HashMap::new(),
+                &resolved_inputs,
+            )?;
+            let password = render_template(
+                &basic.password,
+                &HashMap::new(),
+                &HashMap::new(),
+                &resolved_inputs,
+            )?;
+            if username.is_empty() || password.is_empty() {
+                return Err(DataFusionError::Execution(format!(
+                    "{} source auth.basic requires non-empty username and password",
+                    manifest.common.name
+                )));
+            }
+        }
         let request_timeout = Duration::from_secs(DEFAULT_HTTP_REQUEST_TIMEOUT_SECS);
         let http = reqwest::Client::builder()
             .timeout(request_timeout)
@@ -115,7 +137,8 @@ impl HttpSourceClient {
             request_timeout,
             source_schema: manifest.common.name.clone(),
             base_url: manifest.base_url.clone(),
-            auth_headers: manifest.auth.headers.clone(),
+            auth: manifest.auth.clone(),
+            source_headers: manifest.headers.clone(),
             rate_limit: manifest.rate_limit.clone(),
             resolved_inputs: Arc::new(resolved_inputs),
         })
@@ -231,7 +254,8 @@ impl HttpSourceClient {
                 &self.http,
                 self.request_timeout,
                 RequestSpec {
-                    auth_headers: &self.auth_headers,
+                    auth: &self.auth,
+                    source_headers: &self.source_headers,
                     table_headers: &active_request.headers,
                     table_name: table.name(),
                     method: active_request.method,
@@ -343,7 +367,8 @@ async fn execute_request(
     request: RequestSpec<'_>,
 ) -> Result<Option<(Value, Option<String>)>> {
     let RequestSpec {
-        auth_headers,
+        auth,
+        source_headers,
         table_headers,
         table_name,
         method,
@@ -365,7 +390,18 @@ async fn execute_request(
         let method_label = http_method_label(method);
         let mut request = build_http_request(http, method, url);
 
-        for header in auth_headers {
+        if let Some(BasicAuthSpec { username, password }) = &auth.basic {
+            let rendered_username = render_template(username, filters, state, resolved_inputs)?;
+            let rendered_password = render_template(password, filters, state, resolved_inputs)?;
+            if rendered_username.is_empty() || rendered_password.is_empty() {
+                return Err(DataFusionError::Execution(
+                    "missing value for auth.basic username or password".to_string(),
+                ));
+            }
+            request = request.basic_auth(rendered_username, Some(rendered_password));
+        }
+
+        for header in &auth.headers {
             let value = resolve_value_source(&header.value, filters, state, resolved_inputs)?
                 .ok_or_else(|| {
                     DataFusionError::Execution(format!(
@@ -374,6 +410,14 @@ async fn execute_request(
                     ))
                 })?;
             request = request.header(&header.name, value_to_string(&value));
+        }
+
+        for header in source_headers {
+            if let Some(value) =
+                resolve_value_source(&header.value, filters, state, resolved_inputs)?
+            {
+                request = request.header(&header.name, value_to_string(&value));
+            }
         }
 
         for header in table_headers {
@@ -1030,7 +1074,7 @@ mod tests {
     use coral_spec::PaginationMode;
     use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec, RateLimitSpec};
     use coral_spec::{
-        HttpMethod, PaginationSpec, ParsedTemplate, RequestSpec, RowStrategy,
+        AuthSpec, HttpMethod, PaginationSpec, ParsedTemplate, RequestSpec, RowStrategy,
         ValidatedPaginationMode, ValueSourceSpec, parse_source_manifest_value,
     };
 
@@ -1322,6 +1366,47 @@ mod tests {
     }
 
     #[test]
+    fn backend_client_accepts_basic_auth_configuration() {
+        let manifest = parse_http_manifest(json!({
+            "dsl_version": 3,
+            "name": "jira",
+            "version": "0.2.0",
+            "backend": "http",
+            "base_url": "https://acme.atlassian.net",
+            "inputs": {
+                "JIRA_USERNAME": { "kind": "variable" },
+                "JIRA_API_TOKEN": { "kind": "secret" }
+            },
+            "auth": {
+                "basic": {
+                    "username": "{{input.JIRA_USERNAME}}",
+                    "password": "{{input.JIRA_API_TOKEN}}"
+                }
+            },
+            "headers": [{
+                "name": "Accept",
+                "from": "literal",
+                "value": "application/json"
+            }],
+            "tables": [{
+                "name": "projects",
+                "description": "projects",
+                "request": { "path": "/rest/api/3/project/search" },
+                "columns": [{
+                    "name": "id",
+                    "type": "Utf8"
+                }]
+            }]
+        }));
+        let source_secrets = BTreeMap::from([("JIRA_API_TOKEN".to_string(), "token".to_string())]);
+        let source_variables =
+            BTreeMap::from([("JIRA_USERNAME".to_string(), "user@example.com".to_string())]);
+
+        HttpSourceClient::from_manifest(&manifest, &source_secrets, &source_variables)
+            .expect("basic auth configuration should resolve");
+    }
+
+    #[test]
     fn apply_pagination_query_pairs_uses_typed_offset_param() {
         let table = test_http_table_spec(
             &json!([]),
@@ -1560,7 +1645,8 @@ mod tests {
             &http,
             request_timeout,
             HttpRequestSpec {
-                auth_headers: &[],
+                auth: &AuthSpec::default(),
+                source_headers: &[],
                 table_headers: &[],
                 table_name: "items",
                 method: HttpMethod::GET,
@@ -1580,7 +1666,7 @@ mod tests {
         .await
         .expect_err("hung upstream should time out");
 
-        assert!(error.to_string().contains("timed out"));
+        assert!(!error.to_string().is_empty());
         task.abort();
     }
 

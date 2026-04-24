@@ -16,9 +16,9 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::{
-    AuthSpec, ColumnSpec, FilterSpec, ManifestError, ManifestInputKind, ManifestInputSpec,
-    PaginationSpec, ParsedTemplate, RequestRouteSpec, RequestSpec, ResponseSpec, Result,
-    SourceBackend, SourceManifestCommon, TableCommon, inputs::collect_source_inputs_value,
+    AuthSpec, ColumnSpec, FilterSpec, HeaderSpec, ManifestError, ManifestInputKind,
+    ManifestInputSpec, PaginationSpec, ParsedTemplate, RequestRouteSpec, RequestSpec, ResponseSpec,
+    Result, SourceBackend, SourceManifestCommon, TableCommon, inputs::collect_source_inputs_value,
     validate::validate_template, validate_http_table, validate_test_queries,
 };
 
@@ -42,6 +42,7 @@ pub struct HttpSourceManifest {
     pub common: SourceManifestCommon,
     pub base_url: ParsedTemplate,
     pub auth: AuthSpec,
+    pub headers: Vec<HeaderSpec>,
     pub rate_limit: RateLimitSpec,
     pub tables: Vec<HttpTableSpec>,
     pub declared_inputs: Vec<ManifestInputSpec>,
@@ -62,6 +63,8 @@ struct RawHttpSourceManifest {
     base_url: ParsedTemplate,
     #[serde(default)]
     auth: AuthSpec,
+    #[serde(default)]
+    headers: Vec<HeaderSpec>,
     #[serde(default)]
     rate_limit: RateLimitSpec,
     #[serde(default)]
@@ -209,11 +212,24 @@ impl HttpSourceManifest {
             backend: _backend,
             base_url,
             auth,
+            headers,
             rate_limit,
             inputs: _inputs,
             tables,
         } = raw;
         validate_test_queries(&name, &test_queries)?;
+        if let Some(basic) = &auth.basic {
+            validate_template(
+                &basic.username,
+                &HashSet::new(),
+                &format!("{name} auth.basic"),
+            )?;
+            validate_template(
+                &basic.password,
+                &HashSet::new(),
+                &format!("{name} auth.basic"),
+            )?;
+        }
         let common =
             SourceManifestCommon::new(dsl_version, name, version, description, test_queries);
         let tables = tables
@@ -236,6 +252,7 @@ impl HttpSourceManifest {
             common,
             base_url,
             auth,
+            headers,
             rate_limit,
             tables,
             declared_inputs,
