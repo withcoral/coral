@@ -115,6 +115,8 @@ Use read-only SQL in `test_queries`. Prefer bounded checks such as `SELECT * FRO
 
 To connect an HTTP API, the source spec declares the base URL, auth, endpoints, and response shape.
 
+For authentication, Coral supports three top-level `auth.type` modes. Use `HeaderAuth` for declarative headers such as bearer tokens or API keys, `BasicAuth` for username/password HTTP Basic authentication, and `CustomAuth` for named request authenticators that need runtime logic such as AWS SigV4 signing. The example below uses `HeaderAuth`; for the full auth field reference and additional examples, see [HTTP-backed tables](/reference/source-spec-reference#http-backed-tables).
+
 ```yaml
 name: demo_api
 version: 0.1.0
