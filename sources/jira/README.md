@@ -7,11 +7,13 @@
 
 ## Authentication
 
-Requires `JIRA_BASIC_AUTH`, which is the Base64 form of `email:api_token` for Jira Cloud. Create an API token at [Atlassian API token settings](https://id.atlassian.com/manage-profile/security/api-tokens), then encode:
+Requires:
 
-```bash
-printf '%s' 'you@example.com:YOUR_JIRA_API_TOKEN' | base64
-```
+- `JIRA_BASE_URL`: your Jira Cloud site URL, for example `https://acme.atlassian.net`
+- `JIRA_USERNAME`: your Jira Cloud email address
+- `JIRA_API_TOKEN`: your Jira Cloud API token
+
+Create a token at [Atlassian API token settings](https://id.atlassian.com/manage-profile/security/api-tokens). Coral sends `JIRA_USERNAME` and `JIRA_API_TOKEN` as HTTP Basic auth credentials for Jira Cloud.
 
 ## Quick start
 

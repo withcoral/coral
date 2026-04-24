@@ -177,14 +177,16 @@ See [Intercom authentication docs](https://developers.intercom.com/docs/build-an
 Base URL of your Jira Cloud site (for example
 `https://acme.atlassian.net`).
 
-`JIRA_BASIC_AUTH` (required)
+`JIRA_USERNAME` (required)
 
-Use Base64-encoded `email:api_token` credentials for Jira Cloud
-Basic auth.
-Create an API token at
+Your Jira Cloud email address.
+
+`JIRA_API_TOKEN` (required)
+
+Your Jira Cloud API token.
+Create a token at
 [Atlassian API token settings](https://id.atlassian.com/manage-profile/security/api-tokens),
-then encode `email:api_token`.
-Example: `printf '%s' 'you@example.com:YOUR_JIRA_API_TOKEN' | base64`.
+then use it as the basic-auth password.
 
 ### `launchdarkly`
 
