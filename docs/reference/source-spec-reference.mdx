@@ -68,6 +68,33 @@ Each column also supports:
 - `nullable` (boolean, default `true`): whether the column can contain NULL values
 - `description` (string): human-readable description, surfaced through `coral.columns`
 
+### Nested field naming
+
+Coral uses a double underscore (`__`) naming convention for flattened nested or related fields.
+Treat the full name as the SQL column name:
+
+- `assignee__name` means the `name` field inside the `assignee` object or relation
+- `repository__owner__login` means `repository.owner.login`
+
+This is a naming convention, not special SQL syntax. Query the column exactly as it appears in `coral.columns`:
+
+```sql
+SELECT number, title, assignee__name
+FROM github.issues
+WHERE owner = 'withcoral' AND repo = 'coral'
+ORDER BY number DESC
+LIMIT 10
+```
+
+Do not rewrite these names with dots such as `assignee.name` or `repository.owner.login`. When you are unsure which flattened names a source exposes, inspect them first:
+
+```sql
+SELECT column_name, description
+FROM coral.columns
+WHERE schema_name = 'github' AND table_name = 'issues'
+ORDER BY ordinal_position
+```
+
 ### Querying JSON columns
 
 `Json`-typed columns (and any `Utf8` column whose values happen to be JSON) can be queried with the built-in JSON functions:

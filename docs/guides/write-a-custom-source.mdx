@@ -38,6 +38,24 @@ Source authoring works well as an agent-driven workflow. Point your coding agent
 5. Inspects `coral.tables`, `coral.columns` and `coral.inputs` to check the shape
 6. Refines and repeats until the tables look right
 
+## Column naming for nested fields
+
+When a source exposes nested API fields as separate SQL columns, use double underscores (`__`) to flatten the path into a single column name.
+
+- `assignee__name` means "the `name` field under `assignee`"
+- `repository__owner__login` means `repository.owner.login`
+
+This matches the naming convention used across bundled sources and keeps the mapping easy to read in both SQL and `coral.columns`. Treat the full flattened name as the column name in queries; it is not dot notation.
+
+```sql
+SELECT title, assignee__name
+FROM github.issues
+WHERE owner = 'withcoral' AND repo = 'coral'
+LIMIT 5
+```
+
+If you are consuming a source, inspect `coral.columns` to see the exact names Coral exposes. If you are authoring a source, prefer `parent__child` style names for flattened fields so users can recognize related data consistently.
+
 ## Example: local JSONL source
 
 The fastest way to see a custom source working is with a local file.
