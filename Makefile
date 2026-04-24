@@ -29,14 +29,26 @@ fix-sources:
 #   make docs-check      # CI freshness check: non-zero exit if stale
 
 docs-generate:
-	cargo run -p xtask -- \
+	cargo run -p xtask -- generate-docs \
 	  --sources-dir sources \
 	  --index docs/reference/bundled-sources.mdx \
 	  --docs-json docs/docs.json
 
 docs-check:
-	cargo run -p xtask -- \
+	cargo run -p xtask -- generate-docs \
 	  --sources-dir sources \
 	  --index docs/reference/bundled-sources.mdx \
 	  --docs-json docs/docs.json \
 	  --check
+
+# ----------------------------------------------------------------------------
+# Truncation detector
+# ----------------------------------------------------------------------------
+# Flags bundled-source descriptions that look like they were cut mid-phrase
+# by an upstream LLM generation cap. Useful as a post-regeneration sanity
+# check; see xtask/src/detect.rs for the rule list.
+#
+#   make detect-truncations   # scan sources/ and print suspected truncations
+
+detect-truncations:
+	cargo run -p xtask -- detect-truncations

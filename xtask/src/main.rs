@@ -1,14 +1,16 @@
-//! Generates the Mintlify bundled-sources docs page from source manifests.
+//! Developer tooling for the Coral source bundle.
 //!
-//! Reads every `sources/<name>/manifest.y{a,}ml`, parses it via
-//! [`coral_spec::parse_source_manifest_yaml`], and writes a regenerated
-//! `bundled-sources.mdx` index plus an updated Mintlify navigation file.
-//! In `--check` mode, renders everything in memory and exits non-zero when
-//! the outputs differ from disk — suitable for CI freshness enforcement.
+//! This binary exposes two subcommands that share workspace conventions but
+//! serve different workflows:
+//!   - `generate-docs` regenerates the bundled-sources Mintlify page and nav
+//!     from `sources/*/manifest.y{a,}ml`.
+//!   - `detect-truncations` scans manifests for likely-truncated descriptions
+//!     (the regression gate for the SOURCE-465 manifest cleanup).
 
 #![allow(
     clippy::print_stderr,
-    reason = "CLI intentionally renders stale-file diagnostics to stderr"
+    clippy::print_stdout,
+    reason = "CLI intentionally writes human-readable diagnostics to stdout/stderr"
 )]
 
 use std::fs;
@@ -16,19 +18,30 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Context, Result, bail};
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use coral_spec::{ValidatedSourceManifest, parse_source_manifest_yaml};
 
+mod detect;
 mod nav;
 mod render;
 
-/// CLI for regenerating the bundled-source docs from source manifests.
 #[derive(Debug, Parser)]
-#[command(
-    name = "xtask",
-    about = "Regenerate Coral source docs from sources/*/manifest.y{a,}ml"
-)]
+#[command(name = "xtask", about = "Developer tooling for Coral bundled sources")]
 struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Debug, Subcommand)]
+enum Command {
+    /// Regenerate the bundled-sources docs page and Mintlify nav.
+    GenerateDocs(GenerateDocsArgs),
+    /// Scan manifests for likely-truncated descriptions.
+    DetectTruncations(DetectArgs),
+}
+
+#[derive(Debug, clap::Args)]
+struct GenerateDocsArgs {
     /// Directory containing one subdirectory per source, each holding a
     /// `manifest.yaml` or `manifest.yml` file.
     #[arg(long, default_value = "sources")]
@@ -48,9 +61,20 @@ struct Cli {
     check: bool,
 }
 
+#[derive(Debug, clap::Args)]
+struct DetectArgs {
+    /// Manifest files or directories to scan. Defaults to `sources/` when
+    /// no paths are given.
+    paths: Vec<PathBuf>,
+
+    /// Print one line per manifest scanned, including those with no hits.
+    #[arg(long)]
+    verbose: bool,
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    match run(&cli) {
+    match run(&cli.command) {
         Ok(true) => ExitCode::SUCCESS,
         Ok(false) => ExitCode::from(1),
         Err(err) => {
@@ -60,33 +84,48 @@ fn main() -> ExitCode {
     }
 }
 
-/// Returns `Ok(true)` on success, `Ok(false)` if `--check` found a stale file.
-fn run(cli: &Cli) -> Result<bool> {
-    let manifests = load_manifests(&cli.sources_dir)?;
+/// Returns `Ok(true)` on success, `Ok(false)` on a detected regression
+/// (stale generated file or suspected truncation).
+fn run(command: &Command) -> Result<bool> {
+    match command {
+        Command::GenerateDocs(args) => generate_docs(args),
+        Command::DetectTruncations(args) => {
+            let paths: Vec<PathBuf> = if args.paths.is_empty() {
+                vec![PathBuf::from("sources")]
+            } else {
+                args.paths.clone()
+            };
+            detect::run(&paths, args.verbose)
+        }
+    }
+}
+
+fn generate_docs(args: &GenerateDocsArgs) -> Result<bool> {
+    let manifests = load_manifests(&args.sources_dir)?;
 
     let index = render::index_page(&manifests);
 
-    let existing_json = fs::read_to_string(&cli.docs_json)
-        .with_context(|| format!("reading {}", cli.docs_json.display()))?;
+    let existing_json = fs::read_to_string(&args.docs_json)
+        .with_context(|| format!("reading {}", args.docs_json.display()))?;
     let updated_json = nav::update_docs_json(&existing_json)?;
 
-    if cli.check {
-        Ok(check_mode(cli, &index, &updated_json))
+    if args.check {
+        Ok(check_mode(args, &index, &updated_json))
     } else {
-        write_mode(cli, &index, &updated_json)?;
+        write_mode(args, &index, &updated_json)?;
         Ok(true)
     }
 }
 
-fn check_mode(cli: &Cli, index: &str, docs_json: &str) -> bool {
+fn check_mode(args: &GenerateDocsArgs, index: &str, docs_json: &str) -> bool {
     let mut stale = Vec::new();
 
-    if fs::read_to_string(&cli.index).ok().as_deref() != Some(index) {
-        stale.push(cli.index.clone());
+    if fs::read_to_string(&args.index).ok().as_deref() != Some(index) {
+        stale.push(args.index.clone());
     }
 
-    if fs::read_to_string(&cli.docs_json).ok().as_deref() != Some(docs_json) {
-        stale.push(cli.docs_json.clone());
+    if fs::read_to_string(&args.docs_json).ok().as_deref() != Some(docs_json) {
+        stale.push(args.docs_json.clone());
     }
 
     if stale.is_empty() {
@@ -101,9 +140,9 @@ fn check_mode(cli: &Cli, index: &str, docs_json: &str) -> bool {
     }
 }
 
-fn write_mode(cli: &Cli, index: &str, docs_json: &str) -> Result<()> {
-    write_if_changed(&cli.index, index)?;
-    write_if_changed(&cli.docs_json, docs_json)?;
+fn write_mode(args: &GenerateDocsArgs, index: &str, docs_json: &str) -> Result<()> {
+    write_if_changed(&args.index, index)?;
+    write_if_changed(&args.docs_json, docs_json)?;
     Ok(())
 }
 
