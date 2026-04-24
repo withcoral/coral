@@ -16,20 +16,18 @@ use tonic::transport::Server;
 
 use super::env::AppEnvironment;
 use super::error::AppError;
-use crate::query::extensions::BuiltinEngineExtensionsProvider;
-use crate::query::extensions::compose_engine_extensions_providers;
+use crate::EngineExtensionsProvider;
 use crate::query::manager::QueryManager;
 use crate::query::service::QueryService;
 use crate::sources::manager::SourceManager;
 use crate::sources::service::SourceService;
 use crate::state::{AppStateLayout, ConfigStore, SecretStore};
-use crate::{EngineExtensionsProvider, NoopEngineExtensionsProvider};
 
 /// Server-side bootstrap configuration for the Coral server.
 #[derive(Clone)]
 pub(crate) struct ServerConfig {
     config_dir: Option<PathBuf>,
-    engine_extensions_provider: Arc<dyn EngineExtensionsProvider>,
+    engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
 }
 
 impl Default for ServerConfig {
@@ -44,7 +42,7 @@ impl ServerConfig {
     pub(crate) fn new() -> Self {
         Self {
             config_dir: None,
-            engine_extensions_provider: Arc::new(NoopEngineExtensionsProvider),
+            engine_extensions_providers: Vec::new(),
         }
     }
 
@@ -56,14 +54,12 @@ impl ServerConfig {
     }
 
     #[must_use]
-    pub(crate) fn with_engine_extensions_provider(
+    pub(crate) fn add_engine_extensions_provider(
         mut self,
         engine_extensions_provider: Arc<dyn EngineExtensionsProvider>,
     ) -> Self {
-        self.engine_extensions_provider = compose_engine_extensions_providers(
-            Arc::clone(&self.engine_extensions_provider),
-            engine_extensions_provider,
-        );
+        self.engine_extensions_providers
+            .push(engine_extensions_provider);
         self
     }
 }
@@ -93,25 +89,16 @@ impl ServerBuilder {
     #[must_use]
     /// Adds an engine extensions provider used for query runtime builds.
     ///
-    /// Providers are composed in call order, so extensions from this provider
-    /// are merged with extensions from any provider already configured,
-    /// including providers added by [`Self::with_builtin_extensions`]. Built-in
-    /// providers are only included when explicitly added.
-    pub fn with_engine_extensions_provider(
+    /// Providers are evaluated in call order, so later providers can add or
+    /// override engine extensions produced by earlier providers.
+    pub fn add_engine_extensions_provider(
         mut self,
         engine_extensions_provider: Arc<dyn EngineExtensionsProvider>,
     ) -> Self {
         self.config = self
             .config
-            .with_engine_extensions_provider(engine_extensions_provider);
+            .add_engine_extensions_provider(engine_extensions_provider);
         self
-    }
-
-    #[must_use]
-    /// Adds the built-in engine extensions shipped with the open-source Coral
-    /// distribution.
-    pub fn with_builtin_extensions(self) -> Self {
-        self.with_engine_extensions_provider(Arc::new(BuiltinEngineExtensionsProvider))
     }
 
     /// Starts the Coral gRPC server on loopback TCP.
@@ -141,7 +128,7 @@ impl ServerBuilder {
             secret_store,
             env.query_runtime_context(),
             layout,
-            Arc::clone(&self.config.engine_extensions_provider),
+            self.config.engine_extensions_providers,
         );
         start_server(source_manager, query_manager).await
     }
@@ -254,20 +241,22 @@ mod tests {
     use tonic::transport::Endpoint;
 
     use super::{ServerBuilder, start_server};
-    use crate::NoopEngineExtensionsProvider;
     use crate::query::manager::QueryManager;
     use crate::sources::manager::SourceManager;
     use crate::state::{AppStateLayout, ConfigStore, SecretStore};
     use crate::transport::workspace_to_proto;
     use crate::workspaces::WorkspaceName;
+    use crate::{AwsEngineExtensionsProvider, NoopEngineExtensionsProvider};
 
     fn default_workspace() -> Workspace {
         workspace_to_proto(&WorkspaceName::default())
     }
 
     #[test]
-    fn server_builder_accepts_builtin_extensions() {
-        let _ = ServerBuilder::new().with_builtin_extensions();
+    fn server_builder_accepts_engine_extensions_providers() {
+        let _ = ServerBuilder::new()
+            .add_engine_extensions_provider(Arc::new(AwsEngineExtensionsProvider))
+            .add_engine_extensions_provider(Arc::new(NoopEngineExtensionsProvider));
     }
 
     #[tokio::test]
@@ -298,7 +287,7 @@ mod tests {
                 home_dir: Some(fake_home.clone()),
             },
             layout,
-            Arc::new(NoopEngineExtensionsProvider),
+            vec![Arc::new(NoopEngineExtensionsProvider)],
         );
         let running = start_server(source_manager, query_manager)
             .await
@@ -374,7 +363,7 @@ tables:
             SecretStore::new(layout.clone()),
             QueryRuntimeContext { home_dir: None },
             layout,
-            Arc::new(NoopEngineExtensionsProvider),
+            vec![Arc::new(NoopEngineExtensionsProvider)],
         );
         let running = start_server(source_manager, query_manager)
             .await
@@ -462,7 +451,7 @@ tables:
             SecretStore::new(layout.clone()),
             QueryRuntimeContext { home_dir: None },
             layout,
-            Arc::new(NoopEngineExtensionsProvider),
+            vec![Arc::new(NoopEngineExtensionsProvider)],
         );
         let running = start_server(source_manager, query_manager)
             .await

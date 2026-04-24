@@ -11,7 +11,7 @@ use coral_engine::{
 use coral_spec::{ManifestInputKind, ManifestInputSpec, parse_source_manifest_yaml};
 
 use crate::bootstrap::AppError;
-use crate::query::extensions::EngineExtensionsProvider;
+use crate::query::extensions::{EngineExtensionsProvider, engine_extensions_for_providers};
 use crate::sources::SourceName;
 use crate::sources::catalog::resolve_installed_manifest;
 use crate::sources::model::InstalledSource;
@@ -35,7 +35,7 @@ pub(crate) struct QueryManager {
     secret_store: SecretStore,
     runtime_context: QueryRuntimeContext,
     layout: AppStateLayout,
-    engine_extensions_provider: Arc<dyn EngineExtensionsProvider>,
+    engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
 }
 
 impl QueryManager {
@@ -44,14 +44,14 @@ impl QueryManager {
         secret_store: SecretStore,
         runtime_context: QueryRuntimeContext,
         layout: AppStateLayout,
-        engine_extensions_provider: Arc<dyn EngineExtensionsProvider>,
+        engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
     ) -> Self {
         Self {
             config_store,
             secret_store,
             runtime_context,
             layout,
-            engine_extensions_provider,
+            engine_extensions_providers,
         }
     }
 
@@ -172,9 +172,10 @@ impl QueryManager {
     fn runtime_provider(&self, sources: &[QuerySource]) -> RuntimeProvider {
         RuntimeProvider {
             runtime_context: self.runtime_context.clone(),
-            engine_extensions: Mutex::new(Some(
-                self.engine_extensions_provider.extensions_for(sources),
-            )),
+            engine_extensions: Mutex::new(Some(engine_extensions_for_providers(
+                &self.engine_extensions_providers,
+                sources,
+            ))),
         }
     }
 }

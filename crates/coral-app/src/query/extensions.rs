@@ -25,12 +25,11 @@ impl EngineExtensionsProvider for NoopEngineExtensionsProvider {
     }
 }
 
-/// Provider that installs the built-in engine extensions shipped with
-/// the open-source Coral distribution.
+/// Provider that installs Coral's AWS engine extensions.
 #[derive(Debug, Default)]
-pub(crate) struct BuiltinEngineExtensionsProvider;
+pub struct AwsEngineExtensionsProvider;
 
-impl EngineExtensionsProvider for BuiltinEngineExtensionsProvider {
+impl EngineExtensionsProvider for AwsEngineExtensionsProvider {
     fn extensions_for(&self, _selected_sources: &[QuerySource]) -> EngineExtensions {
         let mut extensions = EngineExtensions::default();
         let authenticator = Arc::new(AwsSigV4Authenticator);
@@ -41,28 +40,19 @@ impl EngineExtensionsProvider for BuiltinEngineExtensionsProvider {
     }
 }
 
-pub(crate) fn compose_engine_extensions_providers(
-    base: Arc<dyn EngineExtensionsProvider>,
-    extra: Arc<dyn EngineExtensionsProvider>,
-) -> Arc<dyn EngineExtensionsProvider> {
-    Arc::new(CompositeEngineExtensionsProvider { base, extra })
-}
-
-struct CompositeEngineExtensionsProvider {
-    base: Arc<dyn EngineExtensionsProvider>,
-    extra: Arc<dyn EngineExtensionsProvider>,
-}
-
-impl EngineExtensionsProvider for CompositeEngineExtensionsProvider {
-    fn extensions_for(&self, selected_sources: &[QuerySource]) -> EngineExtensions {
-        let mut merged = self.base.extensions_for(selected_sources);
-        let extra = self.extra.extensions_for(selected_sources);
+pub(crate) fn engine_extensions_for_providers(
+    providers: &[Arc<dyn EngineExtensionsProvider>],
+    selected_sources: &[QuerySource],
+) -> EngineExtensions {
+    let mut merged = EngineExtensions::default();
+    for provider in providers {
+        let extra = provider.extensions_for(selected_sources);
         merged.source_decorators.extend(extra.source_decorators);
         merged
             .request_authenticators
             .extend(extra.request_authenticators);
-        merged
     }
+    merged
 }
 
 #[cfg(test)]
@@ -119,30 +109,30 @@ mod tests {
     }
 
     #[test]
-    fn builtin_provider_registers_aws_sigv4() {
-        let extensions = BuiltinEngineExtensionsProvider.extensions_for(&[]);
+    fn aws_provider_registers_aws_sigv4() {
+        let extensions = AwsEngineExtensionsProvider.extensions_for(&[]);
         let authenticator = extensions
             .request_authenticators
             .get("aws_sigv4")
-            .expect("builtin provider should register aws authenticator");
+            .expect("AWS provider should register aws authenticator");
 
         assert_eq!(authenticator.name(), "aws_sigv4");
     }
 
     #[test]
-    fn composed_provider_merges_base_and_extra_authenticators() {
-        let provider = CompositeEngineExtensionsProvider {
-            base: Arc::new(TestEngineExtensionsProvider {
+    fn provider_lists_merge_authenticators_in_call_order() {
+        let providers = vec![
+            Arc::new(TestEngineExtensionsProvider {
                 key: "base",
                 name: "base",
-            }),
-            extra: Arc::new(TestEngineExtensionsProvider {
+            }) as Arc<dyn EngineExtensionsProvider>,
+            Arc::new(TestEngineExtensionsProvider {
                 key: "extra",
                 name: "extra",
             }),
-        };
+        ];
 
-        let extensions = provider.extensions_for(&[]);
+        let extensions = engine_extensions_for_providers(&providers, &[]);
 
         let base_authenticator = extensions
             .request_authenticators

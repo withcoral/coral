@@ -1005,6 +1005,7 @@ dependencies = [
  "assert_cmd",
  "clap",
  "coral-api",
+ "coral-app",
  "coral-client",
  "coral-mcp",
  "coral-spec",

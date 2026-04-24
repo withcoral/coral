@@ -1,3 +1,6 @@
+use std::sync::Arc;
+
+use coral_app::AwsEngineExtensionsProvider;
 use coral_client::{
     AppClient, ClientError,
     local::{LocalServerError, RunningServer, ServerBuilder},
@@ -24,8 +27,7 @@ pub(crate) async fn bootstrap() -> Result<Bootstrap, BootstrapError> {
         });
     }
 
-    let server = ServerBuilder::new()
-        .with_builtin_extensions()
+    let server = configure_server_builder(ServerBuilder::new())
         .start()
         .await?;
     let app = AppClient::connect(server.endpoint_uri()).await?;
@@ -33,6 +35,10 @@ pub(crate) async fn bootstrap() -> Result<Bootstrap, BootstrapError> {
         app,
         _server: Some(server),
     })
+}
+
+fn configure_server_builder(builder: ServerBuilder) -> ServerBuilder {
+    builder.add_engine_extensions_provider(Arc::new(AwsEngineExtensionsProvider))
 }
 
 #[cfg(feature = "cli-test-server")]
