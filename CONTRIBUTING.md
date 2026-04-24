@@ -203,3 +203,10 @@ This project follows the rules in [`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md).
 
 By contributing to Coral, you agree that your contributions will be licensed
 under the project licence.
+
+If you are contributing to Coral for the first time, please email
+[legal@withcoral.com](mailto:legal@withcoral.com), including your Github
+username and confirming that you agree to our
+[Individual Contributor Licensing Agreement](./CLA_individual.md). To agree to
+the CLA on behalf of a corporation, please see the
+[Corporate CLA](./CLA_corporate.md).
