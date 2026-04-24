@@ -4,7 +4,8 @@ use wiremock::matchers::{header, method, path, query_param, query_param_is_missi
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use crate::harness::{
-    TestRuntime, build_source, build_source_with_secrets, execution_to_rows, users_rows,
+    TestRuntime, build_source, build_source_with_inputs, build_source_with_secrets,
+    execution_to_rows, users_rows,
 };
 
 fn base_http_manifest(name: &str, base_url: &str) -> Value {
@@ -359,6 +360,96 @@ async fn auth_headers_sent_correctly() {
             &[source],
             &TestRuntime,
             "SELECT COUNT(*) AS n FROM http_auth.users",
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(rows, vec![json!({"n": 3})]);
+}
+
+#[tokio::test]
+async fn basic_auth_allows_empty_username() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .and(header("authorization", "Basic OnNlY3JldC10b2tlbg=="))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": users_rows() })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut manifest = base_http_manifest("http_basic_empty_username", &server.uri());
+    manifest["inputs"] = json!({
+        "USERNAME": { "kind": "variable" },
+        "PASSWORD": { "kind": "secret" }
+    });
+    manifest["auth"] = json!({
+        "basic": {
+            "username": "{{input.USERNAME}}",
+            "password": "{{input.PASSWORD}}"
+        }
+    });
+    let source = build_source_with_inputs(
+        manifest,
+        [("USERNAME".to_string(), String::new())]
+            .into_iter()
+            .collect(),
+        [("PASSWORD".to_string(), "secret-token".to_string())]
+            .into_iter()
+            .collect(),
+    );
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            &TestRuntime,
+            "SELECT COUNT(*) AS n FROM http_basic_empty_username.users",
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(rows, vec![json!({"n": 3})]);
+}
+
+#[tokio::test]
+async fn basic_auth_allows_empty_password() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .and(header("authorization", "Basic ZGVtbzo="))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": users_rows() })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut manifest = base_http_manifest("http_basic_empty_password", &server.uri());
+    manifest["inputs"] = json!({
+        "USERNAME": { "kind": "variable" },
+        "PASSWORD": { "kind": "secret" }
+    });
+    manifest["auth"] = json!({
+        "basic": {
+            "username": "{{input.USERNAME}}",
+            "password": "{{input.PASSWORD}}"
+        }
+    });
+    let source = build_source_with_inputs(
+        manifest,
+        [("USERNAME".to_string(), "demo".to_string())]
+            .into_iter()
+            .collect(),
+        [("PASSWORD".to_string(), String::new())]
+            .into_iter()
+            .collect(),
+    );
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            &TestRuntime,
+            "SELECT COUNT(*) AS n FROM http_basic_empty_password.users",
         )
         .await
         .expect("query should succeed"),

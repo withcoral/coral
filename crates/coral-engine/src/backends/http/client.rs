@@ -102,24 +102,18 @@ impl HttpSourceClient {
             }
         }
         if let Some(basic) = &manifest.auth.basic {
-            let username = render_template(
+            render_template(
                 &basic.username,
                 &HashMap::new(),
                 &HashMap::new(),
                 &resolved_inputs,
             )?;
-            let password = render_template(
+            render_template(
                 &basic.password,
                 &HashMap::new(),
                 &HashMap::new(),
                 &resolved_inputs,
             )?;
-            if username.is_empty() || password.is_empty() {
-                return Err(DataFusionError::Execution(format!(
-                    "{} source auth.basic requires non-empty username and password",
-                    manifest.common.name
-                )));
-            }
         }
         let request_timeout = Duration::from_secs(DEFAULT_HTTP_REQUEST_TIMEOUT_SECS);
         let http = reqwest::Client::builder()
@@ -393,11 +387,6 @@ async fn execute_request(
         if let Some(BasicAuthSpec { username, password }) = &auth.basic {
             let rendered_username = render_template(username, filters, state, resolved_inputs)?;
             let rendered_password = render_template(password, filters, state, resolved_inputs)?;
-            if rendered_username.is_empty() || rendered_password.is_empty() {
-                return Err(DataFusionError::Execution(
-                    "missing value for auth.basic username or password".to_string(),
-                ));
-            }
             request = request.basic_auth(rendered_username, Some(rendered_password));
         }
 
