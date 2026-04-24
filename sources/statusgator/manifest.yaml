@@ -28,6 +28,9 @@ test_queries:
 tables:
   - name: boards
     description: StatusGator monitoring boards
+    guide: |
+      Start here to inventory boards. Use `id`, `public_token` values
+      from here in related tables and drill-down queries.
     request:
       method: GET
       path: /boards
@@ -86,6 +89,9 @@ tables:
             - updated_at
   - name: monitors
     description: Service monitors on a board
+    guide: |
+      Use this table for Service monitors on a board. Requires
+      `board_id` from `statusgator.boards`.
     request:
       method: GET
       path: /boards/{{filter.board_id}}/monitors
@@ -237,6 +243,10 @@ tables:
         required: true
   - name: history
     description: Status history for a board
+    guide: |
+      Use this table for Status history for a board. Requires `board_id`
+      from `statusgator.boards`. Keep time filters tight so the endpoint
+      stays fast and the results stay interpretable.
     request:
       method: GET
       path: /boards/{{filter.board_id}}/history
@@ -345,6 +355,10 @@ tables:
       - name: end_date
   - name: incidents
     description: Incidents for a board
+    guide: |
+      Use this table for Incidents for a board. Requires `board_id` from
+      `statusgator.boards`. Use it after inventory tables identify the
+      entities worth investigating in detail.
     request:
       method: GET
       path: /boards/{{filter.board_id}}/incidents
@@ -461,6 +475,10 @@ tables:
         required: true
   - name: monitor_components
     description: Components for a specific monitor
+    guide: |
+      Use this table for Components for a specific monitor. Requires
+      `board_id` from `statusgator.boards`. Requires `monitor_id` from
+      `statusgator.monitors`.
     request:
       method: GET
       path: /boards/{{filter.board_id}}/monitors/{{filter.monitor_id}}/components
@@ -546,6 +564,10 @@ tables:
         required: true
   - name: service_search
     description: Search for services by name
+    guide: |
+      Start here to inventory service search. Use `q` to narrow the
+      result set before doing heavier joins or exports. Use `id` values
+      from here in related tables and drill-down queries.
     request:
       method: GET
       path: /services/search
@@ -617,6 +639,9 @@ tables:
         required: true
   - name: service_components
     description: Components for a service
+    guide: |
+      Use this table for Components for a service. Requires `service_id`
+      from `statusgator.service_search`.
     request:
       method: GET
       path: /services/{{filter.service_id}}/components
@@ -685,6 +710,9 @@ tables:
         required: true
   - name: status_page_subscribers
     description: Subscribers to a board's status page
+    guide: |
+      Use this table for Subscribers to a board's status page. Requires
+      `board_id` from `statusgator.boards`.
     request:
       method: GET
       path: /boards/{{filter.board_id}}/status_page_subscribers
@@ -761,6 +789,9 @@ tables:
         required: true
   - name: users
     description: Users in the StatusGator account
+    guide: |
+      Start here to inventory users. Use `id` values from here in
+      related tables and drill-down queries.
     request:
       method: GET
       path: /users
@@ -843,6 +874,8 @@ tables:
             - last_sign_in_at
   - name: monitoring_regions
     description: Available monitoring regions
+    guide: |
+      Start here to inventory monitoring regions.
     request:
       method: GET
       path: /monitoring_regions
@@ -909,6 +942,9 @@ tables:
             - desc
   - name: board_detail
     description: Detailed information about a single board
+    guide: |
+      Use this table for Detailed information about a single board.
+      Requires `board_id` from `statusgator.boards`.
     request:
       method: GET
       path: /boards/{{filter.board_id}}
@@ -969,6 +1005,10 @@ tables:
         required: true
   - name: ping
     description: Health check endpoint
+    guide: |
+      Use this table for Health check endpoint. Useful as a quick auth
+      and connectivity check before you troubleshoot other StatusGator
+      tables.
     request:
       method: GET
       path: /ping

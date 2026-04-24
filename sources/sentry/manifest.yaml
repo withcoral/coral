@@ -27,6 +27,9 @@ test_queries:
 tables:
   - name: projects
     description: Sentry projects in the organization
+    guide: |
+      Start here to inventory projects. Use `id`, `slug` values from
+      here in related tables and drill-down queries.
     request:
       method: GET
       path: /api/0/organizations/{{input.SENTRY_ORG}}/projects/
@@ -86,6 +89,9 @@ tables:
             - dateCreated
   - name: issues
     description: Sentry issues across projects
+    guide: |
+      Start here to inventory issues. Use `id` values from here in
+      related tables and drill-down queries.
     request:
       method: GET
       path: /api/0/organizations/{{input.SENTRY_ORG}}/issues/
@@ -180,6 +186,11 @@ tables:
       - name: project
   - name: events
     description: Individual events for a specific issue
+    guide: |
+      Use this table for Individual events for a specific issue.
+      Requires `issue_id` from `sentry.issues`. Best used after
+      inventory tables identify the entity or time range you want to
+      investigate.
     request:
       method: GET
       path: /api/0/organizations/{{input.SENTRY_ORG}}/issues/{{filter.issue_id}}/events/
@@ -277,6 +288,9 @@ tables:
         required: true
   - name: issue_tags
     description: Tags for a specific issue
+    guide: |
+      Use this table for Tags for a specific issue. Requires `issue_id`
+      from `sentry.issues`.
     request:
       method: GET
       path: /api/0/issues/{{filter.issue_id}}/tags/
@@ -324,6 +338,9 @@ tables:
         required: true
   - name: issue_participants
     description: Participants for a specific issue
+    guide: |
+      Use this table for Participants for a specific issue. Requires
+      `issue_id` from `sentry.issues`.
     request:
       method: GET
       path: /api/0/issues/{{filter.issue_id}}/participants/
@@ -387,6 +404,9 @@ tables:
         required: true
   - name: teams
     description: Teams in the organization
+    guide: |
+      Start here to inventory teams. Use `id`, `slug` values from here
+      in related tables and drill-down queries.
     request:
       method: GET
       path: /api/0/organizations/{{input.SENTRY_ORG}}/teams/
@@ -454,6 +474,9 @@ tables:
             - hasAccess
   - name: members
     description: Organization members
+    guide: |
+      Start here to inventory members. Use `id` values from here in
+      related tables and drill-down queries.
     request:
       method: GET
       path: /api/0/organizations/{{input.SENTRY_ORG}}/members/
@@ -541,6 +564,9 @@ tables:
             - inviteStatus
   - name: releases
     description: Organization releases
+    guide: |
+      Start here to inventory releases. Use `version` values from here
+      in related tables and drill-down queries.
     request:
       method: GET
       path: /api/0/organizations/{{input.SENTRY_ORG}}/releases/
@@ -624,6 +650,10 @@ tables:
             - lastEvent
   - name: deployments
     description: Deployments for a release version
+    guide: |
+      Use this table for Deployments for a release version. Requires
+      `version` from `sentry.releases`. Use it after inventory tables
+      identify the entities worth investigating in detail.
     request:
       method: GET
       path: /api/0/organizations/{{input.SENTRY_ORG}}/releases/{{filter.version}}/deploys/
@@ -693,6 +723,9 @@ tables:
         required: true
   - name: release_files
     description: Files for a release version
+    guide: |
+      Use this table for Files for a release version. Requires `version`
+      from `sentry.releases`.
     request:
       method: GET
       path: /api/0/organizations/{{input.SENTRY_ORG}}/releases/{{filter.version}}/files/
@@ -743,6 +776,11 @@ tables:
         required: true
   - name: project_events
     description: Recent events for a specific project
+    guide: |
+      Use this table for Recent events for a specific project. Use
+      `project` with a slug from `sentry.projects` to scope results to
+      one project. Best used after inventory tables identify the entity
+      or time range you want to investigate.
     request:
       method: GET
       path: /api/0/projects/{{input.SENTRY_ORG}}/{{filter.project}}/events/
@@ -844,6 +882,10 @@ tables:
         required: true
   - name: discover
     description: Sentry discover query interface
+    guide: |
+      Use this table for Sentry discover query interface. Keep time
+      filters tight so the endpoint stays fast and the results stay
+      interpretable.
     fetch_limit_default: 1000
     request:
       method: GET

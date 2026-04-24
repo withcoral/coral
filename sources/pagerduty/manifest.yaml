@@ -26,6 +26,8 @@ test_queries:
 tables:
   - name: abilities
     description: List abilities
+    guide: |
+      Use this table to list abilities.
     request:
       method: GET
       path: /abilities
@@ -50,6 +52,10 @@ tables:
             - abilities
   - name: active
     description: Get the Service Orchestration active status for a Service
+    guide: |
+      Use this table to get the Service Orchestration active status for
+      a Service. Requires `service_id`, usually from
+      `pagerduty.services`.
     filters:
       - name: service_id
         required: true
@@ -85,6 +91,9 @@ tables:
           key: service_id
   - name: addons
     description: List installed Add-ons
+    guide: |
+      Use this table to list installed Add-ons. Pass `id` to hit the
+      single-record endpoint when you need details for one row.
     filters:
       - name: total
         required: false
@@ -296,6 +305,9 @@ tables:
             - type
   - name: alert_grouping_settings
     description: List alert grouping settings
+    guide: |
+      Use this table to list alert grouping settings. Pass `id` to hit
+      the single-record endpoint when you need details for one row.
     filters:
       - name: total
         required: false
@@ -674,6 +686,11 @@ tables:
             - updated_at
   - name: analytic_raw_incidents
     description: Get raw data - single incident
+    guide: |
+      Use this table to get raw data - single incident. Pass `id` to hit
+      the single-record endpoint when you need details for one row. Use
+      it after inventory tables identify the entities worth
+      investigating in detail.
     filters:
       - name: id
         required: true
@@ -1150,6 +1167,10 @@ tables:
             - user_defined_effort_seconds
   - name: automation_action_action_services
     description: Get all service references associated with an Automation Action
+    guide: |
+      Use this table to list service references for an Automation
+      Action. Requires `id` for the parent automation action; add
+      `service_id` when you want one specific referenced service.
     filters:
       - name: id
         required: true
@@ -1289,6 +1310,9 @@ tables:
             - type
   - name: automation_action_actions
     description: List Automation Actions
+    guide: |
+      Use this table to list Automation Actions. Pass `id` to hit the
+      single-record endpoint when you need details for one row.
     filters:
       - name: name
         required: false
@@ -2013,6 +2037,10 @@ tables:
             - type
   - name: business_service_subscribers
     description: List Business Service Subscribers
+    guide: |
+      Use this table to list Business Service Subscribers. Requires
+      `id` from `pagerduty.business_services` to choose the parent
+      business service.
     filters:
       - name: id
         required: true
@@ -2092,6 +2120,10 @@ tables:
             - total
   - name: business_service_supporting_service_impacts
     description: List the supporting Business Services for the given Business Service Id, sorted by impacted status.
+    guide: |
+      Use this table to list the supporting Business Services for the
+      given Business Service Id, sorted by impacted status. Pass `id` to
+      hit the single-record endpoint when you need details for one row.
     filters:
       - name: id
         required: true
@@ -2215,6 +2247,9 @@ tables:
             - type
   - name: business_services
     description: List Business Services
+    guide: |
+      Start here to inventory business services. Pass `id` to hit the
+      single-record endpoint when you need details for one row.
     filters:
       - name: total
         required: false
@@ -2508,6 +2543,10 @@ tables:
       List Cache Variables for a Service Event Orchestration. Cache Variables allow you to store event data on an Event Orchestration, which can then
       be used in Event Orchestration rules as part of conditions or actions. For more information see the [API Concepts
       Document](../../api-reference/a47605517c19a-api-concepts#event-orchestrations) Scoped OAuth requires: `services.read`
+    guide: |
+      Use this table to inspect cache variables. Requires `service_id`,
+      usually from `pagerduty.services`. Pass `id` to hit the single-
+      record endpoint when you need details for one row.
     filters:
       - name: service_id
         required: true
@@ -2959,6 +2998,9 @@ tables:
             - type
   - name: change_events
     description: List Change Events
+    guide: |
+      Use this table to list Change Events. Pass `id` to hit the single-
+      record endpoint when you need details for one row.
     filters:
       - name: total
         required: false
@@ -3408,6 +3450,9 @@ tables:
             - type
   - name: contact_methods
     description: List a user's contact methods
+    guide: |
+      Use this table to list a user's contact methods. Pass `id` to hit
+      the single-record endpoint when you need details for one row.
     filters:
       - name: id
         required: true
@@ -3716,6 +3761,8 @@ tables:
             - type
   - name: counts
     description: Get Paused Incident Reporting counts
+    guide: |
+      Use this table to get Paused Incident Reporting counts.
     filters:
       - name: service_id
         required: false
@@ -3819,6 +3866,9 @@ tables:
           key: suspended_by
   - name: custom_shifts
     description: List custom shifts
+    guide: |
+      Use this table to list custom shifts. Pass `id` to hit the single-
+      record endpoint when you need details for one row.
     filters:
       - name: id
         required: true
@@ -4025,6 +4075,11 @@ tables:
             - type
   - name: data
     description: Get Data for an External Data Cache Variable on a Global Event Orchestration
+    guide: |
+      Use this table to get Data for an External Data Cache Variable on
+      a Global Event Orchestration. Pass `id` to hit the single-record
+      endpoint when you need details for one row. Requires
+      `cache_variable_id` from `pagerduty.cache_variables`.
     filters:
       - name: id
         required: true
@@ -4095,6 +4150,9 @@ tables:
           key: service_id
   - name: enablements
     description: List Enablements for an Event Orchestration
+    guide: |
+      Use this table to list enablements for an Event Orchestration.
+      Requires `id` for the parent event orchestration.
     filters:
       - name: id
         required: true
@@ -4164,6 +4222,9 @@ tables:
             - warnings
   - name: escalation_policies
     description: List escalation policies
+    guide: |
+      Start here to inventory escalation policies. Pass `id` to hit the
+      single-record endpoint when you need details for one row.
     filters:
       - name: total
         required: false
@@ -4499,6 +4560,10 @@ tables:
           key: user_ids[]
   - name: event_orchestration_integrations
     description: List Integrations for an Event Orchestration
+    guide: |
+      Use this table to list integrations for an Event Orchestration.
+      Requires `id` for the parent event orchestration; add
+      `integration_id` when you want one specific integration.
     filters:
       - name: id
         required: true
@@ -4638,6 +4703,9 @@ tables:
             - type
   - name: event_orchestration_services
     description: Get the Service Orchestration for a Service
+    guide: |
+      Use this table to get the Service Orchestration for a Service.
+      Requires `service_id`, usually from `pagerduty.services`.
     filters:
       - name: service_id
         required: true
@@ -4846,6 +4914,9 @@ tables:
           key: service_id
   - name: event_orchestrations
     description: List Event Orchestrations
+    guide: |
+      Use this table to list Event Orchestrations. Pass `id` to hit the
+      single-record endpoint when you need details for one row.
     filters:
       - name: sort_by
         required: false
@@ -5300,6 +5371,10 @@ tables:
             - version
   - name: events
     description: List events
+    guide: |
+      Use this table to list events. Pass `id` to hit the single-record
+      endpoint when you need details for one row. Requires `rotation_id`
+      from `pagerduty.rotations`.
     filters:
       - name: id
         required: true
@@ -5793,6 +5868,9 @@ tables:
             - type
   - name: extension_schemas
     description: List extension schemas
+    guide: |
+      Use this table to list extension schemas. Pass `id` to hit the
+      single-record endpoint when you need details for one row.
     filters:
       - name: total
         required: false
@@ -6003,6 +6081,9 @@ tables:
             - url
   - name: extensions
     description: List extensions
+    guide: |
+      Use this table to list extensions. Pass `id` to hit the single-
+      record endpoint when you need details for one row.
     filters:
       - name: total
         required: false
@@ -6408,6 +6489,9 @@ tables:
             - type
   - name: field_options
     description: List Field Options
+    guide: |
+      Use this table to list Field Options. Requires `field_id` from the
+      relevant custom-field catalog table.
     filters:
       - name: field_id
         required: true
@@ -6524,6 +6608,8 @@ tables:
           key: field_option_id
   - name: fields
     description: List template fields
+    guide: |
+      Use this table to list template fields.
     request:
       method: GET
       path: /templates/fields
@@ -6633,6 +6719,9 @@ tables:
       evaluate against all Events sent to an Event Orchestration. When a matching rule is found, it can modify and enhance the event and can route the
       event to another set of Global Rules within this Orchestration for further processing. For more information see the [API Concepts
       Document](../../api-reference/a47605517c19a-api-concepts#event-orchestrations) Scoped OAuth requires: `event_orchestrations.read`
+    guide: |
+      Use this table to inspect global. Pass `id` to hit the single-
+      record endpoint when you need details for one row.
     filters:
       - name: id
         required: true
@@ -6667,6 +6756,8 @@ tables:
             - orchestration_path
   - name: impactors
     description: List Impactors affecting Business Services
+    guide: |
+      Use this table to list Impactors affecting Business Services.
     filters:
       - name: ids[]
         required: false
@@ -6724,6 +6815,10 @@ tables:
             - more
   - name: impacts
     description: List Business Services sorted by impacted status
+    guide: |
+      Use this table to list Business Services sorted by impacted
+      status. Pass `id` to hit the single-record endpoint when you need
+      details for one row.
     filters:
       - name: additional_fields[]
         required: false
@@ -6852,6 +6947,11 @@ tables:
             - type
   - name: incident_alerts
     description: List alerts for an incident
+    guide: |
+      Use this table to list alerts for an incident. Pass `id` to hit
+      the single-record endpoint when you need details for one row. Use
+      it after inventory tables identify the entities worth
+      investigating in detail.
     filters:
       - name: total
         required: false
@@ -7711,6 +7811,9 @@ tables:
             - type
   - name: incident_custom_field_values
     description: Get Custom Field Values
+    guide: |
+      Use this table to get Custom Field Values. Pass `id` to hit the
+      single-record endpoint when you need details for one row.
     filters:
       - name: id
         required: true
@@ -7813,6 +7916,8 @@ tables:
             - value
   - name: incident_custom_fields
     description: List Fields
+    guide: |
+      Use this table to list Fields.
     filters:
       - name: field_id
         required: false
@@ -8124,6 +8229,9 @@ tables:
             - updated_at
   - name: incident_status_update_subscribers
     description: List Notification Subscribers
+    guide: |
+      Use this table to list Notification Subscribers. Pass `id` to hit
+      the single-record endpoint when you need details for one row.
     filters:
       - name: id
         required: true
@@ -8187,6 +8295,10 @@ tables:
             - subscriber_type
   - name: incident_type_custom_fields
     description: List Incident Type Custom Fields
+    guide: |
+      Use this table to list Incident Type Custom Fields. Use
+      `type_id_or_name` to scope this endpoint to the records you
+      actually want.
     filters:
       - name: type_id_or_name
         required: true
@@ -8551,6 +8663,9 @@ tables:
             - updated_at
   - name: incident_workflow_actions
     description: List Actions
+    guide: |
+      Use this table to list Actions. Pass `id` to hit the single-record
+      endpoint when you need details for one row.
     filters:
       - name: keyword
         required: false
@@ -8997,6 +9112,9 @@ tables:
             - version
   - name: incident_workflows
     description: List Incident Workflows
+    guide: |
+      Use this table to list Incident Workflows. Pass `id` to hit the
+      single-record endpoint when you need details for one row.
     filters:
       - name: total
         required: false
@@ -9315,6 +9433,9 @@ tables:
             - type
   - name: incidents
     description: List incidents
+    guide: |
+      Start here to inventory incidents. Pass `id` to hit the single-
+      record endpoint when you need details for one row.
     filters:
       - name: total
         required: false
@@ -13442,6 +13563,9 @@ tables:
           key: user_ids[]
   - name: invocations
     description: List Invocations
+    guide: |
+      Use this table to list Invocations. Pass `id` to hit the single-
+      record endpoint when you need details for one row.
     filters:
       - name: invocation_state
         required: false
@@ -14024,6 +14148,10 @@ tables:
             - type
   - name: license
     description: Get the License allocated to a User
+    guide: |
+      Use this table to get the License allocated to a User. Pass `id`
+      to hit the single-record endpoint when you need details for one
+      row.
     filters:
       - name: id
         required: true
@@ -14151,6 +14279,8 @@ tables:
             - valid_roles
   - name: license_allocations
     description: List License Allocations
+    guide: |
+      Use this table to list License Allocations.
     request:
       method: GET
       path: /license_allocations
@@ -14336,6 +14466,9 @@ tables:
             - type
   - name: licenses
     description: List Licenses
+    guide: |
+      Start here to inventory licenses. Use `id` values from here in
+      related tables and drill-down queries.
     request:
       method: GET
       path: /licenses
@@ -14457,6 +14590,9 @@ tables:
             - valid_roles
   - name: list_overrides
     description: List overrides
+    guide: |
+      Use this table to list overrides. Pass `id` to hit the single-
+      record endpoint when you need details for one row.
     filters:
       - name: id
         required: true
@@ -14833,6 +14969,9 @@ tables:
             - type
   - name: list_schedules_v3
     description: List schedules
+    guide: |
+      Use this table to list schedules. Pass `id` to hit the single-
+      record endpoint when you need details for one row.
     filters:
       - name: id
         required: false
@@ -15118,6 +15257,9 @@ tables:
             - type
   - name: list_teams
     description: List teams
+    guide: |
+      Use this table to list teams. Pass `id` to hit the single-record
+      endpoint when you need details for one row.
     filters:
       - name: total
         required: false
@@ -15339,6 +15481,9 @@ tables:
             - type
   - name: log_entries
     description: List log entries
+    guide: |
+      Use this table to list log entries. Pass `id` to hit the single-
+      record endpoint when you need details for one row.
     filters:
       - name: total
         required: false
@@ -16601,6 +16746,9 @@ tables:
             - type
   - name: maintenance_windows
     description: List maintenance windows
+    guide: |
+      Use this table to list maintenance windows. Pass `id` to hit the
+      single-record endpoint when you need details for one row.
     filters:
       - name: query
         required: false
@@ -17043,6 +17191,8 @@ tables:
             - type
   - name: me
     description: Get the current user
+    guide: |
+      Use this table to get the current user.
     request:
       method: GET
       path: /users/me
@@ -17249,6 +17399,9 @@ tables:
             - type
   - name: members
     description: List members of a team
+    guide: |
+      Use this table to list members of a team. Pass `id` to hit the
+      single-record endpoint when you need details for one row.
     filters:
       - name: total
         required: false
@@ -17360,6 +17513,8 @@ tables:
             - type
   - name: memories
     description: List SRE Agent memories
+    guide: |
+      Use this table to list SRE Agent memories.
     filters:
       - name: service_id
         required: false
@@ -17503,6 +17658,9 @@ tables:
             - updated_at
   - name: notes
     description: List notes for an incident
+    guide: |
+      Use this table to list notes for an incident. Pass `id` to hit the
+      single-record endpoint when you need details for one row.
     filters:
       - name: id
         required: true
@@ -17675,6 +17833,9 @@ tables:
             - type
   - name: notification_rules
     description: List a user's notification rules
+    guide: |
+      Use this table to list a user's notification rules. Pass `id` to
+      hit the single-record endpoint when you need details for one row.
     filters:
       - name: id
         required: true
@@ -17983,6 +18144,10 @@ tables:
             - urgency
   - name: notification_subscriptions
     description: List Team Notification Subscriptions
+    guide: |
+      Use this table to list Team Notification Subscriptions. Pass `id`
+      to hit the single-record endpoint when you need details for one
+      row.
     filters:
       - name: id
         required: true
@@ -18058,6 +18223,8 @@ tables:
             - total
   - name: notifications
     description: List notifications
+    guide: |
+      Use this table to list notifications.
     filters:
       - name: total
         required: false
@@ -18229,6 +18396,9 @@ tables:
             - type
   - name: oauth_clients
     description: List OAuth clients
+    guide: |
+      Use this table to list OAuth clients. Pass `id` to hit the single-
+      record endpoint when you need details for one row.
     filters:
       - name: id
         required: false
@@ -18414,6 +18584,9 @@ tables:
             - type
   - name: oauth_delegations
     description: List a user's delegations
+    guide: |
+      Use this table to list a user's delegations. Pass `id` to hit the
+      single-record endpoint when you need details for one row.
     filters:
       - name: id
         required: true
@@ -18533,6 +18706,10 @@ tables:
             - status
   - name: oncall_handoff_notification_rules
     description: List a User's Handoff Notification Rules
+    guide: |
+      Use this table to list a User's Handoff Notification Rules. Pass
+      `id` to hit the single-record endpoint when you need details for
+      one row.
     filters:
       - name: id
         required: true
@@ -18759,6 +18936,8 @@ tables:
           key: oncall_handoff_notification_rule_id
   - name: oncalls
     description: List all of the on-calls
+    guide: |
+      Use this table to list all of the on-calls.
     filters:
       - name: time_zone
         required: false
@@ -19063,6 +19242,9 @@ tables:
           key: user_ids[]
   - name: outlier_incident
     description: Get Outlier Incident
+    guide: |
+      Use this table to get Outlier Incident. Pass `id` to hit the
+      single-record endpoint when you need details for one row.
     filters:
       - name: id
         required: true
@@ -19548,6 +19730,11 @@ tables:
             - mined_text
   - name: past_incidents
     description: Get Past Incidents
+    guide: |
+      Use this table to get Past Incidents. Pass `id` to hit the single-
+      record endpoint when you need details for one row. Use it after
+      inventory tables identify the entities worth investigating in
+      detail.
     filters:
       - name: id
         required: true
@@ -19607,6 +19794,10 @@ tables:
             - total
   - name: paused_incident_report_alerts
     description: Get Paused Incident Reporting on Alerts
+    guide: |
+      Use this table to get Paused Incident Reporting on Alerts. Use it
+      after inventory tables identify the entities worth investigating
+      in detail.
     filters:
       - name: service_id
         required: false
@@ -19700,6 +19891,11 @@ tables:
           key: suspended_by
   - name: post_updates
     description: List Status Page Post Updates
+    guide: |
+      Use this table to list Status Page Post Updates. Pass `id` to hit
+      the single-record endpoint when you need details for one row.
+      Requires `post_id`; fetch candidate values from `pagerduty.posts`
+      when available.
     filters:
       - name: id
         required: true
@@ -20116,6 +20312,11 @@ tables:
             - update_frequency_ms
   - name: postmortem
     description: Get a Post Postmortem
+    guide: |
+      Use this table to get a Post Postmortem. Pass `id` to hit the
+      single-record endpoint when you need details for one row. Requires
+      `post_id`; fetch candidate values from `pagerduty.posts` when
+      available.
     filters:
       - name: id
         required: true
@@ -20253,6 +20454,9 @@ tables:
             - type
   - name: posts
     description: List Status Page Posts
+    guide: |
+      Use this table to list Status Page Posts. Pass `id` to hit the
+      single-record endpoint when you need details for one row.
     filters:
       - name: id
         required: true
@@ -20665,6 +20869,9 @@ tables:
             - updates
   - name: priorities
     description: List priorities
+    guide: |
+      Start here to inventory priorities. Use `id` values from here in
+      related tables and drill-down queries.
     filters:
       - name: total
         required: false
@@ -20766,6 +20973,9 @@ tables:
             - type
   - name: priority_thresholds
     description: Get the global priority threshold for a Business Service to be considered impacted by an Incident
+    guide: |
+      Use this table to get the global priority threshold for a Business
+      Service to be considered impacted by an Incident.
     request:
       method: GET
       path: /business_services/priority_thresholds
@@ -20807,6 +21017,9 @@ tables:
             - order
   - name: records
     description: List audit records
+    guide: |
+      Use this table to list audit records. Pass `id` to hit the single-
+      record endpoint when you need details for one row.
     filters:
       - name: root_resource_types[]
         required: false
@@ -21221,6 +21434,11 @@ tables:
       feature provides incident responders with recent change events that are most relevant to that incident. Change Correlation informs the responder
       why a particular change event was surfaced and correlated to an incident based on three key factors which include time, related service, or
       intelligence (machine learning). Scoped OAuth requires: `incidents.read`
+    guide: |
+      Use this table to inspect related change events. Pass `id` to hit
+      the single-record endpoint when you need details for one row. Best
+      used after inventory tables identify the entity or time range you
+      want to investigate.
     filters:
       - name: id
         required: true
@@ -21427,6 +21645,11 @@ tables:
             - type
   - name: related_incidents
     description: Get Related Incidents
+    guide: |
+      Use this table to get Related Incidents. Pass `id` to hit the
+      single-record endpoint when you need details for one row. Use it
+      after inventory tables identify the entities worth investigating
+      in detail.
     filters:
       - name: id
         required: true
@@ -21477,6 +21700,10 @@ tables:
             - related_incidents
   - name: responses
     description: Get raw responses from a single incident
+    guide: |
+      Use this table to get raw responses from a single incident. Pass
+      `id` to hit the single-record endpoint when you need details for
+      one row.
     filters:
       - name: id
         required: true
@@ -21571,6 +21798,9 @@ tables:
             - time_to_respond_seconds
   - name: rotations
     description: List rotations
+    guide: |
+      Use this table to list rotations. Pass `id` to hit the single-
+      record endpoint when you need details for one row.
     filters:
       - name: id
         required: true
@@ -21722,6 +21952,10 @@ tables:
             - type
   - name: router
     description: Get the Router for an Event Orchestration
+    guide: |
+      Use this table to get the Router for an Event Orchestration. Pass
+      `id` to hit the single-record endpoint when you need details for
+      one row.
     filters:
       - name: id
         required: true
@@ -21756,6 +21990,9 @@ tables:
             - orchestration_path
   - name: ruleset_rules
     description: List Event Rules
+    guide: |
+      Use this table to list Event Rules. Pass `id` to hit the single-
+      record endpoint when you need details for one row.
     filters:
       - name: total
         required: false
@@ -22436,6 +22673,9 @@ tables:
             - variables
   - name: rulesets
     description: List Rulesets
+    guide: |
+      Use this table to list Rulesets. Pass `id` to hit the single-
+      record endpoint when you need details for one row.
     filters:
       - name: total
         required: false
@@ -22863,6 +23103,9 @@ tables:
             - type
   - name: runners
     description: List Automation Action runners
+    guide: |
+      Use this table to list Automation Action runners. Pass `id` to hit
+      the single-record endpoint when you need details for one row.
     filters:
       - name: name
         required: false
@@ -23263,6 +23506,9 @@ tables:
             - type
   - name: schedules
     description: List schedules
+    guide: |
+      Start here to inventory schedules. Pass `id` to hit the single-
+      record endpoint when you need details for one row.
     filters:
       - name: total
         required: false
@@ -23904,6 +24150,9 @@ tables:
             - users
   - name: service_custom_field_field_options
     description: List Field Options
+    guide: |
+      Use this table to list Field Options. Requires `field_id` from the
+      relevant custom-field catalog table.
     filters:
       - name: field_id
         required: true
@@ -24087,6 +24336,9 @@ tables:
             - updated_at
   - name: service_custom_field_values
     description: Get Custom Field Values
+    guide: |
+      Use this table to get Custom Field Values. Pass `id` to hit the
+      single-record endpoint when you need details for one row.
     filters:
       - name: id
         required: true
@@ -24189,6 +24441,8 @@ tables:
             - value
   - name: service_custom_fields
     description: List Fields
+    guide: |
+      Use this table to list Fields.
     filters:
       - name: field_id
         required: false
@@ -24489,6 +24743,9 @@ tables:
             - updated_at
   - name: service_dependency_business_services
     description: Get Business Service dependencies
+    guide: |
+      Use this table to get Business Service dependencies. Pass `id` to
+      hit the single-record endpoint when you need details for one row.
     filters:
       - name: id
         required: true
@@ -24588,6 +24845,10 @@ tables:
       by Impact, secondarily by most recently impacted, and finally by name. To get Impact information about a specific Business Service on the Status
       Dashboard that does not appear in the Impact-sorted response, use the `ids[]` parameter on the `/business_services/impacts` endpoint. Scoped
       OAuth requires: `status_dashboards.read`
+    guide: |
+      Use this table to inspect service impacts. Requires `url_slug`
+      from the related status page configuration. Pass `id` to hit the
+      single-record endpoint when you need details for one row.
     filters:
       - name: url_slug
         required: true
@@ -24717,6 +24978,10 @@ tables:
           key: url_slug
   - name: service_integrations
     description: View an integration
+    guide: |
+      Use this table for View an integration. Pass `id` to hit the
+      single-record endpoint when you need details for one row. Requires
+      `integration_id` from the matching integration table.
     filters:
       - name: id
         required: true
@@ -25019,6 +25284,9 @@ tables:
           key: integration_id
   - name: service_rules
     description: List Service's Event Rules
+    guide: |
+      Use this table to list Service's Event Rules. Pass `id` to hit the
+      single-record endpoint when you need details for one row.
     filters:
       - name: total
         required: false
@@ -25642,6 +25910,9 @@ tables:
             - variables
   - name: services
     description: List services
+    guide: |
+      Start here to inventory services. Pass `id` to hit the single-
+      record endpoint when you need details for one row.
     filters:
       - name: query
         required: false
@@ -26885,6 +27156,8 @@ tables:
             - type
   - name: session_configurations
     description: Get an account's session configurations
+    guide: |
+      Use this table to get an account's session configurations.
     filters:
       - name: type
         required: false
@@ -26936,6 +27209,10 @@ tables:
             - type
   - name: severities
     description: List Status Page Severities
+    guide: |
+      Start here to inventory severities. Pass `id` to hit the single-
+      record endpoint when you need details for one row. Use `id` values
+      from here in related tables and drill-down queries.
     filters:
       - name: id
         required: true
@@ -27143,6 +27420,11 @@ tables:
             - type
   - name: standard_scores
     description: List resources' standards scores
+    guide: |
+      Use this table to list resources' standards scores. Use `ids` to
+      scope this endpoint to the records you actually want. Use
+      `resource_type` to scope this endpoint to the records you actually
+      want.
     filters:
       - name: ids
         required: true
@@ -27227,6 +27509,8 @@ tables:
             - standards
   - name: standards
     description: List Standards
+    guide: |
+      Use this table to list Standards.
     filters:
       - name: active
         required: false
@@ -27320,6 +27604,11 @@ tables:
             - type
   - name: standards_score
     description: List a resource's standards scores
+    guide: |
+      Use this table to list a resource's standards scores. Pass `id` to
+      hit the single-record endpoint when you need details for one row.
+      Use `resource_type` to scope this endpoint to the records you
+      actually want.
     filters:
       - name: id
         required: true
@@ -27397,6 +27686,9 @@ tables:
             - type
   - name: status_dashboards
     description: List Status Dashboards
+    guide: |
+      Start here to inventory status dashboards. Pass `id` to hit the
+      single-record endpoint when you need details for one row.
     filters:
       - name: id
         required: false
@@ -27481,6 +27773,9 @@ tables:
             - url_slug
   - name: status_page_impacts
     description: List Status Page Impacts
+    guide: |
+      Use this table to list Status Page Impacts. Pass `id` to hit the
+      single-record endpoint when you need details for one row.
     filters:
       - name: id
         required: true
@@ -27688,6 +27983,9 @@ tables:
             - type
   - name: status_page_services
     description: List Status Page Services
+    guide: |
+      Use this table to list Status Page Services. Pass `id` to hit the
+      single-record endpoint when you need details for one row.
     filters:
       - name: id
         required: true
@@ -27889,6 +28187,9 @@ tables:
             - type
   - name: status_pages
     description: List Status Pages
+    guide: |
+      Start here to inventory status pages. Use `id` values from here in
+      related tables and drill-down queries.
     filters:
       - name: status_page_type
         required: false
@@ -27971,6 +28272,11 @@ tables:
             - url
   - name: status_update_notification_rules
     description: List a user's status update notification rules.
+    guide: |
+      Use this table to list a user's status update notification rules.
+      Requires `id` from `pagerduty.users`; add
+      `status_update_notification_rule_id` when you want one specific
+      rule.
     filters:
       - name: id
         required: true
@@ -28097,6 +28403,9 @@ tables:
             - status_update_notification_rules
   - name: statuses
     description: List Status Page Statuses
+    guide: |
+      Use this table to list Status Page Statuses. Pass `id` to hit the
+      single-record endpoint when you need details for one row.
     filters:
       - name: id
         required: true
@@ -28304,6 +28613,9 @@ tables:
             - type
   - name: subscriptions
     description: List Status Page Subscriptions
+    guide: |
+      Use this table to list Status Page Subscriptions. Pass `id` to hit
+      the single-record endpoint when you need details for one row.
     filters:
       - name: id
         required: true
@@ -28596,6 +28908,11 @@ tables:
             - type
   - name: tag
     description: Get connected entities
+    guide: |
+      Use this table to get connected entities. Pass `id` to hit the
+      single-record endpoint when you need details for one row. Use
+      `entity_type` to scope this endpoint to the records you actually
+      want.
     filters:
       - name: total
         required: false
@@ -28698,6 +29015,9 @@ tables:
             - users
   - name: tags
     description: List tags
+    guide: |
+      Start here to inventory tags. Pass `id` to hit the single-record
+      endpoint when you need details for one row.
     filters:
       - name: total
         required: false
@@ -28896,6 +29216,10 @@ tables:
           key: entity_type
   - name: teams
     description: Get all team references associated with an Automation Action
+    guide: |
+      Start here to inventory teams. Pass `id` to hit the single-record
+      endpoint when you need details for one row. Use `id` values from
+      here in related tables and drill-down queries.
     filters:
       - name: id
         required: true
@@ -29039,6 +29363,10 @@ tables:
             - type
   - name: technical_services
     description: Get technical service dependencies
+    guide: |
+      Start here to inventory technical services. Pass `id` to hit the
+      single-record endpoint when you need details for one row. Use `id`
+      values from here in related tables and drill-down queries.
     filters:
       - name: id
         required: true
@@ -29133,6 +29461,9 @@ tables:
             - type
   - name: templates
     description: List templates
+    guide: |
+      Use this table to list templates. Pass `id` to hit the single-
+      record endpoint when you need details for one row.
     filters:
       - name: total
         required: false
@@ -29697,6 +30028,9 @@ tables:
             - type
   - name: triggers
     description: List Triggers
+    guide: |
+      Use this table to list Triggers. Pass `id` to hit the single-
+      record endpoint when you need details for one row.
     filters:
       - name: workflow_id
         required: false
@@ -30265,6 +30599,8 @@ tables:
           key: workflow_name_contains
   - name: types
     description: List incident types
+    guide: |
+      Use this table to list incident types.
     filters:
       - name: filter
         required: false
@@ -30539,6 +30875,9 @@ tables:
             - updated_at
   - name: unrouted
     description: Get the Unrouted Orchestration for an Event Orchestration
+    guide: |
+      Use this table to inspect the unrouted orchestration for an Event
+      Orchestration. Requires `id` for the parent event orchestration.
     filters:
       - name: id
         required: true
@@ -30573,6 +30912,9 @@ tables:
             - orchestration_path
   - name: url_slugs
     description: Get a single Status Dashboard by `url_slug`
+    guide: |
+      Use this table to get a single Status Dashboard by `url_slug`.
+      Requires `url_slug` from the related status page configuration.
     filters:
       - name: url_slug
         required: true
@@ -30634,6 +30976,10 @@ tables:
           key: url_slug
   - name: user_session
     description: Get a user's session
+    guide: |
+      Use this table to get a user's session. Pass `id` to hit the
+      single-record endpoint when you need details for one row. Use
+      `type` to scope this endpoint to the records you actually want.
     filters:
       - name: id
         required: true
@@ -30736,6 +31082,9 @@ tables:
             - user_id
   - name: user_sessions
     description: List a user's active sessions
+    guide: |
+      Use this table to list a user's active sessions. Pass `id` to hit
+      the single-record endpoint when you need details for one row.
     filters:
       - name: id
         required: true
@@ -30799,6 +31148,9 @@ tables:
             - user_id
   - name: users
     description: List users
+    guide: |
+      Start here to inventory users. Pass `id` to hit the single-record
+      endpoint when you need details for one row.
     filters:
       - name: query
         required: false
@@ -31229,6 +31581,9 @@ tables:
             - type
   - name: vendors
     description: List vendors
+    guide: |
+      Start here to inventory vendors. Pass `id` to hit the single-
+      record endpoint when you need details for one row.
     filters:
       - name: total
         required: false
@@ -31373,6 +31728,9 @@ tables:
             - website_url
   - name: webhook_subscriptions
     description: List webhook subscriptions
+    guide: |
+      Use this table to list webhook subscriptions. Pass `id` to hit the
+      single-record endpoint when you need details for one row.
     filters:
       - name: total
         required: false
@@ -31836,6 +32194,8 @@ tables:
             - type
   - name: workflow_integration_connections
     description: 'List all Workflow Integration Connections. Scoped OAuth requires: `workflow_integrations:connections.read`'
+    guide: |
+      Use this table to inspect workflow integration connections.
     filters:
       - name: name
         required: false
@@ -32061,6 +32421,9 @@ tables:
             - type
   - name: workflow_integrations
     description: List Workflow Integrations
+    guide: |
+      Use this table to list Workflow Integrations. Pass `id` to hit the
+      single-record endpoint when you need details for one row.
     filters:
       - name: include_deprecated
         required: false
@@ -32273,6 +32636,10 @@ tables:
             - type
   - name: workflows_integration_connections
     description: List Workflow Integration Connections
+    guide: |
+      Use this table to list Workflow Integration Connections. Requires
+      `integration_id` from the matching integration table. Pass `id` to
+      hit the single-record endpoint when you need details for one row.
     filters:
       - name: integration_id
         required: true

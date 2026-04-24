@@ -31,6 +31,9 @@ test_queries:
 tables:
   - name: channels
     description: Slack channels with topic, purpose, and member count
+    guide: |
+      Start here to inventory channels. Use `id` values from here in
+      related tables and drill-down queries.
     request:
       method: GET
       path: /api/conversations.list
@@ -116,6 +119,11 @@ tables:
             - created
   - name: messages
     description: Messages in a Slack channel (requires channel filter)
+    guide: |
+      Use this table for Messages in a Slack channel (requires channel
+      filter). Requires `channel` from `slack.channels`. Keep time
+      filters tight so the endpoint stays fast and the results stay
+      interpretable.
     request:
       method: GET
       path: /api/conversations.history
@@ -242,6 +250,9 @@ tables:
       - name: latest
   - name: users
     description: Slack workspace users with profile info (email requires users:read.email scope)
+    guide: |
+      Start here to inventory users. Use `id` values from here in
+      related tables and drill-down queries.
     request:
       method: GET
       path: /api/users.list
