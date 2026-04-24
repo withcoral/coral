@@ -164,6 +164,9 @@ pub(crate) fn source_name_arg(name: Option<&str>) -> Result<String, anyhow::Erro
             "source name must not contain '/' or '\\\\'"
         ));
     }
+    if name == "." || name == ".." {
+        return Err(anyhow::anyhow!("source name must not be '.' or '..'"));
+    }
     Ok(name.to_string())
 }
 
@@ -529,7 +532,7 @@ mod tests {
 
     use super::{
         ValidationFollowUp, ValidationSeverityMode, collect_inputs_with, finalize_input_value,
-        validation_follow_up,
+        source_name_arg, validation_follow_up,
     };
 
     #[test]
@@ -618,6 +621,15 @@ mod tests {
         assert!(message.contains("LINEAR_API_KEY"));
         assert!(message.contains("OTHER_KEY"));
         assert!(message.contains("--interactive"));
+    }
+
+    #[test]
+    fn source_name_arg_rejects_dot_segments() {
+        let error = source_name_arg(Some("..")).expect_err("dot segment should fail");
+        assert!(error.to_string().contains("must not be '.' or '..'"));
+
+        let error = source_name_arg(Some(" . ")).expect_err("dot segment should fail");
+        assert!(error.to_string().contains("must not be '.' or '..'"));
     }
 
     #[test]
