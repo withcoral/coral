@@ -30,6 +30,10 @@ test_queries:
 tables:
   - name: projects
     description: LaunchDarkly projects visible to the authenticated token
+    guide: |
+      Start here to discover `project_key` values for project-scoped tables
+      such as environments and feature flags. Tags are returned as a
+      comma-separated string.
     request:
       method: GET
       path: /api/v2/projects
@@ -88,6 +92,10 @@ tables:
             - tags
   - name: environments
     description: Environments for a LaunchDarkly project
+    guide: |
+      Requires `project_key` from `launchdarkly.projects`. Use it to
+      enumerate valid environment keys before querying segments or flag
+      environments.
     request:
       method: GET
       path: /api/v2/projects/{{filter.project_key}}/environments
@@ -164,6 +172,10 @@ tables:
         required: true
   - name: feature_flags
     description: Feature flags for a LaunchDarkly project
+    guide: |
+      Requires `project_key` from `launchdarkly.projects`. Join `key` to
+      `launchdarkly.flag_environments.flag_key` for environment-specific
+      state.
     request:
       method: GET
       path: /api/v2/flags/{{filter.project_key}}
@@ -264,6 +276,9 @@ tables:
         required: true
   - name: segments
     description: Segments for a LaunchDarkly project and environment
+    guide: |
+      Requires both `project_key` and `environment_key`. Query environments
+      first so you can fan out over valid environment keys.
     request:
       method: GET
       path: /api/v2/segments/{{filter.project_key}}/{{filter.environment_key}}
@@ -349,6 +364,10 @@ tables:
         required: true
   - name: flag_environments
     description: Environment-scoped feature flag status and targeting configuration
+    guide: |
+      Requires both `project_key` and `environment_key`. This is the best
+      table for environment-specific targeting details such as `rules`,
+      `targets`, and `enabled` state.
     request:
       method: GET
       path: /api/v2/flags/{{filter.project_key}}
@@ -524,6 +543,9 @@ tables:
         required: true
   - name: members
     description: Account members visible to the authenticated token
+    guide: |
+      Use for account membership and coarse role auditing. `pending_invite`
+      distinguishes invited users from active members.
     request:
       method: GET
       path: /api/v2/members
@@ -590,6 +612,10 @@ tables:
             - _pendingInvite
   - name: roles
     description: Custom roles
+    guide: |
+      Lookup table for custom LaunchDarkly roles. Join `key` or `name` with
+      membership exports outside Coral if you need finer-grained RBAC
+      analysis.
     request:
       method: GET
       path: /api/v2/roles
@@ -640,6 +666,10 @@ tables:
             - description
   - name: audit_log
     description: Audit log entries in a time window
+    guide: |
+      Requires constant `from` and `to` filters for a bounded time window.
+      Keep the window small (for example, under 30 days); milliseconds
+      since epoch work well for repeatable exports and incremental polling.
     request:
       method: GET
       path: /api/v2/auditlog

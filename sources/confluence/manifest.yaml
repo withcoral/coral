@@ -34,6 +34,10 @@ test_queries:
 tables:
   - name: spaces
     description: Confluence spaces visible to the authenticated user
+    guide: |
+      Use this table to discover `space_id` and `key` values before querying
+      pages or blog posts. The `labels` filter expects label names, not
+      label IDs.
     filters:
       - name: ids
         required: false
@@ -174,6 +178,10 @@ tables:
           key: labels
   - name: pages
     description: Confluence pages visible to the authenticated user
+    guide: |
+      Use `space_id` to keep scans scoped to one space. `body_format`
+      (storage or atlas_doc_format) populates the corresponding `body_*`
+      column; use `confluence.page` for single-page lookups.
     filters:
       - name: space_id
         required: false
@@ -351,6 +359,10 @@ tables:
           key: body_format
   - name: page
     description: A single Confluence page by ID
+    guide: |
+      Fetch a single page when you already know the content ID, including
+      cases where list queries are too broad. `body_format` controls which
+      `body_*` column is populated.
     filters:
       - name: id
         required: true
@@ -522,11 +534,9 @@ tables:
   - name: blog_posts
     description: Confluence blog posts visible to the authenticated user
     guide: |
-      Confluence `GET /api/v2/blogposts` supports status values
-      `current`, `deleted`, and `trashed`. Passing `status='draft'`
-      returns a 400 `INVALID_REQUEST_PARAMETER` from the API.
-      To fetch a specific draft blog post, query `confluence.blog_post`
-      by ID.
+      Supports `current`, `deleted`, and `trashed`. The list API
+      rejects `status='draft'`; use `confluence.blog_post` by ID to
+      fetch specific drafts.
     filters:
       - name: space_id
         required: false
@@ -675,6 +685,10 @@ tables:
           key: body_format
   - name: blog_post
     description: A single Confluence blog post by ID
+    guide: |
+      Use this table for a single blog post by ID, especially for drafts
+      that `confluence.blog_posts` cannot list. `body_format` controls
+      which `body_*` column is populated.
     filters:
       - name: id
         required: true
@@ -821,6 +835,10 @@ tables:
           key: body_format
   - name: page_footer_comments
     description: Footer comments on a specific Confluence page
+    guide: |
+      Requires `page_id` from `confluence.pages` or `confluence.page`. These
+      are page-level comments, not inline annotations; `body_format`
+      controls which `body_*` column is populated.
     filters:
       - name: page_id
         required: true
@@ -928,6 +946,10 @@ tables:
           key: body_format
   - name: page_inline_comments
     description: Inline comments on a specific Confluence page
+    guide: |
+      Requires `page_id` from `confluence.pages` or `confluence.page`. Use
+      `inline_marker_ref` and `inline_original_selection` to locate the
+      commented text; `body_format` controls which `body_*` column is populated.
     filters:
       - name: page_id
         required: true
@@ -1061,6 +1083,10 @@ tables:
           key: body_format
   - name: blog_post_footer_comments
     description: Footer comments on a specific Confluence blog post
+    guide: |
+      Requires `blog_post_id` from `confluence.blog_posts` or
+      `confluence.blog_post`. These are post-level comments; `body_format`
+      controls which `body_*` column is populated.
     filters:
       - name: blog_post_id
         required: true
@@ -1168,6 +1194,10 @@ tables:
           key: body_format
   - name: blog_post_inline_comments
     description: Inline comments on a specific Confluence blog post
+    guide: |
+      Requires `blog_post_id` from `confluence.blog_posts` or
+      `confluence.blog_post`. Use the inline marker columns to map each
+      comment back to the quoted blog post text.
     filters:
       - name: blog_post_id
         required: true
@@ -1301,6 +1331,10 @@ tables:
           key: body_format
   - name: page_attachments
     description: Attachments on a specific Confluence page
+    guide: |
+      Requires `page_id` from `confluence.pages` or `confluence.page`. Use
+      `confluence.attachment` with an attachment `id` when you need one
+      file's full metadata or a specific version.
     filters:
       - name: page_id
         required: true
@@ -1422,6 +1456,10 @@ tables:
             - webuiLink
   - name: blog_post_attachments
     description: Attachments on a specific Confluence blog post
+    guide: |
+      Requires `blog_post_id` from `confluence.blog_posts` or
+      `confluence.blog_post`. Use `confluence.attachment` when you need
+      one file's full metadata or a specific version.
     filters:
       - name: blog_post_id
         required: true
@@ -1543,6 +1581,10 @@ tables:
             - webuiLink
   - name: attachment
     description: A single Confluence attachment by ID
+    guide: |
+      Use attachment IDs from `page_attachments` or `blog_post_attachments`.
+      Set `version` when you need a historical attachment version instead
+      of the current one.
     filters:
       - name: id
         required: true
@@ -1716,6 +1758,10 @@ tables:
           key: version
   - name: labels
     description: Labels defined in Confluence
+    guide: |
+      Use this table to browse available labels and stable label IDs.
+      `sort` and `label_id` are useful for deterministic pagination or
+      resuming large exports.
     filters:
       - name: label_id
         required: false

@@ -34,6 +34,10 @@ test_queries:
 tables:
   - name: projects
     description: Projects visible to the authenticated Jira user
+    guide: |
+      Start here to discover `project_id` and `project_key` values for
+      project-scoped tables. `query`, `expand`, and `order_by` map directly
+      to Jira search parameters.
     filters:
       - name: query
         required: false
@@ -183,6 +187,11 @@ tables:
           key: order_by
   - name: issues
     description: Issues visible to the authenticated Jira user
+    guide: |
+      This table requires `jql`; always include `project` or `created`
+      filters to prevent timeouts and heavy scans on large Jira
+      instances. Join `project_id` or `project_key` to `jira.projects`
+      for metadata.
     filters:
       - name: jql
         required: true
@@ -403,6 +412,10 @@ tables:
           key: expand
   - name: issue_comments
     description: Comments for a specific Jira issue
+    guide: |
+      Requires `issue_id_or_key` from `jira.issues`. Use `order_by` for
+      deterministic replay and `expand` when Jira comment expansions are
+      needed.
     filters:
       - name: issue_id_or_key
         required: true
@@ -553,6 +566,9 @@ tables:
           key: expand
   - name: project_versions
     description: Versions for a specific Jira project
+    guide: |
+      Requires `project_id_or_key` from `jira.projects`. `status` is useful
+      for separating unreleased, released, and archived versions.
     filters:
       - name: project_id_or_key
         required: true
@@ -722,6 +738,10 @@ tables:
           key: status
   - name: project_components
     description: Components for a specific Jira project
+    guide: |
+      Requires `project_id_or_key` from `jira.projects`. Use this table to
+      resolve component names, leads, and assignee behavior before analyzing
+      tagged issues.
     filters:
       - name: project_id_or_key
         required: true
@@ -882,6 +902,9 @@ tables:
           key: query
   - name: myself
     description: Current authenticated Jira user
+    guide: |
+      Single-row table for the authenticated Jira user. Helpful for checking
+      account scope, locale, and time zone during setup.
     filters:
       - name: expand
         required: false
@@ -969,6 +992,10 @@ tables:
           key: expand
   - name: issue_types
     description: Issue types visible to the authenticated Jira user
+    guide: |
+      Lookup table for issue-type metadata, including hierarchy and
+      project-scoped custom types. Join `name` to
+      `jira.issues.issue_type_name`.
     request:
       method: GET
       path: /rest/api/3/issuetype
@@ -1078,6 +1105,9 @@ tables:
             - key
   - name: priorities
     description: Issue priorities configured in Jira
+    guide: |
+      Lookup table for the priority scheme configured in Jira. Join `name`
+      back to `jira.issues.priority_name`.
     request:
       method: GET
       path: /rest/api/3/priority
@@ -1134,6 +1164,10 @@ tables:
             - statusColor
   - name: project_categories
     description: Project categories configured in Jira
+    guide: |
+      Small lookup table for project grouping metadata. Join
+      `project_categories.id` to `jira.projects.category_id` or
+      `project_categories.name` to `jira.projects.category_name`.
     request:
       method: GET
       path: /rest/api/3/projectCategory
@@ -1174,6 +1208,9 @@ tables:
             - description
   - name: issue_link_types
     description: Issue link types configured in Jira
+    guide: |
+      Use `inward` and `outward` to interpret linked-issue relationships
+      from other Jira exports. This table is usually small and stable.
     request:
       method: GET
       path: /rest/api/3/issueLinkType
@@ -1224,6 +1261,9 @@ tables:
             - outward
   - name: issue_worklogs
     description: Worklogs for a specific Jira issue
+    guide: |
+      Requires `issue_id_or_key` from `jira.issues`. Use `started_after` and
+      `started_before` to keep incremental syncs small and repeatable.
     filters:
       - name: issue_id_or_key
         required: true

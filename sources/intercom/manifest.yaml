@@ -30,6 +30,9 @@ test_queries:
 tables:
   - name: contacts
     description: Contacts (users and leads) in the workspace
+    guide: |
+      Start here for person-level analysis. `role` distinguishes users from
+      leads, and `owner_id` joins to `intercom.admins`.
     request:
       method: GET
       path: /contacts
@@ -262,6 +265,10 @@ tables:
             - image_url
   - name: companies
     description: Companies in the workspace
+    guide: |
+      Use for account-level reporting such as plan, spend, and activity.
+      `company_id` is the business identifier Intercom exposes to your
+      workspace.
     request:
       method: POST
       path: /companies/list
@@ -393,6 +400,11 @@ tables:
             - last_request_at
   - name: conversations
     description: Conversations in the workspace
+    guide: |
+      Use `admin_assignee_id` and `team_assignee_id` to join conversations
+      back to `intercom.admins` and `intercom.teams`. Some workspaces may
+      get `403 api_plan_restricted`; source and statistics columns are still
+      useful for routing and SLA analysis when available.
     request:
       method: GET
       path: /conversations
@@ -665,6 +677,9 @@ tables:
             - count_assignments
   - name: admins
     description: Admins and team members in the workspace
+    guide: |
+      Join `id` to contact owners or conversation assignees. `team_ids`
+      shows the admin's team memberships.
     request:
       method: GET
       path: /admins
@@ -755,6 +770,9 @@ tables:
             - avatar
   - name: tags
     description: Tags in the workspace
+    guide: |
+      Small lookup table for tagging dimensions used elsewhere in Intercom.
+      Use it to normalize tag IDs to human-readable names.
     request:
       method: GET
       path: /tags
@@ -780,6 +798,9 @@ tables:
             - name
   - name: teams
     description: Teams in the workspace
+    guide: |
+      Use `id` for conversation assignment joins. `admin_ids` lets you map
+      team membership without an extra API call.
     request:
       method: GET
       path: /teams
@@ -814,6 +835,10 @@ tables:
           separator: ", "
   - name: segments
     description: Segments in the workspace
+    guide: |
+      Useful for saved-audience reporting and counts by person type.
+      `count` is the current segment size returned by Intercom, not a
+      historical trend.
     request:
       method: GET
       path: /segments
@@ -875,6 +900,11 @@ tables:
             - updated_at
   - name: data_attributes
     description: Data attributes for contacts, companies, and conversations
+    guide: |
+      Set `model` to `contact`, `company`, or `conversation` when you only
+      need one attribute family. Use this table to discover attribute
+      keys before querying custom fields in `intercom.contacts` or
+      `intercom.companies`.
     filters:
       - name: model
         required: false
@@ -990,6 +1020,10 @@ tables:
             - updated_at
   - name: collections
     description: Help Center collections
+    guide: |
+      Help Center collections form a hierarchy via `parent_id`. When
+      `articles.parent_type` is `collection`, cast as needed before
+      joining `articles.parent_id` back to collection IDs.
     request:
       method: GET
       path: /help_center/collections
@@ -1088,6 +1122,10 @@ tables:
             - updated_at
   - name: articles
     description: Help Center articles
+    guide: |
+      Use `parent_id` and `parent_type` to place articles under collections.
+      `author_id` maps to admin IDs; cast when joining to
+      `intercom.admins.id`.
     request:
       method: GET
       path: /articles
@@ -1194,6 +1232,10 @@ tables:
             - updated_at
   - name: ticket_types
     description: Ticket types in the workspace
+    guide: |
+      Lookup table for the ticket schema configured in the workspace. Use
+      `category` and `archived` to separate active support flows from
+      retired ones.
     request:
       method: GET
       path: /ticket_types

@@ -24,6 +24,10 @@ test_queries:
 tables:
   - name: teams
     description: Teams in the Linear workspace
+    guide: |
+      Start here to discover `team_id` and `team_key` values for
+      team-scoped tables. `private` can explain why some users cannot see
+      related issues.
     request:
       method: POST
       path: /graphql
@@ -134,6 +138,10 @@ tables:
             - updatedAt
   - name: users
     description: Users in the Linear workspace
+    guide: |
+      Workspace user dimension table. Join `id` to attachment
+      `creator_id`, or use user names and emails to interpret issue
+      assignee fields.
     request:
       method: POST
       path: /graphql
@@ -253,6 +261,10 @@ tables:
             - updatedAt
   - name: projects
     description: Projects in the Linear workspace
+    guide: |
+      Use this table to discover `project_id` values before querying
+      milestones or project updates. Team columns let you group projects
+      without another join.
     request:
       method: POST
       path: /graphql
@@ -396,6 +408,10 @@ tables:
             - name
   - name: project_milestones
     description: Milestones for a specific Linear project
+    guide: |
+      Requires `project_id` from `linear.projects`. Use `status`, `progress`,
+      and `archived_at` to separate active roadmap items from completed
+      ones.
     request:
       method: POST
       path: /graphql
@@ -553,6 +569,10 @@ tables:
         required: true
   - name: cycles
     description: Cycles in the Linear workspace
+    guide: |
+      Optionally filter by `team_id` to keep results scoped to one team.
+      Without a filter, this table returns cycles across the whole
+      workspace.
     request:
       method: POST
       path: /graphql
@@ -679,6 +699,10 @@ tables:
         required: false
   - name: initiatives
     description: Initiatives in the Linear workspace
+    guide: |
+      High-level planning objects that can outlive individual projects. Use
+      alongside `projects` when you need roadmap context beyond a single
+      team.
     request:
       method: POST
       path: /graphql
@@ -771,6 +795,10 @@ tables:
             - updatedAt
   - name: project_updates
     description: Updates for a specific Linear project
+    guide: |
+      Requires `project_id` from `linear.projects`. The `body` field
+      contains the written update; timestamps make this useful for progress
+      reporting.
     request:
       method: POST
       path: /graphql
@@ -874,6 +902,9 @@ tables:
         required: true
   - name: issue_labels
     description: Issue labels in the Linear workspace
+    guide: |
+      Workspace-wide label lookup table. Join by label names from downstream
+      exports when you need consistent color and group metadata.
     request:
       method: POST
       path: /graphql
@@ -968,6 +999,10 @@ tables:
             - isGroup
   - name: issues
     description: Issues in the Linear workspace
+    guide: |
+      Optional project filters are useful for narrowing large workspaces.
+      Join `team_id`, `project_id`, and assignee columns back to `teams`,
+      `projects`, and `users`.
     filters:
       - name: project_id
       - name: project_milestone_id
@@ -1235,6 +1270,9 @@ tables:
             - completedAt
   - name: issue_comments
     description: Comments for a specific Linear issue
+    guide: |
+      Requires `issue_id` from `linear.issues` or `linear.team_issues`. Use
+      it when you need the discussion trail for a specific issue.
     request:
       method: POST
       path: /graphql
@@ -1338,6 +1376,9 @@ tables:
         required: true
   - name: team_issues
     description: Issues for a specific Linear team
+    guide: |
+      Requires `team_id` from `linear.teams`. Prefer this table over
+      `linear.issues` when you want a complete backlog for one team.
     request:
       method: POST
       path: /graphql
@@ -1507,6 +1548,10 @@ tables:
         required: true
   - name: attachments
     description: Attachments (including pull requests) linked to Linear issues
+    guide: |
+      Includes external links such as pull requests attached to issues.
+      Join `issue_id` or `issue_identifier` back to `linear.issues` for
+      issue context.
     request:
       method: POST
       path: /graphql
