@@ -34,7 +34,7 @@ pub(crate) async fn build_runtime(
             .map_err(|err| datafusion_to_core(&err, &[]))?,
     );
     let mut ctx = SessionContext::new_with_config_rt(session_config, runtime_env);
-    register_json_support(&mut ctx).map_err(|err| datafusion_to_core(&err))?;
+    register_json_support(&mut ctx).map_err(|err| datafusion_to_core(&err, &[]))?;
     let ctx = Arc::new(ctx);
 
     let runtime_context = runtime.runtime_context();
