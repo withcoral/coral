@@ -1,4 +1,4 @@
-//! Client-side bootstrap for local Coral clients.
+s//! Client-side bootstrap for local Coral clients.
 
 use coral_api::v1::Workspace;
 use coral_api::v1::query_service_client::QueryServiceClient;
