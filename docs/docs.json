@@ -86,7 +86,8 @@
         "pages": [
           "reference/cli-reference",
           "reference/bundled-sources",
-          "reference/source-spec-reference"
+          "reference/source-spec-reference",
+          "reference/security"
         ]
       },
       {
