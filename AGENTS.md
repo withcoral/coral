@@ -26,6 +26,10 @@
   its bootstrap seam today.
 - If a caller needs explicit local server control, prefer `coral-client::local`
   over widening the default client surface.
+- Keep process environment access owned by the right crate. `coral-app` owns
+  runtime/bootstrap env reads, `coral-cli` owns CLI-surface env reads, and
+  other crates should receive explicit values from callers instead of reading
+  ambient process environment directly.
 - Changes to CLI or MCP surfaces must include corresponding documentation
   updates under `docs/` in the same change.
 - When proposing or updating a PR title, use Conventional Commits:

@@ -21,6 +21,7 @@ use std::io::Cursor;
 use bytes::Bytes;
 use futures::TryStreamExt as _;
 use object_store::ObjectStore;
+use object_store::ObjectStoreExt as _;
 use object_store::aws::AmazonS3Builder;
 use object_store::local::LocalFileSystem;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
@@ -582,10 +583,10 @@ fn parse_bool(value: &str) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::ParquetTableProvider;
-    use crate::QueryRuntimeContext;
-    use crate::backends::{CompiledBackendSource, compile_source_manifest};
+    use crate::backends::compile_source_manifest;
     use crate::runtime::catalog;
-    use crate::runtime::registry::register_sources_blocking;
+    use crate::runtime::registry::{CompiledQuerySource, register_sources_blocking};
+    use crate::{QueryRuntimeContext, QuerySource};
     use coral_spec::backends::file::FileTableSpec;
     use coral_spec::{ValidatedSourceManifest, parse_source_manifest_value};
     use datafusion::arrow::array::{
@@ -602,19 +603,22 @@ mod tests {
     use std::sync::Arc;
     use tempfile::tempdir;
 
-    fn compile_sources(
-        manifests: Vec<ValidatedSourceManifest>,
-    ) -> Vec<Box<dyn CompiledBackendSource>> {
+    fn compile_sources(manifests: Vec<ValidatedSourceManifest>) -> Vec<CompiledQuerySource> {
         manifests
             .into_iter()
             .map(|manifest| {
-                compile_source_manifest(
-                    &manifest,
-                    BTreeMap::new(),
-                    BTreeMap::new(),
-                    &QueryRuntimeContext::default(),
-                )
-                .expect("manifest should compile")
+                let variables = BTreeMap::new();
+                let secrets = BTreeMap::new();
+                CompiledQuerySource {
+                    source: QuerySource::new(manifest.clone(), variables.clone(), secrets.clone()),
+                    compiled: compile_source_manifest(
+                        &manifest,
+                        variables,
+                        secrets,
+                        &QueryRuntimeContext::default(),
+                    )
+                    .expect("manifest should compile"),
+                }
             })
             .collect()
     }

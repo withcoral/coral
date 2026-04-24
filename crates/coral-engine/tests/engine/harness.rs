@@ -58,11 +58,37 @@ pub(crate) fn assert_row_count(execution: &QueryExecution, expected: usize) {
     assert_eq!(execution_to_rows(execution).len(), expected);
 }
 
+#[allow(
+    dead_code,
+    reason = "retained for other engine tests that may assert invalid input"
+)]
 pub(crate) fn assert_invalid_input(error: CoreError, expected_detail: &str) {
     assert_eq!(error.status_code(), StatusCode::InvalidArgument);
     match error {
         CoreError::InvalidInput(detail) => assert_eq!(detail, expected_detail),
         other => panic!("expected CoreError::InvalidInput, got {other:?}"),
+    }
+}
+
+pub(crate) fn assert_table_not_found(
+    error: CoreError,
+    expected_schema: &str,
+    expected_table: &str,
+) {
+    assert_eq!(error.status_code(), StatusCode::NotFound);
+    match error {
+        CoreError::QueryFailure(sqe) => {
+            assert_eq!(sqe.reason(), "TABLE_NOT_FOUND");
+            assert_eq!(
+                sqe.metadata().get("schema").map(String::as_str),
+                Some(expected_schema)
+            );
+            assert_eq!(
+                sqe.metadata().get("table").map(String::as_str),
+                Some(expected_table)
+            );
+        }
+        other => panic!("expected CoreError::QueryFailure, got {other:?}"),
     }
 }
 

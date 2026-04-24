@@ -1,15 +1,25 @@
 dsl_version: 3
 name: jira
 version: 0.1.0
-description: Jira Cloud REST API source for project metadata
+description: |
+  Query projects, issues, comments, worklogs, versions, components,
+  issue types, priorities, and related metadata from Jira Cloud.
 backend: http
 inputs:
   JIRA_BASE_URL:
     kind: variable
-    default: https://your-domain.atlassian.net
+    hint: |
+      Base URL of your Jira Cloud site (for example
+      `https://acme.atlassian.net`).
   JIRA_BASIC_AUTH:
     kind: secret
-    hint: Use https://github.com/withcoral/coral/blob/main/sources/jira/jira-auth.sh to generate JIRA_BASIC_AUTH.
+    hint: |
+      Use Base64-encoded `email:api_token` credentials for Jira Cloud
+      Basic auth.
+      Create an API token at
+      [Atlassian API token settings](https://id.atlassian.com/manage-profile/security/api-tokens),
+      then encode `email:api_token`.
+      Example: `printf '%s' 'you@example.com:YOUR_JIRA_API_TOKEN' | base64`.
 base_url: "{{input.JIRA_BASE_URL}}"
 auth:
   headers:
@@ -19,6 +29,8 @@ auth:
     - name: Accept
       from: literal
       value: application/json
+test_queries:
+  - SELECT * FROM jira.projects LIMIT 1
 tables:
   - name: projects
     description: Projects visible to the authenticated Jira user
@@ -55,7 +67,7 @@ tables:
         query_param: maxResults
     columns:
       - name: id
-        type: Int64
+        type: Utf8
         nullable: false
         description: Project ID
         expr:
@@ -128,7 +140,7 @@ tables:
             - avatarUrls
             - 48x48
       - name: category_id
-        type: Int64
+        type: Utf8
         nullable: true
         description: Project category ID
         expr:
@@ -645,9 +657,9 @@ tables:
           path:
             - overdue
       - name: project_id
-        type: Int64
+        type: Utf8
         nullable: true
-        description: Numeric project ID for the version
+        description: Project ID for the version
         expr:
           kind: path
           path:

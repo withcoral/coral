@@ -7,14 +7,14 @@ use datafusion::arrow::array::{
     Array, BooleanArray, Float64Array, Int64Array, RecordBatch, StringArray,
     TimestampMicrosecondArray,
 };
-use datafusion::arrow::datatypes::{DataType, SchemaRef, TimeUnit};
+use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::error::{DataFusionError, Result};
 use serde_json::Value;
 
-use crate::backends::arrow_type_for_column;
 use crate::backends::shared::json_path::get_path_value;
 use coral_spec::{
-    ColumnSpec, ExprSpec, ParsedTemplate, TemplateNamespace, TemplatePart, TimestampInput,
+    ColumnSpec, ExprSpec, ManifestDataType, ParsedTemplate, TemplateNamespace, TemplatePart,
+    TimestampInput,
 };
 
 #[allow(
@@ -37,49 +37,53 @@ pub(crate) fn convert_items(
 
     for column in columns {
         let expr = column.resolved_expr();
-        let data_type = arrow_type_for_column(column)?;
+        let data_type = column
+            .manifest_data_type()
+            .map_err(|error| DataFusionError::Execution(error.to_string()))?;
 
         match data_type {
-            DataType::Utf8 => {
+            ManifestDataType::Utf8 => {
                 let array: StringArray = items
                     .iter()
                     .map(|row| to_utf8(eval_expr(&expr, row, filters)))
                     .collect();
                 arrays.push(Arc::new(array));
             }
-            DataType::Int64 => {
+            ManifestDataType::Json => {
+                let array: StringArray = items
+                    .iter()
+                    .map(|row| to_json_utf8(eval_expr(&expr, row, filters)))
+                    .collect();
+                arrays.push(Arc::new(array));
+            }
+            ManifestDataType::Int64 => {
                 let array: Int64Array = items
                     .iter()
                     .map(|row| to_i64(eval_expr(&expr, row, filters)))
                     .collect();
                 arrays.push(Arc::new(array));
             }
-            DataType::Boolean => {
+            ManifestDataType::Boolean => {
                 let array: BooleanArray = items
                     .iter()
                     .map(|row| to_bool(eval_expr(&expr, row, filters)))
                     .collect();
                 arrays.push(Arc::new(array));
             }
-            DataType::Float64 => {
+            ManifestDataType::Float64 => {
                 let array: Float64Array = items
                     .iter()
                     .map(|row| to_f64(eval_expr(&expr, row, filters)))
                     .collect();
                 arrays.push(Arc::new(array));
             }
-            DataType::Timestamp(TimeUnit::Microsecond, Some(ref tz)) if tz.as_ref() == "+00:00" => {
+            ManifestDataType::Timestamp => {
                 let array: TimestampMicrosecondArray = items
                     .iter()
                     .map(|row| to_i64(eval_expr(&expr, row, filters)))
                     .collect();
                 let array = array.with_timezone("+00:00");
                 arrays.push(Arc::new(array));
-            }
-            other => {
-                return Err(DataFusionError::Execution(format!(
-                    "unsupported Arrow type in mapping: {other:?}"
-                )));
             }
         }
     }
@@ -295,6 +299,13 @@ fn to_utf8(value: Option<Value>) -> Option<String> {
         Value::Number(v) => Some(v.to_string()),
         Value::Array(v) => serde_json::to_string(&v).ok(),
         Value::Object(v) => serde_json::to_string(&v).ok(),
+    }
+}
+
+fn to_json_utf8(value: Option<Value>) -> Option<String> {
+    match value? {
+        Value::Null => None,
+        other => serde_json::to_string(&other).ok(),
     }
 }
 
@@ -637,5 +648,50 @@ mod tests {
         );
 
         assert_eq!(rendered, Some(Value::String("untitled".to_string())));
+    }
+
+    #[test]
+    fn json_type_serializes_values_as_valid_json_strings() {
+        let table = table_with_expr(
+            "props",
+            "Json",
+            &ExprSpec::Path {
+                path: vec!["properties".into()],
+            },
+        );
+        let schema = schema_from_columns(table.columns(), "test", table.name()).unwrap();
+        let items = vec![
+            json!({"properties": {"country": "US", "count": 3}}),
+            json!({"properties": "hello"}),
+            json!({"properties": true}),
+            json!({"properties": 3}),
+            json!({"properties": null}),
+            json!({}),
+        ];
+        let batch = convert_items(table.columns(), schema, &HashMap::new(), &items).unwrap();
+
+        let col = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(col.value(0)).unwrap(),
+            json!({"country": "US", "count": 3}),
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(col.value(1)).unwrap(),
+            json!("hello")
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(col.value(2)).unwrap(),
+            json!(true)
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(col.value(3)).unwrap(),
+            json!(3)
+        );
+        assert!(col.is_null(4));
+        assert!(col.is_null(5));
     }
 }

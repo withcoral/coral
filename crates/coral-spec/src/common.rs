@@ -23,6 +23,7 @@ pub struct SourceManifestCommon {
     pub name: String,
     pub version: String,
     pub description: String,
+    pub test_queries: Vec<String>,
 }
 
 impl SourceManifestCommon {
@@ -31,14 +32,27 @@ impl SourceManifestCommon {
         name: String,
         version: String,
         description: String,
+        test_queries: Vec<String>,
     ) -> Self {
         Self {
             dsl_version,
             name,
             version,
             description,
+            test_queries,
         }
     }
+}
+
+pub(crate) fn validate_test_queries(source_name: &str, test_queries: &[String]) -> Result<()> {
+    for (index, query) in test_queries.iter().enumerate() {
+        if query.trim().is_empty() {
+            return Err(ManifestError::validation(format!(
+                "source '{source_name}' test_queries[{index}] must not be empty"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Supported source-spec backends.
@@ -60,6 +74,11 @@ pub enum ManifestDataType {
     Boolean,
     Float64,
     Timestamp,
+    /// Stored as UTF-8 containing valid JSON. Hints to users and tooling
+    /// that the column is queryable with JSON functions (`json_get`,
+    /// `json_get_str`, `json_as_text`, etc.); the JSON functions also
+    /// work on plain `Utf8` columns whose values happen to be JSON.
+    Json,
 }
 
 /// Source-level authentication requirements for HTTP-backed source specs.
@@ -636,6 +655,7 @@ pub(crate) fn parse_manifest_data_type(s: &str) -> Result<ManifestDataType> {
         "Boolean" => Ok(ManifestDataType::Boolean),
         "Float64" => Ok(ManifestDataType::Float64),
         "Timestamp" => Ok(ManifestDataType::Timestamp),
+        "Json" => Ok(ManifestDataType::Json),
         other => Err(ManifestError::validation(format!(
             "unsupported data type '{other}' in source manifest"
         ))),

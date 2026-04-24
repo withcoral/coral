@@ -577,7 +577,7 @@ async fn missing_required_filter_surfaces_structured_error() {
             assert!(!sqe.retryable());
             assert_eq!(sqe.metadata().get("schema").unwrap(), "http_required");
             assert_eq!(sqe.metadata().get("table").unwrap(), "users");
-            assert_eq!(sqe.metadata().get("field").unwrap(), "id");
+            assert_eq!(sqe.metadata().get("column").unwrap(), "id");
             assert!(sqe.summary().contains("WHERE id"));
             assert!(sqe.hint().unwrap().contains("coral.columns"));
         }

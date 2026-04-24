@@ -81,5 +81,5 @@ async fn broken_source_does_not_block_healthy_sources() {
         }))
         .await
         .expect_err("broken source query should fail");
-    assert_eq!(broken.code(), tonic::Code::InvalidArgument);
+    assert_eq!(broken.code(), tonic::Code::NotFound);
 }

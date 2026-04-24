@@ -1,0 +1,27 @@
+---
+source: xtask/src/nav.rs
+assertion_line: 87
+expression: updated
+---
+{
+  "name": "Coral Docs",
+  "navigation": {
+    "groups": [
+      {
+        "group": "Get started",
+        "pages": [
+          "index",
+          "getting-started/installation"
+        ]
+      },
+      {
+        "group": "Reference",
+        "pages": [
+          "reference/cli-reference",
+          "reference/bundled-sources",
+          "reference/source-spec-reference"
+        ]
+      }
+    ]
+  }
+}

@@ -1,12 +1,20 @@
 dsl_version: 3
 name: stripe
 version: 2026-03-25.dahlia
-description: The Stripe REST API for account and payment operations.
+description: >-
+  Query customers, charges, subscriptions, invoices, payments, products,
+  prices, refunds, disputes, payouts, balance transactions, and events
+  from Stripe.
 backend: http
 inputs:
   STRIPE_API_KEY:
     kind: secret
-    hint: Create a restricted or secret API key in the Stripe Dashboard → Developers → API keys
+    hint: |
+      Create a restricted API key (`rk_test_` or `rk_live_`) with Read
+      permissions for the resources you plan to query.
+      You can also use secret keys (`sk_test_` or `sk_live_`), but
+      restricted keys limit access to only the required endpoints.
+      See [Stripe API key docs](https://docs.stripe.com/keys).
 base_url: https://api.stripe.com
 auth:
   headers:
@@ -23706,7 +23714,10 @@ tables:
         type: Utf8
         nullable: true
         virtual: false
-        description: Payment methods available in the specified country; You may need to enable some payment methods (e.g.
+        description: >-
+          Payment methods available in the specified country. You may need to enable some payment methods (e.g., [ACH](https://stripe.com/docs/ach))
+          on your account before they appear in this list. The `stripe` payment method refers to [charging through your
+          platform](https://stripe.com/docs/connect/destination-charges).
         expr:
           kind: path
           path:
@@ -29452,7 +29463,7 @@ tables:
           path:
             - test_clock
   - name: customer_sources
-    description: <p>List sources for a specified customer.</p>
+    description: List sources for a specified customer.
     filters:
       - name: customer
         required: true
@@ -31345,8 +31356,9 @@ tables:
         type: Utf8
         nullable: true
         virtual: false
-        description: The status of the code verification, either pending (awaiting verification, attempts_remaining should
-          be greater than 0), succeeded (successful.
+        description: >-
+          The status of the code verification, either `pending` (awaiting verification, `attempts_remaining` should be greater than 0), `succeeded`
+          (successful verification) or `failed` (failed verification, cannot be verified anymore as `attempts_remaining` should be 0).
         expr:
           kind: path
           path:
@@ -33189,8 +33201,10 @@ tables:
         type: Utf8
         nullable: true
         virtual: false
-        description: The failure reason for the redirect, either user_abort (the customer aborted or dropped out of the redirect
-          flow), declined (the authentication.
+        description: >-
+          The failure reason for the redirect, either `user_abort` (the customer aborted or dropped out of the redirect flow), `declined` (the
+          authentication failed or the transaction was declined), or `processing_error` (the redirect failed due to a technical error). Present only
+          if the redirect status is `failed`.
         expr:
           kind: path
           path:
@@ -33210,8 +33224,9 @@ tables:
         type: Utf8
         nullable: true
         virtual: false
-        description: The status of the redirect, either pending (ready to be used by your customer to authenticate the transaction),
-          succeeded (successful authentication,.
+        description: >-
+          The status of the redirect, either `pending` (ready to be used by your customer to authenticate the transaction), `succeeded` (successful
+          authentication, cannot be reused) or `not_required` (redirect should not be used) or `failed` (failed authentication, cannot be reused).
         expr:
           kind: path
           path:
@@ -36618,7 +36633,7 @@ tables:
           kind: from_filter
           key: subscription_exposed_id
   - name: dispute
-    description: <p>Retrieve a dispute for a specified charge.</p>
+    description: Retrieve a dispute for a specified charge.
     filters:
       - name: charge
         required: true
@@ -37592,7 +37607,7 @@ tables:
           path:
             - type
   - name: domains
-    description: <p>List apple pay domains.</p>
+    description: List apple pay domains.
     filters:
       - name: domain_name
         required: false
@@ -95768,7 +95783,9 @@ tables:
         type: Utf8
         nullable: true
         virtual: false
-        description: The list of payment method types (e.
+        description: >-
+          The list of payment method types (e.g. card) that this SetupIntent is allowed to set up. A list of valid payment method types can be found
+          [here](https://docs.stripe.com/api/payment_methods/object#payment_method_object-type).
         expr:
           kind: path
           path:
@@ -96058,7 +96075,7 @@ tables:
           path:
             - type
   - name: source_transactions
-    description: <p>List source transactions for a given source.</p>
+    description: List source transactions for a given source.
     filters:
       - name: source
         required: true
@@ -96137,7 +96154,9 @@ tables:
         type: Int64
         nullable: true
         virtual: false
-        description: A positive integer in the smallest currency unit (that is, 100 cents for $1.
+        description: >-
+          A positive integer in the smallest currency unit (that is, 100 cents for $1.00, or 1 for ¥1, Japanese Yen being a zero-decimal currency)
+          representing the total amount for the order.
         expr:
           kind: path
           path:
@@ -96735,7 +96754,9 @@ tables:
         type: Int64
         nullable: true
         virtual: false
-        description: A positive integer in the smallest currency unit (that is, 100 cents for $1.
+        description: >-
+          A positive integer in the smallest currency unit (that is, 100 cents for $1.00, or 1 for ¥1, Japanese Yen being a zero-decimal currency)
+          representing the total amount for the order.
         expr:
           kind: path
           path:
@@ -97217,8 +97238,9 @@ tables:
         type: Utf8
         nullable: true
         virtual: false
-        description: The status of the code verification, either pending (awaiting verification, attempts_remaining should
-          be greater than 0), succeeded (successful.
+        description: >-
+          The status of the code verification, either `pending` (awaiting verification, `attempts_remaining` should be greater than 0), `succeeded`
+          (successful verification) or `failed` (failed verification, cannot be verified anymore as `attempts_remaining` should be 0).
         expr:
           kind: path
           path:
@@ -98065,8 +98087,10 @@ tables:
         type: Utf8
         nullable: true
         virtual: false
-        description: The failure reason for the redirect, either user_abort (the customer aborted or dropped out of the redirect
-          flow), declined (the authentication.
+        description: >-
+          The failure reason for the redirect, either `user_abort` (the customer aborted or dropped out of the redirect flow), `declined` (the
+          authentication failed or the transaction was declined), or `processing_error` (the redirect failed due to a technical error). Present only
+          if the redirect status is `failed`.
         expr:
           kind: path
           path:
@@ -98086,8 +98110,9 @@ tables:
         type: Utf8
         nullable: true
         virtual: false
-        description: The status of the redirect, either pending (ready to be used by your customer to authenticate the transaction),
-          succeeded (successful.
+        description: >-
+          The status of the redirect, either `pending` (ready to be used by your customer to authenticate the transaction), `succeeded` (successful
+          authentication, cannot be reused) or `not_required` (redirect should not be used) or `failed` (failed authentication, cannot be reused).
         expr:
           kind: path
           path:
@@ -98264,7 +98289,9 @@ tables:
         type: Int64
         nullable: true
         virtual: false
-        description: A positive integer in the smallest currency unit (that is, 100 cents for $1.
+        description: >-
+          A positive integer in the smallest currency unit (that is, 100 cents for $1.00, or 1 for ¥1, Japanese Yen being a zero-decimal currency)
+          representing the total amount for the order.
         expr:
           kind: path
           path:

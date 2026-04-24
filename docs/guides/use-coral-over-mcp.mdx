@@ -12,14 +12,15 @@ Before setting up a client, make sure you have [connected at least one source](/
 
 ## What MCP clients get
 
-| Type     | Name             | Description                      |
-| -------- | ---------------- | -------------------------------- |
-| Tool     | `sql`            | Run a SQL query                  |
-| Tool     | `list_tables`    | List all available tables        |
-| Resource | `coral://guide`  | Usage guide for agents           |
-| Resource | `coral://tables` | Schema for all installed sources |
+| Type     | Name             | Description                                             |
+| -------- | ---------------- | ------------------------------------------------------- |
+| Tool     | `sql`            | Run a SQL query                                         |
+| Tool     | `list_tables`    | List queryable fully qualified tables                   |
+| Resource | `coral://guide`  | Usage guide for agents                                  |
+| Resource | `coral://tables` | JSON summaries of queryable tables and required filters |
 
 Clients see the same installed sources and query results as `coral sql`. You set up sources with the CLI, then agents query them over MCP.
+For richer metadata, have the agent query `coral.tables`, `coral.columns`, and `coral.inputs` over the `sql` tool instead of relying only on `list_tables` or `coral://tables`.
 
 ## Client setup
 

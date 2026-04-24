@@ -17,7 +17,9 @@ use crate::sources::manager::SourceManager;
 use crate::sources::model::{
     CandidateSource, CandidateSourceInput, CandidateSourceInputKind, InstalledSource, SourceOrigin,
 };
-use crate::transport::{query_status, table_to_proto, workspace_to_proto};
+use crate::transport::{
+    query_status, validate_source_response_to_proto, workspace_name_from_proto, workspace_to_proto,
+};
 use crate::workspaces::WorkspaceName;
 
 #[derive(Clone)]
@@ -42,12 +44,7 @@ impl SourceServiceApi for SourceService {
         request: Request<DiscoverSourcesRequest>,
     ) -> Result<Response<DiscoverSourcesResponse>, Status> {
         let request = request.into_inner();
-        let workspace = request.workspace.as_ref().ok_or_else(|| {
-            app_status(crate::bootstrap::AppError::InvalidInput(
-                "missing workspace".to_string(),
-            ))
-        })?;
-        let workspace_name = WorkspaceName::parse(&workspace.name).map_err(app_status)?;
+        let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
         let sources = self
             .sources
             .discover_sources(&workspace_name)
@@ -63,12 +60,7 @@ impl SourceServiceApi for SourceService {
         request: Request<ListSourcesRequest>,
     ) -> Result<Response<ListSourcesResponse>, Status> {
         let request = request.into_inner();
-        let workspace = request.workspace.as_ref().ok_or_else(|| {
-            app_status(crate::bootstrap::AppError::InvalidInput(
-                "missing workspace".to_string(),
-            ))
-        })?;
-        let workspace_name = WorkspaceName::parse(&workspace.name).map_err(app_status)?;
+        let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
         let sources: Vec<_> = self
             .sources
             .list_workspace_sources(&workspace_name)
@@ -84,12 +76,7 @@ impl SourceServiceApi for SourceService {
         request: Request<GetSourceRequest>,
     ) -> Result<Response<Source>, Status> {
         let request = request.into_inner();
-        let workspace = request.workspace.as_ref().ok_or_else(|| {
-            app_status(crate::bootstrap::AppError::InvalidInput(
-                "missing workspace".to_string(),
-            ))
-        })?;
-        let workspace_name = WorkspaceName::parse(&workspace.name).map_err(app_status)?;
+        let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
         let source_name = SourceName::parse(&request.name).map_err(app_status)?;
         let source = self
             .sources
@@ -106,12 +93,7 @@ impl SourceServiceApi for SourceService {
         request: Request<CreateBundledSourceRequest>,
     ) -> Result<Response<Source>, Status> {
         let request = request.into_inner();
-        let workspace = request.workspace.as_ref().ok_or_else(|| {
-            app_status(crate::bootstrap::AppError::InvalidInput(
-                "missing workspace".to_string(),
-            ))
-        })?;
-        let workspace_name = WorkspaceName::parse(&workspace.name).map_err(app_status)?;
+        let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
         let bundled_name = SourceName::parse(&request.name).map_err(app_status)?;
         let installed = self
             .sources
@@ -128,12 +110,7 @@ impl SourceServiceApi for SourceService {
         request: Request<ImportSourceRequest>,
     ) -> Result<Response<Source>, Status> {
         let request = request.into_inner();
-        let workspace = request.workspace.as_ref().ok_or_else(|| {
-            app_status(crate::bootstrap::AppError::InvalidInput(
-                "missing workspace".to_string(),
-            ))
-        })?;
-        let workspace_name = WorkspaceName::parse(&workspace.name).map_err(app_status)?;
+        let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
         let installed = self
             .sources
             .import_source(&workspace_name, &request)
@@ -149,12 +126,7 @@ impl SourceServiceApi for SourceService {
         request: Request<DeleteSourceRequest>,
     ) -> Result<Response<()>, Status> {
         let request = request.into_inner();
-        let workspace = request.workspace.as_ref().ok_or_else(|| {
-            app_status(crate::bootstrap::AppError::InvalidInput(
-                "missing workspace".to_string(),
-            ))
-        })?;
-        let workspace_name = WorkspaceName::parse(&workspace.name).map_err(app_status)?;
+        let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
         let source_name = SourceName::parse(&request.name).map_err(app_status)?;
         let _installed = self
             .sources
@@ -168,27 +140,20 @@ impl SourceServiceApi for SourceService {
         request: Request<ValidateSourceRequest>,
     ) -> Result<Response<ValidateSourceResponse>, Status> {
         let request = request.into_inner();
-        let workspace = request.workspace.as_ref().ok_or_else(|| {
-            app_status(crate::bootstrap::AppError::InvalidInput(
-                "missing workspace".to_string(),
-            ))
-        })?;
-        let workspace_name = WorkspaceName::parse(&workspace.name).map_err(app_status)?;
+        let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
         let source_name = SourceName::parse(&request.name).map_err(app_status)?;
         let result = self
             .queries
             .validate_source(&workspace_name, &source_name)
             .await
             .map_err(query_status)?;
-        let tables = result
-            .tables
-            .into_iter()
-            .map(|table| table_to_proto(&workspace_name, table))
-            .collect::<Vec<_>>();
-        Ok(Response::new(ValidateSourceResponse {
-            source: Some(installed_source_to_proto(&workspace_name, result.source)),
-            tables,
-        }))
+        let crate::query::manager::ValidatedSource { source, report } = result;
+        let source = installed_source_to_proto(&workspace_name, source);
+        Ok(Response::new(validate_source_response_to_proto(
+            source,
+            &workspace_name,
+            report,
+        )))
     }
 }
 
@@ -196,7 +161,7 @@ fn installed_source_to_proto(workspace_name: &WorkspaceName, source: InstalledSo
     Source {
         workspace: Some(workspace_to_proto(workspace_name)),
         name: source.name.as_str().to_string(),
-        version: source.version,
+        version: source.version.unwrap_or_default(),
         secrets: source
             .secrets
             .into_iter()
@@ -242,7 +207,7 @@ fn candidate_source_input_to_proto(input: CandidateSourceInput) -> SourceInputSp
         kind: proto_candidate_input_kind(input.kind) as i32,
         required: input.required,
         default_value: input.default_value,
-        hint: input.hint,
+        hint: input.hint.unwrap_or_default(),
     }
 }
 

@@ -142,12 +142,12 @@ fn validate_value_source(
     context: &str,
 ) -> Result<()> {
     match source {
-        ValueSourceSpec::Filter { key, .. } | ValueSourceSpec::FilterInt { key, .. } => {
-            if !known_filters.contains(key) {
-                return Err(ManifestError::validation(format!(
-                    "{context} references unknown filter '{key}'"
-                )));
-            }
+        ValueSourceSpec::Filter { key, .. } | ValueSourceSpec::FilterInt { key, .. }
+            if !known_filters.contains(key) =>
+        {
+            return Err(ManifestError::validation(format!(
+                "{context} references unknown filter '{key}'"
+            )));
         }
         ValueSourceSpec::Template { template } => {
             validate_template(template, known_filters, context)?;
@@ -159,12 +159,10 @@ fn validate_value_source(
 
 fn validate_expr(expr: &ExprSpec, known_filters: &HashSet<String>, context: &str) -> Result<()> {
     match expr {
-        ExprSpec::FromFilter { key } => {
-            if !known_filters.contains(key) {
-                return Err(ManifestError::validation(format!(
-                    "{context} references unknown filter '{key}'"
-                )));
-            }
+        ExprSpec::FromFilter { key } if !known_filters.contains(key) => {
+            return Err(ManifestError::validation(format!(
+                "{context} references unknown filter '{key}'"
+            )));
         }
         ExprSpec::Coalesce { exprs } => {
             for nested in exprs {
@@ -174,12 +172,10 @@ fn validate_expr(expr: &ExprSpec, known_filters: &HashSet<String>, context: &str
         ExprSpec::IfPresent { check, .. } => {
             validate_expr(check, known_filters, context)?;
         }
-        ExprSpec::ObjectFilterPath { filter_key, .. } => {
-            if !known_filters.contains(filter_key) {
-                return Err(ManifestError::validation(format!(
-                    "{context} references unknown filter '{filter_key}'"
-                )));
-            }
+        ExprSpec::ObjectFilterPath { filter_key, .. } if !known_filters.contains(filter_key) => {
+            return Err(ManifestError::validation(format!(
+                "{context} references unknown filter '{filter_key}'"
+            )));
         }
         ExprSpec::FormatTimestamp { expr, .. } => {
             validate_expr(expr, known_filters, context)?;

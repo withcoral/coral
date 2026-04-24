@@ -39,7 +39,7 @@ jobs:
         if: steps.rp.outputs.pr
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
-          ref: ${{ fromJSON(steps.rp.outputs.pr).headBranchName }}
+          ref: ${{ fromJSON(steps.rp.outputs.pr || '{}').headBranchName }}
           token: ${{ steps.github-app-token.outputs.token }}
           persist-credentials: true
 
@@ -50,7 +50,7 @@ jobs:
       - name: Sync Cargo.lock to new workspace version
         if: steps.rp.outputs.pr
         env:
-          PR_BRANCH: ${{ fromJSON(steps.rp.outputs.pr).headBranchName }}
+          PR_BRANCH: ${{ fromJSON(steps.rp.outputs.pr || '{}').headBranchName }}
         run: |
           set -euo pipefail
           cargo update --workspace

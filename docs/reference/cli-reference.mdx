@@ -43,22 +43,27 @@ coral source list
 
 Add a bundled source or update its credentials.
 
+By default, Coral reads each declared input from an environment variable of the same name. If a required input is missing, the command exits with an error listing the missing keys.
+
 ```shellscript
-coral source add github
+GITHUB_TOKEN=ghp_... coral source add github
 ```
 
-Coral prompts for required variables or secrets interactively. If the source is already installed, running this command again replaces its stored credentials with the new values you provide.
-After installation, it automatically validates the connection and prints the discovered tables.
+Pass `--interactive` to be prompted for variables and secrets instead:
+
+```shellscript
+coral source add --interactive github
+```
+
+If the source is already installed, running this command again replaces its stored credentials with the new values you provide. After installation, it prints the discovered tables and runs any optional top-level `test_queries` declared in the source spec to validate the connection. Any post-install validation issue is reported as a warning here so the source remains installed and re-runnable.
 
 ### `coral source add --file <PATH>`
 
-Add a custom source spec from a YAML file.
+Add a custom source spec from a YAML file. Input values come from environment variables by default; add `--interactive` to be prompted.
 
 ```shellscript
 coral source add --file ./local-messages.yaml
 ```
-
-Like `source add`, this automatically validates and prints discovered tables after install.
 
 ### `coral source lint <FILE>`
 
@@ -70,7 +75,7 @@ coral source lint ./my-source.yaml
 
 ### `coral source test <NAME>`
 
-Validate that an installed source can initialize and expose tables.
+Validate that an installed source can initialize, expose tables, and run any optional top-level `test_queries` declared in its source spec. The command errors when one or more declared query tests fail.
 
 ```shellscript
 coral source test github
