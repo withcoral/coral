@@ -25,6 +25,7 @@ use coral_spec::{
 
 const DEFAULT_MAX_PAGES: usize = 10_000;
 const DEFAULT_HTTP_REQUEST_TIMEOUT_SECS: u64 = 30;
+const DEFAULT_HTTP_USER_AGENT: &str = concat!("coral/", env!("CARGO_PKG_VERSION"));
 
 /// Executes manifest-driven HTTP requests for one registered source.
 #[derive(Clone)]
@@ -100,7 +101,7 @@ impl HttpSourceClient {
         let request_timeout = Duration::from_secs(DEFAULT_HTTP_REQUEST_TIMEOUT_SECS);
         let http = reqwest::Client::builder()
             .timeout(request_timeout)
-            .user_agent("coral")
+            .user_agent(DEFAULT_HTTP_USER_AGENT)
             .build()
             .map_err(|error| {
                 DataFusionError::Execution(format!(

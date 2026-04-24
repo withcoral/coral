@@ -94,7 +94,9 @@ impl ServerBuilder {
     /// Adds an engine extensions provider used for query runtime builds.
     ///
     /// Providers are composed in call order, so extensions from this provider
-    /// are merged with extensions from any provider already configured.
+    /// are merged with extensions from any provider already configured,
+    /// including providers added by [`Self::with_builtin_extensions`]. Built-in
+    /// providers are only included when explicitly added.
     pub fn with_engine_extensions_provider(
         mut self,
         engine_extensions_provider: Arc<dyn EngineExtensionsProvider>,
