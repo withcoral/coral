@@ -39,6 +39,20 @@ List sources currently installed.
 coral source list
 ```
 
+### `coral source info <NAME>`
+
+Show metadata for a bundled source: whether it is installed, its version, description, and declared inputs.
+
+```shellscript
+coral source info datadog
+```
+
+Pass `-v/--verbose` to include each input's hint text.
+
+```shellscript
+coral source info datadog --verbose
+```
+
 ### `coral source add <NAME>`
 
 Add a bundled source or update its credentials.
