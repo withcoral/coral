@@ -904,6 +904,12 @@ fn set_path_value_at(cursor: &mut Value, path: &[String], value: Value) -> Resul
             DataFusionError::Execution("failed to create JSON array path".to_string())
         })?;
         if array.len() <= index {
+            const MAX_JSON_ARRAY_INDEX: usize = 10_000;
+            if index > MAX_JSON_ARRAY_INDEX {
+                return Err(DataFusionError::Execution(format!(
+                    "JSON array index {index} exceeds supported maximum {MAX_JSON_ARRAY_INDEX}"
+                )));
+            }
             array.resize_with(index + 1, || Value::Null);
         }
         return set_path_value_at(&mut array[index], tail, value);
