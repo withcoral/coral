@@ -16,13 +16,14 @@ use tonic::transport::Server;
 
 use super::env::AppEnvironment;
 use super::error::AppError;
+use crate::query::extensions::BuiltinEngineExtensionsProvider;
 use crate::query::extensions::compose_engine_extensions_providers;
 use crate::query::manager::QueryManager;
 use crate::query::service::QueryService;
 use crate::sources::manager::SourceManager;
 use crate::sources::service::SourceService;
 use crate::state::{AppStateLayout, ConfigStore, SecretStore};
-use crate::{BuiltinEngineExtensionsProvider, EngineExtensionsProvider};
+use crate::{EngineExtensionsProvider, NoopEngineExtensionsProvider};
 
 /// Server-side bootstrap configuration for the Coral server.
 #[derive(Clone)]
@@ -43,7 +44,7 @@ impl ServerConfig {
     pub(crate) fn new() -> Self {
         Self {
             config_dir: None,
-            engine_extensions_provider: Arc::new(BuiltinEngineExtensionsProvider),
+            engine_extensions_provider: Arc::new(NoopEngineExtensionsProvider),
         }
     }
 
@@ -102,6 +103,13 @@ impl ServerBuilder {
             .config
             .with_engine_extensions_provider(engine_extensions_provider);
         self
+    }
+
+    #[must_use]
+    /// Adds the built-in engine extensions shipped with the open-source Coral
+    /// distribution.
+    pub fn with_builtin_extensions(self) -> Self {
+        self.with_engine_extensions_provider(Arc::new(BuiltinEngineExtensionsProvider))
     }
 
     /// Starts the Coral gRPC server on loopback TCP.
@@ -243,7 +251,7 @@ mod tests {
     use tonic::Request;
     use tonic::transport::Endpoint;
 
-    use super::start_server;
+    use super::{ServerBuilder, start_server};
     use crate::NoopEngineExtensionsProvider;
     use crate::query::manager::QueryManager;
     use crate::sources::manager::SourceManager;
@@ -253,6 +261,11 @@ mod tests {
 
     fn default_workspace() -> Workspace {
         workspace_to_proto(&WorkspaceName::default())
+    }
+
+    #[test]
+    fn server_builder_accepts_builtin_extensions() {
+        let _ = ServerBuilder::new().with_builtin_extensions();
     }
 
     #[tokio::test]

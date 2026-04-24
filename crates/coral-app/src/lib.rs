@@ -41,7 +41,5 @@ mod workspaces;
 
 pub use bootstrap::{AppError, RunningServer, ServerBuilder};
 pub use coral_engine::{EngineExtensions, QuerySource};
-pub use query::extensions::{
-    BuiltinEngineExtensionsProvider, EngineExtensionsProvider, NoopEngineExtensionsProvider,
-};
+pub use query::extensions::{EngineExtensionsProvider, NoopEngineExtensionsProvider};
 pub use workspaces::DEFAULT_WORKSPACE_ID;

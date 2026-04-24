@@ -25,9 +25,10 @@ impl EngineExtensionsProvider for NoopEngineExtensionsProvider {
     }
 }
 
-/// Default local app provider that installs built-in engine extensions.
+/// Provider that installs the built-in engine extensions shipped with
+/// the open-source Coral distribution.
 #[derive(Debug, Default)]
-pub struct BuiltinEngineExtensionsProvider;
+pub(crate) struct BuiltinEngineExtensionsProvider;
 
 impl EngineExtensionsProvider for BuiltinEngineExtensionsProvider {
     fn extensions_for(&self, _selected_sources: &[QuerySource]) -> EngineExtensions {

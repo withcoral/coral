@@ -239,9 +239,9 @@ The top-level `auth` block declares how Coral authenticates outgoing requests. P
 | ------ | ------- |
 | `HeaderAuth` | Attach one or more declarative auth headers (Bearer tokens, API keys, pre-signed headers). |
 | `BasicAuth` | HTTP Basic. Coral base64-encodes `username:password` into `Authorization: Basic ...`. |
-| `CustomAuth` | Dispatch request signing to a built-in Coral authenticator (for schemes that must observe the built request, such as AWS SigV4). |
+| `CustomAuth` | Use a named authenticator for auth schemes that need request signing, such as AWS SigV4. |
 
-All three resolve their inputs from declared source inputs (`{{input.KEY}}` templates or `from: input`). Auth is source-scoped — it does not see SQL filters or pagination state.
+Credentials for authentication are declared in [Source inputs](/reference/source-spec-reference#source-inputs).
 
 #### `HeaderAuth`
 
@@ -276,7 +276,7 @@ auth:
   # ...authenticator-specific fields, see below
 ```
 
-The `authenticator` key selects a built-in Coral authenticator. All other fields under `auth` are passed through as that authenticator's config. Use this type when signing depends on the final request contents.
+The `authenticator` key names a runtime-provided authenticator. All other fields under `auth` are passed through as that authenticator's config. Use this type when signing depends on the final request contents.
 
 ##### `aws_sigv4`
 

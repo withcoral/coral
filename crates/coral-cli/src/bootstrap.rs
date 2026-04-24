@@ -24,7 +24,10 @@ pub(crate) async fn bootstrap() -> Result<Bootstrap, BootstrapError> {
         });
     }
 
-    let server = ServerBuilder::new().start().await?;
+    let server = ServerBuilder::new()
+        .with_builtin_extensions()
+        .start()
+        .await?;
     let app = AppClient::connect(server.endpoint_uri()).await?;
     Ok(Bootstrap {
         app,
