@@ -6,7 +6,7 @@ use rmcp::{
     ErrorData,
     model::{CallToolResult, Content},
 };
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 #[derive(Debug, Clone)]
 pub(crate) struct ToolError {
@@ -45,11 +45,12 @@ pub(crate) fn tool_error_result(error: ToolError) -> CallToolResult {
     if let Some(reason) = &error.reason {
         obj.insert("reason".to_string(), Value::String(reason.clone()));
     }
-    for (key, value) in &error.metadata {
-        if !matches!(key.as_str(), "summary" | "detail" | "hint") {
-            obj.insert(key.clone(), Value::String(value.clone()));
-        }
-    }
+    let metadata = error
+        .metadata
+        .iter()
+        .map(|(key, value)| (key.clone(), Value::String(value.clone())))
+        .collect::<Map<_, _>>();
+    obj.insert("metadata".to_string(), Value::Object(metadata));
 
     let structured = json!({ "error": error_obj });
     let mut result = CallToolResult::structured_error(structured);
@@ -219,9 +220,14 @@ mod tests {
         let result = tool_error_result(error);
         let json = result.structured_content.expect("structured content");
         assert_eq!(json["error"]["reason"], "PROVIDER_REQUEST_FAILED");
-        assert_eq!(json["error"]["source"], "github");
-        assert_eq!(json["error"]["http_status"], "401");
         assert_eq!(json["error"]["retryable"], false);
+        assert_eq!(json["error"]["metadata"]["source"], "github");
+        assert_eq!(json["error"]["metadata"]["http_status"], "401");
+        // Reserved top-level fields must not be shadowed by provider metadata.
+        assert!(
+            json["error"]["source"].is_null(),
+            "provider metadata must not leak into the reserved top-level namespace"
+        );
     }
 
     #[test]
@@ -241,6 +247,37 @@ mod tests {
             result.structured_content.expect("structured content")["error"]["retryable"],
             true
         );
+    }
+
+    #[test]
+    fn provider_metadata_cannot_shadow_reserved_fields() {
+        // A misbehaving source could stuff keys like `retryable` or `grpc_code`
+        // into `ErrorInfo.metadata`. Nesting provider metadata under
+        // `error.metadata` keeps the top-level shape stable for clients that
+        // pattern-match on `retryable` / `reason` / `grpc_code`.
+        let status = build_coral_status(
+            "PROVIDER_REQUEST_FAILED",
+            vec![
+                ("summary", "Source error"),
+                ("detail", "boom"),
+                ("retryable", "true"),
+                ("grpc_code", "Ok"),
+                ("reason", "SPOOFED"),
+            ],
+            false,
+        );
+        let error = tool_error_from_status("Query", &status);
+        let result = tool_error_result(error);
+        let json = result.structured_content.expect("structured content");
+        assert_eq!(json["error"]["retryable"], false);
+        assert_eq!(
+            json["error"]["grpc_code"],
+            Code::FailedPrecondition.to_string()
+        );
+        assert_eq!(json["error"]["reason"], "PROVIDER_REQUEST_FAILED");
+        assert_eq!(json["error"]["metadata"]["retryable"], "true");
+        assert_eq!(json["error"]["metadata"]["grpc_code"], "Ok");
+        assert_eq!(json["error"]["metadata"]["reason"], "SPOOFED");
     }
 
     #[test]
