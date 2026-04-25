@@ -1,0 +1,37 @@
+name: Post release to Discord
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  notify-discord:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post to Discord
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_CHANGELOG_WEBHOOK }}
+          TAG_NAME: ${{ github.event.release.tag_name }}
+          RELEASE_NAME: ${{ github.event.release.name }}
+          RELEASE_BODY: ${{ github.event.release.body }}
+          RELEASE_URL: ${{ github.event.release.html_url }}
+        run: |
+          MAX_LEN=3500
+          BODY="$RELEASE_BODY"
+          if [ ${#BODY} -gt $MAX_LEN ]; then
+            BODY="${BODY:0:$MAX_LEN}..."
+          fi
+
+          jq -n \
+            --arg title "🪸 ${RELEASE_NAME:-$TAG_NAME}" \
+            --arg desc "$BODY" \
+            --arg url "$RELEASE_URL" \
+            '{
+              embeds: [{
+                title: $title,
+                description: $desc,
+                url: $url,
+                color: 16744272,
+                footer: { text: "Fresh from the reef" }
+              }]
+            }' | curl -sf -H "Content-Type: application/json" -d @- "$DISCORD_WEBHOOK"
