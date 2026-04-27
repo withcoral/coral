@@ -140,12 +140,26 @@ pub(crate) async fn print_source_info(
     verbose: bool,
 ) -> Result<(), anyhow::Error> {
     let canonical = source_name_arg(Some(name))?;
-    let sources = discover_sources(app).await?;
-    let source = sources
+
+    if let Some(available) = discover_sources(app)
+        .await?
+        .into_iter()
+        .find(|source| source.name == canonical)
+    {
+        print_available_source_info(&available, verbose);
+        return Ok(());
+    }
+
+    let installed = list_sources(app)
+        .await?
         .into_iter()
         .find(|source| source.name == canonical)
         .ok_or_else(|| anyhow::anyhow!("unknown source '{canonical}'"))?;
+    print_installed_source_info(&installed);
+    Ok(())
+}
 
+fn print_available_source_info(source: &AvailableSource, verbose: bool) {
     let status = if source.installed {
         style("installed").green().to_string()
     } else {
@@ -154,13 +168,14 @@ pub(crate) async fn print_source_info(
 
     println!("{}", style(&source.name).bold());
     println!("  Status:      {status}");
+    println!("  Origin:      {}", source_origin_label(source.origin));
     println!("  Version:     {}", source.version);
     if !source.description.is_empty() {
         println!("  Description: {}", source.description);
     }
 
     if source.inputs.is_empty() {
-        return Ok(());
+        return;
     }
 
     println!();
@@ -188,8 +203,34 @@ pub(crate) async fn print_source_info(
             println!("      {}", style(&input.hint).dim());
         }
     }
+}
 
-    Ok(())
+fn print_installed_source_info(source: &Source) {
+    println!("{}", style(&source.name).bold());
+    println!("  Status:      {}", style("installed").green());
+    println!("  Origin:      {}", source_origin_label(source.origin));
+    println!("  Version:     {}", source.version);
+
+    if source.variables.is_empty() && source.secrets.is_empty() {
+        return;
+    }
+
+    println!();
+    println!("  {}", style("Configured inputs").bold());
+    for variable in &source.variables {
+        println!(
+            "    {} {}",
+            style(&variable.key).bold(),
+            style("(variable)").dim()
+        );
+    }
+    for secret in &source.secrets {
+        println!(
+            "    {} {}",
+            style(&secret.key).bold(),
+            style("(secret)").dim()
+        );
+    }
 }
 
 pub(crate) async fn delete_source(app: &AppClient, name: &str) -> Result<(), anyhow::Error> {

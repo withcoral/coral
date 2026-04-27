@@ -239,6 +239,31 @@ async fn source_info_renders_metadata_for_available_source() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn source_info_falls_back_to_installed_imported_source() {
+    let server = MockServer::start().await;
+
+    let assert = server
+        .cmd()
+        .args(["source", "info", "jira"])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert!(stdout.contains("jira"), "expected source name: {stdout}");
+    assert!(
+        stdout.contains("installed"),
+        "expected installed status: {stdout}"
+    );
+    assert!(
+        stdout.contains("imported"),
+        "expected imported origin: {stdout}"
+    );
+    assert!(stdout.contains("2.0.0"), "expected version: {stdout}");
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn source_info_errors_for_unknown_source() {
     let server = MockServer::start().await;
 
