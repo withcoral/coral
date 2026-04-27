@@ -178,10 +178,7 @@ fn classify_filter(
     {
         return TableProviderFilterPushDown::Exact;
     }
-    if let Expr::IsTrue(inner)
-    | Expr::IsFalse(inner)
-    | Expr::IsNotTrue(inner)
-    | Expr::IsNotFalse(inner) = expr
+    if let Expr::IsTrue(inner) | Expr::IsFalse(inner) = expr
         && let Expr::Column(col) = inner.as_ref()
         && allowed.contains(col.name())
     {
@@ -302,15 +299,24 @@ mod tests {
     }
 
     #[test]
-    fn boolean_is_predicates_push_down_exactly() {
+    fn boolean_is_true_and_is_false_push_down_exactly() {
         for expr in [
             Expr::IsTrue(Box::new(col("descending"))),
             Expr::IsFalse(Box::new(col("descending"))),
+        ] {
+            let pushdown = classify_filter(&expr, &allowed(&["descending"]), &modes(&[]));
+            assert_eq!(pushdown, TableProviderFilterPushDown::Exact);
+        }
+    }
+
+    #[test]
+    fn null_inclusive_boolean_is_predicates_are_not_pushed_down() {
+        for expr in [
             Expr::IsNotTrue(Box::new(col("descending"))),
             Expr::IsNotFalse(Box::new(col("descending"))),
         ] {
             let pushdown = classify_filter(&expr, &allowed(&["descending"]), &modes(&[]));
-            assert_eq!(pushdown, TableProviderFilterPushDown::Exact);
+            assert_eq!(pushdown, TableProviderFilterPushDown::Unsupported);
         }
     }
 }
