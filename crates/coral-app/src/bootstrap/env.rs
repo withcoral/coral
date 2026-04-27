@@ -3,7 +3,6 @@
 use std::path::PathBuf;
 
 use coral_engine::QueryRuntimeContext;
-use directories::BaseDirs;
 
 use super::consts::CORAL_CONFIG_DIR;
 
@@ -17,7 +16,7 @@ impl AppEnvironment {
     pub(crate) fn discover() -> Self {
         Self {
             coral_config_dir_override: coral_config_dir_override(),
-            user_home_dir: BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()),
+            user_home_dir: etcetera::home_dir().ok(),
         }
     }
 

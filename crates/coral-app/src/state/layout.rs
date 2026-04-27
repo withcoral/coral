@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use directories::ProjectDirs;
+use etcetera::app_strategy::{AppStrategy, AppStrategyArgs, choose_native_strategy};
 
 use crate::bootstrap::AppError;
 use crate::sources::SourceName;
@@ -24,9 +24,17 @@ impl AppStateLayout {
         let config_dir = if let Some(config_dir) = config_dir_override {
             config_dir
         } else {
-            let dirs =
-                ProjectDirs::from("com", "withcoral", "coral").ok_or(AppError::MissingConfigDir)?;
-            dirs.config_dir().to_path_buf()
+            let strategy = choose_native_strategy(AppStrategyArgs {
+                top_level_domain: "com".to_string(),
+                author: "withcoral".to_string(),
+                app_name: "coral".to_string(),
+            })
+            .map_err(|_| AppError::MissingConfigDir)?;
+            #[cfg(target_os = "macos")]
+            let dir = strategy.data_dir();
+            #[cfg(not(target_os = "macos"))]
+            let dir = strategy.config_dir();
+            dir
         };
 
         Ok(Self {
