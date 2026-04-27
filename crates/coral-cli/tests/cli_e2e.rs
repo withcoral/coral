@@ -188,8 +188,9 @@ async fn source_info_renders_metadata_for_installed_source() {
         "expected hint to be hidden without --verbose: {stdout}"
     );
 
-    let requests = server.discover_sources_requests();
-    assert_eq!(requests.len(), 1, "expected one discover_sources call");
+    let requests = server.get_source_info_requests();
+    assert_eq!(requests.len(), 1, "expected one get_source_info call");
+    assert_eq!(requests[0].name, "github");
     assert_default_workspace(requests[0].workspace.as_ref());
 
     server.shutdown().await;
@@ -239,7 +240,7 @@ async fn source_info_renders_metadata_for_available_source() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn source_info_falls_back_to_installed_imported_source() {
+async fn source_info_renders_installed_imported_source() {
     let server = MockServer::start().await;
 
     let assert = server
@@ -259,6 +260,11 @@ async fn source_info_falls_back_to_installed_imported_source() {
         "expected imported origin: {stdout}"
     );
     assert!(stdout.contains("2.0.0"), "expected version: {stdout}");
+
+    let requests = server.get_source_info_requests();
+    assert_eq!(requests.len(), 1, "expected one get_source_info call");
+    assert_eq!(requests[0].name, "jira");
+    assert_default_workspace(requests[0].workspace.as_ref());
 
     server.shutdown().await;
 }

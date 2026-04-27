@@ -2,9 +2,9 @@
 
 use coral_api::v1::source_service_server::SourceService as SourceServiceApi;
 use coral_api::v1::{
-    AvailableSource, CreateBundledSourceRequest, DeleteSourceRequest, DiscoverSourcesRequest,
-    DiscoverSourcesResponse, GetSourceRequest, ImportSourceRequest, ListSourcesRequest,
-    ListSourcesResponse, Source, SourceInputKind, SourceInputSpec,
+    CreateBundledSourceRequest, DeleteSourceRequest, DiscoverSourcesRequest,
+    DiscoverSourcesResponse, GetSourceInfoRequest, GetSourceRequest, ImportSourceRequest,
+    ListSourcesRequest, ListSourcesResponse, Source, SourceInfo, SourceInputKind, SourceInputSpec,
     SourceOrigin as ProtoSourceOrigin, SourceSecret, SourceVariable, ValidateSourceRequest,
     ValidateSourceResponse,
 };
@@ -86,6 +86,20 @@ impl SourceServiceApi for SourceService {
             &workspace_name,
             source,
         )))
+    }
+
+    async fn get_source_info(
+        &self,
+        request: Request<GetSourceInfoRequest>,
+    ) -> Result<Response<SourceInfo>, Status> {
+        let request = request.into_inner();
+        let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+        let source_name = SourceName::parse(&request.name).map_err(app_status)?;
+        let source = self
+            .sources
+            .get_source_info(&workspace_name, &source_name)
+            .map_err(app_status)?;
+        Ok(Response::new(candidate_source_to_proto(source)))
     }
 
     async fn create_bundled_source(
@@ -186,8 +200,8 @@ fn proto_source_origin(origin: SourceOrigin) -> ProtoSourceOrigin {
     }
 }
 
-fn candidate_source_to_proto(source: CandidateSource) -> AvailableSource {
-    AvailableSource {
+fn candidate_source_to_proto(source: CandidateSource) -> SourceInfo {
+    SourceInfo {
         name: source.name.as_str().to_string(),
         description: source.description,
         version: source.version,

@@ -71,8 +71,8 @@ message SourceInputSpec {
   string hint = 5;
 }
 
-// One bundled or imported source available for installation.
-message AvailableSource {
+// One bundled or imported source metadata record.
+message SourceInfo {
   // Canonical source name.
   string name = 1;
   // Human-readable description.
@@ -83,7 +83,7 @@ message AvailableSource {
   repeated SourceInputSpec inputs = 4;
   // Whether a source with this name is already configured in the workspace.
   bool installed = 5;
-  // Where this available source came from.
+  // Where this source came from.
   SourceOrigin origin = 6;
 }
 
@@ -93,10 +93,10 @@ message DiscoverSourcesRequest {
   Workspace workspace = 1;
 }
 
-// Returns all bundled available sources.
+// Returns all bundled source metadata records.
 message DiscoverSourcesResponse {
   // Bundled sources compiled into this Coral build.
-  repeated AvailableSource sources = 1;
+  repeated SourceInfo sources = 1;
 }
 
 // Installs one bundled source by name.
@@ -140,6 +140,14 @@ message GetSourceRequest {
   // Owning workspace resource.
   Workspace workspace = 1;
   // Bare source name to fetch.
+  string name = 2;
+}
+
+// Fetches source metadata by identifier.
+message GetSourceInfoRequest {
+  // Owning workspace resource.
+  Workspace workspace = 1;
+  // Bare source name to fetch metadata for.
   string name = 2;
 }
 
@@ -202,6 +210,8 @@ service SourceService {
   rpc ListSources(ListSourcesRequest) returns (ListSourcesResponse);
   // Fetches one registered source.
   rpc GetSource(GetSourceRequest) returns (Source);
+  // Fetches metadata for one installed or bundled source.
+  rpc GetSourceInfo(GetSourceInfoRequest) returns (SourceInfo);
   // Installs one bundled source.
   rpc CreateBundledSource(CreateBundledSourceRequest) returns (Source);
   // Imports one user-provided source manifest.

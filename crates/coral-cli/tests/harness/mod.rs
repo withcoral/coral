@@ -14,11 +14,11 @@ use assert_cmd::Command;
 use coral_api::v1::query_service_server::{QueryService, QueryServiceServer};
 use coral_api::v1::source_service_server::{SourceService, SourceServiceServer};
 use coral_api::v1::{
-    AvailableSource, Column, CreateBundledSourceRequest, DeleteSourceRequest,
-    DiscoverSourcesRequest, DiscoverSourcesResponse, ExecuteSqlRequest, ExecuteSqlResponse,
+    Column, CreateBundledSourceRequest, DeleteSourceRequest, DiscoverSourcesRequest,
+    DiscoverSourcesResponse, ExecuteSqlRequest, ExecuteSqlResponse, GetSourceInfoRequest,
     GetSourceRequest, ImportSourceRequest, ListSourcesRequest, ListSourcesResponse,
-    ListTablesRequest, ListTablesResponse, Source, SourceInputKind, SourceInputSpec, SourceOrigin,
-    Table, ValidateSourceRequest, ValidateSourceResponse, Workspace,
+    ListTablesRequest, ListTablesResponse, Source, SourceInfo, SourceInputKind, SourceInputSpec,
+    SourceOrigin, Table, ValidateSourceRequest, ValidateSourceResponse, Workspace,
 };
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
@@ -105,7 +105,7 @@ fn mock_sql_response(sql: &str) -> ExecuteSqlResponse {
 fn mock_discover_response() -> DiscoverSourcesResponse {
     DiscoverSourcesResponse {
         sources: vec![
-            AvailableSource {
+            SourceInfo {
                 name: "github".to_string(),
                 description: "GitHub data".to_string(),
                 version: "1.0.0".to_string(),
@@ -119,7 +119,7 @@ fn mock_discover_response() -> DiscoverSourcesResponse {
                 installed: true,
                 origin: SourceOrigin::Bundled as i32,
             },
-            AvailableSource {
+            SourceInfo {
                 name: "slack".to_string(),
                 description: "Slack data".to_string(),
                 version: "2.1.0".to_string(),
@@ -139,6 +139,42 @@ fn mock_validate_response() -> ValidateSourceResponse {
             mock_table("github", "pull_requests"),
         ],
         query_tests: Vec::new(),
+    }
+}
+
+fn mock_source_info(name: &str) -> Result<SourceInfo, Status> {
+    match name {
+        "github" => Ok(SourceInfo {
+            name: "github".to_string(),
+            description: "GitHub data".to_string(),
+            version: "1.0.0".to_string(),
+            inputs: vec![SourceInputSpec {
+                key: "GITHUB_TOKEN".to_string(),
+                kind: SourceInputKind::Secret as i32,
+                required: true,
+                default_value: String::new(),
+                hint: "Create a token at github.com/settings/tokens".to_string(),
+            }],
+            installed: true,
+            origin: SourceOrigin::Bundled as i32,
+        }),
+        "slack" => Ok(SourceInfo {
+            name: "slack".to_string(),
+            description: "Slack data".to_string(),
+            version: "2.1.0".to_string(),
+            inputs: Vec::new(),
+            installed: false,
+            origin: SourceOrigin::Bundled as i32,
+        }),
+        "jira" => Ok(SourceInfo {
+            name: "jira".to_string(),
+            description: "Jira data".to_string(),
+            version: "2.0.0".to_string(),
+            inputs: Vec::new(),
+            installed: true,
+            origin: SourceOrigin::Imported as i32,
+        }),
+        _ => Err(Status::not_found(format!("unknown source '{name}'"))),
     }
 }
 
@@ -270,6 +306,7 @@ struct Captured {
     discover_sources: Mutex<Vec<DiscoverSourcesRequest>>,
     list_sources: Mutex<Vec<ListSourcesRequest>>,
     get_source: Mutex<Vec<GetSourceRequest>>,
+    get_source_info: Mutex<Vec<GetSourceInfoRequest>>,
     create_bundled_source: Mutex<Vec<CreateBundledSourceRequest>>,
     import_source: Mutex<Vec<ImportSourceRequest>>,
     delete_source: Mutex<Vec<DeleteSourceRequest>>,
@@ -387,6 +424,19 @@ impl SourceService for MockSourceService {
             .expect("get_source capture")
             .push(request.into_inner());
         Ok(Response::new(mock_source()))
+    }
+
+    async fn get_source_info(
+        &self,
+        request: Request<GetSourceInfoRequest>,
+    ) -> Result<Response<SourceInfo>, Status> {
+        let request = request.into_inner();
+        self.captured
+            .get_source_info
+            .lock()
+            .expect("get_source_info capture")
+            .push(request.clone());
+        Ok(Response::new(mock_source_info(&request.name)?))
     }
 
     async fn create_bundled_source(
@@ -535,6 +585,14 @@ impl MockServer {
             .list_sources
             .lock()
             .expect("list_sources capture")
+            .clone()
+    }
+
+    pub(crate) fn get_source_info_requests(&self) -> Vec<GetSourceInfoRequest> {
+        self.captured
+            .get_source_info
+            .lock()
+            .expect("get_source_info capture")
             .clone()
     }
 

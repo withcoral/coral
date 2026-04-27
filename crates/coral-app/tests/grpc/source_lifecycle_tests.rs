@@ -2,9 +2,9 @@ use std::fs;
 
 use coral_api::v1::{
     CreateBundledSourceRequest, DeleteSourceRequest, DiscoverSourcesRequest, ExecuteSqlRequest,
-    GetSourceRequest, ImportSourceRequest, ListTablesRequest, QueryTestFailure, QueryTestSuccess,
-    SourceOrigin, SourceSecret, SourceVariable, ValidateSourceRequest, Workspace,
-    query_test_result,
+    GetSourceInfoRequest, GetSourceRequest, ImportSourceRequest, ListTablesRequest,
+    QueryTestFailure, QueryTestSuccess, SourceOrigin, SourceSecret, SourceVariable,
+    ValidateSourceRequest, Workspace, query_test_result,
 };
 use coral_client::default_workspace;
 use tempfile::TempDir;
@@ -631,6 +631,69 @@ async fn discover_bundled_sources_returns_catalog_and_marks_installed_sources() 
         .find(|source| source.name == "github")
         .expect("github bundled source after install");
     assert!(github.installed);
+}
+
+#[tokio::test]
+async fn get_source_info_returns_available_bundled_metadata() {
+    let harness = GrpcHarness::new().await;
+
+    let info = harness
+        .source_client()
+        .get_source_info(Request::new(GetSourceInfoRequest {
+            workspace: Some(default_workspace()),
+            name: "github".to_string(),
+        }))
+        .await
+        .expect("get source info")
+        .into_inner();
+
+    assert_eq!(info.name, "github");
+    assert_eq!(info.origin, SourceOrigin::Bundled as i32);
+    assert!(!info.installed);
+    assert!(!info.description.is_empty());
+    assert!(!info.version.is_empty());
+    assert!(
+        info.inputs.iter().any(|input| input.key == "GITHUB_TOKEN"),
+        "expected bundled manifest inputs"
+    );
+}
+
+#[tokio::test]
+async fn get_source_info_uses_effective_installed_imported_manifest() {
+    let harness = GrpcHarness::new().await;
+
+    harness
+        .import_source(
+            fixture_manifest_with_inputs_yaml(),
+            vec![SourceVariable {
+                key: "API_BASE".to_string(),
+                value: "https://example.com".to_string(),
+            }],
+            vec![SourceSecret {
+                key: "API_TOKEN".to_string(),
+                value: "secret-token".to_string(),
+            }],
+        )
+        .await;
+
+    let info = harness
+        .source_client()
+        .get_source_info(Request::new(GetSourceInfoRequest {
+            workspace: Some(default_workspace()),
+            name: "secured_messages".to_string(),
+        }))
+        .await
+        .expect("get source info")
+        .into_inner();
+
+    assert_eq!(info.name, "secured_messages");
+    assert_eq!(info.version, "0.1.0");
+    assert_eq!(info.origin, SourceOrigin::Imported as i32);
+    assert!(info.installed);
+    assert_eq!(info.inputs.len(), 2);
+    assert_eq!(info.inputs[0].key, "API_BASE");
+    assert_eq!(info.inputs[0].default_value, "https://example.com");
+    assert_eq!(info.inputs[1].key, "API_TOKEN");
 }
 
 #[tokio::test]

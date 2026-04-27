@@ -1,4 +1,4 @@
-use coral_api::v1::{AvailableSource, ExecuteSqlRequest, Source};
+use coral_api::v1::{ExecuteSqlRequest, Source, SourceInfo};
 use coral_client::{
     AppClient, decode_execute_sql_response, default_workspace, format_batches_table,
 };
@@ -82,7 +82,7 @@ pub(crate) async fn run(app: &AppClient) -> Result<(), anyhow::Error> {
 
 fn select_top_level(
     theme: &ColorfulTheme,
-    bundled_sources: &[AvailableSource],
+    bundled_sources: &[SourceInfo],
 ) -> Result<TopLevelChoice, anyhow::Error> {
     let name_width = bundled_sources
         .iter()
@@ -121,7 +121,7 @@ fn select_top_level(
     }
 }
 
-fn format_source_list_item(source: &AvailableSource, name_width: usize) -> String {
+fn format_source_list_item(source: &SourceInfo, name_width: usize) -> String {
     let check = if source.installed { "✓ " } else { "  " };
     let preview = if source.description.is_empty() {
         String::new()
@@ -137,7 +137,7 @@ fn format_source_list_item(source: &AvailableSource, name_width: usize) -> Strin
 async fn run_installed_source_menu(
     app: &AppClient,
     theme: &ColorfulTheme,
-    source: &AvailableSource,
+    source: &SourceInfo,
 ) -> Result<(), anyhow::Error> {
     let items = ["Update credentials", "Validate", "Back"];
     let actions = [
@@ -184,10 +184,7 @@ async fn run_installed_source_menu(
     Ok(())
 }
 
-async fn run_add_bundled_source(
-    app: &AppClient,
-    source: &AvailableSource,
-) -> Result<(), anyhow::Error> {
+async fn run_add_bundled_source(app: &AppClient, source: &SourceInfo) -> Result<(), anyhow::Error> {
     let inputs = source
         .inputs
         .iter()
@@ -354,13 +351,13 @@ fn truncate_description(description: &str, max_len: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use coral_api::v1::AvailableSource;
+    use coral_api::v1::SourceInfo;
 
     use super::{format_source_list_item, truncate_description};
 
     #[test]
     fn source_list_item_shows_checkmark_for_installed() {
-        let source = AvailableSource {
+        let source = SourceInfo {
             name: "github".to_string(),
             description: "Query repositories and issues".to_string(),
             version: "1.0.0".to_string(),
@@ -376,7 +373,7 @@ mod tests {
 
     #[test]
     fn source_list_item_shows_space_for_uninstalled() {
-        let source = AvailableSource {
+        let source = SourceInfo {
             name: "slack".to_string(),
             description: "Send and receive messages".to_string(),
             version: "1.0.0".to_string(),
@@ -391,7 +388,7 @@ mod tests {
 
     #[test]
     fn source_list_item_aligns_names() {
-        let short = AvailableSource {
+        let short = SourceInfo {
             name: "gh".to_string(),
             description: "GitHub".to_string(),
             version: "1.0.0".to_string(),
@@ -399,7 +396,7 @@ mod tests {
             installed: false,
             origin: 1,
         };
-        let long = AvailableSource {
+        let long = SourceInfo {
             name: "statusgator".to_string(),
             description: "Status pages".to_string(),
             version: "1.0.0".to_string(),

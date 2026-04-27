@@ -79,6 +79,30 @@ impl SourceManager {
         ))
     }
 
+    pub(crate) fn get_source_info(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> Result<CandidateSource, AppError> {
+        match self.config_store.get_source(workspace_name, source_name) {
+            Ok(source) => {
+                return Ok(
+                    resolve_installed_manifest(workspace_name, &source, &self.layout)?.candidate,
+                );
+            }
+            Err(AppError::SourceNotFound(_)) => {}
+            Err(error) => return Err(error),
+        }
+
+        match load_bundled_source(source_name) {
+            Ok(bundled) => self.describe_bundled_source(workspace_name, &bundled.manifest_yaml),
+            Err(AppError::InvalidInput(_)) => {
+                Err(AppError::SourceNotFound(source_name.to_string()))
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     pub(crate) fn discover_sources(
         &self,
         workspace_name: &WorkspaceName,

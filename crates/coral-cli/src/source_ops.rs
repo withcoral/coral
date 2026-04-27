@@ -3,9 +3,9 @@ use std::io::{IsTerminal, stdin, stdout};
 use std::path::Path;
 
 use coral_api::v1::{
-    AvailableSource, CreateBundledSourceRequest, DeleteSourceRequest, DiscoverSourcesRequest,
+    CreateBundledSourceRequest, DeleteSourceRequest, DiscoverSourcesRequest, GetSourceInfoRequest,
     ImportSourceRequest, ListSourcesRequest, QueryTestFailure, QueryTestSuccess, Source,
-    SourceInputKind, SourceInputSpec, SourceOrigin, SourceSecret, SourceVariable,
+    SourceInfo, SourceInputKind, SourceInputSpec, SourceOrigin, SourceSecret, SourceVariable,
     ValidateSourceRequest, ValidateSourceResponse, query_test_result,
 };
 use coral_client::{AppClient, default_workspace};
@@ -52,9 +52,7 @@ impl TableDisplayLimit {
     pub(crate) const DEFAULT: Self = Self::Max(MAX_TABLES_PER_SCHEMA);
 }
 
-pub(crate) async fn discover_sources(
-    app: &AppClient,
-) -> Result<Vec<AvailableSource>, anyhow::Error> {
+pub(crate) async fn discover_sources(app: &AppClient) -> Result<Vec<SourceInfo>, anyhow::Error> {
     Ok(app
         .source_client()
         .discover_sources(Request::new(DiscoverSourcesRequest {
@@ -139,27 +137,19 @@ pub(crate) async fn print_source_info(
     name: &str,
     verbose: bool,
 ) -> Result<(), anyhow::Error> {
-    let canonical = source_name_arg(Some(name))?;
-
-    if let Some(available) = discover_sources(app)
+    let source = app
+        .source_client()
+        .get_source_info(Request::new(GetSourceInfoRequest {
+            workspace: Some(default_workspace()),
+            name: source_name_arg(Some(name))?,
+        }))
         .await?
-        .into_iter()
-        .find(|source| source.name == canonical)
-    {
-        print_available_source_info(&available, verbose);
-        return Ok(());
-    }
-
-    let installed = list_sources(app)
-        .await?
-        .into_iter()
-        .find(|source| source.name == canonical)
-        .ok_or_else(|| anyhow::anyhow!("unknown source '{canonical}'"))?;
-    print_installed_source_info(&installed);
+        .into_inner();
+    print_source_info_response(&source, verbose);
     Ok(())
 }
 
-fn print_available_source_info(source: &AvailableSource, verbose: bool) {
+fn print_source_info_response(source: &SourceInfo, verbose: bool) {
     let status = if source.installed {
         style("installed").green().to_string()
     } else {
@@ -202,34 +192,6 @@ fn print_available_source_info(source: &AvailableSource, verbose: bool) {
         if verbose && !input.hint.is_empty() {
             println!("      {}", style(&input.hint).dim());
         }
-    }
-}
-
-fn print_installed_source_info(source: &Source) {
-    println!("{}", style(&source.name).bold());
-    println!("  Status:      {}", style("installed").green());
-    println!("  Origin:      {}", source_origin_label(source.origin));
-    println!("  Version:     {}", source.version);
-
-    if source.variables.is_empty() && source.secrets.is_empty() {
-        return;
-    }
-
-    println!();
-    println!("  {}", style("Configured inputs").bold());
-    for variable in &source.variables {
-        println!(
-            "    {} {}",
-            style(&variable.key).bold(),
-            style("(variable)").dim()
-        );
-    }
-    for secret in &source.secrets {
-        println!(
-            "    {} {}",
-            style(&secret.key).bold(),
-            style("(secret)").dim()
-        );
     }
 }
 
