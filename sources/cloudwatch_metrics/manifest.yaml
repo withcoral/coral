@@ -211,7 +211,10 @@ tables:
         type: Timestamp
         nullable: true
         description: Datapoint timestamp.
-        expr: {kind: path, path: [Timestamp]}
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr: {kind: path, path: [Timestamp]}
       - name: average
         type: Float64
         nullable: true
@@ -374,7 +377,10 @@ tables:
         type: Timestamp
         nullable: true
         description: Last state update timestamp.
-        expr: {kind: path, path: [StateUpdatedTimestamp]}
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr: {kind: path, path: [StateUpdatedTimestamp]}
     filters:
       - name: alarm_name_prefix
       - name: action_prefix
@@ -452,7 +458,10 @@ tables:
         type: Timestamp
         nullable: true
         description: Last state update timestamp.
-        expr: {kind: path, path: [StateUpdatedTimestamp]}
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr: {kind: path, path: [StateUpdatedTimestamp]}
     filters:
       - name: alarm_name_prefix
       - name: action_prefix
@@ -509,7 +518,10 @@ tables:
         type: Timestamp
         nullable: true
         description: History item timestamp.
-        expr: {kind: path, path: [Timestamp]}
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr: {kind: path, path: [Timestamp]}
       - name: history_item_type
         type: Utf8
         nullable: true
@@ -567,7 +579,10 @@ tables:
         type: Timestamp
         nullable: true
         description: Last modified timestamp.
-        expr: {kind: path, path: [LastModified]}
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr: {kind: path, path: [LastModified]}
       - name: size
         type: Int64
         nullable: true
@@ -662,12 +677,18 @@ tables:
         type: Timestamp
         nullable: true
         description: Creation timestamp.
-        expr: {kind: path, path: [CreationDate]}
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr: {kind: path, path: [CreationDate]}
       - name: last_update_date
         type: Timestamp
         nullable: true
         description: Last update timestamp.
-        expr: {kind: path, path: [LastUpdateDate]}
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr: {kind: path, path: [LastUpdateDate]}
 
   - name: metric_stream
     description: Details for one CloudWatch metric stream returned by GetMetricStream.
