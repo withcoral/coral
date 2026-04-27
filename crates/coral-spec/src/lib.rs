@@ -85,15 +85,16 @@ mod schema;
 mod template;
 mod validate;
 
+pub use backends::http::{AuthSpec, BasicAuthSpec, CustomAuthSpec, HeaderAuthSpec};
 pub(crate) use common::validate_test_queries;
 pub use common::{
-    AuthSpec, BodyFieldSpec, ColumnSpec, ExprSpec, FilterMode, FilterSpec, HeaderSpec, HttpMethod,
+    BodyFieldSpec, ColumnSpec, ExprSpec, FilterMode, FilterSpec, HeaderSpec, HttpMethod,
     ManifestDataType, PageSizeSpec, PaginationMode, PaginationSpec, QueryParamSpec,
     RequestRouteSpec, RequestSpec, ResponseSpec, RowStrategy, SourceBackend, SourceManifestCommon,
     TableCommon, TimestampInput, ValidatedPagination, ValidatedPaginationMode, ValueSourceSpec,
 };
 pub use error::{ManifestError, Result};
-pub use inputs::{ManifestInputKind, ManifestInputSpec};
+pub use inputs::{ManifestInputKind, ManifestInputSpec, resolve_inputs};
 pub use loader::load_manifest_path;
 pub use parser::{
     ValidatedSourceManifest, parse_source_manifest_value, parse_source_manifest_yaml,

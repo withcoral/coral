@@ -94,7 +94,7 @@ mod tests {
                 ("hint", "Add a constant equality filter on `repo`."),
                 ("schema", "github"),
                 ("table", "issues"),
-                ("field", "repo"),
+                ("column", "repo"),
             ],
             false,
         );

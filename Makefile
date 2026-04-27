@@ -41,13 +41,13 @@ fix-sources:
 #   make docs-check      # CI freshness check: non-zero exit if stale
 
 docs-generate:
-	cargo run -p xtask -- \
+	cargo run -p xtask -- generate-docs \
 	  --sources-dir sources \
 	  --index docs/reference/bundled-sources.mdx \
 	  --docs-json docs/docs.json
 
 docs-check:
-	cargo run -p xtask -- \
+	cargo run -p xtask -- generate-docs \
 	  --sources-dir sources \
 	  --index docs/reference/bundled-sources.mdx \
 	  --docs-json docs/docs.json \

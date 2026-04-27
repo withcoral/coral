@@ -13,6 +13,20 @@ A source spec tells Coral how to connect to an API or read a local dataset, what
   withcoral/skills` to help your coding agent write source specs.
 </Tip>
 
+## Will this work for my source?
+
+How much effort a custom source takes depends on what you are connecting to.
+
+File-based sources (JSONL, CSV, Parquet) are the simplest case — define the file location and columns, and the source is ready to query.
+
+API-backed sources vary in difficulty. The source spec model is designed for APIs that have:
+
+- **Long-lived, non-SSO API credentials** — an API key, personal access token, or service account that does not require a browser-based login flow
+- **Structured, accessible documentation** — an OpenAPI spec, GraphQL schema, or clearly organized REST docs that describe endpoints and response shapes
+- **Real data to validate against** — actual records in the account so you can confirm the source is returning the expected results during development
+
+If you are unsure whether your API is a good candidate, ask us in [Discord](https://withcoral.com/discord) before getting started.
+
 ## Agent-driven authoring
 
 Source authoring works well as an agent-driven workflow. Point your coding agent at the Coral CLI and the [source spec reference](/reference/source-spec-reference), give it the API docs or describe the endpoints you want, and let it iterate:
@@ -23,6 +37,24 @@ Source authoring works well as an agent-driven workflow. Point your coding agent
 4. Validates with `coral source test my_source`
 5. Inspects `coral.tables`, `coral.columns` and `coral.inputs` to check the shape
 6. Refines and repeats until the tables look right
+
+## Column naming for nested fields
+
+When a source exposes nested API fields as separate SQL columns, use double underscores (`__`) to flatten the path into a single column name.
+
+- `assignee__name` means "the `name` field under `assignee`"
+- `repository__owner__login` means `repository.owner.login`
+
+This matches the naming convention used across bundled sources and keeps the mapping easy to read in both SQL and `coral.columns`. Treat the full flattened name as the column name in queries; it is not dot notation.
+
+```sql
+SELECT title, assignee__name
+FROM github.issues
+WHERE owner = 'withcoral' AND repo = 'coral'
+LIMIT 5
+```
+
+If you are consuming a source, inspect `coral.columns` to see the exact names Coral exposes. If you are authoring a source, prefer `parent__child` style names for flattened fields so users can recognize related data consistently.
 
 ## Example: local JSONL source
 
@@ -115,6 +147,8 @@ Use read-only SQL in `test_queries`. Prefer bounded checks such as `SELECT * FRO
 
 To connect an HTTP API, the source spec declares the base URL, auth, endpoints, and response shape.
 
+For authentication, Coral supports three top-level `auth.type` modes. Use `HeaderAuth` for declarative headers such as bearer tokens or API keys, `BasicAuth` for username/password HTTP Basic authentication, and `CustomAuth` for named request authenticators that need runtime logic such as AWS SigV4 signing. The example below uses `HeaderAuth`; for the full auth field reference and additional examples, see [HTTP-backed tables](/reference/source-spec-reference#http-backed-tables).
+
 ```yaml
 name: demo_api
 version: 0.1.0
@@ -130,6 +164,7 @@ inputs:
     hint: Bearer token for the API
 base_url: "{{input.API_BASE}}"
 auth:
+  type: HeaderAuth
   headers:
     - name: Authorization
       from: template
@@ -158,7 +193,7 @@ tables:
         type: Utf8
 ```
 
-When you run `coral source add --file`, Coral prompts for the declared `inputs` interactively. `kind: variable` values go to source variables; `kind: secret` values go to the secret store.
+When you run `coral source add --file`, Coral reads each declared `input` from an environment variable of the same name, or prompts for them when you pass `--interactive`. `kind: variable` values go to source variables; `kind: secret` values go to the secret store.
 
 For the full set of HTTP response, pagination, auth, and column fields, see [HTTP-backed tables](/reference/source-spec-reference#http-backed-tables).
 

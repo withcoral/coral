@@ -1,0 +1,19 @@
+[package]
+name = "coral-auth-aws"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+aws-credential-types = "1.2"
+aws-sigv4 = "1.4"
+coral-engine.workspace = true
+coral-spec.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true

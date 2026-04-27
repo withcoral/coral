@@ -1,13 +1,10 @@
+use std::sync::Arc;
+
+use coral_app::AwsEngineExtensionsProvider;
 use coral_client::{
     AppClient, ClientError,
     local::{LocalServerError, RunningServer, ServerBuilder},
 };
-
-#[cfg(feature = "cli-test-server")]
-use std::env;
-
-#[cfg(feature = "cli-test-server")]
-const CORAL_ENDPOINT_ENV: &str = "CORAL_ENDPOINT";
 
 pub(crate) struct Bootstrap {
     pub(crate) app: AppClient,
@@ -30,7 +27,9 @@ pub(crate) async fn bootstrap() -> Result<Bootstrap, BootstrapError> {
         });
     }
 
-    let server = ServerBuilder::new().start().await?;
+    let server = configure_server_builder(ServerBuilder::new())
+        .start()
+        .await?;
     let app = AppClient::connect(server.endpoint_uri()).await?;
     Ok(Bootstrap {
         app,
@@ -38,15 +37,13 @@ pub(crate) async fn bootstrap() -> Result<Bootstrap, BootstrapError> {
     })
 }
 
+fn configure_server_builder(builder: ServerBuilder) -> ServerBuilder {
+    builder.add_engine_extensions_provider(Arc::new(AwsEngineExtensionsProvider))
+}
+
 #[cfg(feature = "cli-test-server")]
-#[allow(
-    clippy::disallowed_methods,
-    reason = "This feature-gated test hook owns the CORAL_ENDPOINT bootstrap override."
-)]
 fn bootstrap_endpoint() -> Option<String> {
-    env::var_os(CORAL_ENDPOINT_ENV)
-        .and_then(|value| value.into_string().ok())
-        .filter(|value| !value.is_empty())
+    coral_cli::env::bootstrap_endpoint()
 }
 
 #[cfg(not(feature = "cli-test-server"))]

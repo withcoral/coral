@@ -161,7 +161,7 @@ fn installed_source_to_proto(workspace_name: &WorkspaceName, source: InstalledSo
     Source {
         workspace: Some(workspace_to_proto(workspace_name)),
         name: source.name.as_str().to_string(),
-        version: source.version,
+        version: source.version.unwrap_or_default(),
         secrets: source
             .secrets
             .into_iter()

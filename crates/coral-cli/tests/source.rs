@@ -31,6 +31,7 @@ fn source_test_errors_when_required_secret_is_missing() {
       TEST_API_KEY:
         kind: secret
     auth:
+      type: HeaderAuth
       headers:
         - name: Authorization
           from: template

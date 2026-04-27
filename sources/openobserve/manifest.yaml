@@ -24,11 +24,14 @@ inputs:
       Example: `echo -n 'user@example.com:password' | base64`.
 base_url: "{{input.OPENOBSERVE_URL}}"
 auth:
+  type: HeaderAuth
   headers:
     - name: Authorization
       from: template
       template: "Basic {{input.OPENOBSERVE_BASIC_AUTH}}"
 
+test_queries:
+  - SELECT * FROM openobserve.streams LIMIT 1
 tables:
   - name: streams
     description: List available OpenObserve streams.

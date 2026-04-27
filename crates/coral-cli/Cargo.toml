@@ -25,6 +25,7 @@ tokio.workspace = true
 tonic.workspace = true
 
 coral-api.workspace = true
+coral-app.workspace = true
 coral-client.workspace = true
 coral-spec.workspace = true
 coral-mcp.workspace = true

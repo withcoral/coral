@@ -22,6 +22,7 @@ inputs:
       See [PostHog API docs](https://posthog.com/docs/api).
 base_url: "{{input.POSTHOG_API_BASE}}"
 auth:
+  type: HeaderAuth
   headers:
     - name: Authorization
       from: template
@@ -31,6 +32,10 @@ test_queries:
 tables:
   - name: actions
     description: project_actions
+    guide: |
+      Use this table to inspect saved action definitions. Requires
+      `project_id`, typically from `posthog.projects`. Pass `id` to hit
+      the single-record endpoint when you need details for one row.
     filters:
       - name: format
         required: false
@@ -442,6 +447,9 @@ tables:
             - user_access_level
   - name: active
     description: Get active breakpoints (External API)
+    guide: |
+      Use this table to inspect active. Requires `project_id`, typically
+      from `posthog.projects`.
     filters:
       - name: enabled
         required: false
@@ -542,6 +550,11 @@ tables:
             - repository
   - name: activity
     description: Create, Read, Update and Delete Warehouse Tables.
+    guide: |
+      Use this table to review warehouse activity records. Requires
+      `environment_id` from the related PostHog environment or API
+      response. Pass `id` to hit the single-record endpoint when you
+      need details for one row.
     filters:
       - name: environment_id
         required: true
@@ -841,6 +854,11 @@ tables:
           key: project_id
   - name: activity_log
     description: project_activity_log
+    guide: |
+      Use this table to review project activity log entries. Requires
+      `project_id`, typically from `posthog.projects`. Best used after
+      inventory tables identify the entity or time range you want to
+      investigate.
     filters:
       - name: item_id
         required: false
@@ -1072,6 +1090,11 @@ tables:
             - was_impersonated
   - name: advanced_activity_logs
     description: project_advanced_activity_logs
+    guide: |
+      Use this table to review advanced activity log entries. Requires
+      `project_id`, typically from `posthog.projects`. Best used after
+      inventory tables identify the entity or time range you want to
+      investigate.
     filters:
       - name: project_id
         required: true
@@ -1268,6 +1291,11 @@ tables:
             - was_impersonated
   - name: alerts
     description: environment_alerts
+    guide: |
+      Use this table to inspect alert configurations. Requires
+      `environment_id` from the related PostHog environment or API
+      response. Pass `id` to hit the single-record endpoint when you
+      need details for one row.
     filters:
       - name: environment_id
         required: true
@@ -1950,6 +1978,10 @@ tables:
   - name: annotations
     description: Create, Read, Update and Delete annotations. [See docs](https://posthog.com/docs/data/annotations) for more
       information on annotations.
+    guide: |
+      Use this table to inspect annotations. Requires `project_id`,
+      typically from `posthog.projects`. Pass `id` to hit the single-
+      record endpoint when you need details for one row.
     filters:
       - name: project_id
         required: true
@@ -2217,6 +2249,10 @@ tables:
             - updated_at
   - name: assignment_rules
     description: environment_error_tracking_assignment_rules
+    guide: |
+      Use this table to inspect assignment rules. Requires `project_id`,
+      typically from `posthog.projects`. Pass `id` to hit the single-
+      record endpoint when you need details for one row.
     filters:
       - name: project_id
         required: true
@@ -2327,6 +2363,9 @@ tables:
             - updated_at
   - name: available_filters
     description: project_advanced_activity_logs_available_filters
+    guide: |
+      Use this table to inspect available filters for a query surface.
+      Requires `project_id`, typically from `posthog.projects`.
     filters:
       - name: project_id
         required: true
@@ -2526,6 +2565,11 @@ tables:
       ViewSet for BatchExportBackfill models.
 
       Allows creating and reading backfills, but not updating or deleting them.
+    guide: |
+      Use this table to inspect backfill runs. Requires
+      `batch_export_id`; fetch candidate values from
+      `posthog.batch_exports` when available. Requires `environment_id`
+      from the related PostHog environment or API response.
     filters:
       - name: batch_export_id
         required: true
@@ -2750,6 +2794,10 @@ tables:
           key: project_id
   - name: batch_exports
     description: environment_batch_exports
+    guide: |
+      Use this table to inspect batch exports. Requires `environment_id`
+      from the related PostHog environment or API response. Pass `id` to
+      hit the single-record endpoint when you need details for one row.
     filters:
       - name: environment_id
         required: true
@@ -3150,6 +3198,10 @@ tables:
           key: project_id
   - name: batch_jobs
     description: environment_hog_flow_batch_jobs
+    guide: |
+      Use this table to inspect batch jobs. Requires `environment_id`
+      from the related PostHog environment or API response. Pass `id` to
+      hit the single-record endpoint when you need details for one row.
     filters:
       - name: environment_id
         required: true
@@ -3357,6 +3409,9 @@ tables:
           key: project_id
   - name: breakpoint_hits
     description: Get breakpoint hits
+    guide: |
+      Use this table to inspect live debugger breakpoint hits. Requires
+      `project_id`, typically from `posthog.projects`.
     filters:
       - name: breakpoint_ids
         required: false
@@ -3471,6 +3526,10 @@ tables:
             - variables
   - name: by_name
     description: Get event definition by exact name
+    guide: |
+      Use this table to inspect by name. Use `name` to narrow the result
+      set before doing heavier joins or exports. Requires `project_id`,
+      typically from `posthog.projects`.
     filters:
       - name: name
         required: true
@@ -3535,6 +3594,10 @@ tables:
             - properties
   - name: cohorts
     description: project_cohorts
+    guide: |
+      Start here to inventory cohorts. Requires `project_id`, typically
+      from `posthog.projects`. Pass `id` to hit the single-record
+      endpoint when you need details for one row.
     filters:
       - name: project_id
         required: true
@@ -3868,6 +3931,10 @@ tables:
             - version
   - name: collaborators
     description: environment_dashboard_collaborators
+    guide: |
+      Use this table to inspect dashboard collaborators. Requires
+      `dashboard_id` from the relevant dashboard listing. Requires
+      `project_id`, typically from `posthog.projects`.
     filters:
       - name: dashboard_id
         required: true
@@ -4039,6 +4106,10 @@ tables:
             - user_uuid
   - name: connection_token
     description: Get sandbox connection token
+    guide: |
+      Use this table to inspect connection token. Pass `id` to hit the
+      single-record endpoint when you need details for one row. Requires
+      `project_id`, typically from `posthog.projects`.
     filters:
       - name: id
         required: true
@@ -4093,6 +4164,10 @@ tables:
             - token
   - name: connections
     description: Create, Read, Update and Delete External data Sources.
+    guide: |
+      Use this table to inspect external data connections. Requires
+      `environment_id` from the related PostHog environment or API
+      response.
     filters:
       - name: environment_id
         required: true
@@ -4183,6 +4258,9 @@ tables:
           key: project_id
   - name: conversations
     description: environment_conversations
+    guide: |
+      Use this table to inspect conversations. Requires `project_id`,
+      typically from `posthog.projects`.
     filters:
       - name: project_id
         required: true
@@ -4438,6 +4516,9 @@ tables:
             - uuid
   - name: counts
     description: Review state counts for the runs list.
+    guide: |
+      Use this table to inspect counts. Requires `project_id`, typically
+      from `posthog.projects`.
     filters:
       - name: project_id
         required: true
@@ -4496,6 +4577,10 @@ tables:
             - stale
   - name: customer_profile_configs
     description: environment_customer_profile_configs
+    guide: |
+      Use this table to inspect customer profile configs. Requires
+      `project_id`, typically from `posthog.projects`. Pass `id` to hit
+      the single-record endpoint when you need details for one row.
     filters:
       - name: project_id
         required: true
@@ -4587,6 +4672,10 @@ tables:
             - updated_at
   - name: dashboard_templates
     description: project_dashboard_templates
+    guide: |
+      Use this table to inspect dashboard templates. Requires
+      `project_id`, typically from `posthog.projects`. Pass `id` to hit
+      the single-record endpoint when you need details for one row.
     filters:
       - name: is_featured
         required: false
@@ -4764,6 +4853,11 @@ tables:
             - variables
   - name: data_color_themes
     description: environment_data_color_themes
+    guide: |
+      Use this table to inspect data color themes. Requires
+      `environment_id` from the related PostHog environment or API
+      response. Pass `id` to hit the single-record endpoint when you
+      need details for one row.
     filters:
       - name: environment_id
         required: true
@@ -4943,6 +5037,10 @@ tables:
           key: project_id
   - name: dataset_items
     description: environment_dataset_items
+    guide: |
+      Use this table to inspect dataset items. Requires `environment_id`
+      from the related PostHog environment or API response. Pass `id` to
+      hit the single-record endpoint when you need details for one row.
     filters:
       - name: dataset
         required: false
@@ -5188,6 +5286,10 @@ tables:
           key: project_id
   - name: datasets
     description: environment_datasets
+    guide: |
+      Use this table to inspect datasets. Requires `environment_id` from
+      the related PostHog environment or API response. Pass `id` to hit
+      the single-record endpoint when you need details for one row.
     filters:
       - name: environment_id
         required: true
@@ -5451,6 +5553,11 @@ tables:
           key: project_id
   - name: dependencies
     description: Return the count of immediate upstream and downstream dependencies for this saved query.
+    guide: |
+      Use this table to inspect dependency counts between configs.
+      Requires `environment_id` from the related PostHog environment or
+      API response. Pass `id` to hit the single-record endpoint when you
+      need details for one row.
     filters:
       - name: environment_id
         required: true
@@ -5750,6 +5857,10 @@ tables:
           key: project_id
   - name: dependent_configs
     description: Get evaluations using this key and alternative keys for replacement.
+    guide: |
+      Use this table to inspect dependent configs. Pass `id` to hit the
+      single-record endpoint when you need details for one row. Requires
+      `project_id`, typically from `posthog.projects`.
     filters:
       - name: id
         required: true
@@ -5953,6 +6064,10 @@ tables:
             - state
   - name: dependent_flags
     description: Get other active flags that depend on this flag.
+    guide: |
+      Use this table to inspect dependent flags. Pass `id` to hit the
+      single-record endpoint when you need details for one row. Requires
+      `project_id`, typically from `posthog.projects`.
     filters:
       - name: id
         required: true
@@ -6011,6 +6126,10 @@ tables:
       RESTful API for managing desktop meeting recordings.
 
       Standard CRUD operations plus transcript management as a subresource.
+    guide: |
+      Use this table to inspect desktop recordings. Requires
+      `project_id`, typically from `posthog.projects`. Pass `id` to hit
+      the single-record endpoint when you need details for one row.
     filters:
       - name: project_id
         required: true
@@ -6262,6 +6381,10 @@ tables:
             - video_url
   - name: domains
     description: domains
+    guide: |
+      Use this table to inspect verified domains. Requires
+      `organization_id` from `posthog.organizations`. Pass `id` to hit
+      the single-record endpoint when you need details for one row.
     filters:
       - name: organization_id
         required: true
@@ -6421,6 +6544,10 @@ tables:
             - verified_at
   - name: draft_status
     description: Lightweight polling endpoint for draft change detection.
+    guide: |
+      Use this table to inspect draft status for a pending change. Pass
+      `id` to hit the single-record endpoint when you need details for
+      one row. Requires `project_id`, typically from `posthog.projects`.
     filters:
       - name: id
         required: true
@@ -6473,6 +6600,10 @@ tables:
             - updated_at
   - name: early_access_feature
     description: project_early_access_feature
+    guide: |
+      Use this table to inspect early access feature. Requires
+      `project_id`, typically from `posthog.projects`. Pass `id` to hit
+      the single-record endpoint when you need details for one row.
     filters:
       - name: project_id
         required: true
@@ -6707,6 +6838,11 @@ tables:
             - stage
   - name: elements
     description: environment_elements
+    guide: |
+      Use this table to inspect event elements. Requires
+      `environment_id` from the related PostHog environment or API
+      response. Pass `id` to hit the single-record endpoint when you
+      need details for one row.
     filters:
       - name: environment_id
         required: true
@@ -6837,6 +6973,9 @@ tables:
           key: project_id
   - name: endpoints
     description: List all endpoints for the team.
+    guide: |
+      Use this table to inspect endpoints. Requires `environment_id`
+      from the related PostHog environment or API response.
     filters:
       - name: created_by
         required: false
@@ -7290,6 +7429,11 @@ tables:
           key: project_id
   - name: environment_llm_prompt_name
     description: environment_llm_prompts_name
+    guide: |
+      Use this table to inspect environment llm prompt name. Requires
+      `project_id`, typically from `posthog.projects`. Use `prompt_name`
+      from `posthog.llm_prompts` when drilling into prompt-specific
+      endpoints.
     filters:
       - name: project_id
         required: true
@@ -7419,6 +7563,11 @@ tables:
             - version_count
   - name: environment_llm_prompt_resolve_name
     description: environment_llm_prompts_resolve_name
+    guide: |
+      Use this table to inspect environment llm prompt resolve name.
+      Requires `project_id`, typically from `posthog.projects`. Use
+      `prompt_name` from `posthog.llm_prompts` when drilling into
+      prompt-specific endpoints.
     filters:
       - name: before_version
         required: false
@@ -7614,6 +7763,11 @@ tables:
           key: version_id
   - name: environment_log_alerts
     description: environment_logs_alerts
+    guide: |
+      Use this table to inspect environment log alerts. Requires
+      `environment_id` from the related PostHog environment or API
+      response. Pass `id` to hit the single-record endpoint when you
+      need details for one row.
     filters:
       - name: environment_id
         required: true
@@ -7914,6 +8068,10 @@ tables:
           key: project_id
   - name: evaluations
     description: environment_evaluations
+    guide: |
+      Use this table to inspect feature flag evaluations. Requires
+      `project_id`, typically from `posthog.projects`. Pass `id` to hit
+      the single-record endpoint when you need details for one row.
     filters:
       - name: enabled
         required: false
@@ -8244,6 +8402,10 @@ tables:
             - updated_at
   - name: event_definitions
     description: project_event_definitions
+    guide: |
+      Use this table to inspect event definitions. Requires
+      `project_id`, typically from `posthog.projects`. Pass `id` to hit
+      the single-record endpoint when you need details for one row.
     filters:
       - name: project_id
         required: true
@@ -8710,6 +8872,9 @@ tables:
             - uuid
   - name: event_schemas
     description: project_event_schemas
+    guide: |
+      Use this table to inspect event schemas. Requires `project_id`,
+      typically from `posthog.projects`.
     filters:
       - name: project_id
         required: true
@@ -8789,6 +8954,11 @@ tables:
       is kept only for backwards compatibility.\n        If you ever ask about it you will be advised to not use it...\n        If
       you want to ad-hoc list or aggregate events, use the Query endpoint instead.\n        If you want to export all events
       or many pages of events you should use our CDP/Batch Exports products instead.\n        "
+    guide: |
+      Use this table to inspect raw event rows. Requires
+      `environment_id` from the related PostHog environment or API
+      response. Pass `id` to hit the single-record endpoint when you
+      need details for one row.
     filters:
       - name: distinct_id
         required: false
@@ -9011,9 +9181,11 @@ tables:
           kind: from_filter
           key: person_id
       - name: properties
-        type: Utf8
+        type: Json
         nullable: true
         virtual: false
+        description: Event properties as a JSON object. Query with
+          `json_get_str(properties, 'key')`.
         expr:
           kind: path
           path:
@@ -9068,6 +9240,10 @@ tables:
           key: project_id
   - name: experiment_holdouts
     description: project_experiment_holdouts
+    guide: |
+      Use this table to inspect experiment holdouts. Requires
+      `project_id`, typically from `posthog.projects`. Pass `id` to hit
+      the single-record endpoint when you need details for one row.
     filters:
       - name: project_id
         required: true
@@ -9241,6 +9417,10 @@ tables:
             - updated_at
   - name: experiment_saved_metrics
     description: project_experiment_saved_metrics
+    guide: |
+      Use this table to inspect experiment saved metrics. Requires
+      `project_id`, typically from `posthog.projects`. Pass `id` to hit
+      the single-record endpoint when you need details for one row.
     filters:
       - name: project_id
         required: true
@@ -9431,6 +9611,10 @@ tables:
             - user_access_level
   - name: experiments
     description: List experiments for the current project. Supports filtering by status and archival state.
+    guide: |
+      Start here to inventory experiments. Requires `project_id`,
+      typically from `posthog.projects`. Pass `id` to hit the single-
+      record endpoint when you need details for one row.
     filters:
       - name: project_id
         required: true
@@ -9989,6 +10173,10 @@ tables:
             - user_access_level
   - name: exports
     description: environment_exports
+    guide: |
+      Use this table to inspect export jobs. Requires `environment_id`
+      from the related PostHog environment or API response. Pass `id` to
+      hit the single-record endpoint when you need details for one row.
     filters:
       - name: environment_id
         required: true
@@ -10128,6 +10316,11 @@ tables:
           key: project_id
   - name: external_data_sources
     description: Create, Read, Update and Delete External data Sources.
+    guide: |
+      Use this table to inspect external data sources. Requires
+      `environment_id` from the related PostHog environment or API
+      response. Pass `id` to hit the single-record endpoint when you
+      need details for one row.
     filters:
       - name: environment_id
         required: true
@@ -10364,6 +10557,10 @@ tables:
           key: project_id
   - name: feature_flags
     description: Create, read, update, and delete feature flags.
+    guide: |
+      Start here to inventory feature flags. Requires `project_id`,
+      typically from `posthog.projects`. Pass `id` to hit the single-
+      record endpoint when you need details for one row.
     filters:
       - name: active
         required: false
@@ -10940,6 +11137,11 @@ tables:
             - version
   - name: file_system
     description: environment_file_system
+    guide: |
+      Use this table to inspect the file system view. Requires
+      `environment_id` from the related PostHog environment or API
+      response. Pass `id` to hit the single-record endpoint when you
+      need details for one row.
     filters:
       - name: environment_id
         required: true
@@ -11088,6 +11290,11 @@ tables:
           key: project_id
   - name: file_system_shortcut
     description: environment_file_system_shortcut
+    guide: |
+      Use this table to inspect file system shortcuts. Requires
+      `environment_id` from the related PostHog environment or API
+      response. Pass `id` to hit the single-record endpoint when you
+      need details for one row.
     filters:
       - name: environment_id
         required: true
@@ -11186,6 +11393,10 @@ tables:
           key: project_id
   - name: fingerprints
     description: environment_error_tracking_fingerprints
+    guide: |
+      Use this table to inspect error-tracking fingerprints. Requires
+      `project_id`, typically from `posthog.projects`. Pass `id` to hit
+      the single-record endpoint when you need details for one row.
     filters:
       - name: project_id
         required: true
@@ -11254,6 +11465,11 @@ tables:
           key: project_id
   - name: github_branches
     description: environment_integration_github_branches
+    guide: |
+      Use this table to inspect connected GitHub branches. Requires
+      `environment_id` from the related PostHog environment or API
+      response. Pass `id` to hit the single-record endpoint when you
+      need details for one row.
     filters:
       - name: environment_id
         required: true
@@ -11342,6 +11558,11 @@ tables:
           key: project_id
   - name: github_repos
     description: environment_integration_github_repos
+    guide: |
+      Use this table to inspect connected GitHub repositories. Requires
+      `environment_id` from the related PostHog environment or API
+      response. Pass `id` to hit the single-record endpoint when you
+      need details for one row.
     filters:
       - name: environment_id
         required: true
@@ -11412,6 +11633,10 @@ tables:
           key: project_id
   - name: grouping_rules
     description: environment_error_tracking_grouping_rules
+    guide: |
+      Use this table to inspect grouping rules. Requires `project_id`,
+      typically from `posthog.projects`. Pass `id` to hit the single-
+      record endpoint when you need details for one row.
     filters:
       - name: project_id
         required: true
@@ -11532,6 +11757,11 @@ tables:
   - name: groups
     description: List all groups of a specific group type. You must pass ?group_type_index= in the URL. To get a list of valid
       group types, call /api/:project_id/groups_types/
+    guide: |
+      Use this table to inspect groups. Requires `environment_id` from
+      the related PostHog environment or API response. Use
+      `group_type_index` to scope this endpoint to the records you
+      actually want.
     filters:
       - name: environment_id
         required: true
@@ -11633,6 +11863,9 @@ tables:
           key: project_id
   - name: groups_types
     description: project_groups_types
+    guide: |
+      Use this table to inspect group types. Requires `project_id`,
+      typically from `posthog.projects`.
     filters:
       - name: project_id
         required: true
@@ -11715,6 +11948,10 @@ tables:
           key: project_id
   - name: health_issues
     description: environment_health_issues
+    guide: |
+      Use this table to inspect health issues. Requires `project_id`,
+      typically from `posthog.projects`. Pass `id` to hit the single-
+      record endpoint when you need details for one row.
     filters:
       - name: project_id
         required: true
@@ -11823,6 +12060,9 @@ tables:
             - updated_at
   - name: heatmaps
     description: environment_heatmaps
+    guide: |
+      Use this table to inspect heatmaps. Requires `environment_id` from
+      the related PostHog environment or API response.
     filters:
       - name: environment_id
         required: true
@@ -11874,6 +12114,10 @@ tables:
           key: project_id
   - name: hog_flows
     description: environment_hog_flows
+    guide: |
+      Use this table to inspect hog flows. Requires `environment_id`
+      from the related PostHog environment or API response. Pass `id` to
+      hit the single-record endpoint when you need details for one row.
     filters:
       - name: created_at
         required: false
@@ -12294,6 +12538,9 @@ tables:
           key: project_id
   - name: hog_function_templates
     description: project_hog_function_templates
+    guide: |
+      Use this table to inspect hog function templates. Requires
+      `project_id`, typically from `posthog.projects`.
     filters:
       - name: project_id
         required: true
@@ -12516,6 +12763,10 @@ tables:
             - use_all_events_by_default
   - name: hog_functions
     description: environment_hog_functions
+    guide: |
+      Use this table to inspect hog functions. Requires `environment_id`
+      from the related PostHog environment or API response. Pass `id` to
+      hit the single-record endpoint when you need details for one row.
     filters:
       - name: created_at
         required: false
@@ -13056,6 +13307,11 @@ tables:
           key: project_id
   - name: insight_variables
     description: environment_insight_variables
+    guide: |
+      Use this table to inspect insight variables. Requires
+      `environment_id` from the related PostHog environment or API
+      response. Pass `id` to hit the single-record endpoint when you
+      need details for one row.
     filters:
       - name: environment_id
         required: true
@@ -13183,6 +13439,10 @@ tables:
       request.META["_coalesced_response"] for followers. This mixin runs DRF's
       initial() (auth + permissions + throttling) before returning the
       cached response, ensuring the request is authorized.
+    guide: |
+      Start here to inventory insights. Requires `environment_id` from
+      the related PostHog environment or API response. Pass `id` to hit
+      the single-record endpoint when you need details for one row.
     filters:
       - name: basic
         required: false
@@ -15032,6 +15292,10 @@ tables:
           key: project_id
   - name: integrations
     description: environment_integrations
+    guide: |
+      Use this table to inspect integrations. Requires `environment_id`
+      from the related PostHog environment or API response. Pass `id` to
+      hit the single-record endpoint when you need details for one row.
     filters:
       - name: environment_id
         required: true
@@ -15248,6 +15512,9 @@ tables:
           key: project_id
   - name: invites
     description: invites
+    guide: |
+      Use this table to inspect organization invites. Requires
+      `organization_id` from `posthog.organizations`.
     filters:
       - name: organization_id
         required: true
@@ -15462,6 +15729,10 @@ tables:
             - updated_at
   - name: is_generating_demo_data
     description: Projects for the current organization.
+    guide: |
+      Use this table to inspect is generating demo data. Pass `id` to
+      hit the single-record endpoint when you need details for one row.
+      Requires `organization_id` from `posthog.organizations`.
     filters:
       - name: id
         required: true
@@ -15531,6 +15802,10 @@ tables:
             - updated_at
   - name: issues
     description: environment_error_tracking_issues
+    guide: |
+      Use this table to inspect issue records. Requires `project_id`,
+      typically from `posthog.projects`. Pass `id` to hit the single-
+      record endpoint when you need details for one row.
     filters:
       - name: project_id
         required: true
@@ -15716,6 +15991,10 @@ tables:
             - status
   - name: live_debugger_breakpoints
     description: Create, Read, Update and Delete breakpoints for live debugging.
+    guide: |
+      Use this table to inspect live debugger breakpoints. Requires
+      `project_id`, typically from `posthog.projects`. Pass `id` to hit
+      the single-record endpoint when you need details for one row.
     filters:
       - name: filename
         required: false
@@ -15827,6 +16106,9 @@ tables:
             - updated_at
   - name: llm_prompts
     description: environment_llm_prompts
+    guide: |
+      Use this table to inspect LLM prompts. Requires `project_id`,
+      typically from `posthog.projects`.
     filters:
       - name: project_id
         required: true
@@ -16048,6 +16330,9 @@ tables:
             - version_count
   - name: local_evaluation
     description: Create, read, update, and delete feature flags.
+    guide: |
+      Use this table to inspect local evaluation. Requires `project_id`,
+      typically from `posthog.projects`.
     filters:
       - name: project_id
         required: true
@@ -16206,6 +16491,10 @@ tables:
   - name: log
     description: Get query log details from query_log_archive table for a specific query_id, the query must have been issued
       in last 24 hours.
+    guide: |
+      Use this table to inspect log. Requires `environment_id` from the
+      related PostHog environment or API response. Pass `id` to hit the
+      single-record endpoint when you need details for one row.
     filters:
       - name: environment_id
         required: true
@@ -16264,6 +16553,11 @@ tables:
           key: project_id
   - name: logs
     description: environment_plugin_config_logs
+    guide: |
+      Use this table to inspect logs. Requires `environment_id` from the
+      related PostHog environment or API response. Requires
+      `plugin_config_id`; fetch candidate values from
+      `posthog.plugin_configs` when available.
     filters:
       - name: environment_id
         required: true
@@ -16392,6 +16686,11 @@ tables:
           key: project_id
   - name: materialization_status
     description: Get materialization status for an endpoint. Supports ?version=N query param.
+    guide: |
+      Use this table to inspect materialization status. Supports
+      ?version=N query param. Requires `environment_id` from the related
+      PostHog environment or API response. Use `name` to narrow the
+      result set before doing heavier joins or exports.
     filters:
       - name: environment_id
         required: true
@@ -16497,6 +16796,10 @@ tables:
           key: project_id
   - name: mcp_server_installations
     description: environment_mcp_server_installations
+    guide: |
+      Use this table to inspect mcp server installations. Requires
+      `project_id`, typically from `posthog.projects`. Pass `id` to hit
+      the single-record endpoint when you need details for one row.
     filters:
       - name: project_id
         required: true
@@ -16640,6 +16943,9 @@ tables:
             - url
   - name: mcp_servers
     description: environment_mcp_servers
+    guide: |
+      Use this table to inspect mcp servers. Requires `project_id`,
+      typically from `posthog.projects`.
     filters:
       - name: project_id
         required: true
@@ -16704,6 +17010,10 @@ tables:
             - url
   - name: members
     description: members
+    guide: |
+      Start here to inventory members. Requires `organization_id` from
+      `posthog.organizations`. Use `id` values from here in related
+      tables and drill-down queries.
     filters:
       - name: organization_id
         required: true
@@ -16876,6 +17186,10 @@ tables:
             - uuid
   - name: metrics
     description: project_groups_type_metrics
+    guide: |
+      Start here to inventory metrics. Use `group_type_index` to scope
+      this endpoint to the records you actually want. Requires
+      `project_id`, typically from `posthog.projects`.
     filters:
       - name: group_type_index
         required: true
@@ -16977,6 +17291,9 @@ tables:
           key: project_id
   - name: my_flags
     description: Create, read, update, and delete feature flags.
+    guide: |
+      Use this table to inspect my flags. Requires `project_id`,
+      typically from `posthog.projects`.
     filters:
       - name: groups
         required: false
@@ -17162,6 +17479,10 @@ tables:
   - name: notebooks
     description: The API for interacting with Notebooks. This feature is in early access and the API can have breaking changes
       without announcement.
+    guide: |
+      Use this table to inspect notebooks. Requires `project_id`,
+      typically from `posthog.projects`. Keep time filters tight so the
+      endpoint stays fast and the results stay interpretable.
     filters:
       - name: contains
         required: false
@@ -17533,6 +17854,9 @@ tables:
             - version
   - name: oauth_applications
     description: ViewSet for listing OAuth applications at the organization level (read-only).
+    guide: |
+      Use this table to inspect oauth applications. Requires
+      `organization_id` from `posthog.organizations`.
     filters:
       - name: organization_id
         required: true
@@ -17617,6 +17941,10 @@ tables:
             - updated
   - name: object_media_previews
     description: project_object_media_previews
+    guide: |
+      Use this table to inspect object media previews. Requires
+      `project_id`, typically from `posthog.projects`. Pass `id` to hit
+      the single-record endpoint when you need details for one row.
     filters:
       - name: project_id
         required: true
@@ -17734,6 +18062,10 @@ tables:
       This is read-only. Creation is handled by the integration installation flows
       (e.g., Vercel marketplace installation). Deletion requires contacting support
       due to billing implications.
+    guide: |
+      Use this table to inspect organization integrations. Requires
+      `organization_id` from `posthog.organizations`. Pass `id` to hit
+      the single-record endpoint when you need details for one row.
     filters:
       - name: organization_id
         required: true
@@ -17906,6 +18238,10 @@ tables:
             - updated_at
   - name: organization_project_activity
     description: Projects for the current organization.
+    guide: |
+      Use this table to inspect organization project activity. Pass `id`
+      to hit the single-record endpoint when you need details for one
+      row. Requires `organization_id` from `posthog.organizations`.
     filters:
       - name: id
         required: true
@@ -17975,6 +18311,9 @@ tables:
             - updated_at
   - name: organizations
     description: organizations
+    guide: |
+      Start here to inventory organizations. Pass `id` to hit the
+      single-record endpoint when you need details for one row.
     filters:
       - name: id
         required: false
@@ -18210,6 +18549,11 @@ tables:
             - updated_at
   - name: persisted_folder
     description: environment_persisted_folder
+    guide: |
+      Use this table to inspect persisted folder. Requires
+      `environment_id` from the related PostHog environment or API
+      response. Pass `id` to hit the single-record endpoint when you
+      need details for one row.
     filters:
       - name: environment_id
         required: true
@@ -18312,6 +18656,10 @@ tables:
           key: project_id
   - name: persons
     description: Read and delete PostHog persons; create or update via the capture API, $set/$unset properties, or SDKs.
+    guide: |
+      Start here to inventory persons. Requires `environment_id` from
+      the related PostHog environment or API response. Pass `id` to hit
+      the single-record endpoint when you need details for one row.
     filters:
       - name: distinct_id
         required: false
@@ -18466,10 +18814,11 @@ tables:
           path:
             - name
       - name: properties
-        type: Utf8
+        type: Json
         nullable: true
         virtual: false
         description: Key-value map of person properties set via $set and $set_once operations.
+          Query with `json_get_str(properties, 'key')`.
         expr:
           kind: path
           path:
@@ -18504,6 +18853,9 @@ tables:
       Get the preferred media preview for an event definition.
       Most recent user-uploaded, then most recent exported asset.
       Requires event_definition (query param).
+    guide: |
+      Use this table to inspect preferred for event. Requires
+      `project_id`, typically from `posthog.projects`.
     filters:
       - name: project_id
         required: true
@@ -18603,6 +18955,10 @@ tables:
             - uploaded_media_id
   - name: product_tours
     description: project_product_tours
+    guide: |
+      Use this table to inspect product tours. Requires `project_id`,
+      typically from `posthog.projects`. Pass `id` to hit the single-
+      record endpoint when you need details for one row.
     filters:
       - name: project_id
         required: true
@@ -19119,6 +19475,10 @@ tables:
             - updated_at
   - name: project_feature_flag_activity
     description: Create, read, update, and delete feature flags.
+    guide: |
+      Use this table to inspect project feature flag activity. Pass `id`
+      to hit the single-record endpoint when you need details for one
+      row. Requires `project_id`, typically from `posthog.projects`.
     filters:
       - name: id
         required: true
@@ -19333,6 +19693,11 @@ tables:
             - user
   - name: project_feature_flags_activity
     description: Create, read, update, and delete feature flags.
+    guide: |
+      Use this table to inspect project feature flags activity. Requires
+      `project_id`, typically from `posthog.projects`. Best used after
+      inventory tables identify the entity or time range you want to
+      investigate.
     filters:
       - name: project_id
         required: true
@@ -19545,6 +19910,11 @@ tables:
             - user
   - name: project_secret_api_keys
     description: environment_project_secret_api_keys
+    guide: |
+      Use this table to inspect project secret api keys. Requires
+      `environment_id` from the related PostHog environment or API
+      response. Pass `id` to hit the single-record endpoint when you
+      need details for one row.
     filters:
       - name: environment_id
         required: true
@@ -19676,6 +20046,10 @@ tables:
 
       Returns:
           Survey statistics including event counts, unique respondents, and conversion rates
+    guide: |
+      Use this table to inspect project survey stats. Pass `id` to hit
+      the single-record endpoint when you need details for one row.
+      Requires `project_id`, typically from `posthog.projects`.
     filters:
       - name: date_from
         required: false
@@ -19792,6 +20166,11 @@ tables:
 
       Returns:
           Aggregated statistics across all surveys including total counts and rates
+    guide: |
+      Use this table to inspect project surveys stats. Requires
+      `project_id`, typically from `posthog.projects`. Keep time filters
+      tight so the endpoint stays fast and the results stay
+      interpretable.
     filters:
       - name: date_from
         required: false
@@ -19863,6 +20242,10 @@ tables:
             - stats
   - name: project_task_runs
     description: List task runs
+    guide: |
+      Use this table to inspect project task runs. Requires
+      `project_id`, typically from `posthog.projects`. Requires
+      `task_id` from `posthog.tasks`.
     filters:
       - name: project_id
         required: true
@@ -20093,6 +20476,10 @@ tables:
             - uploaded_at
   - name: project_visual_review_runs
     description: List runs for the team, optionally filtered by review state.
+    guide: |
+      Use this table to inspect project visual review runs. Requires
+      `project_id`, typically from `posthog.projects`. Pass `id` to hit
+      the single-record endpoint when you need details for one row.
     filters:
       - name: project_id
         required: true
@@ -20308,6 +20695,10 @@ tables:
             - unchanged
   - name: projects
     description: Projects for the current organization.
+    guide: |
+      Start here to inventory projects. Requires `organization_id` from
+      `posthog.organizations`. Pass `id` to hit the single-record
+      endpoint when you need details for one row.
     filters:
       - name: organization_id
         required: true
@@ -20487,6 +20878,11 @@ tables:
       - timestamp: ISO datetime string for the point in time (e.g., "2023-06-15T14:30:00Z")
       - include_set_once: Whether to handle $set_once operations (default: false)
       - debug: Whether to include debug information with raw events (default: false)
+    guide: |
+      Use this table to inspect properties at time. Requires
+      `environment_id` from the related PostHog environment or API
+      response. Use `timestamp` to scope this endpoint to the records
+      you actually want.
     filters:
       - name: debug
         required: false
@@ -20816,6 +21212,10 @@ tables:
           key: project_id
   - name: property_definitions
     description: project_property_definitions
+    guide: |
+      Start here to inventory property definitions. Requires
+      `project_id`, typically from `posthog.projects`. Pass `id` to hit
+      the single-record endpoint when you need details for one row.
     filters:
       - name: event_names
         required: false
@@ -21265,6 +21665,10 @@ tables:
             - uuid
   - name: provider_keys
     description: environment_llm_analytics_provider_keys
+    guide: |
+      Use this table to inspect provider keys. Requires `project_id`,
+      typically from `posthog.projects`. Pass `id` to hit the single-
+      record endpoint when you need details for one row.
     filters:
       - name: project_id
         required: true
@@ -21477,6 +21881,10 @@ tables:
   - name: proxy_records
     description: List all reverse proxies configured for the organization. Returns proxy records along with the maximum number
       allowed by the current plan.
+    guide: |
+      Use this table to inspect proxy records. Requires
+      `organization_id` from `posthog.organizations`. Pass `id` to hit
+      the single-record endpoint when you need details for one row.
     filters:
       - name: organization_id
         required: true
@@ -21599,6 +22007,8 @@ tables:
             - updated_at
   - name: public_hog_function_templates
     description: public_hog_function_templates
+    guide: |
+      Use this table to inspect public hog function templates.
     filters:
       - name: template_id
         required: false
@@ -21778,6 +22188,10 @@ tables:
           key: types
   - name: query
     description: (Experimental)
+    guide: |
+      Use this table to inspect query results. Requires `environment_id`
+      from the related PostHog environment or API response. Pass `id` to
+      hit the single-record endpoint when you need details for one row.
     filters:
       - name: environment_id
         required: true
@@ -22038,6 +22452,10 @@ tables:
           key: project_id
   - name: queue
     description: environment_conversation_queue
+    guide: |
+      Use this table to inspect queue. Use `conversation` to scope this
+      endpoint to the records you actually want. Requires `project_id`,
+      typically from `posthog.projects`.
     filters:
       - name: conversation
         required: true
@@ -22285,6 +22703,10 @@ tables:
             - uuid
   - name: releases
     description: environment_error_tracking_releases
+    guide: |
+      Use this table to inspect releases. Requires `project_id`,
+      typically from `posthog.projects`. Pass `id` to hit the single-
+      record endpoint when you need details for one row.
     filters:
       - name: project_id
         required: true
@@ -22381,6 +22803,10 @@ tables:
             - version
   - name: repos
     description: List all projects for the team.
+    guide: |
+      Use this table to inspect repos. Requires `project_id`, typically
+      from `posthog.projects`. Pass `id` to hit the single-record
+      endpoint when you need details for one row.
     filters:
       - name: project_id
         required: true
@@ -22473,6 +22899,10 @@ tables:
             - team_id
   - name: repository_readiness
     description: Get repository readiness
+    guide: |
+      Use this table to inspect repository readiness. Requires
+      `project_id`, typically from `posthog.projects`. Use `repository`
+      to scope this endpoint to the records you actually want.
     filters:
       - name: project_id
         required: true
@@ -22837,6 +23267,10 @@ tables:
           key: window_days
   - name: review_queue_items
     description: environment_llm_analytics_review_queue_items
+    guide: |
+      Use this table to inspect review queue items. Requires
+      `project_id`, typically from `posthog.projects`. Pass `id` to hit
+      the single-record endpoint when you need details for one row.
     filters:
       - name: order_by
         required: false
@@ -23071,6 +23505,10 @@ tables:
             - updated_at
   - name: review_queues
     description: environment_llm_analytics_review_queues
+    guide: |
+      Use this table to inspect review queues. Requires `project_id`,
+      typically from `posthog.projects`. Pass `id` to hit the single-
+      record endpoint when you need details for one row.
     filters:
       - name: name
         required: false
@@ -23278,6 +23716,11 @@ tables:
             - updated_at
   - name: role_memberships
     description: role_role_memberships
+    guide: |
+      Use this table to inspect role memberships. Requires
+      `organization_id` from `posthog.organizations`. Requires
+      `role_id`; fetch candidate values from `posthog.roles` when
+      available.
     filters:
       - name: organization_id
         required: true
@@ -23453,6 +23896,10 @@ tables:
             - user_uuid
   - name: roles
     description: roles
+    guide: |
+      Start here to inventory roles. Requires `organization_id` from
+      `posthog.organizations`. Pass `id` to hit the single-record
+      endpoint when you need details for one row.
     filters:
       - name: organization_id
         required: true
@@ -23624,6 +24071,10 @@ tables:
           key: organization_id
   - name: run_history
     description: Return the recent run history (up to 5 most recent) for this materialized view.
+    guide: |
+      Use this table to inspect run history. Requires `environment_id`
+      from the related PostHog environment or API response. Pass `id` to
+      hit the single-record endpoint when you need details for one row.
     filters:
       - name: environment_id
         required: true
@@ -23923,6 +24374,11 @@ tables:
           key: project_id
   - name: runs
     description: environment_batch_export_runs
+    guide: |
+      Use this table to inspect runs. Requires `batch_export_id`; fetch
+      candidate values from `posthog.batch_exports` when available.
+      Requires `environment_id` from the related PostHog environment or
+      API response.
     filters:
       - name: batch_export_id
         required: true
@@ -24139,6 +24595,10 @@ tables:
           key: project_id
   - name: sandbox_environments
     description: API for managing sandbox environments that control network access for task runs.
+    guide: |
+      Use this table to inspect sandbox environments. Requires
+      `project_id`, typically from `posthog.projects`. Pass `id` to hit
+      the single-record endpoint when you need details for one row.
     filters:
       - name: project_id
         required: true
@@ -24371,6 +24831,9 @@ tables:
             - updated_at
   - name: saved
     description: environment_saved
+    guide: |
+      Use this table to inspect saved items. Requires `environment_id`
+      from the related PostHog environment or API response.
     filters:
       - name: environment_id
         required: true
@@ -24627,6 +25090,10 @@ tables:
           key: project_id
   - name: schedules
     description: environment_hog_flow_schedules
+    guide: |
+      Use this table to inspect schedules. Requires `environment_id`
+      from the related PostHog environment or API response. Pass `id` to
+      hit the single-record endpoint when you need details for one row.
     filters:
       - name: created_at
         required: false
@@ -24778,6 +25245,10 @@ tables:
           key: project_id
   - name: schema_property_groups
     description: project_schema_property_groups
+    guide: |
+      Use this table to inspect schema property groups. Requires
+      `project_id`, typically from `posthog.projects`. Pass `id` to hit
+      the single-record endpoint when you need details for one row.
     filters:
       - name: project_id
         required: true
@@ -24989,6 +25460,10 @@ tables:
             - updated_at
   - name: scoped_api_keys
     description: member_scoped_api_keys
+    guide: |
+      Use this table to inspect scoped api keys. Requires
+      `organization_id` from `posthog.organizations`. Use `user__uuid`
+      to scope this endpoint to the records you actually want.
     filters:
       - name: organization_id
         required: true
@@ -25161,6 +25636,10 @@ tables:
             - uuid
   - name: score_definitions
     description: environment_llm_analytics_score_definitions
+    guide: |
+      Use this table to inspect score definitions. Requires
+      `project_id`, typically from `posthog.projects`. Pass `id` to hit
+      the single-record endpoint when you need details for one row.
     filters:
       - name: archived
         required: false
@@ -25498,6 +25977,10 @@ tables:
             - updated_at
   - name: session_group_summaries
     description: API for retrieving and managing stored group session summaries.
+    guide: |
+      Use this table to inspect session group summaries. Requires
+      `project_id`, typically from `posthog.projects`. Pass `id` to hit
+      the single-record endpoint when you need details for one row.
     filters:
       - name: project_id
         required: true
@@ -25700,6 +26183,10 @@ tables:
             - title
   - name: session_recording_playlists
     description: Override list to include synthetic playlists
+    guide: |
+      Use this table to inspect session recording playlists. Requires
+      `environment_id` from the related PostHog environment or API
+      response.
     filters:
       - name: created_by
         required: false
@@ -26057,6 +26544,11 @@ tables:
           key: project_id
   - name: session_recordings
     description: environment_session_recordings
+    guide: |
+      Use this table to inspect session recordings. Requires
+      `environment_id` from the related PostHog environment or API
+      response. Pass `id` to hit the single-record endpoint when you
+      need details for one row.
     filters:
       - name: environment_id
         required: true
@@ -26385,6 +26877,10 @@ tables:
           key: project_id
   - name: sharing
     description: environment_dashboard_sharing
+    guide: |
+      Use this table to inspect sharing. Requires `dashboard_id` from
+      the relevant dashboard listing. Requires `environment_id` from the
+      related PostHog environment or API response.
     filters:
       - name: dashboard_id
         required: true
@@ -26522,6 +27018,10 @@ tables:
           key: project_id
   - name: signal_source_configs
     description: project_signal_source_configs
+    guide: |
+      Use this table to inspect signal source configs. Requires
+      `project_id`, typically from `posthog.projects`. Pass `id` to hit
+      the single-record endpoint when you need details for one row.
     filters:
       - name: project_id
         required: true
@@ -26637,6 +27137,11 @@ tables:
             - updated_at
   - name: snapshot_history
     description: Recent change history for a snapshot identifier across runs.
+    guide: |
+      Use this table to inspect snapshot history. Pass `id` to hit the
+      single-record endpoint when you need details for one row. Use
+      `identifier` to scope this endpoint to the records you actually
+      want.
     filters:
       - name: id
         required: true
@@ -26728,6 +27233,10 @@ tables:
             - run_id
   - name: snapshots
     description: Get all snapshots for a run with diff results.
+    guide: |
+      Use this table to inspect snapshots. Pass `id` to hit the single-
+      record endpoint when you need details for one row. Requires
+      `project_id`, typically from `posthog.projects`.
     filters:
       - name: id
         required: true
@@ -26989,6 +27498,10 @@ tables:
             - reviewed_at
   - name: spike_events
     description: environment_error_tracking_spike_events
+    guide: |
+      Use this table to inspect spike events. Requires `project_id`,
+      typically from `posthog.projects`. Best used after inventory
+      tables identify the entity or time range you want to investigate.
     filters:
       - name: project_id
         required: true
@@ -27084,6 +27597,10 @@ tables:
           key: project_id
   - name: status
     description: Create, read, update, and delete feature flags.
+    guide: |
+      Use this table to inspect status details. Pass `id` to hit the
+      single-record endpoint when you need details for one row. Requires
+      `project_id`, typically from `posthog.projects`.
     filters:
       - name: id
         required: true
@@ -27138,6 +27655,11 @@ tables:
             - status
   - name: stream
     description: API for managing task runs. Each run represents an execution of a task.
+    guide: |
+      Use this table to inspect stream. Each run represents an execution
+      of a task. Pass `id` to hit the single-record endpoint when you
+      need details for one row. Requires `project_id`, typically from
+      `posthog.projects`.
     filters:
       - name: id
         required: true
@@ -27239,6 +27761,10 @@ tables:
             - uploaded_at
   - name: subscriptions
     description: environment_subscriptions
+    guide: |
+      Use this table to inspect subscriptions. Requires `environment_id`
+      from the related PostHog environment or API response. Pass `id` to
+      hit the single-record endpoint when you need details for one row.
     filters:
       - name: environment_id
         required: true
@@ -27547,6 +28073,9 @@ tables:
           key: project_id
   - name: summary
     description: environment_health_issues_summary
+    guide: |
+      Use this table to inspect summary results. Requires `project_id`,
+      typically from `posthog.projects`.
     filters:
       - name: project_id
         required: true
@@ -27645,6 +28174,10 @@ tables:
             - updated_at
   - name: suppression_rules
     description: environment_error_tracking_suppression_rules
+    guide: |
+      Use this table to inspect suppression rules. Requires
+      `project_id`, typically from `posthog.projects`. Pass `id` to hit
+      the single-record endpoint when you need details for one row.
     filters:
       - name: project_id
         required: true
@@ -27737,6 +28270,10 @@ tables:
             - updated_at
   - name: surveys
     description: project_surveys
+    guide: |
+      Start here to inventory surveys. Requires `project_id`, typically
+      from `posthog.projects`. Pass `id` to hit the single-record
+      endpoint when you need details for one row.
     filters:
       - name: archived
         required: false
@@ -28544,6 +29081,10 @@ tables:
             - user_access_level
   - name: symbol_sets
     description: environment_error_tracking_symbol_sets
+    guide: |
+      Use this table to inspect symbol sets. Requires `project_id`,
+      typically from `posthog.projects`. Pass `id` to hit the single-
+      record endpoint when you need details for one row.
     filters:
       - name: project_id
         required: true
@@ -28649,6 +29190,10 @@ tables:
             - team_id
   - name: tasks
     description: List tasks
+    guide: |
+      Use this table to inspect tasks. Requires `project_id`, typically
+      from `posthog.projects`. Pass `id` to hit the single-record
+      endpoint when you need details for one row.
     filters:
       - name: created_by
         required: false
@@ -28796,6 +29341,10 @@ tables:
             - title
   - name: thresholds
     description: environment_insight_thresholds
+    guide: |
+      Use this table to inspect thresholds. Requires `environment_id`
+      from the related PostHog environment or API response. Requires
+      `insight_id` from `posthog.insights`.
     filters:
       - name: environment_id
         required: true
@@ -29446,6 +29995,10 @@ tables:
           key: project_id
   - name: tickets
     description: List tickets with person data attached.
+    guide: |
+      Use this table to inspect tickets. Requires `project_id`,
+      typically from `posthog.projects`. Pass `id` to hit the single-
+      record endpoint when you need details for one row.
     filters:
       - name: project_id
         required: true
@@ -29810,6 +30363,10 @@ tables:
             - updated_at
   - name: trace_reviews
     description: environment_llm_analytics_trace_reviews
+    guide: |
+      Use this table to inspect trace reviews. Requires `project_id`,
+      typically from `posthog.projects`. Pass `id` to hit the single-
+      record endpoint when you need details for one row.
     filters:
       - name: definition_id
         required: false
@@ -30330,6 +30887,9 @@ tables:
 
       Returns the sum of unread_team_count for all non-resolved tickets.
       Cached in Redis for 30 seconds, invalidated on changes.
+    guide: |
+      Use this table to inspect unread count. Requires `project_id`,
+      typically from `posthog.projects`.
     filters:
       - name: project_id
         required: true
@@ -30684,6 +31244,9 @@ tables:
             - updated_at
   - name: user_home_settings
     description: user_home_setting
+    guide: |
+      Use this table to inspect user home settings. Use `uuid` to scope
+      this endpoint to the records you actually want.
     filters:
       - name: uuid
         required: true
@@ -30799,6 +31362,10 @@ tables:
           key: uuid
   - name: user_interviews
     description: environment_user_interviews
+    guide: |
+      Use this table to inspect user interviews. Requires `project_id`,
+      typically from `posthog.projects`. Pass `id` to hit the single-
+      record endpoint when you need details for one row.
     filters:
       - name: project_id
         required: true
@@ -30972,6 +31539,9 @@ tables:
             - transcript
   - name: users
     description: users
+    guide: |
+      Start here to inventory users. Use `id`, `slug` values from here
+      in related tables and drill-down queries.
     filters:
       - name: email
         required: false
@@ -31390,6 +31960,9 @@ tables:
       Returns:
 
       - Array of objects with 'name' field containing possible values
+    guide: |
+      Use this table to inspect property values. Requires `project_id`,
+      typically from `posthog.projects`.
     filters:
       - name: key
         required: false
@@ -31440,6 +32013,10 @@ tables:
           key: project_id
   - name: versions
     description: List all versions for an endpoint.
+    guide: |
+      Use this table to inspect versions. Requires `environment_id` from
+      the related PostHog environment or API response. Use `name` to
+      narrow the result set before doing heavier joins or exports.
     filters:
       - name: created_by
         required: false
@@ -31889,6 +32466,9 @@ tables:
           key: project_id
   - name: views
     description: environment_logs_views
+    guide: |
+      Use this table to inspect saved views. Requires `project_id`,
+      typically from `posthog.projects`.
     filters:
       - name: project_id
         required: true
@@ -32072,6 +32652,11 @@ tables:
             - updated_at
   - name: warehouse_saved_queries
     description: Create, Read, Update and Delete Warehouse Tables.
+    guide: |
+      Use this table to inspect saved warehouse queries. Requires
+      `environment_id` from the related PostHog environment or API
+      response. Pass `id` to hit the single-record endpoint when you
+      need details for one row.
     filters:
       - name: environment_id
         required: true
@@ -32394,6 +32979,11 @@ tables:
           key: project_id
   - name: warehouse_tables
     description: Create, Read, Update and Delete Warehouse Tables.
+    guide: |
+      Start here to inventory warehouse tables. Requires
+      `environment_id` from the related PostHog environment or API
+      response. Pass `id` to hit the single-record endpoint when you
+      need details for one row.
     filters:
       - name: environment_id
         required: true
@@ -32826,6 +33416,10 @@ tables:
           key: project_id
   - name: web_experiments
     description: project_web_experiments
+    guide: |
+      Use this table to inspect web experiments. Requires `project_id`,
+      typically from `posthog.projects`. Pass `id` to hit the single-
+      record endpoint when you need details for one row.
     filters:
       - name: project_id
         required: true

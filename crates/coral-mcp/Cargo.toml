@@ -22,3 +22,4 @@ coral-client.workspace = true
 [dev-dependencies]
 coral-app.workspace = true
 tempfile.workspace = true
+tonic-types.workspace = true

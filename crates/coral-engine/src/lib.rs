@@ -71,7 +71,8 @@ pub mod contracts;
 mod runtime;
 
 pub use composition::{
-    EngineExtensions, SourceDecorator, SourceDecoratorError, SourceFailurePolicy, SourceTables,
+    EngineExtensions, RequestAuthenticator, RequestAuthenticatorError, SourceDecorator,
+    SourceDecoratorError, SourceFailurePolicy, SourceTables,
 };
 pub use contracts::{
     ColumnInfo, CoreError, QueryExecution, QueryRuntimeContext, QueryRuntimeProvider, QuerySource,

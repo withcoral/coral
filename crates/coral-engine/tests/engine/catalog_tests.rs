@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 
 use crate::harness::{
-    TestRuntime, assert_invalid_input, build_source, build_source_with_inputs, dir_url,
+    TestRuntime, assert_table_not_found, build_source, build_source_with_inputs, dir_url,
     execution_to_rows, write_jsonl_file,
 };
 
@@ -234,7 +234,7 @@ async fn query_nonexistent_schema_returns_error() {
         .await
         .expect_err("missing schema should fail");
 
-    assert_invalid_input(error, "table 'datafusion.missing.users' not found");
+    assert_table_not_found(error, "missing", "users");
 }
 
 fn table_summary(table: &TableInfo) -> (String, String, String) {

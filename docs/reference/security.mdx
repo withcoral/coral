@@ -1,0 +1,75 @@
+---
+title: "Security model"
+description: "Coral's intended threat model for the current release."
+---
+
+Coral is designed as a local data-access layer for a trusted user and the agents
+or scripts that user chooses to run. It does not send your source configuration,
+usage history, or query results to a Coral-hosted service. Source credentials
+are used locally and sent to the upstream providers you configure when a query
+requires them.
+
+## Intended threat model
+
+This release is intended for single-user local use:
+
+- You install and run the `coral` binary on your own macOS or Linux machine.
+- You choose which source specs to install, which credentials to provide, and
+  which MCP clients or scripts may call Coral.
+- Coral stores configuration and source secrets under the local Coral config
+  directory, which defaults to the platform config directory and can be changed
+  with `CORAL_CONFIG_DIR`.
+- CLI and MCP queries run through the same local runtime. The internal gRPC
+  server binds to loopback, and the MCP server uses stdio transport.
+
+Coral reduces data exposure by keeping execution local and by exposing a narrow
+MCP surface: `sql`, `list_tables`, `coral://guide`, and `coral://tables`.
+Secret values are not returned through `coral.inputs`; secret rows show only
+whether a value is configured.
+
+## What Coral protects against
+
+Coral's current protections are aimed at accidental exposure within that local
+trust boundary:
+
+- Source secrets are stored separately from non-secret source variables, in
+  plaintext local files rather than in `config.toml`.
+- State files written by Coral use private file permissions on Unix systems.
+- SQL execution is configured as read-only: DDL, DML, and multiple statements
+  are disabled.
+- Source and workspace names are validated before they are used in local state
+  paths.
+- MCP clients can query installed sources, but they do not receive raw stored
+  secret values through the discovery tables or resources.
+
+## What you still need to trust
+
+Coral is not a sandbox for untrusted agents, source specs, or credentials.
+If you give an unsandboxed agent permission to run as your user, that agent may
+already be able to read local files your OS account can read, such as shell
+config, project files, or SSH configuration. Coral adds access to the sources
+you configure; it does not make an otherwise untrusted local agent safe.
+
+- A connected MCP client can ask Coral to query any source you have installed.
+- A source token can access whatever the upstream provider allows for that
+  token, so prefer read-only and least-privilege credentials.
+- A custom source spec can direct Coral to make HTTP requests or read local file
+  locations declared by that spec. Only install source specs you trust.
+- Anyone who can read your local Coral config directory or control your user
+  account should be treated as able to read stored source secrets and use the
+  configured sources.
+- Coral does not attempt to protect against a compromised machine, compromised
+  MCP client, malicious shell environment, or malicious upstream API response.
+
+## Practical guidance
+
+- Scope provider tokens to the minimum data your workflow needs.
+- Put Coral's config directory on a local disk protected by your operating
+  system account controls.
+- Review custom source specs before installing them, especially `base_url`,
+  `auth`, and file `location` fields.
+- Configure `coral mcp-stdio` only in MCP clients you are comfortable allowing
+  to query your installed sources.
+
+Report suspected vulnerabilities privately through the project's
+[security policy](https://github.com/withcoral/coral/blob/main/SECURITY.md).

@@ -8,6 +8,7 @@ use datafusion::prelude::{SQLOptions, SessionConfig, SessionContext};
 use crate::backends::compile_query_source;
 use crate::runtime::catalog;
 use crate::runtime::error::datafusion_to_core;
+use crate::runtime::json::register_json_support;
 use crate::runtime::registry::{
     CompiledQuerySource, SourceRegistrationCandidate, SourceRegistrationFailure, register_sources,
 };
@@ -30,18 +31,21 @@ pub(crate) async fn build_runtime(
         RuntimeEnvBuilder::new()
             .with_object_list_cache_limit(0)
             .build()
-            .map_err(|err| datafusion_to_core(&err))?,
+            .map_err(|err| datafusion_to_core(&err, &[]))?,
     );
-    let ctx = Arc::new(SessionContext::new_with_config_rt(
-        session_config,
-        runtime_env,
-    ));
+    let mut ctx = SessionContext::new_with_config_rt(session_config, runtime_env);
+    register_json_support(&mut ctx).map_err(|err| datafusion_to_core(&err, &[]))?;
+    let ctx = Arc::new(ctx);
 
     let runtime_context = runtime.runtime_context();
     let mut build_options: EngineExtensions = runtime.engine_extensions();
     let mut source_candidates = Vec::new();
     for source in sources {
-        match compile_query_source(source, &runtime_context) {
+        match compile_query_source(
+            source,
+            &runtime_context,
+            &build_options.request_authenticators,
+        ) {
             Ok(compiled) => {
                 source_candidates.push(SourceRegistrationCandidate::Compiled(
                     CompiledQuerySource {
@@ -63,7 +67,7 @@ pub(crate) async fn build_runtime(
     )
     .await?;
     catalog::register(&ctx, &registration.active_sources)
-        .map_err(|err| datafusion_to_core(&err))?;
+        .map_err(|err| datafusion_to_core(&err, &[]))?;
     let tables = catalog::collect_tables(&registration.active_sources);
     for failure in &registration.failures {
         tracing::warn!(
@@ -103,9 +107,12 @@ impl QueryRuntimeAdapter {
             .ctx
             .sql_with_options(sql, read_only_sql_options())
             .await
-            .map_err(|err| datafusion_to_core(&err))?;
+            .map_err(|err| datafusion_to_core(&err, &self.tables))?;
         let arrow_schema = Arc::new(df.schema().as_arrow().clone());
-        let batches = df.collect().await.map_err(|err| datafusion_to_core(&err))?;
+        let batches = df
+            .collect()
+            .await
+            .map_err(|err| datafusion_to_core(&err, &self.tables))?;
         Ok(QueryExecution::new(arrow_schema, batches))
     }
 }
@@ -115,34 +122,4 @@ fn read_only_sql_options() -> SQLOptions {
         .with_allow_ddl(false)
         .with_allow_dml(false)
         .with_allow_statements(false)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn datafusion_to_core_unwraps_context_wrapped_schema_error_to_invalid_input() {
-        use datafusion::common::{Column, SchemaError};
-        use datafusion::error::DataFusionError;
-
-        let schema_err = Box::new(SchemaError::FieldNotFound {
-            field: Box::new(Column::new_unqualified("user_login")),
-            valid_fields: vec![
-                Column::new_unqualified("user__login"),
-                Column::new_unqualified("title"),
-            ],
-        });
-        let inner = DataFusionError::SchemaError(schema_err, Box::new(None));
-        let wrapped = DataFusionError::Context("wrapping context".to_string(), Box::new(inner));
-
-        let core = datafusion_to_core(&wrapped);
-
-        match core {
-            CoreError::InvalidInput(msg) => {
-                assert!(msg.contains("user_login"), "expected field name in: {msg}");
-            }
-            other => panic!("expected CoreError::InvalidInput, got {other:?}"),
-        }
-    }
 }

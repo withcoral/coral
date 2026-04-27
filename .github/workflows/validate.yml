@@ -2,7 +2,7 @@ name: Validate
 
 on:
   push:
-    branches: [main]
+    branches: [ main ]
   pull_request:
 
 permissions:
@@ -36,7 +36,7 @@ jobs:
 
       - name: Detect changes
         id: filter
-        uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36 # v3
+        uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
         with:
           filters: |
             github_actions:
@@ -190,7 +190,7 @@ jobs:
 
   validate:
     runs-on: ubuntu-latest
-    needs: [changes, rust-checks, gha-security-audit, source-lint, docs-freshness, license-check]
+    needs: [ changes, rust-checks, gha-security-audit, source-lint, docs-freshness, license-check ]
     # Run even when upstream jobs fail or are conditionally skipped so this
     # job can act as the single required status check for the workflow.
     if: ${{ always() }}

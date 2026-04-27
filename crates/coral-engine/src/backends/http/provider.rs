@@ -129,7 +129,7 @@ impl TableProvider for HttpSourceTableProvider {
                     ProviderQueryError::MissingRequiredFilter {
                         schema: self.source_schema.clone(),
                         table: self.table.name().to_string(),
-                        field: required.name.clone(),
+                        column: required.name.clone(),
                     },
                 )));
             }

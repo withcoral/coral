@@ -166,6 +166,7 @@ inputs:
     kind: secret
 base_url: "{{input.API_BASE}}"
 auth:
+  type: HeaderAuth
   headers:
     - name: Authorization
       from: template

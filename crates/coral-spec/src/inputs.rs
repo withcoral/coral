@@ -8,7 +8,7 @@
 //! the variable or secret store. Manifests that take no interactive inputs
 //! may omit the block entirely.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Map, Value};
 
@@ -39,6 +39,30 @@ pub struct ManifestInputSpec {
     pub default_value: String,
     /// Optional authored hint shown to the user when collecting the input.
     pub hint: Option<String>,
+}
+
+/// Merge user-provided secrets and variables with manifest defaults into one
+/// runtime-ready input map.
+#[must_use]
+pub fn resolve_inputs(
+    declared: &[ManifestInputSpec],
+    source_secrets: &BTreeMap<String, String>,
+    source_variables: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    let mut resolved = BTreeMap::new();
+    for input in declared {
+        let value = match input.kind {
+            ManifestInputKind::Secret => source_secrets.get(&input.key).cloned(),
+            ManifestInputKind::Variable => source_variables
+                .get(&input.key)
+                .cloned()
+                .or_else(|| (!input.required).then(|| input.default_value.clone())),
+        };
+        if let Some(value) = value {
+            resolved.insert(input.key.clone(), value);
+        }
+    }
+    resolved
 }
 
 /// Collect interactive source inputs from an already-parsed manifest value.
@@ -209,6 +233,7 @@ inputs:
     hint: Run `gh auth token` or create a PAT
 base_url: "{{input.GITHUB_API_BASE}}"
 auth:
+  type: HeaderAuth
   headers:
     - name: Authorization
       from: template
@@ -247,6 +272,7 @@ inputs:
   GITHUB_TOKEN:
     kind: secret
 auth:
+  type: HeaderAuth
   headers:
     - name: Authorization
       from: input

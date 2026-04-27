@@ -20,13 +20,19 @@ This lists the bundled sources available in your build. Coral comes with [bundle
 
 ## 2. Add a source
 
-For example, add GitHub:
+For example, add GitHub. Pass `--interactive` and Coral will prompt you for each required input:
 
 ```shellscript
-coral source add github
+coral source add --interactive github
 ```
 
-Coral prompts for any required variables or secrets. Once connected, the source's data is available as SQL tables. To update a source's credentials later, run the same command again.
+Once connected, the source's data is available as SQL tables. To update a source's credentials later, run the same command again.
+
+<Tip>
+  For scripted setups, omit `--interactive` and Coral reads each input from an
+  environment variable of the same name — e.g. `GITHUB_TOKEN=ghp_... coral
+  source add github`.
+</Tip>
 
 ## 3. Query your data
 

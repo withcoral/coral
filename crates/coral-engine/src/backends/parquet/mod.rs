@@ -21,6 +21,7 @@ use std::io::Cursor;
 use bytes::Bytes;
 use futures::TryStreamExt as _;
 use object_store::ObjectStore;
+use object_store::ObjectStoreExt as _;
 use object_store::aws::AmazonS3Builder;
 use object_store::local::LocalFileSystem;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;

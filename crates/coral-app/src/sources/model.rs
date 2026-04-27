@@ -37,9 +37,12 @@ pub(crate) enum CandidateSourceInputKind {
 pub(crate) struct InstalledSource {
     /// Bare source name. This is also the visible SQL schema name.
     pub(crate) name: SourceName,
-    /// Manifest version from the installed source spec.
+    /// Persisted manifest version when it should live in app state.
+    ///
+    /// Bundled sources resolve their manifest directly from the compiled-in
+    /// catalog, so they do not persist a duplicate version string in config.
     #[serde(default)]
-    pub(crate) version: String,
+    pub(crate) version: Option<String>,
     /// Configured non-secret variable bindings.
     #[serde(default)]
     pub(crate) variables: BTreeMap<String, String>,

@@ -19,12 +19,12 @@ const TOO_MANY_REQUESTS: u16 = HttpStatus::TOO_MANY_REQUESTS.as_u16();
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum ProviderQueryError {
     #[error(
-        "{schema}.{table} table requires a constant equality filter: WHERE {field} = <constant>"
+        "{schema}.{table} table requires a constant equality filter: WHERE {column} = <constant>"
     )]
     MissingRequiredFilter {
         schema: String,
         table: String,
-        field: String,
+        column: String,
     },
 
     #[error("{source_schema}.{table} API error: {detail}")]
@@ -58,18 +58,18 @@ impl ProviderQueryError {
             Self::MissingRequiredFilter {
                 schema,
                 table,
-                field,
+                column,
             } => {
                 let mut metadata = HashMap::new();
                 metadata.insert("schema".to_string(), schema.clone());
                 metadata.insert("table".to_string(), table.clone());
-                metadata.insert("field".to_string(), field.clone());
+                metadata.insert("column".to_string(), column.clone());
                 StructuredQueryError::new(
                     "MISSING_REQUIRED_FILTER",
-                    format!("{schema}.{table} requires `WHERE {field} = <constant>`"),
-                    format!("{schema}.{table} requires a constant equality filter on {field}"),
+                    format!("{schema}.{table} requires `WHERE {column} = <constant>`"),
+                    format!("{schema}.{table} requires a constant equality filter on {column}"),
                     Some(format!(
-                        "Add a constant equality filter on `{field}` or inspect \
+                        "Add a constant equality filter on `{column}` or inspect \
                          `coral.columns` / `coral.tables` first."
                     )),
                     false,
@@ -285,13 +285,13 @@ mod tests {
         let error = ProviderQueryError::MissingRequiredFilter {
             schema: "github".to_string(),
             table: "issues".to_string(),
-            field: "repo".to_string(),
+            column: "repo".to_string(),
         }
         .to_structured();
         assert_eq!(error.reason(), "MISSING_REQUIRED_FILTER");
         assert_eq!(error.metadata().get("schema").unwrap(), "github");
         assert_eq!(error.metadata().get("table").unwrap(), "issues");
-        assert_eq!(error.metadata().get("field").unwrap(), "repo");
+        assert_eq!(error.metadata().get("column").unwrap(), "repo");
         assert!(error.summary().contains("repo"));
         assert!(error.hint().is_some());
         assert_eq!(error.status(), StatusCode::FailedPrecondition);
@@ -389,7 +389,7 @@ mod tests {
         let error = ProviderQueryError::MissingRequiredFilter {
             schema: "github".to_string(),
             table: "issues".to_string(),
-            field: "repo".to_string(),
+            column: "repo".to_string(),
         }
         .to_structured();
         let text = error.to_string();

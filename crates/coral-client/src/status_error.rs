@@ -168,7 +168,7 @@ mod tests {
             vec![
                 ("schema", "github"),
                 ("table", "issues"),
-                ("field", "repo"),
+                ("column", "repo"),
                 (
                     "summary",
                     "github.issues requires `WHERE repo = <constant>`",
@@ -190,7 +190,7 @@ mod tests {
                 );
                 assert_eq!(err.metadata.get("schema").unwrap(), "github");
                 assert_eq!(err.metadata.get("table").unwrap(), "issues");
-                assert_eq!(err.metadata.get("field").unwrap(), "repo");
+                assert_eq!(err.metadata.get("column").unwrap(), "repo");
                 assert!(
                     !err.metadata.contains_key("summary"),
                     "summary promoted out of metadata"
