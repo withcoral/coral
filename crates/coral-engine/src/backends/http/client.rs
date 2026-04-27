@@ -490,9 +490,7 @@ fn validate_request_template_inputs(
                 validate_value_source_inputs(&field.value, resolved_inputs).map_err(|error| {
                     registration_error(
                         source_name,
-                        &format!(
-                            "table '{table_name}' {request_label} body field '{field_path}'"
-                        ),
+                        &format!("table '{table_name}' {request_label} body field '{field_path}'"),
                         &error,
                     )
                 })?;
@@ -1218,10 +1216,12 @@ mod tests {
         let body = match &request.body {
             BodySpec::Json { fields } => fields
                 .iter()
-                .map(|field| json!({
-                    "path": field.path,
-                    "value": value_source_json(&field.value),
-                }))
+                .map(|field| {
+                    json!({
+                        "path": field.path,
+                        "value": value_source_json(&field.value),
+                    })
+                })
                 .collect::<Vec<_>>(),
             BodySpec::Text { .. } => Vec::new(),
         };

@@ -7,9 +7,7 @@ use coral_engine::{
 };
 use reqwest::header::{AUTHORIZATION, HeaderName, HeaderValue};
 use serde_json::{Value, json};
-use wiremock::matchers::{
-    body_string, header, method, path, query_param, query_param_is_missing,
-};
+use wiremock::matchers::{body_string, header, method, path, query_param, query_param_is_missing};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use crate::harness::{
