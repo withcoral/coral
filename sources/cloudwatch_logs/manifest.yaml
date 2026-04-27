@@ -124,7 +124,7 @@ tables:
           key: order_by
           default: LogStreamName
         - path: [descending]
-          from: filter
+          from: filter_bool
           key: descending
           default: true
         - path: [limit]
@@ -157,7 +157,7 @@ tables:
         description: Ordering mode filter.
         expr: {kind: from_filter, key: order_by}
       - name: descending
-        type: Utf8
+        type: Boolean
         nullable: true
         virtual: true
         description: Descending sort filter.

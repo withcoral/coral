@@ -69,7 +69,7 @@ tables:
           from: filter
           key: recently_active
         - path: [IncludeLinkedAccounts]
-          from: filter
+          from: filter_bool
           key: include_linked_accounts
         - path: [OwningAccount]
           from: filter
@@ -104,7 +104,7 @@ tables:
         description: Virtual filter. Use PT3H to request recently active metrics.
         expr: {kind: from_filter, key: recently_active}
       - name: include_linked_accounts
-        type: Utf8
+        type: Boolean
         nullable: true
         virtual: true
         description: Virtual filter for cross-account observability.
