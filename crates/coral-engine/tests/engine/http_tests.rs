@@ -7,7 +7,7 @@ use coral_engine::{
 };
 use reqwest::header::{AUTHORIZATION, HeaderName, HeaderValue};
 use serde_json::{Value, json};
-use wiremock::matchers::{header, method, path, query_param, query_param_is_missing};
+use wiremock::matchers::{body_json, header, method, path, query_param, query_param_is_missing};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use crate::harness::{
@@ -239,6 +239,55 @@ async fn select_with_where_filter_pushdown() {
     );
 
     assert_eq!(rows, vec![json!({"id": 2, "name": "Grace"})]);
+}
+
+#[tokio::test]
+async fn boolean_filter_bool_is_predicate_sends_json_bool_body() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/users/search"))
+        .and(body_json(json!({ "includeArchived": false })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            json!({ "data": [json!({"id": 2, "name": "Grace", "email": "grace@example.com"})] }),
+        ))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut manifest = base_http_manifest("http_bool_filter", &server.uri());
+    let table = &mut manifest["tables"][0];
+    table["filters"] = json!([{ "name": "include_archived" }]);
+    table["request"] = json!({
+        "method": "POST",
+        "path": "/api/users/search",
+        "body": [
+            {
+                "path": ["includeArchived"],
+                "from": "filter_bool",
+                "key": "include_archived"
+            }
+        ]
+    });
+    table["columns"].as_array_mut().unwrap().push(json!({
+        "name": "include_archived",
+        "type": "Boolean",
+        "nullable": true,
+        "virtual": true,
+        "expr": { "kind": "from_filter", "key": "include_archived" }
+    }));
+    let source = build_source(manifest);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            &TestRuntime,
+            "SELECT id, include_archived FROM http_bool_filter.users WHERE include_archived IS FALSE",
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(rows, vec![json!({"id": 2, "include_archived": false})]);
 }
 
 #[tokio::test]

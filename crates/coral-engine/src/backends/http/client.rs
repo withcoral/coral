@@ -1203,6 +1203,11 @@ mod tests {
                 "key": key,
                 "default": default,
             }),
+            ValueSourceSpec::FilterBool { key, default } => json!({
+                "from": "filter_bool",
+                "key": key,
+                "default": default,
+            }),
             ValueSourceSpec::Input { key } => json!({
                 "from": "input",
                 "key": key,
@@ -1371,6 +1376,24 @@ mod tests {
                 .to_string()
                 .contains("filter 'start_time' value 'not-a-number' is not a valid i64")
         );
+    }
+
+    #[test]
+    fn resolve_value_source_parses_filter_bools_as_bools() {
+        let filters = HashMap::from([("descending".to_string(), "false".to_string())]);
+
+        let value = resolve_value_source(
+            &ValueSourceSpec::FilterBool {
+                key: "descending".to_string(),
+                default: None,
+            },
+            &filters,
+            &HashMap::new(),
+            &BTreeMap::new(),
+        )
+        .expect("bool filter should resolve");
+
+        assert_eq!(value, Some(json!(false)));
     }
 
     #[test]

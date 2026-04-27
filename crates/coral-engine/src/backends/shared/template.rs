@@ -41,6 +41,19 @@ pub(crate) fn resolve_value_source(
             };
             Ok(value)
         }
+        ValueSourceSpec::FilterBool { key, default } => {
+            let value = if let Some(filter) = filters.get(key) {
+                let parsed = filter.parse::<bool>().map_err(|error| {
+                    DataFusionError::Execution(format!(
+                        "filter '{key}' value '{filter}' is not a valid bool: {error}"
+                    ))
+                })?;
+                Some(json!(parsed))
+            } else {
+                default.map(|value| json!(value))
+            };
+            Ok(value)
+        }
         ValueSourceSpec::Input { key } => Ok(resolved_inputs.get(key).cloned().map(Value::String)),
         ValueSourceSpec::State { key } => Ok(state.get(key).map(|v| Value::String(v.clone()))),
         ValueSourceSpec::NowEpochMinusSeconds { seconds } => {
@@ -177,6 +190,7 @@ pub(crate) fn validate_value_source_inputs(
         ValueSourceSpec::Literal { .. }
         | ValueSourceSpec::Filter { .. }
         | ValueSourceSpec::FilterInt { .. }
+        | ValueSourceSpec::FilterBool { .. }
         | ValueSourceSpec::State { .. }
         | ValueSourceSpec::NowEpochMinusSeconds { .. } => Ok(()),
     }
