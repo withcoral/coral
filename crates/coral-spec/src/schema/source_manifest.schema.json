@@ -365,6 +365,14 @@
         },
         {
           "properties": {
+            "from": { "const": "filter_bool" },
+            "key": { "type": "string", "minLength": 1 },
+            "default": { "type": "boolean" }
+          },
+          "required": ["key"]
+        },
+        {
+          "properties": {
             "from": { "const": "input" },
             "key": { "type": "string", "minLength": 1 }
           },

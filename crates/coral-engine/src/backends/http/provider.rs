@@ -167,6 +167,23 @@ fn classify_filter(
     allowed: &HashSet<&str>,
     filter_modes: &HashMap<&str, FilterMode>,
 ) -> TableProviderFilterPushDown {
+    if let Expr::Column(col) = expr
+        && allowed.contains(col.name())
+    {
+        return TableProviderFilterPushDown::Exact;
+    }
+    if let Expr::Not(inner) = expr
+        && let Expr::Column(col) = inner.as_ref()
+        && allowed.contains(col.name())
+    {
+        return TableProviderFilterPushDown::Exact;
+    }
+    if let Expr::IsTrue(inner) | Expr::IsFalse(inner) = expr
+        && let Expr::Column(col) = inner.as_ref()
+        && allowed.contains(col.name())
+    {
+        return TableProviderFilterPushDown::Exact;
+    }
     if let Expr::BinaryExpr(binary) = expr
         && binary.op == Operator::Eq
         && let Expr::Column(col) = binary.left.as_ref()
@@ -201,6 +218,7 @@ mod tests {
         Expr, Operator, TableProviderFilterPushDown, binary_expr, expr::Like, lit,
     };
     use std::collections::{HashMap, HashSet};
+    use std::ops::Not;
 
     fn allowed<'a>(names: &'a [&'a str]) -> HashSet<&'a str> {
         names.iter().copied().collect()
@@ -262,5 +280,43 @@ mod tests {
             &modes(&[("query", FilterMode::Search)]),
         );
         assert_eq!(pushdown, TableProviderFilterPushDown::Inexact);
+    }
+
+    #[test]
+    fn boolean_column_filter_pushes_down_exactly() {
+        let pushdown = classify_filter(&col("descending"), &allowed(&["descending"]), &modes(&[]));
+        assert_eq!(pushdown, TableProviderFilterPushDown::Exact);
+    }
+
+    #[test]
+    fn negated_boolean_column_filter_pushes_down_exactly() {
+        let pushdown = classify_filter(
+            &col("descending").not(),
+            &allowed(&["descending"]),
+            &modes(&[]),
+        );
+        assert_eq!(pushdown, TableProviderFilterPushDown::Exact);
+    }
+
+    #[test]
+    fn boolean_is_true_and_is_false_push_down_exactly() {
+        for expr in [
+            Expr::IsTrue(Box::new(col("descending"))),
+            Expr::IsFalse(Box::new(col("descending"))),
+        ] {
+            let pushdown = classify_filter(&expr, &allowed(&["descending"]), &modes(&[]));
+            assert_eq!(pushdown, TableProviderFilterPushDown::Exact);
+        }
+    }
+
+    #[test]
+    fn null_inclusive_boolean_is_predicates_are_not_pushed_down() {
+        for expr in [
+            Expr::IsNotTrue(Box::new(col("descending"))),
+            Expr::IsNotFalse(Box::new(col("descending"))),
+        ] {
+            let pushdown = classify_filter(&expr, &allowed(&["descending"]), &modes(&[]));
+            assert_eq!(pushdown, TableProviderFilterPushDown::Unsupported);
+        }
     }
 }

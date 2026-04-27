@@ -1,9 +1,9 @@
 name: slack
-version: 2.0.0
+version: 2.1.0
 dsl_version: 3
 backend: http
 description: >-
-  Query channels, messages, and users from your Slack workspace.
+  Query channels, messages, thread replies, and users from your Slack workspace.
 inputs:
   SLACK_TOKEN:
     kind: secret
@@ -249,6 +249,169 @@ tables:
         required: true
       - name: oldest
       - name: latest
+  - name: thread_replies
+    description: Slack thread replies for a specific channel and parent message
+    request:
+      method: GET
+      path: /api/conversations.replies
+      query:
+        - name: channel
+          from: filter
+          key: channel
+        - name: ts
+          from: filter
+          key: thread_ts
+        - name: oldest
+          from: filter
+          key: oldest
+        - name: latest
+          from: filter
+          key: latest
+        - name: inclusive
+          from: filter
+          key: inclusive
+        - name: include_all_metadata
+          from: filter
+          key: include_all_metadata
+    response:
+      ok_path:
+        - ok
+      error_path:
+        - error
+      rows_path:
+        - messages
+    pagination:
+      mode: cursor_query
+      page_size:
+        default: 200
+        max: 200
+        query_param: limit
+      cursor_param: cursor
+      response_cursor_path:
+        - response_metadata
+        - next_cursor
+    columns:
+      - name: channel
+        type: Utf8
+        nullable: false
+        description: Channel ID (required filter to specify which channel)
+        expr:
+          kind: from_filter
+          key: channel
+      - name: thread_ts
+        type: Utf8
+        nullable: false
+        description: Thread parent timestamp (required filter)
+        expr:
+          kind: from_filter
+          key: thread_ts
+      - name: user_id
+        type: Utf8
+        nullable: true
+        description: User ID of the reply author
+        expr:
+          kind: path
+          path:
+            - user
+      - name: text
+        type: Utf8
+        nullable: true
+        description: Reply text content
+        expr:
+          kind: path
+          path:
+            - text
+      - name: ts
+        type: Timestamp
+        nullable: false
+        description: Reply time from Slack `ts`, exposed as a UTC Timestamp
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr:
+            kind: path
+            path:
+              - ts
+      - name: permalink
+        type: Utf8
+        nullable: false
+        description: Deep link to the thread reply in Slack
+        expr:
+          kind: template
+          template: "https://slack.com/archives/{{filter.channel}}/p{{expr.ts_id}}?thread_ts={{expr.thread_ts}}&cid={{filter.channel}}"
+          values:
+            ts_id:
+              kind: replace
+              expr:
+                kind: path
+                path:
+                  - ts
+              from: "."
+              to: ""
+            thread_ts:
+              kind: coalesce
+              exprs:
+                - kind: path
+                  path:
+                    - thread_ts
+                - kind: path
+                  path:
+                    - ts
+      - name: reply_count
+        type: Int64
+        nullable: true
+        description: Number of replies in thread (present on parent messages)
+        expr:
+          kind: path
+          path:
+            - reply_count
+      - name: subtype
+        type: Utf8
+        nullable: true
+        description: Message subtype
+        expr:
+          kind: path
+          path:
+            - subtype
+      - name: oldest
+        type: Utf8
+        nullable: true
+        description: Oldest timestamp filter (virtual)
+        expr:
+          kind: "null"
+        virtual: true
+      - name: latest
+        type: Utf8
+        nullable: true
+        description: Latest timestamp filter (virtual)
+        expr:
+          kind: "null"
+        virtual: true
+      - name: inclusive
+        type: Utf8
+        nullable: true
+        description: Include messages matching oldest or latest timestamps, as true or false (virtual)
+        expr:
+          kind: from_filter
+          key: inclusive
+        virtual: true
+      - name: include_all_metadata
+        type: Utf8
+        nullable: true
+        description: Return all metadata associated with thread messages, as true or false (virtual)
+        expr:
+          kind: from_filter
+          key: include_all_metadata
+        virtual: true
+    filters:
+      - name: channel
+        required: true
+      - name: thread_ts
+        required: true
+      - name: oldest
+      - name: latest
+      - name: inclusive
+      - name: include_all_metadata
   - name: users
     description: Slack workspace users with profile info (email requires users:read.email scope)
     guide: |

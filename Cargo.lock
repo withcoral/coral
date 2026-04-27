@@ -852,6 +852,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "clap_complete"
+version = "4.6.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3ff7a1dccbdd8b078c2bdebff47e404615151534d5043da397ec50286816f9cb"
+dependencies = [
+ "clap",
+]
+
+[[package]]
 name = "clap_derive"
 version = "4.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -958,7 +967,7 @@ checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
 
 [[package]]
 name = "coral-api"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "prost",
  "protoc-bin-vendored",
@@ -970,7 +979,7 @@ dependencies = [
 
 [[package]]
 name = "coral-app"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "arrow",
  "coral-api",
@@ -997,7 +1006,7 @@ dependencies = [
 
 [[package]]
 name = "coral-auth-aws"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "aws-credential-types",
  "aws-sigv4",
@@ -1010,12 +1019,13 @@ dependencies = [
 
 [[package]]
 name = "coral-cli"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "arrow",
  "assert_cmd",
  "clap",
+ "clap_complete",
  "coral-api",
  "coral-app",
  "coral-client",
@@ -1034,7 +1044,7 @@ dependencies = [
 
 [[package]]
 name = "coral-client"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "arrow",
  "coral-api",
@@ -1047,7 +1057,7 @@ dependencies = [
 
 [[package]]
 name = "coral-engine"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "arrow",
  "async-trait",
@@ -1074,7 +1084,7 @@ dependencies = [
 
 [[package]]
 name = "coral-mcp"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "coral-api",
  "coral-app",
@@ -1090,7 +1100,7 @@ dependencies = [
 
 [[package]]
 name = "coral-spec"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "jsonschema",
  "serde",
@@ -5653,7 +5663,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "clap",

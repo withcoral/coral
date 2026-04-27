@@ -1,0 +1,294 @@
+dsl_version: 3
+name: cloudwatch_logs
+version: 0.1.0
+backend: http
+description: >-
+  Query Amazon CloudWatch Logs groups, streams, and events.
+inputs:
+  AWS_REGION:
+    kind: variable
+    default: us-east-1
+    hint: |
+      AWS region for CloudWatch Logs API requests, for example `us-east-1`.
+  AWS_ENDPOINT_SUFFIX:
+    kind: variable
+    default: amazonaws.com
+    hint: |
+      AWS endpoint DNS suffix. Keep `amazonaws.com` for standard AWS
+      regions. Use the appropriate suffix for other partitions.
+  AWS_ACCESS_KEY_ID:
+    kind: secret
+    hint: |
+      AWS access key ID with CloudWatch Logs read permissions.
+  AWS_SECRET_ACCESS_KEY:
+    kind: secret
+    hint: |
+      AWS secret access key for SigV4 signing.
+base_url: https://logs.{{input.AWS_REGION}}.{{input.AWS_ENDPOINT_SUFFIX}}
+auth:
+  type: CustomAuth
+  authenticator: aws_sigv4
+  service: logs
+  region: "{{input.AWS_REGION}}"
+  access_key_id: "{{input.AWS_ACCESS_KEY_ID}}"
+  secret_access_key: "{{input.AWS_SECRET_ACCESS_KEY}}"
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+  - name: Content-Type
+    from: literal
+    value: application/x-amz-json-1.1
+test_queries:
+  - SELECT * FROM cloudwatch_logs.log_groups LIMIT 1
+tables:
+  - name: log_groups
+    description: CloudWatch Logs log groups returned by DescribeLogGroups.
+    request:
+      method: POST
+      path: /
+      headers:
+        - name: X-Amz-Target
+          from: literal
+          value: Logs_20140328.DescribeLogGroups
+      body:
+        - path: [logGroupNamePrefix]
+          from: filter
+          key: log_group_name_prefix
+        - path: [limit]
+          from: literal
+          value: 50
+    response:
+      rows_path: [logGroups]
+    pagination:
+      mode: cursor_body
+      cursor_body_path: [nextToken]
+      response_cursor_path: [nextToken]
+      max_pages: 100
+    columns:
+      - name: log_group_name
+        type: Utf8
+        nullable: false
+        description: Log group name.
+        expr: {kind: path, path: [logGroupName]}
+      - name: arn
+        type: Utf8
+        nullable: true
+        description: Log group ARN.
+        expr: {kind: path, path: [arn]}
+      - name: creation_time
+        type: Int64
+        nullable: true
+        description: Creation time in Unix epoch milliseconds.
+        expr: {kind: path, path: [creationTime]}
+      - name: retention_in_days
+        type: Int64
+        nullable: true
+        description: Retention period in days.
+        expr: {kind: path, path: [retentionInDays]}
+      - name: metric_filter_count
+        type: Int64
+        nullable: true
+        description: Number of metric filters.
+        expr: {kind: path, path: [metricFilterCount]}
+      - name: stored_bytes
+        type: Int64
+        nullable: true
+        description: Stored bytes.
+        expr: {kind: path, path: [storedBytes]}
+    filters:
+      - name: log_group_name_prefix
+
+  - name: log_streams
+    description: CloudWatch Logs log streams returned by DescribeLogStreams.
+    guide: >
+      Requires log_group_name. Optional log_stream_name_prefix narrows the
+      returned streams. order_by defaults to LogStreamName because AWS does not
+      allow log_stream_name_prefix together with LastEventTime ordering.
+    request:
+      method: POST
+      path: /
+      headers:
+        - name: X-Amz-Target
+          from: literal
+          value: Logs_20140328.DescribeLogStreams
+      body:
+        - path: [logGroupName]
+          from: filter
+          key: log_group_name
+        - path: [logStreamNamePrefix]
+          from: filter
+          key: log_stream_name_prefix
+        - path: [orderBy]
+          from: filter
+          key: order_by
+          default: LogStreamName
+        - path: [descending]
+          from: filter_bool
+          key: descending
+          default: true
+        - path: [limit]
+          from: literal
+          value: 50
+    response:
+      rows_path: [logStreams]
+    pagination:
+      mode: cursor_body
+      cursor_body_path: [nextToken]
+      response_cursor_path: [nextToken]
+      max_pages: 100
+    columns:
+      - name: log_group_name
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Log group name filter.
+        expr: {kind: from_filter, key: log_group_name}
+      - name: log_stream_name_prefix
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Log stream name prefix filter.
+        expr: {kind: from_filter, key: log_stream_name_prefix}
+      - name: order_by
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Ordering mode filter.
+        expr: {kind: from_filter, key: order_by}
+      - name: descending
+        type: Boolean
+        nullable: true
+        virtual: true
+        description: Descending sort filter.
+        expr: {kind: from_filter, key: descending}
+      - name: log_stream_name
+        type: Utf8
+        nullable: false
+        description: Log stream name.
+        expr: {kind: path, path: [logStreamName]}
+      - name: arn
+        type: Utf8
+        nullable: true
+        description: Log stream ARN.
+        expr: {kind: path, path: [arn]}
+      - name: creation_time
+        type: Int64
+        nullable: true
+        description: Creation time in Unix epoch milliseconds.
+        expr: {kind: path, path: [creationTime]}
+      - name: first_event_timestamp
+        type: Int64
+        nullable: true
+        description: First event timestamp in Unix epoch milliseconds.
+        expr: {kind: path, path: [firstEventTimestamp]}
+      - name: last_event_timestamp
+        type: Int64
+        nullable: true
+        description: Last event timestamp in Unix epoch milliseconds.
+        expr: {kind: path, path: [lastEventTimestamp]}
+      - name: last_ingestion_time
+        type: Int64
+        nullable: true
+        description: Last ingestion time in Unix epoch milliseconds.
+        expr: {kind: path, path: [lastIngestionTime]}
+      - name: stored_bytes
+        type: Int64
+        nullable: true
+        description: Stored bytes.
+        expr: {kind: path, path: [storedBytes]}
+    filters:
+      - name: log_group_name
+        required: true
+      - name: log_stream_name_prefix
+      - name: order_by
+      - name: descending
+
+  - name: log_events
+    description: CloudWatch Logs events returned by FilterLogEvents.
+    guide: >
+      Requires log_group_name or log_group_identifier. Optional start_time and
+      end_time are Unix epoch milliseconds. Use filter_pattern for CloudWatch
+      Logs filter syntax and log_stream_name_prefix to narrow streams.
+    fetch_limit_default: 1000
+    request:
+      method: POST
+      path: /
+      headers:
+        - name: X-Amz-Target
+          from: literal
+          value: Logs_20140328.FilterLogEvents
+      body:
+        - path: [logGroupName]
+          from: filter
+          key: log_group_name
+        - path: [logGroupIdentifier]
+          from: filter
+          key: log_group_identifier
+        - path: [logStreamNamePrefix]
+          from: filter
+          key: log_stream_name_prefix
+        - path: [filterPattern]
+          from: filter
+          key: filter_pattern
+        - path: [startTime]
+          from: filter_int
+          key: start_time
+        - path: [endTime]
+          from: filter_int
+          key: end_time
+        - path: [limit]
+          from: literal
+          value: 1000
+    response:
+      rows_path: [events]
+    pagination:
+      mode: cursor_body
+      cursor_body_path: [nextToken]
+      response_cursor_path: [nextToken]
+      max_pages: 100
+    columns:
+      - name: event_id
+        type: Utf8
+        nullable: true
+        description: Event ID.
+        expr: {kind: path, path: [eventId]}
+      - name: timestamp
+        type: Int64
+        nullable: true
+        description: Event timestamp in Unix epoch milliseconds.
+        expr: {kind: path, path: [timestamp]}
+      - name: ingestion_time
+        type: Int64
+        nullable: true
+        description: Ingestion time in Unix epoch milliseconds.
+        expr: {kind: path, path: [ingestionTime]}
+      - name: log_stream_name
+        type: Utf8
+        nullable: true
+        description: Log stream name.
+        expr: {kind: path, path: [logStreamName]}
+      - name: message
+        type: Utf8
+        nullable: true
+        description: Log message.
+        expr: {kind: path, path: [message]}
+      - name: log_group_name
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Log group name filter.
+        expr: {kind: from_filter, key: log_group_name}
+      - name: filter_pattern
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: CloudWatch Logs filter pattern.
+        expr: {kind: from_filter, key: filter_pattern}
+    filters:
+      - name: log_group_name
+      - name: log_group_identifier
+      - name: log_stream_name_prefix
+      - name: filter_pattern
+      - name: start_time
+      - name: end_time

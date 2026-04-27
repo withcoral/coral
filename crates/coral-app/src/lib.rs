@@ -32,6 +32,7 @@
 //!
 /// Bootstrap entrypoints and local server assembly.
 pub mod bootstrap;
+mod identity;
 mod query;
 mod sources;
 mod state;

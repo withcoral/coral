@@ -986,29 +986,42 @@ fn set_path_value(root: &mut Value, path: &[String], value: Value) -> Result<()>
         return Ok(());
     }
 
-    let mut cursor = root;
-    for key in &path[..path.len() - 1] {
-        if !cursor.is_object() {
-            *cursor = Value::Object(Map::new());
+    set_path_value_at(root, path, value)
+}
+
+fn set_path_value_at(cursor: &mut Value, path: &[String], value: Value) -> Result<()> {
+    let Some((head, tail)) = path.split_first() else {
+        *cursor = value;
+        return Ok(());
+    };
+
+    if let Ok(index) = head.parse::<usize>() {
+        if !cursor.is_array() {
+            *cursor = Value::Array(Vec::new());
         }
-        let obj = cursor.as_object_mut().ok_or_else(|| {
-            DataFusionError::Execution("failed to create JSON object path".to_string())
+        let array = cursor.as_array_mut().ok_or_else(|| {
+            DataFusionError::Execution("failed to create JSON array path".to_string())
         })?;
-        cursor = obj
-            .entry(key.clone())
-            .or_insert_with(|| Value::Object(Map::new()));
+        if array.len() <= index {
+            const MAX_JSON_ARRAY_INDEX: usize = 10_000;
+            if index > MAX_JSON_ARRAY_INDEX {
+                return Err(DataFusionError::Execution(format!(
+                    "JSON array index {index} exceeds supported maximum {MAX_JSON_ARRAY_INDEX}"
+                )));
+            }
+            array.resize_with(index + 1, || Value::Null);
+        }
+        return set_path_value_at(&mut array[index], tail, value);
     }
 
-    let last = path
-        .last()
-        .cloned()
-        .ok_or_else(|| DataFusionError::Execution("invalid empty JSON path segment".to_string()))?;
-
+    if !cursor.is_object() {
+        *cursor = Value::Object(Map::new());
+    }
     let obj = cursor.as_object_mut().ok_or_else(|| {
-        DataFusionError::Execution("failed to assign JSON path value".to_string())
+        DataFusionError::Execution("failed to create JSON object path".to_string())
     })?;
-    obj.insert(last, value);
-    Ok(())
+    let next = obj.entry(head.clone()).or_insert(Value::Null);
+    set_path_value_at(next, tail, value)
 }
 
 #[allow(
@@ -1160,7 +1173,7 @@ mod tests {
     use super::{
         HttpSourceClient, PageState, RequestSpec as HttpRequestSpec, apply_pagination_query_pairs,
         execute_request, extract_next_link_url, extract_rows, join_url, normalize_base_url,
-        page_is_exhausted, resolve_value_source,
+        page_is_exhausted, resolve_value_source, set_path_value,
     };
     use coral_spec::PaginationMode;
     use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec, RateLimitSpec};
@@ -1212,6 +1225,49 @@ mod tests {
         .expect("table should exist")
     }
 
+    #[test]
+    fn set_path_value_builds_arrays_from_numeric_segments() {
+        let mut root = json!({});
+
+        set_path_value(
+            &mut root,
+            &[
+                "Dimensions".to_string(),
+                "0".to_string(),
+                "Name".to_string(),
+            ],
+            json!("ClusterName"),
+        )
+        .expect("path assignment should succeed");
+        set_path_value(
+            &mut root,
+            &[
+                "Dimensions".to_string(),
+                "0".to_string(),
+                "Value".to_string(),
+            ],
+            json!("titaness"),
+        )
+        .expect("path assignment should succeed");
+        set_path_value(
+            &mut root,
+            &["Statistics".to_string(), "0".to_string()],
+            json!("Average"),
+        )
+        .expect("path assignment should succeed");
+
+        assert_eq!(
+            root,
+            json!({
+                "Dimensions": [{
+                    "Name": "ClusterName",
+                    "Value": "titaness"
+                }],
+                "Statistics": ["Average"]
+            })
+        );
+    }
+
     fn request_json(request: &RequestSpec) -> serde_json::Value {
         let body = match &request.body {
             BodySpec::Json { fields } => fields
@@ -1253,6 +1309,11 @@ mod tests {
             }),
             ValueSourceSpec::FilterInt { key, default } => json!({
                 "from": "filter_int",
+                "key": key,
+                "default": default,
+            }),
+            ValueSourceSpec::FilterBool { key, default } => json!({
+                "from": "filter_bool",
                 "key": key,
                 "default": default,
             }),
@@ -1424,6 +1485,24 @@ mod tests {
                 .to_string()
                 .contains("filter 'start_time' value 'not-a-number' is not a valid i64")
         );
+    }
+
+    #[test]
+    fn resolve_value_source_parses_filter_bools_as_bools() {
+        let filters = HashMap::from([("descending".to_string(), "false".to_string())]);
+
+        let value = resolve_value_source(
+            &ValueSourceSpec::FilterBool {
+                key: "descending".to_string(),
+                default: None,
+            },
+            &filters,
+            &HashMap::new(),
+            &BTreeMap::new(),
+        )
+        .expect("bool filter should resolve");
+
+        assert_eq!(value, Some(json!(false)));
     }
 
     #[test]

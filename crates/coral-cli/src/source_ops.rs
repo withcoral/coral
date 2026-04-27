@@ -164,6 +164,9 @@ pub(crate) fn source_name_arg(name: Option<&str>) -> Result<String, anyhow::Erro
             "source name must not contain '/' or '\\\\'"
         ));
     }
+    if name == "." || name == ".." {
+        return Err(anyhow::anyhow!("source name must not be '.' or '..'"));
+    }
     Ok(name.to_string())
 }
 
@@ -306,6 +309,51 @@ pub(crate) async fn validate_and_warn(
         eprintln!("Warning: validation failed: {err}");
     }
     Ok(())
+}
+
+pub(crate) async fn test_and_print(
+    app: &AppClient,
+    source_name: &str,
+    limit: TableDisplayLimit,
+    severity_mode: ValidationSeverityMode,
+) -> Result<(), anyhow::Error> {
+    let normalized = source_name_arg(Some(source_name))?;
+    let err = match validate_and_print(app, &normalized, limit, severity_mode).await {
+        Ok(()) => return Ok(()),
+        Err(err) => err,
+    };
+
+    let is_not_found = err
+        .downcast_ref::<tonic::Status>()
+        .is_some_and(|status| status.code() == tonic::Code::NotFound);
+    if !is_not_found {
+        return Err(err);
+    }
+
+    // Discovery failure must not mask the original validation error.
+    let Ok(available) = discover_sources(app).await else {
+        return Err(err);
+    };
+    if available
+        .iter()
+        .any(|source| source.name == normalized && !source.installed)
+    {
+        return Err(source_not_installed_error(&normalized));
+    }
+
+    Err(source_not_found_error(&normalized))
+}
+
+fn source_not_installed_error(source_name: &str) -> anyhow::Error {
+    anyhow::anyhow!(
+        "source '{source_name}' is not installed. Run `coral source add {source_name}` to install it, then retry `coral source test {source_name}`."
+    )
+}
+
+fn source_not_found_error(source_name: &str) -> anyhow::Error {
+    anyhow::anyhow!(
+        "source '{source_name}' was not found. Run `coral source list` to see installed sources or `coral source discover` to see bundled sources available to install."
+    )
 }
 
 pub(crate) fn print_validation_pretty(
@@ -529,7 +577,7 @@ mod tests {
 
     use super::{
         ValidationFollowUp, ValidationSeverityMode, collect_inputs_with, finalize_input_value,
-        validation_follow_up,
+        source_name_arg, validation_follow_up,
     };
 
     #[test]
@@ -618,6 +666,15 @@ mod tests {
         assert!(message.contains("LINEAR_API_KEY"));
         assert!(message.contains("OTHER_KEY"));
         assert!(message.contains("--interactive"));
+    }
+
+    #[test]
+    fn source_name_arg_rejects_dot_segments() {
+        let error = source_name_arg(Some("..")).expect_err("dot segment should fail");
+        assert!(error.to_string().contains("must not be '.' or '..'"));
+
+        let error = source_name_arg(Some(" . ")).expect_err("dot segment should fail");
+        assert!(error.to_string().contains("must not be '.' or '..'"));
     }
 
     #[test]

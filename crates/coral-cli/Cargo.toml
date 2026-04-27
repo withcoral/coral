@@ -19,6 +19,7 @@ cli-test-server = []
 anyhow.workspace = true
 arrow.workspace = true
 clap.workspace = true
+clap_complete.workspace = true
 dialoguer.workspace = true
 thiserror.workspace = true
 tokio.workspace = true

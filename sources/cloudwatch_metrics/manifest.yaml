@@ -1,0 +1,790 @@
+dsl_version: 3
+name: cloudwatch_metrics
+version: 0.2.0
+backend: http
+description: >-
+  Query Amazon CloudWatch metrics and monitoring metadata.
+inputs:
+  AWS_REGION:
+    kind: variable
+    default: us-east-1
+    hint: |
+      AWS region for CloudWatch API requests, for example `us-east-1`.
+  AWS_ENDPOINT_SUFFIX:
+    kind: variable
+    default: amazonaws.com
+    hint: |
+      AWS endpoint DNS suffix. Keep `amazonaws.com` for standard AWS
+      regions. Use the appropriate suffix for other partitions.
+  AWS_ACCESS_KEY_ID:
+    kind: secret
+    hint: |
+      AWS access key ID with the CloudWatch read permissions needed for
+      the tables you plan to query.
+  AWS_SECRET_ACCESS_KEY:
+    kind: secret
+    hint: |
+      AWS secret access key for SigV4 signing.
+base_url: https://monitoring.{{input.AWS_REGION}}.{{input.AWS_ENDPOINT_SUFFIX}}
+auth:
+  type: CustomAuth
+  authenticator: aws_sigv4
+  service: monitoring
+  region: "{{input.AWS_REGION}}"
+  access_key_id: "{{input.AWS_ACCESS_KEY_ID}}"
+  secret_access_key: "{{input.AWS_SECRET_ACCESS_KEY}}"
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+  - name: Content-Encoding
+    from: literal
+    value: amz-1.0
+test_queries:
+  - SELECT * FROM cloudwatch_metrics.metrics WHERE namespace = 'AWS/EC2' LIMIT 1
+  - SELECT * FROM cloudwatch_metrics.metric_alarms LIMIT 1
+tables:
+  - name: metrics
+    description: CloudWatch metric identities returned by ListMetrics.
+    guide: >
+      Optional filters: namespace, metric_name, and recently_active. Set
+      recently_active to PT3H to request metrics active in the past three
+      hours. CloudWatch returns only metrics that reported data in the past
+      two weeks.
+    request:
+      method: POST
+      path: /
+      headers:
+        - name: X-Amz-Target
+          from: literal
+          value: GraniteServiceVersion20100801.ListMetrics
+      body:
+        - path: [Namespace]
+          from: filter
+          key: namespace
+        - path: [MetricName]
+          from: filter
+          key: metric_name
+        - path: [RecentlyActive]
+          from: filter
+          key: recently_active
+        - path: [IncludeLinkedAccounts]
+          from: filter_bool
+          key: include_linked_accounts
+        - path: [OwningAccount]
+          from: filter
+          key: owning_account
+    response:
+      rows_path: [Metrics]
+    pagination:
+      mode: cursor_body
+      cursor_body_path: [NextToken]
+      response_cursor_path: [NextToken]
+      max_pages: 100
+    columns:
+      - name: namespace
+        type: Utf8
+        nullable: true
+        description: Metric namespace.
+        expr: {kind: path, path: [Namespace]}
+      - name: metric_name
+        type: Utf8
+        nullable: true
+        description: Metric name.
+        expr: {kind: path, path: [MetricName]}
+      - name: dimensions
+        type: Utf8
+        nullable: true
+        description: Metric dimensions as JSON objects.
+        expr: {kind: join_array, path: [Dimensions]}
+      - name: recently_active
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Virtual filter. Use PT3H to request recently active metrics.
+        expr: {kind: from_filter, key: recently_active}
+      - name: include_linked_accounts
+        type: Boolean
+        nullable: true
+        virtual: true
+        description: Virtual filter for cross-account observability.
+        expr: {kind: from_filter, key: include_linked_accounts}
+      - name: owning_account
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Virtual filter for the owning source account ID.
+        expr: {kind: from_filter, key: owning_account}
+    filters:
+      - name: namespace
+      - name: metric_name
+      - name: recently_active
+      - name: include_linked_accounts
+      - name: owning_account
+
+  - name: metric_statistics
+    description: CloudWatch datapoints returned by GetMetricStatistics.
+    guide: >
+      Requires namespace, metric_name, start_time, and end_time. period defaults
+      to 300 seconds. Up to three dimensions can be supplied with dimension_name,
+      dimension_value, dimension2_name, dimension2_value, dimension3_name, and
+      dimension3_value. The request asks CloudWatch for Average, Minimum,
+      Maximum, Sum, and SampleCount.
+    request:
+      method: POST
+      path: /
+      headers:
+        - name: X-Amz-Target
+          from: literal
+          value: GraniteServiceVersion20100801.GetMetricStatistics
+      body:
+        - path: [Namespace]
+          from: filter
+          key: namespace
+        - path: [MetricName]
+          from: filter
+          key: metric_name
+        - path: [StartTime]
+          from: filter
+          key: start_time
+        - path: [EndTime]
+          from: filter
+          key: end_time
+        - path: [Period]
+          from: filter_int
+          key: period
+          default: 300
+        - path: [Unit]
+          from: filter
+          key: unit
+        - path: [Statistics, "0"]
+          from: literal
+          value: Average
+        - path: [Statistics, "1"]
+          from: literal
+          value: Minimum
+        - path: [Statistics, "2"]
+          from: literal
+          value: Maximum
+        - path: [Statistics, "3"]
+          from: literal
+          value: Sum
+        - path: [Statistics, "4"]
+          from: literal
+          value: SampleCount
+        - path: [Dimensions, "0", Name]
+          from: filter
+          key: dimension_name
+        - path: [Dimensions, "0", Value]
+          from: filter
+          key: dimension_value
+        - path: [Dimensions, "1", Name]
+          from: filter
+          key: dimension2_name
+        - path: [Dimensions, "1", Value]
+          from: filter
+          key: dimension2_value
+        - path: [Dimensions, "2", Name]
+          from: filter
+          key: dimension3_name
+        - path: [Dimensions, "2", Value]
+          from: filter
+          key: dimension3_value
+    response:
+      rows_path: [Datapoints]
+    pagination:
+      mode: none
+    columns:
+      - name: namespace
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Metric namespace filter.
+        expr: {kind: from_filter, key: namespace}
+      - name: metric_name
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Metric name filter.
+        expr: {kind: from_filter, key: metric_name}
+      - name: timestamp
+        type: Timestamp
+        nullable: true
+        description: Datapoint timestamp.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr: {kind: path, path: [Timestamp]}
+      - name: average
+        type: Float64
+        nullable: true
+        description: Average value.
+        expr: {kind: path, path: [Average]}
+      - name: minimum
+        type: Float64
+        nullable: true
+        description: Minimum value.
+        expr: {kind: path, path: [Minimum]}
+      - name: maximum
+        type: Float64
+        nullable: true
+        description: Maximum value.
+        expr: {kind: path, path: [Maximum]}
+      - name: sum
+        type: Float64
+        nullable: true
+        description: Sum value.
+        expr: {kind: path, path: [Sum]}
+      - name: sample_count
+        type: Float64
+        nullable: true
+        description: Number of samples.
+        expr: {kind: path, path: [SampleCount]}
+      - name: unit
+        type: Utf8
+        nullable: true
+        description: Datapoint unit.
+        expr: {kind: path, path: [Unit]}
+      - name: dimension_name
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: First dimension name filter.
+        expr: {kind: from_filter, key: dimension_name}
+      - name: dimension_value
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: First dimension value filter.
+        expr: {kind: from_filter, key: dimension_value}
+    filters:
+      - name: namespace
+        required: true
+      - name: metric_name
+        required: true
+      - name: start_time
+        required: true
+      - name: end_time
+        required: true
+      - name: period
+      - name: unit
+      - name: dimension_name
+      - name: dimension_value
+      - name: dimension2_name
+      - name: dimension2_value
+      - name: dimension3_name
+      - name: dimension3_value
+
+  - name: metric_alarms
+    description: CloudWatch metric alarms returned by DescribeAlarms.
+    request:
+      method: POST
+      path: /
+      headers:
+        - name: X-Amz-Target
+          from: literal
+          value: GraniteServiceVersion20100801.DescribeAlarms
+      body:
+        - path: [AlarmNamePrefix]
+          from: filter
+          key: alarm_name_prefix
+        - path: [ActionPrefix]
+          from: filter
+          key: action_prefix
+        - path: [StateValue]
+          from: filter
+          key: state_value
+        - path: [AlarmTypes, "0"]
+          from: literal
+          value: MetricAlarm
+        - path: [MaxRecords]
+          from: literal
+          value: 100
+    response:
+      rows_path: [MetricAlarms]
+    pagination:
+      mode: cursor_body
+      cursor_body_path: [NextToken]
+      response_cursor_path: [NextToken]
+      max_pages: 100
+    columns:
+      - name: alarm_name
+        type: Utf8
+        nullable: false
+        description: Alarm name.
+        expr: {kind: path, path: [AlarmName]}
+      - name: alarm_arn
+        type: Utf8
+        nullable: true
+        description: Alarm ARN.
+        expr: {kind: path, path: [AlarmArn]}
+      - name: state_value
+        type: Utf8
+        nullable: true
+        description: Alarm state.
+        expr: {kind: path, path: [StateValue]}
+      - name: state_reason
+        type: Utf8
+        nullable: true
+        description: Human-readable state reason.
+        expr: {kind: path, path: [StateReason]}
+      - name: metric_name
+        type: Utf8
+        nullable: true
+        description: Metric name watched by the alarm.
+        expr: {kind: path, path: [MetricName]}
+      - name: namespace
+        type: Utf8
+        nullable: true
+        description: Metric namespace watched by the alarm.
+        expr: {kind: path, path: [Namespace]}
+      - name: dimensions
+        type: Utf8
+        nullable: true
+        description: Alarm metric dimensions as JSON objects.
+        expr: {kind: join_array, path: [Dimensions]}
+      - name: comparison_operator
+        type: Utf8
+        nullable: true
+        description: Comparison operator.
+        expr: {kind: path, path: [ComparisonOperator]}
+      - name: threshold
+        type: Float64
+        nullable: true
+        description: Alarm threshold.
+        expr: {kind: path, path: [Threshold]}
+      - name: period
+        type: Int64
+        nullable: true
+        description: Evaluation period in seconds.
+        expr: {kind: path, path: [Period]}
+      - name: evaluation_periods
+        type: Int64
+        nullable: true
+        description: Number of periods evaluated.
+        expr: {kind: path, path: [EvaluationPeriods]}
+      - name: actions_enabled
+        type: Boolean
+        nullable: true
+        description: Whether actions are enabled.
+        expr: {kind: path, path: [ActionsEnabled]}
+      - name: alarm_actions
+        type: Utf8
+        nullable: true
+        description: Alarm action ARNs.
+        expr: {kind: join_array, path: [AlarmActions]}
+      - name: state_updated_timestamp
+        type: Timestamp
+        nullable: true
+        description: Last state update timestamp.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr: {kind: path, path: [StateUpdatedTimestamp]}
+    filters:
+      - name: alarm_name_prefix
+      - name: action_prefix
+      - name: state_value
+
+  - name: composite_alarms
+    description: CloudWatch composite alarms returned by DescribeAlarms.
+    request:
+      method: POST
+      path: /
+      headers:
+        - name: X-Amz-Target
+          from: literal
+          value: GraniteServiceVersion20100801.DescribeAlarms
+      body:
+        - path: [AlarmNamePrefix]
+          from: filter
+          key: alarm_name_prefix
+        - path: [ActionPrefix]
+          from: filter
+          key: action_prefix
+        - path: [StateValue]
+          from: filter
+          key: state_value
+        - path: [AlarmTypes, "0"]
+          from: literal
+          value: CompositeAlarm
+        - path: [MaxRecords]
+          from: literal
+          value: 100
+    response:
+      rows_path: [CompositeAlarms]
+    pagination:
+      mode: cursor_body
+      cursor_body_path: [NextToken]
+      response_cursor_path: [NextToken]
+      max_pages: 100
+    columns:
+      - name: alarm_name
+        type: Utf8
+        nullable: false
+        description: Alarm name.
+        expr: {kind: path, path: [AlarmName]}
+      - name: alarm_arn
+        type: Utf8
+        nullable: true
+        description: Alarm ARN.
+        expr: {kind: path, path: [AlarmArn]}
+      - name: alarm_rule
+        type: Utf8
+        nullable: true
+        description: Composite alarm rule.
+        expr: {kind: path, path: [AlarmRule]}
+      - name: state_value
+        type: Utf8
+        nullable: true
+        description: Alarm state.
+        expr: {kind: path, path: [StateValue]}
+      - name: state_reason
+        type: Utf8
+        nullable: true
+        description: Human-readable state reason.
+        expr: {kind: path, path: [StateReason]}
+      - name: actions_enabled
+        type: Boolean
+        nullable: true
+        description: Whether actions are enabled.
+        expr: {kind: path, path: [ActionsEnabled]}
+      - name: alarm_actions
+        type: Utf8
+        nullable: true
+        description: Alarm action ARNs.
+        expr: {kind: join_array, path: [AlarmActions]}
+      - name: state_updated_timestamp
+        type: Timestamp
+        nullable: true
+        description: Last state update timestamp.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr: {kind: path, path: [StateUpdatedTimestamp]}
+    filters:
+      - name: alarm_name_prefix
+      - name: action_prefix
+      - name: state_value
+
+  - name: alarm_history
+    description: CloudWatch alarm history items returned by DescribeAlarmHistory.
+    request:
+      method: POST
+      path: /
+      headers:
+        - name: X-Amz-Target
+          from: literal
+          value: GraniteServiceVersion20100801.DescribeAlarmHistory
+      body:
+        - path: [AlarmName]
+          from: filter
+          key: alarm_name
+        - path: [HistoryItemType]
+          from: filter
+          key: history_item_type
+        - path: [StartDate]
+          from: filter
+          key: start_date
+        - path: [EndDate]
+          from: filter
+          key: end_date
+        - path: [ScanBy]
+          from: filter
+          key: scan_by
+          default: TimestampDescending
+        - path: [MaxRecords]
+          from: literal
+          value: 100
+    response:
+      rows_path: [AlarmHistoryItems]
+    pagination:
+      mode: cursor_body
+      cursor_body_path: [NextToken]
+      response_cursor_path: [NextToken]
+      max_pages: 100
+    columns:
+      - name: alarm_name
+        type: Utf8
+        nullable: true
+        description: Alarm name.
+        expr: {kind: path, path: [AlarmName]}
+      - name: alarm_type
+        type: Utf8
+        nullable: true
+        description: Alarm type.
+        expr: {kind: path, path: [AlarmType]}
+      - name: timestamp
+        type: Timestamp
+        nullable: true
+        description: History item timestamp.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr: {kind: path, path: [Timestamp]}
+      - name: history_item_type
+        type: Utf8
+        nullable: true
+        description: History item type.
+        expr: {kind: path, path: [HistoryItemType]}
+      - name: history_summary
+        type: Utf8
+        nullable: true
+        description: History summary.
+        expr: {kind: path, path: [HistorySummary]}
+      - name: history_data
+        type: Utf8
+        nullable: true
+        description: Raw history data JSON string.
+        expr: {kind: path, path: [HistoryData]}
+    filters:
+      - name: alarm_name
+      - name: history_item_type
+      - name: start_date
+      - name: end_date
+      - name: scan_by
+
+  - name: dashboards
+    description: CloudWatch dashboard entries returned by ListDashboards.
+    request:
+      method: POST
+      path: /
+      headers:
+        - name: X-Amz-Target
+          from: literal
+          value: GraniteServiceVersion20100801.ListDashboards
+      body:
+        - path: [DashboardNamePrefix]
+          from: filter
+          key: dashboard_name_prefix
+    response:
+      rows_path: [DashboardEntries]
+    pagination:
+      mode: cursor_body
+      cursor_body_path: [NextToken]
+      response_cursor_path: [NextToken]
+      max_pages: 100
+    columns:
+      - name: dashboard_name
+        type: Utf8
+        nullable: false
+        description: Dashboard name.
+        expr: {kind: path, path: [DashboardName]}
+      - name: dashboard_arn
+        type: Utf8
+        nullable: true
+        description: Dashboard ARN.
+        expr: {kind: path, path: [DashboardArn]}
+      - name: last_modified
+        type: Timestamp
+        nullable: true
+        description: Last modified timestamp.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr: {kind: path, path: [LastModified]}
+      - name: size
+        type: Int64
+        nullable: true
+        description: Dashboard body size in bytes.
+        expr: {kind: path, path: [Size]}
+    filters:
+      - name: dashboard_name_prefix
+
+  - name: dashboard
+    description: Details for one CloudWatch dashboard returned by GetDashboard.
+    request:
+      method: POST
+      path: /
+      headers:
+        - name: X-Amz-Target
+          from: literal
+          value: GraniteServiceVersion20100801.GetDashboard
+      body:
+        - path: [DashboardName]
+          from: filter
+          key: dashboard_name
+    response: {}
+    pagination:
+      mode: none
+    columns:
+      - name: dashboard_name
+        type: Utf8
+        nullable: false
+        description: Dashboard name.
+        expr: {kind: path, path: [DashboardName]}
+      - name: dashboard_arn
+        type: Utf8
+        nullable: true
+        description: Dashboard ARN.
+        expr: {kind: path, path: [DashboardArn]}
+      - name: dashboard_body
+        type: Utf8
+        nullable: true
+        description: Dashboard body JSON.
+        expr: {kind: path, path: [DashboardBody]}
+    filters:
+      - name: dashboard_name
+        required: true
+
+  - name: metric_streams
+    description: CloudWatch metric stream entries returned by ListMetricStreams.
+    request:
+      method: POST
+      path: /
+      headers:
+        - name: X-Amz-Target
+          from: literal
+          value: GraniteServiceVersion20100801.ListMetricStreams
+      body:
+        - path: [MaxResults]
+          from: literal
+          value: 500
+    response:
+      rows_path: [Entries]
+    pagination:
+      mode: cursor_body
+      cursor_body_path: [NextToken]
+      response_cursor_path: [NextToken]
+      max_pages: 100
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Metric stream name.
+        expr: {kind: path, path: [Name]}
+      - name: arn
+        type: Utf8
+        nullable: true
+        description: Metric stream ARN.
+        expr: {kind: path, path: [Arn]}
+      - name: firehose_arn
+        type: Utf8
+        nullable: true
+        description: Destination Firehose ARN.
+        expr: {kind: path, path: [FirehoseArn]}
+      - name: state
+        type: Utf8
+        nullable: true
+        description: Metric stream state.
+        expr: {kind: path, path: [State]}
+      - name: output_format
+        type: Utf8
+        nullable: true
+        description: Metric stream output format.
+        expr: {kind: path, path: [OutputFormat]}
+      - name: creation_date
+        type: Timestamp
+        nullable: true
+        description: Creation timestamp.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr: {kind: path, path: [CreationDate]}
+      - name: last_update_date
+        type: Timestamp
+        nullable: true
+        description: Last update timestamp.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr: {kind: path, path: [LastUpdateDate]}
+
+  - name: metric_stream
+    description: Details for one CloudWatch metric stream returned by GetMetricStream.
+    request:
+      method: POST
+      path: /
+      headers:
+        - name: X-Amz-Target
+          from: literal
+          value: GraniteServiceVersion20100801.GetMetricStream
+      body:
+        - path: [Name]
+          from: filter
+          key: name
+    response: {}
+    pagination:
+      mode: none
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Metric stream name.
+        expr: {kind: path, path: [Name]}
+      - name: arn
+        type: Utf8
+        nullable: true
+        description: Metric stream ARN.
+        expr: {kind: path, path: [Arn]}
+      - name: firehose_arn
+        type: Utf8
+        nullable: true
+        description: Destination Firehose ARN.
+        expr: {kind: path, path: [FirehoseArn]}
+      - name: role_arn
+        type: Utf8
+        nullable: true
+        description: Role ARN used by the metric stream.
+        expr: {kind: path, path: [RoleArn]}
+      - name: state
+        type: Utf8
+        nullable: true
+        description: Metric stream state.
+        expr: {kind: path, path: [State]}
+      - name: output_format
+        type: Utf8
+        nullable: true
+        description: Metric stream output format.
+        expr: {kind: path, path: [OutputFormat]}
+      - name: include_filters
+        type: Utf8
+        nullable: true
+        description: Included namespace filters as JSON objects.
+        expr: {kind: join_array, path: [IncludeFilters]}
+      - name: exclude_filters
+        type: Utf8
+        nullable: true
+        description: Excluded namespace filters as JSON objects.
+        expr: {kind: join_array, path: [ExcludeFilters]}
+    filters:
+      - name: name
+        required: true
+
+  - name: tags
+    description: Tags for a CloudWatch alarm or Contributor Insights rule.
+    request:
+      method: POST
+      path: /
+      headers:
+        - name: X-Amz-Target
+          from: literal
+          value: GraniteServiceVersion20100801.ListTagsForResource
+      body:
+        - path: [ResourceARN]
+          from: filter
+          key: resource_arn
+    response:
+      rows_path: [Tags]
+    pagination:
+      mode: none
+    columns:
+      - name: resource_arn
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Resource ARN filter.
+        expr: {kind: from_filter, key: resource_arn}
+      - name: key
+        type: Utf8
+        nullable: false
+        description: Tag key.
+        expr: {kind: path, path: [Key]}
+      - name: value
+        type: Utf8
+        nullable: true
+        description: Tag value.
+        expr: {kind: path, path: [Value]}
+    filters:
+      - name: resource_arn
+        required: true
