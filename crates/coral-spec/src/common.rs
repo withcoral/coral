@@ -215,6 +215,11 @@ pub enum ValueSourceSpec {
         #[serde(default)]
         default: Option<i64>,
     },
+    FilterBool {
+        key: String,
+        #[serde(default)]
+        default: Option<bool>,
+    },
     Input {
         key: String,
     },
