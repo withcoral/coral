@@ -19,20 +19,6 @@ Once added, the source works exactly like a bundled one: same SQL, same `coral.t
   `coral source test`.
 </Tip>
 
-## Will this work for my source?
-
-How much effort a custom source takes depends on what you are connecting to.
-
-File-based sources (JSONL, CSV, Parquet) are the simplest case — define the file location and columns, and the source is ready to query.
-
-API-backed sources vary in difficulty. The source spec model is designed for APIs that have:
-
-- **Long-lived, non-SSO API credentials** — an API key, personal access token, or service account that does not require a browser-based login flow
-- **Structured, accessible documentation** — an OpenAPI spec, GraphQL schema, or clearly organized REST docs that describe endpoints and response shapes
-- **Real data to validate against** — actual records in the account so you can confirm the source is returning the expected results during development
-
-If you are unsure whether your API is a good candidate, ask us in [Discord](https://withcoral.com/discord) before getting started.
-
 ## Choose your authoring path
 
 Use the same manifest format in both cases, but pick the workflow that matches your goal:
@@ -69,17 +55,6 @@ That sequence tells you three different things:
 - `lint` catches YAML/schema mistakes before credentials or runtime behavior are involved
 - `add --file` installs the source and shows install-time warnings
 - `test` gives you a strict validation result that is easy to rerun while iterating
-
-## Agent-driven authoring
-
-Source authoring works well as an agent-driven workflow. Point your coding agent at the Coral CLI and the [source spec reference](/reference/source-spec-reference), give it the API docs or describe the endpoints you want, and let it iterate:
-
-1. The agent writes or updates the source spec YAML.
-2. Lints the file with `coral source lint ./my-source.yaml` to catch errors before installing.
-3. Adds it with `coral source add --file ./my-source.yaml`.
-4. Validates with `coral source test my_source`.
-5. Inspects `coral.tables`, `coral.columns`, and `coral.inputs` to check the shape.
-6. Refines and repeats until the tables look right.
 
 ## Example: local JSONL source
 
@@ -144,35 +119,28 @@ coral sql "
 "
 ```
 
-## How to validate
+## Validate and inspect
 
-When you add `test_queries` to a source spec, treat them as a lightweight validation contract for that source.
+Treat `test_queries` as a lightweight validation contract for the manifest.
 
-1. Run `coral source lint ./my-source.yaml` first. It catches schema and semantic issues without touching your workspace or asking for secrets.
+1. Run `coral source lint ./my-source.yaml` first. This catches YAML, schema, and semantic issues without installing the source.
 2. Add or update the source with `coral source add --file ./my-source.yaml`.
-3. Confirm the install-time validation output:
-   - the source exposes the expected tables
-   - each declared `test_queries` entry runs successfully
-   - successful queries show a pass status and row count
-   - failing queries surface the SQL text plus an error message
-4. Run real `coral sql` queries against the new tables to confirm the shape is useful beyond the validation checks.
-5. If you want a strict rerun later, or you are debugging a failure, run `coral source test <source_name>`.
-6. If a query fails, fix either the source spec or the upstream credentials/configuration, then rerun `coral source test <source_name>`.
+3. Review the install-time output to confirm Coral discovered the expected tables and that each declared `test_queries` entry either passed or surfaced a clear error.
+4. Rerun strict validation with `coral source test <source_name>` whenever you want a pass/fail result.
+5. Query `coral.tables`, `coral.columns`, and `coral.inputs` to confirm the installed source shape matches what you intended.
+6. Run one or two real `coral sql` queries that reflect how you expect the source to be used.
 
-If you are validating a credentialed source end-to-end, it is useful to try both:
-
-- a correctly configured source, which should pass table validation and all declared query tests
-- an intentionally misconfigured source, which should still install but fail `coral source test` with a non-zero exit code
-
-This gives you confidence that the source spec works in the happy path and that `test_queries` catch broken credentials or runtime regressions in a predictable way.
+For credentialed sources, it is useful to validate both a happy path and a broken-credential path. A good manifest should install cleanly when configured correctly, and its `test_queries` should fail predictably when credentials or runtime configuration are wrong.
 
 Use read-only SQL in `test_queries`. Prefer bounded checks such as `SELECT * FROM schema.table LIMIT 1` over expensive scans like `SELECT COUNT(*)`, especially for HTTP-backed sources or large datasets. Coral rejects DDL, DML, and other non-read-only statements as failed validation queries instead of applying them.
 
 ## Document table usage with `guide`
 
-If a table needs query-writing help beyond a short description, add a `guide` field to that table in the source spec.
+If a table needs query-writing help beyond a short description, add a `guide`
+field to that table in the source spec.
 
-This is especially useful for search-style endpoints or APIs with easy-to-miss constraints:
+This is especially useful for search-style endpoints or APIs with easy-to-miss
+constraints:
 
 - required scoping filters
 - provider-specific search syntax or qualifiers
@@ -186,10 +154,12 @@ tables:
     description: Search commits
     guide: >
       Requires q. Always scope with repo:OWNER/NAME or org:NAME.
-      Common qualifiers: author:LOGIN, path:DIR, committer-date:>=YYYY-MM-DD.
+      Common qualifiers: author:LOGIN, path:DIR,
+      committer-date:>=YYYY-MM-DD.
 ```
 
-Coral stores this authored text on the installed table and exposes it through `coral.tables.guide`, so both humans and agents can read it during discovery:
+Coral stores this authored text on the installed table and exposes it through
+`coral.tables.guide`, so both humans and agents can read it during discovery:
 
 ```shellscript
 coral sql "
@@ -200,13 +170,9 @@ coral sql "
 "
 ```
 
-For MCP clients, this table-level `guide` complements `coral://guide`: agents should read `coral://guide` for the general Coral discovery workflow, then inspect `coral.tables.guide` for table-specific query advice.
-
 ## Example: HTTP API source
 
 To connect an HTTP API, the source spec declares the base URL, auth, endpoints, and response shape.
-
-For authentication, Coral supports three top-level `auth.type` modes. Use `HeaderAuth` for declarative headers such as bearer tokens or API keys, `BasicAuth` for username/password HTTP Basic authentication, and `CustomAuth` for named request authenticators that need runtime logic such as AWS SigV4 signing. The example below uses `HeaderAuth`; for the full auth field reference and additional examples, see [HTTP-backed tables](/reference/source-spec-reference#http-backed-tables).
 
 ```yaml
 name: demo_api
@@ -223,7 +189,6 @@ inputs:
     hint: Bearer token for the API
 base_url: "{{input.API_BASE}}"
 auth:
-  type: HeaderAuth
   headers:
     - name: Authorization
       from: template
@@ -252,7 +217,7 @@ tables:
         type: Utf8
 ```
 
-When you run `coral source add --file`, Coral reads each declared `input` from an environment variable of the same name, or prompts for them when you pass `--interactive`. `kind: variable` values go to source variables; `kind: secret` values go to the secret store.
+When you run `coral source add --file`, Coral prompts for the declared `inputs` interactively. `kind: variable` values go to source variables; `kind: secret` values go to the secret store.
 
 For the full set of HTTP response, pagination, auth, and column fields, see [HTTP-backed tables](/reference/source-spec-reference#http-backed-tables).
 
