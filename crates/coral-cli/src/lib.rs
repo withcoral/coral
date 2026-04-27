@@ -202,7 +202,7 @@ async fn run_parsed(app: AppClient, cli: Cli) -> Result<(), anyhow::Error> {
                 println!("Manifest is valid");
             }
             SourceCommand::Test { name } => {
-                source_ops::validate_and_print(
+                source_ops::test_and_print(
                     &app,
                     &name,
                     source_ops::TableDisplayLimit::All,

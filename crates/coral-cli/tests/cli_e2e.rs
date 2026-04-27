@@ -12,7 +12,9 @@ use std::sync::Arc;
 use arrow::array::{Int64Array, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
-use coral_api::v1::{DiscoverSourcesResponse, ExecuteSqlResponse, ListSourcesResponse};
+use coral_api::v1::{
+    AvailableSource, DiscoverSourcesResponse, ExecuteSqlResponse, ListSourcesResponse, SourceOrigin,
+};
 use tonic::Code;
 
 use harness::{MockServer, MockServerConfig, encode_arrow_ipc_stream};
@@ -601,6 +603,96 @@ async fn source_add_interactive_requires_tty() {
     assert!(
         stderr.contains("requires a TTY"),
         "expected TTY requirement error: {stderr}"
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn source_test_suggests_add_for_uninstalled_bundled_source() {
+    let server = MockServer::start_with_config(
+        MockServerConfig::default()
+            .with_validate_source_error(Code::NotFound, "source 'default:demo_bundled' not found")
+            .with_discover_sources(DiscoverSourcesResponse {
+                sources: vec![AvailableSource {
+                    name: "demo_bundled".to_string(),
+                    description: "A demo bundled source for testing".to_string(),
+                    version: "1.0.0".to_string(),
+                    inputs: Vec::new(),
+                    installed: false,
+                    origin: SourceOrigin::Bundled as i32,
+                }],
+            }),
+    )
+    .await;
+
+    let assert = server
+        .cmd()
+        .args(["source", "test", "demo_bundled"])
+        .assert()
+        .failure();
+
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    assert!(
+        stderr.contains("source 'demo_bundled' is not installed"),
+        "expected not-installed error in stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("coral source add demo_bundled"),
+        "expected add suggestion in stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("coral source test demo_bundled"),
+        "expected retry suggestion in stderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("default:demo_bundled"),
+        "should not expose workspace-qualified source name: {stderr}"
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn source_test_normalizes_error_for_unknown_source() {
+    let server = MockServer::start_with_config(
+        MockServerConfig::default()
+            .with_validate_source_error(
+                Code::NotFound,
+                "source 'default:totally_unknown' not found",
+            )
+            .with_discover_sources(DiscoverSourcesResponse {
+                sources: Vec::new(),
+            }),
+    )
+    .await;
+
+    let assert = server
+        .cmd()
+        .args(["source", "test", "totally_unknown"])
+        .assert()
+        .failure();
+
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    assert!(
+        stderr.contains("source 'totally_unknown' was not found"),
+        "expected normalized not-found error in stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("coral source list"),
+        "expected list suggestion in stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("coral source discover"),
+        "expected discover suggestion in stderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("default:totally_unknown"),
+        "should not expose workspace-qualified source name: {stderr}"
+    );
+    assert!(
+        !stderr.contains("coral source add"),
+        "should not contain add suggestion for unknown source: {stderr}"
     );
 
     server.shutdown().await;
