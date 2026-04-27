@@ -152,10 +152,7 @@
                 "type": "array",
                 "items": { "$ref": "#/$defs/query_param" }
               },
-              "body": {
-                "type": "array",
-                "items": { "$ref": "#/$defs/body_field" }
-              },
+              "body": { "$ref": "#/$defs/body" },
               "headers": {
                 "type": "array",
                 "items": { "$ref": "#/$defs/header" }
@@ -215,15 +212,60 @@
           "type": "array",
           "items": { "$ref": "#/$defs/query_param" }
         },
-        "body": {
-          "type": "array",
-          "items": { "$ref": "#/$defs/body_field" }
-        },
+        "body": { "$ref": "#/$defs/body" },
         "headers": {
           "type": "array",
           "items": { "$ref": "#/$defs/header" }
         }
       }
+    },
+    "body": {
+      "oneOf": [
+        {
+          "type": "array",
+          "items": { "$ref": "#/$defs/body_field" }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["format", "fields"],
+          "properties": {
+            "format": { "const": "json" },
+            "fields": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/body_field" }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["format", "content"],
+          "properties": {
+            "format": { "const": "text" },
+            "content": { "$ref": "#/$defs/body_text_content" }
+          }
+        }
+      ]
+    },
+    "body_text_content": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["from"],
+      "properties": {
+        "from": { "type": "string" },
+        "template": { "type": "string" },
+        "value": {},
+        "key": { "type": "string", "minLength": 1 },
+        "keys": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "default": {},
+        "seconds": { "type": "integer" }
+      },
+      "allOf": [{ "$ref": "#/$defs/value_source_switch" }]
     },
     "query_param": {
       "type": "object",
@@ -348,6 +390,10 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "format": {
+          "type": "string",
+          "enum": ["json", "json_each_row"]
+        },
         "rows_path": {
           "type": "array",
           "items": { "type": "string", "minLength": 1 }

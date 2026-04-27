@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::common::{
-    ColumnSpec, ExprSpec, FilterSpec, PaginationSpec, RequestRouteSpec, RequestSpec,
+    BodySpec, ColumnSpec, ExprSpec, FilterSpec, PaginationSpec, RequestRouteSpec, RequestSpec,
     ValueSourceSpec,
 };
 use crate::{ManifestError, ParsedTemplate, Result, TemplateNamespace};
@@ -122,15 +122,26 @@ fn validate_request_bindings(
         )?;
     }
 
-    for field in &request.body {
-        validate_value_source(
-            &field.value,
-            known_filters,
-            &format!(
-                "{schema}.{table_name} request body path '{}'",
-                field.path.join(".")
-            ),
-        )?;
+    match &request.body {
+        BodySpec::Json { fields } => {
+            for field in fields {
+                validate_value_source(
+                    &field.value,
+                    known_filters,
+                    &format!(
+                        "{schema}.{table_name} request body path '{}'",
+                        field.path.join(".")
+                    ),
+                )?;
+            }
+        }
+        BodySpec::Text { content } => {
+            validate_value_source(
+                content,
+                known_filters,
+                &format!("{schema}.{table_name} request body text"),
+            )?;
+        }
     }
 
     Ok(())

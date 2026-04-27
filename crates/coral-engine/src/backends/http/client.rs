@@ -19,8 +19,9 @@ use crate::backends::shared::template::{
 };
 use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec, RateLimitSpec};
 use coral_spec::{
-    AuthSpec, HeaderSpec, HttpMethod, PageSizeSpec, ParsedTemplate, RequestRouteSpec,
-    RequestSpec as ManifestRequestSpec, RowStrategy, ValidatedPagination, ValidatedPaginationMode,
+    AuthSpec, BodySpec, HeaderSpec, HttpMethod, PageSizeSpec, ParsedTemplate, RequestRouteSpec,
+    RequestSpec as ManifestRequestSpec, ResponseBodyFormat, RowStrategy, ValidatedPagination,
+    ValidatedPaginationMode,
 };
 
 const DEFAULT_MAX_PAGES: usize = 10_000;
@@ -61,6 +62,13 @@ struct PageState {
     next_url: Option<String>,
 }
 
+/// Concrete request body shape passed to the HTTP layer.
+#[derive(Debug, Clone)]
+enum RequestBody {
+    Json(Value),
+    Text(String),
+}
+
 struct RequestSpec<'a> {
     auth: &'a AuthSpec,
     request_headers: &'a [HeaderSpec],
@@ -71,7 +79,8 @@ struct RequestSpec<'a> {
     base_url: &'a str,
     url: &'a str,
     query_pairs: &'a [(String, String)],
-    body: Option<&'a Value>,
+    body: Option<&'a RequestBody>,
+    response_format: ResponseBodyFormat,
     source_schema: &'a str,
     rate_limit: &'a RateLimitSpec,
     filters: &'a HashMap<String, String>,
@@ -243,6 +252,7 @@ impl HttpSourceClient {
                     url: &url,
                     query_pairs: &query_pairs,
                     body: body.as_ref(),
+                    response_format: table.response.format,
                     source_schema: &self.source_schema,
                     rate_limit: &self.rate_limit,
                     filters,
@@ -469,19 +479,34 @@ fn validate_request_template_inputs(
             )
         })?;
     }
-    for field in &request.body {
-        let field_path = if field.path.is_empty() {
-            "<root>".to_string()
-        } else {
-            field.path.join(".")
-        };
-        validate_value_source_inputs(&field.value, resolved_inputs).map_err(|error| {
-            registration_error(
-                source_name,
-                &format!("table '{table_name}' {request_label} body field '{field_path}'"),
-                &error,
-            )
-        })?;
+    match &request.body {
+        BodySpec::Json { fields } => {
+            for field in fields {
+                let field_path = if field.path.is_empty() {
+                    "<root>".to_string()
+                } else {
+                    field.path.join(".")
+                };
+                validate_value_source_inputs(&field.value, resolved_inputs).map_err(|error| {
+                    registration_error(
+                        source_name,
+                        &format!(
+                            "table '{table_name}' {request_label} body field '{field_path}'"
+                        ),
+                        &error,
+                    )
+                })?;
+            }
+        }
+        BodySpec::Text { content } => {
+            validate_value_source_inputs(content, resolved_inputs).map_err(|error| {
+                registration_error(
+                    source_name,
+                    &format!("table '{table_name}' {request_label} body text"),
+                    &error,
+                )
+            })?;
+        }
     }
     Ok(())
 }
@@ -520,6 +545,7 @@ async fn execute_request(
         url,
         query_pairs,
         body,
+        response_format,
         source_schema,
         rate_limit,
         filters,
@@ -555,6 +581,14 @@ async fn execute_request(
                 header_map.insert(name, value);
             }
         }
+        if matches!(body, Some(RequestBody::Text(_)))
+            && !header_map.contains_key(reqwest::header::CONTENT_TYPE)
+        {
+            header_map.insert(
+                reqwest::header::CONTENT_TYPE,
+                HeaderValue::from_static("text/plain"),
+            );
+        }
         if !header_map.is_empty() {
             request = request.headers(header_map);
         }
@@ -563,14 +597,21 @@ async fn execute_request(
             request = request.query(query_pairs);
         }
 
-        if let Some(body) = body {
-            request = request.json(body);
+        match body {
+            Some(RequestBody::Json(value)) => {
+                request = request.json(value);
+            }
+            Some(RequestBody::Text(text)) => {
+                request = request.body(text.clone());
+            }
+            None => {}
         }
 
         let logged_url = build_logged_url(url, query_pairs);
-        let _logged_body = body
-            .and_then(|b| serde_json::to_string_pretty(b).ok())
-            .filter(|s| !s.is_empty());
+        let _logged_body = body.and_then(|b| match b {
+            RequestBody::Json(value) => serde_json::to_string_pretty(value).ok(),
+            RequestBody::Text(text) => Some(text.clone()),
+        });
 
         let built = resolve_auth_headers(auth, request, request_authenticators, resolved_inputs)?;
 
@@ -637,16 +678,62 @@ async fn execute_request(
             )));
         }
 
-        let payload: Value = response.json().await.map_err(|error| {
+        let payload = decode_response_body(
+            response,
+            response_format,
+            method_label,
+            &logged_url,
+            request_timeout,
+        )
+        .await?;
+        return Ok(Some((payload, next_url)));
+    }
+}
+
+async fn decode_response_body(
+    response: reqwest::Response,
+    format: ResponseBodyFormat,
+    method_label: &str,
+    logged_url: &str,
+    request_timeout: Duration,
+) -> Result<Value> {
+    match format {
+        ResponseBodyFormat::Json => response.json().await.map_err(|error| {
             request_error(
                 "response decoding",
                 method_label,
-                &logged_url,
+                logged_url,
                 request_timeout,
                 &error,
             )
-        })?;
-        return Ok(Some((payload, next_url)));
+        }),
+        ResponseBodyFormat::JsonEachRow => {
+            let text = response.text().await.map_err(|error| {
+                request_error(
+                    "response decoding",
+                    method_label,
+                    logged_url,
+                    request_timeout,
+                    &error,
+                )
+            })?;
+            let mut rows = Vec::new();
+            for (index, line) in text.lines().enumerate() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                let row: Value = serde_json::from_str(trimmed).map_err(|error| {
+                    DataFusionError::Execution(format!(
+                        "response decoding failed for {method_label} {logged_url}: \
+                         json_each_row line {} is not valid JSON: {error}",
+                        index + 1
+                    ))
+                })?;
+                rows.push(row);
+            }
+            Ok(Value::Array(rows))
+        }
     }
 }
 
@@ -753,48 +840,62 @@ fn build_request_body(
     filters: &HashMap<String, String>,
     state: &PageState,
     resolved_inputs: &BTreeMap<String, String>,
-) -> Result<Option<Value>> {
-    if request.body.is_empty() {
-        return Ok(None);
-    }
-
+) -> Result<Option<RequestBody>> {
     let state_values = pagination_state_values(state);
-    let mut root = Value::Object(Map::new());
-
-    for field in &request.body {
-        if let Some(value) =
-            resolve_value_source(&field.value, filters, &state_values, resolved_inputs)?
-        {
-            set_path_value(&mut root, &field.path, value)?;
+    match &request.body {
+        BodySpec::Json { fields } => {
+            if fields.is_empty() {
+                return Ok(None);
+            }
+            let mut root = Value::Object(Map::new());
+            for field in fields {
+                if let Some(value) =
+                    resolve_value_source(&field.value, filters, &state_values, resolved_inputs)?
+                {
+                    set_path_value(&mut root, &field.path, value)?;
+                }
+            }
+            Ok(Some(RequestBody::Json(root)))
+        }
+        BodySpec::Text { content } => {
+            let value = resolve_value_source(content, filters, &state_values, resolved_inputs)?
+                .unwrap_or(Value::Null);
+            Ok(Some(RequestBody::Text(value_to_string(&value))))
         }
     }
-
-    Ok(Some(root))
 }
 
 fn apply_pagination_body_fields(
-    body: &mut Option<Value>,
+    body: &mut Option<RequestBody>,
     table: &HttpTableSpec,
     pagination: &ValidatedPagination,
     state: &PageState,
     page_size: Option<usize>,
 ) -> Result<()> {
-    if body.is_none()
-        && pagination
-            .page_size
-            .as_ref()
-            .is_none_or(|s| s.body_path.is_empty())
-        && !(matches!(pagination.mode, ValidatedPaginationMode::CursorBody)
-            && !table.pagination.cursor_body_path.is_empty()
-            && state.cursor.is_some())
-    {
+    let needs_page_size_body = page_size
+        .zip(pagination.page_size.as_ref())
+        .is_some_and(|(_, spec)| !spec.body_path.is_empty());
+    let needs_cursor_body = matches!(pagination.mode, ValidatedPaginationMode::CursorBody)
+        && !table.pagination.cursor_body_path.is_empty()
+        && state.cursor.is_some();
+
+    if !needs_page_size_body && !needs_cursor_body {
         return Ok(());
     }
 
-    if body.is_none() {
-        *body = Some(Value::Object(Map::new()));
+    if let Some(RequestBody::Text(_)) = body {
+        return Err(DataFusionError::Execution(
+            "pagination body fields are not supported with text request bodies".to_string(),
+        ));
     }
-    let root = body.as_mut().expect("body is present");
+
+    if body.is_none() {
+        *body = Some(RequestBody::Json(Value::Object(Map::new())));
+    }
+    let root = match body.as_mut().expect("body is present") {
+        RequestBody::Json(root) => root,
+        RequestBody::Text(_) => unreachable!("text body rejected above"),
+    };
 
     if let (Some(page_size), Some(spec)) = (page_size, pagination.page_size.as_ref())
         && !spec.body_path.is_empty()
@@ -1066,8 +1167,9 @@ mod tests {
     use coral_spec::PaginationMode;
     use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec, RateLimitSpec};
     use coral_spec::{
-        AuthSpec, HttpMethod, PaginationSpec, ParsedTemplate, RequestSpec, RowStrategy,
-        ValidatedPaginationMode, ValueSourceSpec, parse_source_manifest_value,
+        AuthSpec, BodySpec, HttpMethod, PaginationSpec, ParsedTemplate, RequestSpec,
+        ResponseBodyFormat, RowStrategy, ValidatedPaginationMode, ValueSourceSpec,
+        parse_source_manifest_value,
     };
 
     fn parse_http_manifest(value: serde_json::Value) -> HttpSourceManifest {
@@ -1113,6 +1215,16 @@ mod tests {
     }
 
     fn request_json(request: &RequestSpec) -> serde_json::Value {
+        let body = match &request.body {
+            BodySpec::Json { fields } => fields
+                .iter()
+                .map(|field| json!({
+                    "path": field.path,
+                    "value": value_source_json(&field.value),
+                }))
+                .collect::<Vec<_>>(),
+            BodySpec::Text { .. } => Vec::new(),
+        };
         json!({
             "method": format!("{:?}", request.method),
             "path": request.path,
@@ -1120,10 +1232,7 @@ mod tests {
                 "name": query.name,
                 "value": value_source_json(&query.value),
             })).collect::<Vec<_>>(),
-            "body": request.body.iter().map(|field| json!({
-                "path": field.path,
-                "value": value_source_json(&field.value),
-            })).collect::<Vec<_>>(),
+            "body": body,
             "headers": request.headers.iter().map(|header| json!({
                 "name": header.name,
                 "value": value_source_json(&header.value),
@@ -1587,7 +1696,7 @@ mod tests {
                 method: HttpMethod::GET,
                 path: ParsedTemplate::parse("/items").expect("template"),
                 query: vec![],
-                body: vec![],
+                body: BodySpec::default(),
                 headers: vec![],
             },
         );
@@ -1646,7 +1755,7 @@ mod tests {
                 method: HttpMethod::GET,
                 path: ParsedTemplate::parse("/items").expect("template"),
                 query: vec![],
-                body: vec![],
+                body: BodySpec::default(),
                 headers: vec![],
             },
         );
@@ -1828,6 +1937,7 @@ mod tests {
                 url: &url,
                 query_pairs: &query_pairs,
                 body: None,
+                response_format: ResponseBodyFormat::default(),
                 source_schema: "demo",
                 rate_limit: &RateLimitSpec::default(),
                 filters: &filters,
