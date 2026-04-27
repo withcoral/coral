@@ -1,9 +1,9 @@
 # cargo-deny configuration. Run with: `make license-check`
 # (or `cargo deny check licenses` directly).
 #
-# Allow-list approach: anything not listed below fails by default. This keeps
-# copyleft (GPL/AGPL/LGPL/MPL), weak-copyleft, and source-available licenses
-# (BUSL/FSL/Elastic-2.0) out of the supply chain. Add new entries deliberately.
+# Allow-list approach: anything not listed below fails by default. Anything
+# we haven't reviewed and accepted stays out of the supply chain. Add new
+# entries deliberately.
 
 [licenses]
 version = 2
