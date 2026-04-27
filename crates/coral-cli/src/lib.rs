@@ -15,7 +15,8 @@ mod source_ops;
 
 use std::path::PathBuf;
 
-use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
+use clap::{ArgGroup, Args, CommandFactory, Parser, Subcommand, ValueEnum};
+use clap_complete::{Shell, generate};
 use coral_api::v1::ExecuteSqlRequest;
 use coral_client::{
     AppClient, decode_execute_sql_response, default_workspace, format_batches_json,
@@ -45,6 +46,15 @@ enum Command {
     Onboard,
     /// Start the MCP server over stdio
     McpStdio,
+    /// Generate shell completion scripts
+    Completion(CompletionArgs),
+}
+
+#[derive(Debug, Args)]
+/// Generate shell completion scripts
+struct CompletionArgs {
+    /// Shell to generate completions for
+    shell: Shell,
 }
 
 #[derive(Debug, Args)]
@@ -220,6 +230,11 @@ async fn run_parsed(app: AppClient, cli: Cli) -> Result<(), anyhow::Error> {
         }
         Command::McpStdio => {
             coral_mcp::run_stdio_with_client(app).await?;
+        }
+        Command::Completion(args) => {
+            let mut cmd = Cli::command();
+            let bin_name = cmd.get_name().to_string();
+            generate(args.shell, &mut cmd, bin_name, &mut std::io::stdout());
         }
     }
 
