@@ -13,7 +13,7 @@ use arrow::array::{Int64Array, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use coral_api::v1::{
-    AvailableSource, DiscoverSourcesResponse, ExecuteSqlResponse, ListSourcesResponse, SourceOrigin,
+    DiscoverSourcesResponse, ExecuteSqlResponse, ListSourcesResponse, SourceInfo, SourceOrigin,
 };
 use tonic::Code;
 
@@ -749,7 +749,7 @@ async fn source_test_suggests_add_for_uninstalled_bundled_source() {
         MockServerConfig::default()
             .with_validate_source_error(Code::NotFound, "source 'default:demo_bundled' not found")
             .with_discover_sources(DiscoverSourcesResponse {
-                sources: vec![AvailableSource {
+                sources: vec![SourceInfo {
                     name: "demo_bundled".to_string(),
                     description: "A demo bundled source for testing".to_string(),
                     version: "1.0.0".to_string(),
