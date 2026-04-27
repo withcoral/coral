@@ -6,6 +6,18 @@ rust-checks:
 	RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps
 
 # ----------------------------------------------------------------------------
+# Dependency license scan
+# ----------------------------------------------------------------------------
+# Fails if any workspace dependency uses a license outside the allow-list in
+# deny.toml. Requires `cargo-deny`.
+#
+#   make license-check
+
+license-check:
+	cargo deny --version >/dev/null 2>&1 || cargo install --locked cargo-deny
+	cargo deny check licenses
+
+# ----------------------------------------------------------------------------
 # Source manifest linting
 # ----------------------------------------------------------------------------
 # Lints sources/ with ryl (Rust-native yamllint port).

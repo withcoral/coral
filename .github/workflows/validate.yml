@@ -27,6 +27,7 @@ jobs:
       rust_checks: ${{ steps.filter.outputs.rust_checks }}
       source-lint: ${{ steps.filter.outputs.source-lint }}
       docs-freshness: ${{ steps.filter.outputs.docs-freshness }}
+      license-check: ${{ steps.filter.outputs.license-check }}
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -63,6 +64,13 @@ jobs:
               - 'crates/coral-spec/**'
               - 'sources/**'
               - 'docs/**'
+            license-check:
+              - '.github/workflows/validate.yml'
+              - 'Makefile'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'crates/**/Cargo.toml'
+              - 'deny.toml'
 
   rust-checks:
     name: Rust checks
@@ -152,9 +160,37 @@ jobs:
       - name: Run make docs-check
         run: make docs-check
 
+  license-check:
+    name: Dependency license scan
+    runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ needs.changes.outputs.license-check == 'true' }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        run: rustup show
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          shared-key: coral-license-check-${{ runner.os }}
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@5f57d6cb7cd20b14a8a27f522884c4bc8a187458 # v2.75.19
+        with:
+          tool: cargo-deny
+
+      - name: Run make license-check
+        run: make license-check
+
   validate:
     runs-on: ubuntu-latest
-    needs: [changes, rust-checks, gha-security-audit, source-lint, docs-freshness]
+    needs: [changes, rust-checks, gha-security-audit, source-lint, docs-freshness, license-check]
     # Run even when upstream jobs fail or are conditionally skipped so this
     # job can act as the single required status check for the workflow.
     if: ${{ always() }}
@@ -166,6 +202,7 @@ jobs:
           GHA_SECURITY_AUDIT_RESULT: ${{ needs.gha-security-audit.result }}
           SOURCE_LINT_RESULT: ${{ needs.source-lint.result }}
           DOCS_FRESHNESS_RESULT: ${{ needs.docs-freshness.result }}
+          LICENSE_CHECK_RESULT: ${{ needs.license-check.result }}
         run: |
           jobs=(
             "changes:$CHANGES_RESULT"
@@ -173,6 +210,7 @@ jobs:
             "gha-security-audit:$GHA_SECURITY_AUDIT_RESULT"
             "source-lint:$SOURCE_LINT_RESULT"
             "docs-freshness:$DOCS_FRESHNESS_RESULT"
+            "license-check:$LICENSE_CHECK_RESULT"
           )
 
           failed=0
