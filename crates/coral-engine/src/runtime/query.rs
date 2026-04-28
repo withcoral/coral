@@ -9,6 +9,7 @@ use crate::backends::compile_query_source;
 use crate::runtime::catalog;
 use crate::runtime::error::datafusion_to_core;
 use crate::runtime::json::register_json_support;
+use crate::runtime::pattern_validator::register_pattern_validator;
 use crate::runtime::registry::{
     CompiledQuerySource, SourceRegistrationCandidate, SourceRegistrationFailure, register_sources,
 };
@@ -35,6 +36,7 @@ pub(crate) async fn build_runtime(
     );
     let mut ctx = SessionContext::new_with_config_rt(session_config, runtime_env);
     register_json_support(&mut ctx).map_err(|err| datafusion_to_core(&err, &[]))?;
+    register_pattern_validator(&mut ctx).map_err(|err| datafusion_to_core(&err, &[]))?;
     let ctx = Arc::new(ctx);
 
     let runtime_context = runtime.runtime_context();

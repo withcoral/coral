@@ -17,6 +17,8 @@ mod json_tests;
 mod jsonl_tests;
 #[path = "engine/parquet_tests.rs"]
 mod parquet_tests;
+#[path = "engine/pattern_error_tests.rs"]
+mod pattern_error_tests;
 #[path = "engine/structured_error_tests.rs"]
 mod structured_error_tests;
 #[path = "engine/test_source_tests.rs"]
