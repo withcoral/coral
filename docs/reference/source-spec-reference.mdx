@@ -23,12 +23,13 @@ test_queries:
   - SELECT * FROM my_source.messages LIMIT 1
 ```
 
-| Field         | Description                                        |
-| ------------- | -------------------------------------------------- |
-| `name`        | Source name, also used as the SQL schema name      |
-| `version`     | Source spec version string                         |
-| `dsl_version` | Coral source spec DSL version (currently `3`)      |
-| `backend`     | How data is fetched: `http`, `jsonl`, or `parquet` |
+| Field          | Description                                          |
+| -------------- | ---------------------------------------------------- |
+| `name`         | Source name, also used as the SQL schema name        |
+| `version`      | Source spec version string                           |
+| `dsl_version`  | Coral source spec DSL version (currently `3`)        |
+| `backend`      | How data is fetched: `http`, `jsonl`, or `parquet`   |
+| `namespaces`   | Optional table namespace descriptions for large sources |
 | `test_queries` | Optional read-only SQL checks Coral runs during `coral source test` |
 
 ## Test queries
@@ -49,6 +50,28 @@ Notes:
 - Prefer cheap read-only checks that validate connectivity and mapping logic. For example, `SELECT * FROM schema.table LIMIT 1` is usually a better fit than `SELECT COUNT(*)`.
 - Keep these queries read-only. Statements such as `CREATE`, `COPY`, `INSERT`,
   `UPDATE`, `DELETE`, or `SET` are reported as failed validation queries.
+
+## Table namespaces
+
+Tables belong to the `core` namespace by default. Larger sources can declare
+additional namespaces to keep discovery focused:
+
+```yaml
+namespaces:
+  actions:
+    description: GitHub Actions workflows, runs, jobs, and artifacts
+
+tables:
+  - name: repo_action_runs
+    namespace: actions
+    description: GitHub Actions workflow runs
+    request:
+      method: GET
+      path: /repos/{{filter.owner}}/{{filter.repo}}/actions/runs
+```
+
+Namespace names must be lowercase identifiers. A table using a non-core
+namespace must reference a declared namespace.
 
 ## Column types
 

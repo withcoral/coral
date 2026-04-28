@@ -241,4 +241,248 @@ tables:
             "source 'demo' test_queries[0] must not be empty"
         );
     }
+
+    #[test]
+    fn parse_source_manifest_defaults_table_namespace_to_core() {
+        let manifest = parse_source_manifest_yaml(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: jsonl
+tables:
+  - name: messages
+    description: Demo messages
+    source:
+      location: file:///tmp/demo/
+    columns:
+      - name: kind
+        type: Utf8
+",
+        )
+        .expect("manifest should parse");
+
+        let jsonl = manifest.as_jsonl().expect("jsonl manifest");
+        assert_eq!(jsonl.tables[0].common.namespace, "core");
+        assert_eq!(jsonl.common.namespaces[0].name, "core");
+    }
+
+    #[test]
+    fn parse_source_manifest_preserves_declared_unused_namespace() {
+        let manifest = parse_source_manifest_yaml(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: jsonl
+namespaces:
+  archive:
+    description: Historical records
+tables:
+  - name: messages
+    description: Demo messages
+    source:
+      location: file:///tmp/demo/
+    columns:
+      - name: kind
+        type: Utf8
+",
+        )
+        .expect("manifest should parse");
+
+        let jsonl = manifest.as_jsonl().expect("jsonl manifest");
+        assert!(
+            jsonl
+                .common
+                .namespaces
+                .iter()
+                .any(|namespace| namespace.name == "archive")
+        );
+    }
+
+    #[test]
+    fn parse_source_manifest_does_not_add_unused_core_namespace() {
+        let manifest = parse_source_manifest_yaml(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: jsonl
+namespaces:
+  archive:
+    description: Historical records
+tables:
+  - name: messages
+    namespace: archive
+    description: Demo messages
+    source:
+      location: file:///tmp/demo/
+    columns:
+      - name: kind
+        type: Utf8
+",
+        )
+        .expect("manifest should parse");
+
+        let jsonl = manifest.as_jsonl().expect("jsonl manifest");
+        assert_eq!(jsonl.common.namespaces.len(), 1);
+        assert_eq!(jsonl.common.namespaces[0].name, "archive");
+    }
+
+    #[test]
+    fn parse_source_manifest_rejects_undeclared_non_core_namespace() {
+        let error = parse_source_manifest_yaml(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: jsonl
+tables:
+  - name: messages
+    namespace: archive
+    description: Demo messages
+    source:
+      location: file:///tmp/demo/
+    columns:
+      - name: kind
+        type: Utf8
+",
+        )
+        .expect_err("undeclared namespace should fail");
+
+        assert_eq!(
+            error.to_string(),
+            "demo.archive namespace is used by a table but is not declared"
+        );
+    }
+
+    #[test]
+    fn parse_source_manifest_rejects_duplicate_table_name_across_namespaces() {
+        let error = parse_source_manifest_yaml(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: jsonl
+namespaces:
+  archive:
+    description: Historical records
+tables:
+  - name: messages
+    description: Demo messages
+    source:
+      location: file:///tmp/demo/
+    columns:
+      - name: kind
+        type: Utf8
+  - name: messages
+    namespace: archive
+    description: Archived messages
+    source:
+      location: file:///tmp/demo/
+    columns:
+      - name: kind
+        type: Utf8
+",
+        )
+        .expect_err("duplicate table name should fail");
+
+        assert_eq!(error.to_string(), "demo has duplicate table 'messages'");
+    }
+
+    #[test]
+    fn parse_source_manifest_rejects_invalid_namespace_identifier() {
+        let error = parse_source_manifest_yaml(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: jsonl
+namespaces:
+  bad.name:
+    description: Bad namespace
+tables:
+  - name: messages
+    namespace: bad.name
+    description: Demo messages
+    source:
+      location: file:///tmp/demo/
+    columns:
+      - name: kind
+        type: Utf8
+",
+        )
+        .expect_err("invalid namespace should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("does not match \"^[a-z_][a-z0-9_]*$\""),
+            "got: {error}"
+        );
+    }
+
+    #[test]
+    fn parse_source_manifest_rejects_uppercase_namespace_identifier() {
+        let error = parse_source_manifest_yaml(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: jsonl
+namespaces:
+  Core:
+    description: Wrong casing
+tables:
+  - name: messages
+    namespace: Core
+    description: Demo messages
+    source:
+      location: file:///tmp/demo/
+    columns:
+      - name: kind
+        type: Utf8
+",
+        )
+        .expect_err("uppercase namespace should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("does not match \"^[a-z_][a-z0-9_]*$\""),
+            "got: {error}"
+        );
+    }
+
+    #[test]
+    fn parse_source_manifest_rejects_reserved_namespace_identifier() {
+        let error = parse_source_manifest_yaml(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: jsonl
+namespaces:
+  datafusion:
+    description: Reserved namespace
+tables:
+  - name: messages
+    namespace: datafusion
+    description: Demo messages
+    source:
+      location: file:///tmp/demo/
+    columns:
+      - name: kind
+        type: Utf8
+",
+        )
+        .expect_err("reserved namespace should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("is not allowed for \"datafusion\""),
+            "got: {error}"
+        );
+    }
 }

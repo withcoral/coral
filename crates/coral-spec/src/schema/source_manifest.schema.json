@@ -23,6 +23,11 @@
       "items": { "$ref": "#/$defs/header" }
     },
     "rate_limit": { "$ref": "#/$defs/rate_limit" },
+    "namespaces": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/namespace" },
+      "propertyNames": { "$ref": "#/$defs/namespaceIdentifier" }
+    },
     "tables": {
       "type": "array",
       "minItems": 1,
@@ -41,6 +46,19 @@
     }
   },
   "$defs": {
+    "namespaceIdentifier": {
+      "type": "string",
+      "pattern": "^[a-z_][a-z0-9_]*$",
+      "not": { "enum": ["coral", "datafusion", "information_schema"] }
+    },
+    "namespace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["description"],
+      "properties": {
+        "description": { "type": "string", "minLength": 1 }
+      }
+    },
     "inputs": {
       "type": "object",
       "additionalProperties": { "$ref": "#/$defs/input" },
@@ -126,6 +144,7 @@
       "required": ["name", "description"],
       "properties": {
         "name": { "type": "string", "minLength": 1 },
+        "namespace": { "$ref": "#/$defs/namespaceIdentifier" },
         "description": { "type": "string", "minLength": 1 },
         "guide": { "type": "string" },
         "filters": {

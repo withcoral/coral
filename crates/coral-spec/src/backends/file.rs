@@ -11,15 +11,16 @@
 
 use serde::Deserialize;
 use serde_json::Value;
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use url::Url;
 
 use crate::common::parse_manifest_data_type;
 use crate::inputs::collect_source_inputs_value;
 use crate::{
     ColumnSpec, FilterSpec, ManifestDataType, ManifestError, ManifestInputKind, ManifestInputSpec,
-    Result, SourceBackend, SourceManifestCommon, TableCommon, validate_columns,
-    validate_filters_and_column_exprs, validate_test_queries,
+    Result, SourceBackend, SourceManifestCommon, TableCommon,
+    common::{DEFAULT_NAMESPACE, RawNamespaceSpec, build_source_manifest_common},
+    validate_columns, validate_filters_and_column_exprs,
 };
 
 /// Validated top-level manifest for a `Parquet`-backed source.
@@ -76,6 +77,8 @@ struct RawFileSourceManifest {
     backend: SourceBackend,
     #[serde(default)]
     inputs: Option<Value>,
+    #[serde(default)]
+    namespaces: BTreeMap<String, RawNamespaceSpec>,
     tables: Vec<RawFileTableSpec>,
 }
 
@@ -83,6 +86,8 @@ struct RawFileSourceManifest {
 #[serde(deny_unknown_fields)]
 struct RawFileTableSpec {
     name: String,
+    #[serde(default)]
+    namespace: Option<String>,
     description: String,
     #[serde(default)]
     guide: String,
@@ -229,6 +234,9 @@ impl PartitionColumnSpec {
 
 impl RawFileTableSpec {
     fn into_validated_parquet(self, schema: &str) -> Result<FileTableSpec> {
+        let namespace = self
+            .namespace
+            .unwrap_or_else(|| DEFAULT_NAMESPACE.to_string());
         self.source.validate_for_parquet(schema, &self.name)?;
         validate_columns(&self.columns, schema, &self.name)?;
 
@@ -251,6 +259,7 @@ impl RawFileTableSpec {
         Ok(FileTableSpec {
             common: TableCommon::new(
                 self.name,
+                namespace,
                 self.description,
                 self.guide,
                 self.filters,
@@ -262,6 +271,9 @@ impl RawFileTableSpec {
     }
 
     fn into_validated_jsonl(self, schema: &str) -> Result<FileTableSpec> {
+        let namespace = self
+            .namespace
+            .unwrap_or_else(|| DEFAULT_NAMESPACE.to_string());
         if self.columns.is_empty() {
             return Err(ManifestError::validation(format!(
                 "{schema}.{} uses backend=jsonl and must define columns",
@@ -275,6 +287,7 @@ impl RawFileTableSpec {
         Ok(FileTableSpec {
             common: TableCommon::new(
                 self.name,
+                namespace,
                 self.description,
                 self.guide,
                 self.filters,
@@ -299,11 +312,20 @@ impl ParquetSourceManifest {
             test_queries,
             backend: _backend,
             inputs: _inputs,
+            namespaces,
             tables,
         } = raw;
-        validate_test_queries(&name, &test_queries)?;
-        let common =
-            SourceManifestCommon::new(dsl_version, name, version, description, test_queries);
+        let common = build_source_manifest_common(
+            dsl_version,
+            name,
+            version,
+            description,
+            test_queries,
+            namespaces,
+            tables
+                .iter()
+                .map(|table| (table.name.as_str(), table.namespace.as_deref())),
+        )?;
         let tables = tables
             .into_iter()
             .map(|table| table.into_validated_parquet(&common.name))
@@ -329,11 +351,20 @@ impl JsonlSourceManifest {
             test_queries,
             backend: _backend,
             inputs: _inputs,
+            namespaces,
             tables,
         } = raw;
-        validate_test_queries(&name, &test_queries)?;
-        let common =
-            SourceManifestCommon::new(dsl_version, name, version, description, test_queries);
+        let common = build_source_manifest_common(
+            dsl_version,
+            name,
+            version,
+            description,
+            test_queries,
+            namespaces,
+            tables
+                .iter()
+                .map(|table| (table.name.as_str(), table.namespace.as_deref())),
+        )?;
         let tables = tables
             .into_iter()
             .map(|table| table.into_validated_jsonl(&common.name))

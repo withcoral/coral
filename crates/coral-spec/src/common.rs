@@ -9,12 +9,26 @@
 //! source identity, filters, request templating, response extraction, typed
 //! columns, and pagination.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{ManifestError, ParsedTemplate, Result};
+
+/// Default table namespace used when a source spec does not declare one.
+pub const DEFAULT_NAMESPACE: &str = "core";
+
+/// Default description for the implicit `core` namespace.
+const DEFAULT_NAMESPACE_DESCRIPTION: &str = "Default tables";
+
+const RESERVED_NAMESPACE_NAMES: &[&str] = &["coral", "datafusion", "information_schema"];
+
+/// Return whether a namespace is the implicit default namespace.
+#[must_use]
+fn is_core_namespace(namespace: &str) -> bool {
+    namespace == DEFAULT_NAMESPACE
+}
 
 /// Common top-level source metadata shared by every backend source spec.
 #[derive(Debug, Clone)]
@@ -24,6 +38,7 @@ pub struct SourceManifestCommon {
     pub version: String,
     pub description: String,
     pub test_queries: Vec<String>,
+    pub namespaces: Vec<NamespaceSpec>,
 }
 
 impl SourceManifestCommon {
@@ -33,6 +48,7 @@ impl SourceManifestCommon {
         version: String,
         description: String,
         test_queries: Vec<String>,
+        namespaces: Vec<NamespaceSpec>,
     ) -> Self {
         Self {
             dsl_version,
@@ -40,8 +56,16 @@ impl SourceManifestCommon {
             version,
             description,
             test_queries,
+            namespaces,
         }
     }
+}
+
+/// Raw source-level table namespace declaration from a manifest.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RawNamespaceSpec {
+    pub description: String,
 }
 
 pub(crate) fn validate_test_queries(source_name: &str, test_queries: &[String]) -> Result<()> {
@@ -53,6 +77,150 @@ pub(crate) fn validate_test_queries(source_name: &str, test_queries: &[String]) 
         }
     }
     Ok(())
+}
+
+fn validate_identifier(label: &str, value: &str) -> Result<()> {
+    if value.is_empty() {
+        return Err(ManifestError::validation(format!(
+            "{label} must not be empty"
+        )));
+    }
+    let mut chars = value.chars();
+    let Some(first) = chars.next() else {
+        return Err(ManifestError::validation(format!(
+            "{label} must not be empty"
+        )));
+    };
+    let valid_first = first == '_' || first.is_ascii_alphabetic();
+    let valid_rest = chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric());
+    if !valid_first || !valid_rest {
+        return Err(ManifestError::validation(format!(
+            "{label} '{value}' must match [A-Za-z_][A-Za-z0-9_]*"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_namespace_identifier(value: &str) -> Result<()> {
+    validate_identifier("namespace", value)?;
+    if value != value.to_ascii_lowercase() {
+        return Err(ManifestError::validation(format!(
+            "namespace '{value}' must be lowercase"
+        )));
+    }
+    if value.eq_ignore_ascii_case(DEFAULT_NAMESPACE) && value != DEFAULT_NAMESPACE {
+        return Err(ManifestError::validation(format!(
+            "namespace '{value}' must be written as '{DEFAULT_NAMESPACE}'"
+        )));
+    }
+    if RESERVED_NAMESPACE_NAMES
+        .iter()
+        .any(|reserved| value.eq_ignore_ascii_case(reserved))
+    {
+        return Err(ManifestError::validation(format!(
+            "namespace '{value}' is reserved"
+        )));
+    }
+    Ok(())
+}
+
+pub(crate) fn build_source_manifest_common<'a>(
+    dsl_version: u32,
+    name: String,
+    version: String,
+    description: String,
+    test_queries: Vec<String>,
+    namespaces: BTreeMap<String, RawNamespaceSpec>,
+    tables: impl IntoIterator<Item = (&'a str, Option<&'a str>)>,
+) -> Result<SourceManifestCommon> {
+    // Keep backend-agnostic source checks here so HTTP, JSONL, and Parquet
+    // apply the same test-query, table-name, and namespace rules.
+    validate_test_queries(&name, &test_queries)?;
+
+    let tables = tables.into_iter().collect::<Vec<_>>();
+    validate_unique_table_names(&name, tables.iter().map(|(table_name, _)| *table_name))?;
+    let table_namespaces = tables
+        .iter()
+        .map(|(_, namespace)| namespace.unwrap_or(DEFAULT_NAMESPACE).to_string())
+        .collect::<Vec<_>>();
+    let namespaces = normalize_namespaces(&name, namespaces, &table_namespaces)?;
+
+    Ok(SourceManifestCommon::new(
+        dsl_version,
+        name,
+        version,
+        description,
+        test_queries,
+        namespaces,
+    ))
+}
+
+pub(crate) fn normalize_namespaces(
+    source_name: &str,
+    declared: BTreeMap<String, RawNamespaceSpec>,
+    table_namespaces: &[String],
+) -> Result<Vec<NamespaceSpec>> {
+    let mut namespaces = BTreeMap::new();
+    let mut used = BTreeSet::new();
+
+    for (name, spec) in declared {
+        validate_namespace_identifier(&name)?;
+        if spec.description.trim().is_empty() {
+            return Err(ManifestError::validation(format!(
+                "{source_name}.{name} namespace description must not be empty"
+            )));
+        }
+        namespaces.insert(name, spec.description);
+    }
+
+    for namespace in table_namespaces {
+        validate_namespace_identifier(namespace)?;
+        used.insert(namespace.clone());
+        if !is_core_namespace(namespace) && !namespaces.contains_key(namespace) {
+            return Err(ManifestError::validation(format!(
+                "{source_name}.{namespace} namespace is used by a table but is not declared"
+            )));
+        }
+    }
+
+    if used.contains(DEFAULT_NAMESPACE) {
+        namespaces
+            .entry(DEFAULT_NAMESPACE.to_string())
+            .or_insert_with(|| DEFAULT_NAMESPACE_DESCRIPTION.to_string());
+    }
+
+    let entries = namespaces
+        .into_iter()
+        .map(|(name, description)| NamespaceSpec { name, description })
+        .collect::<Vec<_>>();
+    Ok(entries)
+}
+
+pub(crate) fn validate_unique_table_names<'a>(
+    source_name: &str,
+    table_names: impl IntoIterator<Item = &'a str>,
+) -> Result<()> {
+    let mut seen = BTreeSet::new();
+    for table_name in table_names {
+        if table_name.trim().is_empty() {
+            return Err(ManifestError::validation(format!(
+                "{source_name} has an empty table name"
+            )));
+        }
+        if !seen.insert(table_name.to_string()) {
+            return Err(ManifestError::validation(format!(
+                "{source_name} has duplicate table '{table_name}'"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Normalized source-level namespace metadata.
+#[derive(Debug, Clone)]
+pub struct NamespaceSpec {
+    pub name: String,
+    pub description: String,
 }
 
 /// Supported source-spec backends.
@@ -93,6 +261,7 @@ pub struct HeaderSpec {
 #[derive(Debug, Clone)]
 pub struct TableCommon {
     pub name: String,
+    pub namespace: String,
     pub description: String,
     pub guide: String,
     pub filters: Vec<FilterSpec>,
@@ -103,6 +272,7 @@ pub struct TableCommon {
 impl TableCommon {
     pub(crate) fn new(
         name: String,
+        namespace: String,
         description: String,
         guide: String,
         filters: Vec<FilterSpec>,
@@ -111,6 +281,7 @@ impl TableCommon {
     ) -> Self {
         Self {
             name,
+            namespace,
             description,
             guide,
             filters,

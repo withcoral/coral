@@ -10,7 +10,7 @@
 //! they are still engine-neutral; no runtime HTTP client or execution concerns
 //! live in this crate.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use serde::Deserialize;
 use serde_json::{Map, Value};
@@ -18,8 +18,11 @@ use serde_json::{Map, Value};
 use crate::{
     ColumnSpec, FilterSpec, HeaderSpec, ManifestError, ManifestInputKind, ManifestInputSpec,
     PaginationSpec, ParsedTemplate, RequestRouteSpec, RequestSpec, ResponseSpec, Result,
-    SourceBackend, SourceManifestCommon, TableCommon, inputs::collect_source_inputs_value,
-    validate::validate_template, validate_http_table, validate_test_queries,
+    SourceBackend, SourceManifestCommon, TableCommon,
+    common::{DEFAULT_NAMESPACE, RawNamespaceSpec, build_source_manifest_common},
+    inputs::collect_source_inputs_value,
+    validate::validate_template,
+    validate_http_table,
 };
 
 /// Source-level authentication requirements for HTTP-backed source specs.
@@ -114,6 +117,8 @@ struct RawHttpSourceManifest {
     rate_limit: RateLimitSpec,
     #[serde(default)]
     inputs: Option<Value>,
+    #[serde(default)]
+    namespaces: BTreeMap<String, RawNamespaceSpec>,
     tables: Vec<RawHttpTableSpec>,
 }
 
@@ -121,6 +126,8 @@ struct RawHttpSourceManifest {
 #[serde(deny_unknown_fields)]
 struct RawHttpTableSpec {
     name: String,
+    #[serde(default)]
+    namespace: Option<String>,
     description: String,
     #[serde(default)]
     guide: String,
@@ -216,6 +223,9 @@ impl HttpSourceManifest {
 
 impl RawHttpTableSpec {
     fn into_validated(self, schema: &str) -> Result<HttpTableSpec> {
+        let namespace = self
+            .namespace
+            .unwrap_or_else(|| DEFAULT_NAMESPACE.to_string());
         validate_http_table(
             schema,
             &self.name,
@@ -229,6 +239,7 @@ impl RawHttpTableSpec {
         Ok(HttpTableSpec {
             common: TableCommon::new(
                 self.name,
+                namespace,
                 self.description,
                 self.guide,
                 self.filters,
@@ -260,11 +271,20 @@ impl HttpSourceManifest {
             request_headers,
             rate_limit,
             inputs: _inputs,
+            namespaces,
             tables,
         } = raw;
-        validate_test_queries(&name, &test_queries)?;
-        let common =
-            SourceManifestCommon::new(dsl_version, name, version, description, test_queries);
+        let common = build_source_manifest_common(
+            dsl_version,
+            name,
+            version,
+            description,
+            test_queries,
+            namespaces,
+            tables
+                .iter()
+                .map(|table| (table.name.as_str(), table.namespace.as_deref())),
+        )?;
         let tables = tables
             .into_iter()
             .map(|table| table.into_validated(&common.name))
@@ -303,6 +323,7 @@ pub(crate) fn test_http_table_spec(
     HttpTableSpec {
         common: TableCommon::new(
             name.to_string(),
+            DEFAULT_NAMESPACE.to_string(),
             "test".to_string(),
             String::new(),
             filters,

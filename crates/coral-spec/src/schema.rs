@@ -67,6 +67,30 @@ tables:
     }
 
     #[test]
+    fn validate_manifest_schema_accepts_table_namespaces() {
+        let manifest = manifest_json(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+base_url: https://example.com
+namespaces:
+  actions:
+    description: Action data
+tables:
+  - name: runs
+    namespace: actions
+    description: Demo runs
+    request:
+      method: GET
+      path: /runs
+",
+        );
+        validate_manifest_schema(&manifest).expect("valid manifest should pass schema validation");
+    }
+
+    #[test]
     fn validate_manifest_schema_rejects_unknown_top_level_field() {
         let manifest = manifest_json(&format!("schema: legacy\n{}", valid_http_manifest()));
         let error = validate_manifest_schema(&manifest).expect_err("schema validation should fail");
