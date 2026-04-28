@@ -8071,7 +8071,7 @@ tables:
             - updated
   - name: calculations
     description: Retrieve a Tax Calculation
-    guide: "Calculations. Scope with calculation. List endpoint."
+    guide: "Tax calculation breakdown. Scope with calculation to inspect the returned breakdown for that calculation."
     filters:
       - name: calculation
         required: true
@@ -36680,7 +36680,7 @@ tables:
           key: subscription_exposed_id
   - name: dispute
     description: Retrieve a dispute for a specified charge.
-    guide: "Dispute. Scope with charge. List endpoint."
+    guide: "Dispute balance transactions. Scope with charge to inspect the balance transactions attached to that charge's dispute."
     filters:
       - name: charge
         required: true
@@ -40446,7 +40446,7 @@ tables:
             - updated
   - name: get_application_fees_id_refunds
     description: List all application fee refunds
-    guide: "Refunds. Use id to fetch one row."
+    guide: "Application fee refunds. Scope with application fee id to list refunds for that fee."
     filters:
       - name: id
         required: true

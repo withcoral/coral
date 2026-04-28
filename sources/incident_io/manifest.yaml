@@ -8907,8 +8907,8 @@ tables:
   - name: openapi_json
     description: OpenAPI
     guide: >-
-      Use this table to open API. Query it directly when you need the full list; it works
-      best as a lookup or dimension table.
+      OpenAPI document. Query this singleton endpoint when you need the raw v2 API
+      specification JSON.
     request:
       method: GET
       path: /v1/openapi.json
@@ -8931,8 +8931,8 @@ tables:
   - name: openapi_v3_json
     description: OpenAPIV3
     guide: >-
-      Use this table to open APIV3. Query it directly when you need the full list; it works
-      best as a lookup or dimension table.
+      OpenAPI v3 document. Query this singleton endpoint when you need the raw v3 API
+      specification JSON.
     request:
       method: GET
       path: /v1/openapiV3.json
