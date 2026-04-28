@@ -113,6 +113,8 @@ This server exposes:
 | Type     | Name             | Description                      |
 | -------- | ---------------- | -------------------------------- |
 | Tool     | `sql`            | Run a SQL query                  |
-| Tool     | `list_tables`    | List all available tables        |
+| Tool     | `list_tables`    | List all available tables, optionally narrowed by exact `schema` |
 | Resource | `coral://guide`  | Usage guide for agents           |
 | Resource | `coral://tables` | Schema for all installed sources |
+
+MCP `list_tables` accepts an optional `schema` argument. The filter is an exact schema-name match.

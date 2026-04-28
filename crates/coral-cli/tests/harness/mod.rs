@@ -303,14 +303,19 @@ impl QueryService for MockQueryService {
         &self,
         request: Request<ListTablesRequest>,
     ) -> Result<Response<ListTablesResponse>, Status> {
+        let request = request.into_inner();
+        let schema_filter = request.schema_filter.clone();
         self.captured
             .list_tables
             .lock()
             .expect("list_tables capture")
-            .push(request.into_inner());
-        Ok(Response::new(ListTablesResponse {
-            tables: vec![mock_visible_table()],
-        }))
+            .push(request);
+        let tables = if schema_filter.is_empty() || schema_filter == "local_messages" {
+            vec![mock_visible_table()]
+        } else {
+            Vec::new()
+        };
+        Ok(Response::new(ListTablesResponse { tables }))
     }
 
     async fn execute_sql(
@@ -519,6 +524,14 @@ impl MockServer {
             .execute_sql
             .lock()
             .expect("execute_sql capture")
+            .clone()
+    }
+
+    pub(crate) fn list_tables_requests(&self) -> Vec<ListTablesRequest> {
+        self.captured
+            .list_tables
+            .lock()
+            .expect("list_tables capture")
             .clone()
     }
 

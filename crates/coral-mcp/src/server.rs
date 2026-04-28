@@ -19,9 +19,9 @@ use tonic::Request;
 
 use crate::surface::{
     build_tool_result, guide_resource, guide_resource_content, initial_instructions,
-    internal_status, list_tables_tool, list_tables_value, required_string_argument, sql_tool,
-    status_to_error_data, tables_resource, tables_resource_content, tool_error_from_status,
-    tool_error_result,
+    internal_status, list_tables_tool, list_tables_value, optional_string_argument,
+    required_string_argument, sql_tool, status_to_error_data, tables_resource,
+    tables_resource_content, tool_error_from_status, tool_error_result,
 };
 
 #[derive(Clone)]
@@ -49,12 +49,13 @@ impl CoralMcpServer {
             .sources)
     }
 
-    async fn load_tables(&self) -> Result<Vec<Table>, tonic::Status> {
+    async fn load_tables(&self, schema: Option<&str>) -> Result<Vec<Table>, tonic::Status> {
         let mut query_client = self.query_client.clone();
         Ok(query_client
             .list_tables(Request::new(ListTablesRequest {
                 workspace: Some(default_workspace()),
-                schema_filter: String::new(),
+                // MCP exposes this as `schema`; the local API names the exact-match field `schema_filter`.
+                schema_filter: schema.unwrap_or_default().to_string(),
             }))
             .await?
             .into_inner()
@@ -62,7 +63,7 @@ impl CoralMcpServer {
     }
 
     async fn load_sources_and_tables(&self) -> Result<(Vec<Source>, Vec<Table>), tonic::Status> {
-        tokio::try_join!(self.load_sources(), self.load_tables())
+        tokio::try_join!(self.load_sources(), self.load_tables(None))
     }
 
     async fn query_rows(&self, sql: &str) -> Result<Vec<Value>, tonic::Status> {
@@ -127,13 +128,16 @@ impl ServerHandler for CoralMcpServer {
                     Err(status) => Ok(tool_error_result(tool_error_from_status("Query", &status))),
                 }
             }
-            "list_tables" => match self.load_tables().await {
-                Ok(tables) => build_tool_result(list_tables_value(&tables)),
-                Err(status) => Ok(tool_error_result(tool_error_from_status(
-                    "Table listing",
-                    &status,
-                ))),
-            },
+            "list_tables" => {
+                let schema = optional_string_argument(request.arguments.as_ref(), "schema")?;
+                match self.load_tables(schema.as_deref()).await {
+                    Ok(tables) => build_tool_result(list_tables_value(&tables)),
+                    Err(status) => Ok(tool_error_result(tool_error_from_status(
+                        "Table listing",
+                        &status,
+                    ))),
+                }
+            }
             _ => Err(ErrorData::invalid_params(
                 format!("tool '{}' not found", request.name),
                 None,
@@ -174,7 +178,7 @@ impl ServerHandler for CoralMcpServer {
             }
             "coral://tables" => {
                 let tables = self
-                    .load_tables()
+                    .load_tables(None)
                     .await
                     .map_err(|status| status_to_error_data(&status))?;
                 let text = tables_resource_content(&tables)

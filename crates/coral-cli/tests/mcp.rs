@@ -69,6 +69,17 @@ async fn mcp_stdio_lists_tools_and_resources() -> Result<(), Box<dyn std::error:
             .expect("list_tables description")
             .contains("1 table(s) are currently visible")
     );
+    let list_tables_properties = tools[1]
+        .input_schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .expect("list_tables properties");
+    assert_eq!(list_tables_properties["schema"]["type"], "string");
+    let list_tables_description = tools[1]
+        .description
+        .as_deref()
+        .expect("list_tables description");
+    assert!(list_tables_description.contains("exact schema"));
 
     let resources = client.list_all_resources().await?;
     assert_eq!(
@@ -113,6 +124,30 @@ async fn mcp_stdio_sql_and_list_tables_return_structured_content()
     assert_eq!(
         tables.structured_content.expect("structured content")["tables"][0]["name"],
         "local_messages.messages"
+    );
+
+    let filtered_tables = client
+        .call_tool(
+            CallToolRequestParams::new("list_tables").with_arguments(json_object(&json!({
+                "schema": "local_messages"
+            }))),
+        )
+        .await?;
+    assert_eq!(filtered_tables.is_error, Some(false));
+    assert_eq!(
+        filtered_tables
+            .structured_content
+            .expect("structured content")["tables"][0]["name"],
+        "local_messages.messages"
+    );
+    let captured_list_tables = server.list_tables_requests();
+    assert_eq!(
+        captured_list_tables
+            .last()
+            .expect("captured list_tables request")
+            .schema_filter
+            .as_str(),
+        "local_messages"
     );
 
     let sql = client

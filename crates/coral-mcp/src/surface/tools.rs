@@ -39,7 +39,12 @@ pub(crate) fn list_tables_tool(tables: &[Table]) -> Tool {
         list_tables_description(tables),
         json_object_schema(&json!({
             "type": "object",
-            "properties": {}
+            "properties": {
+                "schema": {
+                    "type": "string",
+                    "description": "Exact SQL schema name to list, such as github or stripe. Omit to list all visible schemas."
+                }
+            }
         })),
     )
     .with_annotations(
@@ -66,6 +71,27 @@ pub(crate) fn required_string_argument(
     Ok(value.to_string())
 }
 
+pub(crate) fn optional_string_argument(
+    arguments: Option<&Map<String, Value>>,
+    key: &str,
+) -> Result<Option<String>, ErrorData> {
+    let Some(value) = arguments.and_then(|arguments| arguments.get(key)) else {
+        return Ok(None);
+    };
+    let Some(value) = value.as_str() else {
+        return Err(ErrorData::invalid_params(
+            format!("argument '{key}' must be a string"),
+            None,
+        ));
+    };
+    let value = value.trim();
+    if value.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(value.to_string()))
+    }
+}
+
 pub(crate) fn build_tool_result(value: Value) -> Result<CallToolResult, ErrorData> {
     let pretty = serde_json::to_string_pretty(&value)
         .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
@@ -90,7 +116,7 @@ fn sql_tool_description(sources: &[Source], tables: &[Table]) -> String {
 
 fn list_tables_description(tables: &[Table]) -> String {
     format!(
-        "List queryable fully qualified tables. {} table(s) are currently visible.",
+        "List queryable fully qualified tables, optionally narrowed by exact schema. {} table(s) are currently visible.",
         visible_table_count(tables)
     )
 }
