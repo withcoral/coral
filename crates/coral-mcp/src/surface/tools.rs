@@ -116,7 +116,7 @@ fn sql_tool_description(sources: &[Source], tables: &[Table]) -> String {
 
 fn list_tables_description(tables: &[Table]) -> String {
     format!(
-        "List queryable fully qualified tables, optionally narrowed by exact schema. {} table(s) are currently visible.",
+        "List queryable fully qualified tables, optionally narrowed by exact schema. Query `coral.tables` and `coral.columns` with the `sql` tool for richer metadata and table search. {} table(s) are currently visible.",
         visible_table_count(tables)
     )
 }

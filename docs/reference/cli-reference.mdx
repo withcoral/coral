@@ -117,4 +117,4 @@ This server exposes:
 | Resource | `coral://guide`  | Usage guide for agents           |
 | Resource | `coral://tables` | Schema for all installed sources |
 
-MCP `list_tables` accepts an optional `schema` argument. The filter is an exact schema-name match.
+MCP `list_tables` accepts an optional `schema` argument. The filter is an exact schema-name match. For substring table search, use SQL `LIKE` against `coral.tables` through the `sql` tool.

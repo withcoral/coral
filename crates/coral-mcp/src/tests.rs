@@ -170,6 +170,8 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
         .as_deref()
         .expect("list_tables description");
     assert!(list_tables_description.contains("exact schema"));
+    assert!(list_tables_description.contains("coral.tables"));
+    assert!(list_tables_description.contains("coral.columns"));
 
     let initial_resources = client
         .list_all_resources()
@@ -248,6 +250,14 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
     assert!(updated_guide_text.contains("- coral: System metadata schema."));
     assert!(updated_guide_text.contains("- local_messages"));
     assert!(!updated_guide_text.contains("## Visible SQL Schemas"));
+    assert!(
+        updated_guide_text
+            .contains("SELECT schema_name, table_name, description, required_filters")
+    );
+    assert!(updated_guide_text.contains("FROM coral.tables"));
+    assert!(updated_guide_text.contains("LIKE"));
+    assert!(updated_guide_text.contains("DESCRIBE local_messages.messages"));
+    assert!(updated_guide_text.contains("is_required_filter"));
     assert!(updated_guide_text.contains(
         "FROM coral.columns WHERE schema_name = 'local_messages' AND table_name = 'messages'"
     ));

@@ -80,6 +80,8 @@ async fn mcp_stdio_lists_tools_and_resources() -> Result<(), Box<dyn std::error:
         .as_deref()
         .expect("list_tables description");
     assert!(list_tables_description.contains("exact schema"));
+    assert!(list_tables_description.contains("coral.tables"));
+    assert!(list_tables_description.contains("coral.columns"));
 
     let resources = client.list_all_resources().await?;
     assert_eq!(
@@ -96,6 +98,9 @@ async fn mcp_stdio_lists_tools_and_resources() -> Result<(), Box<dyn std::error:
     let guide_text = text_content(&guide);
     assert!(guide_text.contains("## Available Schemas"));
     assert!(guide_text.contains("- local_messages"));
+    assert!(guide_text.contains("FROM coral.tables"));
+    assert!(guide_text.contains("LIKE"));
+    assert!(guide_text.contains("DESCRIBE local_messages.messages"));
     assert!(guide_text.contains(
         "FROM coral.columns WHERE schema_name = 'local_messages' AND table_name = 'messages'"
     ));

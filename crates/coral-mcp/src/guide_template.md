@@ -7,10 +7,18 @@
 Always inspect queryable tables and table metadata before writing queries:
 
 ```sql
--- List visible tables, descriptions, and required filters
-SELECT schema_name, table_name, description, required_filters FROM coral.tables ORDER BY schema_name, table_name;
+-- List visible tables, descriptions, guides, and required filters
+SELECT schema_name, table_name, description, required_filters
+FROM coral.tables
+ORDER BY schema_name, table_name;
 
--- Inspect columns for one visible table
+-- Find tables by substring within one schema
+{{TABLE_SEARCH_EXAMPLE}}
+
+-- Quick table shape shortcut
+{{DESCRIBE_EXAMPLE}}
+
+-- Canonical column inspection with required-filter metadata
 {{COLUMNS_EXAMPLE}}
 ```
 

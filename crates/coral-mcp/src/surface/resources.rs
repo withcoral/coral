@@ -5,7 +5,7 @@ use coral_api::v1::{Source, Table};
 use rmcp::model::{AnnotateAble, RawResource, Resource};
 use serde_json::{Value, json};
 
-static INITIAL_INSTRUCTIONS: &str = "You are connected to Coral. Read `coral://guide` for query patterns, use `list_tables` to inspect queryable tables, and use `sql` against `coral.tables` and `coral.columns` for discovery.";
+static INITIAL_INSTRUCTIONS: &str = "You are connected to Coral. Use the `sql` tool against `coral.tables` to discover visible tables, descriptions, guides, and required filters, then query `coral.columns` for column types, descriptions, virtual columns, and `is_required_filter`. Use `list_tables` only as a flat fully qualified table index, optionally narrowed by exact schema. `DESCRIBE <schema>.<table>` and `SHOW COLUMNS FROM <schema>.<table>` are quick-shape shortcuts.";
 static GUIDE_TEMPLATE: &str = include_str!("../guide_template.md");
 
 pub(crate) fn initial_instructions() -> &'static str {
@@ -49,23 +49,29 @@ pub(crate) fn guide_resource_content(sources: &[Source], tables: &[Table]) -> St
         }
     }
 
-    let columns_example = first_visible_table(tables).map_or_else(
-        || {
-            "SELECT column_name, data_type, is_required_filter, description \
-FROM coral.columns WHERE schema_name = '<schema>' AND table_name = '<table>' ORDER BY ordinal_position;"
-                .to_string()
-        },
-        |(schema_name, table_name)| {
-            format!(
-                "SELECT column_name, data_type, is_required_filter, description \
+    let (schema_name, table_name) = first_visible_table(tables).unwrap_or(("<schema>", "<table>"));
+    let search_fragment = if table_name == "<table>" {
+        "pull"
+    } else {
+        table_name
+    };
+    let columns_example = format!(
+        "SELECT column_name, data_type, is_required_filter, description \
 FROM coral.columns WHERE schema_name = '{schema_name}' AND table_name = '{table_name}' ORDER BY ordinal_position;"
-            )
-        },
     );
+    let table_search_example = format!(
+        "SELECT schema_name, table_name, description, required_filters \
+FROM coral.tables \
+WHERE schema_name = '{schema_name}' AND table_name LIKE '%{search_fragment}%' \
+ORDER BY schema_name, table_name;"
+    );
+    let describe_example = format!("DESCRIBE {schema_name}.{table_name};");
 
     GUIDE_TEMPLATE
         .replace("{{SOURCES_SECTION}}", &sources_section)
         .replace("{{COLUMNS_EXAMPLE}}", &columns_example)
+        .replace("{{DESCRIBE_EXAMPLE}}", &describe_example)
+        .replace("{{TABLE_SEARCH_EXAMPLE}}", &table_search_example)
 }
 
 pub(crate) fn tables_resource_content(tables: &[Table]) -> Result<String, serde_json::Error> {
@@ -171,6 +177,8 @@ mod tests {
         assert!(content.contains("- coral: System metadata schema."));
         assert!(content.contains("No query-visible source schemas are currently available."));
         assert!(content.contains("schema_name = '<schema>'"));
+        assert!(content.contains("table_name LIKE '%pull%'"));
+        assert!(content.contains("DESCRIBE <schema>.<table>"));
     }
 
     #[test]
@@ -184,5 +192,9 @@ mod tests {
         assert!(content.contains("Visible source schemas:"));
         assert!(content.contains("- slack"));
         assert!(content.contains("Fully qualify tables in SQL, for example `slack.messages`."));
+        assert!(content.contains(
+            "FROM coral.tables WHERE schema_name = 'slack' AND table_name LIKE '%channels%'"
+        ));
+        assert!(content.contains("DESCRIBE slack.channels"));
     }
 }

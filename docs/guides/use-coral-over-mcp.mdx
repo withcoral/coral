@@ -20,7 +20,7 @@ Before setting up a client, make sure you have [connected at least one source](/
 | Resource | `coral://tables` | JSON summaries of queryable tables and required filters |
 
 Clients see the same installed sources and query results as `coral sql`. You set up sources with the CLI, then agents query them over MCP.
-For richer metadata, have the agent query `coral.tables`, `coral.columns`, and `coral.inputs` over the `sql` tool instead of relying only on `list_tables` or `coral://tables`. `list_tables` accepts an optional `schema` argument that performs exact schema matching only.
+For discovery, have the agent query `coral.tables`, `coral.columns`, and `coral.inputs` over the `sql` tool. `coral.columns` is the canonical column metadata surface because it includes column descriptions and `is_required_filter`. `list_tables` is useful as a flat fully qualified table index, and its optional `schema` argument performs exact schema matching only. For quick table shape checks, agents can also run `DESCRIBE <schema>.<table>` or `SHOW COLUMNS FROM <schema>.<table>`.
 
 ## Client setup
 
