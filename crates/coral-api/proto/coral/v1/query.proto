@@ -25,6 +25,16 @@ message ExecuteSqlResponse {
 message ListTablesRequest {
   // Workspace whose current query-visible tables should be listed.
   Workspace workspace = 1;
+  // Restrict results to this SQL schema. Exact match.
+  // Empty string (default) or whitespace-only strings mean no filter.
+  //
+  // INVARIANT: this message must not carry matching primitives beyond
+  // exact `schema_filter`. Substring / prefix / fuzzy / multi-field
+  // predicates go through the `sql` RPC against `coral.tables`. This
+  // caps what agents have to learn about ListTables semantics and
+  // keeps `sql`-against-`coral.tables` as the canonical richer-predicate
+  // path. See SOURCE-459 design notes.
+  string schema_filter = 2;
 }
 
 // Returns the query-visible tables in one workspace.

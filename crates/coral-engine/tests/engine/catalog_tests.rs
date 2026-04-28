@@ -191,6 +191,45 @@ async fn list_tables_matches_catalog() {
 }
 
 #[tokio::test]
+async fn list_tables_filters_by_schema() {
+    let (_temp, sources) = build_catalog_sources();
+
+    let alpha = CoralQuery::list_tables(&sources, &TestRuntime, Some("alpha"))
+        .await
+        .expect("alpha schema should list");
+    assert_eq!(
+        alpha.iter().map(table_summary).collect::<Vec<_>>(),
+        vec![(
+            "alpha".to_string(),
+            "users".to_string(),
+            "Alpha users".to_string()
+        )]
+    );
+
+    let beta = CoralQuery::list_tables(&sources, &TestRuntime, Some("beta"))
+        .await
+        .expect("beta schema should list");
+    assert_eq!(
+        beta.iter().map(table_summary).collect::<Vec<_>>(),
+        vec![(
+            "beta".to_string(),
+            "teams".to_string(),
+            "Beta teams".to_string()
+        )]
+    );
+
+    let missing = CoralQuery::list_tables(&sources, &TestRuntime, Some("missing"))
+        .await
+        .expect("missing schema should list as empty");
+    assert!(missing.is_empty());
+
+    let unfiltered = CoralQuery::list_tables(&sources, &TestRuntime, None)
+        .await
+        .expect("unfiltered list should succeed");
+    assert_eq!(unfiltered.len(), 2);
+}
+
+#[tokio::test]
 async fn list_tables_empty_when_no_sources() {
     let tables = CoralQuery::list_tables(&[], &TestRuntime, None)
         .await

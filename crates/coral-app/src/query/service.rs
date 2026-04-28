@@ -32,9 +32,11 @@ impl QueryServiceApi for QueryService {
     ) -> Result<Response<ListTablesResponse>, Status> {
         let request = request.into_inner();
         let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+        let schema_filter = request.schema_filter.trim();
+        let schema_filter = (!schema_filter.is_empty()).then_some(schema_filter);
         let tables = self
             .queries
-            .list_tables(&workspace_name)
+            .list_tables(&workspace_name, schema_filter)
             .await
             .map_err(query_status)?
             .into_iter()

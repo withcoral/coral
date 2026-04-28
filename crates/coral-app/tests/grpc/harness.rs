@@ -104,6 +104,7 @@ impl GrpcHarness {
         self.query_client()
             .list_tables(Request::new(ListTablesRequest {
                 workspace: Some(default_workspace()),
+                schema_filter: String::new(),
             }))
             .await
             .expect("list tables")

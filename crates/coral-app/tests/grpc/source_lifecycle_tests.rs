@@ -208,6 +208,55 @@ async fn validate_source_returns_tables() {
 }
 
 #[tokio::test]
+async fn list_tables_filters_by_schema() {
+    let harness = GrpcHarness::new().await;
+    let manifest_yaml = fixture_manifest_yaml(harness.temp_path());
+    harness
+        .import_source(manifest_yaml, Vec::new(), Vec::new())
+        .await;
+
+    let local_messages = harness
+        .query_client()
+        .list_tables(Request::new(ListTablesRequest {
+            workspace: Some(default_workspace()),
+            schema_filter: "local_messages".to_string(),
+        }))
+        .await
+        .expect("schema-filtered list tables")
+        .into_inner()
+        .tables;
+    assert_eq!(local_messages.len(), 1);
+    assert_eq!(local_messages[0].schema_name, "local_messages");
+    assert_eq!(local_messages[0].name, "messages");
+
+    let missing = harness
+        .query_client()
+        .list_tables(Request::new(ListTablesRequest {
+            workspace: Some(default_workspace()),
+            schema_filter: "missing".to_string(),
+        }))
+        .await
+        .expect("missing schema should list as empty")
+        .into_inner()
+        .tables;
+    assert!(missing.is_empty());
+
+    let unfiltered = harness
+        .query_client()
+        .list_tables(Request::new(ListTablesRequest {
+            workspace: Some(default_workspace()),
+            schema_filter: String::new(),
+        }))
+        .await
+        .expect("unfiltered list tables")
+        .into_inner()
+        .tables;
+    assert_eq!(unfiltered.len(), 1);
+    assert_eq!(unfiltered[0].schema_name, "local_messages");
+    assert_eq!(unfiltered[0].name, "messages");
+}
+
+#[tokio::test]
 async fn validate_source_returns_query_test_results_without_unary_error() {
     let harness = GrpcHarness::new().await;
     let manifest_yaml = fixture_manifest_with_test_queries_yaml(
@@ -1108,6 +1157,7 @@ async fn rejects_invalid_workspace_and_source_names() {
             workspace: Some(Workspace {
                 name: r"bad\workspace".to_string(),
             }),
+            schema_filter: String::new(),
         }))
         .await
         .expect_err("workspace with backslash should fail");
