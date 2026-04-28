@@ -77,11 +77,11 @@ Full [benchmark report](https://withcoral.com/benchmarks).
 
 Coral sits between you and your data sources: you (or your agent) write SQL, and Coral translates it into API calls or file reads, then returns a single query result.
 
-For example, here's Coral answering the question:
+For example, here's Claude Code using Coral to answer the question:
 
 > Which Sentry errors create the most noise in Slack, and who is working on them?
 
-![coral sql demo](/images/coral-sql-join.gif)
+![coral sql demo](/images/claude-query-example.gif)
 
 A **source spec** is a YAML file that defines how to reach an API or local dataset and which tables/columns it exposes. A **source** is a data source Coral can query, created from a source spec plus your configured credentials and variables. When you run `coral source add github`, Coral installs the `github` source. At query time, Coral loads that source as the `github` SQL schema, so tables like `github.issues` and `github.pulls` are queryable. Start with [bundled sources](/reference/bundled-sources) or [write your own](/guides/write-a-custom-source).
 
