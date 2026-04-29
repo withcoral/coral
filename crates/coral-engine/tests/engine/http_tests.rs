@@ -810,7 +810,7 @@ async fn text_body_sends_raw_sql_with_default_content_type() {
     let rows = execution_to_rows(
         &CoralQuery::execute_sql(
             &[source],
-            &TestRuntime,
+            test_runtime(),
             "SELECT id, name, email FROM http_text_body.users",
         )
         .await
@@ -869,7 +869,7 @@ async fn text_body_respects_explicit_content_type_override() {
     let rows = execution_to_rows(
         &CoralQuery::execute_sql(
             &[source],
-            &TestRuntime,
+            test_runtime(),
             "SELECT COUNT(*) AS n FROM http_ct_override.items",
         )
         .await
@@ -920,7 +920,7 @@ async fn text_body_omits_absent_optional_content() {
     let rows = execution_to_rows(
         &CoralQuery::execute_sql(
             &[source],
-            &TestRuntime,
+            test_runtime(),
             "SELECT COUNT(*) AS n FROM http_optional_text_body.items",
         )
         .await
@@ -965,7 +965,7 @@ async fn json_each_row_response_parses_newline_delimited_rows() {
     let rows = execution_to_rows(
         &CoralQuery::execute_sql(
             &[source],
-            &TestRuntime,
+            test_runtime(),
             "SELECT id, name FROM http_ndjson.logs ORDER BY id",
         )
         .await
@@ -1025,7 +1025,7 @@ async fn legacy_json_body_array_form_still_works() {
     let rows = execution_to_rows(
         &CoralQuery::execute_sql(
             &[source],
-            &TestRuntime,
+            test_runtime(),
             "SELECT id, name, email FROM http_legacy_body.users ORDER BY id",
         )
         .await
