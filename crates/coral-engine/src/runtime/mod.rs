@@ -2,6 +2,7 @@
 //! tables, and schema plumbing.
 
 pub(crate) mod catalog;
+pub(crate) mod catalog_provider;
 pub(crate) mod error;
 pub(crate) mod json;
 pub(crate) mod pattern_validator;

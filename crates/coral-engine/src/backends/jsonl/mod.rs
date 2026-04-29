@@ -19,7 +19,7 @@ use crate::backends::shared::json_exec::{Converter, Fetcher, JsonExec, RowFetche
 use crate::backends::shared::mapping::convert_items;
 use crate::backends::{
     BackendCompileRequest, BackendRegistration, CompiledBackendSource, RegisteredSource,
-    RegisteredTable, build_registered_inputs, build_registered_table,
+    RegisteredTable, build_registered_inputs, build_registered_namespaces, build_registered_table,
     registered_columns_from_specs, required_filter_names, schema_from_columns,
 };
 use crate::{CoreError, QueryRuntimeContext};
@@ -303,6 +303,7 @@ impl CompiledBackendSource for JsonlCompiledSource {
             tables,
             source: RegisteredSource {
                 schema_name: self.manifest.common.name.clone(),
+                namespaces: build_registered_namespaces(&self.manifest.common.namespaces),
                 tables: table_infos,
                 inputs,
             },

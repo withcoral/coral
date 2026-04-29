@@ -16,6 +16,8 @@ pub struct ColumnInfo {
 pub struct TableInfo {
     /// `SQL` schema name.
     pub schema_name: String,
+    /// Table namespace within the source.
+    pub namespace: String,
     /// Table name within the schema.
     pub table_name: String,
     /// User-facing table description.

@@ -52,6 +52,51 @@ fn teams_manifest(dir: &std::path::Path) -> Value {
     })
 }
 
+fn namespaced_manifest(core_dir: &std::path::Path, actions_dir: &std::path::Path) -> Value {
+    json!({
+        "name": "github",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "jsonl",
+        "namespaces": {
+            "actions": {
+                "description": "GitHub Actions workflow data"
+            },
+            "core": {
+                "description": "Common GitHub tables"
+            }
+        },
+        "tables": [
+            {
+                "name": "issues",
+                "description": "GitHub issues",
+                "source": {
+                    "location": dir_url(core_dir),
+                    "glob": "**/*.jsonl"
+                },
+                "columns": [
+                    { "name": "number", "type": "Int64" },
+                    { "name": "title", "type": "Utf8" }
+                ]
+            },
+            {
+                "name": "repo_action_runs",
+                "namespace": "actions",
+                "description": "GitHub Actions workflow runs",
+                "source": {
+                    "location": dir_url(actions_dir),
+                    "glob": "**/*.jsonl"
+                },
+                "columns": [
+                    { "name": "run_id", "type": "Int64" },
+                    { "name": "issue_number", "type": "Int64" },
+                    { "name": "status", "type": "Utf8" }
+                ]
+            }
+        ]
+    })
+}
+
 fn build_catalog_sources() -> (TempDir, Vec<QuerySource>) {
     let temp = TempDir::new().expect("temp dir");
     let alpha_dir = temp.path().join("alpha");
@@ -223,6 +268,202 @@ async fn join_across_two_sources() {
             json!({"name": "Grace", "team_name": "Infra"}),
             json!({"name": "Linus", "team_name": "Platform"}),
         ]
+    );
+}
+
+#[tokio::test]
+async fn namespaces_support_core_shorthand_explicit_core_and_non_core_queries() {
+    let temp = TempDir::new().expect("temp dir");
+    let core_dir = temp.path().join("github-core");
+    let actions_dir = temp.path().join("github-actions");
+    write_jsonl_file(
+        &core_dir,
+        "issues.jsonl",
+        &[json!({"number": 1, "title": "first issue"})],
+    );
+    write_jsonl_file(
+        &actions_dir,
+        "runs.jsonl",
+        &[json!({"run_id": 101, "issue_number": 1, "status": "completed"})],
+    );
+    let sources = vec![build_source(namespaced_manifest(&core_dir, &actions_dir))];
+
+    let shorthand_rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &sources,
+            &TestRuntime,
+            "SELECT number, title FROM github.issues",
+        )
+        .await
+        .expect("core shorthand query should succeed"),
+    );
+    let explicit_core_rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &sources,
+            &TestRuntime,
+            "SELECT number, title FROM github.core.issues",
+        )
+        .await
+        .expect("explicit core query should succeed"),
+    );
+    let namespaced_rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &sources,
+            &TestRuntime,
+            "SELECT run_id, status FROM github.actions.repo_action_runs",
+        )
+        .await
+        .expect("non-core namespace query should succeed"),
+    );
+
+    assert_eq!(
+        shorthand_rows,
+        vec![json!({"number": 1, "title": "first issue"})]
+    );
+    assert_eq!(explicit_core_rows, shorthand_rows);
+    assert_eq!(
+        namespaced_rows,
+        vec![json!({"run_id": 101, "status": "completed"})]
+    );
+}
+
+#[tokio::test]
+async fn coral_namespaces_lists_namespace_metadata() {
+    let temp = TempDir::new().expect("temp dir");
+    let core_dir = temp.path().join("github-core");
+    let actions_dir = temp.path().join("github-actions");
+    write_jsonl_file(
+        &core_dir,
+        "issues.jsonl",
+        &[json!({"number": 1, "title": "first issue"})],
+    );
+    write_jsonl_file(
+        &actions_dir,
+        "runs.jsonl",
+        &[json!({"run_id": 101, "issue_number": 1, "status": "completed"})],
+    );
+    let sources = vec![build_source(namespaced_manifest(&core_dir, &actions_dir))];
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &sources,
+            &TestRuntime,
+            "SELECT namespace, description, table_count \
+             FROM coral.namespaces WHERE schema_name = 'github' ORDER BY namespace",
+        )
+        .await
+        .expect("namespace metadata query should succeed"),
+    );
+
+    assert_eq!(
+        rows,
+        vec![
+            json!({"namespace": "actions", "description": "GitHub Actions workflow data", "table_count": 1}),
+            json!({"namespace": "core", "description": "Common GitHub tables", "table_count": 1}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn coral_tables_and_columns_include_namespace_without_alias_duplicates() {
+    let temp = TempDir::new().expect("temp dir");
+    let core_dir = temp.path().join("github-core");
+    let actions_dir = temp.path().join("github-actions");
+    write_jsonl_file(
+        &core_dir,
+        "issues.jsonl",
+        &[json!({"number": 1, "title": "first issue"})],
+    );
+    write_jsonl_file(
+        &actions_dir,
+        "runs.jsonl",
+        &[json!({"run_id": 101, "issue_number": 1, "status": "completed"})],
+    );
+    let sources = vec![build_source(namespaced_manifest(&core_dir, &actions_dir))];
+
+    let table_rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &sources,
+            &TestRuntime,
+            "SELECT schema_name, namespace, table_name \
+             FROM coral.tables \
+             WHERE schema_name = 'github' \
+             ORDER BY namespace, table_name",
+        )
+        .await
+        .expect("table metadata query should succeed"),
+    );
+    assert_eq!(
+        table_rows,
+        vec![
+            json!({"schema_name": "github", "namespace": "actions", "table_name": "repo_action_runs"}),
+            json!({"schema_name": "github", "namespace": "core", "table_name": "issues"}),
+        ]
+    );
+
+    let column_rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &sources,
+            &TestRuntime,
+            "SELECT namespace, table_name, column_name \
+             FROM coral.columns \
+             WHERE schema_name = 'github' AND table_name = 'repo_action_runs' \
+             ORDER BY ordinal_position",
+        )
+        .await
+        .expect("column metadata query should succeed"),
+    );
+    assert_eq!(
+        column_rows,
+        vec![
+            json!({"namespace": "actions", "table_name": "repo_action_runs", "column_name": "run_id"}),
+            json!({"namespace": "actions", "table_name": "repo_action_runs", "column_name": "issue_number"}),
+            json!({"namespace": "actions", "table_name": "repo_action_runs", "column_name": "status"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cross_source_joins_support_namespaced_tables() {
+    let temp = TempDir::new().expect("temp dir");
+    let github_core_dir = temp.path().join("github-core");
+    let github_actions_dir = temp.path().join("github-actions");
+    let beta_dir = temp.path().join("beta");
+    write_jsonl_file(
+        &github_core_dir,
+        "issues.jsonl",
+        &[json!({"number": 1, "title": "first issue"})],
+    );
+    write_jsonl_file(
+        &github_actions_dir,
+        "runs.jsonl",
+        &[json!({"run_id": 101, "issue_number": 1, "status": "completed"})],
+    );
+    write_jsonl_file(
+        &beta_dir,
+        "teams.jsonl",
+        &[json!({"id": 101, "team_name": "CI"})],
+    );
+    let sources = vec![
+        build_source(namespaced_manifest(&github_core_dir, &github_actions_dir)),
+        build_source(teams_manifest(&beta_dir)),
+    ];
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &sources,
+            &TestRuntime,
+            "SELECT r.status, t.team_name \
+             FROM github.actions.repo_action_runs r \
+             JOIN beta.teams t ON r.run_id = t.id",
+        )
+        .await
+        .expect("cross-source join should succeed"),
+    );
+
+    assert_eq!(
+        rows,
+        vec![json!({"status": "completed", "team_name": "CI"})]
     );
 }
 

@@ -108,6 +108,7 @@ mod tests {
     use coral_engine::{
         ColumnInfo, CoreError, QueryTestResult as EngineQueryTestResult, TableInfo,
     };
+    use coral_spec::DEFAULT_NAMESPACE;
 
     #[test]
     fn query_status_maps_app_errors() {
@@ -154,6 +155,7 @@ mod tests {
         let workspace_name = WorkspaceName::parse("default").expect("workspace");
         let table = TableInfo {
             schema_name: "demo".to_string(),
+            namespace: DEFAULT_NAMESPACE.to_string(),
             table_name: "users".to_string(),
             description: "User records".to_string(),
             columns: vec![ColumnInfo {

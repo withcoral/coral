@@ -24,12 +24,14 @@ pub(crate) const SYSTEM_SCHEMA: &str = "coral";
 /// Returns a `DataFusionError` if the catalog is missing or the metadata
 /// tables cannot be materialized.
 pub(crate) fn register(ctx: &SessionContext, active_sources: &[RegisteredSource]) -> Result<()> {
+    let namespaces_table = build_namespaces_table(active_sources)?;
     let tables_table = build_tables_table(active_sources)?;
     let columns_table = build_columns_table(active_sources)?;
     let inputs_table = build_inputs_table(active_sources)?;
 
     let mut meta_tables: HashMap<String, Arc<dyn datafusion::datasource::TableProvider>> =
         HashMap::new();
+    meta_tables.insert("namespaces".to_string(), Arc::new(namespaces_table));
     meta_tables.insert("tables".to_string(), Arc::new(tables_table));
     meta_tables.insert("columns".to_string(), Arc::new(columns_table));
     meta_tables.insert("inputs".to_string(), Arc::new(inputs_table));
@@ -53,6 +55,7 @@ pub(crate) fn collect_tables(active_sources: &[RegisteredSource]) -> Vec<TableIn
         .flat_map(|source| {
             source.tables.iter().map(move |table| TableInfo {
                 schema_name: source.schema_name.clone(),
+                namespace: table.namespace.clone(),
                 table_name: table.table_name.clone(),
                 description: table.description.clone(),
                 columns: table
@@ -69,14 +72,93 @@ pub(crate) fn collect_tables(active_sources: &[RegisteredSource]) -> Vec<TableIn
         })
         .collect::<Vec<_>>();
     tables.sort_by(|left, right| {
-        (&left.schema_name, &left.table_name).cmp(&(&right.schema_name, &right.table_name))
+        (&left.schema_name, &left.namespace, &left.table_name).cmp(&(
+            &right.schema_name,
+            &right.namespace,
+            &right.table_name,
+        ))
     });
     tables
+}
+
+fn build_namespaces_table(active_sources: &[RegisteredSource]) -> Result<MemTable> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("schema_name", DataType::Utf8, false),
+        Field::new("namespace", DataType::Utf8, false),
+        Field::new("description", DataType::Utf8, false),
+        Field::new("table_count", DataType::Int32, false),
+    ]));
+
+    let mut rows = active_sources
+        .iter()
+        .flat_map(|source| {
+            source.namespaces.iter().map(move |namespace| {
+                let table_count = source
+                    .tables
+                    .iter()
+                    .filter(|table| table.namespace == namespace.name)
+                    .count();
+                CatalogNamespace {
+                    schema_name: source.schema_name.clone(),
+                    namespace: namespace.name.clone(),
+                    description: namespace.description.clone(),
+                    table_count,
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+
+    rows.sort_by(|left, right| {
+        (&left.schema_name, &left.namespace).cmp(&(&right.schema_name, &right.namespace))
+    });
+
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(
+                rows.iter()
+                    .map(|row| Some(row.schema_name.as_str()))
+                    .collect::<StringArray>(),
+            ),
+            Arc::new(
+                rows.iter()
+                    .map(|row| Some(row.namespace.as_str()))
+                    .collect::<StringArray>(),
+            ),
+            Arc::new(
+                rows.iter()
+                    .map(|row| Some(row.description.as_str()))
+                    .collect::<StringArray>(),
+            ),
+            Arc::new(
+                rows.iter()
+                    .map(|row| table_count_i32(row.table_count))
+                    .collect::<Result<Int32Array>>()?,
+            ),
+        ],
+    )
+    .map_err(|error| DataFusionError::ArrowError(Box::new(error), None))?;
+
+    MemTable::try_new(schema, vec![vec![batch]])
+}
+
+struct CatalogNamespace {
+    schema_name: String,
+    namespace: String,
+    description: String,
+    table_count: usize,
+}
+
+fn table_count_i32(count: usize) -> Result<Option<i32>> {
+    i32::try_from(count).map(Some).map_err(|_| {
+        DataFusionError::Execution(format!("namespace table_count {count} exceeds i32"))
+    })
 }
 
 fn build_tables_table(active_sources: &[RegisteredSource]) -> Result<MemTable> {
     let schema = Arc::new(Schema::new(vec![
         Field::new("schema_name", DataType::Utf8, false),
+        Field::new("namespace", DataType::Utf8, false),
         Field::new("table_name", DataType::Utf8, false),
         Field::new("description", DataType::Utf8, false),
         Field::new("guide", DataType::Utf8, false),
@@ -86,30 +168,56 @@ fn build_tables_table(active_sources: &[RegisteredSource]) -> Result<MemTable> {
     let mut rows = active_sources
         .iter()
         .flat_map(|source| {
-            source.tables.iter().map(move |table| {
-                (
-                    source.schema_name.as_str(),
-                    table.table_name.as_str(),
-                    table.description.as_str(),
-                    table.guide.as_str(),
-                    table.required_filters.join(","),
-                )
+            source.tables.iter().map(move |table| CatalogTable {
+                schema_name: source.schema_name.clone(),
+                namespace: table.namespace.clone(),
+                table_name: table.table_name.clone(),
+                description: table.description.clone(),
+                guide: table.guide.clone(),
+                required_filters: table.required_filters.join(","),
             })
         })
         .collect::<Vec<_>>();
 
-    rows.sort_by(|left, right| (left.0, left.1).cmp(&(right.0, right.1)));
+    rows.sort_by(|left, right| {
+        (&left.schema_name, &left.namespace, &left.table_name).cmp(&(
+            &right.schema_name,
+            &right.namespace,
+            &right.table_name,
+        ))
+    });
 
     let batch = RecordBatch::try_new(
         schema.clone(),
         vec![
-            Arc::new(rows.iter().map(|row| Some(row.0)).collect::<StringArray>()),
-            Arc::new(rows.iter().map(|row| Some(row.1)).collect::<StringArray>()),
-            Arc::new(rows.iter().map(|row| Some(row.2)).collect::<StringArray>()),
-            Arc::new(rows.iter().map(|row| Some(row.3)).collect::<StringArray>()),
             Arc::new(
                 rows.iter()
-                    .map(|row| Some(row.4.as_str()))
+                    .map(|row| Some(row.schema_name.as_str()))
+                    .collect::<StringArray>(),
+            ),
+            Arc::new(
+                rows.iter()
+                    .map(|row| Some(row.namespace.as_str()))
+                    .collect::<StringArray>(),
+            ),
+            Arc::new(
+                rows.iter()
+                    .map(|row| Some(row.table_name.as_str()))
+                    .collect::<StringArray>(),
+            ),
+            Arc::new(
+                rows.iter()
+                    .map(|row| Some(row.description.as_str()))
+                    .collect::<StringArray>(),
+            ),
+            Arc::new(
+                rows.iter()
+                    .map(|row| Some(row.guide.as_str()))
+                    .collect::<StringArray>(),
+            ),
+            Arc::new(
+                rows.iter()
+                    .map(|row| Some(row.required_filters.as_str()))
                     .collect::<StringArray>(),
             ),
         ],
@@ -117,6 +225,15 @@ fn build_tables_table(active_sources: &[RegisteredSource]) -> Result<MemTable> {
     .map_err(|error| DataFusionError::ArrowError(Box::new(error), None))?;
 
     MemTable::try_new(schema, vec![vec![batch]])
+}
+
+struct CatalogTable {
+    schema_name: String,
+    namespace: String,
+    table_name: String,
+    description: String,
+    guide: String,
+    required_filters: String,
 }
 
 struct CatalogInput {
@@ -224,6 +341,7 @@ fn build_inputs_table(active_sources: &[RegisteredSource]) -> Result<MemTable> {
 
 struct CatalogColumn {
     schema_name: String,
+    namespace: String,
     table_name: String,
     column_name: String,
     data_type: String,
@@ -240,6 +358,7 @@ struct CatalogColumn {
 fn build_columns_table(active_sources: &[RegisteredSource]) -> Result<MemTable> {
     let schema = Arc::new(Schema::new(vec![
         Field::new("schema_name", DataType::Utf8, false),
+        Field::new("namespace", DataType::Utf8, false),
         Field::new("table_name", DataType::Utf8, false),
         Field::new("ordinal_position", DataType::Int32, false),
         Field::new("column_name", DataType::Utf8, false),
@@ -259,6 +378,7 @@ fn build_columns_table(active_sources: &[RegisteredSource]) -> Result<MemTable> 
                     .enumerate()
                     .map(move |(position, column)| CatalogColumn {
                         schema_name: source.schema_name.clone(),
+                        namespace: table.namespace.clone(),
                         table_name: table.table_name.clone(),
                         column_name: column.name.clone(),
                         data_type: column.data_type.clone(),
@@ -272,11 +392,18 @@ fn build_columns_table(active_sources: &[RegisteredSource]) -> Result<MemTable> 
         .collect::<Vec<_>>();
 
     rows.sort_by(|left, right| {
-        (&left.schema_name, &left.table_name, left.ordinal_position).cmp(&(
-            &right.schema_name,
-            &right.table_name,
-            right.ordinal_position,
-        ))
+        (
+            &left.schema_name,
+            &left.namespace,
+            &left.table_name,
+            left.ordinal_position,
+        )
+            .cmp(&(
+                &right.schema_name,
+                &right.namespace,
+                &right.table_name,
+                right.ordinal_position,
+            ))
     });
 
     let batch = RecordBatch::try_new(
@@ -285,6 +412,11 @@ fn build_columns_table(active_sources: &[RegisteredSource]) -> Result<MemTable> 
             Arc::new(
                 rows.iter()
                     .map(|row| Some(row.schema_name.as_str()))
+                    .collect::<StringArray>(),
+            ),
+            Arc::new(
+                rows.iter()
+                    .map(|row| Some(row.namespace.as_str()))
                     .collect::<StringArray>(),
             ),
             Arc::new(

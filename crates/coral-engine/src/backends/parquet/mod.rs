@@ -29,9 +29,9 @@ use parquet::file::reader::{ChunkReader, Length};
 
 use crate::backends::{
     BackendCompileRequest, BackendRegistration, CompiledBackendSource, RegisteredSource,
-    RegisteredTable, build_registered_inputs, build_registered_table, partition_columns_to_arrow,
-    registered_columns_from_schema, registered_columns_from_specs, required_filter_names,
-    schema_from_columns,
+    RegisteredTable, build_registered_inputs, build_registered_namespaces, build_registered_table,
+    partition_columns_to_arrow, registered_columns_from_schema, registered_columns_from_specs,
+    required_filter_names, schema_from_columns,
 };
 use coral_spec::backends::file::{FileTableSpec, ParquetSourceManifest};
 
@@ -249,6 +249,7 @@ impl CompiledBackendSource for ParquetCompiledSource {
             tables,
             source: RegisteredSource {
                 schema_name: self.manifest.common.name.clone(),
+                namespaces: build_registered_namespaces(&self.manifest.common.namespaces),
                 tables: table_infos,
                 inputs,
             },

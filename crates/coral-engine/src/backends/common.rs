@@ -7,7 +7,8 @@ use crate::{QueryRuntimeContext, RequestAuthenticator};
 use async_trait::async_trait;
 use coral_spec::backends::file::PartitionColumnSpec;
 use coral_spec::{
-    ColumnSpec, FilterSpec, ManifestDataType, ManifestInputKind, ManifestInputSpec, TableCommon,
+    ColumnSpec, FilterSpec, ManifestDataType, ManifestInputKind, ManifestInputSpec, NamespaceSpec,
+    TableCommon,
 };
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use datafusion::datasource::TableProvider;
@@ -27,6 +28,7 @@ pub(crate) struct RegisteredColumn {
 #[derive(Debug, Clone)]
 pub(crate) struct RegisteredTable {
     pub(crate) table_name: String,
+    pub(crate) namespace: String,
     pub(crate) description: String,
     pub(crate) guide: String,
     pub(crate) columns: Vec<RegisteredColumn>,
@@ -50,6 +52,7 @@ pub(crate) struct RegisteredInput {
 #[derive(Debug, Clone)]
 pub(crate) struct RegisteredSource {
     pub(crate) schema_name: String,
+    pub(crate) namespaces: Vec<RegisteredNamespace>,
     pub(crate) tables: Vec<RegisteredTable>,
     pub(crate) inputs: Vec<RegisteredInput>,
 }
@@ -57,6 +60,12 @@ pub(crate) struct RegisteredSource {
 pub(crate) struct BackendRegistration {
     pub(crate) tables: HashMap<String, Arc<dyn TableProvider>>,
     pub(crate) source: RegisteredSource,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RegisteredNamespace {
+    pub(crate) name: String,
+    pub(crate) description: String,
 }
 
 pub(crate) struct BackendCompileRequest<'a> {
@@ -176,11 +185,24 @@ pub(crate) fn build_registered_table(
 ) -> RegisteredTable {
     RegisteredTable {
         table_name: common.name.clone(),
+        namespace: common.namespace.clone(),
         description: common.description.clone(),
         guide: common.guide.clone(),
         columns,
         required_filters,
     }
+}
+
+pub(crate) fn build_registered_namespaces(
+    namespaces: &[NamespaceSpec],
+) -> Vec<RegisteredNamespace> {
+    namespaces
+        .iter()
+        .map(|namespace| RegisteredNamespace {
+            name: namespace.name.clone(),
+            description: namespace.description.clone(),
+        })
+        .collect()
 }
 
 pub(crate) fn manifest_data_type_to_arrow(data_type: ManifestDataType) -> DataType {

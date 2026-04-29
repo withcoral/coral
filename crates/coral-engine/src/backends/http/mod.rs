@@ -12,7 +12,7 @@ use datafusion::prelude::SessionContext;
 use crate::RequestAuthenticator;
 use crate::backends::{
     BackendCompileRequest, BackendRegistration, CompiledBackendSource, RegisteredSource,
-    RegisteredTable, build_registered_inputs, build_registered_table,
+    RegisteredTable, build_registered_inputs, build_registered_namespaces, build_registered_table,
     registered_columns_from_specs, required_filter_names,
 };
 use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec};
@@ -102,6 +102,7 @@ impl CompiledBackendSource for HttpCompiledSource {
             tables,
             source: RegisteredSource {
                 schema_name: self.manifest.common.name.clone(),
+                namespaces: build_registered_namespaces(&self.manifest.common.namespaces),
                 tables: table_infos,
                 inputs,
             },

@@ -9,6 +9,10 @@ use reqwest::header::{HeaderName, HeaderValue};
 use crate::{CoreError, contracts::QuerySource};
 
 /// One source's table providers keyed by manifest table name.
+///
+/// Table names are unique per source in source-spec v1, even when tables live
+/// in different namespaces. The runtime attaches namespace metadata after
+/// decorators run, before inserting providers into `DataFusion`.
 pub type SourceTables = HashMap<String, Arc<dyn TableProvider>>;
 
 /// Neutral bundle of optional engine extensions for one runtime build.

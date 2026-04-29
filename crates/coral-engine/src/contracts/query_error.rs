@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 
+use coral_spec::DEFAULT_NAMESPACE;
 use datafusion::common::utils::quote_identifier;
 
 use super::catalog::TableInfo;
@@ -403,11 +404,20 @@ fn table_not_found_hint(
 /// names stay one quoted identifier; case-preserving names are quoted
 /// only when they would otherwise round-trip wrong).
 fn format_schema_table(info: &TableInfo) -> String {
-    format!(
-        "{}.{}",
-        quote_dotted_identifier(&info.schema_name),
-        quote_identifier(&info.table_name)
-    )
+    if info.namespace == DEFAULT_NAMESPACE {
+        format!(
+            "{}.{}",
+            quote_dotted_identifier(&info.schema_name),
+            quote_identifier(&info.table_name)
+        )
+    } else {
+        format!(
+            "{}.{}.{}",
+            quote_dotted_identifier(&info.schema_name),
+            quote_identifier(&info.namespace),
+            quote_identifier(&info.table_name)
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -527,11 +537,14 @@ fn quote_dotted_identifier(ident: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use coral_spec::DEFAULT_NAMESPACE;
+
     use super::*;
 
     fn table(schema: &str, name: &str) -> TableInfo {
         TableInfo {
             schema_name: schema.to_string(),
+            namespace: DEFAULT_NAMESPACE.to_string(),
             table_name: name.to_string(),
             description: String::new(),
             columns: vec![],
