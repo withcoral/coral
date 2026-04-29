@@ -98,10 +98,10 @@ JOIN github.pulls p ON p.html_url = a.url
 WHERE p.owner = 'withcoral' AND p.repo = 'coral'
 ```
 
-**Authentication.** On `coral source add`, Coral prompts for the variables and
-secrets declared by the source spec (API tokens, workspace IDs, file paths,
-and so on). These are stored locally and used only at query time; credentials
-never leave your machine.
+**Authentication.** On `coral source add`, Coral reads variables and secrets
+from matching environment variables, or prompts for them when you pass
+`--interactive`. These values are stored locally and used only at query time;
+credentials never leave your machine.
 
 **Built for production.** Coral is a read layer by design. For read tasks, SQL
 outperforms per-source tool calls when complexity outgrows a single API call:
@@ -154,14 +154,16 @@ This lists the bundled sources available in your build.
 
 ### 3. Add a source
 
-For example, add GitHub:
+For example, add GitHub interactively:
 
 ```bash
-coral source add github
+coral source add --interactive github
 ```
 
-Coral prompts for any required variables or secrets. Once connected, the
-source's data is available as SQL tables. To update a source's credentials
+Coral prompts for any required variables or secrets. For scripted setup, omit
+`--interactive` and provide each input as an environment variable of the same
+name, such as `GITHUB_TOKEN=ghp_... coral source add github`. Once connected,
+the source's data is available as SQL tables. To update a source's credentials
 later, run the same command again.
 
 ### 4. Query your data
