@@ -7,6 +7,7 @@ on:
 jobs:
   notify-discord:
     runs-on: ubuntu-latest
+    environment: release
     steps:
       - name: Post to Discord
         env:
