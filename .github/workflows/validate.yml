@@ -103,8 +103,8 @@ jobs:
       - name: Run zizmor
         uses: zizmorcore/zizmor-action@71321a20a9ded102f6e9ce5718a2fcec2c4f70d8 # v0.5.2
         with:
-          annotations: true
-          advanced-security: false
+          annotations: ${{ github.event_name == 'pull_request' }}
+          advanced-security: ${{ github.event_name != 'pull_request' }}
           min-severity: low
 
   source-lint:
