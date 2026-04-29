@@ -540,6 +540,50 @@ async fn api_returns_500() {
 }
 
 #[tokio::test]
+async fn api_returns_500_with_bad_link_header_still_reports_api_failure() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .respond_with(
+            ResponseTemplate::new(500)
+                .append_header(
+                    "Link",
+                    "<https://example.invalid/api/users?page=2>; rel=\"next\"",
+                )
+                .set_body_string("boom"),
+        )
+        .expect(3)
+        .mount(&server)
+        .await;
+
+    let mut manifest = base_http_manifest("http_500_bad_link", &server.uri());
+    manifest["tables"][0]["pagination"] = json!({
+        "mode": "link_header"
+    });
+    let source = build_source(manifest);
+
+    let error = CoralQuery::execute_sql(
+        &[source],
+        test_runtime(),
+        "SELECT * FROM http_500_bad_link.users",
+    )
+    .await
+    .expect_err("500 should fail as an API request error");
+
+    assert_eq!(error.status_code(), StatusCode::Unavailable);
+    match &error {
+        CoreError::QueryFailure(sqe) => {
+            assert_eq!(sqe.reason(), "PROVIDER_REQUEST_FAILED");
+            assert!(sqe.retryable());
+            assert_eq!(sqe.metadata().get("http_status").unwrap(), "500");
+            assert_eq!(sqe.metadata().get("source").unwrap(), "http_500_bad_link");
+            assert_eq!(sqe.metadata().get("provider_failure_stage"), None);
+        }
+        other => panic!("unexpected 500 error variant: {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn api_returns_401() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
@@ -751,10 +795,73 @@ async fn api_returns_malformed_json() {
     .await
     .expect_err("malformed json should fail");
 
-    assert_eq!(error.status_code(), StatusCode::Internal);
+    assert_eq!(error.status_code(), StatusCode::FailedPrecondition);
     match error {
-        CoreError::Internal(detail) => assert!(detail.contains("response decoding failed")),
+        CoreError::QueryFailure(sqe) => {
+            assert_eq!(sqe.reason(), "PROVIDER_REQUEST_FAILED");
+            assert_eq!(sqe.summary(), "Source response decode failed");
+            assert!(!sqe.retryable());
+            assert_eq!(sqe.metadata().get("source").unwrap(), "http_bad_json");
+            assert_eq!(sqe.metadata().get("table").unwrap(), "users");
+            assert_eq!(
+                sqe.metadata().get("provider_failure_stage").unwrap(),
+                "decode"
+            );
+            assert!(sqe.detail().contains("response decoding failed"));
+        }
         other => panic!("unexpected malformed-json error variant: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn pagination_link_header_cross_origin_surfaces_structured_error() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .append_header(
+                    "Link",
+                    "<https://example.invalid/api/users?page=2>; rel=\"next\"",
+                )
+                .set_body_json(json!({ "data": [] })),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut manifest = base_http_manifest("http_bad_pagination", &server.uri());
+    manifest["tables"][0]["pagination"] = json!({
+        "mode": "link_header"
+    });
+    let source = build_source(manifest);
+
+    let error = CoralQuery::execute_sql(
+        &[source],
+        test_runtime(),
+        "SELECT * FROM http_bad_pagination.users",
+    )
+    .await
+    .expect_err("cross-origin pagination link should fail");
+
+    assert_eq!(error.status_code(), StatusCode::FailedPrecondition);
+    match error {
+        CoreError::QueryFailure(sqe) => {
+            assert_eq!(sqe.reason(), "PROVIDER_REQUEST_FAILED");
+            assert_eq!(sqe.summary(), "Source pagination failed");
+            assert!(!sqe.retryable());
+            assert_eq!(sqe.metadata().get("source").unwrap(), "http_bad_pagination");
+            assert_eq!(sqe.metadata().get("table").unwrap(), "users");
+            assert_eq!(
+                sqe.metadata().get("provider_failure_stage").unwrap(),
+                "pagination"
+            );
+            assert!(
+                sqe.detail()
+                    .contains("pagination next link must stay on origin")
+            );
+        }
+        other => panic!("unexpected pagination error variant: {other:?}"),
     }
 }
 

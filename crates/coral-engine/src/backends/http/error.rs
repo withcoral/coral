@@ -37,6 +37,34 @@ pub(crate) enum ProviderQueryError {
         detail: String,
     },
 
+    #[error("{source_schema}.{table} request failed: {detail}")]
+    Request {
+        source_schema: String,
+        table: String,
+        method: Option<String>,
+        url: Option<String>,
+        detail: String,
+        timed_out: bool,
+    },
+
+    #[error("{source_schema}.{table} response decode failed: {detail}")]
+    Decode {
+        source_schema: String,
+        table: String,
+        method: Option<String>,
+        url: Option<String>,
+        detail: String,
+    },
+
+    #[error("{source_schema}.{table} pagination failed: {detail}")]
+    Pagination {
+        source_schema: String,
+        table: String,
+        method: Option<String>,
+        url: Option<String>,
+        detail: String,
+    },
+
     #[error("{source_schema}.{table}: {detail}")]
     RateLimited {
         source_schema: String,
@@ -92,6 +120,47 @@ impl ProviderQueryError {
                 url.as_deref(),
                 detail,
             ),
+            Self::Request {
+                source_schema,
+                table,
+                method,
+                url,
+                detail,
+                timed_out,
+            } => provider_stage_failure_to_structured(provider_request_failure(
+                source_schema,
+                table,
+                method.as_deref(),
+                url.as_deref(),
+                detail,
+                *timed_out,
+            )),
+            Self::Decode {
+                source_schema,
+                table,
+                method,
+                url,
+                detail,
+            } => provider_stage_failure_to_structured(provider_decode_failure(
+                source_schema,
+                table,
+                method.as_deref(),
+                url.as_deref(),
+                detail,
+            )),
+            Self::Pagination {
+                source_schema,
+                table,
+                method,
+                url,
+                detail,
+            } => provider_stage_failure_to_structured(provider_pagination_failure(
+                source_schema,
+                table,
+                method.as_deref(),
+                url.as_deref(),
+                detail,
+            )),
             Self::RateLimited {
                 source_schema,
                 table,
@@ -220,6 +289,131 @@ fn http_request_to_structured(
     )
 }
 
+struct ProviderStageFailure<'a> {
+    source: &'a str,
+    table: &'a str,
+    stage: &'a str,
+    summary: &'a str,
+    detail: &'a str,
+    method: Option<&'a str>,
+    url: Option<&'a str>,
+    hint: Option<String>,
+    retryable: bool,
+    status: StatusCode,
+    timed_out: bool,
+}
+
+fn provider_request_failure<'a>(
+    source: &'a str,
+    table: &'a str,
+    method: Option<&'a str>,
+    url: Option<&'a str>,
+    detail: &'a str,
+    timed_out: bool,
+) -> ProviderStageFailure<'a> {
+    ProviderStageFailure {
+        source,
+        table,
+        stage: "request",
+        summary: if timed_out {
+            "Source request timed out"
+        } else {
+            "Source request failed"
+        },
+        detail,
+        method,
+        url,
+        hint: Some(
+            "The upstream API could not be reached. Check connectivity and retry.".to_string(),
+        ),
+        retryable: true,
+        status: StatusCode::Unavailable,
+        timed_out,
+    }
+}
+
+fn provider_decode_failure<'a>(
+    source: &'a str,
+    table: &'a str,
+    method: Option<&'a str>,
+    url: Option<&'a str>,
+    detail: &'a str,
+) -> ProviderStageFailure<'a> {
+    ProviderStageFailure {
+        source,
+        table,
+        stage: "decode",
+        summary: "Source response decode failed",
+        detail,
+        method,
+        url,
+        hint: Some(
+            "The upstream API returned a response that does not match the source manifest."
+                .to_string(),
+        ),
+        retryable: false,
+        status: StatusCode::FailedPrecondition,
+        timed_out: false,
+    }
+}
+
+fn provider_pagination_failure<'a>(
+    source: &'a str,
+    table: &'a str,
+    method: Option<&'a str>,
+    url: Option<&'a str>,
+    detail: &'a str,
+) -> ProviderStageFailure<'a> {
+    ProviderStageFailure {
+        source,
+        table,
+        stage: "pagination",
+        summary: "Source pagination failed",
+        detail,
+        method,
+        url,
+        hint: Some(
+            "The source pagination configuration or upstream pagination link is invalid."
+                .to_string(),
+        ),
+        retryable: false,
+        status: StatusCode::FailedPrecondition,
+        timed_out: false,
+    }
+}
+
+fn provider_stage_failure_to_structured(failure: ProviderStageFailure<'_>) -> StructuredQueryError {
+    let sanitized_url = failure.url.and_then(sanitize_request_url);
+    let detail = enrich_provider_detail(failure.detail, failure.method, sanitized_url.as_deref());
+
+    let mut metadata = HashMap::new();
+    metadata.insert("source".to_string(), failure.source.to_string());
+    metadata.insert("table".to_string(), failure.table.to_string());
+    metadata.insert(
+        "provider_failure_stage".to_string(),
+        failure.stage.to_string(),
+    );
+    if failure.timed_out {
+        metadata.insert("timeout".to_string(), "true".to_string());
+    }
+    if let Some(method) = failure.method {
+        metadata.insert("http_method".to_string(), method.to_string());
+    }
+    if let Some(url) = &sanitized_url {
+        metadata.insert("url".to_string(), url.clone());
+    }
+
+    StructuredQueryError::new(
+        "PROVIDER_REQUEST_FAILED",
+        failure.summary,
+        detail,
+        failure.hint,
+        failure.retryable,
+        failure.status,
+        metadata,
+    )
+}
+
 /// Returns `true` when the given status belongs to the 5xx server-error class.
 fn is_server_error(status: u16) -> bool {
     HttpStatus::from_u16(status).is_ok_and(|code| code.is_server_error())
@@ -329,6 +523,68 @@ mod tests {
         .to_structured();
         assert_eq!(error.reason(), "INVALID_QUERY_SHAPE");
         assert_eq!(error.status(), StatusCode::InvalidArgument);
+    }
+
+    #[test]
+    fn request_timeout_maps_to_unavailable_provider_failure() {
+        let error = ProviderQueryError::Request {
+            source_schema: "github".to_string(),
+            table: "issues".to_string(),
+            method: Some("GET".to_string()),
+            url: Some("https://api.github.com/issues?token=secret".to_string()),
+            detail: "source API request timed out after 30s".to_string(),
+            timed_out: true,
+        }
+        .to_structured();
+        assert_eq!(error.reason(), "PROVIDER_REQUEST_FAILED");
+        assert_eq!(error.summary(), "Source request timed out");
+        assert_eq!(error.status(), StatusCode::Unavailable);
+        assert!(error.retryable());
+        assert_eq!(
+            error.metadata().get("provider_failure_stage").unwrap(),
+            "request"
+        );
+        assert_eq!(error.metadata().get("timeout").unwrap(), "true");
+        assert!(!error.detail().contains("token=secret"));
+    }
+
+    #[test]
+    fn decode_failure_maps_to_failed_precondition_provider_failure() {
+        let error = ProviderQueryError::Decode {
+            source_schema: "github".to_string(),
+            table: "issues".to_string(),
+            method: Some("GET".to_string()),
+            url: Some("https://api.github.com/issues".to_string()),
+            detail: "expected value at line 1 column 1".to_string(),
+        }
+        .to_structured();
+        assert_eq!(error.reason(), "PROVIDER_REQUEST_FAILED");
+        assert_eq!(error.summary(), "Source response decode failed");
+        assert_eq!(error.status(), StatusCode::FailedPrecondition);
+        assert!(!error.retryable());
+        assert_eq!(
+            error.metadata().get("provider_failure_stage").unwrap(),
+            "decode"
+        );
+    }
+
+    #[test]
+    fn pagination_failure_maps_to_failed_precondition_provider_failure() {
+        let error = ProviderQueryError::Pagination {
+            source_schema: "github".to_string(),
+            table: "issues".to_string(),
+            method: Some("GET".to_string()),
+            url: Some("https://api.github.com/issues".to_string()),
+            detail: "invalid pagination Link header item".to_string(),
+        }
+        .to_structured();
+        assert_eq!(error.reason(), "PROVIDER_REQUEST_FAILED");
+        assert_eq!(error.summary(), "Source pagination failed");
+        assert_eq!(error.status(), StatusCode::FailedPrecondition);
+        assert_eq!(
+            error.metadata().get("provider_failure_stage").unwrap(),
+            "pagination"
+        );
     }
 
     #[test]

@@ -154,7 +154,15 @@ impl HttpSourceClient {
         let pagination = table
             .pagination
             .validated(&self.source_schema, table.name())
-            .map_err(|error| DataFusionError::Execution(error.to_string()))?;
+            .map_err(|error| {
+                provider_error(ProviderQueryError::Pagination {
+                    source_schema: self.source_schema.clone(),
+                    table: table.name().to_string(),
+                    method: None,
+                    url: None,
+                    detail: error.to_string(),
+                })
+            })?;
         let page_size = resolve_page_size(pagination.page_size.as_ref(), sql_limit);
 
         let filter_keys: HashSet<String> = filters.keys().cloned().collect();
@@ -175,11 +183,13 @@ impl HttpSourceClient {
         loop {
             page_count += 1;
             if page_count > max_pages {
-                return Err(DataFusionError::Execution(format!(
-                    "source '{}' table '{}' exceeded pagination max_pages={max_pages}",
-                    self.source_schema,
-                    table.name()
-                )));
+                return Err(provider_error(ProviderQueryError::Pagination {
+                    source_schema: self.source_schema.clone(),
+                    table: table.name().to_string(),
+                    method: None,
+                    url: None,
+                    detail: format!("exceeded pagination max_pages={max_pages}"),
+                }));
             }
 
             let base_url = render_template(
@@ -225,7 +235,10 @@ impl HttpSourceClient {
                     &pagination,
                     &state,
                     page_size,
-                )?;
+                )
+                .map_err(|error| {
+                    pagination_error(&self.source_schema, table.name(), None, Some(&url), &error)
+                })?;
 
                 let mut body = build_request_body(
                     active_request,
@@ -240,7 +253,10 @@ impl HttpSourceClient {
                     &pagination,
                     &state,
                     page_size,
-                )?;
+                )
+                .map_err(|error| {
+                    pagination_error(&self.source_schema, table.name(), None, Some(&url), &error)
+                })?;
                 (query_pairs, body)
             };
 
@@ -338,7 +354,15 @@ impl HttpSourceClient {
                     }
                     let step = offset
                         .resolve_step(page_size, &self.source_schema, table.name())
-                        .map_err(|error| DataFusionError::Execution(error.to_string()))?;
+                        .map_err(|error| {
+                            provider_error(ProviderQueryError::Pagination {
+                                source_schema: self.source_schema.clone(),
+                                table: table.name().to_string(),
+                                method: None,
+                                url: None,
+                                detail: error.to_string(),
+                            })
+                        })?;
                     state.offset = state.offset.saturating_add(step);
                 }
                 ValidatedPaginationMode::LinkHeader | ValidatedPaginationMode::Auto => {
@@ -622,7 +646,8 @@ async fn execute_request(
 
         let response = http.execute(built).await.map_err(|error| {
             request_error(
-                "request",
+                source_schema,
+                table_name,
                 method_label,
                 &logged_url,
                 request_timeout,
@@ -665,9 +690,6 @@ async fn execute_request(
             return Ok(None);
         }
 
-        let next_url =
-            extract_next_link_url(response.headers(), base_url, link_header_require_results)?;
-
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
@@ -683,12 +705,25 @@ async fn execute_request(
             )));
         }
 
+        let next_url =
+            extract_next_link_url(response.headers(), base_url, link_header_require_results)
+                .map_err(|error| {
+                    pagination_error(
+                        source_schema,
+                        table_name,
+                        Some(method_label),
+                        Some(&logged_url),
+                        &error,
+                    )
+                })?;
+
         let payload = decode_response_body(
             response,
             response_format,
+            source_schema,
+            table_name,
             method_label,
             &logged_url,
-            request_timeout,
         )
         .await?;
         return Ok(Some((payload, next_url)));
@@ -698,29 +733,18 @@ async fn execute_request(
 async fn decode_response_body(
     response: reqwest::Response,
     format: ResponseBodyFormat,
+    source_schema: &str,
+    table_name: &str,
     method_label: &str,
     logged_url: &str,
-    request_timeout: Duration,
 ) -> Result<Value> {
     match format {
         ResponseBodyFormat::Json => response.json().await.map_err(|error| {
-            request_error(
-                "response decoding",
-                method_label,
-                logged_url,
-                request_timeout,
-                &error,
-            )
+            decode_error(source_schema, table_name, method_label, logged_url, &error)
         }),
         ResponseBodyFormat::JsonEachRow => {
             let text = response.text().await.map_err(|error| {
-                request_error(
-                    "response decoding",
-                    method_label,
-                    logged_url,
-                    request_timeout,
-                    &error,
-                )
+                decode_error(source_schema, table_name, method_label, logged_url, &error)
             })?;
             let mut rows = Vec::new();
             for (index, line) in text.lines().enumerate() {
@@ -729,11 +753,16 @@ async fn decode_response_body(
                     continue;
                 }
                 let row: Value = serde_json::from_str(trimmed).map_err(|error| {
-                    DataFusionError::Execution(format!(
-                        "response decoding failed for {method_label} {logged_url}: \
-                         json_each_row line {} is not valid JSON: {error}",
-                        index + 1
-                    ))
+                    provider_error(ProviderQueryError::Decode {
+                        source_schema: source_schema.to_string(),
+                        table: table_name.to_string(),
+                        method: Some(method_label.to_string()),
+                        url: Some(logged_url.to_string()),
+                        detail: format!(
+                            "source API response decoding failed: json_each_row line {} is not valid JSON: {error}",
+                            index + 1
+                        ),
+                    })
                 })?;
                 rows.push(row);
             }
@@ -743,22 +772,73 @@ async fn decode_response_body(
 }
 
 fn request_error(
-    stage: &str,
+    source_schema: &str,
+    table_name: &str,
     method_label: &str,
     logged_url: &str,
     request_timeout: Duration,
     error: &reqwest::Error,
 ) -> DataFusionError {
-    if error.is_timeout() {
-        return DataFusionError::Execution(format!(
-            "source API {stage} timed out for {method_label} {logged_url} after {}s",
+    let detail = if error.is_timeout() {
+        format!(
+            "source API request timed out for {method_label} {logged_url} after {}s",
             request_timeout.as_secs_f64()
-        ));
-    }
+        )
+    } else {
+        format!("source API request failed for {method_label} {logged_url}: {error}")
+    };
 
-    DataFusionError::Execution(format!(
-        "source API {stage} failed for {method_label} {logged_url}: {error}"
-    ))
+    provider_error(ProviderQueryError::Request {
+        source_schema: source_schema.to_string(),
+        table: table_name.to_string(),
+        method: Some(method_label.to_string()),
+        url: Some(logged_url.to_string()),
+        detail,
+        timed_out: error.is_timeout(),
+    })
+}
+
+fn decode_error(
+    source_schema: &str,
+    table_name: &str,
+    method_label: &str,
+    logged_url: &str,
+    error: &reqwest::Error,
+) -> DataFusionError {
+    provider_error(ProviderQueryError::Decode {
+        source_schema: source_schema.to_string(),
+        table: table_name.to_string(),
+        method: Some(method_label.to_string()),
+        url: Some(logged_url.to_string()),
+        detail: format!("source API response decoding failed: {error}"),
+    })
+}
+
+fn pagination_error(
+    source_schema: &str,
+    table_name: &str,
+    method_label: Option<&str>,
+    logged_url: Option<&str>,
+    error: &DataFusionError,
+) -> DataFusionError {
+    provider_error(ProviderQueryError::Pagination {
+        source_schema: source_schema.to_string(),
+        table: table_name.to_string(),
+        method: method_label.map(ToOwned::to_owned),
+        url: logged_url.map(ToOwned::to_owned),
+        detail: datafusion_detail(error),
+    })
+}
+
+fn provider_error(error: ProviderQueryError) -> DataFusionError {
+    DataFusionError::External(Box::new(error))
+}
+
+fn datafusion_detail(error: &DataFusionError) -> String {
+    match error {
+        DataFusionError::Execution(detail) => detail.clone(),
+        other => other.to_string(),
+    }
 }
 
 fn http_method_label(method: HttpMethod) -> &'static str {
@@ -1176,6 +1256,7 @@ mod tests {
     use std::collections::{BTreeMap, HashMap};
     use std::time::Duration;
 
+    use datafusion::error::DataFusionError;
     use reqwest::header::{HeaderMap, HeaderValue};
     use serde_json::json;
     use tokio::net::TcpListener;
@@ -1186,6 +1267,7 @@ mod tests {
         apply_pagination_query_pairs, execute_request, extract_next_link_url, extract_rows,
         join_url, normalize_base_url, page_is_exhausted, resolve_value_source, set_path_value,
     };
+    use crate::backends::http::ProviderQueryError;
     use coral_spec::PaginationMode;
     use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec, RateLimitSpec};
     use coral_spec::{
@@ -2089,7 +2171,29 @@ mod tests {
         .await
         .expect_err("hung upstream should time out");
 
-        assert!(error.to_string().contains("timed out"));
+        match error {
+            DataFusionError::External(inner) => {
+                let provider_error = inner
+                    .downcast_ref::<ProviderQueryError>()
+                    .expect("timeout should be a provider query error");
+                match provider_error {
+                    ProviderQueryError::Request {
+                        source_schema,
+                        table,
+                        detail,
+                        timed_out,
+                        ..
+                    } => {
+                        assert_eq!(source_schema, "demo");
+                        assert_eq!(table, "items");
+                        assert!(*timed_out);
+                        assert!(detail.contains("timed out"));
+                    }
+                    other => panic!("expected request provider error, got {other:?}"),
+                }
+            }
+            other => panic!("expected external provider error, got {other:?}"),
+        }
         task.abort();
     }
 

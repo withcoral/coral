@@ -386,7 +386,7 @@ async fn validate_source_skipped_registration_returns_unary_failed_precondition(
 }
 
 #[tokio::test]
-async fn execute_sql_with_unreachable_api_returns_internal_error() {
+async fn execute_sql_with_unreachable_api_returns_unavailable_error() {
     let harness = GrpcHarness::new().await;
     let failing_http = FailingHttpFixture::new().await;
     harness
@@ -401,7 +401,7 @@ async fn execute_sql_with_unreachable_api_returns_internal_error() {
         }))
         .await
         .expect_err("unreachable source query should fail");
-    assert_eq!(error.code(), tonic::Code::Internal);
+    assert_eq!(error.code(), tonic::Code::Unavailable);
 }
 
 #[tokio::test]
