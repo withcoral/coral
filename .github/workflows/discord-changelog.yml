@@ -25,8 +25,14 @@ jobs:
             BODY="${BODY:0:$MAX_LEN}..."
           fi
 
+          TITLE_MAX_LEN=256
+          TITLE="🪸 ${RELEASE_NAME:-$TAG_NAME}"
+          if [ ${#TITLE} -gt $TITLE_MAX_LEN ]; then
+            TITLE="${TITLE:0:$((TITLE_MAX_LEN - 3))}..."
+          fi
+
           jq -n \
-            --arg title "🪸 ${RELEASE_NAME:-$TAG_NAME}" \
+            --arg title "$TITLE" \
             --arg desc "$BODY" \
             --arg url "$RELEASE_URL" \
             '{
