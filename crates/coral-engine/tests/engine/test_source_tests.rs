@@ -4,7 +4,7 @@ use coral_engine::CoralQuery;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
-use crate::harness::{TestRuntime, build_source, dir_url, users_rows, write_jsonl_file};
+use crate::harness::{build_source, dir_url, test_runtime, users_rows, write_jsonl_file};
 
 fn jsonl_manifest(name: &str, dir: &Path, glob: &str) -> Value {
     json!({
@@ -38,7 +38,7 @@ async fn test_source_lists_registered_tables() {
         "**/*.jsonl",
     ));
 
-    let tables = CoralQuery::test_source(&source, &TestRuntime)
+    let tables = CoralQuery::test_source(&source, test_runtime())
         .await
         .expect("test_source should succeed");
 
@@ -57,7 +57,7 @@ async fn test_source_missing_directory_returns_error() {
         "**/*.jsonl",
     ));
 
-    let error = CoralQuery::test_source(&source, &TestRuntime)
+    let error = CoralQuery::test_source(&source, test_runtime())
         .await
         .expect_err("test_source should fail for missing directories");
 
@@ -85,7 +85,7 @@ async fn validate_source_fails_when_source_never_registers() {
     ));
     let queries = vec!["SELECT * FROM jsonl_test_missing.users".to_string()];
 
-    let error = CoralQuery::validate_source(&source, &TestRuntime, &queries)
+    let error = CoralQuery::validate_source(&source, test_runtime(), &queries)
         .await
         .expect_err("validate_source should fail when the source never registers");
 
@@ -113,7 +113,7 @@ async fn validate_source_reports_passing_and_failing_queries() {
         "SELECT * FROM jsonl_test_source.missing".to_string(),
     ];
 
-    let report = CoralQuery::validate_source(&source, &TestRuntime, &queries)
+    let report = CoralQuery::validate_source(&source, test_runtime(), &queries)
         .await
         .expect("validate_source should succeed");
 
@@ -149,7 +149,7 @@ async fn validate_source_maps_non_read_only_queries_to_stable_error() {
     ));
     let queries = vec!["SET datafusion.execution.batch_size = 1".to_string()];
 
-    let report = CoralQuery::validate_source(&source, &TestRuntime, &queries)
+    let report = CoralQuery::validate_source(&source, test_runtime(), &queries)
         .await
         .expect("validate_source should succeed");
 

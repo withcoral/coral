@@ -2,11 +2,10 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::sync::Mutex;
 
 use coral_engine::{
-    CoralQuery, CoreError, EngineExtensions, QueryExecution, QueryRuntimeContext,
-    QueryRuntimeProvider, QuerySource, SourceValidationReport, TableInfo,
+    CoralQuery, CoreError, QueryExecution, QueryRuntimeConfig, QueryRuntimeContext, QuerySource,
+    SourceValidationReport, TableInfo,
 };
 use coral_spec::{ManifestInputKind, ManifestInputSpec, parse_source_manifest_yaml};
 
@@ -62,8 +61,8 @@ impl QueryManager {
         let sources = self
             .load_query_sources(workspace_name)
             .map_err(QueryManagerError::App)?;
-        let runtime = self.runtime_provider(&sources);
-        CoralQuery::list_tables(&sources, &runtime, None)
+        let runtime = self.runtime_config(&sources);
+        CoralQuery::list_tables(&sources, runtime, None)
             .await
             .map_err(QueryManagerError::Core)
     }
@@ -76,8 +75,8 @@ impl QueryManager {
         let sources = self
             .load_query_sources(workspace_name)
             .map_err(QueryManagerError::App)?;
-        let runtime = self.runtime_provider(&sources);
-        CoralQuery::execute_sql(&sources, &runtime, sql)
+        let runtime = self.runtime_config(&sources);
+        CoralQuery::execute_sql(&sources, runtime, sql)
             .await
             .map_err(QueryManagerError::Core)
     }
@@ -94,10 +93,10 @@ impl QueryManager {
         let (query_source, version) = self
             .load_query_source(workspace_name, &source)
             .map_err(QueryManagerError::App)?;
-        let runtime = self.runtime_provider(std::slice::from_ref(&query_source));
+        let runtime = self.runtime_config(std::slice::from_ref(&query_source));
         let report = CoralQuery::validate_source(
             &query_source,
-            &runtime,
+            runtime,
             query_source.source_spec().test_queries(),
         )
         .await
@@ -169,33 +168,11 @@ impl QueryManager {
         ))
     }
 
-    fn runtime_provider(&self, sources: &[QuerySource]) -> RuntimeProvider {
-        RuntimeProvider {
-            runtime_context: self.runtime_context.clone(),
-            engine_extensions: Mutex::new(Some(engine_extensions_for_providers(
-                &self.engine_extensions_providers,
-                sources,
-            ))),
-        }
-    }
-}
-
-struct RuntimeProvider {
-    runtime_context: QueryRuntimeContext,
-    engine_extensions: Mutex<Option<EngineExtensions>>,
-}
-
-impl QueryRuntimeProvider for RuntimeProvider {
-    fn runtime_context(&self) -> QueryRuntimeContext {
-        self.runtime_context.clone()
-    }
-
-    fn engine_extensions(&self) -> EngineExtensions {
-        self.engine_extensions
-            .lock()
-            .expect("engine extensions mutex poisoned")
-            .take()
-            .unwrap_or_default()
+    fn runtime_config(&self, selected_sources: &[QuerySource]) -> QueryRuntimeConfig {
+        QueryRuntimeConfig::new(
+            self.runtime_context.clone(),
+            engine_extensions_for_providers(&self.engine_extensions_providers, selected_sources),
+        )
     }
 }
 

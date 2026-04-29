@@ -5,8 +5,8 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 
 use crate::harness::{
-    TestRuntime, assert_row_count, assert_table_not_found, build_source, dir_url,
-    execution_to_rows, users_rows, write_jsonl_file,
+    assert_row_count, assert_table_not_found, build_source, dir_url, execution_to_rows,
+    test_runtime, users_rows, write_jsonl_file,
 };
 
 fn jsonl_manifest(name: &str, dir: &Path, glob: &str) -> Value {
@@ -39,7 +39,7 @@ async fn select_all_from_jsonl_source() {
 
     let execution = CoralQuery::execute_sql(
         &[source],
-        &TestRuntime,
+        test_runtime(),
         "SELECT id, name, email FROM jsonl_users.users ORDER BY id",
     )
     .await
@@ -62,7 +62,7 @@ async fn select_with_column_projection() {
     let rows = execution_to_rows(
         &CoralQuery::execute_sql(
             &[source],
-            &TestRuntime,
+            test_runtime(),
             "SELECT name FROM jsonl_projection.users ORDER BY name DESC",
         )
         .await
@@ -88,7 +88,7 @@ async fn select_with_where_filter() {
     let rows = execution_to_rows(
         &CoralQuery::execute_sql(
             &[source],
-            &TestRuntime,
+            test_runtime(),
             "SELECT id, name FROM jsonl_filter.users WHERE id = 2",
         )
         .await
@@ -107,7 +107,7 @@ async fn select_with_order_by_and_limit() {
     let rows = execution_to_rows(
         &CoralQuery::execute_sql(
             &[source],
-            &TestRuntime,
+            test_runtime(),
             "SELECT name FROM jsonl_order.users ORDER BY name DESC LIMIT 2",
         )
         .await
@@ -129,7 +129,7 @@ async fn select_count_aggregation() {
     let rows = execution_to_rows(
         &CoralQuery::execute_sql(
             &[source],
-            &TestRuntime,
+            test_runtime(),
             "SELECT COUNT(*) AS n FROM jsonl_count.users",
         )
         .await
@@ -149,7 +149,7 @@ async fn glob_matches_multiple_files() {
 
     let execution = CoralQuery::execute_sql(
         &[source],
-        &TestRuntime,
+        test_runtime(),
         "SELECT id, name, email FROM jsonl_glob.users ORDER BY id",
     )
     .await
@@ -164,10 +164,13 @@ async fn missing_file_returns_error() {
     let missing_dir = temp.path().join("missing");
     let source = build_source(jsonl_manifest("jsonl_missing", &missing_dir, "**/*.jsonl"));
 
-    let error =
-        CoralQuery::execute_sql(&[source], &TestRuntime, "SELECT * FROM jsonl_missing.users")
-            .await
-            .expect_err("missing jsonl source should fail");
+    let error = CoralQuery::execute_sql(
+        &[source],
+        test_runtime(),
+        "SELECT * FROM jsonl_missing.users",
+    )
+    .await
+    .expect_err("missing jsonl source should fail");
 
     assert_table_not_found(error, "jsonl_missing", "users");
 }

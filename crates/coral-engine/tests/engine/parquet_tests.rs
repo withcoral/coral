@@ -5,8 +5,8 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 
 use crate::harness::{
-    TestRuntime, assert_table_not_found, build_source, build_source_with_secrets, dir_url,
-    execution_to_rows, users_batch, write_parquet_file,
+    assert_table_not_found, build_source, build_source_with_secrets, dir_url, execution_to_rows,
+    test_runtime, users_batch, write_parquet_file,
 };
 
 fn parquet_manifest(name: &str, dir: &Path) -> Value {
@@ -36,7 +36,7 @@ async fn select_all_from_parquet_source() {
     let rows = execution_to_rows(
         &CoralQuery::execute_sql(
             &[source],
-            &TestRuntime,
+            test_runtime(),
             "SELECT id, name, email FROM parquet_users.users ORDER BY id",
         )
         .await
@@ -62,7 +62,7 @@ async fn select_with_column_projection() {
     let rows = execution_to_rows(
         &CoralQuery::execute_sql(
             &[source],
-            &TestRuntime,
+            test_runtime(),
             "SELECT email FROM parquet_projection.users ORDER BY email",
         )
         .await
@@ -88,7 +88,7 @@ async fn select_with_where_filter() {
     let rows = execution_to_rows(
         &CoralQuery::execute_sql(
             &[source],
-            &TestRuntime,
+            test_runtime(),
             "SELECT id, name FROM parquet_filter.users WHERE id = 3",
         )
         .await
@@ -107,7 +107,7 @@ async fn select_with_order_by_and_limit() {
     let rows = execution_to_rows(
         &CoralQuery::execute_sql(
             &[source],
-            &TestRuntime,
+            test_runtime(),
             "SELECT id, name FROM parquet_order.users ORDER BY name DESC LIMIT 2",
         )
         .await
@@ -132,7 +132,7 @@ async fn select_count_aggregation() {
     let rows = execution_to_rows(
         &CoralQuery::execute_sql(
             &[source],
-            &TestRuntime,
+            test_runtime(),
             "SELECT COUNT(*) AS n FROM parquet_count.users",
         )
         .await
@@ -179,7 +179,7 @@ async fn parquet_manifest_with_declared_secret_inputs_registers_and_queries() {
     let schemata = execution_to_rows(
         &CoralQuery::execute_sql(
             &[source],
-            &TestRuntime,
+            test_runtime(),
             "SELECT schema_name FROM information_schema.schemata \
              WHERE schema_name = 'warehouse'",
         )
@@ -214,7 +214,7 @@ async fn parquet_manifest_with_declared_secret_inputs_registers_and_queries() {
     let rows = execution_to_rows(
         &CoralQuery::execute_sql(
             &[source2],
-            &TestRuntime,
+            test_runtime(),
             "SELECT id FROM warehouse2.users ORDER BY id",
         )
         .await
@@ -234,7 +234,7 @@ async fn missing_file_returns_error() {
 
     let error = CoralQuery::execute_sql(
         &[source],
-        &TestRuntime,
+        test_runtime(),
         "SELECT * FROM parquet_missing.users",
     )
     .await

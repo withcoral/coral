@@ -10,7 +10,7 @@ use coral_engine::{CoralQuery, CoreError, StatusCode, StructuredQueryError};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
-use crate::harness::{TestRuntime, build_source, dir_url, write_jsonl_file};
+use crate::harness::{build_source, dir_url, test_runtime, write_jsonl_file};
 
 fn manifest(name: &str, table: &str, dir: &Path) -> Value {
     json!({
@@ -52,7 +52,7 @@ async fn unknown_table_in_installed_schema_suggests_case_preserved_quoted_name()
 
     // DataFusion lowercases the unquoted `Master` to `master`, which won't
     // match our case-preserving `Master` table in the catalog.
-    let error = CoralQuery::execute_sql(&[source], &TestRuntime, "SELECT * FROM hockey.Master")
+    let error = CoralQuery::execute_sql(&[source], test_runtime(), "SELECT * FROM hockey.Master")
         .await
         .expect_err("unknown table should fail");
 
@@ -76,7 +76,7 @@ async fn unknown_table_missing_schema_points_at_coral_tables_catalog() {
     );
     let source = build_source(manifest("hockey", "games", temp.path()));
 
-    let error = CoralQuery::execute_sql(&[source], &TestRuntime, "SELECT * FROM nba.games")
+    let error = CoralQuery::execute_sql(&[source], test_runtime(), "SELECT * FROM nba.games")
         .await
         .expect_err("unknown schema should fail");
 
@@ -103,7 +103,7 @@ async fn unknown_table_similar_name_levenshtein_suggests_closest() {
     );
     let source = build_source(manifest("hockey", "games", temp.path()));
 
-    let error = CoralQuery::execute_sql(&[source], &TestRuntime, "SELECT * FROM hockey.gamers")
+    let error = CoralQuery::execute_sql(&[source], test_runtime(), "SELECT * FROM hockey.gamers")
         .await
         .expect_err("unknown table should fail");
 
@@ -130,7 +130,7 @@ async fn unqualified_table_suggests_schema_qualified_name() {
     );
     let source = build_source(manifest("stripe", "accounts", temp.path()));
 
-    let error = CoralQuery::execute_sql(&[source], &TestRuntime, "SELECT * FROM account")
+    let error = CoralQuery::execute_sql(&[source], test_runtime(), "SELECT * FROM account")
         .await
         .expect_err("unqualified unknown table should fail");
 
@@ -169,7 +169,7 @@ async fn unknown_column_on_aliased_join_suggests_case_preserved_quoted_name() {
 
     let error = CoralQuery::execute_sql(
         &[source],
-        &TestRuntime,
+        test_runtime(),
         "SELECT g.id FROM hockey.master AS g \
          JOIN hockey.master AS m ON g.playerID = m.playerID",
     )
@@ -202,7 +202,7 @@ async fn unknown_column_levenshtein_suggests_closest_field() {
 
     // `id2` doesn't exist and isn't a case-twin of anything; the closest
     // candidate by Levenshtein is `id`.
-    let error = CoralQuery::execute_sql(&[source], &TestRuntime, "SELECT id2 FROM hockey.master")
+    let error = CoralQuery::execute_sql(&[source], test_runtime(), "SELECT id2 FROM hockey.master")
         .await
         .expect_err("unknown field should fail");
 

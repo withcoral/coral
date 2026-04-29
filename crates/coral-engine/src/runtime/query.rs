@@ -13,9 +13,7 @@ use crate::runtime::pattern_validator::register_pattern_validator;
 use crate::runtime::registry::{
     CompiledQuerySource, SourceRegistrationCandidate, SourceRegistrationFailure, register_sources,
 };
-use crate::{
-    CoreError, EngineExtensions, QueryExecution, QueryRuntimeProvider, QuerySource, TableInfo,
-};
+use crate::{CoreError, QueryExecution, QueryRuntimeConfig, QuerySource, TableInfo};
 
 pub(crate) struct QueryRuntimeAdapter {
     ctx: Arc<SessionContext>,
@@ -25,7 +23,7 @@ pub(crate) struct QueryRuntimeAdapter {
 
 pub(crate) async fn build_runtime(
     sources: &[QuerySource],
-    runtime: &dyn QueryRuntimeProvider,
+    runtime: QueryRuntimeConfig,
 ) -> Result<QueryRuntimeAdapter, CoreError> {
     let session_config = SessionConfig::new().with_information_schema(true);
     let runtime_env = Arc::new(
@@ -39,15 +37,13 @@ pub(crate) async fn build_runtime(
     register_pattern_validator(&mut ctx).map_err(|err| datafusion_to_core(&err, &[]))?;
     let ctx = Arc::new(ctx);
 
-    let runtime_context = runtime.runtime_context();
-    let mut build_options: EngineExtensions = runtime.engine_extensions();
+    let QueryRuntimeConfig {
+        context: runtime_context,
+        mut extensions,
+    } = runtime;
     let mut source_candidates = Vec::new();
     for source in sources {
-        match compile_query_source(
-            source,
-            &runtime_context,
-            &build_options.request_authenticators,
-        ) {
+        match compile_query_source(source, &runtime_context, &extensions.request_authenticators) {
             Ok(compiled) => {
                 source_candidates.push(SourceRegistrationCandidate::Compiled(
                     CompiledQuerySource {
@@ -65,7 +61,7 @@ pub(crate) async fn build_runtime(
     let registration = register_sources(
         &ctx,
         source_candidates,
-        build_options.source_decorators.as_mut_slice(),
+        extensions.source_decorators.as_mut_slice(),
     )
     .await?;
     catalog::register(&ctx, &registration.active_sources)

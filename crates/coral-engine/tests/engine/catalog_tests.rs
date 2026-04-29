@@ -5,8 +5,8 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 
 use crate::harness::{
-    TestRuntime, assert_table_not_found, build_source, build_source_with_inputs, dir_url,
-    execution_to_rows, write_jsonl_file,
+    assert_table_not_found, build_source, build_source_with_inputs, dir_url, execution_to_rows,
+    test_runtime, write_jsonl_file,
 };
 
 fn users_manifest(dir: &std::path::Path) -> Value {
@@ -88,7 +88,7 @@ async fn coral_tables_lists_installed_sources() {
     let rows = execution_to_rows(
         &CoralQuery::execute_sql(
             &sources,
-            &TestRuntime,
+            test_runtime(),
             "SELECT schema_name, table_name FROM coral.tables ORDER BY schema_name, table_name",
         )
         .await
@@ -111,7 +111,7 @@ async fn coral_columns_returns_metadata() {
     let rows = execution_to_rows(
         &CoralQuery::execute_sql(
             &sources,
-            &TestRuntime,
+            test_runtime(),
             "SELECT column_name, data_type, is_virtual, is_required_filter \
              FROM coral.columns WHERE schema_name = 'alpha' AND table_name = 'users' \
              ORDER BY ordinal_position",
@@ -137,7 +137,7 @@ async fn coral_columns_default_row_order_matches_ordinal_position() {
     let rows = execution_to_rows(
         &CoralQuery::execute_sql(
             &sources,
-            &TestRuntime,
+            test_runtime(),
             "SELECT column_name, ordinal_position \
              FROM coral.columns WHERE schema_name = 'alpha' AND table_name = 'users'",
         )
@@ -159,13 +159,13 @@ async fn coral_columns_default_row_order_matches_ordinal_position() {
 async fn list_tables_matches_catalog() {
     let (_temp, sources) = build_catalog_sources();
 
-    let listed = CoralQuery::list_tables(&sources, &TestRuntime, None)
+    let listed = CoralQuery::list_tables(&sources, test_runtime(), None)
         .await
         .expect("list_tables should succeed");
     let catalog_rows = execution_to_rows(
         &CoralQuery::execute_sql(
             &sources,
-            &TestRuntime,
+            test_runtime(),
             "SELECT schema_name, table_name, description FROM coral.tables ORDER BY schema_name, table_name",
         )
         .await
@@ -192,7 +192,7 @@ async fn list_tables_matches_catalog() {
 
 #[tokio::test]
 async fn list_tables_empty_when_no_sources() {
-    let tables = CoralQuery::list_tables(&[], &TestRuntime, None)
+    let tables = CoralQuery::list_tables(&[], test_runtime(), None)
         .await
         .expect("empty source list should succeed");
 
@@ -206,7 +206,7 @@ async fn join_across_two_sources() {
     let rows = execution_to_rows(
         &CoralQuery::execute_sql(
             &sources,
-            &TestRuntime,
+            test_runtime(),
             "SELECT u.name, t.team_name \
              FROM alpha.users u \
              JOIN beta.teams t ON u.team_id = t.id \
@@ -230,7 +230,7 @@ async fn join_across_two_sources() {
 async fn query_nonexistent_schema_returns_error() {
     let (_temp, sources) = build_catalog_sources();
 
-    let error = CoralQuery::execute_sql(&sources, &TestRuntime, "SELECT * FROM missing.users")
+    let error = CoralQuery::execute_sql(&sources, test_runtime(), "SELECT * FROM missing.users")
         .await
         .expect_err("missing schema should fail");
 
@@ -320,7 +320,7 @@ async fn coral_inputs_exposes_variable_values_and_defaults() {
     let rows = execution_to_rows(
         &CoralQuery::execute_sql(
             &sources,
-            &TestRuntime,
+            test_runtime(),
             "SELECT key, kind, value, default_value, hint, required, is_set \
              FROM coral.inputs WHERE schema_name = 'demo' ORDER BY key",
         )
@@ -367,7 +367,7 @@ async fn coral_inputs_marks_unset_secrets_and_missing_variables() {
     let rows = execution_to_rows(
         &CoralQuery::execute_sql(
             &sources,
-            &TestRuntime,
+            test_runtime(),
             "SELECT key, value, is_set FROM coral.inputs \
              WHERE schema_name = 'demo' ORDER BY key",
         )
@@ -393,7 +393,7 @@ async fn coral_inputs_never_exposes_secret_values() {
     let rows = execution_to_rows(
         &CoralQuery::execute_sql(
             &sources,
-            &TestRuntime,
+            test_runtime(),
             "SELECT value FROM coral.inputs WHERE kind = 'secret'",
         )
         .await
@@ -419,7 +419,7 @@ async fn coral_inputs_reports_explicit_empty_variable_as_set() {
     let rows = execution_to_rows(
         &CoralQuery::execute_sql(
             &sources,
-            &TestRuntime,
+            test_runtime(),
             "SELECT key, value, is_set FROM coral.inputs \
              WHERE schema_name = 'demo' AND key = 'ACCOUNT_ID'",
         )
@@ -439,7 +439,7 @@ async fn coral_inputs_empty_for_sources_without_declared_inputs() {
     let (_temp, sources) = build_catalog_sources();
 
     let rows = execution_to_rows(
-        &CoralQuery::execute_sql(&sources, &TestRuntime, "SELECT * FROM coral.inputs")
+        &CoralQuery::execute_sql(&sources, test_runtime(), "SELECT * FROM coral.inputs")
             .await
             .expect("catalog query should succeed"),
     );
