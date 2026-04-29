@@ -207,6 +207,18 @@ tables:
         virtual: true
         description: Metric name filter.
         expr: {kind: from_filter, key: metric_name}
+      - name: start_time
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: CloudWatch start time filter.
+        expr: {kind: from_filter, key: start_time}
+      - name: end_time
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: CloudWatch end time filter.
+        expr: {kind: from_filter, key: end_time}
       - name: timestamp
         type: Timestamp
         nullable: true
