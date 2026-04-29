@@ -856,8 +856,11 @@ fn build_request_body(
             Ok(Some(RequestBody::Json(root)))
         }
         BodySpec::Text { content } => {
-            let value = resolve_value_source(content, filters, &state_values, resolved_inputs)?
-                .unwrap_or(Value::Null);
+            let Some(value) =
+                resolve_value_source(content, filters, &state_values, resolved_inputs)?
+            else {
+                return Ok(None);
+            };
             Ok(Some(RequestBody::Text(value_to_string(&value))))
         }
     }

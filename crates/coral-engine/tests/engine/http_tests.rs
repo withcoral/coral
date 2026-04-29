@@ -882,6 +882,57 @@ async fn text_body_respects_explicit_content_type_override() {
 }
 
 #[tokio::test]
+async fn text_body_omits_absent_optional_content() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/sql"))
+        .and(body_string(""))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": [] })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let manifest = json!({
+        "name": "http_optional_text_body",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": &server.uri(),
+        "tables": [{
+            "name": "items",
+            "description": "items via optional SQL",
+            "filters": [{ "name": "sql" }],
+            "request": {
+                "method": "POST",
+                "path": "/sql",
+                "body": {
+                    "format": "text",
+                    "content": { "from": "filter", "key": "sql" }
+                }
+            },
+            "response": {
+                "rows_path": ["data"]
+            },
+            "columns": [{ "name": "id", "type": "Int64" }]
+        }]
+    });
+
+    let source = build_source(manifest);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            &TestRuntime,
+            "SELECT COUNT(*) AS n FROM http_optional_text_body.items",
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(rows, vec![json!({"n": 0})]);
+}
+
+#[tokio::test]
 async fn json_each_row_response_parses_newline_delimited_rows() {
     let server = MockServer::start().await;
     let body = "{\"id\":1,\"name\":\"Ada\"}\n\n\
@@ -938,9 +989,11 @@ async fn legacy_json_body_array_form_still_works() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/graphql"))
+        .and(body_json(json!({ "query": "{ users { id name email } }" })))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "data": { "users": users_rows() }
         })))
+        .expect(1)
         .mount(&server)
         .await;
 
