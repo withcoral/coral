@@ -1,5 +1,5 @@
 name: github
-version: 1.1.5
+version: 2.0.0
 dsl_version: 3
 backend: http
 description: >-
@@ -39,10 +39,70 @@ request_headers:
   - name: X-GitHub-Api-Version
     from: literal
     value: "2022-11-28"
+namespaces:
+  actions:
+    description: GitHub Actions workflows, runs, jobs, artifacts, runners, caches, secrets, and variables.
+  apps:
+    description: GitHub Apps, installations, and app-scoped repositories.
+  billing:
+    description: Billing, metering, storage, seats, and usage endpoints.
+  checks:
+    description: Check runs, check suites, commit statuses, and required status checks.
+  classroom:
+    description: GitHub Classroom classrooms, assignments, accepted assignments, and grades.
+  code:
+    description: Repository code, commits, refs, branches, blobs, trees, contents, and languages.
+  codespaces:
+    description: Codespaces, devcontainers, codespace machines, exports, and codespace secrets.
+  copilot:
+    description: Copilot seats, metrics, coding agent permissions, and content exclusion controls.
+  deployments:
+    description: Deployments, deployment statuses, environments, deployment protection, and deployment branches.
+  enterprise:
+    description: Enterprise administration, teams, and enterprise-level settings.
+  gists:
+    description: Gists, gist comments, gist commits, forks, public gists, and starred gists.
+  issues:
+    description: Issues, issue comments, events, labels, milestones, assignees, sub-issues, and timelines.
+  licenses:
+    description: Licenses, codes of conduct, gitignore templates, and other public metadata catalogs.
+  marketplace:
+    description: Marketplace listings, plans, purchases, accounts, and subscriptions.
+  metrics:
+    description: Repository traffic, contributor stats, commit activity, insights, and route statistics.
+  migrations:
+    description: Repository, organization, and user migration/import endpoints.
+  notifications:
+    description: Notifications, notification threads, and notification subscriptions.
+  org:
+    description: Organizations, teams, members, roles, migrations, invitations, and organization-scoped settings.
+  packages:
+    description: Packages, package versions, package conflicts, and package registry settings.
+  pages:
+    description: GitHub Pages sites, builds, deployments, and Pages health checks.
+  projects:
+    description: Projects, project fields, project items, issue fields, and issue types.
+  pulls:
+    description: Pull requests, pull request reviews, review comments, requested reviewers, and changed files.
+  releases:
+    description: Releases, release assets, release tags, latest releases, and immutable release settings.
+  repos:
+    description: Repository metadata, collaborators, forks, hooks, invitations, permissions, topics, and repository settings.
+  rules:
+    description: Branch protection, rulesets, restrictions, required reviews, required signatures, and interaction limits.
+  search:
+    description: GitHub search endpoints across code, commits, issues, labels, repositories, topics, and users.
+  security:
+    description: Code scanning, secret scanning, Dependabot, security advisories, SBOMs, SARIF uploads, and attestations.
+  users:
+    description: Users, authenticated-user settings, emails, keys, followers, starred repositories, and social accounts.
+  webhooks:
+    description: Repository, organization, and app webhook configuration and delivery endpoints.
 test_queries:
   - SELECT * FROM github.meta LIMIT 1
 tables:
   - name: accepted_assignments
+    namespace: classroom
     description: List accepted assignments for an assignment
     guide: >
       Requires assignment_id. Use LIMIT for spot checks; large result sets paginate quickly.
@@ -431,6 +491,7 @@ tables:
           path:
             - submitted
   - name: access
+    namespace: actions
     description: Get the level of access for workflows outside of the repository
     guide: >
       Requires owner and repo. Keep queries repository-scoped; fan out across repos client-side when you
@@ -480,6 +541,7 @@ tables:
           kind: from_filter
           key: repo
   - name: accounts
+    namespace: marketplace
     description: List accounts for a plan
     guide: >
       Requires plan_id. Most useful optional filters: sort, direction. Use LIMIT for spot checks; large
@@ -832,6 +894,7 @@ tables:
           path:
             - url
   - name: activity
+    namespace: metrics
     description: List repository activities
     guide: >
       Requires owner and repo. Most useful optional filters: ref, time_period, actor. Keep queries
@@ -1185,6 +1248,7 @@ tables:
           path:
             - timestamp
   - name: activity_list_repos_starred_by_user
+    namespace: metrics
     description: List repositories starred by a user
     guide: >
       Requires username. Most useful optional filters: sort, direction. Use LIMIT for spot checks; large
@@ -1252,6 +1316,7 @@ tables:
           kind: from_filter
           key: username
   - name: activity_list_repos_watched_by_user
+    namespace: metrics
     description: List repositories watched by a user
     guide: >
       Requires username. Use LIMIT for spot checks; large result sets paginate quickly.
@@ -2324,6 +2389,7 @@ tables:
           path:
             - web_commit_signoff_required
   - name: advisories
+    namespace: security
     description: List global security advisories
     guide: >
       Works without WHERE filters. Most useful optional filters: type, sort, ghsa_id. Add ghsa_id to jump from the
@@ -2717,6 +2783,7 @@ tables:
           path:
             - withdrawn_at
   - name: alerts
+    namespace: security
     description: List Dependabot alerts for an organization
     guide: >
       Requires org. Most useful optional filters: state, assignee, scope. Large organizations can return
@@ -4324,6 +4391,7 @@ tables:
           kind: from_filter
           key: enterprise
   - name: analyses
+    namespace: security
     description: List code scanning analyses for a repository
     guide: >
       Requires owner and repo. Most useful optional filters: ref, sort, sarif_id. Add analysis_id to jump
@@ -4624,6 +4692,7 @@ tables:
           path:
             - warning
   - name: annotations
+    namespace: checks
     description: List check run annotations
     guide: >
       Requires owner, repo, and check_run_id. Keep queries repository-scoped; fan out across repos
@@ -4757,6 +4826,7 @@ tables:
           path:
             - title
   - name: app
+    namespace: apps
     description: Get the authenticated app
     guide: >
       Works without WHERE filters. Results depend on the authenticated app context.
@@ -5190,6 +5260,7 @@ tables:
           path:
             - updated_at
   - name: app_hook_config
+    namespace: apps
     description: Get a webhook configuration for an app
     guide: >
       Works without WHERE filters. Results depend on the authenticated app context.
@@ -5243,6 +5314,7 @@ tables:
           path:
             - url
   - name: app_hook_deliveries
+    namespace: apps
     description: List deliveries for an app webhook
     guide: >
       Works without WHERE filters. Most useful optional filters: status, delivery_id. Add delivery_id to jump from
@@ -5459,6 +5531,7 @@ tables:
           path:
             - url
   - name: app_installations
+    namespace: apps
     description: List installations for the authenticated app
     guide: >
       Works without WHERE filters. Most useful optional filters: installation_id, outdated. Add installation_id to
@@ -6685,6 +6758,7 @@ tables:
           path:
             - updated_at
   - name: approvals
+    namespace: actions
     description: Get the review history for a workflow run
     guide: >
       Requires owner, repo, and run_id. Keep queries repository-scoped; fan out across repos client-side
@@ -6990,6 +7064,7 @@ tables:
             - user
             - user_view_type
   - name: apps
+    namespace: apps
     description: Get an app
     guide: >
       Requires app_slug. Use LIMIT for spot checks; large result sets paginate quickly.
@@ -7433,6 +7508,7 @@ tables:
           path:
             - updated_at
   - name: artifact_and_log_retention
+    namespace: actions
     description: Get artifact and log retention settings for an organization
     guide: >
       Use this table to inspect Actions artifact and log retention for an org. Requires org. Add
@@ -7507,6 +7583,7 @@ tables:
           kind: from_filter
           key: repo
   - name: assignees
+    namespace: issues
     description: List assignees
     guide: >
       Requires owner and repo. Keep queries repository-scoped; fan out across repos client-side when you
@@ -7726,6 +7803,7 @@ tables:
           path:
             - user_view_type
   - name: assignments
+    namespace: classroom
     description: Get an assignment
     guide: >
       Requires assignment_id. Use LIMIT for spot checks; large result sets paginate quickly.
@@ -8101,6 +8179,7 @@ tables:
           path:
             - type
   - name: attempts
+    namespace: actions
     description: Get a workflow run attempt
     guide: >
       Requires owner, repo, run_id, and attempt_number. Most useful optional filters:
@@ -11493,6 +11572,7 @@ tables:
           path:
             - workflow_url
   - name: attestations
+    namespace: security
     description: List attestations
     guide: >
       Use this table to list attestations for one subject digest. Requires username and
@@ -11652,6 +11732,7 @@ tables:
           kind: from_filter
           key: repo
   - name: authors
+    namespace: metrics
     description: Get commit authors
     guide: >
       Requires owner and repo. Keep queries repository-scoped; fan out across repos client-side when you
@@ -11747,6 +11828,7 @@ tables:
           path:
             - url
   - name: autofix
+    namespace: security
     description: Get the status of an autofix for a code scanning alert
     guide: >
       Requires owner, repo, and alert_number. Keep queries repository-scoped; fan out across repos
@@ -11823,6 +11905,7 @@ tables:
           path:
             - status
   - name: autolinks
+    namespace: repos
     description: Get all autolinks of a repository
     guide: >
       Requires owner and repo. Most useful optional filters: autolink_id. Add autolink_id to jump from the
@@ -11922,6 +12005,7 @@ tables:
           path:
             - url_template
   - name: automated_security_fixes
+    namespace: security
     description: Check if Dependabot security updates are enabled for a repository
     guide: >
       Requires owner and repo. Keep queries repository-scoped; fan out across repos client-side when you
@@ -11979,6 +12063,7 @@ tables:
           kind: from_filter
           key: repo
   - name: billing
+    namespace: billing
     description: Get Copilot seat information and settings for an organization
     guide: >
       Requires org. Large organizations can return many rows; narrow by one scoping filter before broad
@@ -12132,6 +12217,7 @@ tables:
           path:
             - seat_management_setting
   - name: blobs
+    namespace: code
     description: Get a blob
     guide: >
       Requires owner, repo, and file_sha. Keep queries repository-scoped; fan out across repos client-side
@@ -12236,6 +12322,7 @@ tables:
           path:
             - url
   - name: blocked_by
+    namespace: issues
     description: List dependencies an issue is blocked by
     guide: >
       Requires owner, repo, and issue_number. Keep queries repository-scoped; fan out across repos
@@ -16237,6 +16324,7 @@ tables:
             - user
             - user_view_type
   - name: blocking
+    namespace: issues
     description: List dependencies an issue is blocking
     guide: >
       Requires owner, repo, and issue_number. Keep queries repository-scoped; fan out across repos
@@ -20238,6 +20326,7 @@ tables:
             - user
             - user_view_type
   - name: branches_where_head
+    namespace: code
     description: List branches for HEAD commit
     guide: >
       Requires owner, repo, and commit_sha. Keep queries repository-scoped; fan out across repos
@@ -20329,6 +20418,7 @@ tables:
           kind: from_filter
           key: repo
   - name: budgets
+    namespace: billing
     description: Get all budgets for an organization
     guide: >
       Requires org. Most useful optional filters: scope, budget_id. Add budget_id to jump from the default
@@ -20486,6 +20576,7 @@ tables:
           kind: from_filter
           key: scope
   - name: builds
+    namespace: pages
     description: List GitHub Pages builds
     guide: >
       Requires owner and repo. Most useful optional filters: build_id. Add build_id to jump from the
@@ -20816,6 +20907,7 @@ tables:
           path:
             - url
   - name: caches
+    namespace: actions
     description: List GitHub Actions caches for a repository
     guide: >
       Requires owner and repo. Most useful optional filters: ref, sort, key. Keep queries
@@ -20955,6 +21047,7 @@ tables:
           path:
             - version
   - name: campaigns
+    namespace: metrics
     description: List campaigns for an organization
     guide: >
       Requires org. Most useful optional filters: state, sort, campaign_number. Add campaign_number to
@@ -21182,6 +21275,7 @@ tables:
           path:
             - updated_at
   - name: check_runs
+    namespace: checks
     description: List check runs for a Git reference
     guide: >
       Requires owner, repo, and ref. Most useful optional filters: status, app_id, check_suite_id. Add
@@ -22251,6 +22345,7 @@ tables:
           kind: from_filter
           key: check_suite_id
   - name: classroom_assignments
+    namespace: classroom
     description: List assignments for a classroom
     guide: >
       Requires classroom_id. Use LIMIT for spot checks; large result sets paginate quickly.
@@ -22486,6 +22581,7 @@ tables:
           path:
             - type
   - name: classrooms
+    namespace: classroom
     description: List classrooms
     guide: >
       Works without WHERE filters. Most useful optional filters: classroom_id. Add classroom_id to jump from the
@@ -22630,6 +22726,7 @@ tables:
           path:
             - url
   - name: clones
+    namespace: metrics
     description: Get repository clones
     guide: >
       Requires owner and repo. Most useful optional filters: per. Keep queries repository-scoped; fan out
@@ -22709,6 +22806,7 @@ tables:
           path:
             - uniques
   - name: code
+    namespace: search
     description: Search code
     guide: >
       Requires q. Most useful optional filters: sort, order. Use LIMIT for spot checks; large result sets
@@ -24133,6 +24231,7 @@ tables:
           path:
             - url
   - name: code_frequency
+    namespace: metrics
     description: Get the weekly commit activity
     guide: >
       Requires owner and repo. Keep queries repository-scoped; fan out across repos client-side when you
@@ -24179,6 +24278,7 @@ tables:
           kind: from_filter
           key: repo
   - name: code_security_configuration
+    namespace: security
     description: Get the code security configuration associated with a repository
     guide: >
       Requires owner and repo. Keep queries repository-scoped; fan out across repos client-side when you
@@ -24558,6 +24658,7 @@ tables:
           path:
             - status
   - name: codes_of_conduct
+    namespace: licenses
     description: Get all codes of conduct
     guide: >
       Works without WHERE filters. Most useful optional filters: key. Add key to jump from the default list call
@@ -24624,6 +24725,7 @@ tables:
           path:
             - url
   - name: codespaces
+    namespace: codespaces
     description: List codespaces for the organization
     guide: >
       Use this table to audit codespaces in one org. Requires org. Start with username or owner/repo
@@ -26797,6 +26899,7 @@ tables:
           kind: from_filter
           key: repo
   - name: collaborators
+    namespace: repos
     description: List repository collaborators
     guide: >
       Requires owner and repo. Most useful optional filters: affiliation, permission. Keep queries
@@ -27096,6 +27199,7 @@ tables:
           path:
             - user_view_type
   - name: comments
+    namespace: issues
     description: List commit comments for a repository
     guide: >
       Requires owner and repo. Most useful optional filters: comment_id, commit_sha. Add comment_id to
@@ -27573,6 +27677,7 @@ tables:
           kind: from_filter
           key: commit_sha
   - name: commit_activity
+    namespace: metrics
     description: Get the last year of commit activity
     guide: >
       Requires owner and repo. Keep queries repository-scoped; fan out across repos client-side when you
@@ -27636,6 +27741,7 @@ tables:
           path:
             - week
   - name: commits
+    namespace: code
     description: List commits
     guide: >
       Use this table to browse commit history for one repo. Requires owner and repo. Start with ref
@@ -28445,6 +28551,7 @@ tables:
           kind: from_filter
           key: pull_number
   - name: config
+    namespace: webhooks
     description: Get a webhook configuration for an organization
     guide: >
       Use this table to inspect one org webhook config. Requires org and hook_id. Add owner and repo
@@ -28546,6 +28653,7 @@ tables:
           kind: from_filter
           key: repo
   - name: configurations
+    namespace: security
     description: Get code security configurations for an enterprise
     guide: >
       Requires enterprise. Most useful optional filters: org, configuration_id, target_type. Add
@@ -28903,6 +29011,7 @@ tables:
           kind: from_filter
           key: org
   - name: conflicts
+    namespace: packages
     description: Get list of conflicting packages during Docker migration for organization
     guide: >
       Requires org. Most useful optional filters: username. Add username to narrow the result set before
@@ -30398,6 +30507,7 @@ tables:
           kind: from_filter
           key: username
   - name: content_exclusion
+    namespace: copilot
     description: Get Copilot content exclusion rules for an organization
     guide: >
       Requires org. Large organizations can return many rows; narrow by one scoping filter before broad
@@ -30434,6 +30544,7 @@ tables:
           kind: from_filter
           key: org
   - name: contents
+    namespace: code
     description: Get repository content
     guide: >
       Requires owner, repo, and path. Most useful optional filters: ref. Keep queries repository-scoped;
@@ -30628,6 +30739,7 @@ tables:
           path:
             - url
   - name: contexts
+    namespace: checks
     description: Get all status check contexts
     guide: >
       Requires owner, repo, and branch. Keep queries repository-scoped; fan out across repos client-side
@@ -30683,6 +30795,7 @@ tables:
           kind: from_filter
           key: repo
   - name: copilot
+    namespace: copilot
     description: Get Copilot seat assignment details for a user
     guide: >
       Requires org and username. Large organizations can return many rows; narrow by one scoping filter
@@ -31551,6 +31664,7 @@ tables:
           kind: from_filter
           key: username
   - name: custom
+    namespace: actions
     description: List custom images for an organization
     guide: >
       Requires org. Most useful optional filters: image_definition_id. Add image_definition_id to jump
@@ -31670,6 +31784,7 @@ tables:
           path:
             - versions_count
   - name: databases
+    namespace: security
     description: List CodeQL databases for a repository
     guide: >
       Requires owner and repo. Most useful optional filters: language. Keep queries repository-scoped; fan
@@ -32028,6 +32143,7 @@ tables:
           path:
             - url
   - name: default_setup
+    namespace: security
     description: Get a code scanning default setup configuration
     guide: >
       Requires owner and repo. Keep queries repository-scoped; fan out across repos client-side when you
@@ -32139,6 +32255,7 @@ tables:
           path:
             - updated_at
   - name: defaults
+    namespace: security
     description: Get default code security configurations for an enterprise
     guide: >
       Requires enterprise. Most useful optional filters: org. Add org to narrow the result set before
@@ -32524,6 +32641,7 @@ tables:
           kind: from_filter
           key: org
   - name: deliveries
+    namespace: webhooks
     description: List deliveries for an organization webhook
     guide: >
       Requires org and hook_id. Most useful optional filters: status, owner, repo. Add delivery_id to jump
@@ -32792,6 +32910,7 @@ tables:
           kind: from_filter
           key: repo
   - name: deployment_branch_policies
+    namespace: deployments
     description: List deployment branch policies
     guide: >
       Requires owner, repo, and environment_name. Most useful optional filters: branch_policy_id. Add
@@ -32901,6 +33020,7 @@ tables:
           path:
             - type
   - name: deployment_protection_rules
+    namespace: deployments
     description: Get all deployment protection rules for an environment
     guide: >
       Requires environment_name, repo, and owner. Most useful optional filters: protection_rule_id. Add
@@ -33046,6 +33166,7 @@ tables:
           kind: from_filter
           key: repo
   - name: deployment_records
+    namespace: deployments
     description: List artifact deployment records
     guide: >
       Requires org and subject_digest. Large organizations can return many rows; narrow by one scoping
@@ -33177,6 +33298,7 @@ tables:
           path:
             - updated_at
   - name: devcontainers
+    namespace: codespaces
     description: List devcontainer configurations in a repository for the authenticated user
     guide: >
       Requires owner and repo. Keep queries repository-scoped; fan out across repos client-side when you
@@ -33247,6 +33369,7 @@ tables:
           kind: from_filter
           key: repo
   - name: downloads
+    namespace: actions
     description: List runner applications for an organization
     guide: >
       Use this table to list runner application downloads for an org. Requires org. Add owner and
@@ -33352,6 +33475,7 @@ tables:
           kind: from_filter
           key: repo
   - name: emails
+    namespace: users
     description: List email addresses for the authenticated user
     guide: >
       Works without WHERE filters. Results are limited to resources visible to the authenticated user.
@@ -33405,6 +33529,7 @@ tables:
           path:
             - visibility
   - name: emojis
+    namespace: licenses
     description: Get emojis
     guide: >
       Works without WHERE filters. Use LIMIT for spot checks; large result sets paginate quickly.
@@ -33428,6 +33553,7 @@ tables:
         expr:
           kind: current_row
   - name: enforce_admins
+    namespace: rules
     description: Get admin branch protection
     guide: >
       Requires owner, repo, and branch. Keep queries repository-scoped; fan out across repos client-side
@@ -33493,6 +33619,7 @@ tables:
           path:
             - url
   - name: enterprise_1_day
+    namespace: copilot
     description: Get Copilot enterprise usage metrics for a specific day
     guide: >
       Requires enterprise and day. Enterprise-wide calls can be expensive; narrow by org or time window
@@ -33555,6 +33682,7 @@ tables:
           path:
             - report_day
   - name: enterprise_code_security_configuration_repositories
+    namespace: security
     description: Get repositories associated with an enterprise code security configuration
     guide: >
       Use this table to list repositories attached to one enterprise code security configuration.
@@ -34345,6 +34473,7 @@ tables:
           kind: from_filter
           key: org
   - name: enterprise_copilot_metric_report_enterprise_28_day_latest
+    namespace: copilot
     description: Get Copilot enterprise usage metrics
     guide: >
       Requires enterprise. Enterprise-wide calls can be expensive; narrow by org or time window before
@@ -34401,6 +34530,7 @@ tables:
           path:
             - report_start_day
   - name: enterprise_team_memberships
+    namespace: enterprise
     description: List members in an enterprise team
     guide: >
       Use this table to list memberships for one enterprise team. Requires enterprise and
@@ -34638,6 +34768,7 @@ tables:
           kind: from_filter
           key: username
   - name: enterprise_teams
+    namespace: enterprise
     description: List enterprise teams
     guide: >
       Use this table to browse enterprise teams. Requires enterprise. Add team_slug to jump to one
@@ -34793,6 +34924,7 @@ tables:
           path:
             - url
   - name: environments
+    namespace: deployments
     description: List environments
     guide: >
       Requires owner and repo. Most useful optional filters: environment_name. Keep queries
@@ -34969,6 +35101,7 @@ tables:
           path:
             - wait_timer
   - name: errors
+    namespace: code
     description: List CODEOWNERS errors
     guide: >
       Requires owner and repo. Most useful optional filters: ref. Keep queries repository-scoped; fan out
@@ -35087,6 +35220,7 @@ tables:
           path:
             - suggestion
   - name: events
+    namespace: issues
     description: List public events
     guide: >
       Use this table to scan the public GitHub event firehose. Works without WHERE filters. Start
@@ -38242,6 +38376,7 @@ tables:
           kind: from_filter
           key: owner
   - name: exports
+    namespace: codespaces
     description: Get details about a codespace export
     guide: >
       Requires codespace_name and export_id. Use LIMIT for spot checks; large result sets paginate
@@ -38344,6 +38479,7 @@ tables:
           path:
             - state
   - name: failed_invitations
+    namespace: migrations
     description: List failed organization invitations
     guide: >
       Requires org. Large organizations can return many rows; narrow by one scoping filter before broad
@@ -38694,6 +38830,7 @@ tables:
           path:
             - team_count
   - name: feeds
+    namespace: licenses
     description: Get feeds
     guide: >
       Works without WHERE filters. Use LIMIT for spot checks; large result sets paginate quickly.
@@ -39098,6 +39235,7 @@ tables:
           path:
             - user_url
   - name: fields
+    namespace: projects
     description: List project fields for organization
     guide: >
       Requires project_number and org. Most useful optional filters: username, field_id. Add field_id to
@@ -39351,6 +39489,7 @@ tables:
           kind: from_filter
           key: username
   - name: files
+    namespace: pulls
     description: List pull requests files
     guide: >
       Requires owner, repo, and pull_number. Keep queries repository-scoped; fan out across repos
@@ -39492,6 +39631,7 @@ tables:
           path:
             - status
   - name: fork_pr_contributor_approval
+    namespace: rules
     description: Get fork PR contributor approval permissions for an organization
     guide: >
       Use this table to inspect fork-PR contributor approval rules for an org. Requires org. Add
@@ -39557,6 +39697,7 @@ tables:
           kind: from_filter
           key: repo
   - name: fork_pr_workflows_private_repos
+    namespace: actions
     description: Get private repo fork PR workflow settings for an organization
     guide: >
       Use this table to inspect private-repo fork workflow settings for an org. Requires org. Add
@@ -39650,6 +39791,7 @@ tables:
           kind: from_filter
           key: repo
   - name: gist
+    namespace: gists
     description: Get a gist revision
     guide: >
       Requires gist_id and sha. Use LIMIT for spot checks; large result sets paginate quickly.
@@ -40085,6 +40227,7 @@ tables:
           path:
             - user
   - name: gist_comments
+    namespace: gists
     description: List gist comments
     guide: >
       Requires gist_id. Most useful optional filters: comment_id. Add comment_id to jump from the default
@@ -40398,6 +40541,7 @@ tables:
             - user
             - user_view_type
   - name: gist_commits
+    namespace: gists
     description: List gist commits
     guide: >
       Requires gist_id. Use LIMIT for spot checks; large result sets paginate quickly.
@@ -40695,6 +40839,7 @@ tables:
           path:
             - version
   - name: gist_forks
+    namespace: gists
     description: List gist forks
     guide: >
       Requires gist_id. Use LIMIT for spot checks; large result sets paginate quickly.
@@ -41125,6 +41270,7 @@ tables:
           path:
             - user
   - name: gist_public
+    namespace: gists
     description: List public gists
     guide: >
       Works without WHERE filters. Use LIMIT for spot checks; large result sets paginate quickly.
@@ -41734,6 +41880,7 @@ tables:
             - user
             - user_view_type
   - name: gist_starred
+    namespace: gists
     description: List starred gists
     guide: >
       Works without WHERE filters. Use LIMIT for spot checks; large result sets paginate quickly.
@@ -42342,6 +42489,7 @@ tables:
             - user
             - user_view_type
   - name: gists
+    namespace: gists
     description: List gists for the authenticated user
     guide: >
       Works without WHERE filters. Most useful optional filters: username, gist_id. Add gist_id to jump from the
@@ -42990,6 +43138,7 @@ tables:
           kind: from_filter
           key: username
   - name: github_owned
+    namespace: actions
     description: Get GitHub-owned images for GitHub-hosted runners in an organization
     guide: >
       Requires org. Large organizations can return many rows; narrow by one scoping filter before broad
@@ -43066,6 +43215,7 @@ tables:
           path:
             - source
   - name: grades
+    namespace: classroom
     description: Get assignment grades
     guide: >
       Requires assignment_id. Use LIMIT for spot checks; large result sets paginate quickly.
@@ -43193,6 +43343,7 @@ tables:
           path:
             - submission_timestamp
   - name: health
+    namespace: pages
     description: Get a DNS health check for GitHub Pages
     guide: >
       Requires owner and repo. Keep queries repository-scoped; fan out across repos client-side when you
@@ -43500,6 +43651,7 @@ tables:
           kind: from_filter
           key: repo
   - name: history
+    namespace: metrics
     description: Get organization ruleset history
     guide: >
       Requires org and ruleset_id. Most useful optional filters: owner, repo, version_id. Add version_id
@@ -43634,6 +43786,7 @@ tables:
           kind: from_filter
           key: repo
   - name: hovercard
+    namespace: users
     description: Get contextual information for a user
     guide: >
       Requires username. Most useful optional filters: subject_id, subject_type. Use LIMIT for spot
@@ -43698,6 +43851,7 @@ tables:
           kind: from_filter
           key: username
   - name: import
+    namespace: migrations
     description: Get an import status
     guide: >
       Requires owner and repo. Keep queries repository-scoped; fan out across repos client-side when you
@@ -43763,6 +43917,7 @@ tables:
           path:
             - vcs
   - name: installation
+    namespace: apps
     description: Get an organization installation for the authenticated app
     guide: >
       Use this table to inspect an app installation for an org. Requires org. Add username to switch
@@ -44996,6 +45151,7 @@ tables:
           kind: from_filter
           key: repo
   - name: installation_repositories
+    namespace: apps
     description: List repositories accessible to the app installation
     guide: >
       Works without WHERE filters. Use LIMIT for spot checks; large result sets paginate quickly.
@@ -46178,6 +46334,7 @@ tables:
           path:
             - web_commit_signoff_required
   - name: installation_requests
+    namespace: apps
     description: List installation requests for the authenticated app
     guide: >
       Works without WHERE filters. Results depend on the authenticated app context.
@@ -46710,6 +46867,7 @@ tables:
             - requester
             - user_view_type
   - name: instances
+    namespace: security
     description: List instances of a code scanning alert
     guide: >
       Requires owner, repo, and alert_number. Most useful optional filters: ref, pr. Keep queries
@@ -46931,6 +47089,7 @@ tables:
           path:
             - state
   - name: interaction_limits
+    namespace: rules
     description: Get interaction restrictions for an organization
     guide: >
       Use this table to inspect interaction limits for an org. Requires org. Add owner and repo to
@@ -47013,6 +47172,7 @@ tables:
           kind: from_filter
           key: repo
   - name: invitations
+    namespace: org
     description: List pending organization invitations
     guide: >
       Requires org. Most useful optional filters: team_slug, team_id, role. Add team_id to jump from the
@@ -47404,6 +47564,7 @@ tables:
           kind: from_filter
           key: team_slug
   - name: issue_field_values
+    namespace: projects
     description: List issue field values for an issue
     guide: >
       Requires owner, repo, and issue_number. Keep queries repository-scoped; fan out across repos
@@ -47501,6 +47662,7 @@ tables:
           path:
             - value
   - name: issue_fields
+    namespace: projects
     description: List issue fields for an organization
     guide: >
       Requires org. Large organizations can return many rows; narrow by one scoping filter before broad
@@ -47611,6 +47773,7 @@ tables:
           path:
             - visibility
   - name: issue_types
+    namespace: projects
     description: List issue types for an organization
     guide: >
       Requires org. Large organizations can return many rows; narrow by one scoping filter before broad
@@ -51888,6 +52051,7 @@ tables:
           kind: from_filter
           key: issue_number
   - name: issues_list_comments
+    namespace: issues
     description: List issue comments
     guide: >
       Requires owner, repo, and issue_number. Keep queries repository-scoped; fan out across repos
@@ -53053,6 +53217,7 @@ tables:
             - user
             - user_view_type
   - name: issues_list_events
+    namespace: issues
     description: List issue events
     guide: >
       Requires owner, repo, and issue_number. Keep queries repository-scoped; fan out across repos
@@ -54912,6 +55077,7 @@ tables:
           path:
             - url
   - name: items
+    namespace: projects
     description: List items for an organization owned project
     guide: >
       Requires project_number and org. Most useful optional filters: username, item_id, view_number. Add
@@ -55366,6 +55532,7 @@ tables:
           kind: from_filter
           key: view_number
   - name: jobs
+    namespace: actions
     description: List jobs for a workflow run
     guide: >
       Requires owner, repo, and run_id. Most useful optional filters: attempt_number, filter. Add
@@ -55649,6 +55816,7 @@ tables:
           kind: from_filter
           key: attempt_number
   - name: labels
+    namespace: actions
     description: List labels for a self-hosted runner for an organization
     guide: >
       Use this table to list labels for one org self-hosted runner. Requires org and runner_id. Add
@@ -55744,6 +55912,7 @@ tables:
           kind: from_filter
           key: repo
   - name: languages
+    namespace: code
     description: List repository languages
     guide: >
       Requires owner and repo. Keep queries repository-scoped; fan out across repos client-side when you
@@ -55790,6 +55959,7 @@ tables:
           kind: from_filter
           key: repo
   - name: large_files
+    namespace: migrations
     description: Get large files
     guide: >
       Requires owner and repo. Keep queries repository-scoped; fan out across repos client-side when you
@@ -55861,6 +56031,7 @@ tables:
           path:
             - size
   - name: latest
+    namespace: copilot
     description: Get Copilot users usage metrics
     guide: >
       Requires enterprise. Most useful optional filters: org. Add org to narrow the result set before
@@ -55932,6 +56103,7 @@ tables:
           kind: from_filter
           key: org
   - name: license
+    namespace: licenses
     description: Get the license for a repository
     guide: >
       Requires owner and repo. Most useful optional filters: ref. Keep queries repository-scoped; fan out
@@ -56170,6 +56342,7 @@ tables:
           path:
             - url
   - name: licenses
+    namespace: licenses
     description: Get all commonly used licenses
     guide: >
       Works without WHERE filters. Most useful optional filters: featured, license. Use LIMIT for spot checks;
@@ -56317,6 +56490,7 @@ tables:
           path:
             - url
   - name: limits
+    namespace: actions
     description: Get limits on GitHub-hosted runners for an organization
     guide: >
       Requires org. Large organizations can return many rows; narrow by one scoping filter before broad
@@ -56375,6 +56549,7 @@ tables:
             - public_ips
             - maximum
   - name: locations
+    namespace: security
     description: List locations for a secret scanning alert
     guide: >
       Requires owner, repo, and alert_number. Keep queries repository-scoped; fan out across repos
@@ -56655,6 +56830,7 @@ tables:
           path:
             - type
   - name: machine_sizes
+    namespace: codespaces
     description: Get GitHub-hosted runners machine specs for an organization
     guide: >
       Requires org. Large organizations can return many rows; narrow by one scoping filter before broad
@@ -56722,6 +56898,7 @@ tables:
           path:
             - storage_gb
   - name: marketplace_listing_accounts
+    namespace: marketplace
     description: Get a subscription plan for an account
     guide: >
       Requires account_id. Use LIMIT for spot checks; large result sets paginate quickly.
@@ -57035,6 +57212,7 @@ tables:
           path:
             - url
   - name: marketplace_listing_plans
+    namespace: marketplace
     description: List plans
     guide: >
       Works without WHERE filters. Use LIMIT for spot checks; large result sets paginate quickly.
@@ -57160,6 +57338,7 @@ tables:
           path:
             - yearly_price_in_cents
   - name: marketplace_listing_stubbed_plans
+    namespace: marketplace
     description: List plans (stubbed)
     guide: >
       Works without WHERE filters. Use LIMIT for spot checks; large result sets paginate quickly.
@@ -57285,6 +57464,7 @@ tables:
           path:
             - yearly_price_in_cents
   - name: marketplace_purchases
+    namespace: marketplace
     description: List subscriptions for the authenticated user
     guide: >
       Works without WHERE filters. Results are limited to resources visible to the authenticated user.
@@ -57564,6 +57744,7 @@ tables:
           path:
             - updated_at
   - name: matching_refs
+    namespace: code
     description: List matching references
     guide: >
       Requires owner, repo, and ref. Keep queries repository-scoped; fan out across repos client-side when
@@ -57665,6 +57846,7 @@ tables:
           path:
             - url
   - name: members
+    namespace: org
     description: List organization members
     guide: >
       Requires org. Most useful optional filters: team_slug, team_id, filter. Add team_id to jump from the
@@ -57939,6 +58121,7 @@ tables:
           kind: from_filter
           key: team_slug
   - name: memberships
+    namespace: org
     description: Get team membership for a user (Legacy)
     guide: >
       Use this table to inspect one team membership. Requires team_id and username. If you only
@@ -58347,6 +58530,7 @@ tables:
         expr:
           kind: current_row
   - name: metrics
+    namespace: copilot
     description: Get Copilot metrics for an organization
     guide: >
       Requires org. Most useful optional filters: team_slug. Add team_slug to narrow the result set before
@@ -58461,6 +58645,7 @@ tables:
           kind: from_filter
           key: team_slug
   - name: milestones
+    namespace: issues
     description: List milestones
     guide: >
       Requires owner and repo. Most useful optional filters: state, sort, milestone_number. Add
@@ -58882,6 +59067,7 @@ tables:
           path:
             - url
   - name: network_configurations
+    namespace: actions
     description: List hosted compute network configurations for an organization
     guide: >
       Requires org. Most useful optional filters: network_configuration_id. Add network_configuration_id
@@ -58996,6 +59182,7 @@ tables:
           kind: from_filter
           key: org
   - name: network_settings
+    namespace: codespaces
     description: Get a hosted compute network settings resource for an organization
     guide: >
       Requires org and network_settings_id. Large organizations can return many rows; narrow by one
@@ -59080,6 +59267,7 @@ tables:
           path:
             - subnet_id
   - name: new
+    namespace: codespaces
     description: Get default attributes for a codespace
     guide: >
       Requires owner and repo. Most useful optional filters: ref, client_ip. Keep queries
@@ -59401,6 +59589,7 @@ tables:
           kind: from_filter
           key: repo
   - name: notification_thread_subscription
+    namespace: notifications
     description: Get a thread subscription for the authenticated user
     guide: >
       Requires thread_id. Use LIMIT for spot checks; large result sets paginate quickly.
@@ -59485,6 +59674,7 @@ tables:
           path:
             - url
   - name: notifications
+    namespace: notifications
     description: List notifications for the authenticated user
     guide: >
       Use this table to review the authenticated user's notifications. Works without WHERE filters.
@@ -60930,6 +61120,7 @@ tables:
           kind: from_filter
           key: repo
   - name: org_action_cache_usage
+    namespace: actions
     description: Get GitHub Actions cache usage for an organization
     guide: >
       Requires org. Large organizations can return many rows; narrow by one scoping filter before broad
@@ -60977,6 +61168,7 @@ tables:
           path:
             - total_active_caches_size_in_bytes
   - name: org_action_hosted_runner_image_custom_versions
+    namespace: actions
     description: List image versions of a custom image for an organization
     guide: >
       Requires image_definition_id and org. Most useful optional filters: version. Large organizations can
@@ -61072,6 +61264,7 @@ tables:
           path:
             - version
   - name: org_action_hosted_runners
+    namespace: actions
     description: List GitHub-hosted runners for an organization
     guide: >
       Requires org. Most useful optional filters: hosted_runner_id. Add hosted_runner_id to jump from the
@@ -61347,6 +61540,7 @@ tables:
           path:
             - status
   - name: org_action_oidc_customization_sub
+    namespace: actions
     description: Get the customization template for an OIDC subject claim for an organization
     guide: >
       Requires org. Large organizations can return many rows; narrow by one scoping filter before broad
@@ -61385,6 +61579,7 @@ tables:
           kind: from_filter
           key: org
   - name: org_action_permission_repositories
+    namespace: actions
     description: List selected repositories enabled for GitHub Actions in an organization
     guide: >
       Requires org. Large organizations can return many rows; narrow by one scoping filter before broad
@@ -62581,6 +62776,7 @@ tables:
           path:
             - web_commit_signoff_required
   - name: org_action_permission_self_hosted_runner_repositories
+    namespace: actions
     description: List repositories allowed to use self-hosted runners in an organization
     guide: >
       Requires org. Large organizations can return many rows; narrow by one scoping filter before broad
@@ -63777,6 +63973,7 @@ tables:
           path:
             - web_commit_signoff_required
   - name: org_action_permissions
+    namespace: actions
     description: Get GitHub Actions permissions for an organization
     guide: >
       Requires org. Large organizations can return many rows; narrow by one scoping filter before broad
@@ -63853,6 +64050,7 @@ tables:
           path:
             - sha_pinning_required
   - name: org_action_runner_group_hosted_runners
+    namespace: actions
     description: List GitHub-hosted runners in a group for an organization
     guide: >
       Requires org and runner_group_id. Large organizations can return many rows; narrow by one scoping
@@ -64087,6 +64285,7 @@ tables:
           path:
             - status
   - name: org_action_runner_group_runners
+    namespace: actions
     description: List self-hosted runners in a group for an organization
     guide: >
       Requires org and runner_group_id. Large organizations can return many rows; narrow by one scoping
@@ -64193,6 +64392,7 @@ tables:
           path:
             - status
   - name: org_action_secret_public_key
+    namespace: actions
     description: Get an organization public key
     guide: >
       Use this table to fetch the public key for org Actions secrets. Requires org. Add owner and
@@ -64298,6 +64498,7 @@ tables:
           kind: from_filter
           key: repo
   - name: org_action_secrets
+    namespace: actions
     description: List organization secrets
     guide: >
       Requires org. Most useful optional filters: secret_name. Add secret_name to jump from the default
@@ -64391,6 +64592,7 @@ tables:
           path:
             - visibility
   - name: org_action_variables
+    namespace: actions
     description: List organization variables
     guide: >
       Requires org. Most useful optional filters: name. Add name to jump from the default list call to a
@@ -64487,6 +64689,7 @@ tables:
           path:
             - visibility
   - name: org_attestation_repositories
+    namespace: security
     description: List attestation repositories
     guide: >
       Requires org. Most useful optional filters: predicate_type. Large organizations can return many
@@ -64551,6 +64754,7 @@ tables:
           kind: from_filter
           key: predicate_type
   - name: org_attestations
+    namespace: security
     description: List attestations
     guide: >
       Requires org and subject_digest. Most useful optional filters: predicate_type. Large organizations
@@ -64645,6 +64849,7 @@ tables:
           kind: from_filter
           key: subject_digest
   - name: org_blocks
+    namespace: org
     description: List users blocked by an organization
     guide: >
       Requires org. Large organizations can return many rows; narrow by one scoping filter before broad
@@ -64855,6 +65060,7 @@ tables:
           path:
             - user_view_type
   - name: org_code_scanning_alerts
+    namespace: security
     description: List code scanning alerts for an organization
     guide: >
       Requires org. Most useful optional filters: state, sort, tool_name. Large organizations can return
@@ -66515,6 +66721,7 @@ tables:
           path:
             - url
   - name: org_codespace_secrets
+    namespace: codespaces
     description: List organization secrets
     guide: >
       Requires org. Most useful optional filters: secret_name. Add secret_name to jump from the default
@@ -66611,6 +66818,7 @@ tables:
           path:
             - visibility
   - name: org_copilot_coding_agent_permission_repositories
+    namespace: copilot
     description: List repositories enabled for Copilot coding agent in an organization
     guide: >
       Requires org. Large organizations can return many rows; narrow by one scoping filter before broad
@@ -67687,6 +67895,7 @@ tables:
           path:
             - web_commit_signoff_required
   - name: org_copilot_coding_agent_permissions
+    namespace: copilot
     description: Get Copilot coding agent permissions for an organization
     guide: >
       Requires org. Large organizations can return many rows; narrow by one scoping filter before broad
@@ -67734,6 +67943,7 @@ tables:
           path:
             - selected_repositories_url
   - name: org_copilot_metric_report_organization_28_day_latest
+    namespace: copilot
     description: Get Copilot organization usage metrics
     guide: >
       Requires org. Large organizations can return many rows; narrow by one scoping filter before broad
@@ -67790,6 +68000,7 @@ tables:
           path:
             - report_start_day
   - name: org_dependabot_secret_public_key
+    namespace: security
     description: Get an organization public key
     guide: >
       Use this table to fetch the public key for org Dependabot secrets. Requires org. Add owner and
@@ -67863,6 +68074,7 @@ tables:
           kind: from_filter
           key: repo
   - name: org_dependabot_secrets
+    namespace: security
     description: List organization secrets
     guide: >
       Requires org. Most useful optional filters: secret_name. Add secret_name to jump from the default
@@ -67956,6 +68168,7 @@ tables:
           path:
             - visibility
   - name: org_hooks
+    namespace: webhooks
     description: List organization webhooks
     guide: >
       Requires org. Most useful optional filters: hook_id. Add hook_id to jump from the default list call
@@ -68129,6 +68342,7 @@ tables:
           path:
             - url
   - name: org_insight_summary_stat_users
+    namespace: metrics
     description: Get summary stats by user
     guide: >
       Requires org, user_id, and min_timestamp. Most useful optional filters: max_timestamp. Large
@@ -68213,6 +68427,7 @@ tables:
           kind: from_filter
           key: user_id
   - name: org_insight_summary_stats
+    namespace: metrics
     description: Get summary stats
     guide: >
       Requires org and min_timestamp. Most useful optional filters: max_timestamp. Large organizations can
@@ -68287,6 +68502,7 @@ tables:
           path:
             - total_request_count
   - name: org_insight_time_stat_users
+    namespace: metrics
     description: Get time stats by user
     guide: >
       Requires org, user_id, min_timestamp, and timestamp_increment. Most useful optional filters:
@@ -68391,6 +68607,7 @@ tables:
           kind: from_filter
           key: user_id
   - name: org_insight_time_stats
+    namespace: metrics
     description: Get time stats
     guide: >
       Requires org, min_timestamp, and timestamp_increment. Most useful optional filters: max_timestamp.
@@ -68484,6 +68701,7 @@ tables:
           path:
             - total_request_count
   - name: org_insights_summary_stat
+    namespace: metrics
     description: Get summary stats by actor
     guide: >
       Requires org, min_timestamp, actor_type, and actor_id. Most useful optional filters: max_timestamp.
@@ -68578,6 +68796,7 @@ tables:
           path:
             - total_request_count
   - name: org_insights_time_stat
+    namespace: metrics
     description: Get time stats by actor
     guide: >
       Requires org, actor_type, actor_id, min_timestamp, and timestamp_increment. Most useful optional
@@ -68692,6 +68911,7 @@ tables:
           path:
             - total_request_count
   - name: org_installations
+    namespace: org
     description: List app installations for an organization
     guide: >
       Requires org. Large organizations can return many rows; narrow by one scoping filter before broad
@@ -69902,6 +70122,7 @@ tables:
           path:
             - updated_at
   - name: org_memberships
+    namespace: org
     description: Get organization membership for a user
     guide: >
       Requires org and username. Large organizations can return many rows; narrow by one scoping filter
@@ -70345,6 +70566,7 @@ tables:
           kind: from_filter
           key: username
   - name: org_migrations
+    namespace: migrations
     description: List organization migrations
     guide: >
       Requires org. Most useful optional filters: migration_id, exclude. Add migration_id to jump from the
@@ -71629,6 +71851,7 @@ tables:
           path:
             - web_commit_signoff_required
   - name: org_organization_role_teams
+    namespace: org
     description: List teams that are assigned to an organization role
     guide: >
       Requires org and role_id. Large organizations can return many rows; narrow by one scoping filter
@@ -72023,6 +72246,7 @@ tables:
           path:
             - url
   - name: org_organization_role_users
+    namespace: org
     description: List users that are assigned to an organization role
     guide: >
       Requires org and role_id. Large organizations can return many rows; narrow by one scoping filter
@@ -72260,6 +72484,7 @@ tables:
           path:
             - user_view_type
   - name: org_private_registry_public_key
+    namespace: org
     description: Get private registries public key for an organization
     guide: >
       Requires org. Large organizations can return many rows; narrow by one scoping filter before broad
@@ -72307,6 +72532,7 @@ tables:
           kind: from_filter
           key: org
   - name: org_property_values
+    namespace: org
     description: List custom property values for organization repositories
     guide: >
       Requires org. Most useful optional filters: repository_query. Large organizations can return many
@@ -72388,6 +72614,7 @@ tables:
           kind: from_filter
           key: repository_query
   - name: org_repos
+    namespace: org
     description: List organization repositories
     guide: >
       Use this table to list repositories in one org. Requires org. Start with type or username
@@ -73556,6 +73783,7 @@ tables:
           kind: from_filter
           key: team_slug
   - name: org_secret_scanning_alerts
+    namespace: security
     description: List secret scanning alerts for an organization
     guide: >
       Requires org. Most useful optional filters: state, assignee, sort. Large organizations can return
@@ -75648,6 +75876,7 @@ tables:
           path:
             - validity
   - name: org_setting_immutable_release_repositories
+    namespace: releases
     description: List selected repositories for immutable releases enforcement
     guide: >
       Requires org. Large organizations can return many rows; narrow by one scoping filter before broad
@@ -76725,6 +76954,7 @@ tables:
           path:
             - web_commit_signoff_required
   - name: org_setting_immutable_releases
+    namespace: releases
     description: Get immutable releases settings for an organization
     guide: >
       Requires org. Large organizations can return many rows; narrow by one scoping filter before broad
@@ -76773,6 +77003,7 @@ tables:
           path:
             - selected_repositories_url
   - name: organization_1_day
+    namespace: copilot
     description: Get Copilot organization usage metrics for a specific day
     guide: >
       Requires org and day. Large organizations can return many rows; narrow by one scoping filter before
@@ -76835,6 +77066,7 @@ tables:
           path:
             - report_day
   - name: organization_roles
+    namespace: org
     description: Get all organization roles for an organization
     guide: >
       Requires org. Most useful optional filters: role_id. Add role_id to jump from the default list call
@@ -77160,6 +77392,7 @@ tables:
           path:
             - updated_at
   - name: organization_secrets
+    namespace: org
     description: List repository organization secrets
     guide: >
       Requires owner and repo. Keep queries repository-scoped; fan out across repos client-side when you
@@ -77230,6 +77463,7 @@ tables:
           path:
             - updated_at
   - name: organization_setting_billing_usage
+    namespace: billing
     description: Get billing usage report for an organization
     guide: >
       Requires org. Most useful optional filters: year, month, day. Large organizations can return many
@@ -77402,6 +77636,7 @@ tables:
           kind: from_filter
           key: year
   - name: organization_variables
+    namespace: org
     description: List repository organization variables
     guide: >
       Requires owner and repo. Keep queries repository-scoped; fan out across repos client-side when you
@@ -78269,6 +78504,7 @@ tables:
           path:
             - web_commit_signoff_required
   - name: orgs_list_for_user
+    namespace: org
     description: List organizations for a user
     guide: >
       Requires username. Use LIMIT for spot checks; large result sets paginate quickly.
@@ -78397,6 +78633,7 @@ tables:
           kind: from_filter
           key: username
   - name: outside_collaborators
+    namespace: org
     description: List outside collaborators for an organization
     guide: >
       Requires org. Most useful optional filters: filter. Large organizations can return many rows; narrow
@@ -78620,6 +78857,7 @@ tables:
           path:
             - user_view_type
   - name: packages
+    namespace: packages
     description: List packages for an organization
     guide: >
       Use this table to list packages in one org. Requires package_type and org. Start with
@@ -80140,6 +80378,7 @@ tables:
           kind: from_filter
           key: username
   - name: packages_list_packages_for_authenticated_user
+    namespace: packages
     description: List packages for the authenticated user's namespace
     guide: >
       Requires package_type. Most useful optional filters: visibility. Use LIMIT for spot checks; large
@@ -81627,6 +81866,7 @@ tables:
           path:
             - visibility
   - name: pages
+    namespace: pages
     description: Get a GitHub Pages site
     guide: >
       Requires owner and repo. Keep queries repository-scoped; fan out across repos client-side when you
@@ -81828,6 +82068,7 @@ tables:
           path:
             - url
   - name: parent
+    namespace: issues
     description: Get parent issue
     guide: >
       Requires owner, repo, and issue_number. Keep queries repository-scoped; fan out across repos
@@ -85826,6 +86067,7 @@ tables:
             - user
             - user_view_type
   - name: participation
+    namespace: metrics
     description: Get the weekly commit count
     guide: >
       Requires owner and repo. Keep queries repository-scoped; fan out across repos client-side when you
@@ -85873,6 +86115,7 @@ tables:
           kind: from_filter
           key: repo
   - name: partner
+    namespace: actions
     description: Get partner images for GitHub-hosted runners in an organization
     guide: >
       Requires org. Large organizations can return many rows; narrow by one scoping filter before broad
@@ -85949,6 +86192,7 @@ tables:
           path:
             - source
   - name: paths
+    namespace: metrics
     description: Get top referral paths
     guide: >
       Requires owner and repo. Keep queries repository-scoped; fan out across repos client-side when you
@@ -86020,6 +86264,7 @@ tables:
           path:
             - uniques
   - name: pattern_configurations
+    namespace: security
     description: List organization pattern configurations
     guide: >
       Requires org. Large organizations can return many rows; narrow by one scoping filter before broad
@@ -86076,6 +86321,7 @@ tables:
           path:
             - provider_pattern_overrides
   - name: pending_deployments
+    namespace: actions
     description: Get pending deployments for a workflow run
     guide: >
       Requires owner, repo, and run_id. Keep queries repository-scoped; fan out across repos client-side
@@ -86217,6 +86463,7 @@ tables:
           path:
             - wait_timer_started_at
   - name: permission
+    namespace: rules
     description: Get repository permissions for a user
     guide: >
       Requires owner, repo, and username. Keep queries repository-scoped; fan out across repos client-side
@@ -86547,6 +86794,7 @@ tables:
           kind: from_filter
           key: username
   - name: permissions_check
+    namespace: codespaces
     description: Check if permissions defined by a devcontainer have been accepted by the authenticated user
     guide: >
       Requires owner, repo, ref, and devcontainer_path. Keep queries repository-scoped; fan out across
@@ -86623,6 +86871,7 @@ tables:
           kind: from_filter
           key: repo
   - name: personal_access_token_requests
+    namespace: rules
     description: List requests to access organization resources with fine-grained personal access tokens
     guide: >
       Requires org. Most useful optional filters: sort, owner, token_id. Large organizations can return
@@ -87104,6 +87353,7 @@ tables:
           path:
             - token_name
   - name: personal_access_tokens
+    namespace: rules
     description: List fine-grained personal access tokens with access to organization resources
     guide: >
       Requires org. Most useful optional filters: sort, owner, token_id. Large organizations can return
@@ -87576,6 +87826,7 @@ tables:
           path:
             - token_name
   - name: platforms
+    namespace: actions
     description: Get platforms for GitHub-hosted runners in an organization
     guide: >
       Requires org. Large organizations can return many rows; narrow by one scoping filter before broad
@@ -87621,6 +87872,7 @@ tables:
           path:
             - total_count
   - name: private_registries
+    namespace: packages
     description: List private registries for an organization
     guide: >
       Requires org. Most useful optional filters: secret_name. Add secret_name to jump from the default
@@ -87842,6 +88094,7 @@ tables:
           path:
             - visibility
   - name: private_vulnerability_reporting
+    namespace: security
     description: Check if private vulnerability reporting is enabled for a repository
     guide: >
       Requires owner and repo. Keep queries repository-scoped; fan out across repos client-side when you
@@ -87890,6 +88143,7 @@ tables:
           kind: from_filter
           key: repo
   - name: profile
+    namespace: users
     description: Get community profile metrics
     guide: >
       Requires owner and repo. Keep queries repository-scoped; fan out across repos client-side when you
@@ -88240,6 +88494,7 @@ tables:
           path:
             - updated_at
   - name: projects_v2
+    namespace: projects
     description: List projects for organization
     guide: >
       Requires org. Most useful optional filters: username, project_number, q. Add project_number to jump
@@ -89452,6 +89707,7 @@ tables:
           kind: from_filter
           key: username
   - name: protection
+    namespace: rules
     description: Get branch protection
     guide: >
       Requires owner, repo, and branch. Keep queries repository-scoped; fan out across repos client-side
@@ -90040,6 +90296,7 @@ tables:
           path:
             - url
   - name: public_emails
+    namespace: users
     description: List public email addresses for the authenticated user
     guide: >
       Works without WHERE filters. Results are limited to resources visible to the authenticated user.
@@ -90093,6 +90350,7 @@ tables:
           path:
             - visibility
   - name: public_key
+    namespace: org
     description: Get an organization public key
     guide: >
       Use this table to fetch the public key for org secrets. Requires org. Add owner and repo to
@@ -90198,6 +90456,7 @@ tables:
           kind: from_filter
           key: repo
   - name: public_members
+    namespace: org
     description: List public organization members
     guide: >
       Requires org. Large organizations can return many rows; narrow by one scoping filter before broad
@@ -94738,6 +94997,7 @@ tables:
           kind: from_filter
           key: commit_sha
   - name: pulls_list_review_comments
+    namespace: pulls
     description: List review comments on a pull request
     guide: >
       Requires owner, repo, and pull_number. Most useful optional filters: sort, direction. Keep queries
@@ -95417,6 +95677,7 @@ tables:
             - user
             - user_view_type
   - name: punch_card
+    namespace: metrics
     description: Get the hourly commit count for each day
     guide: >
       Requires owner and repo. Keep queries repository-scoped; fan out across repos client-side when you
@@ -96120,6 +96381,7 @@ tables:
             - source_import
             - used
   - name: reactions
+    namespace: issues
     description: List reactions for a commit comment
     guide: >
       Requires owner, repo, and comment_id. Most useful optional filters: issue_number, release_id,
@@ -96479,6 +96741,7 @@ tables:
           kind: from_filter
           key: release_id
   - name: readme
+    namespace: code
     description: Get a repository README
     guide: >
       Requires owner and repo. Most useful optional filters: ref, dir. Keep queries repository-scoped; fan
@@ -96692,6 +96955,7 @@ tables:
           path:
             - url
   - name: received_events
+    namespace: users
     description: List events received by the authenticated user
     guide: >
       Requires username. Use LIMIT for spot checks; large result sets paginate quickly.
@@ -99812,6 +100076,7 @@ tables:
           kind: from_filter
           key: username
   - name: ref
+    namespace: code
     description: Get a reference
     guide: >
       Requires owner, repo, and ref. Keep queries repository-scoped; fan out across repos client-side when
@@ -99913,6 +100178,7 @@ tables:
           path:
             - url
   - name: referrers
+    namespace: metrics
     description: Get top referral sources
     guide: >
       Requires owner and repo. Keep queries repository-scoped; fan out across repos client-side when you
@@ -99976,6 +100242,7 @@ tables:
           path:
             - uniques
   - name: releases
+    namespace: releases
     description: List releases
     guide: >
       Requires owner and repo. Most useful optional filters: release_id. Add release_id to jump from the
@@ -100816,6 +101083,7 @@ tables:
           path:
             - zipball_url
   - name: repo
+    namespace: enterprise
     description: List OIDC custom property inclusions for an enterprise
     guide: >
       Requires enterprise. Most useful optional filters: org. Add org to narrow the result set before
@@ -100878,6 +101146,7 @@ tables:
           kind: from_filter
           key: org
   - name: repo_action_artifacts
+    namespace: actions
     description: List artifacts for a repository
     guide: >
       Requires owner and repo. Most useful optional filters: name, artifact_id. Add artifact_id to jump
@@ -101046,6 +101315,7 @@ tables:
           path:
             - workflow_run
   - name: repo_action_cache_usage
+    namespace: actions
     description: Get GitHub Actions cache usage for a repository
     guide: >
       Requires owner and repo. Keep queries repository-scoped; fan out across repos client-side when you
@@ -101112,6 +101382,7 @@ tables:
           kind: from_filter
           key: repo
   - name: repo_action_jobs
+    namespace: actions
     description: Get a job for a workflow run
     guide: >
       Requires owner, repo, and job_id. Keep queries repository-scoped; fan out across repos client-side
@@ -101216,6 +101487,7 @@ tables:
           path:
             - status
   - name: repo_action_oidc_customization_sub
+    namespace: actions
     description: Get the customization template for an OIDC subject claim for a repository
     guide: >
       Requires owner and repo. Keep queries repository-scoped; fan out across repos client-side when you
@@ -101273,6 +101545,7 @@ tables:
           path:
             - use_default
   - name: repo_action_permissions
+    namespace: actions
     description: Get GitHub Actions permissions for a repository
     guide: >
       Requires owner and repo. Keep queries repository-scoped; fan out across repos client-side when you
@@ -101348,6 +101621,7 @@ tables:
           path:
             - sha_pinning_required
   - name: repo_action_run_artifacts
+    namespace: actions
     description: List workflow run artifacts
     guide: >
       Requires owner, repo, and run_id. Most useful optional filters: name, direction. Keep queries
@@ -101522,6 +101796,7 @@ tables:
           path:
             - workflow_run
   - name: repo_action_run_timing
+    namespace: actions
     description: Get workflow run usage
     guide: >
       Requires owner, repo, and run_id. Keep queries repository-scoped; fan out across repos client-side
@@ -101704,6 +101979,7 @@ tables:
           kind: from_filter
           key: run_id
   - name: repo_action_runs
+    namespace: actions
     description: List workflow runs for a repository
     guide: >
       Requires owner and repo. Most useful optional filters: branch, status, check_suite_id. Add run_id to
@@ -105152,6 +105428,7 @@ tables:
           path:
             - workflow_url
   - name: repo_action_secrets
+    namespace: actions
     description: List repository secrets
     guide: >
       Requires owner and repo. Most useful optional filters: secret_name. Add secret_name to jump from the
@@ -105239,6 +105516,7 @@ tables:
           path:
             - updated_at
   - name: repo_action_variables
+    namespace: actions
     description: List repository variables
     guide: >
       Requires owner and repo. Most useful optional filters: name. Add name to jump from the default list
@@ -105329,6 +105607,7 @@ tables:
           path:
             - value
   - name: repo_action_workflow_runs
+    namespace: actions
     description: List workflow runs for a workflow
     guide: >
       Requires owner, repo, and workflow_id. Most useful optional filters: branch, status, check_suite_id.
@@ -108758,6 +109037,7 @@ tables:
           path:
             - workflow_url
   - name: repo_action_workflow_timing
+    namespace: actions
     description: Get workflow usage
     guide: >
       Requires owner, repo, and workflow_id. Keep queries repository-scoped; fan out across repos
@@ -108872,6 +109152,7 @@ tables:
           kind: from_filter
           key: workflow_id
   - name: repo_branch_protection_restriction_apps
+    namespace: rules
     description: Get apps with access to the protected branch
     guide: >
       Requires owner, repo, and branch. Keep queries repository-scoped; fan out across repos client-side
@@ -109329,6 +109610,7 @@ tables:
           path:
             - updated_at
   - name: repo_branch_protection_restriction_teams
+    namespace: rules
     description: Get teams with access to the protected branch
     guide: >
       Requires owner, repo, and branch. Keep queries repository-scoped; fan out across repos client-side
@@ -109720,6 +110002,7 @@ tables:
           path:
             - url
   - name: repo_branch_protection_restriction_users
+    namespace: rules
     description: Get users with access to the protected branch
     guide: >
       Requires owner, repo, and branch. Keep queries repository-scoped; fan out across repos client-side
@@ -109945,6 +110228,7 @@ tables:
           path:
             - user_view_type
   - name: repo_branches
+    namespace: code
     description: List branches
     guide: >
       Requires owner and repo. Most useful optional filters: branch, protected. Keep queries
@@ -111297,6 +111581,7 @@ tables:
           path:
             - required_approving_review_count
   - name: repo_check_runs
+    namespace: checks
     description: Get a check run
     guide: >
       Requires owner, repo, and check_run_id. Keep queries repository-scoped; fan out across repos
@@ -111502,6 +111787,7 @@ tables:
           path:
             - url
   - name: repo_check_suites
+    namespace: checks
     description: Get a check suite
     guide: >
       Requires owner, repo, and check_suite_id. Keep queries repository-scoped; fan out across repos
@@ -113481,6 +113767,7 @@ tables:
           path:
             - url
   - name: repo_code_scanning_alerts
+    namespace: security
     description: List code scanning alerts for a repository
     guide: >
       Requires owner and repo. Most useful optional filters: ref, sort, state. Add alert_number to jump
@@ -114641,6 +114928,7 @@ tables:
           path:
             - user_view_type
   - name: repo_code_scanning_codeql_variant_analyse_repos
+    namespace: security
     description: Get the analysis status of a repository in a CodeQL variant analysis
     guide: >
       Requires owner, repo, codeql_variant_analysis_id, repo_owner, and repo_name. Keep queries
@@ -115484,6 +115772,7 @@ tables:
           path:
             - source_location_prefix
   - name: repo_codespace_machines
+    namespace: codespaces
     description: List available machine types for a repository
     guide: >
       Requires owner and repo. Most useful optional filters: ref, location, client_ip. Keep queries
@@ -115628,6 +115917,7 @@ tables:
           path:
             - storage_in_bytes
   - name: repo_codespace_secrets
+    namespace: codespaces
     description: List repository secrets
     guide: >
       Requires owner and repo. Most useful optional filters: secret_name. Add secret_name to jump from the
@@ -115715,6 +116005,7 @@ tables:
           path:
             - updated_at
   - name: repo_commit_check_suites
+    namespace: checks
     description: List check suites for a Git reference
     guide: >
       Requires owner, repo, and ref. Most useful optional filters: app_id, check_name. Keep queries
@@ -117727,6 +118018,7 @@ tables:
           path:
             - url
   - name: repo_commit_statuses
+    namespace: checks
     description: List commit statuses for a reference
     guide: >
       Requires owner, repo, and ref. Keep queries repository-scoped; fan out across repos client-side when
@@ -118066,6 +118358,7 @@ tables:
           path:
             - url
   - name: repo_compare
+    namespace: code
     description: Compare two commits
     guide: >
       Requires owner, repo, and basehead. Keep queries repository-scoped; fan out across repos client-side
@@ -119629,6 +119922,7 @@ tables:
           path:
             - url
   - name: repo_contributors
+    namespace: metrics
     description: List repository contributors
     guide: >
       Requires owner and repo. Most useful optional filters: anon. Keep queries repository-scoped; fan out
@@ -119862,6 +120156,7 @@ tables:
           path:
             - user_view_type
   - name: repo_dependabot_alerts
+    namespace: security
     description: List Dependabot alerts for a repository
     guide: >
       Requires owner and repo. Most useful optional filters: state, assignee, scope. Add alert_number to
@@ -120872,6 +121167,7 @@ tables:
           path:
             - user_view_type
   - name: repo_dependabot_secrets
+    namespace: security
     description: List repository secrets
     guide: >
       Requires owner and repo. Most useful optional filters: secret_name. Add secret_name to jump from the
@@ -120959,6 +121255,7 @@ tables:
           path:
             - updated_at
   - name: repo_dependency_graph_compare
+    namespace: security
     description: Get a diff of the dependencies between commits
     guide: >
       Requires owner, repo, and basehead. Most useful optional filters: name. Keep queries
@@ -121095,6 +121392,7 @@ tables:
           path:
             - vulnerabilities
   - name: repo_deployment_statuses
+    namespace: deployments
     description: List deployment statuses
     guide: >
       Requires owner, repo, and deployment_id. Most useful optional filters: status_id. Add status_id to
@@ -121951,6 +122249,7 @@ tables:
           path:
             - url
   - name: repo_deployments
+    namespace: deployments
     description: List deployments
     guide: >
       Requires owner and repo. Most useful optional filters: sha, ref, deployment_id. Add deployment_id to
@@ -122842,6 +123141,7 @@ tables:
           path:
             - url
   - name: repo_environment_deployment_protection_rule_apps
+    namespace: deployments
     description: List custom deployment rule integrations available for an environment
     guide: >
       Requires environment_name, repo, and owner. Keep queries repository-scoped; fan out across repos
@@ -122934,6 +123234,7 @@ tables:
           path:
             - slug
   - name: repo_environment_secret_public_key
+    namespace: deployments
     description: Get an environment public key
     guide: >
       Requires owner, repo, and environment_name. Keep queries repository-scoped; fan out across repos
@@ -123033,6 +123334,7 @@ tables:
           path:
             - url
   - name: repo_environment_secrets
+    namespace: deployments
     description: List environment secrets
     guide: >
       Requires owner, repo, and environment_name. Most useful optional filters: secret_name. Add
@@ -123131,6 +123433,7 @@ tables:
           path:
             - updated_at
   - name: repo_environment_variables
+    namespace: deployments
     description: List environment variables
     guide: >
       Requires owner, repo, and environment_name. Most useful optional filters: name. Add name to jump
@@ -123232,6 +123535,7 @@ tables:
           path:
             - value
   - name: repo_forks
+    namespace: repos
     description: List forks
     guide: >
       Requires owner and repo. Most useful optional filters: sort. Keep queries repository-scoped; fan out
@@ -124321,6 +124625,7 @@ tables:
           path:
             - web_commit_signoff_required
   - name: repo_git_commits
+    namespace: code
     description: Get a commit object
     guide: >
       Requires owner, repo, and commit_sha. Keep queries repository-scoped; fan out across repos
@@ -124397,6 +124702,7 @@ tables:
           path:
             - url
   - name: repo_git_tags
+    namespace: code
     description: Get a tag
     guide: >
       Requires owner, repo, and tag_sha. Keep queries repository-scoped; fan out across repos client-side
@@ -124611,6 +124917,7 @@ tables:
             - verification
             - verified_at
   - name: repo_hooks
+    namespace: webhooks
     description: List repository webhooks
     guide: >
       Requires owner and repo. Most useful optional filters: hook_id. Add hook_id to jump from the default
@@ -124847,6 +125154,7 @@ tables:
           path:
             - url
   - name: repo_immutable_releases
+    namespace: releases
     description: Check if immutable releases are enabled for a repository
     guide: >
       Requires owner and repo. Keep queries repository-scoped; fan out across repos client-side when you
@@ -124904,6 +125212,7 @@ tables:
           kind: from_filter
           key: repo
   - name: repo_invitations
+    namespace: repos
     description: List repository invitations
     guide: >
       Requires owner and repo. Keep queries repository-scoped; fan out across repos client-side when you
@@ -126680,6 +126989,7 @@ tables:
           path:
             - url
   - name: repo_issue_comments
+    namespace: issues
     description: List issue comments for a repository
     guide: >
       Requires owner and repo. Most useful optional filters: sort, comment_id, direction. Add comment_id
@@ -127879,6 +128189,7 @@ tables:
             - user
             - user_view_type
   - name: repo_issue_events
+    namespace: issues
     description: List issue events for a repository
     guide: >
       Requires owner and repo. Most useful optional filters: event_id. Add event_id to jump from the
@@ -132918,6 +133229,7 @@ tables:
           path:
             - url
   - name: repo_keys
+    namespace: repos
     description: List deploy keys
     guide: >
       Requires owner and repo. Most useful optional filters: key_id. Add key_id to jump from the default
@@ -133058,6 +133370,7 @@ tables:
           path:
             - verified
   - name: repo_labels
+    namespace: issues
     description: List labels for a repository
     guide: >
       Requires owner and repo. Most useful optional filters: name, issue_number, milestone_number. Add
@@ -133204,6 +133517,7 @@ tables:
           kind: from_filter
           key: milestone_number
   - name: repo_page_build_latest
+    namespace: pages
     description: Get latest Pages build
     guide: >
       Requires owner and repo. Keep queries repository-scoped; fan out across repos client-side when you
@@ -133514,6 +133828,7 @@ tables:
           path:
             - url
   - name: repo_page_deployments
+    namespace: pages
     description: Get the status of a GitHub Pages deployment
     guide: >
       Requires owner, repo, and pages_deployment_id. Keep queries repository-scoped; fan out across repos
@@ -133572,6 +133887,7 @@ tables:
           path:
             - status
   - name: repo_property_values
+    namespace: repos
     description: Get all custom property values for a repository
     guide: >
       Requires owner and repo. Keep queries repository-scoped; fan out across repos client-side when you
@@ -133629,6 +133945,7 @@ tables:
           path:
             - value
   - name: repo_pull_comments
+    namespace: pulls
     description: List review comments in a repository
     guide: >
       Requires owner and repo. Most useful optional filters: sort, comment_id, direction. Add comment_id
@@ -134314,6 +134631,7 @@ tables:
             - user
             - user_view_type
   - name: repo_pull_review_comments
+    namespace: pulls
     description: List comments for a pull request review
     guide: >
       Requires owner, repo, pull_number, and review_id. Keep queries repository-scoped; fan out across
@@ -134968,6 +135286,7 @@ tables:
             - user
             - user_view_type
   - name: repo_release_assets
+    namespace: releases
     description: Get a release asset
     guide: >
       Requires owner, repo, and asset_id. Keep queries repository-scoped; fan out across repos client-side
@@ -135329,6 +135648,7 @@ tables:
           path:
             - url
   - name: repo_release_latest
+    namespace: releases
     description: Get the latest release
     guide: >
       Requires owner and repo. Keep queries repository-scoped; fan out across repos client-side when you
@@ -135682,6 +136002,7 @@ tables:
           path:
             - url
   - name: repo_release_tags
+    namespace: releases
     description: Get a release by tag name
     guide: >
       Requires owner, repo, and tag. Keep queries repository-scoped; fan out across repos client-side when
@@ -136045,6 +136366,7 @@ tables:
           path:
             - url
   - name: repo_rule_branches
+    namespace: code
     description: Get rules for a branch
     guide: >
       Requires owner, repo, and branch. Keep queries repository-scoped; fan out across repos client-side
@@ -136162,6 +136484,7 @@ tables:
           path:
             - type
   - name: repo_secret_scanning_alerts
+    namespace: security
     description: List secret scanning alerts for a repository
     guide: >
       Requires owner and repo. Most useful optional filters: state, assignee, sort. Add alert_number to
@@ -137574,6 +137897,7 @@ tables:
           path:
             - validity
   - name: repo_stat_contributors
+    namespace: metrics
     description: Get all contributor commit activity
     guide: >
       Requires owner and repo. Keep queries repository-scoped; fan out across repos client-side when you
@@ -137835,6 +138159,7 @@ tables:
           path:
             - weeks
   - name: repo_subscription
+    namespace: repos
     description: Get a repository subscription
     guide: >
       Requires owner and repo. Keep queries repository-scoped; fan out across repos client-side when you
@@ -137924,6 +138249,7 @@ tables:
           path:
             - url
   - name: repo_tags
+    namespace: code
     description: List repository tags
     guide: >
       Requires owner and repo. Keep queries repository-scoped; fan out across repos client-side when you
@@ -138025,6 +138351,7 @@ tables:
           path:
             - zipball_url
   - name: repo_topics
+    namespace: repos
     description: Get all repository topics
     guide: >
       Requires owner and repo. Keep queries repository-scoped; fan out across repos client-side when you
@@ -138072,6 +138399,7 @@ tables:
           kind: from_filter
           key: repo
   - name: repos
+    namespace: repos
     description: Check team permissions for a repository (Legacy)
     guide: >
       Requires team_id, owner, and repo. Most useful optional filters: org, team_slug. Add org and
@@ -144645,6 +144973,7 @@ tables:
           path:
             - web_commit_signoff_required
   - name: repos_list_release_assets
+    namespace: releases
     description: List release assets
     guide: >
       Requires owner, repo, and release_id. Keep queries repository-scoped; fan out across repos
@@ -146186,6 +146515,7 @@ tables:
           kind: from_filter
           key: pat_id
   - name: repository_access
+    namespace: security
     description: Lists the repositories Dependabot can access in an organization
     guide: >
       Requires org. Large organizations can return many rows; narrow by one scoping filter before broad
@@ -146856,6 +147186,7 @@ tables:
           path:
             - url
   - name: repository_invitations
+    namespace: repos
     description: List repository invitations for the authenticated user
     guide: >
       Works without WHERE filters. Results are limited to resources visible to the authenticated user.
@@ -148610,6 +148941,7 @@ tables:
           path:
             - url
   - name: requested_reviewers
+    namespace: pulls
     description: Get all requested reviewers for a pull request
     guide: >
       Requires owner, repo, and pull_number. Keep queries repository-scoped; fan out across repos
@@ -148675,6 +149007,7 @@ tables:
           path:
             - users
   - name: required_pull_request_reviews
+    namespace: pulls
     description: Get pull request review protection
     guide: >
       Requires owner, repo, and branch. Keep queries repository-scoped; fan out across repos client-side
@@ -148869,6 +149202,7 @@ tables:
           path:
             - url
   - name: required_signatures
+    namespace: rules
     description: Get commit signature protection
     guide: >
       Requires owner, repo, and branch. Keep queries repository-scoped; fan out across repos client-side
@@ -148934,6 +149268,7 @@ tables:
           path:
             - url
   - name: required_status_checks
+    namespace: checks
     description: Get status checks protection
     guide: >
       Requires owner, repo, and branch. Keep queries repository-scoped; fan out across repos client-side
@@ -149023,6 +149358,7 @@ tables:
           path:
             - url
   - name: restrictions
+    namespace: rules
     description: Get access restrictions
     guide: >
       Requires owner, repo, and branch. Keep queries repository-scoped; fan out across repos client-side
@@ -149128,6 +149464,7 @@ tables:
           path:
             - users_url
   - name: retention_limit
+    namespace: actions
     description: Get GitHub Actions cache retention limit for an enterprise
     guide: >
       Use this table to inspect Actions cache retention limits for an enterprise. Requires
@@ -149207,6 +149544,7 @@ tables:
           kind: from_filter
           key: repo
   - name: reviews
+    namespace: pulls
     description: List reviews for a pull request
     guide: >
       Requires owner, repo, and pull_number. Most useful optional filters: review_id. Add review_id to
@@ -149622,6 +149960,7 @@ tables:
             - user
             - user_view_type
   - name: route_stats
+    namespace: metrics
     description: Get route stats by actor
     guide: >
       Requires org, actor_type, actor_id, and min_timestamp. Most useful optional filters: sort,
@@ -150076,6 +150415,7 @@ tables:
           path:
             - user_url
   - name: rule_suites
+    namespace: rules
     description: List organization rule suites
     guide: >
       Requires org. Most useful optional filters: ref, time_period, owner. Add rule_suite_id to jump from
@@ -150371,6 +150711,7 @@ tables:
           kind: from_filter
           key: repo
   - name: rulesets
+    namespace: rules
     description: Get all organization repository rulesets
     guide: >
       Requires org. Most useful optional filters: owner, repo, ruleset_id. Add ruleset_id to jump from the
@@ -150771,6 +151112,7 @@ tables:
           kind: from_filter
           key: repo
   - name: runner_groups
+    namespace: actions
     description: List self-hosted runner groups for an organization
     guide: >
       Requires org. Most useful optional filters: runner_group_id, visible_to_repository. Add
@@ -150954,6 +151296,7 @@ tables:
           path:
             - workflow_restrictions_read_only
   - name: runners
+    namespace: actions
     description: List self-hosted runners for an organization
     guide: >
       Requires org. Most useful optional filters: owner, repo, name. Add runner_id to jump from the
@@ -151118,6 +151461,7 @@ tables:
           kind: from_filter
           key: repo
   - name: sarifs
+    namespace: security
     description: Get information about a SARIF upload
     guide: >
       Requires owner, repo, and sarif_id. Keep queries repository-scoped; fan out across repos client-side
@@ -151194,6 +151538,7 @@ tables:
           kind: from_filter
           key: sarif_id
   - name: sbom
+    namespace: security
     description: Export a software bill of materials (SBOM) for a repository.
     guide: >
       Requires owner and repo. Keep queries repository-scoped; fan out across repos client-side when you
@@ -151350,6 +151695,7 @@ tables:
             - sbom
             - spdxVersion
   - name: scan_history
+    namespace: security
     description: Get secret scanning scan history for a repository
     guide: >
       Requires owner and repo. Keep queries repository-scoped; fan out across repos client-side when you
@@ -151421,6 +151767,7 @@ tables:
           kind: from_filter
           key: repo
   - name: schema
+    namespace: org
     description: Get all custom properties for an organization
     guide: >
       Requires org. Most useful optional filters: custom_property_name. Large organizations can return
@@ -151557,6 +151904,7 @@ tables:
           path:
             - values_editable_by
   - name: search_commits
+    namespace: search
     description: Search commits
     guide: >
       Searches commits via GitHub's /search/commits API. Requires q. ALWAYS scope with repo:OWNER/NAME or org:NAME —
@@ -153396,6 +153744,7 @@ tables:
           path:
             - url
   - name: search_issues
+    namespace: search
     description: Search issues and pull requests
     guide: >
       Searches issues and pull requests via GitHub's /search/issues API. Requires q, which accepts the full GitHub issue/PR
@@ -157241,6 +157590,7 @@ tables:
             - user
             - user_view_type
   - name: search_labels
+    namespace: search
     description: Search labels
     guide: >
       Searches labels within ONE specific repository. Requires both repository_id (numeric GitHub repo ID, NOT the
@@ -157398,6 +157748,7 @@ tables:
           path:
             - url
   - name: search_repositories
+    namespace: search
     description: Search repositories
     guide: >
       Searches GitHub repositories. Requires q. Common qualifiers: language:LANG, stars:>N, forks:>N, size:>N, topic:NAME,
@@ -158498,6 +158849,7 @@ tables:
           path:
             - web_commit_signoff_required
   - name: search_topics
+    namespace: search
     description: Search topics
     guide: >
       Searches GitHub repository topics by name fragment. Requires q. Topic search accepts free-text terms and a small set
@@ -158671,6 +159023,7 @@ tables:
           path:
             - updated_at
   - name: search_users
+    namespace: search
     description: Search users
     guide: >
       Searches GitHub users and organizations. Requires q. Common qualifiers: type:user, type:org, location:CITY,
@@ -159022,6 +159375,7 @@ tables:
           path:
             - user_view_type
   - name: seats
+    namespace: copilot
     description: List all Copilot seat assignments for an organization
     guide: >
       Requires org. Large organizations can return many rows; narrow by one scoping filter before broad
@@ -159886,6 +160240,7 @@ tables:
           path:
             - updated_at
   - name: security_advisories
+    namespace: security
     description: List repository security advisories for an organization
     guide: >
       Use this table to list repository security advisories for an org. Requires org. Start with
@@ -161320,6 +161675,7 @@ tables:
           kind: from_filter
           key: repo
   - name: security_managers
+    namespace: security
     description: List security manager teams
     guide: >
       Requires org. Large organizations can return many rows; narrow by one scoping filter before broad
@@ -161491,6 +161847,7 @@ tables:
           path:
             - url
   - name: selected_actions
+    namespace: actions
     description: Get allowed actions and reusable workflows for an organization
     guide: >
       Use this table to inspect allowed Actions and reusable workflow policy for an org. Requires
@@ -161575,6 +161932,7 @@ tables:
           kind: from_filter
           key: repo
   - name: self_hosted_runners
+    namespace: actions
     description: Get self-hosted runners settings for an organization
     guide: >
       Requires org. Large organizations can return many rows; narrow by one scoping filter before broad
@@ -161622,6 +161980,7 @@ tables:
           path:
             - selected_repositories_url
   - name: stargazers
+    namespace: repos
     description: List stargazers
     guide: >
       Requires owner and repo. Keep queries repository-scoped; fan out across repos client-side when you
@@ -161671,6 +162030,7 @@ tables:
           kind: from_filter
           key: repo
   - name: status
+    namespace: checks
     description: Get the combined status for a specific reference
     guide: >
       Requires owner, repo, and ref. Keep queries repository-scoped; fan out across repos client-side when
@@ -161815,6 +162175,7 @@ tables:
           path:
             - url
   - name: storage_limit
+    namespace: actions
     description: Get GitHub Actions cache storage limit for an enterprise
     guide: >
       Use this table to inspect Actions cache storage limits for an enterprise. Requires enterprise.
@@ -161894,6 +162255,7 @@ tables:
           kind: from_filter
           key: repo
   - name: storage_records
+    namespace: actions
     description: List artifact storage records
     guide: >
       Requires org and subject_digest. Large organizations can return many rows; narrow by one scoping
@@ -162007,6 +162369,7 @@ tables:
           path:
             - updated_at
   - name: stubbed
+    namespace: marketplace
     description: List subscriptions for the authenticated user (stubbed)
     guide: >
       Works without WHERE filters. Results are limited to resources visible to the authenticated user.
@@ -162286,6 +162649,7 @@ tables:
           path:
             - updated_at
   - name: sub_issues
+    namespace: issues
     description: List sub-issues
     guide: >
       Requires owner, repo, and issue_number. Keep queries repository-scoped; fan out across repos
@@ -166285,6 +166649,7 @@ tables:
             - user
             - user_view_type
   - name: subject_stats
+    namespace: metrics
     description: Get subject stats
     guide: >
       Requires org and min_timestamp. Most useful optional filters: sort, max_timestamp,
@@ -166442,6 +166807,7 @@ tables:
           path:
             - total_request_count
   - name: subscribers
+    namespace: repos
     description: List watchers
     guide: >
       Requires owner and repo. Keep queries repository-scoped; fan out across repos client-side when you
@@ -166661,6 +167027,7 @@ tables:
           path:
             - user_view_type
   - name: summary
+    namespace: billing
     description: Get billing usage summary for an organization
     guide: >
       Use this table to summarize org billing usage. Requires org. Start with year, month, or day
@@ -166880,6 +167247,7 @@ tables:
           kind: from_filter
           key: username
   - name: team
+    namespace: org
     description: Get a team (Legacy)
     guide: >
       Requires team_id. Use LIMIT for spot checks; large result sets paginate quickly.
@@ -167801,6 +168169,7 @@ tables:
           path:
             - url
   - name: teams
+    namespace: org
     description: List teams
     guide: >
       Use this table to list teams in one org. Requires org. Start with team_slug before paging,
@@ -168860,6 +169229,7 @@ tables:
           kind: from_filter
           key: repo
   - name: templates
+    namespace: licenses
     description: Get all gitignore templates
     guide: >
       Works without WHERE filters. Most useful optional filters: name. Add name to jump from the default list call
@@ -168908,6 +169278,7 @@ tables:
           path:
             - source
   - name: threads
+    namespace: notifications
     description: Get a thread
     guide: >
       Requires thread_id. Use LIMIT for spot checks; large result sets paginate quickly.
@@ -170297,6 +170668,7 @@ tables:
           path:
             - url
   - name: timeline
+    namespace: issues
     description: List timeline events for an issue
     guide: >
       Requires owner, repo, and issue_number. Keep queries repository-scoped; fan out across repos
@@ -173756,6 +174128,7 @@ tables:
             - verification
             - verified_at
   - name: trees
+    namespace: code
     description: Get a tree
     guide: >
       Requires owner, repo, and tree_sha. Most useful optional filters: recursive. Keep queries
@@ -173869,6 +174242,7 @@ tables:
           path:
             - url
   - name: usage
+    namespace: billing
     description: Get billing premium request usage report for an organization
     guide: >
       Use this table to inspect premium request usage for an org. Requires org. Start with year,
@@ -174094,6 +174468,7 @@ tables:
           kind: from_filter
           key: username
   - name: usage_by_repository
+    namespace: actions
     description: List repositories with GitHub Actions cache usage for an organization
     guide: >
       Requires org. Large organizations can return many rows; narrow by one scoping filter before broad
@@ -174570,6 +174945,7 @@ tables:
           path:
             - user_view_type
   - name: user_blocks
+    namespace: users
     description: List users blocked by the authenticated user
     guide: >
       Works without WHERE filters. Results are limited to resources visible to the authenticated user.
@@ -174768,6 +175144,7 @@ tables:
           path:
             - user_view_type
   - name: user_codespace_machines
+    namespace: codespaces
     description: List machine types for a codespace
     guide: >
       Requires codespace_name. Use LIMIT for spot checks; large result sets paginate quickly.
@@ -174861,6 +175238,7 @@ tables:
           path:
             - storage_in_bytes
   - name: user_codespace_secret_public_key
+    namespace: codespaces
     description: Get public key for the authenticated user
     guide: >
       Works without WHERE filters. Results are limited to resources visible to the authenticated user.
@@ -174896,6 +175274,7 @@ tables:
           path:
             - key_id
   - name: user_codespace_secrets
+    namespace: codespaces
     description: List secrets for the authenticated user
     guide: >
       Works without WHERE filters. Most useful optional filters: secret_name. Add secret_name to jump from the
@@ -174981,6 +175360,7 @@ tables:
           path:
             - visibility
   - name: user_codespaces
+    namespace: codespaces
     description: List codespaces for the authenticated user
     guide: >
       Works without WHERE filters. Most useful optional filters: repository_id, codespace_name. Add codespace_name
@@ -177141,6 +177521,7 @@ tables:
           path:
             - web_url
   - name: user_docker_conflicts
+    namespace: codespaces
     description: Get list of conflicting packages during Docker migration for authenticated-user
     guide: >
       Works without WHERE filters. Results are limited to resources visible to the authenticated user.
@@ -178609,6 +178990,7 @@ tables:
           path:
             - visibility
   - name: user_event_orgs
+    namespace: org
     description: List organization events for the authenticated user
     guide: >
       Requires username and org. Large organizations can return many rows; narrow by one scoping filter
@@ -181732,6 +182114,7 @@ tables:
           kind: from_filter
           key: username
   - name: user_event_public
+    namespace: users
     description: List public events for a user
     guide: >
       Requires username. Use LIMIT for spot checks; large result sets paginate quickly.
@@ -184852,6 +185235,7 @@ tables:
           kind: from_filter
           key: username
   - name: user_followers
+    namespace: users
     description: List followers of the authenticated user
     guide: >
       Works without WHERE filters. Results are limited to resources visible to the authenticated user.
@@ -185049,6 +185433,7 @@ tables:
           path:
             - user_view_type
   - name: user_following
+    namespace: users
     description: List the people the authenticated user follows
     guide: >
       Works without WHERE filters. Results are limited to resources visible to the authenticated user.
@@ -185246,6 +185631,7 @@ tables:
           path:
             - user_view_type
   - name: user_gpg_keys
+    namespace: users
     description: List GPG keys for the authenticated user
     guide: >
       Works without WHERE filters. Most useful optional filters: gpg_key_id. Add gpg_key_id to jump from the
@@ -185404,6 +185790,7 @@ tables:
           path:
             - subkeys
   - name: user_installation_repositories
+    namespace: apps
     description: List repositories accessible to the user access token
     guide: >
       Requires installation_id. Use LIMIT for spot checks; large result sets paginate quickly.
@@ -186598,6 +186985,7 @@ tables:
           path:
             - web_commit_signoff_required
   - name: user_installations
+    namespace: apps
     description: List app installations accessible to the user access token
     guide: >
       Works without WHERE filters. Results are limited to resources visible to the authenticated user.
@@ -187796,6 +188184,7 @@ tables:
           path:
             - updated_at
   - name: user_interaction_limits
+    namespace: rules
     description: Get interaction restrictions for your public repositories
     guide: >
       Works without WHERE filters. Results are limited to resources visible to the authenticated user.
@@ -187839,6 +188228,7 @@ tables:
           path:
             - origin
   - name: user_issues
+    namespace: issues
     description: List user account issues assigned to the authenticated user
     guide: >
       Works without WHERE filters. Most useful optional filters: state, labels, sort. Results are limited to
@@ -191859,6 +192249,7 @@ tables:
             - user
             - user_view_type
   - name: user_keys
+    namespace: users
     description: List public SSH keys for the authenticated user
     guide: >
       Works without WHERE filters. Most useful optional filters: key_id. Add key_id to jump from the default list
@@ -191961,6 +192352,7 @@ tables:
           path:
             - verified
   - name: user_membership_orgs
+    namespace: org
     description: List organization memberships for the authenticated user
     guide: >
       Use this table to list the authenticated user's organization memberships. Works without WHERE
@@ -192411,6 +192803,7 @@ tables:
             - user
             - user_view_type
   - name: user_migrations
+    namespace: migrations
     description: List user migrations
     guide: >
       Works without WHERE filters. Most useful optional filters: migration_id, exclude. Add migration_id to jump
@@ -193682,6 +194075,7 @@ tables:
           path:
             - web_commit_signoff_required
   - name: user_orgs
+    namespace: org
     description: List organizations for the authenticated user
     guide: >
       Works without WHERE filters. Results are limited to resources visible to the authenticated user.
@@ -193799,6 +194193,7 @@ tables:
           path:
             - url
   - name: user_packages
+    namespace: packages
     description: Get a package for the authenticated user
     guide: >
       Use this table to inspect one authenticated-user package. Requires package_type and
@@ -195315,6 +195710,7 @@ tables:
           kind: from_filter
           key: username
   - name: user_received_event_public
+    namespace: users
     description: List public events received by a user
     guide: >
       Requires username. Use LIMIT for spot checks; large result sets paginate quickly.
@@ -198435,6 +198831,7 @@ tables:
           kind: from_filter
           key: username
   - name: user_repos
+    namespace: users
     description: List repositories for the authenticated user
     guide: >
       Works without WHERE filters. Most useful optional filters: visibility, affiliation, type. Results are
@@ -199677,6 +200074,7 @@ tables:
           path:
             - web_commit_signoff_required
   - name: user_setting_billing_usage
+    namespace: billing
     description: Get billing usage report for a user
     guide: >
       Requires username. Most useful optional filters: year, month, day. Use the time filter for
@@ -199839,6 +200237,7 @@ tables:
           kind: from_filter
           key: year
   - name: user_social_accounts
+    namespace: users
     description: List social accounts for the authenticated user
     guide: >
       Works without WHERE filters. Results are limited to resources visible to the authenticated user.
@@ -199876,6 +200275,7 @@ tables:
           path:
             - url
   - name: user_ssh_signing_keys
+    namespace: users
     description: List SSH signing keys for the authenticated user
     guide: >
       Works without WHERE filters. Most useful optional filters: ssh_signing_key_id. Add ssh_signing_key_id to
@@ -199946,6 +200346,7 @@ tables:
           path:
             - title
   - name: user_starred
+    namespace: users
     description: List repositories starred by the authenticated user
     guide: >
       Works without WHERE filters. Most useful optional filters: sort, direction. Results are limited to resources
@@ -201156,6 +201557,7 @@ tables:
           path:
             - web_commit_signoff_required
   - name: user_stats
+    namespace: metrics
     description: Get user stats
     guide: >
       Requires org, user_id, and min_timestamp. Most useful optional filters: sort, max_timestamp,
@@ -201339,6 +201741,7 @@ tables:
           kind: from_filter
           key: user_id
   - name: user_subscriptions
+    namespace: users
     description: List repositories watched by the authenticated user
     guide: >
       Works without WHERE filters. Results are limited to resources visible to the authenticated user.
@@ -202400,6 +202803,7 @@ tables:
           path:
             - web_commit_signoff_required
   - name: user_teams
+    namespace: org
     description: List teams for the authenticated user
     guide: >
       Works without WHERE filters. Results are limited to resources visible to the authenticated user.
@@ -203741,6 +204145,7 @@ tables:
           kind: from_filter
           key: username
   - name: users_1_day
+    namespace: copilot
     description: Get Copilot users usage metrics for a specific day
     guide: >
       Use this table to inspect Copilot user metrics for one enterprise day. Requires enterprise and
@@ -203823,6 +204228,7 @@ tables:
           kind: from_filter
           key: org
   - name: users_list_followers_for_user
+    namespace: users
     description: List followers of a user
     guide: >
       Requires username. Use LIMIT for spot checks; large result sets paginate quickly.
@@ -204031,6 +204437,7 @@ tables:
           kind: from_filter
           key: username
   - name: users_list_following_for_user
+    namespace: users
     description: List the people a user follows
     guide: >
       Requires username. Use LIMIT for spot checks; large result sets paginate quickly.
@@ -204239,6 +204646,7 @@ tables:
           kind: from_filter
           key: username
   - name: users_list_gpg_keys_for_user
+    namespace: users
     description: List GPG keys for a user
     guide: >
       Requires username. Use LIMIT for spot checks; large result sets paginate quickly.
@@ -204391,6 +204799,7 @@ tables:
           kind: from_filter
           key: username
   - name: users_list_public_keys_for_user
+    namespace: users
     description: List public keys for a user
     guide: >
       Requires username. Use LIMIT for spot checks; large result sets paginate quickly.
@@ -204455,6 +204864,7 @@ tables:
           kind: from_filter
           key: username
   - name: users_list_social_accounts_for_user
+    namespace: users
     description: List social accounts for a user
     guide: >
       Requires username. Use LIMIT for spot checks; large result sets paginate quickly.
@@ -204503,6 +204913,7 @@ tables:
           kind: from_filter
           key: username
   - name: users_list_ssh_signing_keys_for_user
+    namespace: users
     description: List SSH signing keys for a user
     guide: >
       Requires username. Use LIMIT for spot checks; large result sets paginate quickly.
@@ -204567,6 +204978,7 @@ tables:
           kind: from_filter
           key: username
   - name: variant_analyses
+    namespace: security
     description: Get the summary of a CodeQL variant analysis
     guide: >
       Requires owner, repo, and codeql_variant_analysis_id. Keep queries repository-scoped; fan out across
@@ -204723,6 +205135,7 @@ tables:
           path:
             - result_count
   - name: versions
+    namespace: packages
     description: List package versions for a package owned by the authenticated user
     guide: >
       Requires package_type and package_name. Most useful optional filters: state, org, username. Add
@@ -204971,6 +205384,7 @@ tables:
           kind: from_filter
           key: username
   - name: views
+    namespace: pages
     description: Get page views
     guide: >
       Requires owner and repo. Most useful optional filters: per. Keep queries repository-scoped; fan out
@@ -205050,6 +205464,7 @@ tables:
           path:
             - uniques
   - name: workflow
+    namespace: actions
     description: Get default workflow permissions for an organization
     guide: >
       Use this table to inspect default workflow permissions for an org. Requires org. Add owner and
@@ -205123,6 +205538,7 @@ tables:
           kind: from_filter
           key: repo
   - name: workflows
+    namespace: actions
     description: List repository workflows
     guide: >
       Requires owner and repo. Most useful optional filters: workflow_id. Add workflow_id to jump from the
