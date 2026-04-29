@@ -7,11 +7,14 @@
 //!
 //! See: <https://github.com/apache/datafusion/blob/eae7bf4/datafusion/physical-expr/src/expressions/binary.rs#L970-L983>
 //!
-//! This module registers a `FunctionRewrite` that detects unescaped `%` or `_`
-//! in `SIMILAR TO` and regex operator (`~`, `~*`, `!~`, `!~*`) patterns and
-//! returns a clear error suggesting regex syntax, LIKE, or escaping with `\`.
-//! Escaped forms (`\%`, `\_`) are allowed through since they work as literal
-//! matches in the underlying regex engine.
+//! This module registers a `FunctionRewrite` that returns a clear error when
+//! `SIMILAR TO` patterns contain unescaped `%` or `_`. Escaped forms (`\%`,
+//! `\_`) are allowed through since they work as literal matches in the
+//! underlying regex engine.
+//!
+//! Regex operators (`~`, `~*`, `!~`, `!~*`) are not validated because `%` and
+//! `_` are ordinary literal characters in regex and have legitimate uses
+//! (e.g. matching "50%" or "`user_name`").
 
 use std::sync::Arc;
 
@@ -19,8 +22,7 @@ use datafusion::common::config::ConfigOptions;
 use datafusion::common::tree_node::Transformed;
 use datafusion::common::{DFSchema, Result as DataFusionResult, ScalarValue, plan_err};
 use datafusion::execution::FunctionRegistry;
-use datafusion::logical_expr::Operator;
-use datafusion::logical_expr::expr::{BinaryExpr, Expr, Like};
+use datafusion::logical_expr::expr::{Expr, Like};
 use datafusion::logical_expr::expr_rewriter::FunctionRewrite;
 
 pub(crate) fn register_pattern_validator(
@@ -52,7 +54,6 @@ impl FunctionRewrite for PatternValidator {
 fn validate_expr(expr: &Expr) -> DataFusionResult<()> {
     match expr {
         Expr::SimilarTo(like) => validate_similar_to(like),
-        Expr::BinaryExpr(binary) => validate_regex_binary(binary),
         _ => Ok(()),
     }
 }
@@ -65,26 +66,6 @@ fn validate_similar_to(like: &Like) -> DataFusionResult<()> {
     if contains_unescaped_like_wildcards(&pattern) {
         return plan_err!(
             "SIMILAR TO pattern '{pattern}' contains `%` or `_` which are literal characters in SIMILAR TO, not wildcards. Use `.*` instead of `%`, `.` instead of `_`, use LIKE for wildcard matching, or escape with `\\%` / `\\_` if you want the literal character."
-        );
-    }
-
-    Ok(())
-}
-
-fn validate_regex_binary(binary: &BinaryExpr) -> DataFusionResult<()> {
-    if !is_regex_operator(binary.op) {
-        return Ok(());
-    }
-
-    let Some(pattern) = extract_string_literal(&binary.right) else {
-        return Ok(());
-    };
-
-    if has_unescaped_char(&pattern, '%') {
-        return plan_err!(
-            "Regex operator `{}` pattern '{}' contains `%` which is a literal character in regex, not a wildcard. Use `.*` instead of `%`, use LIKE/ILIKE for wildcard matching, or escape with `\\%` if you want the literal character.",
-            binary.op,
-            pattern
         );
     }
 
@@ -124,16 +105,6 @@ fn has_unescaped_char(pattern: &str, ch: char) -> bool {
     false
 }
 
-fn is_regex_operator(op: Operator) -> bool {
-    matches!(
-        op,
-        Operator::RegexMatch
-            | Operator::RegexIMatch
-            | Operator::RegexNotMatch
-            | Operator::RegexNotIMatch
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use datafusion::common::config::ConfigOptions;
@@ -144,7 +115,7 @@ mod tests {
 
     use super::PatternValidator;
     use crate::runtime::pattern_validator::{
-        contains_unescaped_like_wildcards, extract_string_literal, validate_expr,
+        contains_unescaped_like_wildcards, extract_string_literal,
     };
 
     #[test]
@@ -183,32 +154,14 @@ mod tests {
     }
 
     #[test]
-    fn regex_match_with_percent_returns_error() {
-        let error = rewrite_err(regex_expr(Operator::RegexMatch, "(Slack|Weekly)%"));
-        assert!(error.contains("Regex operator `~` pattern '(Slack|Weekly)%'"));
-        assert!(error.contains("Use `.*` instead of `%`"));
+    fn regex_match_with_percent_passes() {
+        // % is a valid literal character in regex — no error
+        assert_rewrite_passes(&regex_expr(Operator::RegexMatch, "(Slack|Weekly)%"));
     }
 
     #[test]
-    fn regex_match_without_percent_passes() {
-        assert_rewrite_passes(&regex_expr(Operator::RegexMatch, "(Slack|Weekly).*"));
-    }
-
-    #[test]
-    fn regex_match_with_escaped_percent_passes() {
-        assert_rewrite_passes(&regex_expr(Operator::RegexMatch, r"100\%"));
-    }
-
-    #[test]
-    fn regex_imatch_with_percent_returns_error() {
-        let error = rewrite_err(regex_expr(Operator::RegexIMatch, "(Slack|Weekly)%"));
-        assert!(error.contains("Regex operator `~*` pattern '(Slack|Weekly)%'"));
-    }
-
-    #[test]
-    fn negated_regex_with_percent_returns_error() {
-        let error = rewrite_err(regex_expr(Operator::RegexNotIMatch, "(Slack|Weekly)%"));
-        assert!(error.contains("Regex operator `!~*` pattern '(Slack|Weekly)%'"));
+    fn regex_match_with_underscore_passes() {
+        assert_rewrite_passes(&regex_expr(Operator::RegexMatch, "user_name"));
     }
 
     #[test]
@@ -254,17 +207,6 @@ mod tests {
         assert!(contains_unescaped_like_wildcards(r"incident_io"));
         assert!(!contains_unescaped_like_wildcards(r"100\%"));
         assert!(contains_unescaped_like_wildcards(r"100%"));
-    }
-
-    #[test]
-    fn validate_expr_ignores_non_literal_regex_patterns() {
-        let expr = Expr::BinaryExpr(BinaryExpr::new(
-            Box::new(Expr::Column(Column::from_name("name"))),
-            Operator::RegexMatch,
-            Box::new(Expr::Column(Column::from_name("pattern"))),
-        ));
-
-        validate_expr(&expr).expect("column-driven regex should not error");
     }
 
     fn similar_to_expr(pattern: &str) -> Expr {
