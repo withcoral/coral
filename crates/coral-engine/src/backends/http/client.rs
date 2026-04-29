@@ -233,7 +233,14 @@ impl HttpSourceClient {
                     &state,
                     self.resolved_inputs.as_ref(),
                 )?;
-                apply_pagination_body_fields(&mut body, table, &pagination, &state, page_size)?;
+                apply_pagination_body_fields(
+                    &mut body,
+                    &active_request.body,
+                    table,
+                    &pagination,
+                    &state,
+                    page_size,
+                )?;
                 (query_pairs, body)
             };
 
@@ -868,6 +875,7 @@ fn build_request_body(
 
 fn apply_pagination_body_fields(
     body: &mut Option<RequestBody>,
+    body_spec: &BodySpec,
     table: &HttpTableSpec,
     pagination: &ValidatedPagination,
     state: &PageState,
@@ -884,7 +892,7 @@ fn apply_pagination_body_fields(
         return Ok(());
     }
 
-    if let Some(RequestBody::Text(_)) = body {
+    if matches!(body_spec, BodySpec::Text { .. }) || matches!(body, Some(RequestBody::Text(_))) {
         return Err(DataFusionError::Execution(
             "pagination body fields are not supported with text request bodies".to_string(),
         ));
@@ -1174,9 +1182,9 @@ mod tests {
     use tokio::task::JoinHandle;
 
     use super::{
-        HttpSourceClient, PageState, RequestSpec as HttpRequestSpec, apply_pagination_query_pairs,
-        execute_request, extract_next_link_url, extract_rows, join_url, normalize_base_url,
-        page_is_exhausted, resolve_value_source, set_path_value,
+        HttpSourceClient, PageState, RequestSpec as HttpRequestSpec, apply_pagination_body_fields,
+        apply_pagination_query_pairs, execute_request, extract_next_link_url, extract_rows,
+        join_url, normalize_base_url, page_is_exhausted, resolve_value_source, set_path_value,
     };
     use coral_spec::PaginationMode;
     use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec, RateLimitSpec};
@@ -1816,6 +1824,55 @@ mod tests {
             pagination.mode,
             ValidatedPaginationMode::Offset(_)
         ));
+    }
+
+    #[test]
+    fn apply_pagination_body_fields_rejects_declared_text_body_even_when_absent() {
+        let table = test_http_table_spec(
+            &json!([]),
+            &RequestSpec {
+                method: HttpMethod::GET,
+                path: ParsedTemplate::parse("/items").expect("template"),
+                query: vec![],
+                body: BodySpec::default(),
+                headers: vec![],
+            },
+        );
+        let body_spec = BodySpec::Text {
+            content: ValueSourceSpec::Filter {
+                key: "sql".to_string(),
+                default: None,
+            },
+        };
+        let pagination = PaginationSpec {
+            page_size: Some(coral_spec::PageSizeSpec {
+                default: 25,
+                max: 100,
+                query_param: None,
+                body_path: vec!["limit".to_string()],
+            }),
+            ..PaginationSpec::default()
+        }
+        .validated("demo", "items")
+        .unwrap();
+        let mut body = None;
+
+        let error = apply_pagination_body_fields(
+            &mut body,
+            &body_spec,
+            &table,
+            &pagination,
+            &PageState::default(),
+            Some(25),
+        )
+        .expect_err("text request bodies must not receive pagination body fields");
+
+        assert!(
+            error
+                .to_string()
+                .contains("pagination body fields are not supported with text request bodies")
+        );
+        assert!(body.is_none());
     }
 
     #[test]
