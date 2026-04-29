@@ -4,6 +4,8 @@ on:
   release:
     types: [published]
 
+permissions: {}
+
 jobs:
   notify-discord:
     runs-on: ubuntu-latest
