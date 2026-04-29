@@ -1,5 +1,17 @@
-//! Query-pattern validation for regex-style operators with common LIKE-wildcard
-//! mistakes.
+//! Validates regex-style query patterns to catch common LIKE-wildcard mistakes.
+//!
+//! `DataFusion`'s `SIMILAR TO` is implemented as a pure regex match — it maps
+//! directly to `RegexMatch` without converting SQL-standard wildcards (`%`, `_`)
+//! to their regex equivalents (`.*`, `.`). This means `WHERE name SIMILAR TO
+//! 'Slack%'` silently matches nothing instead of behaving like `PostgreSQL`.
+//!
+//! See: <https://github.com/apache/datafusion/blob/eae7bf4/datafusion/physical-expr/src/expressions/binary.rs#L970-L983>
+//!
+//! This module registers a `FunctionRewrite` that detects unescaped `%` or `_`
+//! in `SIMILAR TO` and regex operator (`~`, `~*`, `!~`, `!~*`) patterns and
+//! returns a clear error suggesting regex syntax, LIKE, or escaping with `\`.
+//! Escaped forms (`\%`, `\_`) are allowed through since they work as literal
+//! matches in the underlying regex engine.
 
 use std::sync::Arc;
 
@@ -50,9 +62,9 @@ fn validate_similar_to(like: &Like) -> DataFusionResult<()> {
         return Ok(());
     };
 
-    if contains_like_wildcards(&pattern) {
+    if contains_unescaped_like_wildcards(&pattern) {
         return plan_err!(
-            "SIMILAR TO pattern '{pattern}' contains `%` or `_` which are literal characters in SIMILAR TO, not wildcards. Use `.*` instead of `%`, `.` instead of `_`, or use LIKE for wildcard matching."
+            "SIMILAR TO pattern '{pattern}' contains `%` or `_` which are literal characters in SIMILAR TO, not wildcards. Use `.*` instead of `%`, `.` instead of `_`, use LIKE for wildcard matching, or escape with `\\%` / `\\_` if you want the literal character."
         );
     }
 
@@ -68,9 +80,9 @@ fn validate_regex_binary(binary: &BinaryExpr) -> DataFusionResult<()> {
         return Ok(());
     };
 
-    if pattern.contains('%') {
+    if has_unescaped_char(&pattern, '%') {
         return plan_err!(
-            "Regex operator `{}` pattern '{}' contains `%` which is a literal character in regex, not a wildcard. Use `.*` instead of `%`, or use LIKE/ILIKE for wildcard matching.",
+            "Regex operator `{}` pattern '{}' contains `%` which is a literal character in regex, not a wildcard. Use `.*` instead of `%`, use LIKE/ILIKE for wildcard matching, or escape with `\\%` if you want the literal character.",
             binary.op,
             pattern
         );
@@ -92,8 +104,24 @@ fn extract_string_literal(expr: &Expr) -> Option<String> {
     }
 }
 
-fn contains_like_wildcards(pattern: &str) -> bool {
-    pattern.contains('%') || pattern.contains('_')
+/// Returns `true` when `pattern` contains unescaped `%` or `_`.
+///
+/// A preceding backslash (`\%`, `\_`) signals the user intentionally wants the
+/// literal character, so those occurrences are ignored.
+fn contains_unescaped_like_wildcards(pattern: &str) -> bool {
+    has_unescaped_char(pattern, '%') || has_unescaped_char(pattern, '_')
+}
+
+/// Returns `true` when `pattern` contains an unescaped occurrence of `ch`.
+fn has_unescaped_char(pattern: &str, ch: char) -> bool {
+    let mut prev_backslash = false;
+    for c in pattern.chars() {
+        if c == ch && !prev_backslash {
+            return true;
+        }
+        prev_backslash = c == '\\';
+    }
+    false
 }
 
 fn is_regex_operator(op: Operator) -> bool {
@@ -116,7 +144,7 @@ mod tests {
 
     use super::PatternValidator;
     use crate::runtime::pattern_validator::{
-        contains_like_wildcards, extract_string_literal, validate_expr,
+        contains_unescaped_like_wildcards, extract_string_literal, validate_expr,
     };
 
     #[test]
@@ -145,6 +173,16 @@ mod tests {
     }
 
     #[test]
+    fn similar_to_with_escaped_percent_passes() {
+        assert_rewrite_passes(&similar_to_expr(r"100\%"));
+    }
+
+    #[test]
+    fn similar_to_with_escaped_underscore_passes() {
+        assert_rewrite_passes(&similar_to_expr(r"incident\_io"));
+    }
+
+    #[test]
     fn regex_match_with_percent_returns_error() {
         let error = rewrite_err(regex_expr(Operator::RegexMatch, "(Slack|Weekly)%"));
         assert!(error.contains("Regex operator `~` pattern '(Slack|Weekly)%'"));
@@ -154,6 +192,11 @@ mod tests {
     #[test]
     fn regex_match_without_percent_passes() {
         assert_rewrite_passes(&regex_expr(Operator::RegexMatch, "(Slack|Weekly).*"));
+    }
+
+    #[test]
+    fn regex_match_with_escaped_percent_passes() {
+        assert_rewrite_passes(&regex_expr(Operator::RegexMatch, r"100\%"));
     }
 
     #[test]
@@ -201,10 +244,16 @@ mod tests {
     }
 
     #[test]
-    fn contains_like_wildcards_only_flags_like_syntax() {
-        assert!(contains_like_wildcards("Slack%"));
-        assert!(contains_like_wildcards("Slack_"));
-        assert!(!contains_like_wildcards("Slack.*"));
+    fn contains_unescaped_like_wildcards_only_flags_unescaped() {
+        assert!(contains_unescaped_like_wildcards("Slack%"));
+        assert!(contains_unescaped_like_wildcards("Slack_"));
+        assert!(!contains_unescaped_like_wildcards("Slack.*"));
+        assert!(!contains_unescaped_like_wildcards(r"Slack\%"));
+        assert!(!contains_unescaped_like_wildcards(r"Slack\_"));
+        assert!(!contains_unescaped_like_wildcards(r"incident\_io"));
+        assert!(contains_unescaped_like_wildcards(r"incident_io"));
+        assert!(!contains_unescaped_like_wildcards(r"100\%"));
+        assert!(contains_unescaped_like_wildcards(r"100%"));
     }
 
     #[test]
