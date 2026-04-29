@@ -14,7 +14,9 @@ use tonic::{Request, Response, Status};
 use crate::bootstrap::app_status;
 use crate::query::manager::QueryManager;
 use crate::sources::SourceName;
-use crate::sources::manager::SourceManager;
+use crate::sources::manager::{
+    CreateBundledSourceCommand, ImportSourceCommand, SourceBinding, SourceBindings, SourceManager,
+};
 use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
 use crate::transport::{
     grpc_span, instrument_grpc, query_status, validate_source_response_to_proto,
@@ -128,8 +130,12 @@ impl SourceServiceApi for SourceService {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
             let bundled_name = SourceName::parse(&request.name).map_err(app_status)?;
+            let command = CreateBundledSourceCommand {
+                name: bundled_name,
+                bindings: source_bindings_from_proto(request.variables, request.secrets),
+            };
             let installed = sources
-                .create_bundled_source(&workspace_name, &bundled_name, &request)
+                .create_bundled_source(&workspace_name, &command)
                 .map_err(app_status)?;
             Ok(Response::new(installed_source_to_proto(
                 &workspace_name,
@@ -148,8 +154,12 @@ impl SourceServiceApi for SourceService {
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            let command = ImportSourceCommand {
+                manifest_yaml: request.manifest_yaml,
+                bindings: source_bindings_from_proto(request.variables, request.secrets),
+            };
             let installed = sources
-                .import_source(&workspace_name, &request)
+                .import_source(&workspace_name, &command)
                 .map_err(app_status)?;
             Ok(Response::new(installed_source_to_proto(
                 &workspace_name,
@@ -200,6 +210,33 @@ impl SourceServiceApi for SourceService {
             )))
         })
         .await
+    }
+}
+
+fn source_bindings_from_proto(
+    variables: Vec<SourceVariable>,
+    secrets: Vec<SourceSecret>,
+) -> SourceBindings {
+    SourceBindings {
+        variables: variables
+            .into_iter()
+            .map(source_variable_from_proto)
+            .collect(),
+        secrets: secrets.into_iter().map(source_secret_from_proto).collect(),
+    }
+}
+
+fn source_variable_from_proto(variable: SourceVariable) -> SourceBinding {
+    SourceBinding {
+        key: variable.key,
+        value: variable.value,
+    }
+}
+
+fn source_secret_from_proto(secret: SourceSecret) -> SourceBinding {
+    SourceBinding {
+        key: secret.key,
+        value: secret.value,
     }
 }
 
