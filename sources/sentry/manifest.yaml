@@ -100,6 +100,10 @@ tables:
         - name: project
           from: filter
           key: project
+        - name: query
+          from: filter
+          key: query
+          default: ""
     response: {}
     pagination:
       mode: link_header
@@ -191,8 +195,16 @@ tables:
             - kind: path
               path:
                 - project
+      - name: query
+        type: Utf8
+        nullable: true
+        description: Sentry search query string (e.g. "is:unresolved"). Pass via WHERE to scope results.
+        expr:
+          kind: 'null'
+        virtual: true
     filters:
       - name: project
+      - name: query
   - name: events
     description: Individual events for a specific issue
     guide: |
