@@ -27,6 +27,19 @@ For richer metadata, have the agent query `coral.tables`, `coral.columns`, and `
 Coral uses stdio transport. If a client supports a command-based install flow, point it at `coral mcp-stdio`. If a client needs a full path, run `which coral` and use that path in the config instead of `coral`.
 
 <Tabs>
+<Tab title="npx add-mcp">
+
+  Use [add-mcp](https://github.com/neondatabase/add-mcp) to add the Coral MCP server to all your favorite coding agents with a single command.
+
+
+  ```shellscript
+  npx add-mcp -n coral -g "$(which coral) mcp-stdio"
+  ```
+
+  (To install only in the current project, omit the `-g` flag.)
+
+</Tab>
+
   <Tab title="Claude Code">
   ```shellscript
   claude mcp add --scope user coral -- coral mcp-stdio
