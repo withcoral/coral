@@ -293,7 +293,7 @@ async fn empty_string_filter_default_without_where_clause() {
     let rows = execution_to_rows(
         &CoralQuery::execute_sql(
             &[source],
-            &TestRuntime,
+            test_runtime(),
             "SELECT id FROM sentry_default_query.issues",
         )
         .await
@@ -324,7 +324,7 @@ async fn empty_string_filter_default_where_override() {
     let rows = execution_to_rows(
         &CoralQuery::execute_sql(
             &[source],
-            &TestRuntime,
+            test_runtime(),
             "SELECT id FROM sentry_override_query.issues WHERE query = 'is:unresolved'",
         )
         .await
