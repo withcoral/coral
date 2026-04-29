@@ -28,4 +28,6 @@ message Table {
   repeated Column columns = 5;
   // Required filter names, if any.
   repeated string required_filters = 6;
+  // The table namespace within the source. Core tables use "core".
+  string namespace = 7;
 }

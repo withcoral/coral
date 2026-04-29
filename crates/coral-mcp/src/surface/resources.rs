@@ -5,6 +5,8 @@ use coral_api::v1::{Source, Table};
 use rmcp::model::{AnnotateAble, RawResource, Resource};
 use serde_json::{Value, json};
 
+const DEFAULT_TABLE_NAMESPACE: &str = "core";
+
 static INITIAL_INSTRUCTIONS: &str = "You are connected to Coral. Read `coral://guide` for query patterns, use `list_tables` to inspect queryable tables, and use `sql` against `coral.tables` and `coral.columns` for discovery.";
 static GUIDE_TEMPLATE: &str = include_str!("../guide_template.md");
 
@@ -52,13 +54,15 @@ pub(crate) fn guide_resource_content(sources: &[Source], tables: &[Table]) -> St
     let columns_example = first_visible_table(tables).map_or_else(
         || {
             "SELECT column_name, data_type, is_required_filter, description \
-FROM coral.columns WHERE schema_name = '<schema>' AND table_name = '<table>' ORDER BY ordinal_position;"
+FROM coral.columns WHERE schema_name = '<schema>' AND namespace = '<namespace>' AND table_name = '<table>' ORDER BY ordinal_position;"
                 .to_string()
         },
-        |(schema_name, table_name)| {
+        |table| {
+            let namespace = normalized_table_namespace(table);
             format!(
                 "SELECT column_name, data_type, is_required_filter, description \
-FROM coral.columns WHERE schema_name = '{schema_name}' AND table_name = '{table_name}' ORDER BY ordinal_position;"
+FROM coral.columns WHERE schema_name = '{}' AND namespace = '{}' AND table_name = '{}' ORDER BY ordinal_position;",
+                table.schema_name, namespace, table.name
             )
         },
     );
@@ -109,7 +113,10 @@ fn queryable_tables(tables: &[Table]) -> Vec<Value> {
         .iter()
         .map(|table| {
             json!({
-                "name": format!("{}.{}", table.schema_name, table.name),
+                "name": table_sql_name(table),
+                "schema_name": table.schema_name,
+                "namespace": normalized_table_namespace(table),
+                "table_name": table.name,
                 "description": table.description,
                 "required_filters": table.required_filters,
             })
@@ -123,20 +130,45 @@ fn queryable_tables(tables: &[Table]) -> Vec<Value> {
     summaries
 }
 
-fn first_visible_table(tables: &[Table]) -> Option<(&str, &str)> {
-    tables
-        .iter()
-        .min_by(|left, right| {
-            (&left.schema_name, &left.name).cmp(&(&right.schema_name, &right.name))
-        })
-        .map(|table| (table.schema_name.as_str(), table.name.as_str()))
+fn first_visible_table(tables: &[Table]) -> Option<&Table> {
+    tables.iter().min_by(|left, right| {
+        (
+            &left.schema_name,
+            normalized_table_namespace(left),
+            &left.name,
+        )
+            .cmp(&(
+                &right.schema_name,
+                normalized_table_namespace(right),
+                &right.name,
+            ))
+    })
+}
+
+fn normalized_table_namespace(table: &Table) -> &str {
+    // Current servers always send a namespace. Proto3 still decodes missing
+    // values from older producers as an empty string, which should behave as core.
+    if table.namespace.is_empty() {
+        DEFAULT_TABLE_NAMESPACE
+    } else {
+        &table.namespace
+    }
+}
+
+fn table_sql_name(table: &Table) -> String {
+    let namespace = normalized_table_namespace(table);
+    if namespace == DEFAULT_TABLE_NAMESPACE {
+        format!("{}.{}", table.schema_name, table.name)
+    } else {
+        format!("{}.{}.{}", table.schema_name, namespace, table.name)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use coral_api::v1::{Source, Table, Workspace};
 
-    use super::guide_resource_content;
+    use super::{DEFAULT_TABLE_NAMESPACE, guide_resource_content, list_tables_value};
 
     fn source(name: &str) -> Source {
         Source {
@@ -152,11 +184,16 @@ mod tests {
     }
 
     fn table(schema_name: &str, name: &str) -> Table {
+        table_with_namespace(schema_name, DEFAULT_TABLE_NAMESPACE, name)
+    }
+
+    fn table_with_namespace(schema_name: &str, namespace: &str, name: &str) -> Table {
         Table {
             workspace: Some(Workspace {
                 name: "default".to_string(),
             }),
             schema_name: schema_name.to_string(),
+            namespace: namespace.to_string(),
             name: name.to_string(),
             description: format!("{name} description"),
             columns: Vec::new(),
@@ -184,5 +221,41 @@ mod tests {
         assert!(content.contains("Visible source schemas:"));
         assert!(content.contains("- slack"));
         assert!(content.contains("Fully qualify tables in SQL, for example `slack.messages`."));
+        assert!(content.contains(
+            "FROM coral.columns WHERE schema_name = 'slack' AND namespace = 'core' AND table_name = 'channels'"
+        ));
+    }
+
+    #[test]
+    fn guide_content_uses_namespace_when_first_table_is_non_core() {
+        let content = guide_resource_content(
+            &[source("github")],
+            &[table_with_namespace(
+                "github",
+                "actions",
+                "repo_action_runs",
+            )],
+        );
+        assert!(content.contains(
+            "FROM coral.columns WHERE schema_name = 'github' AND namespace = 'actions' AND table_name = 'repo_action_runs'"
+        ));
+    }
+
+    #[test]
+    fn list_tables_renders_canonical_sql_names_and_structured_parts() {
+        let value = list_tables_value(&[
+            table("slack", "messages"),
+            table_with_namespace("github", "actions", "repo_action_runs"),
+        ]);
+
+        assert_eq!(
+            value["tables"][0]["name"],
+            "github.actions.repo_action_runs"
+        );
+        assert_eq!(value["tables"][0]["schema_name"], "github");
+        assert_eq!(value["tables"][0]["namespace"], "actions");
+        assert_eq!(value["tables"][0]["table_name"], "repo_action_runs");
+        assert_eq!(value["tables"][1]["name"], "slack.messages");
+        assert_eq!(value["tables"][1]["namespace"], "core");
     }
 }

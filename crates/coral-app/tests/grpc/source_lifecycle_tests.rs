@@ -7,6 +7,7 @@ use coral_api::v1::{
     ValidateSourceRequest, Workspace, query_test_result,
 };
 use coral_client::default_workspace;
+use coral_spec::DEFAULT_NAMESPACE;
 use tempfile::TempDir;
 use tonic::Request;
 
@@ -196,6 +197,7 @@ async fn validate_source_returns_tables() {
     let validated = harness.validate_source("local_messages").await;
     assert_eq!(validated.tables.len(), 1);
     assert_eq!(validated.tables[0].schema_name, "local_messages");
+    assert_eq!(validated.tables[0].namespace, DEFAULT_NAMESPACE);
     assert_eq!(validated.tables[0].name, "messages");
     assert!(validated.tables[0].required_filters.is_empty());
     assert!(validated.query_tests.is_empty());

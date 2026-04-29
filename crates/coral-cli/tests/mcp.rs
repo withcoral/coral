@@ -86,7 +86,7 @@ async fn mcp_stdio_lists_tools_and_resources() -> Result<(), Box<dyn std::error:
     assert!(guide_text.contains("## Available Schemas"));
     assert!(guide_text.contains("- local_messages"));
     assert!(guide_text.contains(
-        "FROM coral.columns WHERE schema_name = 'local_messages' AND table_name = 'messages'"
+        "FROM coral.columns WHERE schema_name = 'local_messages' AND namespace = 'core' AND table_name = 'messages'"
     ));
 
     let tables = client

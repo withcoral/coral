@@ -15,12 +15,12 @@ Before setting up a client, make sure you have [connected at least one source](/
 | Type     | Name             | Description                                             |
 | -------- | ---------------- | ------------------------------------------------------- |
 | Tool     | `sql`            | Run a SQL query                                         |
-| Tool     | `list_tables`    | List queryable fully qualified tables                   |
+| Tool     | `list_tables`    | List queryable fully qualified table paths              |
 | Resource | `coral://guide`  | Usage guide for agents                                  |
-| Resource | `coral://tables` | JSON summaries of queryable tables and required filters |
+| Resource | `coral://tables` | JSON summaries of queryable table paths and required filters |
 
 Clients see the same installed sources and query results as `coral sql`. You set up sources with the CLI, then agents query them over MCP.
-For richer metadata, have the agent query `coral.tables`, `coral.columns`, and `coral.inputs` over the `sql` tool instead of relying only on `list_tables` or `coral://tables`.
+For richer metadata, have the agent query `coral.namespaces`, `coral.tables`, `coral.columns`, and `coral.inputs` over the `sql` tool instead of relying only on `list_tables` or `coral://tables`. `list_tables` and `coral://tables` render core tables as `source.table` and namespaced tables as `source.namespace.table`.
 
 ## Client setup
 
@@ -175,7 +175,7 @@ Once your client is connected, ask the agent to list available tables or run a s
 
 > "Run a small Coral query against `coral.tables`."
 
-The agent should call `list_tables` or query `coral.tables` and return the schemas from your installed sources.
+The agent should call `list_tables` or query `coral.tables` and return the queryable table paths from your installed sources.
 
 ## Troubleshooting
 

@@ -48,6 +48,7 @@ fn mock_table(schema_name: &str, name: &str) -> Table {
     Table {
         workspace: Some(workspace()),
         schema_name: schema_name.to_string(),
+        namespace: "core".to_string(),
         name: name.to_string(),
         description: String::new(),
         columns: Vec::new(),
@@ -59,6 +60,7 @@ fn mock_visible_table() -> Table {
     Table {
         workspace: Some(workspace()),
         schema_name: "local_messages".to_string(),
+        namespace: "core".to_string(),
         name: "messages".to_string(),
         description: "Fixture messages".to_string(),
         columns: vec![

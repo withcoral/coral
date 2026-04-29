@@ -237,7 +237,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
     assert!(updated_guide_text.contains("- local_messages"));
     assert!(!updated_guide_text.contains("## Visible SQL Schemas"));
     assert!(updated_guide_text.contains(
-        "FROM coral.columns WHERE schema_name = 'local_messages' AND table_name = 'messages'"
+        "FROM coral.columns WHERE schema_name = 'local_messages' AND namespace = 'core' AND table_name = 'messages'"
     ));
 
     let tables = client

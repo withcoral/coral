@@ -42,6 +42,7 @@ pub(crate) fn table_to_proto(
     Table {
         workspace: Some(workspace_to_proto(workspace_name)),
         schema_name: table.schema_name,
+        namespace: table.namespace,
         name: table.table_name,
         description: table.description,
         columns: table
@@ -170,6 +171,7 @@ mod tests {
 
         assert_eq!(proto.workspace, Some(workspace_to_proto(&workspace_name)));
         assert_eq!(proto.schema_name, "demo");
+        assert_eq!(proto.namespace, DEFAULT_NAMESPACE);
         assert_eq!(proto.name, "users");
         assert_eq!(proto.description, "User records");
         assert_eq!(proto.columns.len(), 1);
