@@ -51,6 +51,7 @@ jobs:
               - 'rust-toolchain.toml'
               - 'rust-toolchain'
               - 'crates/**'
+              - 'xtask/**'
             ui-build:
               - '.github/workflows/validate.yml'
               - 'crates/coral-api/proto/**'
@@ -75,6 +76,7 @@ jobs:
               - 'crates/coral-spec/**'
               - 'sources/**'
               - 'docs/**'
+              - 'CHANGELOG.md'
             license-check:
               - '.github/workflows/validate.yml'
               - 'Makefile'
