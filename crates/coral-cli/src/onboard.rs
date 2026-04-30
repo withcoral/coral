@@ -6,7 +6,7 @@ use dialoguer::console::{measure_text_width, style};
 use dialoguer::{Select, theme::ColorfulTheme};
 use tonic::Request;
 
-use crate::source_ops;
+use crate::{browser, source_ops};
 
 const SOURCE_DESCRIPTION_PREVIEW_LIMIT: usize = 88;
 
@@ -297,7 +297,12 @@ async fn show_next_steps_screen(
             }
             Some(NextStepAction::AddMoreSources) => return Ok(NextStepChoice::AddMoreSources),
             Some(NextStepAction::OpenDocs) => {
-                open_url("https://withcoral.com/docs");
+                match browser::open_url("https://withcoral.com/docs") {
+                    Ok(()) => {}
+                    Err(err) => {
+                        println!("{}", style(format!("Could not open browser: {err}")).dim());
+                    }
+                }
             }
             Some(NextStepAction::Exit) | None => return Ok(NextStepChoice::Exit),
         }
@@ -315,25 +320,6 @@ async fn run_first_query(app: &AppClient, sql: &str) -> Result<String, anyhow::E
         .into_inner();
     let result = decode_execute_sql_response(&response)?;
     Ok(format_batches_table(result.batches())?)
-}
-
-fn open_url(url: &str) {
-    let result = if cfg!(target_os = "macos") {
-        std::process::Command::new("open").arg(url).status()
-    } else if cfg!(target_os = "linux") {
-        std::process::Command::new("xdg-open").arg(url).status()
-    } else if cfg!(target_os = "windows") {
-        std::process::Command::new("cmd")
-            .args(["/c", "start", url])
-            .status()
-    } else {
-        return;
-    };
-    match result {
-        Ok(status) if status.success() => {}
-        Ok(status) => println!("{}", style(format!("Browser exited with {status}")).dim()),
-        Err(err) => println!("{}", style(format!("Could not open browser: {err}")).dim()),
-    }
 }
 
 fn truncate_description(description: &str, max_len: usize) -> String {

@@ -114,6 +114,22 @@ Run the guided source setup flow.
 coral onboard
 ```
 
+## `coral ui`
+
+Start the local gRPC-Web server with the embedded Coral UI bundled into the same port and open it in the browser.
+
+```shellscript
+coral ui
+```
+
+The server listens on `http://127.0.0.1:1457` by default, serving the SPA from `/` and gRPC-Web on the same origin, then opens the loopback URL in the default browser. The command keeps running until you press `Ctrl-C`. This subcommand is only present when the binary was built with the `embedded-ui` Cargo feature, which expects the UI bundle in `ui/dist/` at compile time.
+
+Use `--addr` to bind a different loopback address:
+
+```shellscript
+coral ui --addr 127.0.0.1:1458
+```
+
 ## `coral mcp-stdio`
 
 Expose the local Coral runtime as an MCP stdio server.

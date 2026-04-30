@@ -42,7 +42,7 @@ pub mod telemetry;
 mod transport;
 mod workspaces;
 
-pub use bootstrap::{AppError, RunningServer, ServerBuilder};
+pub use bootstrap::{AppError, RunningServer, ServerBuilder, StaticAsset, StaticAssetsProvider};
 pub use coral_engine::{EngineExtensions, QuerySource};
 pub use query::extensions::{
     AwsEngineExtensionsProvider, EngineExtensionsProvider, NoopEngineExtensionsProvider,

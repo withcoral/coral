@@ -45,6 +45,17 @@ pub(crate) async fn bootstrap(enable_stderr_logs: bool) -> Result<Bootstrap, Boo
     })
 }
 
+#[cfg(feature = "embedded-ui")]
+pub(crate) async fn start_ui_server(port: u16) -> Result<RunningServer, BootstrapError> {
+    let server = configure_server_builder(
+        ServerBuilder::embedded_ui_loopback(port, crate::embedded_ui_assets()),
+        false,
+    )
+    .start()
+    .await?;
+    Ok(server)
+}
+
 fn configure_server_builder(builder: ServerBuilder, enable_stderr_logs: bool) -> ServerBuilder {
     builder
         .with_stderr_logs(enable_stderr_logs)
@@ -53,7 +64,7 @@ fn configure_server_builder(builder: ServerBuilder, enable_stderr_logs: bool) ->
 
 #[cfg(feature = "cli-test-server")]
 fn bootstrap_endpoint() -> Option<String> {
-    coral_cli::env::bootstrap_endpoint()
+    crate::env::bootstrap_endpoint()
 }
 
 #[cfg(not(feature = "cli-test-server"))]

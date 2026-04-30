@@ -6,21 +6,10 @@
     reason = "The thin binary delegates command logic to the shared coral-cli library and owns stderr rendering for exit paths."
 )]
 
-mod bootstrap;
-
-use bootstrap::bootstrap;
-
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
-    let bootstrap = bootstrap(coral_cli::enables_stderr_logs()).await?;
-    let ctx = coral_app::RunContext {
-        trace_parent: coral_cli::env::trace_parent(),
-    };
-    let result = coral_cli::run(bootstrap.app.clone(), ctx).await;
-    bootstrap.shutdown().await;
-    tokio::task::spawn_blocking(coral_app::shutdown_tracing)
-        .await
-        .ok();
+    let result = coral_cli::run_from_env().await;
+    let _ = tokio::task::spawn_blocking(coral_app::shutdown_tracing).await;
     match result {
         Ok(()) => Ok(()),
         Err(error) => {

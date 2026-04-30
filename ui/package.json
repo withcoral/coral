@@ -1,0 +1,26 @@
+{
+  "name": "coral-ui",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "npm run proto:gen && vite",
+    "dev:server": "cargo run --manifest-path ../Cargo.toml -p coral-cli --features server -- server",
+    "dev:local": "concurrently --kill-others --names api,ui --prefix-colors blue,green \"npm:dev:server\" \"npm:dev\"",
+    "proto:gen": "rm -rf src/generated && mkdir -p src/generated && protoc --ts_out src/generated --ts_opt long_type_number --ts_opt server_none --proto_path ../crates/coral-api/proto ../crates/coral-api/proto/coral/v1/resources.proto ../crates/coral-api/proto/coral/v1/catalog.proto ../crates/coral-api/proto/coral/v1/query.proto",
+    "build": "npm run proto:gen && tsc -b && vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "@protobuf-ts/plugin": "^2.11.1",
+    "concurrently": "^9.2.1",
+    "typescript": "^5.6.2",
+    "vite": "^5.4.10"
+  },
+  "dependencies": {
+    "@protobuf-ts/grpcweb-transport": "^2.11.1",
+    "@protobuf-ts/runtime": "^2.11.1",
+    "@protobuf-ts/runtime-rpc": "^2.11.1",
+    "apache-arrow": "^21.1.0"
+  }
+}

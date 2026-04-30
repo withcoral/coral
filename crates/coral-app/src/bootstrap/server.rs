@@ -1,10 +1,19 @@
 //! Builds and runs the Coral gRPC server.
 
+use std::borrow::Cow;
+use std::convert::Infallible;
+use std::future::{Future, Ready};
 use std::net::Ipv4Addr;
+use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::task::{Context, Poll};
 
+use axum::body::Body as AxumBody;
+use axum::extract::Request as AxumRequest;
+use axum::response::Response as AxumResponse;
 use coral_api::v1::feedback_service_server::FeedbackServiceServer;
 use coral_api::v1::query_service_server::QueryServiceServer;
 use coral_api::v1::source_service_server::SourceServiceServer;
@@ -13,7 +22,14 @@ use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tokio_stream::wrappers::TcpListenerStream;
+use tonic::body::Body;
+use tonic::codegen::http::header::CONTENT_TYPE;
+use tonic::codegen::http::{HeaderValue, Method, Request, Response, StatusCode};
+use tonic::server::NamedService;
+use tonic::service::Routes;
 use tonic::transport::Server;
+use tonic_web::GrpcWebLayer;
+use tower::{Layer, Service};
 
 use super::env::AppEnvironment;
 use super::error::AppError;
@@ -27,10 +43,30 @@ use crate::sources::service::SourceService;
 use crate::state::{AppStateLayout, ConfigStore, SecretStore};
 use crate::telemetry::TelemetryConfig;
 
+/// A static asset (e.g., a built SPA file) served on the same port as
+/// gRPC-Web.
+pub struct StaticAsset {
+    /// Raw bytes of the asset.
+    pub bytes: Cow<'static, [u8]>,
+    /// MIME type to surface as `Content-Type`.
+    pub content_type: Cow<'static, str>,
+}
+
+/// Source of static assets served alongside gRPC-Web on a single port.
+///
+/// Coral itself is asset-agnostic: `coral-cli`'s `embedded-ui` feature
+/// supplies an implementation backed by the built UI bundle.
+pub trait StaticAssetsProvider: Send + Sync + 'static {
+    /// Returns the asset stored at `path` (relative, no leading slash), or
+    /// `None` if the asset does not exist.
+    fn get(&self, path: &str) -> Option<StaticAsset>;
+}
+
 /// Server-side bootstrap configuration for the Coral server.
 #[derive(Clone)]
 pub(crate) struct ServerConfig {
     config_dir: Option<PathBuf>,
+    mode: ServerMode,
     engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
     enable_stderr_logs: bool,
 }
@@ -42,24 +78,25 @@ impl Default for ServerConfig {
 }
 
 impl ServerConfig {
-    #[must_use]
-    /// Creates the default local server configuration.
     pub(crate) fn new() -> Self {
         Self {
             config_dir: None,
+            mode: ServerMode::NativeGrpc,
             engine_extensions_providers: Vec::new(),
             enable_stderr_logs: false,
         }
     }
 
-    #[must_use]
-    /// Overrides the Coral config directory used by the local server.
     pub(crate) fn with_config_dir(mut self, config_dir: impl Into<PathBuf>) -> Self {
         self.config_dir = Some(config_dir.into());
         self
     }
 
-    #[must_use]
+    pub(crate) fn with_mode(mut self, mode: ServerMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
     pub(crate) fn add_engine_extensions_provider(
         mut self,
         engine_extensions_provider: Arc<dyn EngineExtensionsProvider>,
@@ -76,6 +113,32 @@ impl ServerConfig {
     }
 }
 
+/// Concrete local server mode.
+///
+/// Each variant is a supported product mode instead of an independent
+/// transport or asset-serving knob.
+#[derive(Clone)]
+pub enum ServerMode {
+    /// Native gRPC for CLI, MCP, and local client callers.
+    NativeGrpc,
+    /// Loopback gRPC-Web server that also serves embedded UI assets.
+    EmbeddedUi {
+        /// Port to bind on `127.0.0.1`.
+        port: u16,
+        /// Static UI assets served on the same origin as gRPC-Web.
+        assets: Arc<dyn StaticAssetsProvider>,
+    },
+}
+
+impl ServerMode {
+    fn bind_addr(&self) -> SocketAddr {
+        match self {
+            Self::NativeGrpc => SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+            Self::EmbeddedUi { port, .. } => SocketAddr::from((Ipv4Addr::LOCALHOST, *port)),
+        }
+    }
+}
+
 /// Builder for the Coral server runtime.
 #[derive(Clone, Default)]
 pub struct ServerBuilder {
@@ -84,11 +147,36 @@ pub struct ServerBuilder {
 
 impl ServerBuilder {
     #[must_use]
-    /// Creates a builder that resolves its server config from defaults.
+    /// Creates a builder for the default native gRPC local server.
     pub fn new() -> Self {
         Self {
             config: ServerConfig::new(),
         }
+    }
+
+    #[must_use]
+    /// Creates a builder for a native gRPC local server.
+    pub fn native_grpc() -> Self {
+        Self::new().with_mode(ServerMode::NativeGrpc)
+    }
+
+    #[must_use]
+    /// Creates a builder for loopback gRPC-Web with embedded UI assets.
+    ///
+    /// Requests with native `application/grpc` content-types are rejected with
+    /// HTTP 415. Requests for paths under registered gRPC services route to
+    /// gRPC-Web; every other path is dispatched to the supplied
+    /// [`StaticAssetsProvider`], with SPA fallback to `index.html` for
+    /// unknown paths.
+    pub fn embedded_ui_loopback(port: u16, assets: Arc<dyn StaticAssetsProvider>) -> Self {
+        Self::new().with_mode(ServerMode::EmbeddedUi { port, assets })
+    }
+
+    #[must_use]
+    /// Selects the local server mode.
+    pub fn with_mode(mut self, mode: ServerMode) -> Self {
+        self.config = self.config.with_mode(mode);
+        self
     }
 
     #[must_use]
@@ -124,10 +212,10 @@ impl ServerBuilder {
         self
     }
 
-    /// Starts the Coral gRPC server on loopback TCP.
+    /// Starts the Coral gRPC server on TCP.
     ///
-    /// Coral keeps a real local gRPC boundary here so the public client talks
-    /// to the same typed transport contract the server exposes.
+    /// By default, Coral keeps a real local gRPC boundary here so the public
+    /// client talks to the same typed transport contract the server exposes.
     ///
     /// # Errors
     ///
@@ -156,11 +244,17 @@ impl ServerBuilder {
             layout,
             self.config.engine_extensions_providers,
         );
-        start_server(source_manager, query_manager, feedback_manager).await
+        start_server(
+            source_manager,
+            query_manager,
+            feedback_manager,
+            self.config.mode,
+        )
+        .await
     }
 }
 
-/// Running Coral gRPC server.
+/// Running Coral server.
 ///
 /// Call [`RunningServer::shutdown`] for deterministic teardown. Dropping this
 /// handle sends shutdown to the background task as a best-effort fallback, but
@@ -173,7 +267,7 @@ pub struct RunningServer {
 
 impl RunningServer {
     #[must_use]
-    /// Returns the loopback endpoint URI for this server.
+    /// Returns the endpoint URI for this server.
     ///
     /// This is part of the narrow sibling-facing bootstrap seam used by the
     /// thin local client and by integration tests that need explicit control
@@ -226,28 +320,34 @@ async fn start_server(
     source_manager: SourceManager,
     query_manager: QueryManager,
     feedback_manager: FeedbackManager,
+    mode: ServerMode,
 ) -> Result<RunningServer, AppError> {
     let source_service = SourceService::new(source_manager, query_manager.clone());
     let query_service = QueryService::new(query_manager);
     let feedback_service = FeedbackService::new(feedback_manager);
-    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let listener = TcpListener::bind(mode.bind_addr()).await?;
     let endpoint_uri = format!("http://{}", listener.local_addr()?);
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
-    let task = tokio::spawn(async move {
-        Server::builder()
-            .http2_max_header_list_size(HTTP2_MAX_HEADER_LIST_SIZE)
-            .add_service(SourceServiceServer::new(source_service))
-            .add_service(FeedbackServiceServer::new(feedback_service))
-            .add_service(
-                QueryServiceServer::new(query_service)
-                    .max_encoding_message_size(QUERY_RESPONSE_MAX_MESSAGE_SIZE),
-            )
-            .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
-                let _ = shutdown_rx.await;
-            })
-            .await
-    });
+    let task = match mode {
+        ServerMode::NativeGrpc => start_grpc_server(
+            listener,
+            shutdown_rx,
+            SourceServiceServer::new(source_service),
+            FeedbackServiceServer::new(feedback_service),
+            QueryServiceServer::new(query_service)
+                .max_encoding_message_size(QUERY_RESPONSE_MAX_MESSAGE_SIZE),
+        ),
+        ServerMode::EmbeddedUi { assets, .. } => start_grpc_web_server(
+            listener,
+            shutdown_rx,
+            SourceServiceServer::new(source_service),
+            FeedbackServiceServer::new(feedback_service),
+            QueryServiceServer::new(query_service)
+                .max_encoding_message_size(QUERY_RESPONSE_MAX_MESSAGE_SIZE),
+            assets,
+        ),
+    };
 
     Ok(RunningServer {
         endpoint_uri,
@@ -256,21 +356,266 @@ async fn start_server(
     })
 }
 
+fn start_grpc_server<S, F, Q>(
+    listener: TcpListener,
+    shutdown_rx: oneshot::Receiver<()>,
+    source_service: S,
+    feedback_service: F,
+    query_service: Q,
+) -> JoinHandle<Result<(), tonic::transport::Error>>
+where
+    S: Service<Request<Body>, Response = Response<Body>, Error = Infallible>
+        + NamedService
+        + Clone
+        + Send
+        + Sync
+        + 'static,
+    S::Future: Send + 'static,
+    F: Service<Request<Body>, Response = Response<Body>, Error = Infallible>
+        + NamedService
+        + Clone
+        + Send
+        + Sync
+        + 'static,
+    F::Future: Send + 'static,
+    Q: Service<Request<Body>, Response = Response<Body>, Error = Infallible>
+        + NamedService
+        + Clone
+        + Send
+        + Sync
+        + 'static,
+    Q::Future: Send + 'static,
+{
+    tokio::spawn(async move {
+        Server::builder()
+            .http2_max_header_list_size(HTTP2_MAX_HEADER_LIST_SIZE)
+            .add_service(source_service)
+            .add_service(feedback_service)
+            .add_service(query_service)
+            .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+                let _ = shutdown_rx.await;
+            })
+            .await
+    })
+}
+
+fn start_grpc_web_server<S, F, Q>(
+    listener: TcpListener,
+    shutdown_rx: oneshot::Receiver<()>,
+    source_service: S,
+    feedback_service: F,
+    query_service: Q,
+    static_assets: Arc<dyn StaticAssetsProvider>,
+) -> JoinHandle<Result<(), tonic::transport::Error>>
+where
+    S: Service<Request<Body>, Response = Response<Body>, Error = Infallible>
+        + NamedService
+        + Clone
+        + Send
+        + Sync
+        + 'static,
+    S::Future: Send + 'static,
+    F: Service<Request<Body>, Response = Response<Body>, Error = Infallible>
+        + NamedService
+        + Clone
+        + Send
+        + Sync
+        + 'static,
+    F::Future: Send + 'static,
+    Q: Service<Request<Body>, Response = Response<Body>, Error = Infallible>
+        + NamedService
+        + Clone
+        + Send
+        + Sync
+        + 'static,
+    Q::Future: Send + 'static,
+{
+    let grpc = Routes::default()
+        .add_service(source_service)
+        .add_service(feedback_service)
+        .add_service(query_service)
+        .into_axum_router()
+        .layer(GrpcWebLayer::new())
+        .layer(GrpcWebOnlyLayer);
+
+    let app = grpc.fallback_service(StaticAssetService {
+        provider: static_assets,
+    });
+
+    let combined: Routes = app.into();
+
+    tokio::spawn(async move {
+        Server::builder()
+            .accept_http1(true)
+            .http2_max_header_list_size(HTTP2_MAX_HEADER_LIST_SIZE)
+            .add_routes(combined)
+            .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+                let _ = shutdown_rx.await;
+            })
+            .await
+    })
+}
+
+#[derive(Clone, Copy)]
+struct GrpcWebOnlyLayer;
+
+impl<S> Layer<S> for GrpcWebOnlyLayer {
+    type Service = GrpcWebOnlyService<S>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        GrpcWebOnlyService { inner }
+    }
+}
+
+#[derive(Clone)]
+struct GrpcWebOnlyService<S> {
+    inner: S,
+}
+
+impl<S, ReqB, ResB> Service<Request<ReqB>> for GrpcWebOnlyService<S>
+where
+    S: Service<Request<ReqB>, Response = Response<ResB>> + Send + 'static,
+    S::Future: Send + 'static,
+    S::Error: Send + 'static,
+    ResB: Default,
+{
+    type Response = Response<ResB>;
+    type Error = S::Error;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.inner.poll_ready(cx)
+    }
+
+    fn call(&mut self, request: Request<ReqB>) -> Self::Future {
+        if is_native_grpc_content_type(request.headers().get(CONTENT_TYPE)) {
+            return Box::pin(async {
+                Ok(Response::builder()
+                    .status(StatusCode::UNSUPPORTED_MEDIA_TYPE)
+                    .body(ResB::default())
+                    .expect("static response is valid"))
+            });
+        }
+
+        let future = self.inner.call(request);
+        Box::pin(future)
+    }
+}
+
+fn normalized_content_type(content_type: Option<&HeaderValue>) -> Option<String> {
+    Some(
+        content_type?
+            .to_str()
+            .ok()?
+            .split(';')
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase(),
+    )
+}
+
+fn is_native_grpc_content_type(content_type: Option<&HeaderValue>) -> bool {
+    let Some(content_type) = normalized_content_type(content_type) else {
+        return false;
+    };
+    content_type == "application/grpc" || content_type.starts_with("application/grpc+")
+}
+
+fn is_grpc_web_content_type(content_type: Option<&HeaderValue>) -> bool {
+    let Some(content_type) = normalized_content_type(content_type) else {
+        return false;
+    };
+    content_type == "application/grpc-web" || content_type.starts_with("application/grpc-web+")
+}
+
+fn is_grpc_content_type(content_type: Option<&HeaderValue>) -> bool {
+    is_native_grpc_content_type(content_type) || is_grpc_web_content_type(content_type)
+}
+
+#[derive(Clone)]
+struct StaticAssetService {
+    provider: Arc<dyn StaticAssetsProvider>,
+}
+
+impl Service<AxumRequest> for StaticAssetService {
+    type Response = AxumResponse;
+    type Error = Infallible;
+    type Future = Ready<Result<Self::Response, Self::Error>>;
+
+    fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, request: AxumRequest) -> Self::Future {
+        if is_grpc_content_type(request.headers().get(CONTENT_TYPE)) {
+            return std::future::ready(Ok(static_fallback_error_response(
+                StatusCode::NOT_FOUND,
+                "Not Found",
+            )));
+        }
+        if request.method() != Method::GET && request.method() != Method::HEAD {
+            return std::future::ready(Ok(static_fallback_error_response(
+                StatusCode::METHOD_NOT_ALLOWED,
+                "Method Not Allowed",
+            )));
+        }
+
+        let path = request.uri().path();
+        let key = path.trim_start_matches('/');
+        let asset = self
+            .provider
+            .get(key)
+            .or_else(|| self.provider.get("index.html"));
+        let response = match asset {
+            Some(asset) => {
+                let content_type = HeaderValue::from_str(&asset.content_type)
+                    .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream"));
+                let mut builder = AxumResponse::builder().status(StatusCode::OK);
+                builder
+                    .headers_mut()
+                    .expect("fresh response builder")
+                    .insert(CONTENT_TYPE, content_type);
+                builder
+                    .body(AxumBody::from(asset.bytes.into_owned()))
+                    .expect("static response is valid")
+            }
+            None => static_fallback_error_response(StatusCode::NOT_FOUND, "Not Found"),
+        };
+        std::future::ready(Ok(response))
+    }
+}
+
+fn static_fallback_error_response(status: StatusCode, body: &'static str) -> AxumResponse {
+    AxumResponse::builder()
+        .status(status)
+        .header(
+            CONTENT_TYPE,
+            HeaderValue::from_static("text/plain; charset=utf-8"),
+        )
+        .body(AxumBody::from(body))
+        .expect("static response is valid")
+}
+
 #[cfg(test)]
 mod tests {
+    use std::borrow::Cow;
     use std::net::{Ipv4Addr, TcpListener};
     use std::sync::Arc;
 
     use coral_api::v1::query_service_client::QueryServiceClient;
     use coral_api::v1::source_service_client::SourceServiceClient;
-    use coral_api::v1::{ExecuteSqlRequest, ImportSourceRequest, Workspace};
+    use coral_api::v1::{ExecuteSqlRequest, ImportSourceRequest, ListSourcesRequest, Workspace};
     use coral_api::{HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE};
     use coral_engine::QueryRuntimeContext;
     use tempfile::TempDir;
     use tonic::Request;
     use tonic::transport::Endpoint;
 
-    use super::{ServerBuilder, start_server};
+    use super::{
+        ServerBuilder, ServerMode, StaticAsset, StaticAssetsProvider, is_grpc_web_content_type,
+        is_native_grpc_content_type, start_server,
+    };
     use crate::feedback::manager::FeedbackManager;
     use crate::query::manager::QueryManager;
     use crate::sources::manager::SourceManager;
@@ -283,11 +628,214 @@ mod tests {
         workspace_to_proto(&WorkspaceName::default())
     }
 
+    fn grpc_web_body(message: &impl prost::Message) -> Vec<u8> {
+        let mut encoded = Vec::new();
+        prost::Message::encode(message, &mut encoded).expect("encode protobuf");
+
+        let mut body = Vec::with_capacity(5 + encoded.len());
+        body.push(0);
+        body.extend_from_slice(
+            &u32::try_from(encoded.len())
+                .expect("fixture protobuf length fits u32")
+                .to_be_bytes(),
+        );
+        body.extend_from_slice(&encoded);
+        body
+    }
+
+    struct StubAssets;
+
+    impl StaticAssetsProvider for StubAssets {
+        fn get(&self, path: &str) -> Option<StaticAsset> {
+            if path.is_empty() || path == "index.html" {
+                Some(StaticAsset {
+                    bytes: Cow::Borrowed(b"<html><body>Coral UI</body></html>"),
+                    content_type: Cow::Borrowed("text/html; charset=utf-8"),
+                })
+            } else if path == "assets/app.js" {
+                Some(StaticAsset {
+                    bytes: Cow::Borrowed(b"console.log('coral')"),
+                    content_type: Cow::Borrowed("application/javascript"),
+                })
+            } else {
+                None
+            }
+        }
+    }
+
     #[test]
     fn server_builder_accepts_engine_extensions_providers() {
         let _ = ServerBuilder::new()
             .add_engine_extensions_provider(Arc::new(AwsEngineExtensionsProvider))
             .add_engine_extensions_provider(Arc::new(NoopEngineExtensionsProvider));
+    }
+
+    #[test]
+    fn native_grpc_content_type_detection_excludes_grpc_web() {
+        assert!(is_native_grpc_content_type(Some(
+            &"application/grpc".parse().expect("header")
+        )));
+        assert!(is_native_grpc_content_type(Some(
+            &"application/grpc+proto; charset=utf-8"
+                .parse()
+                .expect("header")
+        )));
+        assert!(!is_native_grpc_content_type(Some(
+            &"application/grpc-web+proto".parse().expect("header")
+        )));
+    }
+
+    #[test]
+    fn grpc_web_content_type_detection_accepts_grpc_web() {
+        assert!(is_grpc_web_content_type(Some(
+            &"application/grpc-web".parse().expect("header")
+        )));
+        assert!(is_grpc_web_content_type(Some(
+            &"application/grpc-web+proto; charset=utf-8"
+                .parse()
+                .expect("header")
+        )));
+        assert!(!is_grpc_web_content_type(Some(
+            &"application/grpc+proto".parse().expect("header")
+        )));
+    }
+
+    #[tokio::test]
+    async fn embedded_ui_server_accepts_browser_requests_and_rejects_native_grpc() {
+        let temp = TempDir::new().expect("temp dir");
+        let running = ServerBuilder::embedded_ui_loopback(0, Arc::new(StubAssets))
+            .with_config_dir(temp.path().join("coral-config"))
+            .start()
+            .await
+            .expect("start embedded UI server");
+        let endpoint = running.endpoint_uri();
+        let path = format!("{endpoint}/coral.v1.SourceService/ListSources");
+        let client = reqwest::Client::new();
+
+        let response = client
+            .post(&path)
+            .header("content-type", "application/grpc-web+proto")
+            .header("x-grpc-web", "1")
+            .body(grpc_web_body(&ListSourcesRequest {
+                workspace: Some(default_workspace()),
+            }))
+            .send()
+            .await
+            .expect("gRPC-Web request");
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        assert!(
+            !response
+                .bytes()
+                .await
+                .expect("gRPC-Web response")
+                .is_empty(),
+            "expected framed gRPC-Web response body"
+        );
+
+        let native_grpc = client
+            .post(&path)
+            .header("content-type", "application/grpc")
+            .body(Vec::new())
+            .send()
+            .await
+            .expect("native gRPC request");
+        assert_eq!(
+            native_grpc.status(),
+            reqwest::StatusCode::UNSUPPORTED_MEDIA_TYPE
+        );
+
+        running.shutdown().await.expect("shutdown");
+    }
+
+    #[tokio::test]
+    async fn embedded_ui_server_serves_static_assets_alongside_grpc_web() {
+        let temp = TempDir::new().expect("temp dir");
+        let running = ServerBuilder::embedded_ui_loopback(0, Arc::new(StubAssets))
+            .with_config_dir(temp.path().join("coral-config"))
+            .start()
+            .await
+            .expect("start embedded UI server");
+        let endpoint = running.endpoint_uri().to_string();
+        let client = reqwest::Client::new();
+
+        // Root serves index.html
+        let root = client.get(&endpoint).send().await.expect("root request");
+        assert_eq!(root.status(), reqwest::StatusCode::OK);
+        assert_eq!(
+            root.headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok()),
+            Some("text/html; charset=utf-8")
+        );
+        let body = root.text().await.expect("root body");
+        assert!(body.contains("Coral UI"), "unexpected body: {body}");
+
+        // Asset path serves the asset
+        let asset = client
+            .get(format!("{endpoint}/assets/app.js"))
+            .send()
+            .await
+            .expect("asset request");
+        assert_eq!(asset.status(), reqwest::StatusCode::OK);
+        assert_eq!(
+            asset
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok()),
+            Some("application/javascript")
+        );
+
+        // Unknown path falls back to index.html (SPA fallback).
+        let route = client
+            .get(format!("{endpoint}/some/spa/route"))
+            .send()
+            .await
+            .expect("spa route request");
+        assert_eq!(route.status(), reqwest::StatusCode::OK);
+        assert_eq!(
+            route
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok()),
+            Some("text/html; charset=utf-8")
+        );
+
+        // gRPC-Web still works on the same port
+        let grpc_path = format!("{endpoint}/coral.v1.SourceService/ListSources");
+        let response = client
+            .post(&grpc_path)
+            .header("content-type", "application/grpc-web+proto")
+            .header("x-grpc-web", "1")
+            .body(grpc_web_body(&ListSourcesRequest {
+                workspace: Some(default_workspace()),
+            }))
+            .send()
+            .await
+            .expect("gRPC-Web request");
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+
+        let unknown_grpc = client
+            .post(format!("{endpoint}/unknown.Service/Method"))
+            .header("content-type", "application/grpc-web+proto")
+            .header("x-grpc-web", "1")
+            .body(grpc_web_body(&ListSourcesRequest {
+                workspace: Some(default_workspace()),
+            }))
+            .send()
+            .await
+            .expect("unknown gRPC-Web request");
+        assert_eq!(unknown_grpc.status(), reqwest::StatusCode::NOT_FOUND);
+        assert_eq!(
+            unknown_grpc
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok()),
+            Some("text/plain; charset=utf-8")
+        );
+        let unknown_body = unknown_grpc.text().await.expect("unknown body");
+        assert_eq!(unknown_body, "Not Found");
+
+        running.shutdown().await.expect("shutdown");
     }
 
     fn loopback_sockets_available() -> bool {
@@ -329,9 +877,14 @@ mod tests {
             layout,
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
-        let running = start_server(source_manager, query_manager, feedback_manager)
-            .await
-            .expect("start server");
+        let running = start_server(
+            source_manager,
+            query_manager,
+            feedback_manager,
+            ServerMode::NativeGrpc,
+        )
+        .await
+        .expect("start server");
         let channel = Endpoint::from_shared(running.endpoint_uri().to_string())
             .expect("endpoint")
             .http2_max_header_list_size(HTTP2_MAX_HEADER_LIST_SIZE)
@@ -406,9 +959,14 @@ tables:
             layout,
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
-        let running = start_server(source_manager, query_manager, feedback_manager)
-            .await
-            .expect("start server");
+        let running = start_server(
+            source_manager,
+            query_manager,
+            feedback_manager,
+            ServerMode::NativeGrpc,
+        )
+        .await
+        .expect("start server");
         let channel = Endpoint::from_shared(running.endpoint_uri().to_string())
             .expect("endpoint")
             .http2_max_header_list_size(HTTP2_MAX_HEADER_LIST_SIZE)
@@ -495,9 +1053,14 @@ tables:
             layout,
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
-        let running = start_server(source_manager, query_manager, feedback_manager)
-            .await
-            .expect("start server");
+        let running = start_server(
+            source_manager,
+            query_manager,
+            feedback_manager,
+            ServerMode::NativeGrpc,
+        )
+        .await
+        .expect("start server");
         let channel = Endpoint::from_shared(running.endpoint_uri().to_string())
             .expect("endpoint")
             .http2_max_header_list_size(HTTP2_MAX_HEADER_LIST_SIZE)
