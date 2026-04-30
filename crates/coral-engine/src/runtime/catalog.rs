@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use coral_spec::ManifestInputKind;
-use datafusion::arrow::array::{BooleanArray, Int32Array, RecordBatch, StringArray};
+use datafusion::arrow::array::{ArrayRef, BooleanArray, Int32Array, RecordBatch, StringArray};
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use datafusion::datasource::MemTable;
 use datafusion::error::{DataFusionError, Result};
@@ -27,12 +27,17 @@ pub(crate) fn register(ctx: &SessionContext, active_sources: &[RegisteredSource]
     let tables_table = build_tables_table(active_sources)?;
     let columns_table = build_columns_table(active_sources)?;
     let inputs_table = build_inputs_table(active_sources)?;
+    let table_functions_table = build_table_functions_table(active_sources)?;
 
     let mut meta_tables: HashMap<String, Arc<dyn datafusion::datasource::TableProvider>> =
         HashMap::new();
     meta_tables.insert("tables".to_string(), Arc::new(tables_table));
     meta_tables.insert("columns".to_string(), Arc::new(columns_table));
     meta_tables.insert("inputs".to_string(), Arc::new(inputs_table));
+    meta_tables.insert(
+        "table_functions".to_string(),
+        Arc::new(table_functions_table),
+    );
 
     let catalog = ctx
         .catalog("datafusion")
@@ -43,6 +48,47 @@ pub(crate) fn register(ctx: &SessionContext, active_sources: &[RegisteredSource]
     )?;
 
     Ok(())
+}
+
+fn build_table_functions_table(active_sources: &[RegisteredSource]) -> Result<MemTable> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("schema_name", DataType::Utf8, false),
+        Field::new("public_name", DataType::Utf8, false),
+        Field::new("kind", DataType::Utf8, false),
+        Field::new("description", DataType::Utf8, false),
+        Field::new("arguments_json", DataType::Utf8, false),
+        Field::new("result_columns_json", DataType::Utf8, false),
+    ]));
+
+    let mut rows = active_sources
+        .iter()
+        .flat_map(|source| source.table_functions.iter())
+        .collect::<Vec<_>>();
+    rows.sort_by(|left, right| {
+        (&left.schema_name, &left.function_name).cmp(&(&right.schema_name, &right.function_name))
+    });
+
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            utf8_column(rows.iter().map(|row| Some(row.schema_name.as_str()))),
+            utf8_column(rows.iter().map(|row| Some(row.public_name.as_str()))),
+            utf8_column(rows.iter().map(|row| Some(row.kind.as_str()))),
+            utf8_column(rows.iter().map(|row| Some(row.description.as_str()))),
+            utf8_column(rows.iter().map(|row| Some(row.arguments_json.as_str()))),
+            utf8_column(
+                rows.iter()
+                    .map(|row| Some(row.result_columns_json.as_str())),
+            ),
+        ],
+    )
+    .map_err(|error| DataFusionError::ArrowError(Box::new(error), None))?;
+
+    MemTable::try_new(schema, vec![vec![batch]])
+}
+
+fn utf8_column<'a>(values: impl IntoIterator<Item = Option<&'a str>>) -> ArrayRef {
+    Arc::new(values.into_iter().collect::<StringArray>())
 }
 
 /// Collect typed query-visible table metadata for the active source set.

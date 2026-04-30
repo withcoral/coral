@@ -296,6 +296,59 @@ fn http_manifest_with_inputs() -> Value {
     })
 }
 
+fn http_manifest_with_function() -> Value {
+    json!({
+        "name": "searchy",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": "https://example.com",
+        "tables": [{
+            "name": "placeholder",
+            "description": "Placeholder table",
+            "request": {
+                "method": "GET",
+                "path": "/placeholder"
+            },
+            "columns": [
+                { "name": "id", "type": "Utf8" }
+            ]
+        }],
+        "functions": [{
+            "name": "search_issues",
+            "kind": "search",
+            "description": "Search issues",
+            "args": [
+                {
+                    "name": "q",
+                    "required": true,
+                    "bind": { "arg": "q" }
+                },
+                {
+                    "name": "mode",
+                    "values": ["lexical", "semantic", "hybrid"],
+                    "bind": { "arg": "search_type" }
+                }
+            ],
+            "request": {
+                "method": "GET",
+                "path": "/search/issues",
+                "query": [
+                    { "name": "q", "from": "arg", "key": "q" },
+                    { "name": "search_type", "from": "arg", "key": "search_type" }
+                ]
+            },
+            "response": {
+                "rows_path": ["items"]
+            },
+            "columns": [
+                { "name": "title", "type": "Utf8" },
+                { "name": "score", "type": "Float64" }
+            ]
+        }]
+    })
+}
+
 fn build_demo_source(variables: &[(&str, &str)], secrets: &[(&str, &str)]) -> QuerySource {
     let to_map = |items: &[(&str, &str)]| -> BTreeMap<String, String> {
         items
@@ -339,6 +392,43 @@ fn jsonl_manifest_with_inputs(dir: &std::path::Path) -> Value {
             ]
         }]
     })
+}
+
+#[tokio::test]
+async fn coral_table_functions_lists_source_functions() {
+    let sources = vec![build_source(http_manifest_with_function())];
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &sources,
+            test_runtime(),
+            "SELECT schema_name, public_name, kind, description, arguments_json, result_columns_json \
+             FROM coral.table_functions WHERE schema_name = 'searchy'",
+        )
+        .await
+        .expect("table function catalog query should succeed"),
+    );
+
+    assert_eq!(rows.len(), 1);
+    let row = &rows[0];
+    assert_eq!(row["schema_name"], "searchy");
+    assert_eq!(row["public_name"], "searchy.search_issues");
+    assert_eq!(row["kind"], "search");
+    assert_eq!(row["description"], "Search issues");
+    assert_eq!(
+        serde_json::from_str::<Value>(row["arguments_json"].as_str().unwrap()).unwrap(),
+        json!([
+            { "name": "q", "required": true, "values": [] },
+            { "name": "mode", "required": false, "values": ["lexical", "semantic", "hybrid"] }
+        ])
+    );
+    assert_eq!(
+        serde_json::from_str::<Value>(row["result_columns_json"].as_str().unwrap()).unwrap(),
+        json!([
+            { "name": "title", "type": "Utf8", "nullable": true, "description": "" },
+            { "name": "score", "type": "Float64", "nullable": true, "description": "" }
+        ])
+    );
 }
 
 #[tokio::test]

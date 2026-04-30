@@ -9,9 +9,9 @@ use coral_spec::ValidatedSourceManifest;
 pub(crate) mod common;
 pub(crate) use common::{
     BackendCompileRequest, BackendRegistration, CompiledBackendSource, RegisteredSource,
-    RegisteredTable, build_registered_inputs, build_registered_table, partition_columns_to_arrow,
-    registered_columns_from_schema, registered_columns_from_specs, required_filter_names,
-    schema_from_columns,
+    RegisteredTable, build_registered_inputs, build_registered_table,
+    build_registered_table_function, partition_columns_to_arrow, registered_columns_from_schema,
+    registered_columns_from_specs, required_filter_names, schema_from_columns,
 };
 
 pub(crate) mod http;

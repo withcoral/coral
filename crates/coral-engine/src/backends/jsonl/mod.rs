@@ -308,6 +308,7 @@ impl CompiledBackendSource for JsonlCompiledSource {
             source: RegisteredSource {
                 schema_name: self.manifest.common.name.clone(),
                 tables: table_infos,
+                table_functions: vec![],
                 inputs,
             },
         })
