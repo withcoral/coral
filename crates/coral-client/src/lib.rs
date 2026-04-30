@@ -30,7 +30,6 @@ use coral_api::v1::ExecuteSqlResponse;
 use serde_json::Value;
 
 pub use client::{AppClient, DEFAULT_WORKSPACE_ID, QueryClient, SourceClient, default_workspace};
-pub use coral_app::seed_root_span;
 pub use error::{ClientError, QueryResultError};
 pub use status_error::{
     CORAL_ERROR_DOMAIN, CoralQueryError, DecodedStatusError, decode_status_error,

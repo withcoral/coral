@@ -158,9 +158,8 @@ impl CliExitError {
 ///
 /// Returns an error if argument parsing, command execution, or output
 /// formatting fails.
-pub async fn run(app: AppClient) -> Result<(), anyhow::Error> {
-    let cli = Cli::parse();
-    run_parsed(app, cli).await
+pub async fn run(app: AppClient, ctx: coral_app::RunContext) -> Result<(), anyhow::Error> {
+    coral_app::run_with_context(&ctx, Box::pin(run_parsed(app, Cli::parse()))).await
 }
 
 async fn run_parsed(app: AppClient, cli: Cli) -> Result<(), anyhow::Error> {

@@ -13,7 +13,10 @@ use bootstrap::bootstrap;
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
     let bootstrap = bootstrap().await?;
-    let result = coral_cli::run(bootstrap.app.clone()).await;
+    let ctx = coral_app::RunContext {
+        trace_parent: coral_cli::env::trace_parent(),
+    };
+    let result = coral_cli::run(bootstrap.app.clone(), ctx).await;
     bootstrap.shutdown().await;
     match result {
         Ok(()) => Ok(()),

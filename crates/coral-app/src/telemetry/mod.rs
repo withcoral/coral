@@ -81,18 +81,28 @@ fn parse_headers(raw: &str) -> HashMap<String, String> {
         .collect()
 }
 
-/// Enters a root CLI span, optionally parented to the W3C `traceparent` value
-/// in the `CORAL_TRACE_PARENT` environment variable.
+/// Per-invocation context populated from the process environment by the CLI binary.
+#[derive(Debug, Default)]
+pub struct RunContext {
+    /// W3C `traceparent` for linking CLI spans to a parent distributed trace.
+    pub trace_parent: Option<String>,
+}
+
+/// Runs `fut` under a root CLI span configured from `ctx`.
+pub async fn run_with_context<F: std::future::Future>(ctx: &RunContext, fut: F) -> F::Output {
+    use tracing::Instrument as _;
+    fut.instrument(build_root_span(ctx.trace_parent.as_deref()))
+        .await
+}
+
+/// Builds a root CLI span, optionally parented to a W3C `traceparent` string.
 ///
-/// The returned [`tracing::span::EnteredSpan`] must be kept alive for the
-/// duration of the CLI invocation — dropping it exits the span.
-#[allow(
-    clippy::disallowed_methods,
-    reason = "CORAL_TRACE_PARENT is intentionally read from the environment as a per-invocation CLI seed"
-)]
-pub fn seed_root_span() -> tracing::span::EnteredSpan {
+/// Pass the value of `CORAL_TRACE_PARENT` (read by the CLI's env module) or
+/// `None` for an unparented span. Use `.instrument(span).await` to run the
+/// CLI future under this span.
+pub fn build_root_span(traceparent: Option<&str>) -> tracing::Span {
     let span = tracing::info_span!("coral.cli");
-    if let Ok(traceparent) = std::env::var("CORAL_TRACE_PARENT") {
+    if let Some(tp) = traceparent {
         struct StringMapExtractor<'a>(&'a HashMap<String, String>);
         impl Extractor for StringMapExtractor<'_> {
             fn get(&self, key: &str) -> Option<&str> {
@@ -102,13 +112,13 @@ pub fn seed_root_span() -> tracing::span::EnteredSpan {
                 self.0.keys().map(String::as_str).collect()
             }
         }
-        let carrier = HashMap::from([("traceparent".to_string(), traceparent)]);
+        let carrier = HashMap::from([("traceparent".to_string(), tp.to_string())]);
         let parent_cx = opentelemetry::global::get_text_map_propagator(|p| {
             p.extract(&StringMapExtractor(&carrier))
         });
         let _ = span.set_parent(parent_cx);
     }
-    span.entered()
+    span
 }
 
 #[allow(
