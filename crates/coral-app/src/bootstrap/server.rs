@@ -121,7 +121,7 @@ impl ServerBuilder {
         )?;
         layout.ensure()?;
         let telemetry_config = TelemetryConfig::load(&layout)?;
-        crate::telemetry::init_tracing(&telemetry_config);
+        crate::telemetry::init_tracing(&telemetry_config)?;
         let config_store = ConfigStore::new(layout.clone());
         let secret_store = SecretStore::new(layout.clone());
         let source_manager =
