@@ -144,23 +144,6 @@ mod tests {
 
     use super::metrics;
 
-    fn sum_u64(metrics: &[ResourceMetrics], name: &str) -> u64 {
-        metrics
-            .iter()
-            .rev()
-            .flat_map(ResourceMetrics::scope_metrics)
-            .flat_map(opentelemetry_sdk::metrics::data::ScopeMetrics::metrics)
-            .find(|metric| metric.name() == name)
-            .and_then(|metric| match metric.data() {
-                AggregatedMetrics::U64(MetricData::Sum(sum)) => sum
-                    .data_points()
-                    .next()
-                    .map(opentelemetry_sdk::metrics::data::SumDataPoint::value),
-                _ => None,
-            })
-            .unwrap_or(0)
-    }
-
     fn histogram_total_count(metrics: &[ResourceMetrics], name: &str) -> u64 {
         metrics
             .iter()
@@ -168,7 +151,7 @@ mod tests {
             .flat_map(ResourceMetrics::scope_metrics)
             .flat_map(opentelemetry_sdk::metrics::data::ScopeMetrics::metrics)
             .find(|metric| metric.name() == name)
-            .map(|metric| match metric.data() {
+            .map_or(0, |metric| match metric.data() {
                 AggregatedMetrics::F64(MetricData::Histogram(histogram)) => histogram
                     .data_points()
                     .map(opentelemetry_sdk::metrics::data::HistogramDataPoint::count)
@@ -179,7 +162,6 @@ mod tests {
                     .sum(),
                 _ => 0,
             })
-            .unwrap_or(0)
     }
 
     #[test]
@@ -190,10 +172,10 @@ mod tests {
 
         let ok = super::status_attr(true);
         let err = super::status_attr(false);
-        metrics.count.add(2, &[ok.clone()]);
-        metrics.count.add(1, &[err.clone()]);
-        metrics.duration.record(0.5, &[ok]);
-        metrics.duration.record(0.1, &[err]);
+        metrics.count.add(2, std::slice::from_ref(&ok));
+        metrics.count.add(1, std::slice::from_ref(&err));
+        metrics.duration.record(0.5, std::slice::from_ref(&ok));
+        metrics.duration.record(0.1, std::slice::from_ref(&err));
         metrics.rows.record(7, &[]);
 
         super::test_support::flush_metrics();

@@ -4,11 +4,51 @@ use coral_api::v1::{
     Column, QueryTestFailure, QueryTestResult, QueryTestSuccess, Source, Table,
     ValidateSourceResponse, Workspace, query_test_result,
 };
+use opentelemetry::propagation::{Extractor, TextMapPropagator as _};
+use opentelemetry_sdk::propagation::TraceContextPropagator;
 use tonic::Status;
+use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
 use crate::bootstrap::{AppError, app_status, core_status};
 use crate::query::manager::QueryManagerError;
 use crate::workspaces::WorkspaceName;
+
+struct MetadataExtractor<'a>(&'a tonic::metadata::MetadataMap);
+
+impl Extractor for MetadataExtractor<'_> {
+    fn get(&self, key: &str) -> Option<&str> {
+        self.0.get(key).and_then(|v| v.to_str().ok())
+    }
+
+    fn keys(&self) -> Vec<&str> {
+        use tonic::metadata::KeyRef;
+        self.0
+            .keys()
+            .filter_map(|k| match k {
+                KeyRef::Ascii(key) => Some(key.as_str()),
+                KeyRef::Binary(_) => None,
+            })
+            .collect()
+    }
+}
+
+/// Extracts a W3C trace context from incoming gRPC request metadata.
+pub(crate) fn extract_trace_context(
+    metadata: &tonic::metadata::MetadataMap,
+) -> opentelemetry::Context {
+    TraceContextPropagator::new().extract(&MetadataExtractor(metadata))
+}
+
+/// Creates a span parented to the trace context extracted from `metadata`.
+pub(crate) fn grpc_span(
+    metadata: &tonic::metadata::MetadataMap,
+    name: &'static str,
+) -> tracing::Span {
+    let parent_cx = extract_trace_context(metadata);
+    let span = tracing::info_span!("grpc", grpc.method = name);
+    let _ = span.set_parent(parent_cx);
+    span
+}
 
 #[allow(
     clippy::needless_pass_by_value,
