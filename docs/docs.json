@@ -86,14 +86,15 @@
         "pages": [
           "reference/cli-reference",
           "reference/bundled-sources",
-          "reference/source-spec-reference",
-          "reference/security"
+          "reference/source-spec-reference"
         ]
       },
       {
-        "group": "Contributors",
+        "group": "Project",
         "pages": [
-          "contributors/architecture"
+          "project/roadmap",
+          "project/security",
+          "project/architecture"
         ]
       }
     ]
