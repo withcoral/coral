@@ -1050,21 +1050,22 @@ async fn config_persists_across_rebuilds_without_local_trace_state() {
 }
 
 #[tokio::test]
-async fn corrupted_config_surfaces_internal_error() {
+async fn corrupted_config_fails_at_startup() {
+    use coral_client::local::ServerBuilder;
+
     let temp = TempDir::new().expect("temp dir");
     let config_dir = temp.path().join("coral-config");
     fs::create_dir_all(&config_dir).expect("create config dir");
     fs::write(config_dir.join("config.toml"), "[[sources]\n").expect("write invalid config");
 
-    let harness = GrpcHarness::start_with_config_dir(config_dir).await;
-    let error = harness
-        .source_client()
-        .discover_sources(Request::new(DiscoverSourcesRequest {
-            workspace: Some(default_workspace()),
-        }))
-        .await
-        .expect_err("corrupted config should surface as an error");
-    assert_eq!(error.code(), tonic::Code::Internal);
+    assert!(
+        ServerBuilder::new()
+            .with_config_dir(&config_dir)
+            .start()
+            .await
+            .is_err(),
+        "corrupted config should prevent server startup"
+    );
 }
 
 #[cfg(unix)]

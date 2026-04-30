@@ -8,7 +8,15 @@ use coral_client::{
 
 pub(crate) struct Bootstrap {
     pub(crate) app: AppClient,
-    pub(crate) _server: Option<RunningServer>,
+    server: Option<RunningServer>,
+}
+
+impl Bootstrap {
+    pub(crate) async fn shutdown(self) {
+        if let Some(server) = self.server {
+            let _ = server.shutdown().await;
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -23,7 +31,7 @@ pub(crate) async fn bootstrap() -> Result<Bootstrap, BootstrapError> {
     if let Some(endpoint) = bootstrap_endpoint() {
         return Ok(Bootstrap {
             app: AppClient::connect(&endpoint).await?,
-            _server: None,
+            server: None,
         });
     }
 
@@ -33,7 +41,7 @@ pub(crate) async fn bootstrap() -> Result<Bootstrap, BootstrapError> {
     let app = AppClient::connect(server.endpoint_uri()).await?;
     Ok(Bootstrap {
         app,
-        _server: Some(server),
+        server: Some(server),
     })
 }
 

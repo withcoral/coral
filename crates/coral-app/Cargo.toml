@@ -13,6 +13,10 @@ workspace = true
 arrow.workspace = true
 directories.workspace = true
 fs2.workspace = true
+opentelemetry.workspace = true
+opentelemetry-appender-tracing.workspace = true
+opentelemetry-otlp.workspace = true
+opentelemetry_sdk.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
@@ -24,14 +28,17 @@ toml_edit.workspace = true
 tonic.workspace = true
 tonic-types.workspace = true
 tracing.workspace = true
+tracing-opentelemetry.workspace = true
+tracing-subscriber.workspace = true
 
 coral-api.workspace = true
 coral-auth-aws = { path = "../auth/aws" }
-coral-spec.workspace = true
 coral-engine.workspace = true
+coral-spec.workspace = true
 
 [dev-dependencies]
 coral-client.workspace = true
+opentelemetry_sdk = { workspace = true, features = ["testing"] }
 reqwest.workspace = true
 tempfile.workspace = true
 tokio.workspace = true

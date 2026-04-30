@@ -22,6 +22,7 @@ use crate::query::service::QueryService;
 use crate::sources::manager::SourceManager;
 use crate::sources::service::SourceService;
 use crate::state::{AppStateLayout, ConfigStore, SecretStore};
+use crate::telemetry::TelemetryConfig;
 
 /// Server-side bootstrap configuration for the Coral server.
 #[derive(Clone)]
@@ -119,6 +120,8 @@ impl ServerBuilder {
                 .or_else(|| env.coral_config_dir_override()),
         )?;
         layout.ensure()?;
+        let telemetry_config = TelemetryConfig::load(&layout)?;
+        crate::telemetry::init_tracing(&telemetry_config);
         let config_store = ConfigStore::new(layout.clone());
         let secret_store = SecretStore::new(layout.clone());
         let source_manager =
@@ -179,6 +182,9 @@ impl RunningServer {
         if let Some(task) = task {
             task.await??;
         }
+        tokio::task::spawn_blocking(crate::telemetry::shutdown_tracing)
+            .await
+            .ok();
         Ok(())
     }
 }
@@ -229,6 +235,7 @@ async fn start_server(
 
 #[cfg(test)]
 mod tests {
+    use std::net::{Ipv4Addr, TcpListener};
     use std::sync::Arc;
 
     use coral_api::v1::query_service_client::QueryServiceClient;
@@ -259,8 +266,16 @@ mod tests {
             .add_engine_extensions_provider(Arc::new(NoopEngineExtensionsProvider));
     }
 
+    fn loopback_sockets_available() -> bool {
+        TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).is_ok()
+    }
+
     #[tokio::test]
     async fn file_tilde_sources_resolve_from_app_owned_runtime_context() {
+        if !loopback_sockets_available() {
+            return;
+        }
+
         let temp = TempDir::new().expect("temp dir");
         let fake_home = temp.path().join("fake-home");
         let config_dir = temp.path().join("coral-config");

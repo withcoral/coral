@@ -4,9 +4,11 @@ use coral_api::v1::Workspace;
 use coral_api::v1::query_service_client::QueryServiceClient;
 use coral_api::v1::source_service_client::SourceServiceClient;
 use coral_api::{HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE};
+use tonic::service::interceptor::InterceptedService;
 use tonic::transport::{Channel, Endpoint};
 
 use crate::error::ClientError;
+use crate::propagation::TraceContextInterceptor;
 
 /// Default workspace used by local Coral clients.
 pub use coral_app::DEFAULT_WORKSPACE_ID;
@@ -20,22 +22,15 @@ pub fn default_workspace() -> Workspace {
 }
 
 /// Public source-management gRPC client.
-///
-/// This stays intentionally thin for now: `coral-client` is a local transport
-/// bootstrap, so it exposes the generated typed client directly rather than
-/// wrapping it in a higher-level SDK surface.
-pub type SourceClient = SourceServiceClient<Channel>;
+pub type SourceClient = SourceServiceClient<InterceptedService<Channel, TraceContextInterceptor>>;
 
 /// Public SQL query gRPC client.
-///
-/// This stays intentionally thin for now: `coral-client` is a local transport
-/// bootstrap, so it exposes the generated typed client directly rather than
-/// wrapping it in a higher-level SDK surface.
-pub type QueryClient = QueryServiceClient<Channel>;
+pub type QueryClient = QueryServiceClient<InterceptedService<Channel, TraceContextInterceptor>>;
 
 /// Public Coral client handle.
 ///
 /// Wraps the generated gRPC clients for a Coral endpoint.
+#[derive(Clone)]
 pub struct AppClient {
     source_client: SourceClient,
     query_client: QueryClient,
@@ -54,8 +49,9 @@ impl AppClient {
         let endpoint = Endpoint::from_shared(endpoint_uri.to_string())?
             .http2_max_header_list_size(HTTP2_MAX_HEADER_LIST_SIZE);
         let channel = endpoint.connect().await?;
-        let source_client = SourceServiceClient::new(channel.clone());
-        let query_client = QueryServiceClient::new(channel)
+        let source_client =
+            SourceServiceClient::with_interceptor(channel.clone(), TraceContextInterceptor);
+        let query_client = QueryServiceClient::with_interceptor(channel, TraceContextInterceptor)
             .max_decoding_message_size(QUERY_RESPONSE_MAX_MESSAGE_SIZE);
         Ok(Self {
             source_client,

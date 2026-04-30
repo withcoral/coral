@@ -42,6 +42,10 @@ glob = "0.3"
 httpdate = "1.0.3"
 jsonschema = { version = "0.18", default-features = false }
 object_store = { version = "0.13.2", features = ["aws"] }
+opentelemetry = "0.31.0"
+opentelemetry-appender-tracing = "0.31.0"
+opentelemetry-otlp = "0.31.0"
+opentelemetry_sdk = "0.31.0"
 parquet = { version = "58.1.0", features = ["arrow"] }
 prost = "0.14.1"
 reqwest = { version = "0.12", default-features = false, features = ["charset", "http2", "json", "rustls-tls-native-roots", "system-proxy"] }
@@ -62,6 +66,8 @@ tonic-prost = "0.14.2"
 tonic-types = "0.14.2"
 tower = "0.5"
 tracing = "0.1.44"
+tracing-opentelemetry = "0.32.1"
+tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 tempfile = "3"
 url = "2"
 urlencoding = "2"

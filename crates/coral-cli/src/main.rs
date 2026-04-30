@@ -12,8 +12,8 @@ use bootstrap::bootstrap;
 
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
-    let bootstrap::Bootstrap { app, _server } = bootstrap().await?;
-    match coral_cli::run(app).await {
+    let bootstrap = bootstrap().await?;
+    let result = match coral_cli::run(bootstrap.app.clone()).await {
         Ok(()) => Ok(()),
         Err(error) => {
             if let Some(cli_error) = error.downcast_ref::<coral_cli::CliExitError>() {
@@ -22,5 +22,7 @@ async fn main() -> Result<(), anyhow::Error> {
             }
             Err(error)
         }
-    }
+    };
+    bootstrap.shutdown().await;
+    result
 }
