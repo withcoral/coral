@@ -32,17 +32,26 @@
   ambient process environment directly.
 - Changes to CLI or MCP surfaces must include corresponding documentation
   updates under `docs/` in the same change.
-- When proposing or updating a PR title, use Conventional Commits:
-  `type(scope): summary`.
+- Pull requests must follow the PR guidance below.
+
+## Pull Requests
+
+- PR titles must follow the Conventional Commits specification, for example
+  `feat: add user authentication` or
+  `fix: resolve race condition in worker`.
 - When using a scope, prefer one that matches the primary area changed,
   usually the crate name minus the `coral-` prefix, `docs`, or
   `sources/<name>`.
-- Keep the PR title up to date as the branch evolves. If the change shifts in
-  scope or intent, update the title to match the current final shape of the
-  branch.
 - Use `!` only for breaking changes, placing it immediately before the colon:
   `type!: summary` or `type(scope)!: summary`. Local WIP commit messages can
   stay pragmatic unless the user explicitly asks for polished commit history.
+- Keep the PR title up to date as the branch evolves. If the change shifts in
+  scope or intent, update the title to match the current final shape of the
+  branch.
+- PR descriptions must include:
+  1. **Intent** — Why is this change being made?
+  2. **What it enables** — What new capability or improvement does this unlock?
+  3. **Usage examples** — How to use or interact with the change.
 
 ## What Counts As a Breaking Change for a CLI?
 
