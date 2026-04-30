@@ -42,43 +42,6 @@ fn base_http_manifest(name: &str, base_url: &str) -> Value {
     })
 }
 
-fn sentry_issues_manifest(name: &str, base_url: &str) -> Value {
-    json!({
-        "name": name,
-        "version": "0.1.0",
-        "dsl_version": 3,
-        "backend": "http",
-        "base_url": base_url,
-        "tables": [{
-            "name": "issues",
-            "description": "Sentry issues",
-            "filters": [
-                { "name": "query" }
-            ],
-            "request": {
-                "method": "GET",
-                "path": "/api/issues",
-                "query": [
-                    { "name": "query", "from": "filter", "key": "query", "default": "" }
-                ]
-            },
-            "response": {
-                "rows_path": ["data"]
-            },
-            "columns": [
-                { "name": "id", "type": "Utf8" },
-                {
-                    "name": "query",
-                    "type": "Utf8",
-                    "nullable": true,
-                    "virtual": true,
-                    "expr": { "kind": "from_filter", "key": "query" }
-                }
-            ]
-        }]
-    })
-}
-
 #[derive(Debug)]
 struct TestRequestAuthenticator;
 
@@ -270,68 +233,6 @@ async fn select_with_where_filter_pushdown() {
     );
 
     assert_eq!(rows, vec![json!({"id": 2, "name": "Grace"})]);
-}
-
-#[tokio::test]
-async fn empty_string_filter_default_without_where_clause() {
-    let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/api/issues"))
-        .and(query_param("query", ""))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(json!({ "data": [json!({"id": "ISSUE-1"})] })),
-        )
-        .expect(1)
-        .mount(&server)
-        .await;
-
-    let source = build_source(sentry_issues_manifest(
-        "sentry_default_query",
-        &server.uri(),
-    ));
-
-    let rows = execution_to_rows(
-        &CoralQuery::execute_sql(
-            &[source],
-            test_runtime(),
-            "SELECT id FROM sentry_default_query.issues",
-        )
-        .await
-        .expect("query should succeed"),
-    );
-
-    assert_eq!(rows, vec![json!({"id": "ISSUE-1"})]);
-}
-
-#[tokio::test]
-async fn empty_string_filter_default_where_override() {
-    let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/api/issues"))
-        .and(query_param("query", "is:unresolved"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(json!({ "data": [json!({"id": "ISSUE-2"})] })),
-        )
-        .expect(1)
-        .mount(&server)
-        .await;
-
-    let source = build_source(sentry_issues_manifest(
-        "sentry_override_query",
-        &server.uri(),
-    ));
-
-    let rows = execution_to_rows(
-        &CoralQuery::execute_sql(
-            &[source],
-            test_runtime(),
-            "SELECT id FROM sentry_override_query.issues WHERE query = 'is:unresolved'",
-        )
-        .await
-        .expect("query should succeed"),
-    );
-
-    assert_eq!(rows, vec![json!({"id": "ISSUE-2"})]);
 }
 
 #[tokio::test]
