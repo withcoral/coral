@@ -23,7 +23,7 @@ fn build_metrics(meter: &Meter) -> Metrics {
             .build(),
         duration: meter
             .f64_histogram("coral.query.duration")
-            .with_unit("ms")
+            .with_unit("s")
             .with_description("Query execution latency")
             .build(),
         errors: meter

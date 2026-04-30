@@ -92,7 +92,7 @@ impl QueryManager {
         metrics.count.add(1, &[]);
         metrics
             .duration
-            .record(started_at.elapsed().as_secs_f64() * 1000.0, &[]);
+            .record(started_at.elapsed().as_secs_f64(), &[]);
 
         if let Ok(execution) = &result {
             let row_count = u64::try_from(execution.row_count()).unwrap_or(u64::MAX);
