@@ -144,24 +144,40 @@ mod tests {
 
     use super::metrics;
 
-    fn histogram_total_count(metrics: &[ResourceMetrics], name: &str) -> u64 {
+    fn find_metric<'a>(
+        metrics: &'a [ResourceMetrics],
+        name: &str,
+    ) -> Option<&'a opentelemetry_sdk::metrics::data::Metric> {
         metrics
             .iter()
             .rev()
             .flat_map(ResourceMetrics::scope_metrics)
             .flat_map(opentelemetry_sdk::metrics::data::ScopeMetrics::metrics)
             .find(|metric| metric.name() == name)
-            .map_or(0, |metric| match metric.data() {
-                AggregatedMetrics::F64(MetricData::Histogram(histogram)) => histogram
-                    .data_points()
-                    .map(opentelemetry_sdk::metrics::data::HistogramDataPoint::count)
-                    .sum(),
-                AggregatedMetrics::U64(MetricData::Histogram(histogram)) => histogram
-                    .data_points()
-                    .map(opentelemetry_sdk::metrics::data::HistogramDataPoint::count)
-                    .sum(),
-                _ => 0,
-            })
+    }
+
+    fn histogram_total_count(metrics: &[ResourceMetrics], name: &str) -> u64 {
+        find_metric(metrics, name).map_or(0, |metric| match metric.data() {
+            AggregatedMetrics::F64(MetricData::Histogram(histogram)) => histogram
+                .data_points()
+                .map(opentelemetry_sdk::metrics::data::HistogramDataPoint::count)
+                .sum(),
+            AggregatedMetrics::U64(MetricData::Histogram(histogram)) => histogram
+                .data_points()
+                .map(opentelemetry_sdk::metrics::data::HistogramDataPoint::count)
+                .sum(),
+            _ => 0,
+        })
+    }
+
+    fn counter_total(metrics: &[ResourceMetrics], name: &str) -> u64 {
+        find_metric(metrics, name).map_or(0, |metric| match metric.data() {
+            AggregatedMetrics::U64(MetricData::Sum(sum)) => sum
+                .data_points()
+                .map(opentelemetry_sdk::metrics::data::SumDataPoint::value)
+                .sum(),
+            _ => 0,
+        })
     }
 
     #[test]
@@ -180,6 +196,7 @@ mod tests {
 
         super::test_support::flush_metrics();
         let finished = exporter.get_finished_metrics().expect("finished metrics");
+        assert_eq!(counter_total(&finished, "coral.query.count"), 3);
         assert_eq!(histogram_total_count(&finished, "coral.query.duration"), 2);
         assert_eq!(histogram_total_count(&finished, "coral.query.rows"), 1);
     }
