@@ -207,6 +207,6 @@ under the project licence.
 If you are contributing to Coral for the first time, please email
 [legal@withcoral.com](mailto:legal@withcoral.com), including your Github
 username and confirming that you agree to our
-[Individual Contributor Licensing Agreement](./CLA_individual.md). To agree to
+[Individual Contributor Licensing Agreement](https://withcoral.com/docs/legal/cla-individual). To agree to
 the CLA on behalf of a corporation, please see the
-[Corporate CLA](./CLA_corporate.md).
+[Corporate CLA](https://withcoral.com/docs/legal/cla-corporate).
