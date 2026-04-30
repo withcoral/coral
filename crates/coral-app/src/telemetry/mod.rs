@@ -5,7 +5,7 @@ use std::sync::{Mutex, Once};
 use std::time::Duration;
 
 use opentelemetry::metrics::MeterProvider as _;
-use opentelemetry::propagation::{Extractor, TextMapPropagator as _};
+use opentelemetry::propagation::Extractor;
 use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_otlp::{
     LogExporter, MetricExporter, SpanExporter, WithExportConfig, WithHttpConfig,
@@ -103,7 +103,9 @@ pub fn seed_root_span() -> tracing::span::EnteredSpan {
             }
         }
         let carrier = HashMap::from([("traceparent".to_string(), traceparent)]);
-        let parent_cx = TraceContextPropagator::new().extract(&StringMapExtractor(&carrier));
+        let parent_cx = opentelemetry::global::get_text_map_propagator(|p| {
+            p.extract(&StringMapExtractor(&carrier))
+        });
         let _ = span.set_parent(parent_cx);
     }
     span.entered()
@@ -115,6 +117,7 @@ pub fn seed_root_span() -> tracing::span::EnteredSpan {
 )]
 pub(crate) fn init_tracing(config: &TelemetryConfig) {
     INIT.call_once(|| {
+        opentelemetry::global::set_text_map_propagator(TraceContextPropagator::new());
         let endpoint = config
             .otel_endpoint
             .as_deref()

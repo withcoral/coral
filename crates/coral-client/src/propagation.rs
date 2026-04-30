@@ -1,7 +1,6 @@
 //! W3C Trace Context propagation for tonic gRPC clients.
 
-use opentelemetry::propagation::{Injector, TextMapPropagator as _};
-use opentelemetry_sdk::propagation::TraceContextPropagator;
+use opentelemetry::propagation::Injector;
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
 struct MetadataInjector<'a>(&'a mut tonic::metadata::MetadataMap);
@@ -27,8 +26,9 @@ impl tonic::service::Interceptor for TraceContextInterceptor {
         mut request: tonic::Request<()>,
     ) -> Result<tonic::Request<()>, tonic::Status> {
         let cx = tracing::Span::current().context();
-        TraceContextPropagator::new()
-            .inject_context(&cx, &mut MetadataInjector(request.metadata_mut()));
+        opentelemetry::global::get_text_map_propagator(|p| {
+            p.inject_context(&cx, &mut MetadataInjector(request.metadata_mut()));
+        });
         Ok(request)
     }
 }

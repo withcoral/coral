@@ -91,9 +91,10 @@ impl QueryManager {
         let metrics = crate::telemetry::metrics::metrics();
         let status = crate::telemetry::metrics::status_attr(result.is_ok());
         metrics.count.add(1, std::slice::from_ref(&status));
-        metrics
-            .duration
-            .record(started_at.elapsed().as_secs_f64(), std::slice::from_ref(&status));
+        metrics.duration.record(
+            started_at.elapsed().as_secs_f64(),
+            std::slice::from_ref(&status),
+        );
 
         if let Ok(execution) = &result {
             let row_count = u64::try_from(execution.row_count()).unwrap_or(u64::MAX);

@@ -4,8 +4,7 @@ use coral_api::v1::{
     Column, QueryTestFailure, QueryTestResult, QueryTestSuccess, Source, Table,
     ValidateSourceResponse, Workspace, query_test_result,
 };
-use opentelemetry::propagation::{Extractor, TextMapPropagator as _};
-use opentelemetry_sdk::propagation::TraceContextPropagator;
+use opentelemetry::propagation::Extractor;
 use tonic::Status;
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
@@ -36,7 +35,7 @@ impl Extractor for MetadataExtractor<'_> {
 pub(crate) fn extract_trace_context(
     metadata: &tonic::metadata::MetadataMap,
 ) -> opentelemetry::Context {
-    TraceContextPropagator::new().extract(&MetadataExtractor(metadata))
+    opentelemetry::global::get_text_map_propagator(|p| p.extract(&MetadataExtractor(metadata)))
 }
 
 /// Creates a span parented to the trace context extracted from `metadata`.
