@@ -27,7 +27,7 @@ pub(crate) enum BootstrapError {
     Connect(#[from] ClientError),
 }
 
-pub(crate) async fn bootstrap() -> Result<Bootstrap, BootstrapError> {
+pub(crate) async fn bootstrap(enable_stderr_logs: bool) -> Result<Bootstrap, BootstrapError> {
     if let Some(endpoint) = bootstrap_endpoint() {
         return Ok(Bootstrap {
             app: AppClient::connect(&endpoint).await?,
@@ -35,7 +35,7 @@ pub(crate) async fn bootstrap() -> Result<Bootstrap, BootstrapError> {
         });
     }
 
-    let server = configure_server_builder(ServerBuilder::new())
+    let server = configure_server_builder(ServerBuilder::new(), enable_stderr_logs)
         .start()
         .await?;
     let app = AppClient::connect(server.endpoint_uri()).await?;
@@ -45,8 +45,10 @@ pub(crate) async fn bootstrap() -> Result<Bootstrap, BootstrapError> {
     })
 }
 
-fn configure_server_builder(builder: ServerBuilder) -> ServerBuilder {
-    builder.add_engine_extensions_provider(Arc::new(AwsEngineExtensionsProvider))
+fn configure_server_builder(builder: ServerBuilder, enable_stderr_logs: bool) -> ServerBuilder {
+    builder
+        .with_stderr_logs(enable_stderr_logs)
+        .add_engine_extensions_provider(Arc::new(AwsEngineExtensionsProvider))
 }
 
 #[cfg(feature = "cli-test-server")]

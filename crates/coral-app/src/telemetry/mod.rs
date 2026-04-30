@@ -25,8 +25,8 @@ pub mod config;
 pub mod metrics;
 
 use crate::bootstrap::AppError;
-use config::DEFAULT_TRACE_FILTER;
 pub use config::TelemetryConfig;
+use config::{DEFAULT_LOG_FILTER, DEFAULT_TRACE_FILTER};
 
 static INIT: OnceLock<Result<(), String>> = OnceLock::new();
 static PROVIDER: Mutex<Option<SdkTracerProvider>> = Mutex::new(None);
@@ -35,8 +35,15 @@ static METER_PROVIDER: Mutex<Option<SdkMeterProvider>> = Mutex::new(None);
 
 const METRICS_INTERVAL: Duration = Duration::from_secs(5);
 
-fn build_filter(log: &str) -> EnvFilter {
-    EnvFilter::new(log)
+fn build_log_filter(filter: Option<&str>) -> (EnvFilter, Option<String>) {
+    let Some(filter) = filter else {
+        return (EnvFilter::new(DEFAULT_LOG_FILTER), None);
+    };
+
+    match EnvFilter::try_new(filter) {
+        Ok(filter) => (filter, None),
+        Err(error) => (EnvFilter::new(DEFAULT_LOG_FILTER), Some(error.to_string())),
+    }
 }
 
 fn build_trace_targets(filter: &str) -> (Targets, Option<String>) {
@@ -122,8 +129,11 @@ pub fn build_root_span(traceparent: Option<&str>) -> tracing::Span {
     span
 }
 
-pub(crate) fn init_tracing(config: &TelemetryConfig) -> Result<(), AppError> {
-    INIT.get_or_init(|| try_init_tracing(config).map_err(|e| e.to_string()))
+pub(crate) fn init_tracing(
+    config: &TelemetryConfig,
+    enable_stderr_logs: bool,
+) -> Result<(), AppError> {
+    INIT.get_or_init(|| try_init_tracing(config, enable_stderr_logs).map_err(|e| e.to_string()))
         .as_ref()
         .map_err(|e| AppError::InvalidInput(e.clone()))?;
     Ok(())
@@ -133,19 +143,20 @@ pub(crate) fn init_tracing(config: &TelemetryConfig) -> Result<(), AppError> {
     clippy::too_many_lines,
     reason = "Initialization configures three OTLP pipelines in one place"
 )]
-fn try_init_tracing(config: &TelemetryConfig) -> Result<(), AppError> {
+fn try_init_tracing(config: &TelemetryConfig, enable_stderr_logs: bool) -> Result<(), AppError> {
     opentelemetry::global::set_text_map_propagator(TraceContextPropagator::new());
     let endpoint = config
         .otel_endpoint
         .as_deref()
         .filter(|value| !value.is_empty())
         .map(str::to_string);
-    let stderr_layer = config.otel_log_filter.as_deref().map(|log_filter| {
+    let (log_filter, log_filter_error) = build_log_filter(config.otel_log_filter.as_deref());
+    let stderr_layer = enable_stderr_logs.then(|| {
         tracing_subscriber::fmt::layer()
             .with_target(true)
             .compact()
             .with_writer(std::io::stderr)
-            .with_filter(build_filter(log_filter))
+            .with_filter(log_filter.clone())
     });
 
     if let Some(ref endpoint) = endpoint {
@@ -215,7 +226,7 @@ fn try_init_tracing(config: &TelemetryConfig) -> Result<(), AppError> {
         let otel_log_layer = LOGGER_PROVIDER.lock().ok().and_then(|guard| {
             guard.as_ref().map(|provider| {
                 opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge::new(provider)
-                    .with_filter(trace_targets)
+                    .with_filter(log_filter)
             })
         });
 
@@ -228,6 +239,14 @@ fn try_init_tracing(config: &TelemetryConfig) -> Result<(), AppError> {
             .with(otel_trace_layer)
             .with(otel_log_layer)
             .init();
+        if let Some(error) = log_filter_error {
+            tracing::warn!(
+                provided_filter = %config.otel_log_filter.as_deref().unwrap_or(DEFAULT_LOG_FILTER),
+                fallback_filter = DEFAULT_LOG_FILTER,
+                detail = %error,
+                "invalid otel_log_filter; falling back to default filter"
+            );
+        }
         if let Some(error) = trace_filter_error {
             tracing::warn!(
                 provided_filter = %config.otel_trace_filter,
@@ -238,6 +257,14 @@ fn try_init_tracing(config: &TelemetryConfig) -> Result<(), AppError> {
         }
     } else {
         Registry::default().with(stderr_layer).init();
+        if let Some(error) = log_filter_error {
+            tracing::warn!(
+                provided_filter = %config.otel_log_filter.as_deref().unwrap_or(DEFAULT_LOG_FILTER),
+                fallback_filter = DEFAULT_LOG_FILTER,
+                detail = %error,
+                "invalid otel_log_filter; falling back to default filter"
+            );
+        }
         initialize_metrics(None);
     }
 
@@ -271,7 +298,8 @@ mod tests {
     use std::collections::HashMap;
 
     use super::{
-        DEFAULT_TRACE_FILTER, build_trace_targets, normalize_otlp_endpoint, parse_headers,
+        DEFAULT_LOG_FILTER, DEFAULT_TRACE_FILTER, build_log_filter, build_trace_targets,
+        normalize_otlp_endpoint, parse_headers,
     };
 
     #[test]
@@ -310,6 +338,26 @@ mod tests {
 
         assert_eq!(format!("{targets:?}"), format!("{expected:?}"));
         assert!(error.is_some());
+        assert!(default_error.is_none());
+    }
+
+    #[test]
+    fn invalid_log_filter_falls_back_to_default() {
+        let (filter, error) = build_log_filter(Some("coral_app=["));
+        let (expected, default_error) = build_log_filter(Some(DEFAULT_LOG_FILTER));
+
+        assert_eq!(format!("{filter:?}"), format!("{expected:?}"));
+        assert!(error.is_some());
+        assert!(default_error.is_none());
+    }
+
+    #[test]
+    fn missing_log_filter_uses_default_without_error() {
+        let (filter, error) = build_log_filter(None);
+        let (expected, default_error) = build_log_filter(Some(DEFAULT_LOG_FILTER));
+
+        assert_eq!(format!("{filter:?}"), format!("{expected:?}"));
+        assert!(error.is_none());
         assert!(default_error.is_none());
     }
 }

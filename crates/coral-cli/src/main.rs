@@ -12,7 +12,7 @@ use bootstrap::bootstrap;
 
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
-    let bootstrap = bootstrap().await?;
+    let bootstrap = bootstrap(coral_cli::enables_stderr_logs()).await?;
     let ctx = coral_app::RunContext {
         trace_parent: coral_cli::env::trace_parent(),
     };

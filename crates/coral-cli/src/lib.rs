@@ -152,6 +152,27 @@ impl CliExitError {
     }
 }
 
+/// Returns whether this CLI invocation should render telemetry logs to stderr.
+///
+/// `MCP` stdio reserves stdout for protocol messages, so stderr is the only
+/// local diagnostics stream that can be safely exposed while the server is
+/// running.
+#[must_use]
+pub fn enables_stderr_logs() -> bool {
+    command_enables_stderr_logs(std::env::args_os())
+}
+
+fn command_enables_stderr_logs<I, T>(args: I) -> bool
+where
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString> + Clone,
+{
+    matches!(
+        Cli::try_parse_from(args).map(|cli| cli.command),
+        Ok(Command::McpStdio)
+    )
+}
+
 /// Parses CLI arguments and runs the shared Coral CLI.
 ///
 /// # Errors
@@ -365,4 +386,19 @@ async fn run_source_add(app: &AppClient, args: SourceAddArgs) -> Result<(), anyh
     };
     println!("Added source {}", response.name);
     source_ops::validate_and_warn(app, &response.name, source_ops::TableDisplayLimit::DEFAULT).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::command_enables_stderr_logs;
+
+    #[test]
+    fn mcp_stdio_invocation_enables_stderr_logs() {
+        assert!(command_enables_stderr_logs(["coral", "mcp-stdio"]));
+    }
+
+    #[test]
+    fn non_mcp_invocation_disables_stderr_logs() {
+        assert!(!command_enables_stderr_logs(["coral", "sql", "SELECT 1"]));
+    }
 }

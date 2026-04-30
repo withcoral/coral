@@ -29,6 +29,7 @@ use crate::telemetry::TelemetryConfig;
 pub(crate) struct ServerConfig {
     config_dir: Option<PathBuf>,
     engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+    enable_stderr_logs: bool,
 }
 
 impl Default for ServerConfig {
@@ -44,6 +45,7 @@ impl ServerConfig {
         Self {
             config_dir: None,
             engine_extensions_providers: Vec::new(),
+            enable_stderr_logs: false,
         }
     }
 
@@ -61,6 +63,12 @@ impl ServerConfig {
     ) -> Self {
         self.engine_extensions_providers
             .push(engine_extensions_provider);
+        self
+    }
+
+    #[must_use]
+    pub(crate) fn with_stderr_logs(mut self, enable_stderr_logs: bool) -> Self {
+        self.enable_stderr_logs = enable_stderr_logs;
         self
     }
 }
@@ -102,6 +110,17 @@ impl ServerBuilder {
         self
     }
 
+    #[must_use]
+    /// Enables or disables local stderr log rendering for this server.
+    ///
+    /// `MCP` stdio adapters can enable this for diagnostics while keeping
+    /// stdout reserved for protocol messages. Other command surfaces should
+    /// leave it disabled and rely on OTEL export for logs.
+    pub fn with_stderr_logs(mut self, enable_stderr_logs: bool) -> Self {
+        self.config = self.config.with_stderr_logs(enable_stderr_logs);
+        self
+    }
+
     /// Starts the Coral gRPC server on loopback TCP.
     ///
     /// Coral keeps a real local gRPC boundary here so the public client talks
@@ -121,7 +140,7 @@ impl ServerBuilder {
         )?;
         layout.ensure()?;
         let telemetry_config = TelemetryConfig::load(&layout)?;
-        crate::telemetry::init_tracing(&telemetry_config)?;
+        crate::telemetry::init_tracing(&telemetry_config, self.config.enable_stderr_logs)?;
         let config_store = ConfigStore::new(layout.clone());
         let secret_store = SecretStore::new(layout.clone());
         let source_manager =
