@@ -6,11 +6,17 @@ use coral_app::{StaticAsset, StaticAssetsProvider};
 use rust_embed::Embed;
 
 #[derive(Embed)]
-#[folder = "$CARGO_MANIFEST_DIR/../../ui/dist/"]
+#[folder = "../../ui/dist/"]
 #[allow_missing = true]
 struct EmbeddedUiFiles;
 
 pub(crate) struct EmbeddedUi;
+
+impl EmbeddedUi {
+    pub(crate) fn is_available() -> bool {
+        EmbeddedUiFiles::get("index.html").is_some()
+    }
+}
 
 impl StaticAssetsProvider for EmbeddedUi {
     fn get(&self, path: &str) -> Option<StaticAsset> {
