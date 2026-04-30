@@ -89,10 +89,11 @@ impl QueryManager {
         .await;
 
         let metrics = crate::telemetry::metrics::metrics();
-        metrics.count.add(1, &[]);
+        let status = crate::telemetry::metrics::status_attr(result.is_ok());
+        metrics.count.add(1, &[status.clone()]);
         metrics
             .duration
-            .record(started_at.elapsed().as_secs_f64(), &[]);
+            .record(started_at.elapsed().as_secs_f64(), &[status]);
 
         if let Ok(execution) = &result {
             let row_count = u64::try_from(execution.row_count()).unwrap_or(u64::MAX);
@@ -101,7 +102,6 @@ impl QueryManager {
             metrics.rows.record(row_count, &[]);
         } else {
             query_span.record("status", "error");
-            metrics.errors.add(1, &[]);
         }
 
         result

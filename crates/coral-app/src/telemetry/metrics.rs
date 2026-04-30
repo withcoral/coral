@@ -2,14 +2,18 @@
 
 use std::sync::RwLock;
 
+use opentelemetry::KeyValue;
 use opentelemetry::metrics::{Counter, Histogram, Meter};
 
 #[derive(Clone)]
 pub(crate) struct Metrics {
     pub(crate) count: Counter<u64>,
     pub(crate) duration: Histogram<f64>,
-    pub(crate) errors: Counter<u64>,
     pub(crate) rows: Histogram<u64>,
+}
+
+pub(crate) fn status_attr(ok: bool) -> KeyValue {
+    KeyValue::new("status", if ok { "ok" } else { "error" })
 }
 
 static METRICS: RwLock<Option<Metrics>> = RwLock::new(None);
@@ -25,11 +29,6 @@ fn build_metrics(meter: &Meter) -> Metrics {
             .f64_histogram("coral.query.duration")
             .with_unit("s")
             .with_description("Query execution latency")
-            .build(),
-        errors: meter
-            .u64_counter("coral.query.errors")
-            .with_unit("{errors}")
-            .with_description("Failed queries")
             .build(),
         rows: meter
             .u64_histogram("coral.query.rows")
@@ -162,43 +161,44 @@ mod tests {
             .unwrap_or(0)
     }
 
-    fn histogram_count(metrics: &[ResourceMetrics], name: &str) -> u64 {
+    fn histogram_total_count(metrics: &[ResourceMetrics], name: &str) -> u64 {
         metrics
             .iter()
             .rev()
             .flat_map(ResourceMetrics::scope_metrics)
             .flat_map(opentelemetry_sdk::metrics::data::ScopeMetrics::metrics)
             .find(|metric| metric.name() == name)
-            .and_then(|metric| match metric.data() {
+            .map(|metric| match metric.data() {
                 AggregatedMetrics::F64(MetricData::Histogram(histogram)) => histogram
                     .data_points()
-                    .next()
-                    .map(opentelemetry_sdk::metrics::data::HistogramDataPoint::count),
+                    .map(opentelemetry_sdk::metrics::data::HistogramDataPoint::count)
+                    .sum(),
                 AggregatedMetrics::U64(MetricData::Histogram(histogram)) => histogram
                     .data_points()
-                    .next()
-                    .map(opentelemetry_sdk::metrics::data::HistogramDataPoint::count),
-                _ => None,
+                    .map(opentelemetry_sdk::metrics::data::HistogramDataPoint::count)
+                    .sum(),
+                _ => 0,
             })
             .unwrap_or(0)
     }
 
     #[test]
-    fn query_metrics_record_counts_errors_and_rows() {
+    fn query_metrics_record_counts_and_rows_with_status() {
         super::test_support::reset_metrics();
         let exporter = super::test_support::install_metrics_exporter();
         let metrics = metrics();
 
-        metrics.count.add(2, &[]);
-        metrics.errors.add(1, &[]);
-        metrics.duration.record(12.5, &[]);
+        let ok = super::status_attr(true);
+        let err = super::status_attr(false);
+        metrics.count.add(2, &[ok.clone()]);
+        metrics.count.add(1, &[err.clone()]);
+        metrics.duration.record(0.5, &[ok]);
+        metrics.duration.record(0.1, &[err]);
         metrics.rows.record(7, &[]);
 
         super::test_support::flush_metrics();
         let finished = exporter.get_finished_metrics().expect("finished metrics");
-        assert_eq!(sum_u64(&finished, "coral.query.count"), 2);
-        assert_eq!(sum_u64(&finished, "coral.query.errors"), 1);
-        assert_eq!(histogram_count(&finished, "coral.query.duration"), 1);
-        assert_eq!(histogram_count(&finished, "coral.query.rows"), 1);
+        assert_eq!(histogram_total_count(&finished, "coral.query.duration"), 2);
+        assert_eq!(histogram_total_count(&finished, "coral.query.rows"), 1);
     }
 }
