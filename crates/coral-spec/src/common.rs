@@ -145,6 +145,45 @@ pub struct FilterSpec {
     pub mode: FilterMode,
 }
 
+/// Declarative source-scoped table-valued function.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SourceTableFunctionSpec {
+    pub name: String,
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub fetch_limit_default: Option<usize>,
+    #[serde(default)]
+    pub args: Vec<TableFunctionArgSpec>,
+    #[serde(default)]
+    pub request: RequestSpec,
+    #[serde(default)]
+    pub response: ResponseSpec,
+    #[serde(default)]
+    pub pagination: PaginationSpec,
+    #[serde(default)]
+    pub columns: Vec<ColumnSpec>,
+}
+
+/// One argument accepted by a source-scoped table-valued function.
+#[derive(Debug, Clone, Deserialize)]
+pub struct TableFunctionArgSpec {
+    pub name: String,
+    #[serde(default)]
+    pub required: bool,
+    #[serde(default)]
+    pub values: Vec<String>,
+    pub bind: FunctionArgBinding,
+}
+
+/// How a table function argument contributes to the provider request.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct FunctionArgBinding {
+    pub arg: String,
+}
+
 /// The base request template for one HTTP table or request route.
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct RequestSpec {
@@ -322,6 +361,21 @@ pub enum ValueSourceSpec {
         key: String,
         separator: String,
         part: usize,
+    },
+    Arg {
+        key: String,
+        #[serde(default)]
+        default: Option<Value>,
+    },
+    ArgInt {
+        key: String,
+        #[serde(default)]
+        default: Option<i64>,
+    },
+    ArgBool {
+        key: String,
+        #[serde(default)]
+        default: Option<bool>,
     },
     Input {
         key: String,

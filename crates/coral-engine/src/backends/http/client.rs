@@ -1564,6 +1564,21 @@ mod tests {
                 "separator": separator,
                 "part": part,
             }),
+            ValueSourceSpec::Arg { key, default } => json!({
+                "from": "arg",
+                "key": key,
+                "default": default,
+            }),
+            ValueSourceSpec::ArgInt { key, default } => json!({
+                "from": "arg_int",
+                "key": key,
+                "default": default,
+            }),
+            ValueSourceSpec::ArgBool { key, default } => json!({
+                "from": "arg_bool",
+                "key": key,
+                "default": default,
+            }),
             ValueSourceSpec::Input { key } => json!({
                 "from": "input",
                 "key": key,

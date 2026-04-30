@@ -302,6 +302,7 @@ fn eval_template(
                     result.push_str(&rendered);
                 }
                 TemplateNamespace::Input
+                | TemplateNamespace::Arg
                 | TemplateNamespace::State
                 | TemplateNamespace::Other(_) => return None,
             },

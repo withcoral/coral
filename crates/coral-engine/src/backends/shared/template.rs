@@ -76,6 +76,11 @@ pub(crate) fn resolve_value_source(
             })?;
             Ok(Some(json!(parsed)))
         }
+        ValueSourceSpec::Arg { key, .. }
+        | ValueSourceSpec::ArgInt { key, .. }
+        | ValueSourceSpec::ArgBool { key, .. } => Err(DataFusionError::Execution(format!(
+            "function argument '{key}' cannot be resolved outside a function request"
+        ))),
         ValueSourceSpec::Input { key } => Ok(resolved_inputs.get(key).cloned().map(Value::String)),
         ValueSourceSpec::State { key } => Ok(state.get(key).map(|v| Value::String(v.clone()))),
         ValueSourceSpec::NowEpochMinusSeconds { seconds } => {
@@ -234,6 +239,9 @@ pub(crate) fn validate_value_source_inputs(
         | ValueSourceSpec::FilterBool { .. }
         | ValueSourceSpec::FilterSplit { .. }
         | ValueSourceSpec::FilterSplitInt { .. }
+        | ValueSourceSpec::Arg { .. }
+        | ValueSourceSpec::ArgInt { .. }
+        | ValueSourceSpec::ArgBool { .. }
         | ValueSourceSpec::State { .. }
         | ValueSourceSpec::NowEpochMinusSeconds { .. } => Ok(()),
     }
