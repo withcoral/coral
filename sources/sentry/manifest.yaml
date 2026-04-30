@@ -113,6 +113,14 @@ tables:
           kind: path
           path:
             - id
+      - name: short_id
+        type: Utf8
+        nullable: true
+        description: Human-readable issue identifier (e.g. "PROJECT-123")
+        expr:
+          kind: path
+          path:
+            - shortId
       - name: title
         type: Utf8
         nullable: false
