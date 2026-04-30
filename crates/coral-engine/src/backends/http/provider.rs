@@ -27,6 +27,12 @@ pub(crate) struct HttpSourceTableProvider {
     source_schema: String,
     table: HttpTableSpec,
     schema: SchemaRef,
+    prebound_request_args: BoundRequestArgs,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct BoundRequestArgs {
+    direct: HashMap<String, String>,
 }
 
 impl std::fmt::Debug for HttpSourceTableProvider {
@@ -56,7 +62,34 @@ impl HttpSourceTableProvider {
             source_schema,
             table,
             schema,
+            prebound_request_args: BoundRequestArgs::default(),
         })
+    }
+
+    pub(crate) fn with_prebound_request_args(
+        backend: HttpSourceClient,
+        source_schema: String,
+        table: HttpTableSpec,
+        prebound_request_args: BoundRequestArgs,
+    ) -> Result<Self> {
+        let schema = schema_from_columns(table.columns(), &source_schema, table.name())?;
+        Ok(Self {
+            backend,
+            source_schema,
+            table,
+            schema,
+            prebound_request_args,
+        })
+    }
+}
+
+impl BoundRequestArgs {
+    pub(crate) fn insert_direct(&mut self, arg: String, value: String) {
+        self.direct.insert(arg, value);
+    }
+
+    fn to_filter_values(&self) -> HashMap<String, String> {
+        self.direct.clone()
     }
 }
 
@@ -121,7 +154,8 @@ impl TableProvider for HttpSourceTableProvider {
         filters: &[Expr],
         limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        let filter_values = extract_filter_values(filters, self.table.filters());
+        let mut filter_values = self.prebound_request_args.to_filter_values();
+        filter_values.extend(extract_filter_values(filters, self.table.filters()));
 
         for required in self.table.filters().iter().filter(|f| f.required) {
             if !filter_values.contains_key(&required.name) {
@@ -134,6 +168,12 @@ impl TableProvider for HttpSourceTableProvider {
                 )));
             }
         }
+        validate_filter_values(
+            &self.source_schema,
+            self.table.name(),
+            self.table.filters(),
+            &filter_values,
+        )?;
 
         let fetcher = Arc::new(HttpFetchPlan {
             backend: self.backend.clone(),
@@ -160,6 +200,31 @@ impl TableProvider for HttpSourceTableProvider {
 
         Ok(Arc::new(exec))
     }
+}
+
+fn validate_filter_values(
+    schema: &str,
+    table: &str,
+    filters: &[coral_spec::FilterSpec],
+    values: &HashMap<String, String>,
+) -> Result<()> {
+    for filter in filters {
+        if filter.values.is_empty() {
+            continue;
+        }
+        let Some(value) = values.get(&filter.name) else {
+            continue;
+        };
+        if !filter.values.iter().any(|allowed| allowed == value) {
+            return Err(DataFusionError::Plan(format!(
+                "{schema}.{table} filter '{}' has invalid value '{}'; expected one of: {}",
+                filter.name,
+                value,
+                filter.values.join(", ")
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn classify_filter(

@@ -11,14 +11,16 @@ use datafusion::prelude::SessionContext;
 
 use crate::RequestAuthenticator;
 use crate::backends::{
-    BackendCompileRequest, BackendRegistration, CompiledBackendSource, RegisteredSource,
-    RegisteredTable, build_registered_inputs, build_registered_table,
+    BackendCompileRequest, BackendRegistration, BackendTableFunctionRegistration,
+    CompiledBackendSource, RegisteredSource, RegisteredTable, build_registered_inputs,
+    build_registered_table, build_registered_table_function, internal_table_function_name,
     registered_columns_from_specs, required_filter_names,
 };
 use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec};
 pub(crate) mod auth;
 pub(crate) mod client;
 pub(crate) mod error;
+pub(crate) mod function;
 pub(crate) mod provider;
 mod rate_limit;
 
@@ -90,6 +92,26 @@ impl CompiledBackendSource for HttpCompiledSource {
             tables.insert(table.name().to_string(), provider);
             table_infos.push(registered_table(table));
         }
+        let mut table_functions = Vec::with_capacity(self.manifest.functions.len());
+        let mut table_function_infos = Vec::with_capacity(self.manifest.functions.len());
+        for function in &self.manifest.functions {
+            let internal_name =
+                internal_table_function_name(&self.manifest.common.name, &function.name);
+            let function_impl = function::HttpSourceTableFunction::new(
+                backend.clone(),
+                self.manifest.common.name.clone(),
+                function.clone(),
+            );
+            table_functions.push(BackendTableFunctionRegistration {
+                internal_name: internal_name.clone(),
+                function: Arc::new(function_impl),
+            });
+            table_function_infos.push(build_registered_table_function(
+                &self.manifest.common.name,
+                function,
+                internal_name,
+            ));
+        }
 
         let secret_keys = self.source_secrets.keys().cloned().collect();
         let inputs = build_registered_inputs(
@@ -100,9 +122,11 @@ impl CompiledBackendSource for HttpCompiledSource {
 
         Ok(BackendRegistration {
             tables,
+            table_functions,
             source: RegisteredSource {
                 schema_name: self.manifest.common.name.clone(),
                 tables: table_infos,
+                table_functions: table_function_infos,
                 inputs,
             },
         })

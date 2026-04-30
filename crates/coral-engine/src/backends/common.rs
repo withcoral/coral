@@ -1,13 +1,15 @@
 //! Shared internal backend contracts and registry-visible metadata.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::fmt::Write;
 use std::sync::Arc;
 
 use crate::{QueryRuntimeContext, RequestAuthenticator};
 use async_trait::async_trait;
 use coral_spec::backends::file::PartitionColumnSpec;
 use coral_spec::{
-    ColumnSpec, FilterSpec, ManifestDataType, ManifestInputKind, ManifestInputSpec, TableCommon,
+    ColumnSpec, FilterSpec, ManifestDataType, ManifestInputKind, ManifestInputSpec,
+    SourceTableFunctionSpec, TableCommon,
 };
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use datafusion::datasource::TableProvider;
@@ -34,6 +36,19 @@ pub(crate) struct RegisteredTable {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct RegisteredTableFunction {
+    pub(crate) schema_name: String,
+    pub(crate) function_name: String,
+    pub(crate) public_name: String,
+    pub(crate) internal_name: String,
+    pub(crate) kind: String,
+    pub(crate) description: String,
+    pub(crate) arguments_json: String,
+    pub(crate) result_columns_json: String,
+    pub(crate) arg_names: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct RegisteredInput {
     pub(crate) key: String,
     pub(crate) kind: ManifestInputKind,
@@ -51,12 +66,35 @@ pub(crate) struct RegisteredInput {
 pub(crate) struct RegisteredSource {
     pub(crate) schema_name: String,
     pub(crate) tables: Vec<RegisteredTable>,
+    pub(crate) table_functions: Vec<RegisteredTableFunction>,
     pub(crate) inputs: Vec<RegisteredInput>,
 }
 
 pub(crate) struct BackendRegistration {
     pub(crate) tables: HashMap<String, Arc<dyn TableProvider>>,
+    pub(crate) table_functions: Vec<BackendTableFunctionRegistration>,
     pub(crate) source: RegisteredSource,
+}
+
+pub(crate) struct BackendTableFunctionRegistration {
+    pub(crate) internal_name: String,
+    pub(crate) function: Arc<dyn datafusion::catalog::TableFunctionImpl>,
+}
+
+pub(crate) fn internal_table_function_name(schema: &str, function: &str) -> String {
+    format!(
+        "__coral_udtf_{}_{}",
+        hex_encode(schema),
+        hex_encode(function)
+    )
+}
+
+fn hex_encode(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len() * 2);
+    for byte in value.as_bytes() {
+        write!(&mut encoded, "{byte:02x}").expect("write to string");
+    }
+    encoded
 }
 
 pub(crate) struct BackendCompileRequest<'a> {
@@ -180,6 +218,52 @@ pub(crate) fn build_registered_table(
         guide: common.guide.clone(),
         columns,
         required_filters,
+    }
+}
+
+pub(crate) fn build_registered_table_function(
+    schema_name: &str,
+    function: &SourceTableFunctionSpec,
+    internal_name: String,
+) -> RegisteredTableFunction {
+    let public_name = format!("{schema_name}.{}", function.name);
+    let arguments = function
+        .args
+        .iter()
+        .map(|arg| {
+            serde_json::json!({
+                "name": arg.name,
+                "required": arg.required,
+                "values": arg.values,
+            })
+        })
+        .collect::<Vec<_>>();
+    let result_columns = registered_columns_from_specs(&function.columns, &[])
+        .into_iter()
+        .map(|column| {
+            serde_json::json!({
+                "name": column.name,
+                "type": column.data_type,
+                "nullable": column.nullable,
+                "description": column.description,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    RegisteredTableFunction {
+        schema_name: schema_name.to_string(),
+        function_name: function.name.clone(),
+        public_name,
+        internal_name,
+        kind: if function.kind.is_empty() {
+            "table".to_string()
+        } else {
+            function.kind.clone()
+        },
+        description: function.description.clone(),
+        arguments_json: serde_json::to_string(&arguments).expect("arguments json"),
+        result_columns_json: serde_json::to_string(&result_columns).expect("result columns json"),
+        arg_names: function.args.iter().map(|arg| arg.name.clone()).collect(),
     }
 }
 

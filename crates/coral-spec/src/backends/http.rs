@@ -16,10 +16,12 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 
 use crate::{
-    ColumnSpec, FilterSpec, HeaderSpec, ManifestError, ManifestInputKind, ManifestInputSpec,
-    PaginationSpec, ParsedTemplate, RequestRouteSpec, RequestSpec, ResponseSpec, Result,
-    SourceBackend, SourceManifestCommon, TableCommon, inputs::collect_source_inputs_value,
-    validate::validate_template, validate_http_table, validate_test_queries,
+    ColumnSpec, FilterSpec, FunctionArgBinding, HeaderSpec, ManifestError, ManifestInputKind,
+    ManifestInputSpec, PaginationSpec, ParsedTemplate, RequestRouteSpec, RequestSpec, ResponseSpec,
+    Result, SourceBackend, SourceManifestCommon, SourceTableFunctionSpec, TableCommon,
+    inputs::collect_source_inputs_value,
+    validate::{validate_columns, validate_template, validate_unique_values},
+    validate_http_table, validate_test_queries,
 };
 
 /// Source-level authentication requirements for HTTP-backed source specs.
@@ -90,6 +92,7 @@ pub struct HttpSourceManifest {
     pub request_headers: Vec<HeaderSpec>,
     pub rate_limit: RateLimitSpec,
     pub tables: Vec<HttpTableSpec>,
+    pub functions: Vec<SourceTableFunctionSpec>,
     pub declared_inputs: Vec<ManifestInputSpec>,
 }
 
@@ -115,6 +118,8 @@ struct RawHttpSourceManifest {
     #[serde(default)]
     inputs: Option<Value>,
     tables: Vec<RawHttpTableSpec>,
+    #[serde(default)]
+    functions: Vec<SourceTableFunctionSpec>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -261,6 +266,7 @@ impl HttpSourceManifest {
             rate_limit,
             inputs: _inputs,
             tables,
+            functions,
         } = raw;
         validate_test_queries(&name, &test_queries)?;
         let common =
@@ -268,6 +274,11 @@ impl HttpSourceManifest {
         let tables = tables
             .into_iter()
             .map(|table| table.into_validated(&common.name))
+            .collect::<Result<Vec<_>>>()?;
+        validate_http_function_names(&common.name, &functions)?;
+        let functions = functions
+            .into_iter()
+            .map(|function| function.into_validated_http(&common.name))
             .collect::<Result<Vec<_>>>()?;
         if base_url.raw().trim().is_empty() {
             return Err(ManifestError::validation(format!(
@@ -288,9 +299,266 @@ impl HttpSourceManifest {
             request_headers,
             rate_limit,
             tables,
+            functions,
             declared_inputs,
         })
     }
+}
+
+impl SourceTableFunctionSpec {
+    fn into_validated_http(self, source_name: &str) -> Result<Self> {
+        validate_http_function(source_name, &self)?;
+        Ok(self)
+    }
+}
+
+fn validate_http_function_names(
+    source_name: &str,
+    functions: &[SourceTableFunctionSpec],
+) -> Result<()> {
+    let mut function_names = HashSet::new();
+
+    for function in functions {
+        validate_identifier(
+            &function.name,
+            &format!("source '{source_name}' function name"),
+        )?;
+        if !function_names.insert(function.name.as_str()) {
+            return Err(ManifestError::validation(format!(
+                "source '{source_name}' function '{}' is declared more than once",
+                function.name
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_http_function(source_name: &str, function: &SourceTableFunctionSpec) -> Result<()> {
+    validate_identifier(
+        &function.name,
+        &format!("source '{source_name}' function name"),
+    )?;
+
+    let mut arg_names = HashSet::new();
+    let mut request_arg_names = HashSet::new();
+    let mut direct_targets = HashSet::new();
+
+    for fixed in &function.fixed {
+        validate_function_binding(
+            source_name,
+            &function.name,
+            &fixed.bind,
+            &mut request_arg_names,
+            &mut direct_targets,
+        )?;
+    }
+
+    for arg in &function.args {
+        validate_identifier(
+            &arg.name,
+            &format!(
+                "source '{source_name}' function '{}' argument",
+                function.name
+            ),
+        )?;
+        if !arg_names.insert(arg.name.as_str()) {
+            return Err(ManifestError::validation(format!(
+                "source '{source_name}' function '{}' argument '{}' is declared more than once",
+                function.name, arg.name
+            )));
+        }
+        validate_unique_values(
+            &arg.values,
+            &format!(
+                "source '{source_name}' function '{}' argument '{}'",
+                function.name, arg.name
+            ),
+        )?;
+        validate_function_binding(
+            source_name,
+            &function.name,
+            &arg.bind,
+            &mut request_arg_names,
+            &mut direct_targets,
+        )?;
+    }
+
+    validate_columns(
+        &function.columns,
+        source_name,
+        &format!("function '{}'", function.name),
+    )?;
+    validate_function_request_bindings(source_name, function, &request_arg_names)?;
+    function
+        .pagination
+        .validate(source_name, &format!("function '{}'", function.name))?;
+
+    Ok(())
+}
+
+fn binding_target(binding: &FunctionArgBinding) -> &str {
+    match binding {
+        FunctionArgBinding::RequestArg { arg } => arg,
+    }
+}
+
+fn validate_function_binding<'a>(
+    source_name: &str,
+    function_name: &str,
+    binding: &'a FunctionArgBinding,
+    request_arg_names: &mut HashSet<&'a str>,
+    direct_targets: &mut HashSet<&'a str>,
+) -> Result<()> {
+    let target = binding_target(binding);
+    request_arg_names.insert(target);
+
+    match binding {
+        FunctionArgBinding::RequestArg { arg } => {
+            if !direct_targets.insert(arg.as_str()) {
+                return Err(ManifestError::validation(format!(
+                    "source '{source_name}' function '{function_name}' has multiple direct bindings for request arg '{arg}'"
+                )));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_function_request_bindings(
+    source_name: &str,
+    function: &SourceTableFunctionSpec,
+    request_arg_names: &HashSet<&str>,
+) -> Result<()> {
+    if function.request.path.raw().trim().is_empty() {
+        return Err(ManifestError::validation(format!(
+            "source '{source_name}' function '{}' has an empty request.path",
+            function.name
+        )));
+    }
+
+    validate_arg_template(
+        &function.request.path,
+        request_arg_names,
+        &format!("source '{source_name}' function '{}'", function.name),
+    )?;
+
+    for header in &function.request.headers {
+        validate_arg_value_source(
+            &header.value,
+            request_arg_names,
+            &format!(
+                "source '{source_name}' function '{}' request header '{}'",
+                function.name, header.name
+            ),
+        )?;
+    }
+
+    for param in &function.request.query {
+        validate_arg_value_source(
+            &param.value,
+            request_arg_names,
+            &format!(
+                "source '{source_name}' function '{}' query param '{}'",
+                function.name, param.name
+            ),
+        )?;
+    }
+
+    for field in &function.request.body {
+        validate_arg_value_source(
+            &field.value,
+            request_arg_names,
+            &format!(
+                "source '{source_name}' function '{}' request body path '{}'",
+                function.name,
+                field.path.join(".")
+            ),
+        )?;
+    }
+
+    Ok(())
+}
+
+fn validate_arg_value_source(
+    source: &crate::ValueSourceSpec,
+    request_arg_names: &HashSet<&str>,
+    context: &str,
+) -> Result<()> {
+    match source {
+        crate::ValueSourceSpec::Arg { key, .. }
+        | crate::ValueSourceSpec::ArgInt { key, .. }
+        | crate::ValueSourceSpec::ArgBool { key, .. }
+            if !request_arg_names.contains(key.as_str()) =>
+        {
+            return Err(ManifestError::validation(format!(
+                "{context} references unknown request arg '{key}'"
+            )));
+        }
+        crate::ValueSourceSpec::Filter { key, .. }
+        | crate::ValueSourceSpec::FilterInt { key, .. }
+        | crate::ValueSourceSpec::FilterBool { key, .. } => {
+            return Err(ManifestError::validation(format!(
+                "{context} uses table filter '{key}' inside a function request"
+            )));
+        }
+        crate::ValueSourceSpec::Template { template } => {
+            validate_arg_template(template, request_arg_names, context)?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn validate_arg_template(
+    template: &ParsedTemplate,
+    request_arg_names: &HashSet<&str>,
+    context: &str,
+) -> Result<()> {
+    for token in template.tokens() {
+        match token.namespace() {
+            crate::TemplateNamespace::Arg => {
+                if !request_arg_names.contains(token.key()) {
+                    return Err(ManifestError::validation(format!(
+                        "{context} references unknown request arg '{}' in template '{}'",
+                        token.key(),
+                        template.raw()
+                    )));
+                }
+            }
+            crate::TemplateNamespace::Input | crate::TemplateNamespace::State => {}
+            crate::TemplateNamespace::Filter
+            | crate::TemplateNamespace::Expr
+            | crate::TemplateNamespace::Other(_) => {
+                return Err(ManifestError::validation(format!(
+                    "{context} uses unsupported function request template token '{}'",
+                    token.raw()
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_identifier(value: &str, context: &str) -> Result<()> {
+    let mut chars = value.chars();
+    let Some(first) = chars.next() else {
+        return Err(ManifestError::validation(format!(
+            "{context} must not be empty"
+        )));
+    };
+    if !(first == '_' || first.is_ascii_alphabetic()) {
+        return Err(ManifestError::validation(format!(
+            "{context} '{value}' must start with a letter or underscore"
+        )));
+    }
+    if chars.any(|ch| !(ch == '_' || ch.is_ascii_alphanumeric())) {
+        return Err(ManifestError::validation(format!(
+            "{context} '{value}' may only contain letters, numbers, and underscores"
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -313,5 +581,73 @@ pub(crate) fn test_http_table_spec(
         requests: vec![],
         response: ResponseSpec::default(),
         pagination: PaginationSpec::default(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        FunctionArgBinding, QueryParamSpec, RequestSpec, SourceTableFunctionSpec,
+        TableFunctionArgSpec, ValueSourceSpec,
+    };
+
+    use super::validate_http_function;
+
+    fn function_with_request_value(value: ValueSourceSpec) -> SourceTableFunctionSpec {
+        SourceTableFunctionSpec {
+            name: "search".to_string(),
+            kind: String::new(),
+            description: String::new(),
+            fetch_limit_default: None,
+            fixed: vec![],
+            args: vec![TableFunctionArgSpec {
+                name: "query".to_string(),
+                required: true,
+                values: vec![],
+                bind: FunctionArgBinding::RequestArg {
+                    arg: "q".to_string(),
+                },
+            }],
+            request: RequestSpec {
+                path: crate::ParsedTemplate::parse("/search").expect("request path"),
+                query: vec![QueryParamSpec {
+                    name: "q".to_string(),
+                    value,
+                }],
+                ..RequestSpec::default()
+            },
+            response: crate::ResponseSpec::default(),
+            pagination: crate::PaginationSpec::default(),
+            columns: vec![],
+        }
+    }
+
+    #[test]
+    fn validate_http_function_rejects_table_filter_value_sources() {
+        let cases = [
+            ValueSourceSpec::Filter {
+                key: "q".to_string(),
+                default: None,
+            },
+            ValueSourceSpec::FilterInt {
+                key: "limit".to_string(),
+                default: None,
+            },
+            ValueSourceSpec::FilterBool {
+                key: "archived".to_string(),
+                default: None,
+            },
+        ];
+
+        for value in cases {
+            let function = function_with_request_value(value);
+            let error = validate_http_function("demo", &function)
+                .expect_err("function requests should reject table filters");
+
+            assert!(
+                error.to_string().contains("uses table filter"),
+                "unexpected error: {error}"
+            );
+        }
     }
 }

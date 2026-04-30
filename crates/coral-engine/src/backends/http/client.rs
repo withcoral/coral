@@ -345,6 +345,7 @@ fn validate_source_scoped_http_config(
     check_base_url_inputs(manifest, resolved_inputs)?;
     check_request_header_inputs(manifest, resolved_inputs)?;
     check_table_request_inputs(manifest, resolved_inputs)?;
+    check_function_request_inputs(manifest, resolved_inputs)?;
     check_auth_inputs(manifest, request_authenticators, resolved_inputs)?;
     Ok(())
 }
@@ -393,6 +394,22 @@ fn check_table_request_inputs(
                 resolved_inputs,
             )?;
         }
+    }
+    Ok(())
+}
+
+fn check_function_request_inputs(
+    manifest: &HttpSourceManifest,
+    resolved_inputs: &BTreeMap<String, String>,
+) -> Result<()> {
+    for function in &manifest.functions {
+        validate_request_template_inputs(
+            &manifest.common.name,
+            &function.name,
+            "function request",
+            &function.request,
+            resolved_inputs,
+        )?;
     }
     Ok(())
 }
@@ -1205,6 +1222,21 @@ mod tests {
             }),
             ValueSourceSpec::FilterBool { key, default } => json!({
                 "from": "filter_bool",
+                "key": key,
+                "default": default,
+            }),
+            ValueSourceSpec::Arg { key, default } => json!({
+                "from": "arg",
+                "key": key,
+                "default": default,
+            }),
+            ValueSourceSpec::ArgInt { key, default } => json!({
+                "from": "arg_int",
+                "key": key,
+                "default": default,
+            }),
+            ValueSourceSpec::ArgBool { key, default } => json!({
+                "from": "arg_bool",
                 "key": key,
                 "default": default,
             }),

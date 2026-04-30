@@ -7,6 +7,8 @@ use crate::backends::http::ProviderQueryError;
 use crate::contracts::{ColumnParts, StructuredQueryError};
 use crate::{CoreError, SourceDecoratorError, TableInfo};
 
+const INTERNAL_TABLE_FUNCTION_PREFIX: &str = "__coral_udtf_";
+
 pub(crate) fn datafusion_to_core(error: &DataFusionError, tables: &[TableInfo]) -> CoreError {
     // Unwrap Context/Shared/Diagnostic wrappers so wrapped schema errors
     // get classified by their root variant instead of all landing in the
@@ -75,7 +77,7 @@ fn schema_error_to_core(schema_error: &SchemaError) -> CoreError {
 /// downstream hint rendering distinguish `.` as a qualifier from `.` as a
 /// character in a quoted identifier.
 fn column_to_parts(column: &Column) -> ColumnParts {
-    let relation: Vec<String> = column
+    let mut relation: Vec<String> = column
         .relation
         .as_ref()
         .map(|reference| match reference {
@@ -90,6 +92,12 @@ fn column_to_parts(column: &Column) -> ColumnParts {
             } => vec![catalog.to_string(), schema.to_string(), table.to_string()],
         })
         .unwrap_or_default();
+    if relation
+        .last()
+        .is_some_and(|table| table.starts_with(INTERNAL_TABLE_FUNCTION_PREFIX))
+    {
+        relation.clear();
+    }
     ColumnParts {
         relation,
         name: column.name.clone(),
@@ -140,6 +148,39 @@ mod tests {
             CoreError::QueryFailure(sqe) => {
                 assert_eq!(sqe.reason(), UNKNOWN_COLUMN_REASON);
                 assert!(sqe.summary().contains("user_login"));
+            }
+            other => panic!("expected CoreError::QueryFailure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unknown_column_hides_internal_table_function_names() {
+        let schema_err = Box::new(SchemaError::FieldNotFound {
+            field: Box::new(Column::new_unqualified("q")),
+            valid_fields: vec![
+                Column::new(
+                    Some(TableReference::bare(
+                        "__coral_udtf_676974687562_7365617263685f697373756573()",
+                    )),
+                    "title",
+                ),
+                Column::new(
+                    Some(TableReference::bare(
+                        "__coral_udtf_676974687562_7365617263685f697373756573()",
+                    )),
+                    "html_url",
+                ),
+            ],
+        });
+        let error = DataFusionError::SchemaError(schema_err, Box::new(None));
+
+        let core = datafusion_to_core(&error, &[]);
+
+        match core {
+            CoreError::QueryFailure(sqe) => {
+                assert!(sqe.detail().contains("title"));
+                assert!(sqe.detail().contains("html_url"));
+                assert!(!sqe.detail().contains("__coral_udtf_"));
             }
             other => panic!("expected CoreError::QueryFailure, got {other:?}"),
         }

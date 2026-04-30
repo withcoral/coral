@@ -27,7 +27,7 @@ pub struct SourceManifestCommon {
 }
 
 impl SourceManifestCommon {
-    pub(crate) fn new(
+    pub fn new(
         dsl_version: u32,
         name: String,
         version: String,
@@ -101,7 +101,7 @@ pub struct TableCommon {
 }
 
 impl TableCommon {
-    pub(crate) fn new(
+    pub fn new(
         name: String,
         description: String,
         guide: String,
@@ -141,6 +141,58 @@ pub struct FilterSpec {
     pub required: bool,
     #[serde(default)]
     pub mode: FilterMode,
+    #[serde(default)]
+    pub values: Vec<String>,
+}
+
+/// Declarative table-valued function backed by a manifest table.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SourceTableFunctionSpec {
+    pub name: String,
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub fetch_limit_default: Option<usize>,
+    #[serde(default)]
+    pub fixed: Vec<FixedFunctionBinding>,
+    #[serde(default)]
+    pub args: Vec<TableFunctionArgSpec>,
+    #[serde(default)]
+    pub request: RequestSpec,
+    #[serde(default)]
+    pub response: ResponseSpec,
+    #[serde(default)]
+    pub pagination: PaginationSpec,
+    #[serde(default)]
+    pub columns: Vec<ColumnSpec>,
+}
+
+/// One argument accepted by a source-scoped table-valued function.
+#[derive(Debug, Clone, Deserialize)]
+pub struct TableFunctionArgSpec {
+    pub name: String,
+    #[serde(default)]
+    pub required: bool,
+    #[serde(default)]
+    pub values: Vec<String>,
+    pub bind: FunctionArgBinding,
+}
+
+/// One constant binding supplied by a source-scoped table-valued function.
+#[derive(Debug, Clone, Deserialize)]
+pub struct FixedFunctionBinding {
+    #[serde(flatten)]
+    pub bind: FunctionArgBinding,
+    pub value: String,
+}
+
+/// How a table function argument contributes to the provider request.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum FunctionArgBinding {
+    RequestArg { arg: String },
 }
 
 /// The base request template for one HTTP table or request route.
@@ -216,6 +268,21 @@ pub enum ValueSourceSpec {
         default: Option<i64>,
     },
     FilterBool {
+        key: String,
+        #[serde(default)]
+        default: Option<bool>,
+    },
+    Arg {
+        key: String,
+        #[serde(default)]
+        default: Option<Value>,
+    },
+    ArgInt {
+        key: String,
+        #[serde(default)]
+        default: Option<i64>,
+    },
+    ArgBool {
         key: String,
         #[serde(default)]
         default: Option<bool>,
@@ -693,6 +760,7 @@ mod tests {
                 name: "id".into(),
                 required: false,
                 mode: FilterMode::default(),
+                values: vec![],
             }],
             RequestSpec {
                 method: HttpMethod::GET,
@@ -728,11 +796,13 @@ mod tests {
                     name: "id".into(),
                     required: false,
                     mode: FilterMode::default(),
+                    values: vec![],
                 },
                 FilterSpec {
                     name: "org".into(),
                     required: false,
                     mode: FilterMode::default(),
+                    values: vec![],
                 },
             ],
             RequestSpec {

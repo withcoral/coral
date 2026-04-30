@@ -10,6 +10,9 @@ Always inspect queryable tables and table metadata before writing queries:
 -- List visible tables, descriptions, and required filters
 SELECT schema_name, table_name, description, required_filters FROM coral.tables ORDER BY schema_name, table_name;
 
+-- List source-scoped table functions, such as provider-native search
+SELECT schema_name, public_name, kind, arguments_json, result_columns_json FROM coral.table_functions ORDER BY schema_name, public_name;
+
 -- Inspect columns for one visible table
 {{COLUMNS_EXAMPLE}}
 ```
@@ -48,6 +51,7 @@ FROM source.events;
 ## Query Guidance
 
 - Fully qualify tables in SQL, for example `slack.messages`.
+- Prefer source-scoped table functions for provider-native search when available, for example `github.search_issues(q => 'deploy failure repo:withcoral/coral')`.
 - Check `coral.tables.required_filters` and `coral.columns.is_required_filter` before querying tables that depend on filter-only inputs.
 - Cross-source joins work with standard SQL after source scans complete.
 - `list_tables` and `coral://tables` show queryable fully qualified tables; `coral.tables`, `coral.columns`, and `coral.inputs` provide richer SQL metadata.

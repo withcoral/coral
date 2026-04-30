@@ -40,6 +40,49 @@ fn base_http_manifest(name: &str, base_url: &str) -> Value {
     })
 }
 
+fn github_like_search_manifest(base_url: &str) -> Value {
+    json!({
+        "name": "github_like",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": base_url,
+        "tables": [],
+        "functions": [{
+            "name": "search_issues",
+            "kind": "search",
+            "description": "Search issues",
+            "args": [
+                {
+                    "name": "q",
+                    "required": true,
+                    "bind": { "kind": "request_arg", "arg": "q" }
+                },
+                {
+                    "name": "mode",
+                    "values": ["lexical", "semantic", "hybrid"],
+                    "bind": { "kind": "request_arg", "arg": "search_type" }
+                }
+            ],
+            "request": {
+                "method": "GET",
+                "path": "/api/search/issues",
+                "query": [
+                    { "name": "q", "from": "arg", "key": "q" },
+                    { "name": "search_type", "from": "arg", "key": "search_type" }
+                ]
+            },
+            "response": { "rows_path": ["items"] },
+            "columns": [
+                { "name": "title", "type": "Utf8" },
+                { "name": "html_url", "type": "Utf8" },
+                { "name": "score", "type": "Float64" },
+                { "name": "state", "type": "Utf8" }
+            ]
+        }]
+    })
+}
+
 #[derive(Debug)]
 struct TestRequestAuthenticator;
 
@@ -239,6 +282,153 @@ async fn select_with_where_filter_pushdown() {
     );
 
     assert_eq!(rows, vec![json!({"id": 2, "name": "Grace"})]);
+}
+
+#[tokio::test]
+async fn source_scoped_table_function_builds_http_search_request() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/search/issues"))
+        .and(query_param("q", "flaky cleanup repo:withcoral/coral"))
+        .and(query_param("search_type", "hybrid"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [{
+                "title": "Flaky cleanup",
+                "html_url": "https://github.com/withcoral/coral/issues/1",
+                "score": 9.5,
+                "state": "open"
+            }]
+        })))
+        .mount(&server)
+        .await;
+
+    let source = build_source(github_like_search_manifest(&server.uri()));
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            &TestRuntime,
+            "SELECT issue.title, issue.html_url, issue.score \
+             FROM GITHUB_LIKE.SEARCH_ISSUES(Q => 'flaky cleanup repo:withcoral/coral', MODE => 'hybrid') AS issue \
+             WHERE issue.state = 'open' \
+             LIMIT 10",
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(
+        rows,
+        vec![json!({
+            "title": "Flaky cleanup",
+            "html_url": "https://github.com/withcoral/coral/issues/1",
+            "score": 9.5
+        })]
+    );
+}
+
+#[tokio::test]
+async fn table_function_discovery_lists_source_functions() {
+    let server = MockServer::start().await;
+    let manifest = json!({
+        "name": "discoverable",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": server.uri(),
+        "tables": [],
+        "functions": [{
+            "name": "search_issues",
+            "kind": "search",
+            "description": "Search issues",
+            "args": [
+                {
+                    "name": "q",
+                    "required": true,
+                    "bind": { "kind": "request_arg", "arg": "q" }
+                },
+                {
+                    "name": "mode",
+                    "values": ["lexical", "semantic", "hybrid"],
+                    "bind": { "kind": "request_arg", "arg": "search_type" }
+                }
+            ],
+            "request": {
+                "method": "GET",
+                "path": "/api/search/issues",
+                "query": [
+                    { "name": "q", "from": "arg", "key": "q" },
+                    { "name": "search_type", "from": "arg", "key": "search_type" }
+                ]
+            },
+            "columns": [
+                { "name": "title", "type": "Utf8" },
+                { "name": "score", "type": "Float64" }
+            ]
+        }]
+    });
+
+    let source = build_source(manifest);
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            &TestRuntime,
+            "SELECT schema_name, public_name, kind, arguments_json, result_columns_json \
+             FROM coral.table_functions \
+             WHERE schema_name = 'discoverable'",
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(
+        rows,
+        vec![json!({
+            "schema_name": "discoverable",
+            "public_name": "discoverable.search_issues",
+            "kind": "search",
+            "arguments_json": "[{\"name\":\"q\",\"required\":true,\"values\":[]},{\"name\":\"mode\",\"required\":false,\"values\":[\"lexical\",\"semantic\",\"hybrid\"]}]",
+            "result_columns_json": "[{\"name\":\"title\",\"type\":\"Utf8\",\"nullable\":true,\"description\":\"\"},{\"name\":\"score\",\"type\":\"Float64\",\"nullable\":true,\"description\":\"\"}]"
+        })]
+    );
+}
+
+#[tokio::test]
+async fn table_function_does_not_expose_request_args_as_columns() {
+    let server = MockServer::start().await;
+    let manifest = json!({
+        "name": "conflict_search",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": server.uri(),
+        "tables": [],
+        "functions": [{
+            "name": "search_issues",
+            "kind": "search",
+            "args": [{
+                "name": "q",
+                "required": true,
+                "bind": { "kind": "request_arg", "arg": "q" }
+            }],
+            "request": {
+                "method": "GET",
+                "path": "/api/search/issues",
+                "query": [{ "name": "q", "from": "arg", "key": "q" }]
+            },
+            "columns": [{ "name": "title", "type": "Utf8" }]
+        }]
+    });
+
+    let source = build_source(manifest);
+    let error = CoralQuery::execute_sql(
+        &[source],
+        &TestRuntime,
+        "SELECT title FROM conflict_search.search_issues(q => 'flaky') WHERE q = 'raw'",
+    )
+    .await
+    .expect_err("request args should not be queryable as result columns");
+
+    assert!(error.to_string().contains('q'), "unexpected error: {error}");
 }
 
 #[tokio::test]

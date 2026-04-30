@@ -65,6 +65,10 @@ pub(crate) fn validate_filters_and_column_exprs(
                 filter.name
             )));
         }
+        validate_unique_values(
+            &filter.values,
+            &format!("{schema}.{table} filter '{}'", filter.name),
+        )?;
     }
 
     for col in columns {
@@ -78,6 +82,23 @@ pub(crate) fn validate_filters_and_column_exprs(
     }
 
     Ok(known_filters)
+}
+
+pub(crate) fn validate_unique_values(values: &[String], context: &str) -> Result<()> {
+    let mut seen = HashSet::new();
+    for value in values {
+        if value.trim().is_empty() {
+            return Err(ManifestError::validation(format!(
+                "{context} values must not contain empty strings"
+            )));
+        }
+        if !seen.insert(value.as_str()) {
+            return Err(ManifestError::validation(format!(
+                "{context} value '{value}' is declared more than once"
+            )));
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn validate_columns(columns: &[ColumnSpec], schema: &str, table: &str) -> Result<()> {
@@ -153,6 +174,13 @@ fn validate_value_source(
         }
         ValueSourceSpec::Template { template } => {
             validate_template(template, known_filters, context)?;
+        }
+        ValueSourceSpec::Arg { key, .. }
+        | ValueSourceSpec::ArgInt { key, .. }
+        | ValueSourceSpec::ArgBool { key, .. } => {
+            return Err(ManifestError::validation(format!(
+                "{context} uses function argument '{key}' outside a function request"
+            )));
         }
         _ => {}
     }
@@ -231,7 +259,10 @@ fn validate_expr_template(
                     )));
                 }
             }
-            TemplateNamespace::Input | TemplateNamespace::State | TemplateNamespace::Other(_) => {
+            TemplateNamespace::Input
+            | TemplateNamespace::Arg
+            | TemplateNamespace::State
+            | TemplateNamespace::Other(_) => {
                 return Err(ManifestError::validation(format!(
                     "{context} uses unsupported expr template token '{}'",
                     token.raw()
@@ -260,6 +291,12 @@ pub(crate) fn validate_template(
                 }
             }
             TemplateNamespace::Input | TemplateNamespace::State => {}
+            TemplateNamespace::Arg => {
+                return Err(ManifestError::validation(format!(
+                    "{context} uses function argument token '{}' outside a function request",
+                    token.raw()
+                )));
+            }
             TemplateNamespace::Expr | TemplateNamespace::Other(_) => {
                 return Err(ManifestError::validation(format!(
                     "{context} uses unsupported template token '{}'",
@@ -300,6 +337,7 @@ mod tests {
             name: "id".to_string(),
             required: false,
             mode: FilterMode::Equality,
+            values: vec![],
         }]
     }
 
@@ -378,6 +416,115 @@ mod tests {
             error
                 .to_string()
                 .contains("references unknown filter 'missing'")
+        );
+    }
+
+    #[test]
+    fn validate_http_table_rejects_function_arg_value_sources() {
+        let cases = [
+            ValueSourceSpec::Arg {
+                key: "query".to_string(),
+                default: None,
+            },
+            ValueSourceSpec::ArgInt {
+                key: "limit".to_string(),
+                default: None,
+            },
+            ValueSourceSpec::ArgBool {
+                key: "archived".to_string(),
+                default: None,
+            },
+        ];
+
+        for value in cases {
+            let request = RequestSpec {
+                query: vec![QueryParamSpec {
+                    name: "value".to_string(),
+                    value,
+                }],
+                ..base_request()
+            };
+
+            let error = validate_http_table(
+                "demo",
+                "messages",
+                &test_filters(),
+                &[test_column()],
+                &request,
+                &[],
+                &PaginationSpec::default(),
+            )
+            .expect_err("table requests should reject function arguments");
+
+            assert!(
+                error.to_string().contains("uses function argument"),
+                "unexpected error: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_http_table_rejects_function_arg_template_tokens() {
+        let request = RequestSpec {
+            path: ParsedTemplate::parse("/search/{{arg.q}}").expect("template"),
+            ..RequestSpec::default()
+        };
+
+        let error = validate_http_table(
+            "demo",
+            "messages",
+            &test_filters(),
+            &[test_column()],
+            &request,
+            &[],
+            &PaginationSpec::default(),
+        )
+        .expect_err("table request templates should reject function arguments");
+
+        assert!(
+            error
+                .to_string()
+                .contains("uses function argument token 'arg.q' outside a function request")
+        );
+    }
+
+    #[test]
+    fn validate_filters_reject_duplicate_values() {
+        let filters = vec![FilterSpec {
+            name: "state".to_string(),
+            required: false,
+            mode: FilterMode::Equality,
+            values: vec!["open".to_string(), "open".to_string()],
+        }];
+
+        let error =
+            validate_filters_and_column_exprs(&filters, &[test_column()], "demo", "messages")
+                .expect_err("duplicate filter values should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("demo.messages filter 'state' value 'open' is declared more than once")
+        );
+    }
+
+    #[test]
+    fn validate_filters_reject_empty_values() {
+        let filters = vec![FilterSpec {
+            name: "state".to_string(),
+            required: false,
+            mode: FilterMode::Equality,
+            values: vec![" ".to_string()],
+        }];
+
+        let error =
+            validate_filters_and_column_exprs(&filters, &[test_column()], "demo", "messages")
+                .expect_err("empty filter values should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("demo.messages filter 'state' values must not contain empty strings")
         );
     }
 

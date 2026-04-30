@@ -13,6 +13,7 @@ use crate::runtime::pattern_validator::register_pattern_validator;
 use crate::runtime::registry::{
     CompiledQuerySource, SourceRegistrationCandidate, SourceRegistrationFailure, register_sources,
 };
+use crate::runtime::source_functions::SourceFunctionRegistry;
 use crate::{
     CoreError, EngineExtensions, QueryExecution, QueryRuntimeProvider, QuerySource, TableInfo,
 };
@@ -71,6 +72,17 @@ pub(crate) async fn build_runtime(
     catalog::register(&ctx, &registration.active_sources)
         .map_err(|err| datafusion_to_core(&err, &[]))?;
     let tables = catalog::collect_tables(&registration.active_sources);
+    let source_functions = SourceFunctionRegistry::new(
+        registration
+            .active_sources
+            .iter()
+            .flat_map(|source| source.table_functions.iter().cloned())
+            .collect(),
+    );
+    if !source_functions.is_empty() {
+        ctx.register_relation_planner(Arc::new(source_functions))
+            .map_err(|err| datafusion_to_core(&err, &tables))?;
+    }
     for failure in &registration.failures {
         tracing::warn!(
             source = %failure.schema_name,

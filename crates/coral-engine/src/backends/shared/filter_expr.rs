@@ -187,11 +187,13 @@ mod tests {
                 name: "owner".into(),
                 required: true,
                 mode: FilterMode::default(),
+                values: vec![],
             },
             FilterSpec {
                 name: "status".into(),
                 required: true,
                 mode: FilterMode::default(),
+                values: vec![],
             },
         ];
 
@@ -208,6 +210,7 @@ mod tests {
             name: "repo".into(),
             required: false,
             mode: FilterMode::default(),
+            values: vec![],
         }];
 
         let expr = col("repo").in_list(vec![lit("coral")], false);
@@ -222,6 +225,7 @@ mod tests {
             name: "q".into(),
             required: false,
             mode: FilterMode::Search,
+            values: vec![],
         }];
 
         let expr = equality_expr("q", "deploy");
@@ -235,6 +239,7 @@ mod tests {
             name: "q".into(),
             required: false,
             mode: FilterMode::Equality,
+            values: vec![],
         }];
 
         let expr = like_expr("q", "%deploy%");
@@ -248,6 +253,7 @@ mod tests {
             name: "q".into(),
             required: false,
             mode: FilterMode::Search,
+            values: vec![],
         }];
 
         let values = extract_filter_values(&[like_expr("q", "%deploy")], &filters);
@@ -269,6 +275,7 @@ mod tests {
             name: "q".into(),
             required: false,
             mode: FilterMode::Search,
+            values: vec![],
         }];
 
         let expr = like_expr("q", "%deploy%");
@@ -283,6 +290,7 @@ mod tests {
             name: "descending".into(),
             required: false,
             mode: FilterMode::default(),
+            values: vec![],
         }];
 
         let values = extract_filter_values(&[col("descending")], &filters);
@@ -296,6 +304,7 @@ mod tests {
             name: "descending".into(),
             required: false,
             mode: FilterMode::default(),
+            values: vec![],
         }];
 
         let values = extract_filter_values(&[col("descending").not()], &filters);
@@ -309,6 +318,7 @@ mod tests {
             name: "descending".into(),
             required: false,
             mode: FilterMode::default(),
+            values: vec![],
         }];
 
         let cases = [
@@ -328,6 +338,7 @@ mod tests {
             name: "descending".into(),
             required: false,
             mode: FilterMode::default(),
+            values: vec![],
         }];
 
         for expr in [

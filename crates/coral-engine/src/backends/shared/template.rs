@@ -14,22 +14,22 @@ pub(crate) static EMPTY_MAP: LazyLock<HashMap<String, String>> = LazyLock::new(H
 /// Resolve one declarative value source into an optional JSON value.
 pub(crate) fn resolve_value_source(
     value: &ValueSourceSpec,
-    filters: &HashMap<String, String>,
+    request_values: &HashMap<String, String>,
     state: &HashMap<String, String>,
     resolved_inputs: &BTreeMap<String, String>,
 ) -> Result<Option<Value>> {
     match value {
         ValueSourceSpec::Template { template } => {
-            let rendered = render_template(template, filters, state, resolved_inputs)?;
+            let rendered = render_template(template, request_values, state, resolved_inputs)?;
             Ok(Some(Value::String(rendered)))
         }
         ValueSourceSpec::Literal { value } => Ok(Some(value.clone())),
-        ValueSourceSpec::Filter { key, default } => Ok(filters
+        ValueSourceSpec::Filter { key, default } => Ok(request_values
             .get(key)
             .map(|v| Value::String(v.clone()))
             .or_else(|| default.clone())),
         ValueSourceSpec::FilterInt { key, default } => {
-            let value = if let Some(filter) = filters.get(key) {
+            let value = if let Some(filter) = request_values.get(key) {
                 let parsed = filter.parse::<i64>().map_err(|error| {
                     DataFusionError::Execution(format!(
                         "filter '{key}' value '{filter}' is not a valid i64: {error}"
@@ -42,10 +42,40 @@ pub(crate) fn resolve_value_source(
             Ok(value)
         }
         ValueSourceSpec::FilterBool { key, default } => {
-            let value = if let Some(filter) = filters.get(key) {
+            let value = if let Some(filter) = request_values.get(key) {
                 let parsed = filter.parse::<bool>().map_err(|error| {
                     DataFusionError::Execution(format!(
                         "filter '{key}' value '{filter}' is not a valid bool: {error}"
+                    ))
+                })?;
+                Some(json!(parsed))
+            } else {
+                default.map(|value| json!(value))
+            };
+            Ok(value)
+        }
+        ValueSourceSpec::Arg { key, default } => Ok(request_values
+            .get(key)
+            .map(|v| Value::String(v.clone()))
+            .or_else(|| default.clone())),
+        ValueSourceSpec::ArgInt { key, default } => {
+            let value = if let Some(arg) = request_values.get(key) {
+                let parsed = arg.parse::<i64>().map_err(|error| {
+                    DataFusionError::Execution(format!(
+                        "argument '{key}' value '{arg}' is not a valid i64: {error}"
+                    ))
+                })?;
+                Some(json!(parsed))
+            } else {
+                default.map(|value| json!(value))
+            };
+            Ok(value)
+        }
+        ValueSourceSpec::ArgBool { key, default } => {
+            let value = if let Some(arg) = request_values.get(key) {
+                let parsed = arg.parse::<bool>().map_err(|error| {
+                    DataFusionError::Execution(format!(
+                        "argument '{key}' value '{arg}' is not a valid bool: {error}"
                     ))
                 })?;
                 Some(json!(parsed))
@@ -74,7 +104,7 @@ pub(crate) fn resolve_value_source(
 /// Render a parsed template into a concrete string.
 pub(crate) fn render_template(
     template: &ParsedTemplate,
-    filters: &HashMap<String, String>,
+    request_values: &HashMap<String, String>,
     state: &HashMap<String, String>,
     resolved_inputs: &BTreeMap<String, String>,
 ) -> Result<String> {
@@ -85,7 +115,7 @@ pub(crate) fn render_template(
             TemplatePart::Token(token) => {
                 out.push_str(&resolve_template_token(
                     token,
-                    filters,
+                    request_values,
                     state,
                     resolved_inputs,
                 )?);
@@ -97,7 +127,7 @@ pub(crate) fn render_template(
 
 fn resolve_template_token(
     token: &TemplateToken,
-    filters: &HashMap<String, String>,
+    request_values: &HashMap<String, String>,
     state: &HashMap<String, String>,
     resolved_inputs: &BTreeMap<String, String>,
 ) -> Result<String> {
@@ -116,13 +146,17 @@ fn resolve_template_token(
             });
     }
 
-    if token.namespace() == &TemplateNamespace::Filter {
-        return filters
+    if let Some(label) = match token.namespace() {
+        TemplateNamespace::Filter => Some("filter"),
+        TemplateNamespace::Arg => Some("argument"),
+        _ => None,
+    } {
+        return request_values
             .get(token.key())
             .cloned()
             .or(default)
             .ok_or_else(|| {
-                DataFusionError::Execution(format!("missing filter '{}'", token.key()))
+                DataFusionError::Execution(format!("missing {label} '{}'", token.key()))
             });
     }
 
@@ -191,6 +225,9 @@ pub(crate) fn validate_value_source_inputs(
         | ValueSourceSpec::Filter { .. }
         | ValueSourceSpec::FilterInt { .. }
         | ValueSourceSpec::FilterBool { .. }
+        | ValueSourceSpec::Arg { .. }
+        | ValueSourceSpec::ArgInt { .. }
+        | ValueSourceSpec::ArgBool { .. }
         | ValueSourceSpec::State { .. }
         | ValueSourceSpec::NowEpochMinusSeconds { .. } => Ok(()),
     }

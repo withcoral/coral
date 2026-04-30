@@ -41,6 +41,154 @@ request_headers:
     value: "2022-11-28"
 test_queries:
   - SELECT * FROM github.meta LIMIT 1
+functions:
+  - name: search_code
+    kind: search
+    description: Search GitHub code.
+    args:
+      - name: q
+        required: true
+        bind:
+          kind: request_arg
+          arg: q
+      - name: sort
+        bind:
+          kind: request_arg
+          arg: sort
+      - name: order
+        bind:
+          kind: request_arg
+          arg: order
+    request:
+      method: GET
+      path: /search/code
+      query:
+        - name: q
+          from: arg
+          key: q
+        - name: sort
+          from: arg
+          key: sort
+        - name: order
+          from: arg
+          key: order
+    response:
+      rows_path: [items]
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_size:
+        default: 30
+        max: 100
+        query_param: per_page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      offset_start: 0
+      link_header_require_results: false
+    columns:
+      - name: name
+        type: Utf8
+        nullable: true
+        expr: { kind: path, path: [name] }
+      - name: path
+        type: Utf8
+        nullable: true
+        expr: { kind: path, path: [path] }
+      - name: html_url
+        type: Utf8
+        nullable: true
+        expr: { kind: path, path: [html_url] }
+      - name: language
+        type: Utf8
+        nullable: true
+        expr: { kind: path, path: [language] }
+      - name: score
+        type: Float64
+        nullable: true
+        expr: { kind: path, path: [score] }
+  - name: search_issues
+    kind: search
+    description: Search GitHub issues and pull requests.
+    args:
+      - name: q
+        required: true
+        bind:
+          kind: request_arg
+          arg: q
+      - name: mode
+        values: [lexical, semantic, hybrid]
+        bind:
+          kind: request_arg
+          arg: search_type
+      - name: advanced
+        bind:
+          kind: request_arg
+          arg: advanced_search
+      - name: sort
+        bind:
+          kind: request_arg
+          arg: sort
+      - name: order
+        bind:
+          kind: request_arg
+          arg: order
+    request:
+      method: GET
+      path: /search/issues
+      query:
+        - name: q
+          from: arg
+          key: q
+        - name: sort
+          from: arg
+          key: sort
+        - name: order
+          from: arg
+          key: order
+        - name: advanced_search
+          from: arg
+          key: advanced_search
+        - name: search_type
+          from: arg
+          key: search_type
+    response:
+      rows_path: [items]
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_size:
+        default: 30
+        max: 100
+        query_param: per_page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      offset_start: 0
+      link_header_require_results: false
+    columns:
+      - name: title
+        type: Utf8
+        nullable: true
+        expr: { kind: path, path: [title] }
+      - name: html_url
+        type: Utf8
+        nullable: true
+        expr: { kind: path, path: [html_url] }
+      - name: score
+        type: Float64
+        nullable: true
+        expr: { kind: path, path: [score] }
+      - name: state
+        type: Utf8
+        nullable: true
+        expr: { kind: path, path: [state] }
+      - name: number
+        type: Int64
+        nullable: true
+        expr: { kind: path, path: [number] }
 tables:
   - name: accepted_assignments
     description: List accepted assignments for an assignment
@@ -153419,6 +153567,7 @@ tables:
         required: false
       - name: search_type
         required: false
+        values: [lexical, semantic, hybrid]
     request:
       method: GET
       path: /search/issues

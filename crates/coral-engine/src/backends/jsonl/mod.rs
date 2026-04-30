@@ -301,9 +301,11 @@ impl CompiledBackendSource for JsonlCompiledSource {
 
         Ok(BackendRegistration {
             tables,
+            table_functions: vec![],
             source: RegisteredSource {
                 schema_name: self.manifest.common.name.clone(),
                 tables: table_infos,
+                table_functions: vec![],
                 inputs,
             },
         })
