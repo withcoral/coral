@@ -781,11 +781,11 @@ fn request_error(
 ) -> DataFusionError {
     let detail = if error.is_timeout() {
         format!(
-            "source API request timed out for {method_label} {logged_url} after {}s",
+            "source API request timed out after {}s",
             request_timeout.as_secs_f64()
         )
     } else {
-        format!("source API request failed for {method_label} {logged_url}: {error}")
+        "source API request failed before a response was received".to_string()
     };
 
     provider_error(ProviderQueryError::Request {
@@ -2139,7 +2139,7 @@ mod tests {
             .build()
             .expect("build test client");
         let url = format!("{base_url}/items");
-        let query_pairs = Vec::new();
+        let query_pairs = vec![("api_key".to_string(), "secret-token".to_string())];
         let filters = HashMap::new();
         let state = HashMap::new();
         let resolved_inputs = BTreeMap::new();
@@ -2188,9 +2188,16 @@ mod tests {
                         assert_eq!(table, "items");
                         assert!(*timed_out);
                         assert!(detail.contains("timed out"));
+                        assert!(!detail.contains("secret-token"));
                     }
                     other => panic!("expected request provider error, got {other:?}"),
                 }
+                let structured = provider_error.to_structured();
+                assert_eq!(
+                    structured.metadata().get("url").map(String::as_str),
+                    Some(format!("{base_url}/items").as_str())
+                );
+                assert!(!structured.detail().contains("secret-token"));
             }
             other => panic!("expected external provider error, got {other:?}"),
         }
