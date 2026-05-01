@@ -112,7 +112,7 @@ lets the query pick just the columns it needs. Query pushdown and caching
 keep things responsive and cut unnecessary API traffic.
 
 For a deeper understanding of the internals, see the
-[architecture page](https://withcoral.com/docs/contributors/architecture).
+[architecture page](https://withcoral.com/docs/project/architecture).
 
 ## Bundled sources
 
