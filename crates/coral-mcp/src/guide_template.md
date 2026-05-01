@@ -10,6 +10,9 @@ Always inspect queryable tables and table metadata before writing queries:
 -- List visible tables, descriptions, and required filters
 SELECT schema_name, table_name, description, required_filters FROM coral.tables ORDER BY schema_name, table_name;
 
+-- List source-scoped table functions, such as provider-native search
+SELECT schema_name, function_name, description, arguments_json, result_columns_json FROM coral.table_functions ORDER BY schema_name, function_name;
+
 -- Inspect columns for one visible table, including nullability and filter-only virtual columns
 {{COLUMNS_EXAMPLE}}
 ```
@@ -56,6 +59,7 @@ WHERE json_get_str(rules, 0, 'clauses', 0, 'values', 0) = 'phoebe-org';
 
 - Use each table's `sql_reference` from `list_tables` or `coral://tables` in `FROM` and `JOIN` clauses, for example `slack.messages`.
 - Do not quote the whole `schema.table` string. Write `github.pulls` or `"github"."pulls"`, not `"github.pulls"`.
+- Prefer source-scoped table functions for provider-native search when available, for example `github.find_issues(q => 'deploy failure repo:withcoral/coral')`.
 - Check `coral.tables.required_filters` and `coral.columns.is_required_filter` before querying tables that depend on filter-only inputs.
 - Cross-source joins work with standard SQL after source scans complete.
 - Use `LIKE` or `ILIKE` for SQL wildcard matching with `%` and `_`. `SIMILAR TO` uses regex-shaped patterns, so write `.*` instead of `%`, `.` instead of `_`, or escape literal percent/underscore characters as `\%` and `\_`.

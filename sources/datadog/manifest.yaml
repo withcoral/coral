@@ -1,5 +1,5 @@
 name: datadog
-version: 2.0.0
+version: 2.1.0
 dsl_version: 3
 backend: http
 description: >-
@@ -44,6 +44,88 @@ auth:
       key: DD_APPLICATION_KEY
 test_queries:
   - SELECT * FROM datadog.monitors LIMIT 1
+functions:
+  - name: search_monitors
+    kind: search
+    description: Search Datadog monitors.
+    args:
+      - name: query
+        required: true
+        bind:
+          arg: query
+    request:
+      method: GET
+      path: /api/v1/monitor/search
+      query:
+        - name: query
+          from: arg
+          key: query
+    response:
+      rows_path:
+        - monitors
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 0
+      page_step: 1
+      page_size:
+        default: 100
+        max: 100
+        query_param: per_page
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Monitor ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Monitor name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Monitor type
+        expr:
+          kind: path
+          path:
+            - type
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Monitor status
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path:
+                - overall_state
+            - kind: path
+              path:
+                - status
+      - name: monitor_query
+        type: Utf8
+        nullable: true
+        description: Monitor query
+        expr:
+          kind: path
+          path:
+            - query
+      - name: tags
+        type: Utf8
+        nullable: true
+        description: Comma-separated tags
+        expr:
+          kind: join_array
+          path:
+            - tags
 tables:
   - name: monitors
     description: Datadog monitors with status and alert configuration.
