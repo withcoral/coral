@@ -323,6 +323,15 @@ async fn internal_table_function_builds_http_search_request() {
     .await;
 }
 
+#[tokio::test]
+async fn source_scoped_table_function_builds_http_search_request() {
+    assert_search_function_query(
+        "SELECT title, score \
+         FROM search.search_issues(mode => 'hybrid', q => 'flaky cleanup repo:withcoral/coral')",
+    )
+    .await;
+}
+
 async fn assert_search_function_query(sql: &str) {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
@@ -401,12 +410,11 @@ async fn table_function_treats_typed_null_as_omitted_optional_argument() {
 async fn table_function_rejects_invalid_argument_values() {
     let server = MockServer::start().await;
     let source = build_source(search_function_manifest("bad_mode_search", &server.uri()));
-    let function_name = internal_table_function_name("bad_mode_search", "search_issues");
 
     let error = CoralQuery::execute_sql(
         &[source],
         test_runtime(),
-        &format!("SELECT title FROM {function_name}('flaky', 'banana')"),
+        "SELECT title FROM bad_mode_search.search_issues(q => 'flaky', mode => 'banana')",
     )
     .await
     .expect_err("invalid function argument should fail planning");
@@ -423,12 +431,11 @@ async fn table_function_rejects_invalid_argument_values() {
 async fn table_function_does_not_expose_request_args_as_columns() {
     let server = MockServer::start().await;
     let source = build_source(search_function_manifest("conflict_search", &server.uri()));
-    let function_name = internal_table_function_name("conflict_search", "search_issues");
 
     let error = CoralQuery::execute_sql(
         &[source],
         test_runtime(),
-        &format!("SELECT title FROM {function_name}('flaky') WHERE q = 'raw'"),
+        "SELECT title FROM conflict_search.search_issues(q => 'flaky') WHERE q = 'raw'",
     )
     .await
     .expect_err("request args should not be queryable as result columns");

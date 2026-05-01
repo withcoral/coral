@@ -42,9 +42,11 @@ pub(crate) struct RegisteredTable {
 pub(crate) struct RegisteredTableFunction {
     pub(crate) schema_name: String,
     pub(crate) function_name: String,
+    pub(crate) internal_name: String,
     pub(crate) description: String,
     pub(crate) arguments_json: String,
     pub(crate) result_columns_json: String,
+    pub(crate) arg_names: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -223,6 +225,7 @@ pub(crate) fn build_registered_table(
 pub(crate) fn build_registered_table_function(
     schema_name: &str,
     function: &SourceTableFunctionSpec,
+    internal_name: String,
 ) -> RegisteredTableFunction {
     let arguments = function
         .args
@@ -250,9 +253,11 @@ pub(crate) fn build_registered_table_function(
     RegisteredTableFunction {
         schema_name: schema_name.to_string(),
         function_name: function.name.clone(),
+        internal_name,
         description: function.description.clone(),
         arguments_json: serde_json::to_string(&arguments).expect("arguments json"),
         result_columns_json: serde_json::to_string(&result_columns).expect("result columns json"),
+        arg_names: function.args.iter().map(|arg| arg.name.clone()).collect(),
     }
 }
 

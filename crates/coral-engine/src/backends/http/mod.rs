@@ -109,6 +109,7 @@ impl CompiledBackendSource for HttpCompiledSource {
             table_function_infos.push(build_registered_table_function(
                 &self.manifest.common.name,
                 function,
+                internal_name,
             ));
         }
 
