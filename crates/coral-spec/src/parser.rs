@@ -215,6 +215,39 @@ tables:
     }
 
     #[test]
+    fn parse_source_manifest_rejects_duplicate_table_names() {
+        let error = parse_source_manifest_yaml(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: jsonl
+tables:
+  - name: messages
+    description: Demo messages
+    source:
+      location: file:///tmp/demo/
+    columns:
+      - name: kind
+        type: Utf8
+  - name: messages
+    description: Duplicate messages
+    source:
+      location: file:///tmp/demo/
+    columns:
+      - name: id
+        type: Int64
+",
+        )
+        .expect_err("duplicate table names should fail");
+
+        assert_eq!(
+            error.to_string(),
+            "source 'demo' has duplicate table 'messages'"
+        );
+    }
+
+    #[test]
     fn parse_source_manifest_rejects_whitespace_only_test_query() {
         let error = parse_source_manifest_yaml(
             r#"

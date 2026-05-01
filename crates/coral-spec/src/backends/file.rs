@@ -19,7 +19,7 @@ use crate::inputs::collect_source_inputs_value;
 use crate::{
     ColumnSpec, FilterSpec, ManifestDataType, ManifestError, ManifestInputKind, ManifestInputSpec,
     Result, SourceBackend, SourceManifestCommon, TableCommon, validate_columns,
-    validate_filters_and_column_exprs, validate_test_queries,
+    validate_filters_and_column_exprs, validate_table_names, validate_test_queries,
 };
 
 /// Validated top-level manifest for a `Parquet`-backed source.
@@ -302,6 +302,7 @@ impl ParquetSourceManifest {
             tables,
         } = raw;
         validate_test_queries(&name, &test_queries)?;
+        validate_table_names(&name, tables.iter().map(|table| table.name.as_str()))?;
         let common =
             SourceManifestCommon::new(dsl_version, name, version, description, test_queries);
         let tables = tables
@@ -332,6 +333,7 @@ impl JsonlSourceManifest {
             tables,
         } = raw;
         validate_test_queries(&name, &test_queries)?;
+        validate_table_names(&name, tables.iter().map(|table| table.name.as_str()))?;
         let common =
             SourceManifestCommon::new(dsl_version, name, version, description, test_queries);
         let tables = tables

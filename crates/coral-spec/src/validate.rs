@@ -8,6 +8,22 @@ use crate::common::{
 };
 use crate::{ManifestError, ParsedTemplate, Result, TemplateNamespace};
 
+pub(crate) fn validate_table_names<'a>(
+    schema: &str,
+    table_names: impl IntoIterator<Item = &'a str>,
+) -> Result<()> {
+    let mut seen_tables = HashSet::new();
+    for table_name in table_names {
+        if !seen_tables.insert(table_name) {
+            return Err(ManifestError::validation(format!(
+                "source '{schema}' has duplicate table '{table_name}'"
+            )));
+        }
+    }
+
+    Ok(())
+}
+
 pub(crate) fn validate_http_table(
     schema: &str,
     table_name: &str,

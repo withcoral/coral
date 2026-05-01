@@ -19,7 +19,7 @@ use crate::{
     ColumnSpec, FilterSpec, HeaderSpec, ManifestError, ManifestInputKind, ManifestInputSpec,
     PaginationSpec, ParsedTemplate, RequestRouteSpec, RequestSpec, ResponseSpec, Result,
     SourceBackend, SourceManifestCommon, TableCommon, inputs::collect_source_inputs_value,
-    validate::validate_template, validate_http_table, validate_test_queries,
+    validate::validate_template, validate_http_table, validate_table_names, validate_test_queries,
 };
 
 /// Source-level authentication requirements for HTTP-backed source specs.
@@ -263,6 +263,7 @@ impl HttpSourceManifest {
             tables,
         } = raw;
         validate_test_queries(&name, &test_queries)?;
+        validate_table_names(&name, tables.iter().map(|table| table.name.as_str()))?;
         let common =
             SourceManifestCommon::new(dsl_version, name, version, description, test_queries);
         let tables = tables
