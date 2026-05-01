@@ -50,4 +50,6 @@ FROM source.events;
 - Fully qualify tables in SQL, for example `slack.messages`.
 - Check `coral.tables.required_filters` and `coral.columns.is_required_filter` before querying tables that depend on filter-only inputs.
 - Cross-source joins work with standard SQL after source scans complete.
+- Use `LIKE` or `ILIKE` for SQL wildcard matching with `%` and `_`. `SIMILAR TO` uses regex-shaped patterns, so write `.*` instead of `%`, `.` instead of `_`, or escape literal percent/underscore characters as `\%` and `\_`.
+- Regex operators such as `~` and `~*` treat `%` and `_` as ordinary literal characters.
 - `list_tables` and `coral://tables` show queryable fully qualified tables; `coral.tables`, `coral.columns`, and `coral.inputs` provide richer SQL metadata.
