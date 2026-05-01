@@ -87,7 +87,15 @@ source:
 
 A source can carry multiple specs simultaneously. Common cases: REST + GraphQL, stable v1 + incomplete v2. Specs are not capabilities themselves — they're inputs to the compiler. Capability-to-spec mapping happens through bindings.
 
-TODO: What happens if the specs fundamentally disagree on the share of a resource, or the interface to a capability? Which one wins? How do we reconcile that in the capability?
+### Reconciling spec disagreements
+
+Specs routinely disagree on wire shape, field naming, and required inputs. The capability layer is a logical contract; bindings translate between that contract and each spec. Disagreements fall into three categories, with corresponding resolutions:
+
+1. **Shape disagreement** (e.g. REST returns `head_sha` flat, GraphQL nests it under `head { oid }`). The capability's entity defines the canonical output shape. Each binding's `output_mapping` rewrites wire shape into that canonical shape. The capability author picks the shape that's most useful to consumers; spec idiosyncrasies are absorbed by the binding.
+2. **Input disagreement** (e.g. one spec keys by `org_id`, another by `org_slug`). The capability declares one canonical input set. Bindings that can mechanically map to it do so via `input_mapping`. A spec that genuinely cannot express the capability's required inputs simply has no binding — recorded as a coverage gap by the build step, not a contradiction in the model.
+3. **Semantic disagreement** — the operations have observably different real-world effects, not just different wire shapes (e.g. one spec's "delete" soft-deletes, the other hard-deletes). These are not the same capability. Split them into distinct capability IDs and let the agent surface choose.
+
+For runtime selection between bindings that all satisfy a capability, ties resolve via `spec.preferred_for`, binding `support` flags, rate-limit headroom, and runtime policy. The capability itself stays neutral on which binding to prefer.
 
 ## Capability
 
@@ -286,9 +294,15 @@ Each alias carries:
 
 - `source` — where it came from (openapi_tag, heuristic, agent_usage, hand_authored, cross_provider_alias)
 - `confidence` — for ranking and conflict resolution
-- `scope` — when the alias should match (e.g. only inside `github.*`)
+- `scope` — a namespace pattern that gates when the alias is eligible to match. Omitted scope means global.
 
-TODO: Help me understand `scope` here a bit better. I can see the example is motivated by mapping Gitlab terminology (“merge requests”) to Github (“pull requests”). But what is the `scope` field achieving?
+`scope` exists to keep cross-provider terminology bridges from polluting global resolution. The `list_merge_requests` example lives on `github.pull_request.list` so a user fluent in GitLab vocabulary can still hit the right capability when they've chosen GitHub. Without scope, that alias would also be a candidate when the agent is working against a connected GitLab source — competing with the native `gitlab.merge_request.list`. Scoping to `github.*` constrains the alias to fire only when resolution is already inside the GitHub namespace, so:
+
+- In a GitHub-only context, the alias is helpful.
+- In a GitLab-only or mixed context, the alias is silent and the native term wins.
+- Authors can attach cross-provider aliases to the providers they bridge to without making those aliases globally ambient.
+
+The same mechanism applies to internal disambiguation: a high-confidence short alias (`pr`) might be safe inside `github.*` but ambiguous globally.
 
 Aliases grow over time. New ones can be learned from agent usage; low-confidence ones can be demoted or removed when they cause collisions.
 
