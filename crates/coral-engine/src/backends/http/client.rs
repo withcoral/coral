@@ -1,6 +1,6 @@
 //! HTTP client used by HTTP-backed source tables.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -15,12 +15,13 @@ use crate::RequestAuthenticator;
 use crate::backends::http::ProviderQueryError;
 use crate::backends::http::auth::{resolve_auth_headers, validate_auth_inputs};
 use crate::backends::http::rate_limit::{RateLimitDecision, check_rate_limit};
+use crate::backends::http::target::HttpRequestTarget;
 use crate::backends::shared::json_path::get_path_value;
 use crate::backends::shared::template::{
     render_template, resolve_value_source, validate_input_dependencies,
     validate_value_source_inputs, value_to_string,
 };
-use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec, RateLimitSpec};
+use coral_spec::backends::http::{HttpSourceManifest, RateLimitSpec};
 use coral_spec::{
     AuthSpec, BodySpec, HeaderSpec, HttpMethod, PageSizeSpec, ParsedTemplate, RequestRouteSpec,
     RequestSpec as ManifestRequestSpec, ResponseBodyFormat, RowStrategy, ValidatedPagination,
@@ -149,19 +150,19 @@ impl HttpSourceClient {
     /// fetched rows cannot be extracted for the table strategy.
     pub(crate) async fn fetch(
         &self,
-        table: &HttpTableSpec,
-        filters: &HashMap<String, String>,
+        target: &HttpRequestTarget,
+        request_values: &HashMap<String, String>,
         sql_limit: Option<usize>,
     ) -> Result<Vec<Value>> {
         let mut all_rows = Vec::new();
-        let effective_limit = sql_limit.or(table.fetch_limit_default());
-        let pagination = table
+        let effective_limit = sql_limit.or(target.fetch_limit_default());
+        let pagination = target
             .pagination
-            .validated(&self.source_schema, table.name())
+            .validated(&self.source_schema, target.name())
             .map_err(|error| {
                 provider_error(ProviderQueryError::Pagination {
                     source_schema: self.source_schema.clone(),
-                    table: table.name().to_string(),
+                    table: target.name().to_string(),
                     method: None,
                     url: None,
                     detail: error.to_string(),
@@ -169,27 +170,26 @@ impl HttpSourceClient {
             })?;
         let page_size = resolve_page_size(pagination.page_size.as_ref(), sql_limit);
 
-        let filter_keys: HashSet<String> = filters.keys().cloned().collect();
-        let active_request = table.resolve_request(&filter_keys);
+        let active_request = &target.request;
 
         let mut state = PageState {
-            page: table.pagination.page_start,
+            page: target.pagination.page_start,
             offset: match &pagination.mode {
                 ValidatedPaginationMode::Offset(offset) => offset.start,
-                _ => table.pagination.offset_start,
+                _ => target.pagination.offset_start,
             },
             ..PageState::default()
         };
 
         let mut page_count = 0usize;
-        let max_pages = table.pagination.max_pages.unwrap_or(DEFAULT_MAX_PAGES);
+        let max_pages = target.pagination.max_pages.unwrap_or(DEFAULT_MAX_PAGES);
 
         loop {
             page_count += 1;
             if page_count > max_pages {
                 return Err(provider_error(ProviderQueryError::Pagination {
                     source_schema: self.source_schema.clone(),
-                    table: table.name().to_string(),
+                    table: target.name().to_string(),
                     method: None,
                     url: None,
                     detail: format!("exceeded pagination max_pages={max_pages}"),
@@ -198,7 +198,7 @@ impl HttpSourceClient {
 
             let base_url = render_template(
                 &self.base_url,
-                filters,
+                request_values,
                 &pagination_state_values(&state),
                 self.resolved_inputs.as_ref(),
             )?;
@@ -217,7 +217,7 @@ impl HttpSourceClient {
             } else {
                 let rendered_path = render_template(
                     &active_request.path,
-                    filters,
+                    request_values,
                     &pagination_state_values(&state),
                     self.resolved_inputs.as_ref(),
                 )?;
@@ -229,37 +229,37 @@ impl HttpSourceClient {
             } else {
                 let mut query_pairs = build_query_pairs(
                     active_request,
-                    filters,
+                    request_values,
                     &state,
                     self.resolved_inputs.as_ref(),
                 )?;
                 apply_pagination_query_pairs(
                     &mut query_pairs,
-                    table,
+                    target,
                     &pagination,
                     &state,
                     page_size,
                 )
                 .map_err(|error| {
-                    pagination_error(&self.source_schema, table.name(), None, Some(&url), &error)
+                    pagination_error(&self.source_schema, target.name(), None, Some(&url), &error)
                 })?;
 
                 let mut body = build_request_body(
                     active_request,
-                    filters,
+                    request_values,
                     &state,
                     self.resolved_inputs.as_ref(),
                 )?;
                 apply_pagination_body_fields(
                     &mut body,
                     &active_request.body,
-                    table,
+                    target,
                     &pagination,
                     &state,
                     page_size,
                 )
                 .map_err(|error| {
-                    pagination_error(&self.source_schema, table.name(), None, Some(&url), &error)
+                    pagination_error(&self.source_schema, target.name(), None, Some(&url), &error)
                 })?;
                 (query_pairs, body)
             };
@@ -273,19 +273,19 @@ impl HttpSourceClient {
                     request_headers: &self.request_headers,
                     request_authenticators: &self.request_authenticators,
                     table_headers: &active_request.headers,
-                    table_name: table.name(),
+                    table_name: target.name(),
                     method: active_request.method,
                     base_url: &base_url,
                     url: &url,
                     query_pairs: &query_pairs,
                     body: body.as_ref(),
-                    response_format: table.response.format,
+                    response_format: target.response.format,
                     source_schema: &self.source_schema,
                     rate_limit: &self.rate_limit,
-                    filters,
+                    filters: request_values,
                     state: &pagination_values,
                     resolved_inputs: self.resolved_inputs.as_ref(),
-                    allow_404_empty: table.response.allow_404_empty,
+                    allow_404_empty: target.response.allow_404_empty,
                     link_header_require_results: pagination.link_header_require_results,
                 },
             )
@@ -295,15 +295,15 @@ impl HttpSourceClient {
                 break;
             };
 
-            if !table.response.ok_path.is_empty() {
-                let ok = get_path_value(&payload, &table.response.ok_path)
+            if !target.response.ok_path.is_empty() {
+                let ok = get_path_value(&payload, &target.response.ok_path)
                     .and_then(Value::as_bool)
                     .unwrap_or(false);
                 if !ok {
-                    let err = if table.response.error_path.is_empty() {
+                    let err = if target.response.error_path.is_empty() {
                         "unknown source API error".to_string()
                     } else {
-                        get_path_value(&payload, &table.response.error_path)
+                        get_path_value(&payload, &target.response.error_path)
                             .and_then(Value::as_str)
                             .unwrap_or("unknown source API error")
                             .to_string()
@@ -311,7 +311,7 @@ impl HttpSourceClient {
                     return Err(DataFusionError::External(Box::new(
                         ProviderQueryError::ApiRequest {
                             source_schema: self.source_schema.clone(),
-                            table: table.name().to_string(),
+                            table: target.name().to_string(),
                             status: None,
                             method: None,
                             url: None,
@@ -322,7 +322,7 @@ impl HttpSourceClient {
                 }
             }
 
-            let mut rows = extract_rows(table, &payload)?;
+            let mut rows = extract_rows(target, &payload)?;
             let rows_on_page = rows.len();
             all_rows.append(&mut rows);
 
@@ -337,7 +337,7 @@ impl HttpSourceClient {
                 ValidatedPaginationMode::None => break,
                 ValidatedPaginationMode::CursorQuery | ValidatedPaginationMode::CursorBody => {
                     let next_cursor =
-                        get_path_value(&payload, &table.pagination.response_cursor_path)
+                        get_path_value(&payload, &target.pagination.response_cursor_path)
                             .and_then(Value::as_str)
                             .map(str::trim)
                             .filter(|s| !s.is_empty())
@@ -351,18 +351,18 @@ impl HttpSourceClient {
                     if page_is_exhausted(rows_on_page, page_size) {
                         break;
                     }
-                    state.page = state.page.saturating_add(table.pagination.page_step);
+                    state.page = state.page.saturating_add(target.pagination.page_step);
                 }
                 ValidatedPaginationMode::Offset(offset) => {
                     if page_is_exhausted(rows_on_page, page_size) {
                         break;
                     }
                     let step = offset
-                        .resolve_step(page_size, &self.source_schema, table.name())
+                        .resolve_step(page_size, &self.source_schema, target.name())
                         .map_err(|error| {
                             provider_error(ProviderQueryError::Pagination {
                                 source_schema: self.source_schema.clone(),
-                                table: table.name().to_string(),
+                                table: target.name().to_string(),
                                 method: None,
                                 url: None,
                                 detail: error.to_string(),
@@ -991,7 +991,7 @@ fn build_query_pairs(
 
 fn apply_pagination_query_pairs(
     params: &mut Vec<(String, String)>,
-    table: &HttpTableSpec,
+    target: &HttpRequestTarget,
     pagination: &ValidatedPagination,
     state: &PageState,
     page_size: Option<usize>,
@@ -1009,7 +1009,7 @@ fn apply_pagination_query_pairs(
         | ValidatedPaginationMode::LinkHeader => {}
         ValidatedPaginationMode::CursorQuery => {
             if let Some(cursor) = &state.cursor {
-                let name = table.pagination.cursor_param.clone().ok_or_else(|| {
+                let name = target.pagination.cursor_param.clone().ok_or_else(|| {
                     DataFusionError::Execution(
                         "cursor_query pagination requires cursor_param".to_string(),
                     )
@@ -1018,7 +1018,7 @@ fn apply_pagination_query_pairs(
             }
         }
         ValidatedPaginationMode::Page => {
-            let name = table.pagination.page_param.clone().ok_or_else(|| {
+            let name = target.pagination.page_param.clone().ok_or_else(|| {
                 DataFusionError::Execution("page pagination requires page_param".to_string())
             })?;
             params.push((name, state.page.to_string()));
@@ -1067,7 +1067,7 @@ fn build_request_body(
 fn apply_pagination_body_fields(
     body: &mut Option<RequestBody>,
     body_spec: &BodySpec,
-    table: &HttpTableSpec,
+    target: &HttpRequestTarget,
     pagination: &ValidatedPagination,
     state: &PageState,
     page_size: Option<usize>,
@@ -1076,7 +1076,7 @@ fn apply_pagination_body_fields(
         .zip(pagination.page_size.as_ref())
         .is_some_and(|(_, spec)| !spec.body_path.is_empty());
     let needs_cursor_body = matches!(pagination.mode, ValidatedPaginationMode::CursorBody)
-        && !table.pagination.cursor_body_path.is_empty()
+        && !target.pagination.cursor_body_path.is_empty()
         && state.cursor.is_some();
 
     if !needs_page_size_body && !needs_cursor_body {
@@ -1106,12 +1106,12 @@ fn apply_pagination_body_fields(
     if matches!(pagination.mode, ValidatedPaginationMode::CursorBody)
         && let Some(cursor) = &state.cursor
     {
-        if table.pagination.cursor_body_path.is_empty() {
+        if target.pagination.cursor_body_path.is_empty() {
             return Err(DataFusionError::Execution(
                 "cursor_body pagination requires cursor_body_path".to_string(),
             ));
         }
-        set_path_value(root, &table.pagination.cursor_body_path, json!(cursor))?;
+        set_path_value(root, &target.pagination.cursor_body_path, json!(cursor))?;
     }
 
     Ok(())
@@ -1253,13 +1253,13 @@ fn set_path_value_at(cursor: &mut Value, path: &[String], value: Value) -> Resul
     clippy::unnecessary_wraps,
     reason = "Keeping a Result return type preserves a uniform extraction interface for callers"
 )]
-fn extract_rows(table: &HttpTableSpec, payload: &Value) -> Result<Vec<Value>> {
-    match table.response.row_strategy {
+fn extract_rows(target: &HttpRequestTarget, payload: &Value) -> Result<Vec<Value>> {
+    match target.response.row_strategy {
         RowStrategy::Direct => {
-            let root = if table.response.rows_path.is_empty() {
+            let root = if target.response.rows_path.is_empty() {
                 payload
             } else {
-                get_path_value(payload, &table.response.rows_path).unwrap_or(&Value::Null)
+                get_path_value(payload, &target.response.rows_path).unwrap_or(&Value::Null)
             };
             match root {
                 Value::Array(items) => Ok(items.clone()),
@@ -1313,10 +1313,10 @@ fn extract_rows(table: &HttpTableSpec, payload: &Value) -> Result<Vec<Value>> {
             Ok(rows)
         }
         RowStrategy::DictEntries => {
-            let root = if table.response.rows_path.is_empty() {
+            let root = if target.response.rows_path.is_empty() {
                 payload
             } else {
-                get_path_value(payload, &table.response.rows_path).unwrap_or(&Value::Null)
+                get_path_value(payload, &target.response.rows_path).unwrap_or(&Value::Null)
             };
             match root {
                 Value::Object(map) => {
@@ -1402,6 +1402,7 @@ mod tests {
         join_url, normalize_base_url, page_is_exhausted, resolve_value_source, set_path_value,
     };
     use crate::backends::http::ProviderQueryError;
+    use crate::backends::http::target::HttpRequestTarget;
     use coral_spec::PaginationMode;
     use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec, RateLimitSpec};
     use coral_spec::{
@@ -1450,6 +1451,10 @@ mod tests {
         .into_iter()
         .next()
         .expect("table should exist")
+    }
+
+    fn test_http_request_target(table: &HttpTableSpec) -> HttpRequestTarget {
+        HttpRequestTarget::from_table(table, table.request.clone())
     }
 
     #[test]
@@ -2139,7 +2144,8 @@ mod tests {
             ..PageState::default()
         };
 
-        apply_pagination_query_pairs(&mut params, &table, &pagination, &state, Some(25)).unwrap();
+        let target = test_http_request_target(&table);
+        apply_pagination_query_pairs(&mut params, &target, &pagination, &state, Some(25)).unwrap();
 
         assert_eq!(
             params,
@@ -2184,11 +2190,12 @@ mod tests {
         .validated("demo", "items")
         .unwrap();
         let mut body = None;
+        let target = test_http_request_target(&table);
 
         let error = apply_pagination_body_fields(
             &mut body,
             &body_spec,
-            &table,
+            &target,
             &pagination,
             &PageState::default(),
             Some(25),
@@ -2242,7 +2249,7 @@ mod tests {
             }
         });
 
-        let rows = extract_rows(&table, &payload).unwrap();
+        let rows = extract_rows(&test_http_request_target(&table), &payload).unwrap();
         assert_eq!(rows.len(), 2);
         for row in &rows {
             assert!(row.get("_key").is_some());
@@ -2269,7 +2276,7 @@ mod tests {
             }
         });
 
-        let rows = extract_rows(&table, &payload).unwrap();
+        let rows = extract_rows(&test_http_request_target(&table), &payload).unwrap();
         assert_eq!(rows.len(), 2);
         for row in &rows {
             assert!(row.get("_key").is_some());
@@ -2283,7 +2290,7 @@ mod tests {
             make_table_with_row_strategy(RowStrategy::DictEntries, vec!["result".to_string()]);
         let payload = json!({ "result": null });
 
-        let rows = extract_rows(&table, &payload).unwrap();
+        let rows = extract_rows(&test_http_request_target(&table), &payload).unwrap();
         assert!(rows.is_empty());
     }
 
@@ -2293,7 +2300,7 @@ mod tests {
             make_table_with_row_strategy(RowStrategy::DictEntries, vec!["missing".to_string()]);
         let payload = json!({ "result": { "a": 1 } });
 
-        let rows = extract_rows(&table, &payload).unwrap();
+        let rows = extract_rows(&test_http_request_target(&table), &payload).unwrap();
         assert!(rows.is_empty());
     }
 
@@ -2303,7 +2310,7 @@ mod tests {
             make_table_with_row_strategy(RowStrategy::DictEntries, vec!["result".to_string()]);
         let payload = json!({ "result": [1, 2, 3] });
 
-        let rows = extract_rows(&table, &payload).unwrap();
+        let rows = extract_rows(&test_http_request_target(&table), &payload).unwrap();
         assert!(rows.is_empty());
     }
 
@@ -2313,7 +2320,7 @@ mod tests {
             make_table_with_row_strategy(RowStrategy::DictEntries, vec!["result".to_string()]);
         let payload = json!({ "result": {} });
 
-        let rows = extract_rows(&table, &payload).unwrap();
+        let rows = extract_rows(&test_http_request_target(&table), &payload).unwrap();
         assert!(rows.is_empty());
     }
 
@@ -2335,7 +2342,7 @@ mod tests {
             }]
         });
 
-        let rows = extract_rows(&table, &payload).unwrap();
+        let rows = extract_rows(&test_http_request_target(&table), &payload).unwrap();
 
         assert_eq!(
             rows,

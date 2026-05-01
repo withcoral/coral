@@ -14,6 +14,7 @@ use serde_json::Value;
 
 use crate::backends::http::HttpSourceClient;
 use crate::backends::http::ProviderQueryError;
+use crate::backends::http::target::HttpRequestTarget;
 use crate::backends::schema_from_columns;
 use crate::backends::shared::filter_expr::{extract_filter_values, literal_to_string};
 use crate::backends::shared::json_exec::{JsonExec, RowFetcher};
@@ -61,10 +62,10 @@ impl HttpSourceTableProvider {
 }
 
 #[derive(Debug)]
-struct HttpFetchPlan {
+pub(crate) struct HttpFetchPlan {
     backend: HttpSourceClient,
-    table: Arc<HttpTableSpec>,
-    filters: Arc<HashMap<String, String>>,
+    target: Arc<HttpRequestTarget>,
+    request_values: HashMap<String, String>,
     limit: Option<usize>,
 }
 
@@ -72,9 +73,50 @@ struct HttpFetchPlan {
 impl RowFetcher for HttpFetchPlan {
     async fn fetch(&self) -> Result<Vec<Value>> {
         self.backend
-            .fetch(self.table.as_ref(), self.filters.as_ref(), self.limit)
+            .fetch(self.target.as_ref(), &self.request_values, self.limit)
             .await
     }
+}
+
+pub(crate) fn http_json_exec(
+    backend: HttpSourceClient,
+    source_schema: &str,
+    target: HttpRequestTarget,
+    schema: SchemaRef,
+    request_values: HashMap<String, String>,
+    projection: Option<&Vec<usize>>,
+    limit: Option<usize>,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    let target = Arc::new(target);
+    let output_schema = schema.clone();
+    let fetcher = Arc::new(HttpFetchPlan {
+        backend,
+        target: target.clone(),
+        request_values: request_values.clone(),
+        limit,
+    });
+
+    let converter_target = target.clone();
+    let filters_for_convert = request_values;
+    let converter = Arc::new(move |items: &[Value]| {
+        convert_items(
+            converter_target.columns(),
+            schema.clone(),
+            &filters_for_convert,
+            items,
+        )
+    });
+
+    let exec = JsonExec::new(
+        source_schema,
+        target.name(),
+        output_schema,
+        fetcher,
+        converter,
+        projection.cloned(),
+    )?;
+
+    Ok(Arc::new(exec))
 }
 
 #[async_trait]
@@ -121,10 +163,10 @@ impl TableProvider for HttpSourceTableProvider {
         filters: &[Expr],
         limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        let filter_values = extract_filter_values(filters, self.table.filters());
+        let request_values = extract_filter_values(filters, self.table.filters());
 
         for required in self.table.filters().iter().filter(|f| f.required) {
-            if !filter_values.contains_key(&required.name) {
+            if !request_values.contains_key(&required.name) {
                 return Err(DataFusionError::External(Box::new(
                     ProviderQueryError::MissingRequiredFilter {
                         schema: self.source_schema.clone(),
@@ -135,36 +177,18 @@ impl TableProvider for HttpSourceTableProvider {
             }
         }
 
-        let table = self.table.clone();
-        let filters = Arc::new(filter_values);
-        let fetcher = Arc::new(HttpFetchPlan {
-            backend: self.backend.clone(),
-            table: table.clone(),
-            filters: filters.clone(),
-            limit,
-        });
+        let request_value_keys: HashSet<String> = request_values.keys().cloned().collect();
+        let active_request = self.table.resolve_request(&request_value_keys).clone();
 
-        let schema = self.schema.clone();
-        let filters_for_convert = filters;
-        let converter = Arc::new(move |items: &[Value]| {
-            convert_items(
-                table.columns(),
-                schema.clone(),
-                filters_for_convert.as_ref(),
-                items,
-            )
-        });
-
-        let exec = JsonExec::new(
+        http_json_exec(
+            self.backend.clone(),
             &self.source_schema,
-            self.table.name(),
+            HttpRequestTarget::from_table(&self.table, active_request),
             self.schema.clone(),
-            fetcher,
-            converter,
-            projection.cloned(),
-        )?;
-
-        Ok(Arc::new(exec))
+            request_values,
+            projection,
+            limit,
+        )
     }
 }
 
