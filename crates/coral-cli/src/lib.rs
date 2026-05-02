@@ -45,7 +45,7 @@ enum Command {
     /// Interactive wizard to set up Coral and explore use cases
     Onboard,
     /// Start the MCP server over stdio
-    McpStdio,
+    McpStdio(McpStdioArgs),
     /// Generate shell completion scripts
     Completion(CompletionArgs),
 }
@@ -65,6 +65,14 @@ struct SqlArgs {
     format: OutputFormat,
     /// SQL query to execute
     sql: String,
+}
+
+#[derive(Debug, Args)]
+/// Start the MCP server over stdio
+struct McpStdioArgs {
+    /// Expose the feedback submission tool.
+    #[arg(long)]
+    enable_feedback: bool,
 }
 
 #[derive(Debug, Args)]
@@ -259,8 +267,14 @@ async fn run_parsed(app: AppClient, cli: Cli) -> Result<(), anyhow::Error> {
         Command::Onboard => {
             onboard::run(&app).await?;
         }
-        Command::McpStdio => {
-            coral_mcp::run_stdio_with_client(app).await?;
+        Command::McpStdio(args) => {
+            coral_mcp::run_stdio_with_client(
+                app,
+                coral_mcp::McpOptions {
+                    feedback_enabled: args.enable_feedback,
+                },
+            )
+            .await?;
         }
         Command::Completion(args) => {
             let mut cmd = Cli::command();

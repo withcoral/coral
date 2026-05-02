@@ -11,4 +11,6 @@ pub(crate) use resources::{
     guide_resource, guide_resource_content, initial_instructions, list_tables_value,
     tables_resource, tables_resource_content,
 };
-pub(crate) use tools::{build_tool_result, list_tables_tool, required_string_argument, sql_tool};
+pub(crate) use tools::{
+    build_tool_result, feedback_tool, list_tables_tool, required_string_argument, sql_tool,
+};

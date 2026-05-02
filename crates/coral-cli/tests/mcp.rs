@@ -23,9 +23,17 @@ fn json_object(value: &Value) -> Map<String, Value> {
 async fn start_mcp_client(
     server: &MockServer,
 ) -> Result<RunningService<RoleClient, ()>, Box<dyn std::error::Error>> {
+    start_mcp_client_with_args(server, &[]).await
+}
+
+async fn start_mcp_client_with_args(
+    server: &MockServer,
+    args: &[&str],
+) -> Result<RunningService<RoleClient, ()>, Box<dyn std::error::Error>> {
     let transport = TokioChildProcess::new(
         tokio::process::Command::new(env!("CARGO_BIN_EXE_coral")).configure(|cmd| {
             cmd.arg("mcp-stdio")
+                .args(args)
                 .env("CORAL_ENDPOINT", server.endpoint_uri());
         }),
     )?;
@@ -94,6 +102,25 @@ async fn mcp_stdio_lists_tools_and_resources() -> Result<(), Box<dyn std::error:
         .await?;
     let tables_json: Value = serde_json::from_str(text_content(&tables))?;
     assert_eq!(tables_json["tables"][0]["name"], "local_messages.messages");
+
+    client.cancel().await?;
+    server.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_stdio_enable_feedback_lists_feedback_tool() -> Result<(), Box<dyn std::error::Error>> {
+    let server = MockServer::start().await;
+    let client = start_mcp_client_with_args(&server, &["--enable-feedback"]).await?;
+
+    let tools = client.list_all_tools().await?;
+    assert_eq!(
+        tools
+            .iter()
+            .map(|tool| tool.name.as_ref())
+            .collect::<Vec<_>>(),
+        vec!["sql", "list_tables", "feedback"]
+    );
 
     client.cancel().await?;
     server.shutdown().await;

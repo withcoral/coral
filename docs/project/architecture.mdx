@@ -65,6 +65,7 @@ The local server and core orchestrator.
 | Server bootstrap | In-process gRPC server lifecycle (`bootstrap/`) |
 | Source management | Install, add from file, list, validate, remove (`sources/`) |
 | Workspace state | Config, secrets, and workspace layout (`state/`, `storage/`) |
+| Feedback persistence | Workspace-scoped blocked-agent feedback reports (`feedback/`) |
 | Query orchestration | Loads sources, builds the engine, executes SQL (`query/`) |
 
 This is the largest crate. It ties `coral-spec` and `coral-engine` together and manages all persistent local state.
@@ -101,7 +102,7 @@ The MCP stdio server.
 | --------------- | ------------------------------------------------------------------- |
 | MCP protocol    | Tool and resource handlers via the `rmcp` SDK (`server.rs`)         |
 | Surface shaping | Tool/resource/error helpers split across `surface/{mod,tools,resources,errors}.rs` |
-| Tools           | `sql`, `list_tables`                                                |
+| Tools           | `sql`, `list_tables`, optional `feedback`                           |
 | Resources       | `coral://guide`, `coral://tables`                                   |
 
 Uses `coral-client` to reach `coral-app`, same transport as the CLI.

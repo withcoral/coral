@@ -11,7 +11,7 @@
 //!
 //! The exposed MCP surface is intentionally small:
 //!
-//! - tools: `sql`, `list_tables`
+//! - tools: `sql`, `list_tables`, and optionally `feedback`
 //! - resources: `coral://guide`, `coral://tables`
 //!
 //! Protocol lifecycle, initialization, and stdio transport behavior should stay
@@ -35,14 +35,21 @@ use rmcp::ServiceExt;
 pub use error::McpError;
 pub(crate) use server::CoralMcpServer;
 
+/// Optional MCP surface features.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct McpOptions {
+    /// Expose the feedback submission tool.
+    pub feedback_enabled: bool,
+}
+
 /// Runs the `MCP` stdio server using an existing Coral client.
 ///
 /// # Errors
 ///
 /// Returns [`McpError`] if the stdio server cannot complete its `MCP`
 /// lifecycle.
-pub async fn run_stdio_with_client(app: AppClient) -> Result<(), McpError> {
-    let server = CoralMcpServer::new(&app)
+pub async fn run_stdio_with_client(app: AppClient, options: McpOptions) -> Result<(), McpError> {
+    let server = CoralMcpServer::new(&app, options)
         .serve((tokio::io::stdin(), tokio::io::stdout()))
         .await?;
     let _ = server.waiting().await?;

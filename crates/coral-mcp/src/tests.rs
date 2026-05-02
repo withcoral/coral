@@ -15,7 +15,7 @@ use serde_json::{Map, Value, json};
 use tempfile::TempDir;
 use tonic::Request;
 
-use crate::CoralMcpServer;
+use crate::{CoralMcpServer, McpOptions};
 
 fn write_fixture_manifest(root: &Path) -> PathBuf {
     let source_dir = root.join("fixture-source");
@@ -97,6 +97,10 @@ impl TestSession {
 }
 
 async fn start_session(temp: &TempDir) -> TestSession {
+    start_session_with_options(temp, McpOptions::default()).await
+}
+
+async fn start_session_with_options(temp: &TempDir, options: McpOptions) -> TestSession {
     let server = ServerBuilder::new()
         .with_config_dir(temp.path().join("coral-config"))
         .start()
@@ -109,7 +113,9 @@ async fn start_session(temp: &TempDir) -> TestSession {
 
     let (server_transport, client_transport) = tokio::io::duplex(4096);
     let mcp_server_task = tokio::spawn(async move {
-        let server = CoralMcpServer::new(&app).serve(server_transport).await?;
+        let server = CoralMcpServer::new(&app, options)
+            .serve(server_transport)
+            .await?;
         server.waiting().await?;
         Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
     });
@@ -158,7 +164,6 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
             .expect("sql description")
             .contains("0 configured source")
     );
-
     let initial_resources = client
         .list_all_resources()
         .await
@@ -249,6 +254,129 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
         "local_messages.messages"
     );
     assert_eq!(tables.is_error, Some(false));
+
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn mcp_feedback_tool_persists_blocked_agent_report() {
+    let temp = TempDir::new().expect("temp dir");
+    let session = start_session_with_options(
+        &temp,
+        McpOptions {
+            feedback_enabled: true,
+        },
+    )
+    .await;
+    let client = &session.client;
+
+    let tools = client.list_all_tools().await.expect("tools");
+    assert_eq!(
+        tools
+            .iter()
+            .map(|tool| tool.name.as_ref())
+            .collect::<Vec<_>>(),
+        vec!["sql", "list_tables", "feedback"]
+    );
+    let feedback_annotations = tools[2].annotations.as_ref().expect("feedback annotations");
+    assert_eq!(feedback_annotations.read_only_hint, Some(false));
+    assert_eq!(feedback_annotations.destructive_hint, Some(false));
+    assert_eq!(feedback_annotations.idempotent_hint, Some(false));
+    assert_eq!(feedback_annotations.open_world_hint, Some(false));
+
+    let feedback = client
+        .call_tool(
+            CallToolRequestParams::new("feedback").with_arguments(json_object(&json!({
+                "trying_to_do": "Fix failing tests",
+                "tried": "Ran cargo test and inspected the failing assertion",
+                "stuck": "The fixture shape does not match the documented contract"
+            }))),
+        )
+        .await
+        .expect("feedback");
+    assert_eq!(feedback.is_error, Some(false));
+    let structured = feedback.structured_content.expect("structured content");
+    assert!(
+        structured["feedback_id"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty())
+    );
+    assert!(
+        structured["created_at"]
+            .as_str()
+            .is_some_and(|created_at| !created_at.is_empty())
+    );
+    assert_eq!(structured["message"], "Feedback submitted.");
+
+    let raw = fs::read_to_string(
+        temp.path()
+            .join("coral-config/workspaces/default/feedback/reports.jsonl"),
+    )
+    .expect("feedback file should exist");
+    let records = raw.lines().collect::<Vec<_>>();
+    assert_eq!(records.len(), 1);
+    let record: Value = serde_json::from_str(records[0]).expect("feedback JSONL should parse");
+    assert_eq!(record["id"], structured["feedback_id"]);
+    assert_eq!(record["workspace"], "default");
+    assert_eq!(record["trying_to_do"], "Fix failing tests");
+    assert_eq!(
+        record["tried"],
+        "Ran cargo test and inspected the failing assertion"
+    );
+    assert_eq!(
+        record["stuck"],
+        "The fixture shape does not match the documented contract"
+    );
+
+    let blank_feedback = client
+        .call_tool(
+            CallToolRequestParams::new("feedback").with_arguments(json_object(&json!({
+                "trying_to_do": "Fix failing tests",
+                "tried": " ",
+                "stuck": "The fixture shape does not match the documented contract"
+            }))),
+        )
+        .await
+        .expect_err("blank feedback should fail before persistence");
+    assert!(
+        blank_feedback
+            .to_string()
+            .contains("missing string argument 'tried'")
+    );
+
+    let raw_after_error = fs::read_to_string(
+        temp.path()
+            .join("coral-config/workspaces/default/feedback/reports.jsonl"),
+    )
+    .expect("feedback file should still exist");
+    assert_eq!(raw_after_error.lines().count(), 1);
+
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn mcp_feedback_tool_is_disabled_by_default() {
+    let temp = TempDir::new().expect("temp dir");
+    let session = start_session(&temp).await;
+    let client = &session.client;
+
+    let feedback = client
+        .call_tool(
+            CallToolRequestParams::new("feedback").with_arguments(json_object(&json!({
+                "trying_to_do": "Fix failing tests",
+                "tried": "Ran cargo test",
+                "stuck": "Need more context"
+            }))),
+        )
+        .await
+        .expect_err("feedback should not be exposed by default");
+    assert!(feedback.to_string().contains("tool 'feedback' not found"));
+    assert!(
+        !temp
+            .path()
+            .join("coral-config/workspaces/default/feedback/reports.jsonl")
+            .exists()
+    );
 
     session.shutdown().await;
 }

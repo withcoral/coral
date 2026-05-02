@@ -11,6 +11,7 @@ workspace = true
 
 [dependencies]
 arrow.workspace = true
+chrono.workspace = true
 directories.workspace = true
 fs2.workspace = true
 opentelemetry.workspace = true
@@ -30,6 +31,7 @@ tonic-types.workspace = true
 tracing.workspace = true
 tracing-opentelemetry.workspace = true
 tracing-subscriber.workspace = true
+uuid.workspace = true
 
 coral-api.workspace = true
 coral-auth-aws = { path = "../auth/aws" }

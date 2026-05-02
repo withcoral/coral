@@ -1,9 +1,11 @@
 //! RMCP server implementation for Coral's stdio MCP surface.
 
-use coral_api::v1::{ExecuteSqlRequest, ListSourcesRequest, ListTablesRequest, Source, Table};
+use coral_api::v1::{
+    ExecuteSqlRequest, ListSourcesRequest, ListTablesRequest, Source, SubmitFeedbackRequest, Table,
+};
 use coral_client::{
-    AppClient, QueryClient, SourceClient, batches_to_json_rows, decode_execute_sql_response,
-    default_workspace,
+    AppClient, FeedbackClient, QueryClient, SourceClient, batches_to_json_rows,
+    decode_execute_sql_response, default_workspace,
 };
 use rmcp::{
     ErrorData, ServerHandler,
@@ -17,29 +19,36 @@ use rmcp::{
 use serde_json::Value;
 use tonic::Request;
 
-use crate::surface::{
-    build_tool_result, guide_resource, guide_resource_content, initial_instructions,
-    internal_status, list_tables_tool, list_tables_value, required_string_argument, sql_tool,
-    status_to_error_data, tables_resource, tables_resource_content, tool_error_from_status,
-    tool_error_result,
+use crate::{
+    McpOptions,
+    surface::{
+        build_tool_result, feedback_tool, guide_resource, guide_resource_content,
+        initial_instructions, internal_status, list_tables_tool, list_tables_value,
+        required_string_argument, sql_tool, status_to_error_data, tables_resource,
+        tables_resource_content, tool_error_from_status, tool_error_result,
+    },
 };
 
 #[derive(Clone)]
 pub(crate) struct CoralMcpServer {
-    source_client: SourceClient,
-    query_client: QueryClient,
+    source: SourceClient,
+    query: QueryClient,
+    feedback: FeedbackClient,
+    options: McpOptions,
 }
 
 impl CoralMcpServer {
-    pub(crate) fn new(app: &AppClient) -> Self {
+    pub(crate) fn new(app: &AppClient, options: McpOptions) -> Self {
         Self {
-            source_client: app.source_client(),
-            query_client: app.query_client(),
+            source: app.source_client(),
+            query: app.query_client(),
+            feedback: app.feedback_client(),
+            options,
         }
     }
 
     async fn load_sources(&self) -> Result<Vec<Source>, tonic::Status> {
-        let mut source_client = self.source_client.clone();
+        let mut source_client = self.source.clone();
         Ok(source_client
             .list_sources(Request::new(ListSourcesRequest {
                 workspace: Some(default_workspace()),
@@ -50,7 +59,7 @@ impl CoralMcpServer {
     }
 
     async fn load_tables(&self) -> Result<Vec<Table>, tonic::Status> {
-        let mut query_client = self.query_client.clone();
+        let mut query_client = self.query.clone();
         Ok(query_client
             .list_tables(Request::new(ListTablesRequest {
                 workspace: Some(default_workspace()),
@@ -65,7 +74,7 @@ impl CoralMcpServer {
     }
 
     async fn query_rows(&self, sql: &str) -> Result<Vec<Value>, tonic::Status> {
-        let mut query_client = self.query_client.clone();
+        let mut query_client = self.query.clone();
         let response = query_client
             .execute_sql(Request::new(ExecuteSqlRequest {
                 workspace: Some(default_workspace()),
@@ -83,6 +92,32 @@ impl CoralMcpServer {
         self.query_rows(sql)
             .await
             .map(|rows| serde_json::json!({ "rows": rows }))
+    }
+
+    async fn submit_feedback_value(
+        &self,
+        trying_to_do: &str,
+        tried: &str,
+        stuck: &str,
+    ) -> Result<Value, tonic::Status> {
+        let mut feedback_client = self.feedback.clone();
+        let response = feedback_client
+            .submit_feedback(Request::new(SubmitFeedbackRequest {
+                workspace: Some(default_workspace()),
+                trying_to_do: trying_to_do.to_string(),
+                tried: tried.to_string(),
+                stuck: stuck.to_string(),
+            }))
+            .await?
+            .into_inner();
+        let report = response
+            .report
+            .ok_or_else(|| tonic::Status::internal("feedback response missing report"))?;
+        Ok(serde_json::json!({
+            "feedback_id": report.id,
+            "created_at": report.created_at,
+            "message": "Feedback submitted.",
+        }))
     }
 }
 
@@ -107,10 +142,11 @@ impl ServerHandler for CoralMcpServer {
             .load_sources_and_tables()
             .await
             .map_err(|status| status_to_error_data(&status))?;
-        Ok(ListToolsResult::with_all_items(vec![
-            sql_tool(&sources, &tables),
-            list_tables_tool(&tables),
-        ]))
+        let mut tools = vec![sql_tool(&sources, &tables), list_tables_tool(&tables)];
+        if self.options.feedback_enabled {
+            tools.push(feedback_tool());
+        }
+        Ok(ListToolsResult::with_all_items(tools))
     }
 
     async fn call_tool(
@@ -133,6 +169,22 @@ impl ServerHandler for CoralMcpServer {
                     &status,
                 ))),
             },
+            "feedback" if self.options.feedback_enabled => {
+                let trying_to_do =
+                    required_string_argument(request.arguments.as_ref(), "trying_to_do")?;
+                let tried = required_string_argument(request.arguments.as_ref(), "tried")?;
+                let stuck = required_string_argument(request.arguments.as_ref(), "stuck")?;
+                match self
+                    .submit_feedback_value(&trying_to_do, &tried, &stuck)
+                    .await
+                {
+                    Ok(value) => build_tool_result(value),
+                    Err(status) => Ok(tool_error_result(tool_error_from_status(
+                        "Feedback submission",
+                        &status,
+                    ))),
+                }
+            }
             _ => Err(ErrorData::invalid_params(
                 format!("tool '{}' not found", request.name),
                 None,

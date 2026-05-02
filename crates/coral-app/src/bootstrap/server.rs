@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 
+use coral_api::v1::feedback_service_server::FeedbackServiceServer;
 use coral_api::v1::query_service_server::QueryServiceServer;
 use coral_api::v1::source_service_server::SourceServiceServer;
 use coral_api::{HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE};
@@ -17,6 +18,8 @@ use tonic::transport::Server;
 use super::env::AppEnvironment;
 use super::error::AppError;
 use crate::EngineExtensionsProvider;
+use crate::feedback::manager::FeedbackManager;
+use crate::feedback::service::FeedbackService;
 use crate::query::manager::QueryManager;
 use crate::query::service::QueryService;
 use crate::sources::manager::SourceManager;
@@ -145,6 +148,7 @@ impl ServerBuilder {
         let secret_store = SecretStore::new(layout.clone());
         let source_manager =
             SourceManager::new(config_store.clone(), secret_store.clone(), layout.clone());
+        let feedback_manager = FeedbackManager::new(layout.clone());
         let query_manager = QueryManager::new(
             config_store,
             secret_store,
@@ -152,7 +156,7 @@ impl ServerBuilder {
             layout,
             self.config.engine_extensions_providers,
         );
-        start_server(source_manager, query_manager).await
+        start_server(source_manager, query_manager, feedback_manager).await
     }
 }
 
@@ -221,9 +225,11 @@ impl Drop for RunningServer {
 async fn start_server(
     source_manager: SourceManager,
     query_manager: QueryManager,
+    feedback_manager: FeedbackManager,
 ) -> Result<RunningServer, AppError> {
     let source_service = SourceService::new(source_manager, query_manager.clone());
     let query_service = QueryService::new(query_manager);
+    let feedback_service = FeedbackService::new(feedback_manager);
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
     let endpoint_uri = format!("http://{}", listener.local_addr()?);
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
@@ -232,6 +238,7 @@ async fn start_server(
         Server::builder()
             .http2_max_header_list_size(HTTP2_MAX_HEADER_LIST_SIZE)
             .add_service(SourceServiceServer::new(source_service))
+            .add_service(FeedbackServiceServer::new(feedback_service))
             .add_service(
                 QueryServiceServer::new(query_service)
                     .max_encoding_message_size(QUERY_RESPONSE_MAX_MESSAGE_SIZE),
@@ -264,6 +271,7 @@ mod tests {
     use tonic::transport::Endpoint;
 
     use super::{ServerBuilder, start_server};
+    use crate::feedback::manager::FeedbackManager;
     use crate::query::manager::QueryManager;
     use crate::sources::manager::SourceManager;
     use crate::state::{AppStateLayout, ConfigStore, SecretStore};
@@ -311,6 +319,7 @@ mod tests {
             SecretStore::new(layout.clone()),
             layout.clone(),
         );
+        let feedback_manager = FeedbackManager::new(layout.clone());
         let query_manager = QueryManager::new(
             ConfigStore::new(layout.clone()),
             SecretStore::new(layout.clone()),
@@ -320,7 +329,7 @@ mod tests {
             layout,
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
-        let running = start_server(source_manager, query_manager)
+        let running = start_server(source_manager, query_manager, feedback_manager)
             .await
             .expect("start server");
         let channel = Endpoint::from_shared(running.endpoint_uri().to_string())
@@ -389,6 +398,7 @@ tables:
             SecretStore::new(layout.clone()),
             layout.clone(),
         );
+        let feedback_manager = FeedbackManager::new(layout.clone());
         let query_manager = QueryManager::new(
             ConfigStore::new(layout.clone()),
             SecretStore::new(layout.clone()),
@@ -396,7 +406,7 @@ tables:
             layout,
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
-        let running = start_server(source_manager, query_manager)
+        let running = start_server(source_manager, query_manager, feedback_manager)
             .await
             .expect("start server");
         let channel = Endpoint::from_shared(running.endpoint_uri().to_string())
@@ -477,6 +487,7 @@ tables:
             SecretStore::new(layout.clone()),
             layout.clone(),
         );
+        let feedback_manager = FeedbackManager::new(layout.clone());
         let query_manager = QueryManager::new(
             ConfigStore::new(layout.clone()),
             SecretStore::new(layout.clone()),
@@ -484,7 +495,7 @@ tables:
             layout,
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
-        let running = start_server(source_manager, query_manager)
+        let running = start_server(source_manager, query_manager, feedback_manager)
             .await
             .expect("start server");
         let channel = Endpoint::from_shared(running.endpoint_uri().to_string())
