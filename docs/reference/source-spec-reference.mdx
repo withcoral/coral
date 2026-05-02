@@ -116,9 +116,34 @@ The `expr` field on a column defines how to extract or compute its value from ea
 | Kind                 | Description                                                        |
 | -------------------- | ------------------------------------------------------------------ |
 | `path`               | Extract a value by JSON path segments                              |
+| `join_array_path`    | Join one nested scalar field from each object in an array          |
 | `format_timestamp`   | Convert an epoch timestamp to a `Timestamp` column                 |
 | `replace`            | Replace all occurrences of one substring in the rendered value     |
 | `template`           | Build a string from a template with placeholder substitutions      |
+
+### `join_array_path`
+
+Extracts one nested value from each object in an array and joins the values into one string.
+Use this when an API returns object arrays such as labels, tags, or owners and the table should expose a compact human-readable column.
+
+```yaml
+- name: label_names
+  type: Utf8
+  expr:
+    kind: join_array_path
+    path:
+      - labels
+      - nodes
+    item_path:
+      - name
+    separator: ","
+```
+
+| Field       | Type   | Default | Description                                     |
+| ----------- | ------ | ------- | ----------------------------------------------- |
+| `path`      | array  | —       | JSON path to the array                          |
+| `item_path` | array  | —       | JSON path to extract from each array item       |
+| `separator` | string | `,`     | Separator used between non-null extracted items |
 
 ### `format_timestamp`
 

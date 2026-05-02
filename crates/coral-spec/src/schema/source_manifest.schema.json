@@ -556,6 +556,23 @@
         {
           "type": "object",
           "additionalProperties": false,
+          "required": ["kind", "path", "item_path"],
+          "properties": {
+            "kind": { "const": "join_array_path" },
+            "path": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 }
+            },
+            "item_path": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 }
+            },
+            "separator": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
           "required": ["kind", "path", "key"],
           "properties": {
             "kind": { "const": "tag_value" },

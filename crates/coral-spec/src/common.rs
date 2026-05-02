@@ -677,6 +677,12 @@ pub enum ExprSpec {
         #[serde(default = "default_separator")]
         separator: String,
     },
+    JoinArrayPath {
+        path: Vec<String>,
+        item_path: Vec<String>,
+        #[serde(default = "default_separator")]
+        separator: String,
+    },
     TagValue {
         path: Vec<String>,
         key: String,

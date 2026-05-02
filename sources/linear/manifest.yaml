@@ -374,6 +374,22 @@ tables:
           kind: path
           path:
             - targetDate
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Creation timestamp
+        expr:
+          kind: path
+          path:
+            - createdAt
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: Updated timestamp
+        expr:
+          kind: path
+          path:
+            - updatedAt
       - name: team_id
         type: Utf8
         nullable: true
@@ -818,6 +834,12 @@ tables:
                     body
                     createdAt
                     updatedAt
+                    user {
+                      id
+                      name
+                      displayName
+                      email
+                    }
                   }
                   pageInfo {
                     endCursor
@@ -1045,10 +1067,17 @@ tables:
                   }
                   project {
                     id
+                    name
+                    slugId
                   }
                   projectMilestone {
                     id
                     name
+                  }
+                  labels {
+                    nodes {
+                      name
+                    }
                   }
                 }
                 pageInfo {
@@ -1269,6 +1298,43 @@ tables:
           kind: path
           path:
             - completedAt
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Issue URL
+        expr:
+          kind: path
+          path:
+            - url
+      - name: project_name
+        type: Utf8
+        nullable: true
+        description: Project name
+        expr:
+          kind: path
+          path:
+            - project
+            - name
+      - name: project_slug_id
+        type: Utf8
+        nullable: true
+        description: Project short slug identifier
+        expr:
+          kind: path
+          path:
+            - project
+            - slugId
+      - name: label_names
+        type: Utf8
+        nullable: true
+        description: Comma-separated issue label names
+        expr:
+          kind: join_array_path
+          path:
+            - labels
+            - nodes
+          item_path:
+            - name
   - name: issue_comments
     description: Comments for a specific Linear issue
     guide: |
@@ -1292,6 +1358,12 @@ tables:
                     body
                     createdAt
                     updatedAt
+                    user {
+                      id
+                      name
+                      displayName
+                      email
+                    }
                   }
                   pageInfo {
                     endCursor
@@ -1356,6 +1428,42 @@ tables:
           kind: path
           path:
             - body
+      - name: author_id
+        type: Utf8
+        nullable: true
+        description: Comment author user ID
+        expr:
+          kind: path
+          path:
+            - user
+            - id
+      - name: author_name
+        type: Utf8
+        nullable: true
+        description: Comment author name
+        expr:
+          kind: path
+          path:
+            - user
+            - name
+      - name: author_display_name
+        type: Utf8
+        nullable: true
+        description: Comment author display name
+        expr:
+          kind: path
+          path:
+            - user
+            - displayName
+      - name: author_email
+        type: Utf8
+        nullable: true
+        description: Comment author email
+        expr:
+          kind: path
+          path:
+            - user
+            - email
       - name: created_at
         type: Utf8
         nullable: true

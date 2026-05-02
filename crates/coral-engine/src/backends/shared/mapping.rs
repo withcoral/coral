@@ -107,15 +107,12 @@ fn eval_expr(expr: &ExprSpec, row: &Value, filters: &HashMap<String, String>) ->
         ExprSpec::FromFilter { key } => filters.get(key).map(|v| Value::String(v.clone())),
         ExprSpec::Literal { value } => Some(value.clone()),
         ExprSpec::Null => None,
-        ExprSpec::JoinArray { path, separator } => {
-            let values = get_path_value(row, path)?.as_array()?;
-            let joined = values
-                .iter()
-                .filter_map(value_to_string_for_join)
-                .collect::<Vec<_>>()
-                .join(separator);
-            Some(Value::String(joined))
-        }
+        ExprSpec::JoinArray { path, separator } => eval_join_array(row, path, separator),
+        ExprSpec::JoinArrayPath {
+            path,
+            item_path,
+            separator,
+        } => eval_join_array_path(row, path, item_path, separator),
         ExprSpec::TagValue {
             path,
             key,
@@ -296,6 +293,32 @@ fn eval_template(
     Some(Value::String(result))
 }
 
+fn eval_join_array(row: &Value, path: &[String], separator: &str) -> Option<Value> {
+    let values = get_path_value(row, path)?.as_array()?;
+    let joined = values
+        .iter()
+        .filter_map(value_to_string_for_join)
+        .collect::<Vec<_>>()
+        .join(separator);
+    Some(Value::String(joined))
+}
+
+fn eval_join_array_path(
+    row: &Value,
+    path: &[String],
+    item_path: &[String],
+    separator: &str,
+) -> Option<Value> {
+    let values = get_path_value(row, path)?.as_array()?;
+    let joined = values
+        .iter()
+        .filter_map(|item| get_path_value(item, item_path))
+        .filter_map(value_to_string_for_join)
+        .collect::<Vec<_>>()
+        .join(separator);
+    Some(Value::String(joined))
+}
+
 fn value_to_string_for_join(value: &Value) -> Option<String> {
     match value {
         Value::Null => None,
@@ -460,6 +483,16 @@ mod tests {
                     TimestampInput::Iso8601 => "iso8601",
                 },
             }),
+            ExprSpec::JoinArrayPath {
+                path,
+                item_path,
+                separator,
+            } => json!({
+                "kind": "join_array_path",
+                "path": path,
+                "item_path": item_path,
+                "separator": separator,
+            }),
             other => panic!("unsupported test expr: {other:?}"),
         }
     }
@@ -612,6 +645,43 @@ mod tests {
             .downcast_ref::<StringArray>()
             .unwrap();
         assert_eq!(col.value(0), "only one");
+    }
+
+    #[test]
+    fn join_array_path_concatenates_nested_scalar_values() {
+        let table = table_with_expr(
+            "label_names",
+            "Utf8",
+            &ExprSpec::JoinArrayPath {
+                path: vec!["labels".into(), "nodes".into()],
+                item_path: vec!["name".into()],
+                separator: ",".into(),
+            },
+        );
+        let schema = schema_from_columns(table.columns(), "test", table.name()).unwrap();
+        let items = vec![
+            serde_json::json!({
+                "labels": {
+                    "nodes": [
+                        {"name": "bug"},
+                        {"name": "customer"},
+                        {"color": "#fff"}
+                    ]
+                }
+            }),
+            serde_json::json!({"labels": {"nodes": []}}),
+            serde_json::json!({"labels": {"nodes": [{"name": null}]}}),
+        ];
+        let batch = convert_items(table.columns(), schema, &HashMap::new(), &items).unwrap();
+        assert_eq!(batch.num_rows(), 3);
+        let col = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(col.value(0), "bug,customer");
+        assert_eq!(col.value(1), "");
+        assert_eq!(col.value(2), "");
     }
 
     #[test]
