@@ -90,7 +90,7 @@ fn sql_tool_description(sources: &[Source], tables: &[Table]) -> String {
 
 fn list_tables_description(tables: &[Table]) -> String {
     format!(
-        "List queryable fully qualified tables. {} table(s) are currently visible.",
+        "List queryable tables. Large catalogs return a schema summary with SQL discovery next steps. {} table(s) are currently visible.",
         visible_table_count(tables)
     )
 }

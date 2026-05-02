@@ -15,12 +15,12 @@ Before setting up a client, make sure you have [connected at least one source](/
 | Type     | Name             | Description                                             |
 | -------- | ---------------- | ------------------------------------------------------- |
 | Tool     | `sql`            | Run a SQL query                                         |
-| Tool     | `list_tables`    | List queryable fully qualified tables                   |
+| Tool     | `list_tables`    | List tables for small catalogs or summarize large catalogs by schema |
 | Resource | `coral://guide`  | Usage guide for agents                                  |
 | Resource | `coral://tables` | JSON summaries of queryable tables and required filters |
 
 Clients see the same installed sources and query results as `coral sql`. You set up sources with the CLI, then agents query them over MCP.
-For richer metadata, have the agent query `coral.tables`, `coral.columns`, and `coral.inputs` over the `sql` tool instead of relying only on `list_tables` or `coral://tables`.
+For richer metadata, have the agent query `coral.tables`, `coral.columns`, and `coral.inputs` over the `sql` tool instead of relying only on `list_tables` or `coral://tables`. On large workspaces, `list_tables` returns schema counts and example table names to keep the first discovery call compact; `coral://tables` remains the full table-list resource.
 
 ## Client setup
 
@@ -188,7 +188,7 @@ Once your client is connected, ask the agent to list available tables or run a s
 
 > "Run a small Coral query against `coral.tables`."
 
-The agent should call `list_tables` or query `coral.tables` and return the schemas from your installed sources.
+The agent should call `list_tables` or query `coral.tables` and return the schemas from your installed sources. If `list_tables` returns `truncated: true`, the agent should follow the included SQL next steps to inspect one schema or table at a time.
 
 ## Troubleshooting
 

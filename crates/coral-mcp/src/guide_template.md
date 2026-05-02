@@ -59,4 +59,4 @@ WHERE json_get_str(rules, 0, 'clauses', 0, 'values', 0) = 'phoebe-org';
 - Cross-source joins work with standard SQL after source scans complete.
 - Use `LIKE` or `ILIKE` for SQL wildcard matching with `%` and `_`. `SIMILAR TO` uses regex-shaped patterns, so write `.*` instead of `%`, `.` instead of `_`, or escape literal percent/underscore characters as `\%` and `\_`.
 - Regex operators such as `~` and `~*` treat `%` and `_` as ordinary literal characters.
-- `list_tables` and `coral://tables` show queryable fully qualified tables; `coral.tables`, `coral.columns`, and `coral.inputs` provide richer SQL metadata.
+- `list_tables` shows queryable tables for small catalogs and a schema summary for large catalogs. Use `coral://tables` when you need the full table list as a resource; use `coral.tables`, `coral.columns`, and `coral.inputs` for richer SQL metadata.

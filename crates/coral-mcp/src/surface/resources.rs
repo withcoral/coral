@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 use coral_api::v1::{Source, Table};
@@ -7,6 +7,8 @@ use serde_json::{Value, json};
 
 static INITIAL_INSTRUCTIONS: &str = "You are connected to Coral. Read `coral://guide` for query patterns, use `list_tables` to inspect queryable tables, and use `sql` against `coral.tables` and `coral.columns` for discovery.";
 static GUIDE_TEMPLATE: &str = include_str!("../guide_template.md");
+const LIST_TABLES_FULL_LIMIT: usize = 100;
+const LIST_TABLES_SCHEMA_EXAMPLE_LIMIT: usize = 5;
 
 pub(crate) fn initial_instructions() -> &'static str {
     INITIAL_INSTRUCTIONS
@@ -73,7 +75,19 @@ pub(crate) fn tables_resource_content(tables: &[Table]) -> Result<String, serde_
 }
 
 pub(crate) fn list_tables_value(tables: &[Table]) -> Value {
-    json!({ "tables": queryable_tables(tables) })
+    if tables.len() <= LIST_TABLES_FULL_LIMIT {
+        return json!({ "tables": queryable_tables(tables) });
+    }
+
+    json!({
+        "total_tables": tables.len(),
+        "truncated": true,
+        "schemas": schema_summaries(tables),
+        "next_steps": [
+            "Use sql: SELECT table_name, description, required_filters FROM coral.tables WHERE schema_name = '<schema>' ORDER BY table_name",
+            "Use sql: SELECT column_name, data_type, is_required_filter, description FROM coral.columns WHERE schema_name = '<schema>' AND table_name = '<table>' ORDER BY ordinal_position"
+        ]
+    })
 }
 
 pub(super) fn visible_schema_count(tables: &[Table]) -> usize {
@@ -123,6 +137,33 @@ fn queryable_tables(tables: &[Table]) -> Vec<Value> {
     summaries
 }
 
+fn schema_summaries(tables: &[Table]) -> Vec<Value> {
+    let mut by_schema: BTreeMap<&str, Vec<&Table>> = BTreeMap::new();
+    for table in tables {
+        by_schema
+            .entry(table.schema_name.as_str())
+            .or_default()
+            .push(table);
+    }
+
+    by_schema
+        .into_iter()
+        .map(|(schema_name, mut schema_tables)| {
+            schema_tables.sort_by(|left, right| left.name.cmp(&right.name));
+            let examples = schema_tables
+                .iter()
+                .take(LIST_TABLES_SCHEMA_EXAMPLE_LIMIT)
+                .map(|table| table.name.as_str())
+                .collect::<Vec<_>>();
+            json!({
+                "schema_name": schema_name,
+                "table_count": schema_tables.len(),
+                "example_tables": examples,
+            })
+        })
+        .collect()
+}
+
 fn first_visible_table(tables: &[Table]) -> Option<(&str, &str)> {
     tables
         .iter()
@@ -136,7 +177,7 @@ fn first_visible_table(tables: &[Table]) -> Option<(&str, &str)> {
 mod tests {
     use coral_api::v1::{Source, Table, Workspace};
 
-    use super::guide_resource_content;
+    use super::{guide_resource_content, list_tables_value};
 
     fn source(name: &str) -> Source {
         Source {
@@ -184,5 +225,50 @@ mod tests {
         assert!(content.contains("Visible source schemas:"));
         assert!(content.contains("- slack"));
         assert!(content.contains("Fully qualify tables in SQL, for example `slack.messages`."));
+    }
+
+    #[test]
+    fn list_tables_keeps_full_shape_for_small_catalogs() {
+        let value = list_tables_value(&[table("slack", "channels"), table("slack", "messages")]);
+        assert_eq!(value["tables"].as_array().expect("tables").len(), 2);
+        assert!(value.get("truncated").is_none());
+    }
+
+    #[test]
+    fn list_tables_summarizes_large_catalogs_by_schema() {
+        let tables = (0..101)
+            .map(|i| {
+                if i < 100 {
+                    table("github", &format!("table_{i:03}"))
+                } else {
+                    table("slack", "messages")
+                }
+            })
+            .collect::<Vec<_>>();
+
+        let value = list_tables_value(&tables);
+        assert_eq!(value["total_tables"], 101);
+        assert_eq!(value["truncated"], true);
+        assert!(value.get("tables").is_none());
+
+        let schemas = value["schemas"].as_array().expect("schemas");
+        assert_eq!(schemas.len(), 2);
+        assert_eq!(schemas[0]["schema_name"], "github");
+        assert_eq!(schemas[0]["table_count"], 100);
+        assert_eq!(
+            schemas[0]["example_tables"]
+                .as_array()
+                .expect("examples")
+                .len(),
+            5
+        );
+        assert_eq!(schemas[1]["schema_name"], "slack");
+        assert_eq!(schemas[1]["table_count"], 1);
+        assert!(
+            value["next_steps"].as_array().expect("next steps")[0]
+                .as_str()
+                .expect("next step")
+                .contains("coral.tables")
+        );
     }
 }
