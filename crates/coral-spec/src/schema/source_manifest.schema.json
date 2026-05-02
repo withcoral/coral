@@ -263,7 +263,9 @@
           "items": { "type": "string", "minLength": 1 }
         },
         "default": {},
-        "seconds": { "type": "integer" }
+        "seconds": { "type": "integer" },
+        "separator": { "type": "string", "minLength": 1 },
+        "part": { "type": "integer", "minimum": 0 }
       },
       "allOf": [{ "$ref": "#/$defs/value_source_switch" }]
     },
@@ -284,7 +286,9 @@
           "items": { "type": "string", "minLength": 1 }
         },
         "default": {},
-        "seconds": { "type": "integer" }
+        "seconds": { "type": "integer" },
+        "separator": { "type": "string", "minLength": 1 },
+        "part": { "type": "integer", "minimum": 0 }
       },
       "allOf": [{ "$ref": "#/$defs/value_source_switch" }]
     },
@@ -308,7 +312,9 @@
           "items": { "type": "string", "minLength": 1 }
         },
         "default": {},
-        "seconds": { "type": "integer" }
+        "seconds": { "type": "integer" },
+        "separator": { "type": "string", "minLength": 1 },
+        "part": { "type": "integer", "minimum": 0 }
       },
       "allOf": [{ "$ref": "#/$defs/value_source_switch" }]
     },
@@ -328,7 +334,9 @@
           "items": { "type": "string", "minLength": 1 }
         },
         "default": {},
-        "seconds": { "type": "integer" }
+        "seconds": { "type": "integer" },
+        "separator": { "type": "string", "minLength": 1 },
+        "part": { "type": "integer", "minimum": 0 }
       },
       "allOf": [{ "$ref": "#/$defs/value_source_switch" }]
     },
@@ -370,6 +378,24 @@
             "default": { "type": "boolean" }
           },
           "required": ["key"]
+        },
+        {
+          "properties": {
+            "from": { "const": "filter_split" },
+            "key": { "type": "string", "minLength": 1 },
+            "separator": { "type": "string", "minLength": 1 },
+            "part": { "type": "integer", "minimum": 0 }
+          },
+          "required": ["key", "separator", "part"]
+        },
+        {
+          "properties": {
+            "from": { "const": "filter_split_int" },
+            "key": { "type": "string", "minLength": 1 },
+            "separator": { "type": "string", "minLength": 1 },
+            "part": { "type": "integer", "minimum": 0 }
+          },
+          "required": ["key", "separator", "part"]
         },
         {
           "properties": {

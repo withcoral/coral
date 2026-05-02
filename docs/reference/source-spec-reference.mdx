@@ -462,6 +462,8 @@ Request query params, body fields, and headers support these `from` values:
 | `filter` | Read a SQL filter as a string |
 | `filter_int` | Read a SQL filter and serialize it as a JSON integer |
 | `filter_bool` | Read a SQL filter and serialize it as a JSON boolean |
+| `filter_split` | Split a SQL filter string and serialize one part as a string |
+| `filter_split_int` | Split a SQL filter string and serialize one part as a JSON integer |
 | `input` | Read a manifest-declared source input (variable/secret) by key |
 | `state` | Read pagination/runtime state |
 | `now_epoch_minus_seconds` | Emit the current Unix epoch seconds minus the configured offset |
@@ -469,6 +471,23 @@ Request query params, body fields, and headers support these `from` values:
 Boolean filters used with `filter_bool` can be written as normal SQL boolean
 predicates, for example `WHERE include_archived IS FALSE` or
 `WHERE include_archived = false`.
+
+Use `filter_split` and `filter_split_int` when a provider requires structured
+request fields but users naturally have one compound identifier. For example,
+`SOURCE-496` can become a string team key and integer issue number:
+
+```yaml
+- path: [variables, teamKey]
+  from: filter_split
+  key: issue_identifier
+  separator: "-"
+  part: 0
+- path: [variables, issueNumber]
+  from: filter_split_int
+  key: issue_identifier
+  separator: "-"
+  part: 1
+```
 
 ### HTTP response fields
 

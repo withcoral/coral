@@ -1724,6 +1724,172 @@ tables:
     filters:
       - name: issue_id
         required: true
+  - name: issue_comments_by_identifier
+    description: Comments for a specific Linear issue identifier
+    guide: |
+      Requires a human issue identifier such as `SOURCE-496`. Use this table
+      when you have an issue key from Linear UI, Slack, or another tool and
+      need the discussion trail without first looking up the internal issue
+      UUID.
+    request:
+      method: POST
+      path: /graphql
+      query: []
+      body:
+        - path:
+            - query
+          from: literal
+          value: |
+            query IssueCommentsByIdentifier($teamKey: String!, $issueNumber: Float!, $first: Int!, $after: String) {
+              issues(filter: { team: { key: { eq: $teamKey } }, number: { eq: $issueNumber } }, first: 1) {
+                nodes {
+                  id
+                  identifier
+                  comments(first: $first, after: $after) {
+                    nodes {
+                      id
+                      body
+                      createdAt
+                      updatedAt
+                      user {
+                        id
+                        name
+                        displayName
+                        email
+                      }
+                    }
+                    pageInfo {
+                      endCursor
+                    }
+                  }
+                }
+              }
+            }
+        - path:
+            - variables
+            - teamKey
+          from: filter_split
+          key: issue_identifier
+          separator: "-"
+          part: 0
+        - path:
+            - variables
+            - issueNumber
+          from: filter_split_int
+          key: issue_identifier
+          separator: "-"
+          part: 1
+        - path:
+            - variables
+            - first
+          from: literal
+          value: 100
+    response:
+      rows_path:
+        - data
+        - issues
+        - nodes
+        - "0"
+        - comments
+        - nodes
+    pagination:
+      mode: cursor_body
+      cursor_body_path:
+        - variables
+        - after
+      response_cursor_path:
+        - data
+        - issues
+        - nodes
+        - "0"
+        - comments
+        - pageInfo
+        - endCursor
+      page_size:
+        default: 100
+        max: 250
+        body_path:
+          - variables
+          - first
+    columns:
+      - name: issue_identifier
+        type: Utf8
+        nullable: false
+        description: Issue identifier filter, for example SOURCE-496
+        expr:
+          kind: from_filter
+          key: issue_identifier
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Comment ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: body
+        type: Utf8
+        nullable: true
+        description: Comment body
+        expr:
+          kind: path
+          path:
+            - body
+      - name: author_id
+        type: Utf8
+        nullable: true
+        description: Comment author user ID
+        expr:
+          kind: path
+          path:
+            - user
+            - id
+      - name: author_name
+        type: Utf8
+        nullable: true
+        description: Comment author name
+        expr:
+          kind: path
+          path:
+            - user
+            - name
+      - name: author_display_name
+        type: Utf8
+        nullable: true
+        description: Comment author display name
+        expr:
+          kind: path
+          path:
+            - user
+            - displayName
+      - name: author_email
+        type: Utf8
+        nullable: true
+        description: Comment author email
+        expr:
+          kind: path
+          path:
+            - user
+            - email
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Creation timestamp
+        expr:
+          kind: path
+          path:
+            - createdAt
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: Updated timestamp
+        expr:
+          kind: path
+          path:
+            - updatedAt
+    filters:
+      - name: issue_identifier
+        required: true
   - name: team_issues
     description: Issues for a specific Linear team
     guide: |
