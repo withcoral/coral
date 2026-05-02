@@ -31,6 +31,7 @@ pub(crate) fn append_file_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
         ensure_dir(parent)?;
     }
     let mut file = open_append_file_private(path)?;
+    set_file_permissions_private(path)?;
     file.write_all(bytes)?;
     file.sync_all()
 }
