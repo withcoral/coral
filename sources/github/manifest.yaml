@@ -55631,11 +55631,34 @@ tables:
         type: Utf8
         nullable: true
         virtual: false
-        description: Steps in this job.
+        description: Raw step objects as JSON text. Use step_names or failed_step_names for compact projections.
         expr:
           kind: path
           path:
             - steps
+      - name: step_names
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Comma-separated workflow job step names.
+        expr:
+          kind: join_array_path
+          path:
+            - steps
+          item_path:
+            - name
+      - name: failed_step_names
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Comma-separated workflow job step names whose conclusion is failure.
+        expr:
+          kind: join_tag_values
+          path:
+            - steps
+          key: failure
+          key_field: conclusion
+          value_field: name
       - name: url
         type: Utf8
         nullable: true
@@ -64157,10 +64180,22 @@ tables:
         type: Utf8
         nullable: true
         virtual: false
+        description: Raw label objects as JSON text. Use label_names for a compact comma-separated projection.
         expr:
           kind: path
           path:
             - labels
+      - name: label_names
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Comma-separated runner label names.
+        expr:
+          kind: join_array_path
+          path:
+            - labels
+          item_path:
+            - name
       - name: name
         type: Utf8
         nullable: true
@@ -93756,10 +93791,22 @@ tables:
         type: Utf8
         nullable: true
         virtual: false
+        description: Raw label objects as JSON text. Use label_names for a compact comma-separated projection.
         expr:
           kind: path
           path:
             - labels
+      - name: label_names
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Comma-separated pull request label names.
+        expr:
+          kind: join_array_path
+          path:
+            - labels
+          item_path:
+            - name
       - name: locked
         type: Boolean
         nullable: true
@@ -94458,18 +94505,42 @@ tables:
         type: Utf8
         nullable: true
         virtual: false
+        description: Raw requested reviewer objects as JSON text. Use requested_reviewer_logins for a compact comma-separated projection.
         expr:
           kind: path
           path:
             - requested_reviewers
+      - name: requested_reviewer_logins
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Comma-separated logins for requested reviewers.
+        expr:
+          kind: join_array_path
+          path:
+            - requested_reviewers
+          item_path:
+            - login
       - name: requested_teams
         type: Utf8
         nullable: true
         virtual: false
+        description: Raw requested team objects as JSON text. Use requested_team_names for a compact comma-separated projection.
         expr:
           kind: path
           path:
             - requested_teams
+      - name: requested_team_names
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Comma-separated names for requested teams.
+        expr:
+          kind: join_array_path
+          path:
+            - requested_teams
+          item_path:
+            - name
       - name: review_comment_url
         type: Utf8
         nullable: true
