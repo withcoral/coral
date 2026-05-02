@@ -813,9 +813,9 @@ tables:
   - name: project_updates
     description: Updates for a specific Linear project
     guide: |
-      Requires `project_id` from `linear.projects`. The `body` field
-      contains the written update; timestamps make this useful for progress
-      reporting.
+      Requires `project_id` from `linear.projects`. Use `health`, `url`,
+      author fields, and timestamps for project status reporting. Join
+      `project_id` back to `linear.projects` when you need project names.
     request:
       method: POST
       path: /graphql
@@ -831,7 +831,10 @@ tables:
                 projectUpdates(first: $first, after: $after) {
                   nodes {
                     id
+                    slugId
                     body
+                    health
+                    url
                     createdAt
                     updatedAt
                     user {
@@ -904,6 +907,66 @@ tables:
           kind: path
           path:
             - body
+      - name: slug_id
+        type: Utf8
+        nullable: true
+        description: Project update short slug identifier
+        expr:
+          kind: path
+          path:
+            - slugId
+      - name: health
+        type: Utf8
+        nullable: true
+        description: "Project update health: onTrack, atRisk, or offTrack"
+        expr:
+          kind: path
+          path:
+            - health
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Project update URL
+        expr:
+          kind: path
+          path:
+            - url
+      - name: author_id
+        type: Utf8
+        nullable: true
+        description: Project update author user ID
+        expr:
+          kind: path
+          path:
+            - user
+            - id
+      - name: author_name
+        type: Utf8
+        nullable: true
+        description: Project update author name
+        expr:
+          kind: path
+          path:
+            - user
+            - name
+      - name: author_display_name
+        type: Utf8
+        nullable: true
+        description: Project update author display name
+        expr:
+          kind: path
+          path:
+            - user
+            - displayName
+      - name: author_email
+        type: Utf8
+        nullable: true
+        description: Project update author email
+        expr:
+          kind: path
+          path:
+            - user
+            - email
       - name: created_at
         type: Utf8
         nullable: true
@@ -1024,8 +1087,13 @@ tables:
     description: Issues in the Linear workspace
     guide: |
       Optional project filters are useful for narrowing large workspaces.
-      Join `team_id`, `project_id`, and assignee columns back to `teams`,
-      `projects`, and `users`.
+      Join `team_id`, `project_id`, `creator_id`, and assignee columns back
+      to `teams`, `projects`, and `users`. Common reporting recipes include
+      backlog by team (`SELECT team_key, state_name, COUNT(*) FROM
+      linear.issues GROUP BY team_key, state_name`), project completion
+      rollups (`GROUP BY project_name` with `completed_at IS NOT NULL`), and
+      readiness checks with `parent_identifier`, `state_type`, `due_date`,
+      and SLA timestamp columns.
     filters:
       - name: project_id
       - name: project_milestone_id
@@ -1047,10 +1115,20 @@ tables:
                   title
                   description
                   priority
+                  priorityLabel
                   estimate
                   createdAt
                   updatedAt
+                  startedAt
                   completedAt
+                  canceledAt
+                  dueDate
+                  branchName
+                  slaStartedAt
+                  slaBreachesAt
+                  slaHighRiskAt
+                  slaMediumRiskAt
+                  slaType
                   url
                   team {
                     id
@@ -1059,16 +1137,27 @@ tables:
                   state {
                     id
                     name
+                    type
                   }
                   assignee {
                     id
                     name
                     email
                   }
+                  creator {
+                    id
+                    name
+                    displayName
+                    email
+                  }
                   project {
                     id
                     name
                     slugId
+                  }
+                  parent {
+                    id
+                    identifier
                   }
                   projectMilestone {
                     id
@@ -1176,6 +1265,14 @@ tables:
           kind: path
           path:
             - priority
+      - name: priority_label
+        type: Utf8
+        nullable: true
+        description: Issue priority label
+        expr:
+          kind: path
+          path:
+            - priorityLabel
       - name: estimate
         type: Int64
         nullable: true
@@ -1220,6 +1317,15 @@ tables:
           path:
             - state
             - name
+      - name: state_type
+        type: Utf8
+        nullable: true
+        description: Workflow state type
+        expr:
+          kind: path
+          path:
+            - state
+            - type
       - name: assignee_id
         type: Utf8
         nullable: true
@@ -1247,6 +1353,42 @@ tables:
           path:
             - assignee
             - email
+      - name: creator_id
+        type: Utf8
+        nullable: true
+        description: Creator user ID
+        expr:
+          kind: path
+          path:
+            - creator
+            - id
+      - name: creator_name
+        type: Utf8
+        nullable: true
+        description: Creator name
+        expr:
+          kind: path
+          path:
+            - creator
+            - name
+      - name: creator_display_name
+        type: Utf8
+        nullable: true
+        description: Creator display name
+        expr:
+          kind: path
+          path:
+            - creator
+            - displayName
+      - name: creator_email
+        type: Utf8
+        nullable: true
+        description: Creator email
+        expr:
+          kind: path
+          path:
+            - creator
+            - email
       - name: created_at
         type: Utf8
         nullable: true
@@ -1272,6 +1414,24 @@ tables:
           path:
             - project
             - id
+      - name: parent_id
+        type: Utf8
+        nullable: true
+        description: Parent issue ID
+        expr:
+          kind: path
+          path:
+            - parent
+            - id
+      - name: parent_identifier
+        type: Utf8
+        nullable: true
+        description: Parent issue identifier
+        expr:
+          kind: path
+          path:
+            - parent
+            - identifier
       - name: project_milestone_id
         type: Utf8
         nullable: true
@@ -1298,6 +1458,78 @@ tables:
           kind: path
           path:
             - completedAt
+      - name: started_at
+        type: Utf8
+        nullable: true
+        description: Start timestamp
+        expr:
+          kind: path
+          path:
+            - startedAt
+      - name: canceled_at
+        type: Utf8
+        nullable: true
+        description: Cancellation timestamp
+        expr:
+          kind: path
+          path:
+            - canceledAt
+      - name: due_date
+        type: Utf8
+        nullable: true
+        description: Due date
+        expr:
+          kind: path
+          path:
+            - dueDate
+      - name: branch_name
+        type: Utf8
+        nullable: true
+        description: Git branch name associated with the issue
+        expr:
+          kind: path
+          path:
+            - branchName
+      - name: sla_started_at
+        type: Utf8
+        nullable: true
+        description: SLA start timestamp
+        expr:
+          kind: path
+          path:
+            - slaStartedAt
+      - name: sla_breaches_at
+        type: Utf8
+        nullable: true
+        description: SLA breach timestamp
+        expr:
+          kind: path
+          path:
+            - slaBreachesAt
+      - name: sla_high_risk_at
+        type: Utf8
+        nullable: true
+        description: SLA high-risk timestamp
+        expr:
+          kind: path
+          path:
+            - slaHighRiskAt
+      - name: sla_medium_risk_at
+        type: Utf8
+        nullable: true
+        description: SLA medium-risk timestamp
+        expr:
+          kind: path
+          path:
+            - slaMediumRiskAt
+      - name: sla_type
+        type: Utf8
+        nullable: true
+        description: SLA type
+        expr:
+          kind: path
+          path:
+            - slaType
       - name: url
         type: Utf8
         nullable: true
