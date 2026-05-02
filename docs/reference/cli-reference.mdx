@@ -17,6 +17,8 @@ coral sql "<SQL>"
 | ---------- | ----------------- | ------- | ------------- |
 | `--format` | `table` \| `json` | `table` | Output format |
 
+JSON output is an array of row objects. Selected nullable columns are included with explicit `null` values when the row value is null.
+
 ## `coral source`
 
 Manage configured sources, either the bundled ones, or your custom source specs.

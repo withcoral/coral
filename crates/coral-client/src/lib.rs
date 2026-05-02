@@ -24,6 +24,7 @@ use std::io::Cursor;
 
 use arrow::datatypes::SchemaRef;
 use arrow::ipc::reader::StreamReader;
+use arrow::json::writer::{JsonArray, WriterBuilder};
 use arrow::record_batch::RecordBatch;
 use arrow::util::pretty::pretty_format_batches;
 use coral_api::v1::ExecuteSqlResponse;
@@ -130,7 +131,9 @@ pub fn format_batches_table(batches: &[RecordBatch]) -> Result<String, QueryResu
 pub fn format_batches_json(batches: &[RecordBatch]) -> Result<String, QueryResultError> {
     let mut bytes = Vec::new();
     {
-        let mut writer = arrow::json::ArrayWriter::new(&mut bytes);
+        let mut writer = WriterBuilder::new()
+            .with_explicit_nulls(true)
+            .build::<_, JsonArray>(&mut bytes);
         for batch in batches {
             writer.write(batch)?;
         }
@@ -157,6 +160,7 @@ mod tests {
     use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
     use arrow::record_batch::RecordBatch;
     use coral_api::v1::ExecuteSqlResponse;
+    use serde_json::Value;
 
     use super::{
         CollectedQueryResult, batches_to_json_rows, decode_execute_sql_response,
@@ -227,8 +231,10 @@ mod tests {
         assert!(table.contains("id"));
         let json = format_batches_json(decoded.batches()).expect("json");
         assert!(json.contains("\"name\":\"a\""));
+        assert!(json.contains("\"name\":null"));
         let rows = batches_to_json_rows(decoded.batches()).expect("rows");
         assert_eq!(rows.len(), 2);
+        assert!(rows[1].get("name").is_some_and(Value::is_null));
     }
 
     #[test]

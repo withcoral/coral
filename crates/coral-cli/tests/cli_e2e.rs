@@ -528,11 +528,10 @@ async fn sql_json_output_renders_multiple_rows() {
     assert_eq!(rows[0].get("id"), Some(&serde_json::json!(1)));
     assert_eq!(rows[0].get("name"), Some(&serde_json::json!("alice")));
     assert_eq!(rows[1].get("id"), Some(&serde_json::json!(2)));
-    // Arrow JSON omits null fields rather than emitting "name":null.
     assert_eq!(
-        rows[1].len(),
-        1,
-        "null name should be omitted from row 2: {:?}",
+        rows[1].get("name"),
+        Some(&serde_json::Value::Null),
+        "null name should be explicit in row 2: {:?}",
         rows[1]
     );
 
