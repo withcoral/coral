@@ -122,9 +122,12 @@ tables:
     description: Messages in a Slack channel (requires channel filter)
     guide: |
       Use this table for Messages in a Slack channel (requires channel
-      filter). Requires `channel` from `slack.channels`. Keep time
-      filters tight so the endpoint stays fast and the results stay
-      interpretable.
+      filter). Requires `channel` from `slack.channels`. `oldest` and
+      `latest` are Slack API timestamp filters: pass raw Slack timestamp
+      strings such as `1777593600.000000`, not ISO-8601 timestamps. The
+      returned `ts` column is a normal UTC `Timestamp`, so use SQL
+      predicates such as `ts >= CAST('2026-05-01T00:00:00Z' AS TIMESTAMP)`
+      when you want ISO-style filtering after the channel history is fetched.
     request:
       method: GET
       path: /api/conversations.history
@@ -233,14 +236,14 @@ tables:
       - name: oldest
         type: Utf8
         nullable: true
-        description: Oldest timestamp filter (virtual)
+        description: Oldest Slack raw `ts` filter such as `1777593600.000000`; not ISO-8601 (virtual)
         expr:
           kind: "null"
         virtual: true
       - name: latest
         type: Utf8
         nullable: true
-        description: Latest timestamp filter (virtual)
+        description: Latest Slack raw `ts` filter such as `1777593600.000000`; not ISO-8601 (virtual)
         expr:
           kind: "null"
         virtual: true
@@ -251,6 +254,13 @@ tables:
       - name: latest
   - name: thread_replies
     description: Slack thread replies for a specific channel and parent message
+    guide: |
+      Requires both `channel` and raw `thread_ts`. Start from
+      `slack.messages` with a channel filter, find a parent message with
+      `reply_count > 0`, then pass that row's `thread_ts` when present or
+      its raw Slack message timestamp as `thread_ts`. The `oldest` and
+      `latest` filters also expect raw Slack timestamp strings such as
+      `1777593600.000000`, not ISO-8601 timestamps.
     request:
       method: GET
       path: /api/conversations.replies
@@ -376,14 +386,14 @@ tables:
       - name: oldest
         type: Utf8
         nullable: true
-        description: Oldest timestamp filter (virtual)
+        description: Oldest Slack raw `ts` filter such as `1777593600.000000`; not ISO-8601 (virtual)
         expr:
           kind: "null"
         virtual: true
       - name: latest
         type: Utf8
         nullable: true
-        description: Latest timestamp filter (virtual)
+        description: Latest Slack raw `ts` filter such as `1777593600.000000`; not ISO-8601 (virtual)
         expr:
           kind: "null"
         virtual: true
