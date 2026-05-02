@@ -369,7 +369,10 @@ tables:
     guide: |
       Requires both `project_key` and `environment_key`. This is the best
       table for environment-specific targeting details such as `rules`,
-      `targets`, and `enabled` state.
+      `targets`, and `enabled` state. `rules` and `targets` are JSON text;
+      use `json_get_str(..., <index>)` for plain string comparisons when an
+      index is known. `json_get_array` returns JSON text elements, so string
+      values include JSON quotes inside the returned `List<Utf8>`.
     request:
       method: GET
       path: /api/v2/flags/{{filter.project_key}}

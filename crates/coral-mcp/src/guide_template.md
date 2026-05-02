@@ -34,7 +34,7 @@ Some source tables expose JSON payloads as `Utf8` columns. Extract fields with t
 
 - `json_get(json, path…)` returns a union. Casting to `Boolean`, `Int32/64`, `Float32/64`, or `Utf8` is rewritten to the matching typed function; casts to `Decimal*` stay on the normal cast path and preserve the requested precision/scale.
 - Typed shortcuts: `json_get_bool`, `json_get_int`, `json_get_float`, `json_get_str` return the named type directly and yield NULL when the path is missing or the shape doesn't match.
-- `json_get_json` returns nested JSON as text for further extraction; `json_get_array` returns `List<Utf8>`.
+- `json_get_json` returns nested JSON as text for further extraction; `json_get_array` returns `List<Utf8>` where each element is JSON text. String array elements therefore include JSON quotes, e.g. `["\"phoebe-org\""]`. For plain string comparisons, prefer `json_get_str(json, ..., <index>)` when the index is known, or compare against JSON text.
 - `json_as_text` renders any value as text (scalars as their text form, objects/arrays as JSON).
 - `json_contains` tests path existence; `json_length` returns array/object size; `json_object_keys` lists keys.
 
@@ -43,6 +43,13 @@ SELECT json_get_str(payload, 'event')              AS event,
        json_get(payload, 'user', 'id')::bigint     AS user_id,
        json_get(payload, 'amount')::decimal(18, 2) AS amount
 FROM source.events;
+```
+
+```sql
+-- json_get_array returns JSON text elements, so string values include quotes.
+SELECT *
+FROM launchdarkly.flag_environments
+WHERE json_get_str(rules, 0, 'clauses', 0, 'values', 0) = 'phoebe-org';
 ```
 
 ## Query Guidance
