@@ -676,6 +676,15 @@
         {
           "type": "object",
           "additionalProperties": false,
+          "required": ["kind", "expr"],
+          "properties": {
+            "kind": { "const": "base64_decode" },
+            "expr": { "$ref": "#/$defs/expr" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
           "required": ["kind", "template", "values"],
           "properties": {
             "kind": { "const": "template" },

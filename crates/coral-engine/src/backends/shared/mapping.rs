@@ -3,6 +3,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use chrono::DateTime;
 use datafusion::arrow::array::{
     Array, BooleanArray, Float64Array, Int64Array, RecordBatch, StringArray,
@@ -183,6 +185,7 @@ fn eval_expr(expr: &ExprSpec, row: &Value, filters: &HashMap<String, String>) ->
         ExprSpec::FormatTimestamp { expr, input } => {
             eval_format_timestamp(expr, input, row, filters)
         }
+        ExprSpec::Base64Decode { expr } => eval_base64_decode(expr, row, filters),
         ExprSpec::Replace { expr, from, to } => {
             let raw = to_utf8(eval_expr(expr, row, filters))?;
             Some(Value::String(raw.replace(from, to)))
@@ -244,6 +247,21 @@ fn parse_epoch_micros(s: &str, input: &TimestampInput) -> Option<i64> {
         TimestampInput::Iso8601 => return None,
     };
     Some(whole * multiplier + frac)
+}
+
+fn eval_base64_decode(
+    expr: &ExprSpec,
+    row: &Value,
+    filters: &HashMap<String, String>,
+) -> Option<Value> {
+    let raw = to_utf8(eval_expr(expr, row, filters))?;
+    let compact = raw
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .collect::<String>();
+    let decoded = BASE64_STANDARD.decode(compact).ok()?;
+    let text = String::from_utf8(decoded).ok()?;
+    Some(Value::String(text))
 }
 
 fn eval_template(
@@ -459,6 +477,10 @@ mod tests {
                 "expr": expr_json(expr),
                 "from": from,
                 "to": to,
+            }),
+            ExprSpec::Base64Decode { expr } => json!({
+                "kind": "base64_decode",
+                "expr": expr_json(expr),
             }),
             ExprSpec::JoinTagValues {
                 path,
@@ -737,6 +759,32 @@ mod tests {
             .downcast_ref::<StringArray>()
             .unwrap();
         assert_eq!(col.value(0), "hello-world");
+    }
+
+    #[test]
+    fn base64_decode_expr_decodes_wrapped_utf8_text() {
+        let table = table_with_expr(
+            "content_text",
+            "Utf8",
+            &ExprSpec::Base64Decode {
+                expr: Box::new(ExprSpec::Path {
+                    path: vec!["content".into()],
+                }),
+            },
+        );
+        let schema = schema_from_columns(table.columns(), "test", table.name()).unwrap();
+        let items = vec![
+            serde_json::json!({"content": "aGVs\nbG8="}),
+            serde_json::json!({"content": "not base64"}),
+        ];
+        let batch = convert_items(table.columns(), schema, &HashMap::new(), &items).unwrap();
+        let col = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(col.value(0), "hello");
+        assert!(col.is_null(1));
     }
 
     #[test]

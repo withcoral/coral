@@ -30436,8 +30436,9 @@ tables:
   - name: contents
     description: Get repository content
     guide: >
-      Requires owner, repo, and path. Most useful optional filters: ref. Keep queries repository-scoped;
-      fan out across repos client-side when you need broader coverage.
+      Requires owner, repo, and path. Select `content_text` for decoded UTF-8 file contents when GitHub returns base64
+      content; keep `content` only when you need the raw API payload. Most useful optional filters: ref. Keep queries
+      repository-scoped; fan out across repos client-side when you need broader coverage.
     filters:
       - name: owner
         required: true
@@ -30503,10 +30504,22 @@ tables:
         type: Utf8
         nullable: true
         virtual: false
+        description: Raw content returned by GitHub, usually base64 for files.
         expr:
           kind: path
           path:
             - content
+      - name: content_text
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Decoded UTF-8 file content when the GitHub content payload is base64 text.
+        expr:
+          kind: base64_decode
+          expr:
+            kind: path
+            path:
+              - content
       - name: download_url
         type: Utf8
         nullable: true

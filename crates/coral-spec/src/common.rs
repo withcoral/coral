@@ -720,6 +720,9 @@ pub enum ExprSpec {
         #[serde(default)]
         input: TimestampInput,
     },
+    Base64Decode {
+        expr: Box<ExprSpec>,
+    },
     Replace {
         expr: Box<ExprSpec>,
         from: String,

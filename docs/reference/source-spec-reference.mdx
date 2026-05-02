@@ -118,6 +118,7 @@ The `expr` field on a column defines how to extract or compute its value from ea
 | `path`               | Extract a value by JSON path segments                              |
 | `join_array_path`    | Join one nested scalar field from each object in an array          |
 | `format_timestamp`   | Convert an epoch timestamp to a `Timestamp` column                 |
+| `base64_decode`      | Decode a base64 string expression into UTF-8 text                  |
 | `replace`            | Replace all occurrences of one substring in the rendered value     |
 | `template`           | Build a string from a template with placeholder substitutions      |
 
@@ -169,6 +170,25 @@ Coral stores `Timestamp` columns as epoch microseconds internally, so the render
 | ------- | ------ | --------- | --------------------------------------------------- |
 | `input` | string | `seconds` | Unit/format of the raw value: `seconds`, `milliseconds`, or `iso8601` |
 | `expr`  | expr   | —         | Inner expression that produces the timestamp value |
+
+### `base64_decode`
+
+Decodes an inner expression as base64 and returns UTF-8 text. Whitespace in the encoded value is ignored, which is useful for APIs that wrap base64 file contents across lines. Invalid base64 or non-UTF-8 bytes produce `NULL`.
+
+```yaml
+- name: content_text
+  type: Utf8
+  expr:
+    kind: base64_decode
+    expr:
+      kind: path
+      path:
+        - content
+```
+
+| Field  | Type | Default | Description                            |
+| ------ | ---- | ------- | -------------------------------------- |
+| `expr` | expr | —       | Inner expression that produces base64 |
 
 ### `replace`
 
