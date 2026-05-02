@@ -90409,8 +90409,9 @@ tables:
   - name: pulls
     description: List pull requests
     guide: >
-      Requires owner and repo. Most useful optional filters: state, head, base. Add pull_number to jump
-      from the default list call to a specific record lookup.
+      Requires owner and repo. By default this table requests state=all from GitHub so aggregates include open and closed
+      pull requests; add state when you need only open, closed, or all. Other useful optional filters are head and base. Add
+      pull_number to jump from the default list call to a specific record lookup.
     filters:
       - name: owner
         required: true
@@ -90437,6 +90438,7 @@ tables:
         - name: state
           from: filter
           key: state
+          default: all
         - name: head
           from: filter
           key: head
@@ -94487,6 +94489,7 @@ tables:
         type: Utf8
         nullable: true
         virtual: false
+        description: Pull request state returned by GitHub. The list request defaults to state=all unless you filter state explicitly.
         expr:
           kind: path
           path:
