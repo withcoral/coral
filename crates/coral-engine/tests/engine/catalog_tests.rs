@@ -112,7 +112,7 @@ async fn coral_columns_returns_metadata() {
         &CoralQuery::execute_sql(
             &sources,
             test_runtime(),
-            "SELECT column_name, data_type, is_virtual, is_required_filter \
+            "SELECT column_name, data_type, is_nullable, is_virtual, is_required_filter \
              FROM coral.columns WHERE schema_name = 'alpha' AND table_name = 'users' \
              ORDER BY ordinal_position",
         )
@@ -123,9 +123,9 @@ async fn coral_columns_returns_metadata() {
     assert_eq!(
         rows,
         vec![
-            json!({"column_name": "id", "data_type": "Int64", "is_virtual": false, "is_required_filter": false}),
-            json!({"column_name": "team_id", "data_type": "Int64", "is_virtual": false, "is_required_filter": false}),
-            json!({"column_name": "name", "data_type": "Utf8", "is_virtual": false, "is_required_filter": false}),
+            json!({"column_name": "id", "data_type": "Int64", "is_nullable": true, "is_virtual": false, "is_required_filter": false}),
+            json!({"column_name": "team_id", "data_type": "Int64", "is_nullable": true, "is_virtual": false, "is_required_filter": false}),
+            json!({"column_name": "name", "data_type": "Utf8", "is_nullable": true, "is_virtual": false, "is_required_filter": false}),
         ]
     );
 }

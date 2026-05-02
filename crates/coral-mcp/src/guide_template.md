@@ -10,7 +10,7 @@ Always inspect queryable tables and table metadata before writing queries:
 -- List visible tables, descriptions, and required filters
 SELECT schema_name, table_name, description, required_filters FROM coral.tables ORDER BY schema_name, table_name;
 
--- Inspect columns for one visible table
+-- Inspect columns for one visible table, including nullability and filter-only virtual columns
 {{COLUMNS_EXAMPLE}}
 ```
 

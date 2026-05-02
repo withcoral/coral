@@ -51,13 +51,13 @@ pub(crate) fn guide_resource_content(sources: &[Source], tables: &[Table]) -> St
 
     let columns_example = first_visible_table(tables).map_or_else(
         || {
-            "SELECT column_name, data_type, is_required_filter, description \
+            "SELECT column_name, data_type, is_nullable, is_virtual, is_required_filter, description \
 FROM coral.columns WHERE schema_name = '<schema>' AND table_name = '<table>' ORDER BY ordinal_position;"
                 .to_string()
         },
         |(schema_name, table_name)| {
             format!(
-                "SELECT column_name, data_type, is_required_filter, description \
+                "SELECT column_name, data_type, is_nullable, is_virtual, is_required_filter, description \
 FROM coral.columns WHERE schema_name = '{schema_name}' AND table_name = '{table_name}' ORDER BY ordinal_position;"
             )
         },

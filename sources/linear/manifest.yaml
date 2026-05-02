@@ -280,6 +280,7 @@ tables:
                 nodes {
                   id
                   name
+                  description
                   slugId
                   state
                   progress
@@ -342,6 +343,14 @@ tables:
           kind: path
           path:
             - name
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Project description
+        expr:
+          kind: path
+          path:
+            - description
       - name: slug_id
         type: Utf8
         nullable: true
