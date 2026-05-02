@@ -311,6 +311,7 @@ impl HttpSourceClient {
                             status: None,
                             method: None,
                             url: None,
+                            filters: filters.clone(),
                             detail: err,
                         },
                     )));
@@ -700,6 +701,7 @@ async fn execute_request(
                     status: Some(status.as_u16()),
                     method: Some(method_label.to_string()),
                     url: Some(logged_url),
+                    filters: filters.clone(),
                     detail: body,
                 },
             )));

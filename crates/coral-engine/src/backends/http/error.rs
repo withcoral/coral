@@ -34,6 +34,7 @@ pub(crate) enum ProviderQueryError {
         status: Option<u16>,
         method: Option<String>,
         url: Option<String>,
+        filters: HashMap<String, String>,
         detail: String,
     },
 
@@ -111,6 +112,7 @@ impl ProviderQueryError {
                 status,
                 method,
                 url,
+                filters,
                 detail,
             } => http_request_to_structured(
                 source_schema,
@@ -118,6 +120,7 @@ impl ProviderQueryError {
                 *status,
                 method.as_deref(),
                 url.as_deref(),
+                filters,
                 detail,
             ),
             Self::Request {
@@ -173,6 +176,7 @@ impl ProviderQueryError {
                 Some(TOO_MANY_REQUESTS),
                 method.as_deref(),
                 url.as_deref(),
+                &HashMap::new(),
                 detail,
             ),
         }
@@ -189,6 +193,7 @@ fn http_request_to_structured(
     http_status: Option<u16>,
     method: Option<&str>,
     url: Option<&str>,
+    filters: &HashMap<String, String>,
     raw_detail: &str,
 ) -> StructuredQueryError {
     let source_shell = shell_arg(source);
@@ -198,10 +203,7 @@ fn http_request_to_structured(
         Some(BAD_REQUEST) => (
             "INVALID_QUERY_SHAPE",
             "Source rejected the request".to_string(),
-            Some(
-                "Adjust the query filters or shape to match the target table's supported inputs."
-                    .to_string(),
-            ),
+            Some(bad_request_hint(source, table, filters)),
             StatusCode::InvalidArgument,
         ),
         Some(UNAUTHORIZED) => (
@@ -277,6 +279,9 @@ fn http_request_to_structured(
     if let Some(u) = &sanitized_url {
         metadata.insert("url".to_string(), u.clone());
     }
+    if !filters.is_empty() {
+        metadata.insert("filters".to_string(), render_filter_values(filters));
+    }
 
     StructuredQueryError::new(
         reason,
@@ -287,6 +292,33 @@ fn http_request_to_structured(
         status,
         metadata,
     )
+}
+
+fn bad_request_hint(source: &str, table: &str, filters: &HashMap<String, String>) -> String {
+    let generic = "Adjust the query filters or shape to match the target table's supported inputs.";
+    match (source, table) {
+        ("datadog", "events") => format!(
+            "{generic} Sent filters: {}. `datadog.events` requires `start` and `end` as Unix epoch seconds, for example 1777593600.",
+            render_filter_values(filters)
+        ),
+        ("datadog", "logs") => format!(
+            "{generic} Sent filters: {}. `datadog.logs` accepts Datadog log search times such as RFC3339 timestamps (`2026-05-01T12:00:00Z`) or relative strings (`now-1h`, `now`).",
+            render_filter_values(filters)
+        ),
+        _ => generic.to_string(),
+    }
+}
+
+fn render_filter_values(filters: &HashMap<String, String>) -> String {
+    if filters.is_empty() {
+        return "<none>".to_string();
+    }
+    let mut pairs = filters
+        .iter()
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect::<Vec<_>>();
+    pairs.sort();
+    pairs.join(", ")
 }
 
 struct ProviderStageFailure<'a> {
@@ -470,6 +502,8 @@ fn enrich_provider_detail(detail: &str, method: Option<&str>, url: Option<&str>)
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use crate::contracts::StatusCode;
 
     use super::ProviderQueryError;
@@ -499,6 +533,7 @@ mod tests {
             status: Some(401),
             method: Some("GET".to_string()),
             url: Some("https://api.github.com/repos/coral/coral/issues".to_string()),
+            filters: HashMap::new(),
             detail: "Bad credentials".to_string(),
         }
         .to_structured();
@@ -518,11 +553,38 @@ mod tests {
             status: Some(400),
             method: None,
             url: None,
+            filters: HashMap::new(),
             detail: "bad request".to_string(),
         }
         .to_structured();
         assert_eq!(error.reason(), "INVALID_QUERY_SHAPE");
         assert_eq!(error.status(), StatusCode::InvalidArgument);
+    }
+
+    #[test]
+    fn datadog_events_400_hint_includes_filter_values_and_time_format() {
+        let error = ProviderQueryError::ApiRequest {
+            source_schema: "datadog".to_string(),
+            table: "events".to_string(),
+            status: Some(400),
+            method: Some("GET".to_string()),
+            url: Some("https://api.datadoghq.eu/api/v1/events?start=bad".to_string()),
+            filters: HashMap::from([
+                ("start".to_string(), "2026-04-30T00:00:00Z".to_string()),
+                ("end".to_string(), "now-7d".to_string()),
+            ]),
+            detail: "bad request".to_string(),
+        }
+        .to_structured();
+
+        let hint = error.hint().expect("400 should include a hint");
+        assert!(hint.contains("start=2026-04-30T00:00:00Z"));
+        assert!(hint.contains("end=now-7d"));
+        assert!(hint.contains("Unix epoch seconds"));
+        assert_eq!(
+            error.metadata().get("filters").map(String::as_str),
+            Some("end=now-7d, start=2026-04-30T00:00:00Z")
+        );
     }
 
     #[test]
@@ -595,6 +657,7 @@ mod tests {
             status: Some(500),
             method: None,
             url: None,
+            filters: HashMap::new(),
             detail: "boom".to_string(),
         }
         .to_structured();
@@ -610,6 +673,7 @@ mod tests {
             status: Some(500),
             method: Some("GET".to_string()),
             url: Some("https://api.datadoghq.eu/api/v1/events?api_key=SECRET".to_string()),
+            filters: HashMap::new(),
             detail: "boom".to_string(),
         }
         .to_structured();
@@ -629,6 +693,7 @@ mod tests {
             status: Some(500),
             method: Some("GET".to_string()),
             url: Some("https://api.github.com/issues?page=3".to_string()),
+            filters: HashMap::new(),
             detail: "upstream boom".to_string(),
         }
         .to_structured();
