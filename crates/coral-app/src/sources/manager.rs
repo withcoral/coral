@@ -5,15 +5,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use coral_api::v1::{
     CreateBundledSourceRequest, ImportSourceRequest, SourceSecret, SourceVariable,
 };
+use coral_spec::ManifestInputKind;
 
 use crate::bootstrap::AppError;
 use crate::sources::SourceName;
 use crate::sources::catalog::{
     describe_manifest, list_bundled_sources, load_bundled_source, resolve_installed_manifest,
 };
-use crate::sources::model::{
-    CandidateSource, CandidateSourceInputKind, InstalledSource, SourceOrigin,
-};
+use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
 use crate::state::{AppStateLayout, ConfigStore, SecretStore};
 use crate::storage::fs;
 use crate::workspaces::WorkspaceName;
@@ -381,13 +380,13 @@ fn validate_bindings(
     let expected_variables = candidate
         .inputs
         .iter()
-        .filter(|input| input.kind == CandidateSourceInputKind::Variable)
+        .filter(|input| input.kind == ManifestInputKind::Variable)
         .map(|input| input.key.clone())
         .collect::<BTreeSet<_>>();
     let expected_secrets = candidate
         .inputs
         .iter()
-        .filter(|input| input.kind == CandidateSourceInputKind::Secret)
+        .filter(|input| input.kind == ManifestInputKind::Secret)
         .map(|input| input.key.clone())
         .collect::<BTreeSet<_>>();
 
@@ -407,7 +406,7 @@ fn validate_bindings(
     }
 
     for input in &candidate.inputs {
-        if input.kind == CandidateSourceInputKind::Variable
+        if input.kind == ManifestInputKind::Variable
             && !variable_values.contains_key(&input.key)
             && !input.default_value.is_empty()
         {
@@ -417,7 +416,7 @@ fn validate_bindings(
 
     for input in &candidate.inputs {
         match input.kind {
-            CandidateSourceInputKind::Variable
+            ManifestInputKind::Variable
                 if input.required && !variable_values.contains_key(&input.key) =>
             {
                 return Err(AppError::InvalidInput(format!(
@@ -425,7 +424,7 @@ fn validate_bindings(
                     input.key
                 )));
             }
-            CandidateSourceInputKind::Secret
+            ManifestInputKind::Secret
                 if input.required && !secret_values.contains_key(&input.key) =>
             {
                 return Err(AppError::InvalidInput(format!(

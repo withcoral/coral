@@ -2,13 +2,11 @@
 
 use std::collections::BTreeSet;
 
-use coral_spec::{ManifestInputKind, ManifestInputSpec, parse_source_manifest_yaml};
+use coral_spec::parse_source_manifest_yaml;
 
 use crate::bootstrap::AppError;
 use crate::sources::SourceName;
-use crate::sources::model::{
-    CandidateSource, CandidateSourceInput, CandidateSourceInputKind, InstalledSource, SourceOrigin,
-};
+use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
 use crate::state::AppStateLayout;
 use crate::workspaces::WorkspaceName;
 
@@ -97,41 +95,21 @@ pub(crate) fn describe_manifest(
         name: SourceName::parse(manifest.schema_name())?,
         description: manifest.description().to_string(),
         version: manifest.source_version().to_string(),
-        inputs: manifest
-            .declared_inputs()
-            .iter()
-            .cloned()
-            .map(candidate_input_spec)
-            .collect(),
+        inputs: manifest.declared_inputs().to_vec(),
         installed,
         origin,
     })
-}
-
-fn candidate_input_spec(input: ManifestInputSpec) -> CandidateSourceInput {
-    CandidateSourceInput {
-        key: input.key,
-        kind: candidate_input_kind(input.kind),
-        required: input.required,
-        default_value: input.default_value,
-        hint: input.hint,
-    }
-}
-
-fn candidate_input_kind(kind: ManifestInputKind) -> CandidateSourceInputKind {
-    match kind {
-        ManifestInputKind::Variable => CandidateSourceInputKind::Variable,
-        ManifestInputKind::Secret => CandidateSourceInputKind::Secret,
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
 
+    use coral_spec::ManifestInputKind;
+
     use super::{describe_manifest, list_bundled_sources};
     use crate::sources::SourceName;
-    use crate::sources::model::{CandidateSourceInputKind, SourceOrigin};
+    use crate::sources::model::SourceOrigin;
 
     #[test]
     fn bundled_sources_load_through_catalog() {
@@ -188,9 +166,9 @@ tables:
         .expect("describe manifest");
         assert_eq!(source.inputs.len(), 2);
         assert_eq!(source.inputs[0].key, "API_BASE");
-        assert_eq!(source.inputs[0].kind, CandidateSourceInputKind::Variable);
+        assert_eq!(source.inputs[0].kind, ManifestInputKind::Variable);
         assert_eq!(source.inputs[1].key, "API_TOKEN");
-        assert_eq!(source.inputs[1].kind, CandidateSourceInputKind::Secret);
+        assert_eq!(source.inputs[1].kind, ManifestInputKind::Secret);
     }
 
     #[test]

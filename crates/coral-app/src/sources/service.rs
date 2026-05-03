@@ -8,15 +8,14 @@ use coral_api::v1::{
     SourceOrigin as ProtoSourceOrigin, SourceSecret, SourceVariable, ValidateSourceRequest,
     ValidateSourceResponse,
 };
+use coral_spec::{ManifestInputKind, ManifestInputSpec};
 use tonic::{Request, Response, Status};
 
 use crate::bootstrap::app_status;
 use crate::query::manager::QueryManager;
 use crate::sources::SourceName;
 use crate::sources::manager::SourceManager;
-use crate::sources::model::{
-    CandidateSource, CandidateSourceInput, CandidateSourceInputKind, InstalledSource, SourceOrigin,
-};
+use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
 use crate::transport::{
     query_status, validate_source_response_to_proto, workspace_name_from_proto, workspace_to_proto,
 };
@@ -215,7 +214,7 @@ fn candidate_source_to_proto(source: CandidateSource) -> SourceInfo {
     }
 }
 
-fn candidate_source_input_to_proto(input: CandidateSourceInput) -> SourceInputSpec {
+fn candidate_source_input_to_proto(input: ManifestInputSpec) -> SourceInputSpec {
     SourceInputSpec {
         key: input.key,
         kind: proto_candidate_input_kind(input.kind) as i32,
@@ -225,9 +224,9 @@ fn candidate_source_input_to_proto(input: CandidateSourceInput) -> SourceInputSp
     }
 }
 
-fn proto_candidate_input_kind(kind: CandidateSourceInputKind) -> SourceInputKind {
+fn proto_candidate_input_kind(kind: ManifestInputKind) -> SourceInputKind {
     match kind {
-        CandidateSourceInputKind::Variable => SourceInputKind::Variable,
-        CandidateSourceInputKind::Secret => SourceInputKind::Secret,
+        ManifestInputKind::Variable => SourceInputKind::Variable,
+        ManifestInputKind::Secret => SourceInputKind::Secret,
     }
 }
