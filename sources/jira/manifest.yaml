@@ -11,22 +11,20 @@ inputs:
     hint: |
       Base URL of your Jira Cloud site (for example
       `https://acme.atlassian.net`).
-  JIRA_BASIC_AUTH:
+  JIRA_EMAIL:
+    kind: variable
+    hint: |
+      Email address for your Atlassian account.
+  JIRA_API_TOKEN:
     kind: secret
     hint: |
-      Use Base64-encoded `email:api_token` credentials for Jira Cloud
-      Basic auth.
       Create an API token at
-      [Atlassian API token settings](https://id.atlassian.com/manage-profile/security/api-tokens),
-      then encode `email:api_token`.
-      Example: `printf '%s' 'you@example.com:YOUR_JIRA_API_TOKEN' | base64`.
+      [Atlassian API token settings](https://id.atlassian.com/manage-profile/security/api-tokens).
 base_url: "{{input.JIRA_BASE_URL}}"
 auth:
-  type: HeaderAuth
-  headers:
-    - name: Authorization
-      from: template
-      template: Basic {{input.JIRA_BASIC_AUTH}}
+  type: BasicAuth
+  username: "{{input.JIRA_EMAIL}}"
+  password: "{{input.JIRA_API_TOKEN}}"
 request_headers:
   - name: Accept
     from: literal

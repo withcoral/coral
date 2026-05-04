@@ -7,10 +7,11 @@
 
 ## Authentication
 
-Requires `JIRA_BASIC_AUTH`, which is the Base64 form of `email:api_token` for Jira Cloud. Create an API token at [Atlassian API token settings](https://id.atlassian.com/manage-profile/security/api-tokens), then encode:
+Requires `JIRA_EMAIL` and `JIRA_API_TOKEN` for Jira Cloud. Create an API token at [Atlassian API token settings](https://id.atlassian.com/manage-profile/security/api-tokens).
 
 ```bash
-printf '%s' 'you@example.com:YOUR_JIRA_API_TOKEN' | base64
+export JIRA_EMAIL="you@example.com"
+export JIRA_API_TOKEN="YOUR_JIRA_API_TOKEN"
 ```
 
 ## Quick start

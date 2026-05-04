@@ -7,10 +7,11 @@
 
 ## Authentication
 
-Requires `CONFLUENCE_BASIC_AUTH`, which is the Base64 form of `email:api_token` for Confluence Cloud. Create an API token at [Atlassian API token settings](https://id.atlassian.com/manage-profile/security/api-tokens), then encode:
+Requires `CONFLUENCE_EMAIL` and `CONFLUENCE_API_TOKEN` for Confluence Cloud. Create an API token at [Atlassian API token settings](https://id.atlassian.com/manage-profile/security/api-tokens).
 
 ```bash
-printf '%s' 'you@example.com:YOUR_CONFLUENCE_API_TOKEN' | base64
+export CONFLUENCE_EMAIL="you@example.com"
+export CONFLUENCE_API_TOKEN="YOUR_CONFLUENCE_API_TOKEN"
 ```
 
 ## Quick start

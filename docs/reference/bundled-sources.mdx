@@ -117,14 +117,14 @@ AWS secret access key for SigV4 signing.
 Base URL of your Atlassian Cloud site, without the `/wiki` suffix
 (for example `https://acme.atlassian.net`).
 
-`CONFLUENCE_BASIC_AUTH` (required)
+`CONFLUENCE_EMAIL` (required)
 
-Use Base64-encoded `email:api_token` credentials for Confluence
-Cloud Basic auth.
+Email address for your Atlassian account.
+
+`CONFLUENCE_API_TOKEN` (required)
+
 Create an API token at
-[Atlassian API token settings](https://id.atlassian.com/manage-profile/security/api-tokens),
-then encode `email:api_token`.
-Example: `printf '%s' 'you@example.com:YOUR_CONFLUENCE_API_TOKEN' | base64`.
+[Atlassian API token settings](https://id.atlassian.com/manage-profile/security/api-tokens).
 
 ### `datadog`
 
@@ -222,14 +222,14 @@ See [Intercom authentication docs](https://developers.intercom.com/docs/build-an
 Base URL of your Jira Cloud site (for example
 `https://acme.atlassian.net`).
 
-`JIRA_BASIC_AUTH` (required)
+`JIRA_EMAIL` (required)
 
-Use Base64-encoded `email:api_token` credentials for Jira Cloud
-Basic auth.
+Email address for your Atlassian account.
+
+`JIRA_API_TOKEN` (required)
+
 Create an API token at
-[Atlassian API token settings](https://id.atlassian.com/manage-profile/security/api-tokens),
-then encode `email:api_token`.
-Example: `printf '%s' 'you@example.com:YOUR_JIRA_API_TOKEN' | base64`.
+[Atlassian API token settings](https://id.atlassian.com/manage-profile/security/api-tokens).
 
 ### `launchdarkly`
 
@@ -266,10 +266,13 @@ default `default`
 Organization slug in OpenObserve. Keep the default `default` for
 single-tenant setups.
 
-`OPENOBSERVE_BASIC_AUTH` (required)
+`OPENOBSERVE_USERNAME` (required)
 
-Base64-encoded `email:password` credentials for HTTP Basic auth.
-Example: `echo -n 'user@example.com:password' | base64`.
+OpenObserve username or email for HTTP Basic auth.
+
+`OPENOBSERVE_PASSWORD` (required)
+
+OpenObserve password for HTTP Basic auth.
 
 ### `pagerduty`
 
