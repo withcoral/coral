@@ -653,7 +653,7 @@
           "properties": {
             "kind": { "const": "format_timestamp" },
             "expr": { "$ref": "#/$defs/expr" },
-            "input": { "type": "string", "enum": ["seconds", "milliseconds"] }
+            "input": { "type": "string", "enum": ["seconds", "milliseconds", "iso8601"] }
           }
         },
         {

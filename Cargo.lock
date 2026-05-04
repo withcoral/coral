@@ -1063,6 +1063,7 @@ dependencies = [
  "async-trait",
  "base64",
  "bytes",
+ "chrono",
  "coral-spec",
  "datafusion",
  "datafusion-functions-json",

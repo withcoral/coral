@@ -1,0 +1,1235 @@
+name: notion
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query pages, data sources, databases, blocks, users, templates, and
+  properties from Notion.
+inputs:
+  NOTION_API_KEY:
+    kind: secret
+    hint: |
+      Create an internal Notion integration and copy its internal integration
+      token. Share the pages and databases you want to query with the
+      integration from Notion's "Add connections" menu.
+
+      The token needs read content capabilities for most tables. See the
+      [Notion authorization docs](https://developers.notion.com/reference/authorization).
+base_url: https://api.notion.com
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.NOTION_API_KEY}}
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+  - name: Content-Type
+    from: literal
+    value: application/json
+  - name: Notion-Version
+    from: literal
+    value: "2026-03-11"
+test_queries:
+  - SELECT * FROM notion.search LIMIT 1
+tables:
+  - name: search
+    description: Pages and data sources shared with the integration
+    guide: |
+      Start here to discover `page_id`, `database_id`, and `data_source_id`
+      values. Use `query` for title search and `object` with `page` or
+      `data_source` to narrow result types.
+    filters:
+      - name: query
+        required: false
+        mode: search
+      - name: object
+        required: false
+    request:
+      method: POST
+      path: /v1/search
+      body:
+        - path:
+            - query
+          from: filter
+          key: query
+    requests:
+      - when_filters:
+          - object
+        method: POST
+        path: /v1/search
+        body:
+          - path:
+              - query
+            from: filter
+            key: query
+          - path:
+              - filter
+              - property
+            from: literal
+            value: object
+          - path:
+              - filter
+              - value
+            from: filter
+            key: object
+    response:
+      rows_path:
+        - results
+    pagination:
+      mode: cursor_body
+      cursor_body_path:
+        - start_cursor
+      response_cursor_path:
+        - next_cursor
+      page_size:
+        default: 100
+        max: 100
+        body_path:
+          - page_size
+    columns:
+      - name: object
+        type: Utf8
+        nullable: false
+        description: Result object type (page or data_source)
+        expr:
+          kind: path
+          path:
+            - object
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Notion object ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: created_time
+        type: Timestamp
+        nullable: true
+        description: Creation timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_time
+      - name: last_edited_time
+        type: Timestamp
+        nullable: true
+        description: Last edit timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - last_edited_time
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Notion URL for page results
+        expr:
+          kind: path
+          path:
+            - url
+      - name: public_url
+        type: Utf8
+        nullable: true
+        description: Public URL for page results, when available
+        expr:
+          kind: path
+          path:
+            - public_url
+      - name: in_trash
+        type: Boolean
+        nullable: true
+        description: Whether the result is in trash
+        expr:
+          kind: path
+          path:
+            - in_trash
+      - name: parent
+        type: Json
+        nullable: true
+        description: Parent object
+        expr:
+          kind: path
+          path:
+            - parent
+      - name: properties
+        type: Json
+        nullable: true
+        description: Page or data source properties object
+        expr:
+          kind: path
+          path:
+            - properties
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw Notion search result
+        expr:
+          kind: current_row
+      - name: query
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional title search query
+        expr:
+          kind: from_filter
+          key: query
+      - name: object_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional object filter (`page` or `data_source`)
+        expr:
+          kind: from_filter
+          key: object
+  - name: users
+    description: Users in the Notion workspace
+    request:
+      method: GET
+      path: /v1/users
+    response:
+      rows_path:
+        - results
+    pagination:
+      mode: cursor_query
+      cursor_param: start_cursor
+      response_cursor_path:
+        - next_cursor
+      page_size:
+        default: 100
+        max: 100
+        query_param: page_size
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: User ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: object
+        type: Utf8
+        nullable: false
+        description: Object type
+        expr:
+          kind: path
+          path:
+            - object
+      - name: type
+        type: Utf8
+        nullable: true
+        description: User type
+        expr:
+          kind: path
+          path:
+            - type
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Display name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: avatar_url
+        type: Utf8
+        nullable: true
+        description: Avatar URL
+        expr:
+          kind: path
+          path:
+            - avatar_url
+      - name: email
+        type: Utf8
+        nullable: true
+        description: Person email when available
+        expr:
+          kind: path
+          path:
+            - person
+            - email
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw user object
+        expr:
+          kind: current_row
+  - name: user
+    description: Metadata for one Notion user
+    filters:
+      - name: user_id
+        required: true
+    request:
+      method: GET
+      path: /v1/users/{{filter.user_id}}
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: User ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: object
+        type: Utf8
+        nullable: false
+        description: Object type
+        expr:
+          kind: path
+          path:
+            - object
+      - name: type
+        type: Utf8
+        nullable: true
+        description: User type
+        expr:
+          kind: path
+          path:
+            - type
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Display name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: avatar_url
+        type: Utf8
+        nullable: true
+        description: Avatar URL
+        expr:
+          kind: path
+          path:
+            - avatar_url
+      - name: email
+        type: Utf8
+        nullable: true
+        description: Person email when available
+        expr:
+          kind: path
+          path:
+            - person
+            - email
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw user object
+        expr:
+          kind: current_row
+      - name: user_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: User ID filter
+        expr:
+          kind: from_filter
+          key: user_id
+  - name: databases
+    description: Metadata for a Notion database
+    guide: |
+      Requires `database_id`. Use `notion.search` to discover databases and
+      their child data sources, then query rows with `notion.data_source_pages`.
+    filters:
+      - name: database_id
+        required: true
+    request:
+      method: GET
+      path: /v1/databases/{{filter.database_id}}
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Database ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: object
+        type: Utf8
+        nullable: false
+        description: Object type
+        expr:
+          kind: path
+          path:
+            - object
+      - name: title
+        type: Json
+        nullable: true
+        description: Database title rich-text array
+        expr:
+          kind: path
+          path:
+            - title
+      - name: description
+        type: Json
+        nullable: true
+        description: Database description rich-text array
+        expr:
+          kind: path
+          path:
+            - description
+      - name: data_sources
+        type: Json
+        nullable: true
+        description: Child data sources for this database
+        expr:
+          kind: path
+          path:
+            - data_sources
+      - name: parent
+        type: Json
+        nullable: true
+        description: Parent object
+        expr:
+          kind: path
+          path:
+            - parent
+      - name: created_time
+        type: Timestamp
+        nullable: true
+        description: Creation timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_time
+      - name: last_edited_time
+        type: Timestamp
+        nullable: true
+        description: Last edit timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - last_edited_time
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw database object
+        expr:
+          kind: current_row
+      - name: database_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Database ID filter
+        expr:
+          kind: from_filter
+          key: database_id
+  - name: data_sources
+    description: Metadata and schema for a Notion data source
+    filters:
+      - name: data_source_id
+        required: true
+    request:
+      method: GET
+      path: /v1/data_sources/{{filter.data_source_id}}
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Data source ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: object
+        type: Utf8
+        nullable: false
+        description: Object type
+        expr:
+          kind: path
+          path:
+            - object
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Data source name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: parent
+        type: Json
+        nullable: true
+        description: Parent database object
+        expr:
+          kind: path
+          path:
+            - parent
+      - name: database_parent
+        type: Json
+        nullable: true
+        description: Parent of the data source's database
+        expr:
+          kind: path
+          path:
+            - database_parent
+      - name: properties
+        type: Json
+        nullable: true
+        description: Data source property schema
+        expr:
+          kind: path
+          path:
+            - properties
+      - name: created_time
+        type: Timestamp
+        nullable: true
+        description: Creation timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_time
+      - name: last_edited_time
+        type: Timestamp
+        nullable: true
+        description: Last edit timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - last_edited_time
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw data source object
+        expr:
+          kind: current_row
+      - name: data_source_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Data source ID filter
+        expr:
+          kind: from_filter
+          key: data_source_id
+  - name: data_source_properties
+    description: Property schema entries for a Notion data source
+    filters:
+      - name: data_source_id
+        required: true
+    request:
+      method: GET
+      path: /v1/data_sources/{{filter.data_source_id}}
+    response:
+      rows_path:
+        - properties
+      row_strategy: dict_entries
+    pagination:
+      mode: none
+    columns:
+      - name: data_source_id
+        type: Utf8
+        nullable: false
+        description: Data source ID filter
+        expr:
+          kind: from_filter
+          key: data_source_id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Property name
+        expr:
+          kind: path
+          path:
+            - _key
+      - name: id
+        type: Utf8
+        nullable: true
+        description: Property ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Property type
+        expr:
+          kind: path
+          path:
+            - type
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw property schema object
+        expr:
+          kind: current_row
+  - name: data_source_pages
+    description: Pages contained in a Notion data source
+    guide: |
+      Requires `data_source_id`. Use SQL predicates on returned columns for
+      simple narrowing. For large data sources, prefer narrower Notion-side
+      filters in future connector revisions.
+    fetch_limit_default: 1000
+    filters:
+      - name: data_source_id
+        required: true
+      - name: result_type
+        required: false
+      - name: in_trash
+        required: false
+    request:
+      method: POST
+      path: /v1/data_sources/{{filter.data_source_id}}/query
+      body:
+        - path:
+            - result_type
+          from: filter
+          key: result_type
+        - path:
+            - in_trash
+          from: filter_bool
+          key: in_trash
+    response:
+      rows_path:
+        - results
+    pagination:
+      mode: cursor_body
+      cursor_body_path:
+        - start_cursor
+      response_cursor_path:
+        - next_cursor
+      page_size:
+        default: 100
+        max: 100
+        body_path:
+          - page_size
+    columns:
+      - name: data_source_id
+        type: Utf8
+        nullable: false
+        description: Data source ID filter
+        expr:
+          kind: from_filter
+          key: data_source_id
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Page ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: object
+        type: Utf8
+        nullable: false
+        description: Object type
+        expr:
+          kind: path
+          path:
+            - object
+      - name: created_time
+        type: Timestamp
+        nullable: true
+        description: Creation timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_time
+      - name: last_edited_time
+        type: Timestamp
+        nullable: true
+        description: Last edit timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - last_edited_time
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Notion page URL
+        expr:
+          kind: path
+          path:
+            - url
+      - name: public_url
+        type: Utf8
+        nullable: true
+        description: Public page URL, when available
+        expr:
+          kind: path
+          path:
+            - public_url
+      - name: in_trash
+        type: Boolean
+        nullable: true
+        description: Whether the page is in trash
+        expr:
+          kind: path
+          path:
+            - in_trash
+      - name: parent
+        type: Json
+        nullable: true
+        description: Parent object
+        expr:
+          kind: path
+          path:
+            - parent
+      - name: properties
+        type: Json
+        nullable: true
+        description: Page properties object
+        expr:
+          kind: path
+          path:
+            - properties
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw page object
+        expr:
+          kind: current_row
+      - name: result_type
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional result type filter (`page` or `data_source`)
+        expr:
+          kind: from_filter
+          key: result_type
+  - name: data_source_templates
+    description: Page templates available for a Notion data source
+    filters:
+      - name: data_source_id
+        required: true
+      - name: name
+        required: false
+        mode: search
+    request:
+      method: GET
+      path: /v1/data_sources/{{filter.data_source_id}}/templates
+      query:
+        - name: name
+          from: filter
+          key: name
+    response:
+      rows_path:
+        - templates
+    pagination:
+      mode: cursor_query
+      cursor_param: start_cursor
+      response_cursor_path:
+        - next_cursor
+      page_size:
+        default: 100
+        max: 100
+        query_param: page_size
+    columns:
+      - name: data_source_id
+        type: Utf8
+        nullable: false
+        description: Data source ID filter
+        expr:
+          kind: from_filter
+          key: data_source_id
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Template page ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Template name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: is_default
+        type: Boolean
+        nullable: false
+        description: Whether this is the data source default template
+        expr:
+          kind: path
+          path:
+            - is_default
+      - name: name_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional template name substring filter
+        expr:
+          kind: from_filter
+          key: name
+  - name: pages
+    description: Metadata and properties for a Notion page
+    filters:
+      - name: page_id
+        required: true
+    request:
+      method: GET
+      path: /v1/pages/{{filter.page_id}}
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Page ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: object
+        type: Utf8
+        nullable: false
+        description: Object type
+        expr:
+          kind: path
+          path:
+            - object
+      - name: created_time
+        type: Timestamp
+        nullable: true
+        description: Creation timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_time
+      - name: last_edited_time
+        type: Timestamp
+        nullable: true
+        description: Last edit timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - last_edited_time
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Notion page URL
+        expr:
+          kind: path
+          path:
+            - url
+      - name: public_url
+        type: Utf8
+        nullable: true
+        description: Public page URL, when available
+        expr:
+          kind: path
+          path:
+            - public_url
+      - name: in_trash
+        type: Boolean
+        nullable: true
+        description: Whether the page is in trash
+        expr:
+          kind: path
+          path:
+            - in_trash
+      - name: parent
+        type: Json
+        nullable: true
+        description: Parent object
+        expr:
+          kind: path
+          path:
+            - parent
+      - name: properties
+        type: Json
+        nullable: true
+        description: Page properties object
+        expr:
+          kind: path
+          path:
+            - properties
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw page object
+        expr:
+          kind: current_row
+      - name: page_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Page ID filter
+        expr:
+          kind: from_filter
+          key: page_id
+  - name: block_children
+    description: Child blocks for a Notion block or page
+    guide: |
+      Requires `block_id`, which can be a page ID or any block ID that
+      supports children.
+    filters:
+      - name: block_id
+        required: true
+    request:
+      method: GET
+      path: /v1/blocks/{{filter.block_id}}/children
+    response:
+      rows_path:
+        - results
+    pagination:
+      mode: cursor_query
+      cursor_param: start_cursor
+      response_cursor_path:
+        - next_cursor
+      page_size:
+        default: 100
+        max: 100
+        query_param: page_size
+    columns:
+      - name: block_id
+        type: Utf8
+        nullable: false
+        description: Parent block ID filter
+        expr:
+          kind: from_filter
+          key: block_id
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Block ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: object
+        type: Utf8
+        nullable: false
+        description: Object type
+        expr:
+          kind: path
+          path:
+            - object
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Block type
+        expr:
+          kind: path
+          path:
+            - type
+      - name: has_children
+        type: Boolean
+        nullable: true
+        description: Whether this block has children
+        expr:
+          kind: path
+          path:
+            - has_children
+      - name: in_trash
+        type: Boolean
+        nullable: true
+        description: Whether this block is in trash
+        expr:
+          kind: path
+          path:
+            - in_trash
+      - name: created_time
+        type: Timestamp
+        nullable: true
+        description: Creation timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_time
+      - name: last_edited_time
+        type: Timestamp
+        nullable: true
+        description: Last edit timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - last_edited_time
+      - name: parent
+        type: Json
+        nullable: true
+        description: Parent object
+        expr:
+          kind: path
+          path:
+            - parent
+      - name: rich_text
+        type: Json
+        nullable: true
+        description: Rich-text array for common text-bearing block types
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path:
+                - paragraph
+                - rich_text
+            - kind: path
+              path:
+                - heading_1
+                - rich_text
+            - kind: path
+              path:
+                - heading_2
+                - rich_text
+            - kind: path
+              path:
+                - heading_3
+                - rich_text
+            - kind: path
+              path:
+                - bulleted_list_item
+                - rich_text
+            - kind: path
+              path:
+                - numbered_list_item
+                - rich_text
+            - kind: path
+              path:
+                - to_do
+                - rich_text
+            - kind: path
+              path:
+                - toggle
+                - rich_text
+            - kind: path
+              path:
+                - quote
+                - rich_text
+            - kind: path
+              path:
+                - callout
+                - rich_text
+            - kind: path
+              path:
+                - meeting_notes
+                - title
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw block object
+        expr:
+          kind: current_row
+  - name: page_property_items
+    description: Raw payload for one Notion page property item
+    guide: |
+      Requires `page_id` and `property_id`. Use
+      `notion.data_source_properties` to discover stable property IDs.
+      Notion may return a single property item or a paginated list payload
+      depending on property type; the full payload is exposed in `raw`.
+    filters:
+      - name: page_id
+        required: true
+      - name: property_id
+        required: true
+    request:
+      method: GET
+      path: /v1/pages/{{filter.page_id}}/properties/{{filter.property_id}}
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: page_id
+        type: Utf8
+        nullable: false
+        description: Page ID filter
+        expr:
+          kind: from_filter
+          key: page_id
+      - name: property_id
+        type: Utf8
+        nullable: false
+        description: Property ID filter
+        expr:
+          kind: from_filter
+          key: property_id
+      - name: object
+        type: Utf8
+        nullable: true
+        description: Response object type
+        expr:
+          kind: path
+          path:
+            - object
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Property item type
+        expr:
+          kind: path
+          path:
+            - type
+      - name: id
+        type: Utf8
+        nullable: true
+        description: Property item ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw property item response
+        expr:
+          kind: current_row
+  - name: page_property_item_values
+    description: Paginated values for one Notion page property item
+    guide: |
+      Requires `page_id` and `property_id`. Use this table for paginated
+      property types such as `title`, `rich_text`, `relation`, `people`, and
+      some rollups. For simple properties, use `notion.page_property_items`.
+    filters:
+      - name: page_id
+        required: true
+      - name: property_id
+        required: true
+    request:
+      method: GET
+      path: /v1/pages/{{filter.page_id}}/properties/{{filter.property_id}}
+    response:
+      rows_path:
+        - results
+    pagination:
+      mode: cursor_query
+      cursor_param: start_cursor
+      response_cursor_path:
+        - next_cursor
+      page_size:
+        default: 100
+        max: 100
+        query_param: page_size
+    columns:
+      - name: page_id
+        type: Utf8
+        nullable: false
+        description: Page ID filter
+        expr:
+          kind: from_filter
+          key: page_id
+      - name: property_id
+        type: Utf8
+        nullable: false
+        description: Property ID filter
+        expr:
+          kind: from_filter
+          key: property_id
+      - name: object
+        type: Utf8
+        nullable: true
+        description: Property item object type
+        expr:
+          kind: path
+          path:
+            - object
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Property item type
+        expr:
+          kind: path
+          path:
+            - type
+      - name: id
+        type: Utf8
+        nullable: true
+        description: Property item ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: title
+        type: Json
+        nullable: true
+        description: Title rich text item, when this is a title value
+        expr:
+          kind: path
+          path:
+            - title
+      - name: rich_text
+        type: Json
+        nullable: true
+        description: Rich text item, when this is a rich_text value
+        expr:
+          kind: path
+          path:
+            - rich_text
+      - name: relation
+        type: Json
+        nullable: true
+        description: Relation item, when this is a relation value
+        expr:
+          kind: path
+          path:
+            - relation
+      - name: people
+        type: Json
+        nullable: true
+        description: People item, when this is a people value
+        expr:
+          kind: path
+          path:
+            - people
+      - name: rollup
+        type: Json
+        nullable: true
+        description: Rollup item, when this is a rollup value
+        expr:
+          kind: path
+          path:
+            - rollup
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw property item value
+        expr:
+          kind: current_row

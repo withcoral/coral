@@ -30,6 +30,7 @@ If the source you need is not available, you can extend Coral by [writing a cust
 | [jira](#jira) | `http` | Query projects, issues, comments, worklogs, versions, components, issue types, priorities, and related metadata from Jira Cloud. |
 | [launchdarkly](#launchdarkly) | `http` | Query projects, feature flags, environments, segments, members, roles, and audit logs from LaunchDarkly. |
 | [linear](#linear) | `http` | Query issues, projects, cycles, initiatives, teams, users, comments, project milestones, labels, and attachments from Linear. |
+| [notion](#notion) | `http` | Query pages, data sources, databases, blocks, users, templates, and properties from Notion. |
 | [openobserve](#openobserve) | `http` | Query streams, logs, metrics, and traces from OpenObserve (Cloud or self-hosted). |
 | [pagerduty](#pagerduty) | `http` | Query incidents, services, teams, users, schedules, oncalls, escalation policies, log entries, change events, status pages, and workflows from PagerDuty. |
 | [posthog](#posthog) | `http` | Query events, persons, sessions, feature flags, experiments, insights, dashboards, cohorts, projects, organizations, and related PostHog resources. |
@@ -252,6 +253,17 @@ Create a personal API key with the Read permission, which gives
 read-only access to all tables. You can optionally scope the key
 to specific teams.
 See [Linear API key docs](https://linear.app/docs/api-and-webhooks#api-keys).
+
+### `notion`
+
+`NOTION_API_KEY` (required)
+
+Create an internal Notion integration and copy its internal integration
+token. Share the pages and databases you want to query with the
+integration from Notion's "Add connections" menu.
+
+The token needs read content capabilities for most tables. See the
+[Notion authorization docs](https://developers.notion.com/reference/authorization).
 
 ### `openobserve`
 

@@ -734,6 +734,8 @@ pub enum TimestampInput {
     Seconds,
     /// Milliseconds since Unix epoch.
     Milliseconds,
+    /// ISO 8601 / RFC 3339 timestamp string.
+    Iso8601,
 }
 
 fn default_separator() -> String {

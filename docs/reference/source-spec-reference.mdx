@@ -122,18 +122,18 @@ The `expr` field on a column defines how to extract or compute its value from ea
 
 ### `format_timestamp`
 
-Converts a numeric or string epoch value into a `Timestamp` column.
+Converts a numeric/string epoch value or an ISO 8601 string into a `Timestamp` column.
 
 Coral stores `Timestamp` columns as epoch microseconds internally, so the rendered output has microsecond precision even when the source value is provided in seconds or milliseconds.
 
-`format_timestamp` currently accepts raw epoch inputs in `seconds` or `milliseconds`. APIs that vend only `microseconds` or `nanoseconds` are not supported by this helper yet.
+`format_timestamp` currently accepts raw epoch inputs in `seconds` or `milliseconds`, plus ISO 8601 / RFC 3339 strings via `iso8601`. APIs that vend only `microseconds` or `nanoseconds` are not supported by this helper yet.
 
 ```yaml
 - name: created_at
   type: Timestamp
   expr:
     kind: format_timestamp
-    input: seconds        # or "milliseconds"
+    input: seconds        # or "milliseconds" / "iso8601"
     expr:
       kind: path
       path:
@@ -142,8 +142,8 @@ Coral stores `Timestamp` columns as epoch microseconds internally, so the render
 
 | Field   | Type   | Default   | Description                                         |
 | ------- | ------ | --------- | --------------------------------------------------- |
-| `input` | string | `seconds` | Unit of the raw value: `seconds` or `milliseconds` |
-| `expr`  | expr   | —         | Inner expression that produces the epoch value     |
+| `input` | string | `seconds` | Unit/format of the raw value: `seconds`, `milliseconds`, or `iso8601` |
+| `expr`  | expr   | —         | Inner expression that produces the timestamp value |
 
 ### `replace`
 
