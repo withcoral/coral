@@ -18,6 +18,9 @@ async fn main() -> Result<(), anyhow::Error> {
     };
     let result = coral_cli::run(bootstrap.app.clone(), ctx).await;
     bootstrap.shutdown().await;
+    tokio::task::spawn_blocking(coral_app::shutdown_tracing)
+        .await
+        .ok();
     match result {
         Ok(()) => Ok(()),
         Err(error) => {

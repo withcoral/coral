@@ -201,9 +201,6 @@ impl RunningServer {
         if let Some(task) = task {
             task.await??;
         }
-        tokio::task::spawn_blocking(crate::telemetry::shutdown_tracing)
-            .await
-            .ok();
         Ok(())
     }
 }
