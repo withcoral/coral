@@ -1056,6 +1056,7 @@ dependencies = [
  "coral-api",
  "coral-app",
  "opentelemetry",
+ "opentelemetry_sdk",
  "serde_json",
  "thiserror",
  "tonic",
