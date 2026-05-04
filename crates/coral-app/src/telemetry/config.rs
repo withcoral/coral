@@ -12,38 +12,34 @@ const DEFAULT_SERVICE_NAME: &str = "coral";
 #[derive(Debug, Clone, Default, Deserialize)]
 struct TelemetryConfigFile {
     #[serde(default)]
-    telemetry: TelemetryConfig,
+    otel: TelemetryConfig,
 }
 
 /// Telemetry settings loaded from `config.toml`.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(default)]
-#[allow(
-    clippy::struct_field_names,
-    reason = "field names mirror the TOML config keys for direct serde deserialization"
-)]
 pub struct TelemetryConfig {
-    pub(crate) otel_endpoint: Option<String>,
-    pub(crate) otel_headers: Option<String>,
-    pub(crate) otel_log_filter: Option<String>,
-    pub(crate) otel_trace_filter: String,
-    pub(crate) otel_service_name: String,
+    pub(crate) endpoint: Option<String>,
+    pub(crate) headers: Option<String>,
+    pub(crate) log_filter: Option<String>,
+    pub(crate) trace_filter: String,
+    pub(crate) service_name: String,
 }
 
 impl Default for TelemetryConfig {
     fn default() -> Self {
         Self {
-            otel_endpoint: None,
-            otel_headers: None,
-            otel_log_filter: None,
-            otel_trace_filter: DEFAULT_TRACE_FILTER.to_string(),
-            otel_service_name: DEFAULT_SERVICE_NAME.to_string(),
+            endpoint: None,
+            headers: None,
+            log_filter: None,
+            trace_filter: DEFAULT_TRACE_FILTER.to_string(),
+            service_name: DEFAULT_SERVICE_NAME.to_string(),
         }
     }
 }
 
 impl TelemetryConfig {
-    /// Load the `[telemetry]` section from `config.toml`.
+    /// Load the `[otel]` section from `config.toml`.
     ///
     /// # Errors
     ///
@@ -51,7 +47,7 @@ impl TelemetryConfig {
     pub(crate) fn load(layout: &AppStateLayout) -> Result<Self, AppError> {
         let config = if layout.config_file().exists() {
             let raw = std::fs::read_to_string(layout.config_file())?;
-            toml::from_str::<TelemetryConfigFile>(&raw)?.telemetry
+            toml::from_str::<TelemetryConfigFile>(&raw)?.otel
         } else {
             Self::default()
         };
@@ -78,7 +74,7 @@ mod tests {
     }
 
     #[test]
-    fn loads_telemetry_section_from_config_file() {
+    fn loads_otel_section_from_config_file() {
         let temp = TempDir::new().expect("temp dir");
         let layout = AppStateLayout::discover(Some(temp.path().join("config"))).expect("layout");
         layout.ensure().expect("ensure config dir");
@@ -87,25 +83,22 @@ mod tests {
             r#"
 version = 1
 
-[telemetry]
-otel_endpoint = "http://localhost:4318"
-otel_headers = "from=config"
-otel_log_filter = "info"
-otel_trace_filter = "coral_app=debug"
-otel_service_name = "from-config"
+[otel]
+endpoint = "http://localhost:4318"
+headers = "from=config"
+log_filter = "info"
+trace_filter = "coral_app=debug"
+service_name = "from-config"
 "#,
         )
         .expect("write config");
 
         let config = TelemetryConfig::load(&layout).expect("telemetry config");
 
-        assert_eq!(
-            config.otel_endpoint.as_deref(),
-            Some("http://localhost:4318")
-        );
-        assert_eq!(config.otel_headers.as_deref(), Some("from=config"));
-        assert_eq!(config.otel_log_filter.as_deref(), Some("info"));
-        assert_eq!(config.otel_trace_filter, "coral_app=debug");
-        assert_eq!(config.otel_service_name, "from-config");
+        assert_eq!(config.endpoint.as_deref(), Some("http://localhost:4318"));
+        assert_eq!(config.headers.as_deref(), Some("from=config"));
+        assert_eq!(config.log_filter.as_deref(), Some("info"));
+        assert_eq!(config.trace_filter, "coral_app=debug");
+        assert_eq!(config.service_name, "from-config");
     }
 }

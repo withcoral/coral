@@ -146,11 +146,11 @@ pub(crate) fn init_tracing(
 fn try_init_tracing(config: &TelemetryConfig, enable_stderr_logs: bool) -> Result<(), AppError> {
     opentelemetry::global::set_text_map_propagator(TraceContextPropagator::new());
     let endpoint = config
-        .otel_endpoint
+        .endpoint
         .as_deref()
         .filter(|value| !value.is_empty())
         .map(str::to_string);
-    let (log_filter, log_filter_error) = build_log_filter(config.otel_log_filter.as_deref());
+    let (log_filter, log_filter_error) = build_log_filter(config.log_filter.as_deref());
     let stderr_layer = enable_stderr_logs.then(|| {
         tracing_subscriber::fmt::layer()
             .with_target(true)
@@ -163,11 +163,11 @@ fn try_init_tracing(config: &TelemetryConfig, enable_stderr_logs: bool) -> Resul
         let resource = opentelemetry_sdk::Resource::builder()
             .with_attribute(opentelemetry::KeyValue::new(
                 "service.name",
-                config.otel_service_name.clone(),
+                config.service_name.clone(),
             ))
             .build();
 
-        let headers = parse_headers(config.otel_headers.as_deref().unwrap_or_default());
+        let headers = parse_headers(config.headers.as_deref().unwrap_or_default());
 
         let trace_exporter = SpanExporter::builder()
             .with_http()
@@ -219,7 +219,7 @@ fn try_init_tracing(config: &TelemetryConfig, enable_stderr_logs: bool) -> Resul
 
         let provider = builder.build();
         let tracer = provider.tracer("coral");
-        let (trace_targets, trace_filter_error) = build_trace_targets(&config.otel_trace_filter);
+        let (trace_targets, trace_filter_error) = build_trace_targets(&config.trace_filter);
         let otel_trace_layer = tracing_opentelemetry::layer()
             .with_tracer(tracer)
             .with_filter(trace_targets.clone());
@@ -241,28 +241,28 @@ fn try_init_tracing(config: &TelemetryConfig, enable_stderr_logs: bool) -> Resul
             .init();
         if let Some(error) = log_filter_error {
             tracing::warn!(
-                provided_filter = %config.otel_log_filter.as_deref().unwrap_or(DEFAULT_LOG_FILTER),
+                provided_filter = %config.log_filter.as_deref().unwrap_or(DEFAULT_LOG_FILTER),
                 fallback_filter = DEFAULT_LOG_FILTER,
                 detail = %error,
-                "invalid otel_log_filter; falling back to default filter"
+                "invalid log_filter; falling back to default filter"
             );
         }
         if let Some(error) = trace_filter_error {
             tracing::warn!(
-                provided_filter = %config.otel_trace_filter,
+                provided_filter = %config.trace_filter,
                 fallback_filter = DEFAULT_TRACE_FILTER,
                 detail = %error,
-                "invalid otel_trace_filter; falling back to default filter"
+                "invalid trace_filter; falling back to default filter"
             );
         }
     } else {
         Registry::default().with(stderr_layer).init();
         if let Some(error) = log_filter_error {
             tracing::warn!(
-                provided_filter = %config.otel_log_filter.as_deref().unwrap_or(DEFAULT_LOG_FILTER),
+                provided_filter = %config.log_filter.as_deref().unwrap_or(DEFAULT_LOG_FILTER),
                 fallback_filter = DEFAULT_LOG_FILTER,
                 detail = %error,
-                "invalid otel_log_filter; falling back to default filter"
+                "invalid log_filter; falling back to default filter"
             );
         }
         initialize_metrics(None);
