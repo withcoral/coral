@@ -44,6 +44,10 @@ test_queries:
 tables:
   - name: log_groups
     description: CloudWatch Logs log groups returned by DescribeLogGroups.
+    guide: >
+      Start here to discover log_group_name values before querying streams or
+      events. Optional log_group_name_prefix narrows large accounts. Use LIMIT
+      for quick inventory checks.
     request:
       method: POST
       path: /

@@ -289,6 +289,10 @@ tables:
 
   - name: metric_alarms
     description: CloudWatch metric alarms returned by DescribeAlarms.
+    guide: >
+      Lists metric alarms only. Optional alarm_name_prefix, action_prefix, and
+      state_value narrow large accounts. Use alarm_arn with
+      cloudwatch_metrics.tags to inspect tags for one alarm.
     request:
       method: POST
       path: /
@@ -400,6 +404,10 @@ tables:
 
   - name: composite_alarms
     description: CloudWatch composite alarms returned by DescribeAlarms.
+    guide: >
+      Lists composite alarms only. Optional alarm_name_prefix, action_prefix,
+      and state_value narrow results. Use alarm_rule to understand which child
+      alarms drive the composite alarm.
     request:
       method: POST
       path: /
@@ -481,6 +489,11 @@ tables:
 
   - name: alarm_history
     description: CloudWatch alarm history items returned by DescribeAlarmHistory.
+    guide: >
+      Optional alarm_name scopes history to one alarm. start_date and end_date
+      use CloudWatch timestamp strings. history_item_type narrows to
+      ConfigurationUpdate, StateUpdate, Action, AlarmContributorStateUpdate, or
+      AlarmContributorAction. scan_by defaults to newest first.
     request:
       method: POST
       path: /
@@ -558,6 +571,10 @@ tables:
 
   - name: dashboards
     description: CloudWatch dashboard entries returned by ListDashboards.
+    guide: >
+      Inventory table for dashboard names and ARNs. Optional
+      dashboard_name_prefix narrows results. Use dashboard_name with
+      cloudwatch_metrics.dashboard to fetch the dashboard body JSON.
     request:
       method: POST
       path: /
@@ -605,6 +622,10 @@ tables:
 
   - name: dashboard
     description: Details for one CloudWatch dashboard returned by GetDashboard.
+    guide: >
+      Requires dashboard_name from cloudwatch_metrics.dashboards. The
+      dashboard_body column contains the raw CloudWatch dashboard JSON for
+      widget inspection.
     request:
       method: POST
       path: /
@@ -641,6 +662,10 @@ tables:
 
   - name: metric_streams
     description: CloudWatch metric stream entries returned by ListMetricStreams.
+    guide: >
+      Inventory table for CloudWatch metric streams. Use name with
+      cloudwatch_metrics.metric_stream to fetch include/exclude namespace
+      filters and stream configuration details.
     request:
       method: POST
       path: /
@@ -704,6 +729,10 @@ tables:
 
   - name: metric_stream
     description: Details for one CloudWatch metric stream returned by GetMetricStream.
+    guide: >
+      Requires name from cloudwatch_metrics.metric_streams. Use this table to
+      inspect delivery configuration, role ARN, output format, and namespace
+      include/exclude filters for one stream.
     request:
       method: POST
       path: /
@@ -765,6 +794,10 @@ tables:
 
   - name: tags
     description: Tags for a CloudWatch alarm or Contributor Insights rule.
+    guide: >
+      Requires resource_arn, usually alarm_arn from metric_alarms or
+      composite_alarms. Returns one row per tag key/value pair for the
+      resource.
     request:
       method: POST
       path: /
