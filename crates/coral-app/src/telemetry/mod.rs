@@ -234,11 +234,18 @@ fn try_init_tracing(config: &TelemetryConfig, enable_stderr_logs: bool) -> Resul
             *guard = Some(provider);
         }
 
-        Registry::default()
+        if let Err(error) = Registry::default()
             .with(stderr_layer)
             .with(otel_trace_layer)
             .with(otel_log_layer)
-            .init();
+            .try_init()
+        {
+            tracing::warn!(
+                detail = %error,
+                "skipping coral-app tracing subscriber: host process has already installed one"
+            );
+            return Ok(());
+        }
         if let Some(error) = log_filter_error {
             tracing::warn!(
                 provided_filter = %config.log_filter.as_deref().unwrap_or(DEFAULT_LOG_FILTER),
@@ -256,7 +263,13 @@ fn try_init_tracing(config: &TelemetryConfig, enable_stderr_logs: bool) -> Resul
             );
         }
     } else {
-        Registry::default().with(stderr_layer).init();
+        if let Err(error) = Registry::default().with(stderr_layer).try_init() {
+            tracing::warn!(
+                detail = %error,
+                "skipping coral-app tracing subscriber: host process has already installed one"
+            );
+            return Ok(());
+        }
         if let Some(error) = log_filter_error {
             tracing::warn!(
                 provided_filter = %config.log_filter.as_deref().unwrap_or(DEFAULT_LOG_FILTER),
