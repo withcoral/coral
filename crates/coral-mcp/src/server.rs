@@ -1,7 +1,8 @@
 //! RMCP server implementation for Coral's stdio MCP surface.
 
 use coral_api::v1::{
-    ExecuteSqlRequest, ListSourcesRequest, ListTablesRequest, Source, SubmitFeedbackRequest, Table,
+    ExecuteSqlRequest, ListSourcesRequest, ListTablesRequest, ListTablesResponse,
+    PaginationRequest, Source, SubmitFeedbackRequest, TableSummary,
 };
 use coral_client::{
     AppClient, FeedbackClient, QueryClient, SourceClient, batches_to_json_rows,
@@ -23,11 +24,20 @@ use crate::{
     McpOptions,
     surface::{
         build_tool_result, feedback_tool, guide_resource, guide_resource_content,
-        initial_instructions, internal_status, list_tables_tool, list_tables_value,
-        required_string_argument, sql_tool, status_to_error_data, tables_resource,
-        tables_resource_content, tool_error_from_status, tool_error_result,
+        initial_instructions, internal_status, list_tables_arguments, list_tables_tool,
+        list_tables_value, required_string_argument, sql_tool, status_to_error_data,
+        tables_resource, tables_resource_content, tool_error_from_status, tool_error_result,
     },
 };
+
+const LIST_TABLES_COUNT_LIMIT: u32 = 1;
+const LIST_TABLES_UNBOUNDED_LIMIT: u32 = 0;
+
+struct LoadTablesParams<'a> {
+    schema_name: Option<&'a str>,
+    pagination: PaginationRequest,
+    omit_columns: bool,
+}
 
 #[derive(Clone)]
 pub(crate) struct CoralMcpServer {
@@ -58,19 +68,61 @@ impl CoralMcpServer {
             .sources)
     }
 
-    async fn load_tables(&self) -> Result<Vec<Table>, tonic::Status> {
+    async fn load_tables(
+        &self,
+        params: LoadTablesParams<'_>,
+    ) -> Result<ListTablesResponse, tonic::Status> {
         let mut query_client = self.query.clone();
         Ok(query_client
             .list_tables(Request::new(ListTablesRequest {
                 workspace: Some(default_workspace()),
+                schema_name: params.schema_name.unwrap_or_default().to_string(),
+                pagination: Some(params.pagination),
+                omit_columns: params.omit_columns,
             }))
             .await?
-            .into_inner()
-            .tables)
+            .into_inner())
     }
 
-    async fn load_sources_and_tables(&self) -> Result<(Vec<Source>, Vec<Table>), tonic::Status> {
-        tokio::try_join!(self.load_sources(), self.load_tables())
+    async fn load_all_table_summaries(&self) -> Result<Vec<TableSummary>, tonic::Status> {
+        Ok(self
+            .load_tables(LoadTablesParams {
+                schema_name: None,
+                pagination: PaginationRequest {
+                    limit: LIST_TABLES_UNBOUNDED_LIMIT,
+                    offset: 0,
+                },
+                omit_columns: true,
+            })
+            .await?
+            .table_summaries)
+    }
+
+    async fn load_table_count(&self) -> Result<usize, tonic::Status> {
+        self.load_tables(LoadTablesParams {
+            schema_name: None,
+            pagination: PaginationRequest {
+                limit: LIST_TABLES_COUNT_LIMIT,
+                offset: 0,
+            },
+            omit_columns: true,
+        })
+        .await
+        .map(|response| {
+            response
+                .pagination
+                .map_or(0, |pagination| pagination.total_count as usize)
+        })
+    }
+
+    async fn load_sources_and_table_count(&self) -> Result<(Vec<Source>, usize), tonic::Status> {
+        tokio::try_join!(self.load_sources(), self.load_table_count())
+    }
+
+    async fn load_sources_and_table_summaries(
+        &self,
+    ) -> Result<(Vec<Source>, Vec<TableSummary>), tonic::Status> {
+        tokio::try_join!(self.load_sources(), self.load_all_table_summaries())
     }
 
     async fn query_rows(&self, sql: &str) -> Result<Vec<Value>, tonic::Status> {
@@ -138,11 +190,14 @@ impl ServerHandler for CoralMcpServer {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
-        let (sources, tables) = self
-            .load_sources_and_tables()
+        let (sources, visible_table_count) = self
+            .load_sources_and_table_count()
             .await
             .map_err(|status| status_to_error_data(&status))?;
-        let mut tools = vec![sql_tool(&sources, &tables), list_tables_tool(&tables)];
+        let mut tools = vec![
+            sql_tool(&sources, visible_table_count),
+            list_tables_tool(visible_table_count),
+        ];
         if self.options.feedback_enabled {
             tools.push(feedback_tool());
         }
@@ -162,13 +217,26 @@ impl ServerHandler for CoralMcpServer {
                     Err(status) => Ok(tool_error_result(tool_error_from_status("Query", &status))),
                 }
             }
-            "list_tables" => match self.load_tables().await {
-                Ok(tables) => build_tool_result(list_tables_value(&tables)),
-                Err(status) => Ok(tool_error_result(tool_error_from_status(
-                    "Table listing",
-                    &status,
-                ))),
-            },
+            "list_tables" => {
+                let arguments = list_tables_arguments(request.arguments.as_ref())?;
+                match self
+                    .load_tables(LoadTablesParams {
+                        schema_name: arguments.schema.as_deref(),
+                        pagination: PaginationRequest {
+                            limit: arguments.limit,
+                            offset: arguments.offset,
+                        },
+                        omit_columns: true,
+                    })
+                    .await
+                {
+                    Ok(response) => build_tool_result(list_tables_value(&response)),
+                    Err(status) => Ok(tool_error_result(tool_error_from_status(
+                        "Table listing",
+                        &status,
+                    ))),
+                }
+            }
             "feedback" if self.options.feedback_enabled => {
                 let trying_to_do =
                     required_string_argument(request.arguments.as_ref(), "trying_to_do")?;
@@ -197,13 +265,13 @@ impl ServerHandler for CoralMcpServer {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, ErrorData> {
-        let (sources, tables) = self
-            .load_sources_and_tables()
+        let (sources, visible_table_count) = self
+            .load_sources_and_table_count()
             .await
             .map_err(|status| status_to_error_data(&status))?;
         Ok(ListResourcesResult::with_all_items(vec![
-            guide_resource(&sources, &tables),
-            tables_resource(&tables),
+            guide_resource(&sources, visible_table_count),
+            tables_resource(visible_table_count),
         ]))
     }
 
@@ -215,7 +283,7 @@ impl ServerHandler for CoralMcpServer {
         match request.uri.as_str() {
             "coral://guide" => {
                 let (sources, tables) = self
-                    .load_sources_and_tables()
+                    .load_sources_and_table_summaries()
                     .await
                     .map_err(|status| status_to_error_data(&status))?;
                 Ok(ReadResourceResult::new(vec![
@@ -225,7 +293,7 @@ impl ServerHandler for CoralMcpServer {
             }
             "coral://tables" => {
                 let tables = self
-                    .load_tables()
+                    .load_all_table_summaries()
                     .await
                     .map_err(|status| status_to_error_data(&status))?;
                 let text = tables_resource_content(&tables)

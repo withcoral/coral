@@ -36,6 +36,18 @@ version: 0.1.0
 dsl_version: 3
 backend: jsonl
 tables:
+  - name: events
+    description: Fixture events
+    source:
+      location: file://{}/
+      glob: "**/*.jsonl"
+    columns:
+      - name: type
+        type: Utf8
+      - name: sessionId
+        type: Utf8
+      - name: text
+        type: Utf8
   - name: messages
     description: Fixture messages
     source:
@@ -48,7 +60,21 @@ tables:
         type: Utf8
       - name: text
         type: Utf8
+  - name: sessions
+    description: Fixture sessions
+    source:
+      location: file://{}/
+      glob: "**/*.jsonl"
+    columns:
+      - name: type
+        type: Utf8
+      - name: sessionId
+        type: Utf8
+      - name: text
+        type: Utf8
 "#,
+        data_dir.display(),
+        data_dir.display(),
         data_dir.display()
     );
     let manifest_path = source_dir.join("source.yaml");
@@ -201,14 +227,14 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
             .description
             .as_deref()
             .expect("sql description")
-            .contains("1 visible SQL schema(s) are currently available")
+            .contains("3 table(s) are currently visible")
     );
     assert!(
         updated_tools[1]
             .description
             .as_deref()
             .expect("tables description")
-            .contains("1 table(s) are currently visible")
+            .contains("3 table(s) are currently visible")
     );
 
     let updated_resources = client
@@ -230,7 +256,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
     let tables_text = text_content(&tables_resource);
     let tables_json =
         serde_json::from_str::<serde_json::Value>(tables_text).expect("parse tables resource");
-    assert_eq!(tables_json["tables"][0]["name"], "local_messages.messages");
+    assert_eq!(tables_json["tables"][0]["name"], "local_messages.events");
 
     let updated_guide = client
         .read_resource(ReadResourceRequestParams::new("coral://guide"))
@@ -242,18 +268,71 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
     assert!(updated_guide_text.contains("- local_messages"));
     assert!(!updated_guide_text.contains("## Visible SQL Schemas"));
     assert!(updated_guide_text.contains(
-        "FROM coral.columns WHERE schema_name = 'local_messages' AND table_name = 'messages'"
+        "FROM coral.columns WHERE schema_name = 'local_messages' AND table_name = 'events'"
     ));
 
     let tables = client
         .call_tool(CallToolRequestParams::new("list_tables"))
         .await
         .expect("list tables");
+    let structured_tables = tables.structured_content.expect("structured content");
+    assert_eq!(structured_tables["total"], 3);
+    assert_eq!(structured_tables["limit"], 50);
+    assert_eq!(structured_tables["offset"], 0);
+    assert_eq!(structured_tables["has_more"], false);
     assert_eq!(
-        tables.structured_content.expect("structured content")["tables"][0]["name"],
-        "local_messages.messages"
+        structured_tables["tables"][0]["name"],
+        "local_messages.events"
     );
+    assert!(structured_tables["tables"][0]["columns"].is_null());
     assert_eq!(tables.is_error, Some(false));
+
+    let page = client
+        .call_tool(
+            CallToolRequestParams::new("list_tables").with_arguments(json_object(&json!({
+                "schema": "local_messages",
+                "limit": 2,
+                "offset": 0
+            }))),
+        )
+        .await
+        .expect("list paginated tables");
+    let page = page.structured_content.expect("structured content");
+    assert_eq!(page["total"], 3);
+    assert_eq!(page["limit"], 2);
+    assert_eq!(page["has_more"], true);
+    assert_eq!(page["next_offset"], 2);
+    assert_eq!(page["tables"].as_array().expect("tables").len(), 2);
+
+    let unknown_schema = client
+        .call_tool(
+            CallToolRequestParams::new("list_tables").with_arguments(json_object(&json!({
+                "schema": "missing",
+                "limit": 2,
+                "offset": 0
+            }))),
+        )
+        .await
+        .expect("list unknown schema");
+    let unknown_schema = unknown_schema
+        .structured_content
+        .expect("structured content");
+    assert_eq!(unknown_schema["total"], 0);
+    assert!(
+        unknown_schema["tables"]
+            .as_array()
+            .expect("tables")
+            .is_empty()
+    );
+
+    client
+        .call_tool(
+            CallToolRequestParams::new("list_tables").with_arguments(json_object(&json!({
+                "limit": 0
+            }))),
+        )
+        .await
+        .expect_err("limit zero should be invalid");
 
     session.shutdown().await;
 }
@@ -434,7 +513,7 @@ async fn mcp_tool_error_does_not_end_session() {
         tables_after_error
             .structured_content
             .expect("structured content")["tables"][0]["name"],
-        "local_messages.messages"
+        "local_messages.events"
     );
     assert_eq!(tables_after_error.is_error, Some(false));
 

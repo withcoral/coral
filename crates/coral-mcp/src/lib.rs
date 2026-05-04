@@ -11,7 +11,7 @@
 //!
 //! The exposed MCP surface is intentionally small:
 //!
-//! - tools: `sql`, `list_tables`, and optionally `feedback`
+//! - tools: `sql`, paginated `list_tables`, and optionally `feedback`
 //! - resources: `coral://guide`, `coral://tables`
 //!
 //! Protocol lifecycle, initialization, and stdio transport behavior should stay

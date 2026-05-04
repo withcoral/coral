@@ -3,7 +3,7 @@
 use std::future::Future;
 
 use coral_api::v1::{
-    Column, QueryTestFailure, QueryTestResult, QueryTestSuccess, Source, Table,
+    Column, QueryTestFailure, QueryTestResult, QueryTestSuccess, Source, Table, TableSummary,
     ValidateSourceResponse, Workspace, query_test_result,
 };
 use opentelemetry::propagation::Extractor;
@@ -134,20 +134,42 @@ pub(crate) fn table_to_proto(
     workspace_name: &WorkspaceName,
     table: coral_engine::TableInfo,
 ) -> Table {
+    table_to_proto_with_columns(workspace_name, table)
+}
+
+pub(crate) fn table_summary_to_proto(
+    workspace_name: &WorkspaceName,
+    table: coral_engine::TableInfo,
+) -> TableSummary {
+    TableSummary {
+        workspace: Some(workspace_to_proto(workspace_name)),
+        schema_name: table.schema_name,
+        name: table.table_name,
+        description: table.description,
+        required_filters: table.required_filters,
+    }
+}
+
+fn table_to_proto_with_columns(
+    workspace_name: &WorkspaceName,
+    table: coral_engine::TableInfo,
+) -> Table {
+    let columns = table
+        .columns
+        .into_iter()
+        .map(|column| Column {
+            name: column.name,
+            data_type: column.data_type,
+            nullable: column.nullable,
+        })
+        .collect();
+
     Table {
         workspace: Some(workspace_to_proto(workspace_name)),
         schema_name: table.schema_name,
         name: table.table_name,
         description: table.description,
-        columns: table
-            .columns
-            .into_iter()
-            .map(|column| Column {
-                name: column.name,
-                data_type: column.data_type,
-                nullable: column.nullable,
-            })
-            .collect(),
+        columns,
         required_filters: table.required_filters,
     }
 }
@@ -194,8 +216,8 @@ mod tests {
     use tonic::Code;
 
     use super::{
-        grpc_code_label, query_status, query_test_result_to_proto, table_to_proto,
-        workspace_name_from_proto, workspace_to_proto,
+        grpc_code_label, query_status, query_test_result_to_proto, table_summary_to_proto,
+        table_to_proto, workspace_name_from_proto, workspace_to_proto,
     };
     use crate::bootstrap::AppError;
     use crate::query::manager::QueryManagerError;
@@ -280,6 +302,30 @@ mod tests {
         assert_eq!(proto.columns[0].name, "id");
         assert_eq!(proto.columns[0].data_type, "Int64");
         assert!(!proto.columns[0].nullable);
+        assert_eq!(proto.required_filters, vec!["org_id"]);
+    }
+
+    #[test]
+    fn table_summary_to_proto_preserves_table_metadata_without_columns() {
+        let workspace_name = WorkspaceName::parse("default").expect("workspace");
+        let table = TableInfo {
+            schema_name: "demo".to_string(),
+            table_name: "users".to_string(),
+            description: "User records".to_string(),
+            columns: vec![ColumnInfo {
+                name: "id".to_string(),
+                data_type: "Int64".to_string(),
+                nullable: false,
+            }],
+            required_filters: vec!["org_id".to_string()],
+        };
+
+        let proto = table_summary_to_proto(&workspace_name, table);
+
+        assert_eq!(proto.workspace, Some(workspace_to_proto(&workspace_name)));
+        assert_eq!(proto.schema_name, "demo");
+        assert_eq!(proto.name, "users");
+        assert_eq!(proto.description, "User records");
         assert_eq!(proto.required_filters, vec!["org_id"]);
     }
 

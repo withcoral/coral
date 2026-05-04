@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
-use coral_api::v1::{Source, Table};
+use coral_api::v1::{ListTablesResponse, Source, Table, TableSummary};
 use rmcp::model::{AnnotateAble, RawResource, Resource};
 use serde_json::{Value, json};
 
@@ -12,21 +12,21 @@ pub(crate) fn initial_instructions() -> &'static str {
     INITIAL_INSTRUCTIONS
 }
 
-pub(crate) fn guide_resource(sources: &[Source], tables: &[Table]) -> Resource {
+pub(crate) fn guide_resource(sources: &[Source], visible_table_count: usize) -> Resource {
     RawResource::new("coral://guide", "guide")
-        .with_description(guide_resource_description(sources, tables))
+        .with_description(guide_resource_description(sources, visible_table_count))
         .with_mime_type("text/markdown")
         .no_annotation()
 }
 
-pub(crate) fn tables_resource(tables: &[Table]) -> Resource {
+pub(crate) fn tables_resource(visible_table_count: usize) -> Resource {
     RawResource::new("coral://tables", "tables")
-        .with_description(tables_resource_description(tables))
+        .with_description(tables_resource_description(visible_table_count))
         .with_mime_type("application/json")
         .no_annotation()
 }
 
-pub(crate) fn guide_resource_content(sources: &[Source], tables: &[Table]) -> String {
+pub(crate) fn guide_resource_content(sources: &[Source], tables: &[TableSummary]) -> String {
     let mut sources_section = String::from("## Available Schemas\n\n");
     sources_section.push_str(
         "- coral: System metadata schema. Use `coral.tables` and `coral.columns` to discover queryable tables, columns, descriptions, and required filters.\n",
@@ -68,47 +68,47 @@ FROM coral.columns WHERE schema_name = '{schema_name}' AND table_name = '{table_
         .replace("{{COLUMNS_EXAMPLE}}", &columns_example)
 }
 
-pub(crate) fn tables_resource_content(tables: &[Table]) -> Result<String, serde_json::Error> {
+pub(crate) fn tables_resource_content(
+    tables: &[TableSummary],
+) -> Result<String, serde_json::Error> {
     serde_json::to_string_pretty(&json!({ "tables": queryable_tables(tables) }))
 }
 
-pub(crate) fn list_tables_value(tables: &[Table]) -> Value {
-    json!({ "tables": queryable_tables(tables) })
+pub(crate) fn list_tables_value(response: &ListTablesResponse) -> Value {
+    let pagination = response.pagination.unwrap_or_default();
+    let table_summaries = response_table_summaries(response);
+    let mut value = json!({
+        "tables": queryable_tables(&table_summaries),
+        "total": pagination.total_count,
+        "limit": pagination.limit,
+        "offset": pagination.offset,
+        "has_more": pagination.has_more,
+    });
+    if pagination.has_more {
+        value["next_offset"] = json!(pagination.next_offset);
+    }
+    value
 }
 
-pub(super) fn visible_schema_count(tables: &[Table]) -> usize {
-    tables
-        .iter()
-        .map(|table| table.schema_name.as_str())
-        .collect::<BTreeSet<_>>()
-        .len()
-}
-
-pub(super) fn visible_table_count(tables: &[Table]) -> usize {
-    tables.len()
-}
-
-fn guide_resource_description(sources: &[Source], tables: &[Table]) -> String {
+fn guide_resource_description(sources: &[Source], visible_table_count: usize) -> String {
     format!(
-        "Query workflow and schema discovery guidance for {} configured source(s), {} visible schema(s), and {} table(s).",
+        "Query workflow and schema discovery guidance for {} configured source(s) and {} visible table(s).",
         sources.len(),
-        visible_schema_count(tables),
-        visible_table_count(tables)
+        visible_table_count
     )
 }
 
-fn tables_resource_description(tables: &[Table]) -> String {
-    format!(
-        "Queryable fully qualified Coral tables ({} table(s)).",
-        visible_table_count(tables)
-    )
+fn tables_resource_description(visible_table_count: usize) -> String {
+    format!("Queryable fully qualified Coral tables ({visible_table_count} table(s)).")
 }
 
-fn queryable_tables(tables: &[Table]) -> Vec<Value> {
+fn queryable_tables(tables: &[TableSummary]) -> Vec<Value> {
     let mut summaries = tables
         .iter()
         .map(|table| {
             json!({
+                "schema_name": table.schema_name,
+                "table_name": table.name,
                 "name": format!("{}.{}", table.schema_name, table.name),
                 "description": table.description,
                 "required_filters": table.required_filters,
@@ -123,7 +123,25 @@ fn queryable_tables(tables: &[Table]) -> Vec<Value> {
     summaries
 }
 
-fn first_visible_table(tables: &[Table]) -> Option<(&str, &str)> {
+fn response_table_summaries(response: &ListTablesResponse) -> Vec<TableSummary> {
+    if response.table_summaries.is_empty() {
+        response.tables.iter().map(table_to_summary).collect()
+    } else {
+        response.table_summaries.clone()
+    }
+}
+
+fn table_to_summary(table: &Table) -> TableSummary {
+    TableSummary {
+        workspace: table.workspace.clone(),
+        schema_name: table.schema_name.clone(),
+        name: table.name.clone(),
+        description: table.description.clone(),
+        required_filters: table.required_filters.clone(),
+    }
+}
+
+fn first_visible_table(tables: &[TableSummary]) -> Option<(&str, &str)> {
     tables
         .iter()
         .min_by(|left, right| {
@@ -134,7 +152,7 @@ fn first_visible_table(tables: &[Table]) -> Option<(&str, &str)> {
 
 #[cfg(test)]
 mod tests {
-    use coral_api::v1::{Source, Table, Workspace};
+    use coral_api::v1::{Source, TableSummary, Workspace};
 
     use super::guide_resource_content;
 
@@ -151,15 +169,14 @@ mod tests {
         }
     }
 
-    fn table(schema_name: &str, name: &str) -> Table {
-        Table {
+    fn table(schema_name: &str, name: &str) -> TableSummary {
+        TableSummary {
             workspace: Some(Workspace {
                 name: "default".to_string(),
             }),
             schema_name: schema_name.to_string(),
             name: name.to_string(),
             description: format!("{name} description"),
-            columns: Vec::new(),
             required_filters: Vec::new(),
         }
     }
