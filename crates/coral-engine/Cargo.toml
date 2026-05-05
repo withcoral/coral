@@ -17,6 +17,7 @@ bytes.workspace = true
 chrono.workspace = true
 datafusion.workspace = true
 datafusion-functions-json.workspace = true
+datafusion-tracing.workspace = true
 futures.workspace = true
 glob.workspace = true
 httpdate.workspace = true

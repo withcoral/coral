@@ -34,6 +34,7 @@ clap = { version = "4.5", features = ["derive", "env"] }
 clap_complete = "4.5"
 datafusion = "53"
 datafusion-functions-json = "0.53"
+datafusion-tracing = "53.0.0"
 dialoguer = "0.12"
 directories = "6"
 fs2 = "0.4"
