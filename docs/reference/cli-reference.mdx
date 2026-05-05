@@ -133,6 +133,28 @@ This server exposes:
 | Resource | `coral://guide`  | Usage guide for agents           |
 | Resource | `coral://tables` | Schema for all installed sources |
 
+## `coral mcp-http`
+
+Expose the local Coral runtime as a streamable HTTP MCP server.
+
+```shellscript
+coral mcp-http --host 0.0.0.0 --port 8080 --path /mcp
+```
+
+This command is intended for long-running service deployments. For local
+desktop clients, prefer `coral mcp-stdio` unless the client specifically needs
+an HTTP MCP URL.
+
+Options:
+
+| Option   | Default   | Description                         |
+| -------- | --------- | ----------------------------------- |
+| `--host` | `0.0.0.0` | Host address to bind                |
+| `--port` | `8080`    | TCP port to bind                    |
+| `--path` | `/mcp`    | HTTP path where MCP is served       |
+
+This server exposes the same tools and resources as `coral mcp-stdio`.
+
 ## `coral completion <SHELL>`
 
 Generate a shell completion script and write it to standard output. Supported shells are `bash`, `zsh`, `fish`, `elvish`, and `powershell`.

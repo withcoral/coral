@@ -10,10 +10,12 @@ publish = false
 workspace = true
 
 [dependencies]
-rmcp.workspace = true
+axum.workspace = true
+rmcp = { workspace = true, features = ["transport-streamable-http-server"] }
 serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+tokio-util.workspace = true
 tonic.workspace = true
 
 coral-api.workspace = true

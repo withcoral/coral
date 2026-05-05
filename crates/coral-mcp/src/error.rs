@@ -21,4 +21,7 @@ pub enum McpError {
     /// The RMCP server task failed while waiting for shutdown.
     #[error(transparent)]
     Join(#[from] tokio::task::JoinError),
+    /// The HTTP MCP server could not bind or serve requests.
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
 }

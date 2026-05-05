@@ -13,7 +13,10 @@ mod onboard;
 mod query_error;
 mod source_ops;
 
-use std::path::PathBuf;
+use std::{
+    net::{IpAddr, Ipv4Addr},
+    path::PathBuf,
+};
 
 use clap::{ArgGroup, Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::{Shell, generate};
@@ -46,8 +49,26 @@ enum Command {
     Onboard,
     /// Start the MCP server over stdio
     McpStdio,
+    /// Start the MCP server over streamable HTTP
+    McpHttp(McpHttpArgs),
     /// Generate shell completion scripts
     Completion(CompletionArgs),
+}
+
+#[derive(Debug, Args)]
+/// Start the MCP server over streamable HTTP
+struct McpHttpArgs {
+    /// Host address to bind.
+    #[arg(long, default_value_t = IpAddr::V4(Ipv4Addr::UNSPECIFIED))]
+    host: IpAddr,
+
+    /// TCP port to bind.
+    #[arg(long, default_value_t = 8080)]
+    port: u16,
+
+    /// HTTP path where the MCP endpoint is served.
+    #[arg(long, default_value = "/mcp")]
+    path: String,
 }
 
 #[derive(Debug, Args)]
@@ -169,7 +190,7 @@ where
 {
     matches!(
         Cli::try_parse_from(args).map(|cli| cli.command),
-        Ok(Command::McpStdio)
+        Ok(Command::McpStdio | Command::McpHttp(_))
     )
 }
 
@@ -261,6 +282,9 @@ async fn run_parsed(app: AppClient, cli: Cli) -> Result<(), anyhow::Error> {
         }
         Command::McpStdio => {
             coral_mcp::run_stdio_with_client(app).await?;
+        }
+        Command::McpHttp(args) => {
+            coral_mcp::run_http_with_client(app, args.host, args.port, &args.path).await?;
         }
         Command::Completion(args) => {
             let mut cmd = Cli::command();
@@ -395,6 +419,21 @@ mod tests {
     #[test]
     fn mcp_stdio_invocation_enables_stderr_logs() {
         assert!(command_enables_stderr_logs(["coral", "mcp-stdio"]));
+    }
+
+    #[test]
+    fn mcp_http_invocation_enables_stderr_logs() {
+        assert!(command_enables_stderr_logs(["coral", "mcp-http"]));
+        assert!(command_enables_stderr_logs([
+            "coral",
+            "mcp-http",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "0",
+            "--path",
+            "/mcp",
+        ]));
     }
 
     #[test]
