@@ -243,7 +243,11 @@ impl CompiledBackendSource for ParquetCompiledSource {
         }
 
         let secret_keys = self.source_secrets.keys().cloned().collect();
-        let inputs = build_registered_inputs(&[], &self.source_variables, &secret_keys);
+        let inputs = build_registered_inputs(
+            &self.manifest.declared_inputs,
+            &self.source_variables,
+            &secret_keys,
+        );
 
         Ok(BackendRegistration {
             tables,

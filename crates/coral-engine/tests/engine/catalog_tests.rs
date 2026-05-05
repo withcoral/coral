@@ -310,6 +310,37 @@ fn build_demo_source(variables: &[(&str, &str)], secrets: &[(&str, &str)]) -> Qu
     )
 }
 
+fn jsonl_manifest_with_inputs(dir: &std::path::Path) -> Value {
+    json!({
+        "name": "jsonl_inputs",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "jsonl",
+        "inputs": {
+            "DATASET": {
+                "kind": "variable",
+                "default": "events",
+                "hint": "Dataset label"
+            },
+            "LOCAL_TOKEN": {
+                "kind": "secret",
+                "hint": "Local file source token"
+            }
+        },
+        "tables": [{
+            "name": "events",
+            "description": "Input metadata regression fixture",
+            "source": {
+                "location": dir_url(dir),
+                "glob": "**/*.jsonl"
+            },
+            "columns": [
+                { "name": "id", "type": "Int64" }
+            ]
+        }]
+    })
+}
+
 #[tokio::test]
 async fn coral_inputs_exposes_variable_values_and_defaults() {
     let sources = vec![build_demo_source(
@@ -354,6 +385,49 @@ async fn coral_inputs_exposes_variable_values_and_defaults() {
                 "default_value": "datadoghq.com",
                 "hint": "Datadog site host",
                 "required": false,
+                "is_set": true,
+            }),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn coral_inputs_exposes_file_source_inputs() {
+    let temp = TempDir::new().expect("temp dir");
+    let data_dir = temp.path().join("jsonl-inputs");
+    write_jsonl_file(&data_dir, "events.jsonl", &[json!({"id": 1})]);
+    let sources = vec![build_source_with_inputs(
+        jsonl_manifest_with_inputs(&data_dir),
+        BTreeMap::from([("DATASET".to_string(), "audit".to_string())]),
+        BTreeMap::from([("LOCAL_TOKEN".to_string(), "secret-value".to_string())]),
+    )];
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &sources,
+            test_runtime(),
+            "SELECT key, kind, value, default_value, hint, is_set \
+             FROM coral.inputs WHERE schema_name = 'jsonl_inputs' ORDER BY key",
+        )
+        .await
+        .expect("catalog query should succeed"),
+    );
+
+    assert_eq!(
+        rows,
+        vec![
+            json!({
+                "key": "DATASET",
+                "kind": "variable",
+                "value": "audit",
+                "default_value": "events",
+                "hint": "Dataset label",
+                "is_set": true,
+            }),
+            json!({
+                "key": "LOCAL_TOKEN",
+                "kind": "secret",
+                "hint": "Local file source token",
                 "is_set": true,
             }),
         ]

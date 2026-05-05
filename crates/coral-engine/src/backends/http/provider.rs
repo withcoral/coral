@@ -25,7 +25,7 @@ use coral_spec::backends::http::HttpTableSpec;
 pub(crate) struct HttpSourceTableProvider {
     backend: HttpSourceClient,
     source_schema: String,
-    table: HttpTableSpec,
+    table: Arc<HttpTableSpec>,
     schema: SchemaRef,
 }
 
@@ -54,7 +54,7 @@ impl HttpSourceTableProvider {
         Ok(Self {
             backend,
             source_schema,
-            table,
+            table: Arc::new(table),
             schema,
         })
     }
@@ -64,7 +64,7 @@ impl HttpSourceTableProvider {
 struct HttpFetchPlan {
     backend: HttpSourceClient,
     table: Arc<HttpTableSpec>,
-    filters: HashMap<String, String>,
+    filters: Arc<HashMap<String, String>>,
     limit: Option<usize>,
 }
 
@@ -72,7 +72,7 @@ struct HttpFetchPlan {
 impl RowFetcher for HttpFetchPlan {
     async fn fetch(&self) -> Result<Vec<Value>> {
         self.backend
-            .fetch(self.table.as_ref(), &self.filters, self.limit)
+            .fetch(self.table.as_ref(), self.filters.as_ref(), self.limit)
             .await
     }
 }
@@ -135,18 +135,24 @@ impl TableProvider for HttpSourceTableProvider {
             }
         }
 
+        let table = self.table.clone();
+        let filters = Arc::new(filter_values);
         let fetcher = Arc::new(HttpFetchPlan {
             backend: self.backend.clone(),
-            table: Arc::new(self.table.clone()),
-            filters: filter_values.clone(),
+            table: table.clone(),
+            filters: filters.clone(),
             limit,
         });
 
         let schema = self.schema.clone();
-        let table = self.table.clone();
-        let filters_for_convert = filter_values;
+        let filters_for_convert = filters;
         let converter = Arc::new(move |items: &[Value]| {
-            convert_items(table.columns(), schema.clone(), &filters_for_convert, items)
+            convert_items(
+                table.columns(),
+                schema.clone(),
+                filters_for_convert.as_ref(),
+                items,
+            )
         });
 
         let exec = JsonExec::new(
