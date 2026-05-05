@@ -753,7 +753,11 @@ async fn execute_request(
                 .instrument(response_span.clone())
                 .await
                 .unwrap_or_default();
-            response_span.record("exception.message", field::display(&body));
+            response_span.record("http.response.body.size", body.len());
+            response_span.record(
+                "exception.message",
+                field::display(response_error_summary(status, &body)),
+            );
             return Err(DataFusionError::External(Box::new(
                 ProviderQueryError::ApiRequest {
                     source_schema: source_schema.to_string(),
@@ -877,6 +881,14 @@ fn trace_reqwest_error(error: &reqwest::Error) -> &'static str {
     } else {
         "source API request failed"
     }
+}
+
+fn response_error_summary(status: reqwest::StatusCode, body: &str) -> String {
+    format!(
+        "upstream returned HTTP {}; body_bytes={}",
+        status.as_u16(),
+        body.len()
+    )
 }
 
 fn decode_error(
