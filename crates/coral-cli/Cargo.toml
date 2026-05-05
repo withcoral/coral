@@ -15,7 +15,7 @@ workspace = true
 [features]
 cli-test-server = []
 server = []
-embedded-ui = ["server", "dep:rust-embed"]
+embedded-ui = ["dep:rust-embed"]
 
 [dependencies]
 anyhow.workspace = true

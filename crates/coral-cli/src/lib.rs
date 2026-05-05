@@ -293,11 +293,6 @@ pub fn embedded_ui_assets() -> Arc<dyn StaticAssetsProvider> {
     Arc::new(embedded_ui::EmbeddedUi)
 }
 
-#[cfg(feature = "embedded-ui")]
-fn embedded_ui_assets_available() -> bool {
-    embedded_ui::EmbeddedUi::is_available()
-}
-
 /// Opens the given URL in the user's default browser.
 ///
 /// # Errors
