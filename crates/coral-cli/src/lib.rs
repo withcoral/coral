@@ -177,7 +177,7 @@ where
 {
     matches!(
         Cli::try_parse_from(args).map(|cli| cli.command),
-        Ok(Command::McpStdio)
+        Ok(Command::McpStdio(_))
     )
 }
 
@@ -409,6 +409,15 @@ mod tests {
     #[test]
     fn mcp_stdio_invocation_enables_stderr_logs() {
         assert!(command_enables_stderr_logs(["coral", "mcp-stdio"]));
+    }
+
+    #[test]
+    fn mcp_stdio_with_feedback_invocation_enables_stderr_logs() {
+        assert!(command_enables_stderr_logs([
+            "coral",
+            "mcp-stdio",
+            "--enable-feedback"
+        ]));
     }
 
     #[test]
