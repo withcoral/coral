@@ -306,7 +306,7 @@ async fn mcp_feedback_tool_persists_blocked_agent_report() {
             .as_str()
             .is_some_and(|created_at| !created_at.is_empty())
     );
-    assert_eq!(structured["message"], "Feedback submitted.");
+    assert_eq!(structured["message"], "Feedback report stored.");
 
     let raw = fs::read_to_string(
         temp.path()

@@ -116,7 +116,7 @@ impl CoralMcpServer {
         Ok(serde_json::json!({
             "feedback_id": report.id,
             "created_at": report.created_at,
-            "message": "Feedback submitted.",
+            "message": "Feedback report stored.",
         }))
     }
 }
