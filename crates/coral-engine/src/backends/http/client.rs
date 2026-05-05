@@ -666,6 +666,9 @@ async fn execute_request(
             url.full = %traced_url,
             error = field::Empty,
             exception.message = field::Empty,
+            coral.http.error.timeout = field::Empty,
+            coral.http.error.connect = field::Empty,
+            coral.http.error.request = field::Empty,
         );
 
         let response = http
@@ -674,7 +677,10 @@ async fn execute_request(
             .await
             .map_err(|error| {
                 request_span.record("error", true);
-                request_span.record("exception.message", field::display(&error));
+                request_span.record("exception.message", trace_reqwest_error(&error));
+                request_span.record("coral.http.error.timeout", error.is_timeout());
+                request_span.record("coral.http.error.connect", error.is_connect());
+                request_span.record("coral.http.error.request", error.is_request());
                 request_error(
                     source_schema,
                     table_name,
@@ -859,6 +865,18 @@ fn request_error(
         detail,
         timed_out: error.is_timeout(),
     })
+}
+
+fn trace_reqwest_error(error: &reqwest::Error) -> &'static str {
+    if error.is_timeout() {
+        "source API request timed out"
+    } else if error.is_connect() {
+        "source API connection failed"
+    } else if error.is_request() {
+        "source API request failed before a response was received"
+    } else {
+        "source API request failed"
+    }
 }
 
 fn decode_error(
