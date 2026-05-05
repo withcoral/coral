@@ -164,7 +164,12 @@ impl ConfigStore {
     }
 
     fn save_unlocked(&self, config: &AppConfig) -> Result<(), AppError> {
-        let raw = render_config(&PersistedAppConfig::from(config));
+        let existing_raw = if self.layout.config_file().exists() {
+            Some(std::fs::read_to_string(self.layout.config_file())?)
+        } else {
+            None
+        };
+        let raw = render_config(&PersistedAppConfig::from(config), existing_raw.as_deref());
         if let Some(parent) = self.layout.config_file().parent() {
             storage_fs::ensure_dir(parent)?;
         }
@@ -233,9 +238,15 @@ impl ConfigStore {
     }
 }
 
-fn render_config(config: &PersistedAppConfig) -> String {
-    let mut doc = DocumentMut::new();
+fn render_config(config: &PersistedAppConfig, existing_raw: Option<&str>) -> String {
+    let mut doc = existing_raw
+        .and_then(|raw| raw.parse::<DocumentMut>().ok())
+        .unwrap_or_default();
+
     doc["version"] = value(i64::from(config.version));
+
+    // Remove and fully rebuild the workspaces section so removed sources don't linger.
+    doc.remove("workspaces");
 
     for (workspace_name, workspace) in &config.workspaces {
         for (source_name, source) in &workspace.sources {
@@ -368,7 +379,7 @@ mod tests {
             catalog,
         };
 
-        let raw = render_config(&PersistedAppConfig::from(&config));
+        let raw = render_config(&PersistedAppConfig::from(&config), None);
         assert!(raw.contains("[workspaces.default.sources.github]"));
         assert!(raw.contains("variables = { GITHUB_API_BASE = \"https://api.github.com\" }"));
         assert!(raw.contains("secrets = [\"GITHUB_TOKEN\"]"));
@@ -391,7 +402,7 @@ mod tests {
             catalog,
         };
 
-        let raw = render_config(&PersistedAppConfig::from(&config));
+        let raw = render_config(&PersistedAppConfig::from(&config), None);
         assert!(!raw.contains("version = \"\""));
         assert!(!raw.contains("version = \""));
     }
@@ -475,6 +486,50 @@ origin = "bundled"
                 )
                 .is_some()
         );
+    }
+
+    #[test]
+    fn preserves_unrelated_sections_when_rendering_with_existing_config() {
+        let existing = r#"
+version = 1
+
+[otel]
+endpoint = "http://localhost:4318"
+headers = "from=config"
+
+[workspaces.default.sources.github]
+version = "1.0.0"
+variables = {}
+secrets = []
+origin = "bundled"
+"#;
+
+        let workspace_name = default_workspace();
+        let mut catalog = SourceCatalog::default();
+        catalog.upsert_source(&workspace_name, installed_source("slack"));
+        let config = AppConfig {
+            version: 1,
+            catalog,
+        };
+
+        let raw = render_config(&PersistedAppConfig::from(&config), Some(existing));
+
+        // OTel section must survive the round-trip.
+        assert!(raw.contains("[otel]"), "otel section should be preserved");
+        assert!(
+            raw.contains("endpoint = \"http://localhost:4318\""),
+            "otel endpoint should be preserved"
+        );
+        assert!(
+            raw.contains("headers = \"from=config\""),
+            "otel headers should be preserved"
+        );
+
+        // The newly added source must be present.
+        assert!(raw.contains("[workspaces.default.sources.slack]"));
+
+        // The old source that was not in the updated catalog must be gone.
+        assert!(!raw.contains("[workspaces.default.sources.github]"));
     }
 
     #[test]

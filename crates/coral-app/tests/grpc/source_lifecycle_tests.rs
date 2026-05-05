@@ -1187,3 +1187,64 @@ async fn rejects_invalid_workspace_and_source_names() {
         .expect_err("source name with backslash should fail");
     assert_eq!(invalid_source_name.code(), tonic::Code::InvalidArgument);
 }
+
+#[tokio::test]
+async fn adding_source_preserves_otel_config_and_existing_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    let config_dir = temp.path().join("coral-config");
+    fs::create_dir_all(&config_dir).expect("create config dir");
+
+    // Pre-populate the config with an [otel] section and an existing source.
+    fs::write(
+        config_dir.join("config.toml"),
+        r#"version = 1
+
+[otel]
+endpoint = "http://localhost:4318"
+headers = "from=config"
+
+[workspaces.default.sources.demo]
+version = "0.1.0"
+variables = {}
+secrets = []
+origin = "imported"
+"#,
+    )
+    .expect("write initial config");
+
+    let harness = GrpcHarness::start_with_config_dir(config_dir.clone()).await;
+    let manifest_yaml = fixture_manifest_yaml(temp.path());
+
+    harness
+        .import_source(manifest_yaml, Vec::new(), Vec::new())
+        .await;
+
+    let config_raw =
+        fs::read_to_string(config_dir.join("config.toml")).expect("read config after import");
+
+    // The [otel] section and its values must survive the round-trip.
+    assert!(
+        config_raw.contains("[otel]"),
+        "otel section should be preserved"
+    );
+    assert!(
+        config_raw.contains("endpoint = \"http://localhost:4318\""),
+        "otel endpoint should be preserved"
+    );
+    assert!(
+        config_raw.contains("headers = \"from=config\""),
+        "otel headers should be preserved"
+    );
+
+    // The pre-existing source must still be present.
+    assert!(
+        config_raw.contains("[workspaces.default.sources.demo]"),
+        "pre-existing source should be preserved"
+    );
+
+    // The newly imported source must now also be present.
+    assert!(
+        config_raw.contains("[workspaces.default.sources.local_messages]"),
+        "newly added source should be in config"
+    );
+}
