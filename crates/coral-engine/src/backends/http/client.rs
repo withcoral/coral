@@ -568,6 +568,11 @@ async fn execute_request(
     request_timeout: Duration,
     request: RequestSpec<'_>,
 ) -> Result<Option<(Value, Option<String>)>> {
+    enum ResponseOutcome {
+        Done(Result<Option<(Value, Option<String>)>>),
+        Retry(Duration),
+    }
+
     let RequestSpec {
         auth,
         request_headers,
@@ -651,155 +656,167 @@ async fn execute_request(
         let request_id = NEXT_HTTP_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
         let attempt = server_error_retries + throttle_retries + 1;
         let traced_url = sanitize_trace_url(&logged_url);
-        let request_span = tracing::info_span!(
-            target: "coral_engine::http",
-            "http.request",
-            otel.name = "http.request",
-            coral.source = source_schema,
-            coral.table = table_name,
-            coral.http.request_id = request_id,
-            coral.http.attempt = attempt,
-            http.request.method = method_label,
-            http.request.body.present = body.is_some(),
-            http.request.body.size = request_body_size(body).unwrap_or_default(),
-            http.request.query_count = query_pairs.len(),
-            url.full = %traced_url,
-            error = field::Empty,
-            exception.message = field::Empty,
-            coral.http.error.timeout = field::Empty,
-            coral.http.error.connect = field::Empty,
-            coral.http.error.request = field::Empty,
-        );
-
-        let response = http
-            .execute(built)
-            .instrument(request_span.clone())
-            .await
-            .map_err(|error| {
-                request_span.record("error", true);
-                request_span.record("exception.message", trace_reqwest_error(&error));
-                request_span.record("coral.http.error.timeout", error.is_timeout());
-                request_span.record("coral.http.error.connect", error.is_connect());
-                request_span.record("coral.http.error.request", error.is_request());
-                request_error(
-                    source_schema,
-                    table_name,
-                    method_label,
-                    &logged_url,
-                    request_timeout,
-                    &error,
-                )
-            })?;
-        let status = response.status();
-        let response_span = tracing::info_span!(
-            target: "coral_engine::http",
-            "http.response",
-            otel.name = "http.response",
-            coral.source = source_schema,
-            coral.table = table_name,
-            coral.http.request_id = request_id,
-            coral.http.attempt = attempt,
-            http.request.method = method_label,
-            http.response.status_code = status.as_u16(),
-            http.response.body.size = field::Empty,
-            url.full = %traced_url,
-            error = field::Empty,
-            exception.message = field::Empty,
-        );
-        if let Some(length) = response.content_length() {
-            response_span.record("http.response.body.size", length);
-        }
-
-        match check_rate_limit(status, response.headers(), rate_limit, throttle_retries) {
-            RateLimitDecision::Continue => {}
-            RateLimitDecision::Retry(wait) => {
-                response_span.record("error", true);
-                response_span.record("exception.message", "rate limited; retrying");
-                throttle_retries += 1;
-                tokio::time::sleep(wait).await;
-                continue;
-            }
-            RateLimitDecision::Fail(error) => {
-                response_span.record("error", true);
-                response_span.record("exception.message", field::display(&error));
-                return Err(DataFusionError::External(Box::new(
-                    ProviderQueryError::RateLimited {
-                        source_schema: source_schema.to_string(),
-                        table: table_name.to_string(),
-                        method: Some(method_label.to_string()),
-                        url: Some(logged_url),
-                        detail: error.to_string(),
-                    },
-                )));
-            }
-        }
-
-        if status.is_server_error() && server_error_retries < 2 {
-            response_span.record("error", true);
-            response_span.record("exception.message", "server error; retrying");
-            server_error_retries += 1;
-            tokio::time::sleep(Duration::from_secs(2)).await;
-            continue;
-        }
-
-        if status == reqwest::StatusCode::NOT_FOUND && allow_404_empty {
-            return Ok(None);
-        }
-
-        if !status.is_success() {
-            response_span.record("error", true);
-            let body = response
-                .text()
-                .instrument(response_span.clone())
-                .await
-                .unwrap_or_default();
-            response_span.record("http.response.body.size", body.len());
-            response_span.record(
-                "exception.message",
-                field::display(response_error_summary(status, &body)),
+        let response = {
+            let request_span = tracing::info_span!(
+                target: "coral_engine::http",
+                "http.request",
+                otel.name = "http.request",
+                coral.source = source_schema,
+                coral.table = table_name,
+                coral.http.request_id = request_id,
+                coral.http.attempt = attempt,
+                http.request.method = method_label,
+                http.request.body.present = body.is_some(),
+                http.request.body.size = request_body_size(body).unwrap_or_default(),
+                http.request.query_count = query_pairs.len(),
+                url.full = %traced_url,
+                error = field::Empty,
+                exception.message = field::Empty,
+                coral.http.error.timeout = field::Empty,
+                coral.http.error.connect = field::Empty,
+                coral.http.error.request = field::Empty,
             );
-            return Err(DataFusionError::External(Box::new(
-                ProviderQueryError::ApiRequest {
-                    source_schema: source_schema.to_string(),
-                    table: table_name.to_string(),
-                    status: Some(status.as_u16()),
-                    method: Some(method_label.to_string()),
-                    url: Some(logged_url),
-                    filters: filters.clone(),
-                    detail: body,
-                },
-            )));
-        }
-
-        let next_url =
-            extract_next_link_url(response.headers(), base_url, link_header_require_results)
-                .map_err(|error| {
-                    response_span.record("error", true);
-                    response_span.record("exception.message", field::display(&error));
-                    pagination_error(
+            match http.execute(built).instrument(request_span.clone()).await {
+                Ok(response) => response,
+                Err(error) => {
+                    request_span.record("error", true);
+                    request_span.record("exception.message", trace_reqwest_error(&error));
+                    request_span.record("coral.http.error.timeout", error.is_timeout());
+                    request_span.record("coral.http.error.connect", error.is_connect());
+                    request_span.record("coral.http.error.request", error.is_request());
+                    return Err(request_error(
                         source_schema,
                         table_name,
-                        Some(method_label),
-                        Some(&logged_url),
+                        method_label,
+                        &logged_url,
+                        request_timeout,
                         &error,
-                    )
-                })?;
+                    ));
+                }
+            }
+        };
 
-        let payload = decode_response_body(
-            response,
-            response_format,
-            source_schema,
-            table_name,
-            method_label,
-            &logged_url,
-        )
-        .instrument(response_span.clone())
-        .await
-        .inspect_err(|error| {
-            response_span.record("error", true);
-            response_span.record("exception.message", field::display(&error));
-        })?;
-        return Ok(Some((payload, next_url)));
+        let status = response.status();
+        let outcome = 'response: {
+            let response_span = tracing::info_span!(
+                target: "coral_engine::http",
+                "http.response",
+                otel.name = "http.response",
+                coral.source = source_schema,
+                coral.table = table_name,
+                coral.http.request_id = request_id,
+                coral.http.attempt = attempt,
+                http.request.method = method_label,
+                http.response.status_code = status.as_u16(),
+                http.response.body.size = field::Empty,
+                url.full = %traced_url,
+                error = field::Empty,
+                exception.message = field::Empty,
+            );
+            if let Some(length) = response.content_length() {
+                response_span.record("http.response.body.size", length);
+            }
+
+            match check_rate_limit(status, response.headers(), rate_limit, throttle_retries) {
+                RateLimitDecision::Continue => {}
+                RateLimitDecision::Retry(wait) => {
+                    response_span.record("error", true);
+                    response_span.record("exception.message", "rate limited; retrying");
+                    throttle_retries += 1;
+                    break 'response ResponseOutcome::Retry(wait);
+                }
+                RateLimitDecision::Fail(error) => {
+                    response_span.record("error", true);
+                    response_span.record("exception.message", field::display(&error));
+                    break 'response ResponseOutcome::Done(Err(DataFusionError::External(
+                        Box::new(ProviderQueryError::RateLimited {
+                            source_schema: source_schema.to_string(),
+                            table: table_name.to_string(),
+                            method: Some(method_label.to_string()),
+                            url: Some(logged_url.clone()),
+                            detail: error.to_string(),
+                        }),
+                    )));
+                }
+            }
+
+            if status.is_server_error() && server_error_retries < 2 {
+                response_span.record("error", true);
+                response_span.record("exception.message", "server error; retrying");
+                server_error_retries += 1;
+                break 'response ResponseOutcome::Retry(Duration::from_secs(2));
+            }
+
+            if status == reqwest::StatusCode::NOT_FOUND && allow_404_empty {
+                break 'response ResponseOutcome::Done(Ok(None));
+            }
+
+            if !status.is_success() {
+                response_span.record("error", true);
+                let body = response
+                    .text()
+                    .instrument(response_span.clone())
+                    .await
+                    .unwrap_or_default();
+                response_span.record("http.response.body.size", body.len());
+                response_span.record(
+                    "exception.message",
+                    field::display(response_error_summary(status, &body)),
+                );
+                break 'response ResponseOutcome::Done(Err(DataFusionError::External(Box::new(
+                    ProviderQueryError::ApiRequest {
+                        source_schema: source_schema.to_string(),
+                        table: table_name.to_string(),
+                        status: Some(status.as_u16()),
+                        method: Some(method_label.to_string()),
+                        url: Some(logged_url.clone()),
+                        detail: body,
+                    },
+                ))));
+            }
+
+            let next_url =
+                extract_next_link_url(response.headers(), base_url, link_header_require_results)
+                    .map_err(|error| {
+                        response_span.record("error", true);
+                        response_span.record("exception.message", field::display(&error));
+                        pagination_error(
+                            source_schema,
+                            table_name,
+                            Some(method_label),
+                            Some(&logged_url),
+                            &error,
+                        )
+                    });
+            let next_url = match next_url {
+                Ok(next_url) => next_url,
+                Err(error) => break 'response ResponseOutcome::Done(Err(error)),
+            };
+
+            let payload = decode_response_body(
+                response,
+                response_format,
+                source_schema,
+                table_name,
+                method_label,
+                &logged_url,
+            )
+            .instrument(response_span.clone())
+            .await
+            .inspect_err(|error| {
+                response_span.record("error", true);
+                response_span.record("exception.message", field::display(&error));
+            })
+            .map(|payload| Some((payload, next_url)));
+            ResponseOutcome::Done(payload)
+        };
+
+        match outcome {
+            ResponseOutcome::Done(result) => return result,
+            ResponseOutcome::Retry(wait) => {
+                tokio::time::sleep(wait).await;
+            }
+        }
     }
 }
 
