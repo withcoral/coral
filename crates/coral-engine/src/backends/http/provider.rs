@@ -14,7 +14,7 @@ use serde_json::Value;
 
 use crate::backends::http::HttpSourceClient;
 use crate::backends::http::ProviderQueryError;
-use crate::backends::http::target::HttpRequestTarget;
+use crate::backends::http::target::HttpFetchTarget;
 use crate::backends::schema_from_columns;
 use crate::backends::shared::filter_expr::{extract_filter_values, literal_to_string};
 use crate::backends::shared::json_exec::{JsonExec, RowFetcher};
@@ -27,6 +27,7 @@ pub(crate) struct HttpSourceTableProvider {
     backend: HttpSourceClient,
     source_schema: String,
     table: Arc<HttpTableSpec>,
+    target: HttpFetchTarget,
     schema: SchemaRef,
 }
 
@@ -52,20 +53,22 @@ impl HttpSourceTableProvider {
         table: HttpTableSpec,
     ) -> Result<Self> {
         let schema = schema_from_columns(table.columns(), &source_schema, table.name())?;
+        let target = HttpFetchTarget::from_resolved_table_request(&table, table.request.clone());
         Ok(Self {
             backend,
             source_schema,
             table: Arc::new(table),
+            target,
             schema,
         })
     }
 }
 
 #[derive(Debug)]
-pub(crate) struct HttpFetchPlan {
+struct HttpFetchPlan {
     backend: HttpSourceClient,
-    target: Arc<HttpRequestTarget>,
-    request_values: HashMap<String, String>,
+    target: Arc<HttpFetchTarget>,
+    request_values: Arc<HashMap<String, String>>,
     limit: Option<usize>,
 }
 
@@ -78,17 +81,17 @@ impl RowFetcher for HttpFetchPlan {
     }
 }
 
-pub(crate) fn http_json_exec(
+fn http_json_exec(
     backend: HttpSourceClient,
     source_schema: &str,
-    target: HttpRequestTarget,
+    target: HttpFetchTarget,
     schema: SchemaRef,
     request_values: HashMap<String, String>,
     projection: Option<&Vec<usize>>,
     limit: Option<usize>,
 ) -> Result<Arc<dyn ExecutionPlan>> {
     let target = Arc::new(target);
-    let output_schema = schema.clone();
+    let request_values = Arc::new(request_values);
     let fetcher = Arc::new(HttpFetchPlan {
         backend,
         target: target.clone(),
@@ -96,21 +99,19 @@ pub(crate) fn http_json_exec(
         limit,
     });
 
-    let converter_target = target.clone();
-    let filters_for_convert = request_values;
-    let converter = Arc::new(move |items: &[Value]| {
-        convert_items(
-            converter_target.columns(),
-            schema.clone(),
-            &filters_for_convert,
-            items,
-        )
-    });
+    let converter = {
+        let target = target.clone();
+        let schema = schema.clone();
+        let request_values = request_values.clone();
+        Arc::new(move |items: &[Value]| {
+            convert_items(target.columns(), schema.clone(), &request_values, items)
+        })
+    };
 
     let exec = JsonExec::new(
         source_schema,
         target.name(),
-        output_schema,
+        schema,
         fetcher,
         converter,
         projection.cloned(),
@@ -179,11 +180,12 @@ impl TableProvider for HttpSourceTableProvider {
 
         let request_value_keys: HashSet<String> = request_values.keys().cloned().collect();
         let active_request = self.table.resolve_request(&request_value_keys).clone();
+        let target = self.target.with_resolved_request(active_request);
 
         http_json_exec(
             self.backend.clone(),
             &self.source_schema,
-            HttpRequestTarget::from_table(&self.table, active_request),
+            target,
             self.schema.clone(),
             request_values,
             projection,
