@@ -2,11 +2,14 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use datafusion::error::{DataFusionError, Result};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde_json::{Map, Value, json};
+use tracing::Instrument as _;
+use tracing::field;
 
 use crate::RequestAuthenticator;
 use crate::backends::http::ProviderQueryError;
@@ -27,6 +30,7 @@ use coral_spec::{
 const DEFAULT_MAX_PAGES: usize = 10_000;
 const DEFAULT_HTTP_REQUEST_TIMEOUT_SECS: u64 = 30;
 const DEFAULT_HTTP_USER_AGENT: &str = concat!("coral/", env!("CARGO_PKG_VERSION"));
+static NEXT_HTTP_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Executes manifest-driven HTTP requests for one registered source.
 #[derive(Clone)]
@@ -644,31 +648,74 @@ async fn execute_request(
         });
 
         let built = resolve_auth_headers(auth, request, request_authenticators, resolved_inputs)?;
+        let request_id = NEXT_HTTP_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
+        let attempt = server_error_retries + throttle_retries + 1;
+        let traced_url = sanitize_trace_url(&logged_url);
+        let request_span = tracing::info_span!(
+            target: "coral_engine::http",
+            "http.request",
+            otel.name = "http.request",
+            coral.source = source_schema,
+            coral.table = table_name,
+            coral.http.request_id = request_id,
+            coral.http.attempt = attempt,
+            http.request.method = method_label,
+            http.request.body.present = body.is_some(),
+            http.request.body.size = request_body_size(body).unwrap_or_default(),
+            http.request.query_count = query_pairs.len(),
+            url.full = %traced_url,
+            error = field::Empty,
+            exception.message = field::Empty,
+        );
 
-        let response = http.execute(built).await.map_err(|error| {
-            request_error(
-                source_schema,
-                table_name,
-                method_label,
-                &logged_url,
-                request_timeout,
-                &error,
-            )
-        })?;
+        let response = http
+            .execute(built)
+            .instrument(request_span.clone())
+            .await
+            .map_err(|error| {
+                request_span.record("error", true);
+                request_span.record("exception.message", field::display(&error));
+                request_error(
+                    source_schema,
+                    table_name,
+                    method_label,
+                    &logged_url,
+                    request_timeout,
+                    &error,
+                )
+            })?;
+        let status = response.status();
+        let response_span = tracing::info_span!(
+            target: "coral_engine::http",
+            "http.response",
+            otel.name = "http.response",
+            coral.source = source_schema,
+            coral.table = table_name,
+            coral.http.request_id = request_id,
+            coral.http.attempt = attempt,
+            http.request.method = method_label,
+            http.response.status_code = status.as_u16(),
+            http.response.body.size = field::Empty,
+            url.full = %traced_url,
+            error = field::Empty,
+            exception.message = field::Empty,
+        );
+        if let Some(length) = response.content_length() {
+            response_span.record("http.response.body.size", length);
+        }
 
-        match check_rate_limit(
-            response.status(),
-            response.headers(),
-            rate_limit,
-            throttle_retries,
-        ) {
+        match check_rate_limit(status, response.headers(), rate_limit, throttle_retries) {
             RateLimitDecision::Continue => {}
             RateLimitDecision::Retry(wait) => {
+                response_span.record("error", true);
+                response_span.record("exception.message", "rate limited; retrying");
                 throttle_retries += 1;
                 tokio::time::sleep(wait).await;
                 continue;
             }
             RateLimitDecision::Fail(error) => {
+                response_span.record("error", true);
+                response_span.record("exception.message", field::display(&error));
                 return Err(DataFusionError::External(Box::new(
                     ProviderQueryError::RateLimited {
                         source_schema: source_schema.to_string(),
@@ -681,19 +728,26 @@ async fn execute_request(
             }
         }
 
-        if response.status().is_server_error() && server_error_retries < 2 {
+        if status.is_server_error() && server_error_retries < 2 {
+            response_span.record("error", true);
+            response_span.record("exception.message", "server error; retrying");
             server_error_retries += 1;
             tokio::time::sleep(Duration::from_secs(2)).await;
             continue;
         }
 
-        if response.status() == reqwest::StatusCode::NOT_FOUND && allow_404_empty {
+        if status == reqwest::StatusCode::NOT_FOUND && allow_404_empty {
             return Ok(None);
         }
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
+        if !status.is_success() {
+            response_span.record("error", true);
+            let body = response
+                .text()
+                .instrument(response_span.clone())
+                .await
+                .unwrap_or_default();
+            response_span.record("exception.message", field::display(&body));
             return Err(DataFusionError::External(Box::new(
                 ProviderQueryError::ApiRequest {
                     source_schema: source_schema.to_string(),
@@ -710,6 +764,8 @@ async fn execute_request(
         let next_url =
             extract_next_link_url(response.headers(), base_url, link_header_require_results)
                 .map_err(|error| {
+                    response_span.record("error", true);
+                    response_span.record("exception.message", field::display(&error));
                     pagination_error(
                         source_schema,
                         table_name,
@@ -727,7 +783,12 @@ async fn execute_request(
             method_label,
             &logged_url,
         )
-        .await?;
+        .instrument(response_span.clone())
+        .await
+        .inspect_err(|error| {
+            response_span.record("error", true);
+            response_span.record("exception.message", field::display(&error));
+        })?;
         return Ok(Some((payload, next_url)));
     }
 }
@@ -1041,6 +1102,29 @@ fn build_logged_url(url: &str, query_pairs: &[(String, String)]) -> String {
         format!("{url}&{suffix}")
     } else {
         format!("{url}?{suffix}")
+    }
+}
+
+fn sanitize_trace_url(raw: &str) -> String {
+    let Ok(mut url) = reqwest::Url::parse(raw) else {
+        let without_fragment = raw.split_once('#').map_or(raw, |(before, _)| before);
+        return without_fragment
+            .split_once('?')
+            .map_or(without_fragment, |(before, _)| before)
+            .to_string();
+    };
+    url.set_query(None);
+    url.set_fragment(None);
+    let _ = url.set_username("");
+    let _ = url.set_password(None);
+    url.to_string()
+}
+
+fn request_body_size(body: Option<&RequestBody>) -> Option<usize> {
+    match body {
+        Some(RequestBody::Json(value)) => serde_json::to_vec(value).ok().map(|body| body.len()),
+        Some(RequestBody::Text(text)) => Some(text.len()),
+        None => None,
     }
 }
 
