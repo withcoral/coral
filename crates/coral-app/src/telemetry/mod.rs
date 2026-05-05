@@ -2,6 +2,7 @@
 
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
@@ -9,7 +10,7 @@ use opentelemetry::metrics::MeterProvider as _;
 use opentelemetry::propagation::Extractor;
 use opentelemetry::trace::{Status as OtelStatus, TracerProvider as _};
 use opentelemetry_otlp::{
-    LogExporter, MetricExporter, SpanExporter, WithExportConfig, WithHttpConfig,
+    LogExporter, MetricExporter, SpanExporter as OtlpSpanExporter, WithExportConfig, WithHttpConfig,
 };
 use opentelemetry_sdk::logs::SdkLoggerProvider;
 use opentelemetry_sdk::metrics::SdkMeterProvider;
@@ -23,7 +24,9 @@ use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Registry};
 
 pub mod config;
+mod local_store;
 pub mod metrics;
+pub(crate) mod service;
 
 use crate::bootstrap::AppError;
 pub use config::TelemetryConfig;
@@ -201,18 +204,26 @@ fn process_executable_name() -> String {
 pub(crate) fn init_tracing(
     config: &TelemetryConfig,
     enable_stderr_logs: bool,
+    local_trace_store_file: Option<PathBuf>,
 ) -> Result<(), AppError> {
-    INIT.get_or_init(|| try_init_tracing(config, enable_stderr_logs).map_err(|e| e.to_string()))
-        .as_ref()
-        .map_err(|e| AppError::InvalidInput(e.clone()))?;
+    INIT.get_or_init(|| {
+        try_init_tracing(config, enable_stderr_logs, local_trace_store_file)
+            .map_err(|e| e.to_string())
+    })
+    .as_ref()
+    .map_err(|e| AppError::InvalidInput(e.clone()))?;
     Ok(())
 }
 
 #[expect(
     clippy::too_many_lines,
-    reason = "Initialization configures three OTLP pipelines in one place"
+    reason = "Initialization wires OpenTelemetry traces, logs, metrics, and local export"
 )]
-fn try_init_tracing(config: &TelemetryConfig, enable_stderr_logs: bool) -> Result<(), AppError> {
+fn try_init_tracing(
+    config: &TelemetryConfig,
+    enable_stderr_logs: bool,
+    local_trace_store_file: Option<PathBuf>,
+) -> Result<(), AppError> {
     opentelemetry::global::set_text_map_propagator(TraceContextPropagator::new());
     let endpoint = config
         .endpoint
@@ -228,7 +239,10 @@ fn try_init_tracing(config: &TelemetryConfig, enable_stderr_logs: bool) -> Resul
             .with_filter(log_filter.clone())
     });
 
-    if let Some(ref endpoint) = endpoint {
+    let local_trace_store_file = local_trace_store_file.filter(|_| config.local_trace_store);
+    let should_export_traces = endpoint.is_some() || local_trace_store_file.is_some();
+    let mut trace_filter_error = None;
+    let otel_trace_layer = if should_export_traces {
         let resource = opentelemetry_sdk::Resource::builder()
             .with_attribute(opentelemetry::KeyValue::new(
                 "service.name",
@@ -237,117 +251,119 @@ fn try_init_tracing(config: &TelemetryConfig, enable_stderr_logs: bool) -> Resul
             .build();
 
         let headers = parse_headers(config.headers.as_deref().unwrap_or_default());
+        let mut builder = SdkTracerProvider::builder().with_resource(resource.clone());
 
-        let trace_exporter = SpanExporter::builder()
-            .with_http()
-            .with_endpoint(normalize_otlp_endpoint(endpoint, "traces"))
-            .with_headers(headers.clone())
-            .build()
-            .map_err(|e| AppError::InvalidInput(e.to_string()))?;
-        let builder = SdkTracerProvider::builder()
-            .with_resource(resource.clone())
-            .with_span_processor(
+        if let Some(ref endpoint) = endpoint {
+            let trace_exporter = OtlpSpanExporter::builder()
+                .with_http()
+                .with_endpoint(normalize_otlp_endpoint(endpoint, "traces"))
+                .with_headers(headers.clone())
+                .build()
+                .map_err(|e| AppError::InvalidInput(e.to_string()))?;
+            builder = builder.with_span_processor(
                 opentelemetry_sdk::trace::BatchSpanProcessor::builder(trace_exporter).build(),
             );
 
-        let log_exporter = LogExporter::builder()
-            .with_http()
-            .with_endpoint(normalize_otlp_endpoint(endpoint, "logs"))
-            .with_headers(headers.clone())
-            .build()
-            .map_err(|e| AppError::InvalidInput(e.to_string()))?;
-        let logger_provider = SdkLoggerProvider::builder()
-            .with_resource(resource.clone())
-            .with_log_processor(
-                opentelemetry_sdk::logs::BatchLogProcessor::builder(log_exporter).build(),
-            )
-            .build();
-        if let Ok(mut guard) = LOGGER_PROVIDER.lock() {
-            *guard = Some(logger_provider);
+            let log_exporter = LogExporter::builder()
+                .with_http()
+                .with_endpoint(normalize_otlp_endpoint(endpoint, "logs"))
+                .with_headers(headers.clone())
+                .build()
+                .map_err(|e| AppError::InvalidInput(e.to_string()))?;
+            let logger_provider = SdkLoggerProvider::builder()
+                .with_resource(resource.clone())
+                .with_log_processor(
+                    opentelemetry_sdk::logs::BatchLogProcessor::builder(log_exporter).build(),
+                )
+                .build();
+            if let Ok(mut guard) = LOGGER_PROVIDER.lock() {
+                *guard = Some(logger_provider);
+            }
+
+            let metric_exporter = MetricExporter::builder()
+                .with_http()
+                .with_endpoint(normalize_otlp_endpoint(endpoint, "metrics"))
+                .with_headers(headers)
+                .build()
+                .map_err(|e| AppError::InvalidInput(e.to_string()))?;
+            let meter_provider = SdkMeterProvider::builder()
+                .with_resource(resource.clone())
+                .with_reader(
+                    opentelemetry_sdk::metrics::PeriodicReader::builder(metric_exporter)
+                        .with_interval(METRICS_INTERVAL)
+                        .build(),
+                )
+                .build();
+            opentelemetry::global::set_meter_provider(meter_provider.clone());
+            initialize_metrics(Some(&meter_provider));
+            if let Ok(mut guard) = METER_PROVIDER.lock() {
+                *guard = Some(meter_provider);
+            }
         }
 
-        let metric_exporter = MetricExporter::builder()
-            .with_http()
-            .with_endpoint(normalize_otlp_endpoint(endpoint, "metrics"))
-            .with_headers(headers)
-            .build()
-            .map_err(|e| AppError::InvalidInput(e.to_string()))?;
-        let meter_provider = SdkMeterProvider::builder()
-            .with_resource(resource.clone())
-            .with_reader(
-                opentelemetry_sdk::metrics::PeriodicReader::builder(metric_exporter)
-                    .with_interval(METRICS_INTERVAL)
-                    .build(),
-            )
-            .build();
-        opentelemetry::global::set_meter_provider(meter_provider.clone());
-        initialize_metrics(Some(&meter_provider));
-        if let Ok(mut guard) = METER_PROVIDER.lock() {
-            *guard = Some(meter_provider);
+        if let Some(path) = local_trace_store_file {
+            let exporter = local_store::SqliteSpanExporter::new(path)
+                .map_err(|e| AppError::InvalidInput(e.to_string()))?;
+            builder = builder.with_span_processor(
+                opentelemetry_sdk::trace::BatchSpanProcessor::builder(exporter).build(),
+            );
         }
 
         let provider = builder.build();
         let tracer = provider.tracer("coral");
-        let (trace_targets, trace_filter_error) = build_trace_targets(&config.trace_filter);
-        let otel_trace_layer = tracing_opentelemetry::layer()
+        let (trace_targets, error) = build_trace_targets(&config.trace_filter);
+        trace_filter_error = error;
+        let layer = tracing_opentelemetry::layer()
             .with_tracer(tracer)
-            .with_filter(trace_targets.clone());
-        let otel_log_layer = LOGGER_PROVIDER.lock().ok().and_then(|guard| {
-            guard.as_ref().map(|provider| {
-                opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge::new(provider)
-                    .with_filter(log_filter)
-            })
-        });
+            .with_filter(trace_targets);
 
         if let Ok(mut guard) = PROVIDER.lock() {
             *guard = Some(provider);
         }
 
-        if let Err(error) = Registry::default()
-            .with(stderr_layer)
-            .with(otel_trace_layer)
-            .with(otel_log_layer)
-            .try_init()
-        {
-            tracing::warn!(
-                detail = %error,
-                "skipping coral-app tracing subscriber: host process has already installed one"
-            );
-            return Ok(());
-        }
-        if let Some(error) = log_filter_error {
-            tracing::warn!(
-                provided_filter = %config.log_filter.as_deref().unwrap_or(DEFAULT_LOG_FILTER),
-                fallback_filter = DEFAULT_LOG_FILTER,
-                detail = %error,
-                "invalid log_filter; falling back to default filter"
-            );
-        }
-        if let Some(error) = trace_filter_error {
-            tracing::warn!(
-                provided_filter = %config.trace_filter,
-                fallback_filter = DEFAULT_TRACE_FILTER,
-                detail = %error,
-                "invalid trace_filter; falling back to default filter"
-            );
-        }
+        Some(layer)
     } else {
-        if let Err(error) = Registry::default().with(stderr_layer).try_init() {
-            tracing::warn!(
-                detail = %error,
-                "skipping coral-app tracing subscriber: host process has already installed one"
-            );
-            return Ok(());
-        }
-        if let Some(error) = log_filter_error {
-            tracing::warn!(
-                provided_filter = %config.log_filter.as_deref().unwrap_or(DEFAULT_LOG_FILTER),
-                fallback_filter = DEFAULT_LOG_FILTER,
-                detail = %error,
-                "invalid log_filter; falling back to default filter"
-            );
-        }
+        None
+    };
+
+    if endpoint.is_none() {
         initialize_metrics(None);
+    }
+
+    let otel_log_layer = LOGGER_PROVIDER.lock().ok().and_then(|guard| {
+        guard.as_ref().map(|provider| {
+            opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge::new(provider)
+                .with_filter(log_filter)
+        })
+    });
+
+    if let Err(error) = Registry::default()
+        .with(stderr_layer)
+        .with(otel_trace_layer)
+        .with(otel_log_layer)
+        .try_init()
+    {
+        tracing::warn!(
+            detail = %error,
+            "skipping coral-app tracing subscriber: host process has already installed one"
+        );
+        return Ok(());
+    }
+    if let Some(error) = log_filter_error {
+        tracing::warn!(
+            provided_filter = %config.log_filter.as_deref().unwrap_or(DEFAULT_LOG_FILTER),
+            fallback_filter = DEFAULT_LOG_FILTER,
+            detail = %error,
+            "invalid log_filter; falling back to default filter"
+        );
+    }
+    if let Some(error) = trace_filter_error {
+        tracing::warn!(
+            provided_filter = %config.trace_filter,
+            fallback_filter = DEFAULT_TRACE_FILTER,
+            detail = %error,
+            "invalid trace_filter; falling back to default filter"
+        );
     }
 
     Ok(())

@@ -101,6 +101,14 @@ Important files include:
 - `config.toml` for installed-source metadata and non-secret variables
 - imported source specs under `workspaces/<workspace>/sources/<source>/manifest.yaml`
 - source secrets stored separately within the same local trust boundary
+- `telemetry/traces.sqlite3` for local OpenTelemetry spans when `[otel].local_trace_store` is enabled
+
+To capture local traces without running an external OpenTelemetry store, add:
+
+```toml
+[otel]
+local_trace_store = true
+```
 
 <Note>
   [Bundled source](/reference/bundled-sources) specs are not copied into the config directory. Coral resolves them from the current binary when you validate or query a bundled source, so upgrades pick up newer bundled manifests without re-adding the source.

@@ -24,6 +24,7 @@ pub struct TelemetryConfig {
     pub(crate) log_filter: Option<String>,
     pub(crate) trace_filter: String,
     pub(crate) service_name: String,
+    pub(crate) local_trace_store: bool,
 }
 
 impl Default for TelemetryConfig {
@@ -34,6 +35,7 @@ impl Default for TelemetryConfig {
             log_filter: None,
             trace_filter: DEFAULT_TRACE_FILTER.to_string(),
             service_name: DEFAULT_SERVICE_NAME.to_string(),
+            local_trace_store: false,
         }
     }
 }
@@ -89,6 +91,7 @@ headers = "from=config"
 log_filter = "info"
 trace_filter = "coral_app=debug"
 service_name = "from-config"
+local_trace_store = true
 "#,
         )
         .expect("write config");
@@ -100,5 +103,6 @@ service_name = "from-config"
         assert_eq!(config.log_filter.as_deref(), Some("info"));
         assert_eq!(config.trace_filter, "coral_app=debug");
         assert_eq!(config.service_name, "from-config");
+        assert!(config.local_trace_store);
     }
 }

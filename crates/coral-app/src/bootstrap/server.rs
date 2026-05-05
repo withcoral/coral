@@ -17,6 +17,7 @@ use axum::response::Response as AxumResponse;
 use coral_api::v1::feedback_service_server::FeedbackServiceServer;
 use coral_api::v1::query_service_server::QueryServiceServer;
 use coral_api::v1::source_service_server::SourceServiceServer;
+use coral_api::v1::trace_service_server::TraceServiceServer;
 use coral_api::{HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
@@ -42,6 +43,7 @@ use crate::sources::manager::SourceManager;
 use crate::sources::service::SourceService;
 use crate::state::{AppStateLayout, ConfigStore, SecretStore};
 use crate::telemetry::TelemetryConfig;
+use crate::telemetry::service::TraceService;
 use crate::transport::GrpcMethodAnnotatedService;
 
 /// A static asset (e.g., a built SPA file) served on the same port as
@@ -232,12 +234,20 @@ impl ServerBuilder {
         )?;
         layout.ensure()?;
         let telemetry_config = TelemetryConfig::load(&layout)?;
-        crate::telemetry::init_tracing(&telemetry_config, self.config.enable_stderr_logs)?;
+        let enabled_local_trace_store_file = telemetry_config
+            .local_trace_store
+            .then(|| layout.local_trace_store_file());
+        crate::telemetry::init_tracing(
+            &telemetry_config,
+            self.config.enable_stderr_logs,
+            enabled_local_trace_store_file,
+        )?;
         let config_store = ConfigStore::new(layout.clone());
         let secret_store = SecretStore::new(layout.clone());
         let source_manager =
             SourceManager::new(config_store.clone(), secret_store.clone(), layout.clone());
         let feedback_manager = FeedbackManager::new(layout.clone());
+        let local_trace_store_file = layout.local_trace_store_file();
         let query_manager = QueryManager::new(
             config_store,
             secret_store,
@@ -249,6 +259,7 @@ impl ServerBuilder {
             source_manager,
             query_manager,
             feedback_manager,
+            local_trace_store_file,
             self.config.mode,
         )
         .await
@@ -329,11 +340,13 @@ async fn start_server(
     source_manager: SourceManager,
     query_manager: QueryManager,
     feedback_manager: FeedbackManager,
+    local_trace_store_file: PathBuf,
     mode: ServerMode,
 ) -> Result<RunningServer, AppError> {
     let source_service = SourceService::new(source_manager, query_manager.clone());
     let query_service = QueryService::new(query_manager);
     let feedback_service = FeedbackService::new(feedback_manager);
+    let trace_service = TraceService::new(local_trace_store_file);
     let listener = TcpListener::bind(mode.bind_addr()).await?;
     let endpoint_uri = format!("http://{}", listener.local_addr()?);
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
@@ -345,6 +358,7 @@ async fn start_server(
         QueryServiceServer::new(query_service)
             .max_encoding_message_size(QUERY_RESPONSE_MAX_MESSAGE_SIZE),
     );
+    let trace_service = GrpcMethodAnnotatedService::new(TraceServiceServer::new(trace_service));
 
     let task = match mode {
         ServerMode::NativeGrpc => start_grpc_server(
@@ -353,6 +367,7 @@ async fn start_server(
             source_service,
             feedback_service,
             query_service,
+            trace_service,
         ),
         ServerMode::EmbeddedUi { assets, .. } => start_grpc_web_server(
             listener,
@@ -360,6 +375,7 @@ async fn start_server(
             source_service,
             feedback_service,
             query_service,
+            trace_service,
             assets,
         ),
     };
@@ -371,12 +387,13 @@ async fn start_server(
     })
 }
 
-fn start_grpc_server<S, F, Q>(
+fn start_grpc_server<S, F, Q, T>(
     listener: TcpListener,
     shutdown_rx: oneshot::Receiver<()>,
     source_service: S,
     feedback_service: F,
     query_service: Q,
+    trace_service: T,
 ) -> JoinHandle<Result<(), tonic::transport::Error>>
 where
     S: Service<Request<Body>, Response = Response<Body>, Error = Infallible>
@@ -400,6 +417,13 @@ where
         + Sync
         + 'static,
     Q::Future: Send + 'static,
+    T: Service<Request<Body>, Response = Response<Body>, Error = Infallible>
+        + NamedService
+        + Clone
+        + Send
+        + Sync
+        + 'static,
+    T::Future: Send + 'static,
 {
     tokio::spawn(async move {
         Server::builder()
@@ -407,6 +431,7 @@ where
             .add_service(source_service)
             .add_service(feedback_service)
             .add_service(query_service)
+            .add_service(trace_service)
             .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
                 drop(shutdown_rx.await);
             })
@@ -414,12 +439,13 @@ where
     })
 }
 
-fn start_grpc_web_server<S, F, Q>(
+fn start_grpc_web_server<S, F, Q, T>(
     listener: TcpListener,
     shutdown_rx: oneshot::Receiver<()>,
     source_service: S,
     feedback_service: F,
     query_service: Q,
+    trace_service: T,
     static_assets: Arc<dyn StaticAssetsProvider>,
 ) -> JoinHandle<Result<(), tonic::transport::Error>>
 where
@@ -444,11 +470,19 @@ where
         + Sync
         + 'static,
     Q::Future: Send + 'static,
+    T: Service<Request<Body>, Response = Response<Body>, Error = Infallible>
+        + NamedService
+        + Clone
+        + Send
+        + Sync
+        + 'static,
+    T::Future: Send + 'static,
 {
     let grpc = Routes::default()
         .add_service(source_service)
         .add_service(feedback_service)
         .add_service(query_service)
+        .add_service(trace_service)
         .into_axum_router()
         .layer(GrpcWebLayer::new())
         .layer(GrpcWebOnlyLayer);
@@ -625,7 +659,10 @@ mod tests {
 
     use coral_api::v1::query_service_client::QueryServiceClient;
     use coral_api::v1::source_service_client::SourceServiceClient;
-    use coral_api::v1::{ExecuteSqlRequest, ImportSourceRequest, ListSourcesRequest, Workspace};
+    use coral_api::v1::trace_service_client::TraceServiceClient;
+    use coral_api::v1::{
+        ExecuteSqlRequest, ImportSourceRequest, ListSourcesRequest, ListTracesRequest, Workspace,
+    };
     use coral_api::{HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE};
     use coral_engine::QueryRuntimeContext;
     use tempfile::TempDir;
@@ -646,6 +683,35 @@ mod tests {
 
     fn default_workspace() -> Workspace {
         workspace_to_proto(&WorkspaceName::default())
+    }
+
+    #[tokio::test]
+    async fn trace_service_lists_empty_store() {
+        let temp = TempDir::new().expect("temp dir");
+        let server = ServerBuilder::new()
+            .with_config_dir(temp.path().join("coral-config"))
+            .start()
+            .await
+            .expect("start server");
+        let channel = Endpoint::from_shared(server.endpoint_uri().to_string())
+            .expect("endpoint")
+            .connect()
+            .await
+            .expect("connect");
+        let mut trace_client = TraceServiceClient::new(channel);
+
+        let response = trace_client
+            .list_traces(Request::new(ListTracesRequest {
+                page_size: 10,
+                page_token: String::new(),
+            }))
+            .await
+            .expect("list traces")
+            .into_inner();
+
+        assert!(response.traces.is_empty());
+        assert!(response.next_page_token.is_empty());
+        server.shutdown().await.expect("shutdown");
     }
 
     fn grpc_web_body(message: &impl prost::Message) -> Vec<u8> {
@@ -888,6 +954,7 @@ mod tests {
             layout.clone(),
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
+        let local_trace_store_file = layout.local_trace_store_file();
         let query_manager = QueryManager::new(
             ConfigStore::new(layout.clone()),
             SecretStore::new(layout.clone()),
@@ -901,6 +968,7 @@ mod tests {
             source_manager,
             query_manager,
             feedback_manager,
+            local_trace_store_file,
             ServerMode::NativeGrpc,
         )
         .await
@@ -972,6 +1040,7 @@ tables:
             layout.clone(),
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
+        let local_trace_store_file = layout.local_trace_store_file();
         let query_manager = QueryManager::new(
             ConfigStore::new(layout.clone()),
             SecretStore::new(layout.clone()),
@@ -983,6 +1052,7 @@ tables:
             source_manager,
             query_manager,
             feedback_manager,
+            local_trace_store_file,
             ServerMode::NativeGrpc,
         )
         .await
@@ -1066,6 +1136,7 @@ tables:
             layout.clone(),
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
+        let local_trace_store_file = layout.local_trace_store_file();
         let query_manager = QueryManager::new(
             ConfigStore::new(layout.clone()),
             SecretStore::new(layout.clone()),
@@ -1077,6 +1148,7 @@ tables:
             source_manager,
             query_manager,
             feedback_manager,
+            local_trace_store_file,
             ServerMode::NativeGrpc,
         )
         .await
