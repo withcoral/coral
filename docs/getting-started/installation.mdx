@@ -101,7 +101,7 @@ Important files include:
 - `config.toml` for installed-source metadata and non-secret variables
 - imported source specs under `workspaces/<workspace>/sources/<source>/manifest.yaml`
 - source secrets stored separately within the same local trust boundary
-- `telemetry/traces.sqlite3` for local OpenTelemetry spans when `[otel].local_trace_store` is enabled
+- Parquet trace files under `telemetry/traces/` when `[otel].local_trace_store` is enabled
 
 To capture local traces without running an external OpenTelemetry store, add:
 

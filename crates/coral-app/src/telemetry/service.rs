@@ -110,7 +110,10 @@ fn trace_store_status(error: TraceStoreError) -> Status {
         TraceStoreError::NotFound(trace_id) => {
             Status::new(Code::NotFound, format!("trace '{trace_id}' not found"))
         }
-        TraceStoreError::Sqlite { .. } => Status::new(Code::Internal, error.to_string()),
+        TraceStoreError::ReadDir { .. }
+        | TraceStoreError::OpenFile { .. }
+        | TraceStoreError::Arrow { .. }
+        | TraceStoreError::Parquet { .. } => Status::new(Code::Internal, error.to_string()),
     }
 }
 

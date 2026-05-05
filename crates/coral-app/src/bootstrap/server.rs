@@ -234,20 +234,20 @@ impl ServerBuilder {
         )?;
         layout.ensure()?;
         let telemetry_config = TelemetryConfig::load(&layout)?;
-        let enabled_local_trace_store_file = telemetry_config
+        let enabled_local_trace_store_dir = telemetry_config
             .local_trace_store
-            .then(|| layout.local_trace_store_file());
+            .then(|| layout.local_trace_store_dir());
         crate::telemetry::init_tracing(
             &telemetry_config,
             self.config.enable_stderr_logs,
-            enabled_local_trace_store_file,
+            enabled_local_trace_store_dir,
         )?;
         let config_store = ConfigStore::new(layout.clone());
         let secret_store = SecretStore::new(layout.clone());
         let source_manager =
             SourceManager::new(config_store.clone(), secret_store.clone(), layout.clone());
         let feedback_manager = FeedbackManager::new(layout.clone());
-        let local_trace_store_file = layout.local_trace_store_file();
+        let local_trace_store_dir = layout.local_trace_store_dir();
         let query_manager = QueryManager::new(
             config_store,
             secret_store,
@@ -259,7 +259,7 @@ impl ServerBuilder {
             source_manager,
             query_manager,
             feedback_manager,
-            local_trace_store_file,
+            local_trace_store_dir,
             self.config.mode,
         )
         .await
@@ -340,13 +340,13 @@ async fn start_server(
     source_manager: SourceManager,
     query_manager: QueryManager,
     feedback_manager: FeedbackManager,
-    local_trace_store_file: PathBuf,
+    local_trace_store_dir: PathBuf,
     mode: ServerMode,
 ) -> Result<RunningServer, AppError> {
     let source_service = SourceService::new(source_manager, query_manager.clone());
     let query_service = QueryService::new(query_manager);
     let feedback_service = FeedbackService::new(feedback_manager);
-    let trace_service = TraceService::new(local_trace_store_file);
+    let trace_service = TraceService::new(local_trace_store_dir);
     let listener = TcpListener::bind(mode.bind_addr()).await?;
     let endpoint_uri = format!("http://{}", listener.local_addr()?);
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
@@ -954,7 +954,7 @@ mod tests {
             layout.clone(),
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
-        let local_trace_store_file = layout.local_trace_store_file();
+        let local_trace_store_dir = layout.local_trace_store_dir();
         let query_manager = QueryManager::new(
             ConfigStore::new(layout.clone()),
             SecretStore::new(layout.clone()),
@@ -968,7 +968,7 @@ mod tests {
             source_manager,
             query_manager,
             feedback_manager,
-            local_trace_store_file,
+            local_trace_store_dir,
             ServerMode::NativeGrpc,
         )
         .await
@@ -1040,7 +1040,7 @@ tables:
             layout.clone(),
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
-        let local_trace_store_file = layout.local_trace_store_file();
+        let local_trace_store_dir = layout.local_trace_store_dir();
         let query_manager = QueryManager::new(
             ConfigStore::new(layout.clone()),
             SecretStore::new(layout.clone()),
@@ -1052,7 +1052,7 @@ tables:
             source_manager,
             query_manager,
             feedback_manager,
-            local_trace_store_file,
+            local_trace_store_dir,
             ServerMode::NativeGrpc,
         )
         .await
@@ -1136,7 +1136,7 @@ tables:
             layout.clone(),
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
-        let local_trace_store_file = layout.local_trace_store_file();
+        let local_trace_store_dir = layout.local_trace_store_dir();
         let query_manager = QueryManager::new(
             ConfigStore::new(layout.clone()),
             SecretStore::new(layout.clone()),
@@ -1148,7 +1148,7 @@ tables:
             source_manager,
             query_manager,
             feedback_manager,
-            local_trace_store_file,
+            local_trace_store_dir,
             ServerMode::NativeGrpc,
         )
         .await

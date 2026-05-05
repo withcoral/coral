@@ -1,94 +1,30 @@
-//! SQLite-backed span export for local trace capture.
+//! Parquet-backed span export for local trace capture.
 
+use std::collections::HashMap;
+use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::process;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use arrow::array::{
+    Array as _, ArrayRef, BooleanArray, Int32Array, Int64Array, StringArray, UInt32Array,
+};
+use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+use arrow::error::ArrowError;
+use arrow::record_batch::RecordBatch;
 use opentelemetry::trace::{SpanId, SpanKind, Status};
 use opentelemetry::{Array as OtelArray, KeyValue, Value as OtelValue};
 use opentelemetry_sdk::Resource;
 use opentelemetry_sdk::error::{OTelSdkError, OTelSdkResult};
 use opentelemetry_sdk::trace::{SpanData, SpanExporter};
-use rusqlite::{Connection, OptionalExtension as _, Row, Statement, params};
+use parquet::arrow::ArrowWriter;
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use parquet::errors::ParquetError;
 use serde_json::{Map as JsonMap, Number as JsonNumber, Value as JsonValue, json};
 
-const DB_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-
-const CREATE_SCHEMA_SQL: &str = r"
-PRAGMA journal_mode = WAL;
-PRAGMA synchronous = NORMAL;
-
-CREATE TABLE IF NOT EXISTS spans (
-    trace_id TEXT NOT NULL,
-    span_id TEXT NOT NULL,
-    parent_span_id TEXT,
-    parent_span_is_remote INTEGER NOT NULL,
-    name TEXT NOT NULL,
-    kind TEXT NOT NULL,
-    status_code TEXT NOT NULL,
-    status_message TEXT,
-    start_time_unix_nanos INTEGER NOT NULL,
-    end_time_unix_nanos INTEGER NOT NULL,
-    duration_nanos INTEGER NOT NULL,
-    attributes_json TEXT NOT NULL,
-    events_json TEXT NOT NULL,
-    links_json TEXT NOT NULL,
-    resource_json TEXT NOT NULL,
-    scope_name TEXT NOT NULL,
-    scope_version TEXT,
-    scope_schema_url TEXT,
-    scope_attributes_json TEXT NOT NULL,
-    trace_flags INTEGER NOT NULL,
-    trace_state TEXT NOT NULL,
-    is_remote INTEGER NOT NULL,
-    dropped_attributes_count INTEGER NOT NULL,
-    dropped_events_count INTEGER NOT NULL,
-    dropped_links_count INTEGER NOT NULL,
-    PRIMARY KEY (trace_id, span_id)
-);
-
-CREATE INDEX IF NOT EXISTS spans_trace_start_idx
-    ON spans(trace_id, start_time_unix_nanos);
-CREATE INDEX IF NOT EXISTS spans_name_start_idx
-    ON spans(name, start_time_unix_nanos DESC);
-CREATE INDEX IF NOT EXISTS spans_start_idx
-    ON spans(start_time_unix_nanos DESC);
-";
-
-const INSERT_SPAN_SQL: &str = r"
-INSERT OR REPLACE INTO spans (
-    trace_id,
-    span_id,
-    parent_span_id,
-    parent_span_is_remote,
-    name,
-    kind,
-    status_code,
-    status_message,
-    start_time_unix_nanos,
-    end_time_unix_nanos,
-    duration_nanos,
-    attributes_json,
-    events_json,
-    links_json,
-    resource_json,
-    scope_name,
-    scope_version,
-    scope_schema_url,
-    scope_attributes_json,
-    trace_flags,
-    trace_state,
-    is_remote,
-    dropped_attributes_count,
-    dropped_events_count,
-    dropped_links_count
-) VALUES (
-    ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
-    ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
-    ?21, ?22, ?23, ?24, ?25
-);
-";
+const PARQUET_BATCH_SIZE: usize = 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum LocalTraceStoreError {
@@ -97,37 +33,43 @@ pub(crate) enum LocalTraceStoreError {
         path: PathBuf,
         source: std::io::Error,
     },
-    #[error("failed to initialize local trace store {path}: {source}")]
-    Sqlite {
+    #[error("failed to create local trace store file {path}: {source}")]
+    CreateFile {
         path: PathBuf,
-        source: rusqlite::Error,
+        source: std::io::Error,
     },
+    #[error("failed to publish local trace store file {from} to {to}: {source}")]
+    PublishFile {
+        from: PathBuf,
+        to: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("failed to encode local trace store file {path}: {source}")]
+    Arrow { path: PathBuf, source: ArrowError },
+    #[error("failed to write local trace store file {path}: {source}")]
+    Parquet { path: PathBuf, source: ParquetError },
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct SqliteSpanExporter {
-    path: PathBuf,
+pub(crate) struct ParquetSpanExporter {
+    dir: PathBuf,
     resource_json: Arc<Mutex<String>>,
     shutdown_called: Arc<AtomicBool>,
+    file_counter: Arc<AtomicU64>,
 }
 
-impl SqliteSpanExporter {
-    pub(crate) fn new(path: PathBuf) -> Result<Self, LocalTraceStoreError> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|source| LocalTraceStoreError::CreateDir {
-                path: parent.to_path_buf(),
-                source,
-            })?;
-        }
-        open_trace_store_connection(&path).map_err(|source| LocalTraceStoreError::Sqlite {
-            path: path.clone(),
+impl ParquetSpanExporter {
+    pub(crate) fn new(dir: PathBuf) -> Result<Self, LocalTraceStoreError> {
+        fs::create_dir_all(&dir).map_err(|source| LocalTraceStoreError::CreateDir {
+            path: dir.clone(),
             source,
         })?;
 
         Ok(Self {
-            path,
+            dir,
             resource_json: Arc::new(Mutex::new("{}".to_string())),
             shutdown_called: Arc::new(AtomicBool::new(false)),
+            file_counter: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -138,13 +80,13 @@ impl SqliteSpanExporter {
     }
 }
 
-impl SpanExporter for SqliteSpanExporter {
+impl SpanExporter for ParquetSpanExporter {
     async fn export(&self, batch: Vec<SpanData>) -> OTelSdkResult {
         if self.shutdown_called.load(Ordering::Relaxed) {
             return Err(OTelSdkError::AlreadyShutdown);
         }
 
-        write_batch(&self.path, &self.resource_json(), &batch)
+        write_batch(&self.dir, &self.resource_json(), &self.file_counter, &batch)
             .map_err(|error| OTelSdkError::InternalFailure(error.to_string()))
     }
 
@@ -162,18 +104,27 @@ impl SpanExporter for SqliteSpanExporter {
 
 #[derive(Debug, Clone)]
 pub(crate) struct TraceStore {
-    path: PathBuf,
+    dir: PathBuf,
 }
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum TraceStoreError {
     #[error("trace '{0}' not found")]
     NotFound(String),
-    #[error("failed to read local trace store {path}: {source}")]
-    Sqlite {
+    #[error("failed to read local trace store directory {path}: {source}")]
+    ReadDir {
         path: PathBuf,
-        source: rusqlite::Error,
+        source: std::io::Error,
     },
+    #[error("failed to open local trace store file {path}: {source}")]
+    OpenFile {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("failed to decode local trace store file {path}: {source}")]
+    Arrow { path: PathBuf, source: ArrowError },
+    #[error("failed to read local trace store file {path}: {source}")]
+    Parquet { path: PathBuf, source: ParquetError },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -242,8 +193,8 @@ struct TraceAggregate {
 }
 
 impl TraceStore {
-    pub(crate) fn new(path: PathBuf) -> Self {
-        Self { path }
+    pub(crate) fn new(dir: PathBuf) -> Self {
+        Self { dir }
     }
 
     pub(crate) fn list_traces(
@@ -251,217 +202,150 @@ impl TraceStore {
         limit: usize,
         offset: usize,
     ) -> Result<Vec<TraceSummaryRecord>, TraceStoreError> {
-        let Some(connection) = self.open_existing_connection()? else {
-            return Ok(Vec::new());
-        };
+        let mut traces: HashMap<String, Vec<TraceSpanRecord>> = HashMap::new();
+        for span in self.read_spans()? {
+            traces.entry(span.trace_id.clone()).or_default().push(span);
+        }
 
-        let mut statement = connection
-            .prepare(
-                r"
-SELECT
-    trace_id,
-    MIN(start_time_unix_nanos) AS start_time_unix_nanos,
-    MAX(end_time_unix_nanos) AS end_time_unix_nanos,
-    COUNT(*) AS span_count,
-    SUM(CASE WHEN status_code = 'error' THEN 1 ELSE 0 END) AS error_count
-FROM spans
-GROUP BY trace_id
-ORDER BY end_time_unix_nanos DESC
-LIMIT ?1 OFFSET ?2
-",
-            )
-            .map_err(|source| self.sqlite_error(source))?;
-        let aggregates = statement
-            .query_map(params![usize_to_i64(limit), usize_to_i64(offset)], |row| {
-                Ok(TraceAggregate {
-                    trace_id: row.get(0)?,
-                    start_time_unix_nanos: row.get(1)?,
-                    end_time_unix_nanos: row.get(2)?,
-                    span_count: i64_to_u32(row.get(3)?),
-                    error_count: i64_to_u32(row.get(4)?),
-                })
-            })
-            .map_err(|source| self.sqlite_error(source))?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|source| self.sqlite_error(source))?;
-        drop(statement);
-
-        aggregates
+        let mut summaries = traces
             .into_iter()
-            .map(|aggregate| {
-                let primary = primary_span(&connection, &aggregate.trace_id)
-                    .map_err(|source| self.sqlite_error(source))?;
-                Ok(summary_from_aggregate(&aggregate, primary.as_ref()))
-            })
-            .collect()
+            .map(|(trace_id, spans)| summary_from_spans(&trace_id, &spans))
+            .collect::<Vec<_>>();
+        summaries.sort_by(|left, right| {
+            right
+                .end_time_unix_nanos
+                .cmp(&left.end_time_unix_nanos)
+                .then_with(|| left.trace_id.cmp(&right.trace_id))
+        });
+
+        Ok(summaries.into_iter().skip(offset).take(limit).collect())
     }
 
     pub(crate) fn get_trace(&self, trace_id: &str) -> Result<TraceDetailRecord, TraceStoreError> {
-        let Some(connection) = self.open_existing_connection()? else {
-            return Err(TraceStoreError::NotFound(trace_id.to_string()));
-        };
-
-        let mut statement = connection
-            .prepare(
-                r"
-SELECT
-    trace_id,
-    span_id,
-    parent_span_id,
-    parent_span_is_remote,
-    name,
-    kind,
-    status_code,
-    status_message,
-    start_time_unix_nanos,
-    end_time_unix_nanos,
-    duration_nanos,
-    attributes_json,
-    events_json,
-    links_json,
-    resource_json,
-    scope_name,
-    scope_version,
-    scope_schema_url,
-    scope_attributes_json,
-    trace_flags,
-    trace_state,
-    is_remote,
-    dropped_attributes_count,
-    dropped_events_count,
-    dropped_links_count
-FROM spans
-WHERE trace_id = ?1
-ORDER BY start_time_unix_nanos ASC, span_id ASC
-",
-            )
-            .map_err(|source| self.sqlite_error(source))?;
-        let spans = statement
-            .query_map(params![trace_id], span_from_row)
-            .map_err(|source| self.sqlite_error(source))?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|source| self.sqlite_error(source))?;
+        let mut spans = self
+            .read_spans()?
+            .into_iter()
+            .filter(|span| span.trace_id == trace_id)
+            .collect::<Vec<_>>();
 
         if spans.is_empty() {
             return Err(TraceStoreError::NotFound(trace_id.to_string()));
         }
 
+        spans.sort_by(|left, right| {
+            left.start_time_unix_nanos
+                .cmp(&right.start_time_unix_nanos)
+                .then_with(|| left.span_id.cmp(&right.span_id))
+        });
+
         let summary = summary_from_spans(trace_id, &spans);
         Ok(TraceDetailRecord { summary, spans })
     }
 
-    fn open_existing_connection(&self) -> Result<Option<Connection>, TraceStoreError> {
-        if !self.path.exists() {
-            return Ok(None);
+    fn read_spans(&self) -> Result<Vec<TraceSpanRecord>, TraceStoreError> {
+        let mut spans_by_id = HashMap::new();
+        for path in self.parquet_files()? {
+            for span in read_spans_file(&path)? {
+                spans_by_id.insert((span.trace_id.clone(), span.span_id.clone()), span);
+            }
         }
-
-        let connection =
-            Connection::open(&self.path).map_err(|source| self.sqlite_error(source))?;
-        connection
-            .busy_timeout(DB_BUSY_TIMEOUT)
-            .map_err(|source| self.sqlite_error(source))?;
-        if !spans_table_exists(&connection).map_err(|source| self.sqlite_error(source))? {
-            return Ok(None);
-        }
-        Ok(Some(connection))
+        Ok(spans_by_id.into_values().collect())
     }
 
-    fn sqlite_error(&self, source: rusqlite::Error) -> TraceStoreError {
-        TraceStoreError::Sqlite {
-            path: self.path.clone(),
+    fn parquet_files(&self) -> Result<Vec<PathBuf>, TraceStoreError> {
+        if !self.dir.exists() {
+            return Ok(Vec::new());
+        }
+
+        let entries = fs::read_dir(&self.dir).map_err(|source| TraceStoreError::ReadDir {
+            path: self.dir.clone(),
             source,
+        })?;
+        let mut files = Vec::new();
+        for entry in entries {
+            let entry = entry.map_err(|source| TraceStoreError::ReadDir {
+                path: self.dir.clone(),
+                source,
+            })?;
+            let path = entry.path();
+            if path
+                .extension()
+                .and_then(std::ffi::OsStr::to_str)
+                .is_some_and(|extension| extension == "parquet")
+            {
+                files.push(path);
+            }
         }
+        files.sort();
+        Ok(files)
     }
 }
 
-fn spans_table_exists(connection: &Connection) -> rusqlite::Result<bool> {
-    let count: i64 = connection.query_row(
-        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'spans'",
-        [],
-        |row| row.get(0),
-    )?;
-    Ok(count > 0)
+fn read_spans_file(path: &Path) -> Result<Vec<TraceSpanRecord>, TraceStoreError> {
+    let file = File::open(path).map_err(|source| TraceStoreError::OpenFile {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let reader = ParquetRecordBatchReaderBuilder::try_new(file)
+        .map_err(|source| TraceStoreError::Parquet {
+            path: path.to_path_buf(),
+            source,
+        })?
+        .with_batch_size(PARQUET_BATCH_SIZE)
+        .build()
+        .map_err(|source| TraceStoreError::Parquet {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    let mut spans = Vec::new();
+    for batch in reader {
+        let batch = batch.map_err(|source| TraceStoreError::Arrow {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        spans.extend(
+            records_from_batch(&batch).map_err(|source| TraceStoreError::Arrow {
+                path: path.to_path_buf(),
+                source,
+            })?,
+        );
+    }
+    Ok(spans)
 }
 
-fn primary_span(
-    connection: &Connection,
-    trace_id: &str,
-) -> rusqlite::Result<Option<TraceSpanRecord>> {
-    connection
-        .query_row(
-            r"
-SELECT
-    trace_id,
-    span_id,
-    parent_span_id,
-    parent_span_is_remote,
-    name,
-    kind,
-    status_code,
-    status_message,
-    start_time_unix_nanos,
-    end_time_unix_nanos,
-    duration_nanos,
-    attributes_json,
-    events_json,
-    links_json,
-    resource_json,
-    scope_name,
-    scope_version,
-    scope_schema_url,
-    scope_attributes_json,
-    trace_flags,
-    trace_state,
-    is_remote,
-    dropped_attributes_count,
-    dropped_events_count,
-    dropped_links_count
-FROM spans
-WHERE trace_id = ?1
-ORDER BY
-    CASE
-        WHEN name = 'coral.query' THEN 0
-        WHEN parent_span_id IS NULL THEN 1
-        ELSE 2
-    END,
-    start_time_unix_nanos ASC,
-    span_id ASC
-LIMIT 1
-",
-            params![trace_id],
-            span_from_row,
-        )
-        .optional()
-}
-
-fn span_from_row(row: &Row<'_>) -> rusqlite::Result<TraceSpanRecord> {
-    Ok(TraceSpanRecord {
-        trace_id: row.get(0)?,
-        span_id: row.get(1)?,
-        parent_span_id: row.get(2)?,
-        parent_span_is_remote: i64_to_bool(row.get(3)?),
-        name: row.get(4)?,
-        kind: row.get(5)?,
-        status: stored_status(row.get::<_, String>(6)?.as_str()),
-        status_message: row.get(7)?,
-        start_time_unix_nanos: row.get(8)?,
-        end_time_unix_nanos: row.get(9)?,
-        duration_nanos: row.get(10)?,
-        attributes_json: row.get(11)?,
-        events_json: row.get(12)?,
-        links_json: row.get(13)?,
-        resource_json: row.get(14)?,
-        scope_name: row.get(15)?,
-        scope_version: row.get(16)?,
-        scope_schema_url: row.get(17)?,
-        scope_attributes_json: row.get(18)?,
-        trace_flags: i64_to_i32(row.get(19)?),
-        trace_state: row.get(20)?,
-        is_remote: i64_to_bool(row.get(21)?),
-        dropped_attributes_count: i64_to_u32(row.get(22)?),
-        dropped_events_count: i64_to_u32(row.get(23)?),
-        dropped_links_count: i64_to_u32(row.get(24)?),
-    })
+fn summary_from_spans(trace_id: &str, spans: &[TraceSpanRecord]) -> TraceSummaryRecord {
+    let start_time_unix_nanos = spans
+        .iter()
+        .map(|span| span.start_time_unix_nanos)
+        .min()
+        .unwrap_or_default();
+    let end_time_unix_nanos = spans
+        .iter()
+        .map(|span| span.end_time_unix_nanos)
+        .max()
+        .unwrap_or(start_time_unix_nanos);
+    let error_count = spans
+        .iter()
+        .filter(|span| span.status == StoredTraceStatus::Error)
+        .count();
+    let aggregate = TraceAggregate {
+        trace_id: trace_id.to_string(),
+        start_time_unix_nanos,
+        end_time_unix_nanos,
+        span_count: usize_to_u32(spans.len()),
+        error_count: usize_to_u32(error_count),
+    };
+    let primary = spans.iter().min_by_key(|span| {
+        let priority = if span.name == "coral.query" {
+            0
+        } else if span.parent_span_id.is_none() {
+            1
+        } else {
+            2
+        };
+        (priority, span.start_time_unix_nanos, span.span_id.as_str())
+    });
+    summary_from_aggregate(&aggregate, primary)
 }
 
 fn summary_from_aggregate(
@@ -524,39 +408,424 @@ fn summary_from_aggregate(
     )
 }
 
-fn summary_from_spans(trace_id: &str, spans: &[TraceSpanRecord]) -> TraceSummaryRecord {
-    let start_time_unix_nanos = spans
+fn write_batch(
+    dir: &Path,
+    resource_json: &str,
+    file_counter: &AtomicU64,
+    batch: &[SpanData],
+) -> Result<(), LocalTraceStoreError> {
+    if batch.is_empty() {
+        return Ok(());
+    }
+
+    fs::create_dir_all(dir).map_err(|source| LocalTraceStoreError::CreateDir {
+        path: dir.to_path_buf(),
+        source,
+    })?;
+    let schema = trace_store_schema();
+    let record_batch = span_batch(schema.clone(), resource_json, batch).map_err(|source| {
+        LocalTraceStoreError::Arrow {
+            path: dir.to_path_buf(),
+            source,
+        }
+    })?;
+    let (temp_path, final_path) = next_batch_paths(dir, file_counter);
+    let file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp_path)
+        .map_err(|source| LocalTraceStoreError::CreateFile {
+            path: temp_path.clone(),
+            source,
+        })?;
+    let mut writer = ArrowWriter::try_new(file, schema, None).map_err(|source| {
+        LocalTraceStoreError::Parquet {
+            path: temp_path.clone(),
+            source,
+        }
+    })?;
+    writer
+        .write(&record_batch)
+        .map_err(|source| LocalTraceStoreError::Parquet {
+            path: temp_path.clone(),
+            source,
+        })?;
+    writer
+        .close()
+        .map_err(|source| LocalTraceStoreError::Parquet {
+            path: temp_path.clone(),
+            source,
+        })?;
+    fs::rename(&temp_path, &final_path).map_err(|source| LocalTraceStoreError::PublishFile {
+        from: temp_path,
+        to: final_path,
+        source,
+    })
+}
+
+fn next_batch_paths(dir: &Path, file_counter: &AtomicU64) -> (PathBuf, PathBuf) {
+    let sequence = file_counter.fetch_add(1, Ordering::Relaxed);
+    let unix_nanos = unix_nanos(SystemTime::now());
+    let filename = format!(
+        "spans-{unix_nanos:020}-{}-{sequence:016}.parquet",
+        process::id()
+    );
+    let final_path = dir.join(filename);
+    let temp_path = final_path.with_extension("parquet.tmp");
+    (temp_path, final_path)
+}
+
+fn span_batch(
+    schema: SchemaRef,
+    resource_json: &str,
+    batch: &[SpanData],
+) -> Result<RecordBatch, ArrowError> {
+    let records = batch
         .iter()
-        .map(|span| span.start_time_unix_nanos)
-        .min()
-        .unwrap_or_default();
-    let end_time_unix_nanos = spans
-        .iter()
-        .map(|span| span.end_time_unix_nanos)
-        .max()
-        .unwrap_or(start_time_unix_nanos);
-    let error_count = spans
-        .iter()
-        .filter(|span| span.status == StoredTraceStatus::Error)
-        .count();
-    let aggregate = TraceAggregate {
-        trace_id: trace_id.to_string(),
-        start_time_unix_nanos,
-        end_time_unix_nanos,
-        span_count: usize_to_u32(spans.len()),
-        error_count: usize_to_u32(error_count),
-    };
-    let primary = spans.iter().min_by_key(|span| {
-        let priority = if span.name == "coral.query" {
-            0
-        } else if span.parent_span_id.is_none() {
-            1
-        } else {
-            2
-        };
-        (priority, span.start_time_unix_nanos, span.span_id.as_str())
-    });
-    summary_from_aggregate(&aggregate, primary)
+        .map(|span| span_record(resource_json, span))
+        .collect::<Vec<_>>();
+    records_to_batch(schema, &records)
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "The Parquet record schema is intentionally explicit and column-oriented"
+)]
+fn records_to_batch(
+    schema: SchemaRef,
+    records: &[TraceSpanRecord],
+) -> Result<RecordBatch, ArrowError> {
+    let columns: Vec<ArrayRef> = vec![
+        Arc::new(StringArray::from(
+            records
+                .iter()
+                .map(|record| record.trace_id.as_str())
+                .collect::<Vec<_>>(),
+        )),
+        Arc::new(StringArray::from(
+            records
+                .iter()
+                .map(|record| record.span_id.as_str())
+                .collect::<Vec<_>>(),
+        )),
+        Arc::new(StringArray::from(
+            records
+                .iter()
+                .map(|record| record.parent_span_id.as_deref())
+                .collect::<Vec<_>>(),
+        )),
+        Arc::new(BooleanArray::from(
+            records
+                .iter()
+                .map(|record| record.parent_span_is_remote)
+                .collect::<Vec<_>>(),
+        )),
+        Arc::new(StringArray::from(
+            records
+                .iter()
+                .map(|record| record.name.as_str())
+                .collect::<Vec<_>>(),
+        )),
+        Arc::new(StringArray::from(
+            records
+                .iter()
+                .map(|record| record.kind.as_str())
+                .collect::<Vec<_>>(),
+        )),
+        Arc::new(StringArray::from(
+            records
+                .iter()
+                .map(|record| status_code(record.status))
+                .collect::<Vec<_>>(),
+        )),
+        Arc::new(StringArray::from(
+            records
+                .iter()
+                .map(|record| record.status_message.as_deref())
+                .collect::<Vec<_>>(),
+        )),
+        Arc::new(Int64Array::from(
+            records
+                .iter()
+                .map(|record| record.start_time_unix_nanos)
+                .collect::<Vec<_>>(),
+        )),
+        Arc::new(Int64Array::from(
+            records
+                .iter()
+                .map(|record| record.end_time_unix_nanos)
+                .collect::<Vec<_>>(),
+        )),
+        Arc::new(Int64Array::from(
+            records
+                .iter()
+                .map(|record| record.duration_nanos)
+                .collect::<Vec<_>>(),
+        )),
+        Arc::new(StringArray::from(
+            records
+                .iter()
+                .map(|record| record.attributes_json.as_str())
+                .collect::<Vec<_>>(),
+        )),
+        Arc::new(StringArray::from(
+            records
+                .iter()
+                .map(|record| record.events_json.as_str())
+                .collect::<Vec<_>>(),
+        )),
+        Arc::new(StringArray::from(
+            records
+                .iter()
+                .map(|record| record.links_json.as_str())
+                .collect::<Vec<_>>(),
+        )),
+        Arc::new(StringArray::from(
+            records
+                .iter()
+                .map(|record| record.resource_json.as_str())
+                .collect::<Vec<_>>(),
+        )),
+        Arc::new(StringArray::from(
+            records
+                .iter()
+                .map(|record| record.scope_name.as_str())
+                .collect::<Vec<_>>(),
+        )),
+        Arc::new(StringArray::from(
+            records
+                .iter()
+                .map(|record| record.scope_version.as_deref())
+                .collect::<Vec<_>>(),
+        )),
+        Arc::new(StringArray::from(
+            records
+                .iter()
+                .map(|record| record.scope_schema_url.as_deref())
+                .collect::<Vec<_>>(),
+        )),
+        Arc::new(StringArray::from(
+            records
+                .iter()
+                .map(|record| record.scope_attributes_json.as_str())
+                .collect::<Vec<_>>(),
+        )),
+        Arc::new(Int32Array::from(
+            records
+                .iter()
+                .map(|record| record.trace_flags)
+                .collect::<Vec<_>>(),
+        )),
+        Arc::new(StringArray::from(
+            records
+                .iter()
+                .map(|record| record.trace_state.as_str())
+                .collect::<Vec<_>>(),
+        )),
+        Arc::new(BooleanArray::from(
+            records
+                .iter()
+                .map(|record| record.is_remote)
+                .collect::<Vec<_>>(),
+        )),
+        Arc::new(UInt32Array::from(
+            records
+                .iter()
+                .map(|record| record.dropped_attributes_count)
+                .collect::<Vec<_>>(),
+        )),
+        Arc::new(UInt32Array::from(
+            records
+                .iter()
+                .map(|record| record.dropped_events_count)
+                .collect::<Vec<_>>(),
+        )),
+        Arc::new(UInt32Array::from(
+            records
+                .iter()
+                .map(|record| record.dropped_links_count)
+                .collect::<Vec<_>>(),
+        )),
+    ];
+
+    RecordBatch::try_new(schema, columns)
+}
+
+fn span_record(resource_json: &str, span: &SpanData) -> TraceSpanRecord {
+    let span_context = &span.span_context;
+    let parent_span_id =
+        (span.parent_span_id != SpanId::INVALID).then(|| span.parent_span_id.to_string());
+    let (status, status_message) = status_parts(&span.status);
+
+    TraceSpanRecord {
+        trace_id: span_context.trace_id().to_string(),
+        span_id: span_context.span_id().to_string(),
+        parent_span_id,
+        parent_span_is_remote: span.parent_span_is_remote,
+        name: span.name.to_string(),
+        kind: span_kind(&span.span_kind).to_string(),
+        status,
+        status_message,
+        start_time_unix_nanos: unix_nanos(span.start_time),
+        end_time_unix_nanos: unix_nanos(span.end_time),
+        duration_nanos: duration_nanos(span.start_time, span.end_time),
+        attributes_json: key_values_json(span.attributes.iter()).to_string(),
+        events_json: events_json(span).to_string(),
+        links_json: links_json(span).to_string(),
+        resource_json: resource_json.to_string(),
+        scope_name: span.instrumentation_scope.name().to_string(),
+        scope_version: span
+            .instrumentation_scope
+            .version()
+            .map(ToString::to_string),
+        scope_schema_url: span
+            .instrumentation_scope
+            .schema_url()
+            .map(ToString::to_string),
+        scope_attributes_json: key_values_json(span.instrumentation_scope.attributes()).to_string(),
+        trace_flags: i32::from(span_context.trace_flags().to_u8()),
+        trace_state: span_context.trace_state().header(),
+        is_remote: span_context.is_remote(),
+        dropped_attributes_count: span.dropped_attributes_count,
+        dropped_events_count: span.events.dropped_count,
+        dropped_links_count: span.links.dropped_count,
+    }
+}
+
+fn records_from_batch(batch: &RecordBatch) -> Result<Vec<TraceSpanRecord>, ArrowError> {
+    let trace_id = string_column(batch, "trace_id")?;
+    let span_id = string_column(batch, "span_id")?;
+    let parent_span_id = string_column(batch, "parent_span_id")?;
+    let parent_span_is_remote = bool_column(batch, "parent_span_is_remote")?;
+    let name = string_column(batch, "name")?;
+    let kind = string_column(batch, "kind")?;
+    let status_code = string_column(batch, "status_code")?;
+    let status_message = string_column(batch, "status_message")?;
+    let start_time_unix_nanos = i64_column(batch, "start_time_unix_nanos")?;
+    let end_time_unix_nanos = i64_column(batch, "end_time_unix_nanos")?;
+    let duration_nanos = i64_column(batch, "duration_nanos")?;
+    let attributes_json = string_column(batch, "attributes_json")?;
+    let events_json = string_column(batch, "events_json")?;
+    let links_json = string_column(batch, "links_json")?;
+    let resource_json = string_column(batch, "resource_json")?;
+    let scope_name = string_column(batch, "scope_name")?;
+    let scope_version = string_column(batch, "scope_version")?;
+    let scope_schema_url = string_column(batch, "scope_schema_url")?;
+    let scope_attributes_json = string_column(batch, "scope_attributes_json")?;
+    let trace_flags = i32_column(batch, "trace_flags")?;
+    let trace_state = string_column(batch, "trace_state")?;
+    let is_remote = bool_column(batch, "is_remote")?;
+    let dropped_attributes_count = u32_column(batch, "dropped_attributes_count")?;
+    let dropped_events_count = u32_column(batch, "dropped_events_count")?;
+    let dropped_links_count = u32_column(batch, "dropped_links_count")?;
+
+    let mut records = Vec::with_capacity(batch.num_rows());
+    for row in 0..batch.num_rows() {
+        records.push(TraceSpanRecord {
+            trace_id: required_string(trace_id, row, "trace_id")?,
+            span_id: required_string(span_id, row, "span_id")?,
+            parent_span_id: optional_string(parent_span_id, row),
+            parent_span_is_remote: parent_span_is_remote.value(row),
+            name: required_string(name, row, "name")?,
+            kind: required_string(kind, row, "kind")?,
+            status: stored_status(&required_string(status_code, row, "status_code")?),
+            status_message: optional_string(status_message, row),
+            start_time_unix_nanos: start_time_unix_nanos.value(row),
+            end_time_unix_nanos: end_time_unix_nanos.value(row),
+            duration_nanos: duration_nanos.value(row),
+            attributes_json: required_string(attributes_json, row, "attributes_json")?,
+            events_json: required_string(events_json, row, "events_json")?,
+            links_json: required_string(links_json, row, "links_json")?,
+            resource_json: required_string(resource_json, row, "resource_json")?,
+            scope_name: required_string(scope_name, row, "scope_name")?,
+            scope_version: optional_string(scope_version, row),
+            scope_schema_url: optional_string(scope_schema_url, row),
+            scope_attributes_json: required_string(
+                scope_attributes_json,
+                row,
+                "scope_attributes_json",
+            )?,
+            trace_flags: trace_flags.value(row),
+            trace_state: required_string(trace_state, row, "trace_state")?,
+            is_remote: is_remote.value(row),
+            dropped_attributes_count: dropped_attributes_count.value(row),
+            dropped_events_count: dropped_events_count.value(row),
+            dropped_links_count: dropped_links_count.value(row),
+        });
+    }
+    Ok(records)
+}
+
+fn string_column<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a StringArray, ArrowError> {
+    typed_column(batch, name)
+}
+
+fn bool_column<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a BooleanArray, ArrowError> {
+    typed_column(batch, name)
+}
+
+fn i32_column<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a Int32Array, ArrowError> {
+    typed_column(batch, name)
+}
+
+fn i64_column<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a Int64Array, ArrowError> {
+    typed_column(batch, name)
+}
+
+fn u32_column<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a UInt32Array, ArrowError> {
+    typed_column(batch, name)
+}
+
+fn typed_column<'a, T: 'static>(batch: &'a RecordBatch, name: &str) -> Result<&'a T, ArrowError> {
+    batch
+        .column_by_name(name)
+        .ok_or_else(|| ArrowError::SchemaError(format!("missing trace store column '{name}'")))?
+        .as_any()
+        .downcast_ref::<T>()
+        .ok_or_else(|| ArrowError::SchemaError(format!("invalid trace store column '{name}'")))
+}
+
+fn required_string(column: &StringArray, row: usize, name: &str) -> Result<String, ArrowError> {
+    if column.is_null(row) {
+        return Err(ArrowError::SchemaError(format!(
+            "trace store column '{name}' is null"
+        )));
+    }
+    Ok(column.value(row).to_string())
+}
+
+fn optional_string(column: &StringArray, row: usize) -> Option<String> {
+    (!column.is_null(row)).then(|| column.value(row).to_string())
+}
+
+fn trace_store_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("trace_id", DataType::Utf8, false),
+        Field::new("span_id", DataType::Utf8, false),
+        Field::new("parent_span_id", DataType::Utf8, true),
+        Field::new("parent_span_is_remote", DataType::Boolean, false),
+        Field::new("name", DataType::Utf8, false),
+        Field::new("kind", DataType::Utf8, false),
+        Field::new("status_code", DataType::Utf8, false),
+        Field::new("status_message", DataType::Utf8, true),
+        Field::new("start_time_unix_nanos", DataType::Int64, false),
+        Field::new("end_time_unix_nanos", DataType::Int64, false),
+        Field::new("duration_nanos", DataType::Int64, false),
+        Field::new("attributes_json", DataType::Utf8, false),
+        Field::new("events_json", DataType::Utf8, false),
+        Field::new("links_json", DataType::Utf8, false),
+        Field::new("resource_json", DataType::Utf8, false),
+        Field::new("scope_name", DataType::Utf8, false),
+        Field::new("scope_version", DataType::Utf8, true),
+        Field::new("scope_schema_url", DataType::Utf8, true),
+        Field::new("scope_attributes_json", DataType::Utf8, false),
+        Field::new("trace_flags", DataType::Int32, false),
+        Field::new("trace_state", DataType::Utf8, false),
+        Field::new("is_remote", DataType::Boolean, false),
+        Field::new("dropped_attributes_count", DataType::UInt32, false),
+        Field::new("dropped_events_count", DataType::UInt32, false),
+        Field::new("dropped_links_count", DataType::UInt32, false),
+    ]))
 }
 
 fn parse_attributes(attributes_json: &str) -> Option<JsonValue> {
@@ -598,97 +867,16 @@ fn stored_status(status_code: &str) -> StoredTraceStatus {
     }
 }
 
-fn i64_to_bool(value: i64) -> bool {
-    value != 0
-}
-
-fn i64_to_i32(value: i64) -> i32 {
-    i32::try_from(value).unwrap_or(if value.is_negative() {
-        i32::MIN
-    } else {
-        i32::MAX
-    })
-}
-
-fn i64_to_u32(value: i64) -> u32 {
-    u32::try_from(value).unwrap_or(if value.is_negative() { 0 } else { u32::MAX })
-}
-
-fn usize_to_i64(value: usize) -> i64 {
-    i64::try_from(value).unwrap_or(i64::MAX)
+fn status_code(status: StoredTraceStatus) -> &'static str {
+    match status {
+        StoredTraceStatus::Unspecified => "unset",
+        StoredTraceStatus::Ok => "ok",
+        StoredTraceStatus::Error => "error",
+    }
 }
 
 fn usize_to_u32(value: usize) -> u32 {
     u32::try_from(value).unwrap_or(u32::MAX)
-}
-
-fn open_trace_store_connection(path: &Path) -> rusqlite::Result<Connection> {
-    let connection = Connection::open(path)?;
-    connection.busy_timeout(DB_BUSY_TIMEOUT)?;
-    connection.execute_batch(CREATE_SCHEMA_SQL)?;
-    Ok(connection)
-}
-
-fn write_batch(path: &Path, resource_json: &str, batch: &[SpanData]) -> rusqlite::Result<()> {
-    if batch.is_empty() {
-        return Ok(());
-    }
-
-    let mut connection = open_trace_store_connection(path)?;
-    let transaction = connection.transaction()?;
-    {
-        let mut statement = transaction.prepare(INSERT_SPAN_SQL)?;
-        for span in batch {
-            insert_span(&mut statement, resource_json, span)?;
-        }
-    }
-    transaction.commit()
-}
-
-fn insert_span(
-    statement: &mut Statement<'_>,
-    resource_json: &str,
-    span: &SpanData,
-) -> rusqlite::Result<()> {
-    let span_context = &span.span_context;
-    let parent_span_id =
-        (span.parent_span_id != SpanId::INVALID).then(|| span.parent_span_id.to_string());
-    let (status_code, status_message) = status_parts(&span.status);
-    let attributes_json = key_values_json(span.attributes.iter()).to_string();
-    let events_json = events_json(span).to_string();
-    let links_json = links_json(span).to_string();
-    let scope_attributes_json =
-        key_values_json(span.instrumentation_scope.attributes()).to_string();
-
-    statement.execute(params![
-        span_context.trace_id().to_string(),
-        span_context.span_id().to_string(),
-        parent_span_id,
-        span.parent_span_is_remote,
-        span.name.as_ref(),
-        span_kind(&span.span_kind),
-        status_code,
-        status_message,
-        unix_nanos(span.start_time),
-        unix_nanos(span.end_time),
-        duration_nanos(span.start_time, span.end_time),
-        attributes_json,
-        events_json,
-        links_json,
-        resource_json,
-        span.instrumentation_scope.name(),
-        span.instrumentation_scope.version(),
-        span.instrumentation_scope.schema_url(),
-        scope_attributes_json,
-        i64::from(span_context.trace_flags().to_u8()),
-        span_context.trace_state().header(),
-        span_context.is_remote(),
-        i64::from(span.dropped_attributes_count),
-        i64::from(span.events.dropped_count),
-        i64::from(span.links.dropped_count),
-    ])?;
-
-    Ok(())
 }
 
 fn key_values_json<'a>(attributes: impl IntoIterator<Item = &'a KeyValue>) -> JsonValue {
@@ -793,11 +981,11 @@ fn span_kind(kind: &SpanKind) -> &'static str {
     }
 }
 
-fn status_parts(status: &Status) -> (&'static str, Option<String>) {
+fn status_parts(status: &Status) -> (StoredTraceStatus, Option<String>) {
     match status {
-        Status::Unset => ("unset", None),
-        Status::Error { description } => ("error", Some(description.to_string())),
-        Status::Ok => ("ok", None),
+        Status::Unset => (StoredTraceStatus::Unspecified, None),
+        Status::Error { description } => (StoredTraceStatus::Error, Some(description.to_string())),
+        Status::Ok => (StoredTraceStatus::Ok, None),
     }
 }
 
@@ -816,18 +1004,20 @@ fn duration_nanos(start: SystemTime, end: SystemTime) -> i64 {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use opentelemetry::KeyValue;
     use opentelemetry::trace::{Span as _, SpanKind, Tracer, TracerProvider as _};
     use opentelemetry_sdk::trace::SdkTracerProvider;
     use tempfile::TempDir;
 
-    use super::{SqliteSpanExporter, StoredTraceStatus, TraceStore};
+    use super::{ParquetSpanExporter, StoredTraceStatus, TraceStore};
 
     #[test]
-    fn exports_finished_spans_to_sqlite() {
+    fn exports_finished_spans_to_parquet() {
         let temp = TempDir::new().expect("temp dir");
-        let path = temp.path().join("telemetry").join("traces.sqlite3");
-        let exporter = SqliteSpanExporter::new(path.clone()).expect("sqlite span exporter");
+        let dir = temp.path().join("telemetry").join("traces");
+        let exporter = ParquetSpanExporter::new(dir.clone()).expect("parquet span exporter");
         let provider = SdkTracerProvider::builder()
             .with_resource(
                 opentelemetry_sdk::Resource::builder_empty()
@@ -850,25 +1040,43 @@ mod tests {
         span.end();
         provider.shutdown().expect("provider shutdown");
 
-        let connection = rusqlite::Connection::open(path).expect("open trace db");
-        let (name, attributes_json, resource_json): (String, String, String) = connection
-            .query_row(
-                "SELECT name, attributes_json, resource_json FROM spans",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .expect("span row");
+        let parquet_files = fs::read_dir(&dir)
+            .expect("trace dir")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry.path().extension().and_then(|ext| ext.to_str()) == Some("parquet")
+            })
+            .count();
+        assert_eq!(parquet_files, 1);
 
-        assert_eq!(name, "coral.query");
-        assert!(attributes_json.contains(r#""test.attribute":"value""#));
-        assert!(resource_json.contains(r#""service.name":"coral-test""#));
+        let store = TraceStore::new(dir);
+        let trace_id = store
+            .list_traces(10, 0)
+            .expect("list traces")
+            .into_iter()
+            .next()
+            .expect("trace summary")
+            .trace_id;
+        let detail = store.get_trace(&trace_id).expect("trace detail");
+
+        assert_eq!(detail.spans[0].name, "coral.query");
+        assert!(
+            detail.spans[0]
+                .attributes_json
+                .contains(r#""test.attribute":"value""#)
+        );
+        assert!(
+            detail.spans[0]
+                .resource_json
+                .contains(r#""service.name":"coral-test""#)
+        );
     }
 
     #[test]
-    fn reads_trace_summaries_and_details_from_sqlite() {
+    fn reads_trace_summaries_and_details_from_parquet() {
         let temp = TempDir::new().expect("temp dir");
-        let path = temp.path().join("telemetry").join("traces.sqlite3");
-        let exporter = SqliteSpanExporter::new(path.clone()).expect("sqlite span exporter");
+        let dir = temp.path().join("telemetry").join("traces");
+        let exporter = ParquetSpanExporter::new(dir.clone()).expect("parquet span exporter");
         let provider = SdkTracerProvider::builder()
             .with_simple_exporter(exporter)
             .build();
@@ -885,7 +1093,7 @@ mod tests {
         span.end();
         provider.shutdown().expect("provider shutdown");
 
-        let store = TraceStore::new(path);
+        let store = TraceStore::new(dir);
         let summaries = store.list_traces(10, 0).expect("list traces");
 
         assert_eq!(summaries.len(), 1);
@@ -905,8 +1113,8 @@ mod tests {
     #[test]
     fn missing_trace_store_lists_empty_and_get_returns_not_found() {
         let temp = TempDir::new().expect("temp dir");
-        let path = temp.path().join("telemetry").join("traces.sqlite3");
-        let store = TraceStore::new(path);
+        let dir = temp.path().join("telemetry").join("traces");
+        let store = TraceStore::new(dir);
 
         assert!(
             store

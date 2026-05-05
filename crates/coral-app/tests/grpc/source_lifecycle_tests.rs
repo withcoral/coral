@@ -1180,8 +1180,8 @@ async fn config_persists_across_rebuilds_without_local_trace_state() {
         .await;
     assert_eq!(rows[0]["n"], 2);
     assert!(
-        !config_dir.join("state").join("state.sqlite3").exists(),
-        "trace/state sqlite should not be created"
+        !config_dir.join("telemetry").join("traces").exists(),
+        "local trace store should not be created"
     );
 }
 
