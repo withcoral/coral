@@ -534,7 +534,7 @@ Request query params, body fields, and headers support these `from` values:
 the value comes from. Table requests use filter value sources because their
 request values come from SQL predicates such as `WHERE id = 123`. Source
 function requests use arg value sources because their request values come from
-named function arguments such as `github.search_issues(query => 'flaky')`.
+named function arguments such as `github.search_issues(q => 'flaky')`.
 
 The suffix controls the value type sent to the provider. Use the bare form for a
 string request value, `_int` for a JSON integer, and `_bool` for a JSON boolean.

@@ -275,7 +275,11 @@ impl HttpSourceManifest {
             .into_iter()
             .map(|table| table.into_validated(&common.name))
             .collect::<Result<Vec<_>>>()?;
-        validate_http_function_names(&common.name, &functions)?;
+        validate_http_function_names(
+            &common.name,
+            tables.iter().map(HttpTableSpec::name),
+            &functions,
+        )?;
         let functions = functions
             .into_iter()
             .map(|function| {
