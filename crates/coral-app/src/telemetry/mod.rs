@@ -355,6 +355,15 @@ mod tests {
     }
 
     #[test]
+    fn default_trace_filter_keeps_http_and_disables_datafusion() {
+        let (targets, error) = build_trace_targets(DEFAULT_TRACE_FILTER);
+
+        assert!(error.is_none());
+        assert!(targets.would_enable("coral_engine::http", &tracing::Level::TRACE));
+        assert!(!targets.would_enable("coral_engine::datafusion", &tracing::Level::TRACE));
+    }
+
+    #[test]
     fn invalid_log_filter_falls_back_to_default() {
         let (filter, error) = build_log_filter(Some("coral_app=["));
         let (expected, default_error) = build_log_filter(Some(DEFAULT_LOG_FILTER));
