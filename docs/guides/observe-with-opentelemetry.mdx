@@ -1,0 +1,106 @@
+---
+title: "Observe Coral with OpenTelemetry"
+description: "Export Coral traces, logs, and metrics to any OTLP-compatible backend."
+---
+
+Coral can emit traces, logs, and metrics over OTLP/HTTP to any compatible backend (Grafana, Honeycomb, OpenObserve, Jaeger, Datadog Agent, etc.). Telemetry is **off by default** and activates only when you set an `[otel]` section with an endpoint in your `config.toml`.
+
+## Enable telemetry
+
+Add an `[otel]` section to `config.toml` in Coral's [local state directory](/getting-started/installation#local-state):
+
+```toml
+[otel]
+endpoint = "http://localhost:4318"
+```
+
+Coral picks up the new settings on the next invocation, and spans, logs, and metrics start flowing on the following query.
+
+The `endpoint` is the OTLP/HTTP base URL. Coral automatically appends `/v1/traces`, `/v1/logs`, and `/v1/metrics` for each signal, so you do not need to set those paths yourself. If you point at a URL that already includes one of those suffixes, Coral strips it before re-appending the right one per signal.
+
+## Configuration reference
+
+All telemetry settings live under `[otel]` in `config.toml`. There are no environment variable overrides except for [`CORAL_TRACE_PARENT`](#distributed-tracing).
+
+| Key            | Type   | Default                                                                | Description                                                                       |
+| -------------- | ------ | ---------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| `endpoint`     | string | unset                                                                  | OTLP/HTTP base URL. When unset, no traces, logs, or metrics are exported.         |
+| `headers`      | string | unset                                                                  | Comma-separated `key=value` pairs sent on every OTLP request (e.g. auth headers). |
+| `log_filter`   | string | `coral_app=info,coral_engine=info`                                     | `tracing-subscriber` filter applied to logs (OTLP and stderr).                    |
+| `trace_filter` | string | `coral_app=trace,coral_engine=trace,coral_engine::datafusion=off`      | `tracing-subscriber` filter applied to OTLP spans.                                |
+| `service_name` | string | `coral`                                                                | Value of the `service.name` resource attribute on every signal.                   |
+
+Example with auth headers and a hosted endpoint:
+
+```toml
+[otel]
+endpoint = "https://otlp.example.com"
+headers = "x-api-key=secret, x-tenant=acme"
+service_name = "coral-laptop"
+trace_filter = "coral_app=trace,coral_engine=trace"
+```
+
+## What gets emitted
+
+### Traces
+
+Each query produces a `coral.cli` root span with child spans for query orchestration, source loading, HTTP backend calls, and (optionally) DataFusion execution. Spans are exported with the W3C Trace Context propagator.
+
+By default, the `coral_engine::datafusion` target is disabled to keep span volume low. Enable it when you want to see DataFusion physical-plan execution and optimizer-rule spans alongside the rest of the query trace:
+
+```toml
+[otel]
+endpoint = "http://localhost:4318"
+trace_filter = "coral_app=trace,coral_engine=trace,coral_engine::datafusion=trace"
+```
+
+Conversely, you can silence noisy targets. The HTTP backend instrumentation lives under `coral_engine::http` and can be disabled while keeping the rest of the engine spans:
+
+```toml
+[otel]
+endpoint = "http://localhost:4318"
+trace_filter = "coral_app=trace,coral_engine=trace,coral_engine::http=off"
+```
+
+The filter syntax is the same one accepted by [`tracing-subscriber`'s `Targets`](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.Targets.html). If the filter fails to parse, Coral logs a warning and falls back to the default.
+
+### Logs
+
+Tracing events are bridged into OTLP logs via `opentelemetry-appender-tracing`. The `log_filter` setting controls which events are exported. Events also render to stderr when Coral is launched as `coral mcp-stdio`, so MCP clients can surface diagnostics; other commands keep stderr clean and rely on OTLP.
+
+### Metrics
+
+Three query instruments are exported on a 5-second periodic reader:
+
+| Metric                   | Kind      | Unit        | Attributes        | Description                               |
+| ------------------------ | --------- | ----------- | ----------------- | ----------------------------------------- |
+| `coral.query.count`      | Counter   | `{queries}` | `status=ok\|error` | Total queries executed.                   |
+| `coral.query.duration`   | Histogram | `s`         | `status=ok\|error` | Query execution latency in seconds.       |
+| `coral.query.rows`       | Histogram | `{rows}`    | —                 | Rows returned per successful query.       |
+
+## Distributed tracing
+
+Coral honors the `CORAL_TRACE_PARENT` environment variable. Set it to a [W3C `traceparent`](https://www.w3.org/TR/trace-context/#traceparent-header) string and Coral's root span attaches to that parent trace. This is the recommended way to link Coral CLI/MCP invocations to spans created by an upstream caller (for example, an AI agent that runs `coral sql` as a tool call).
+
+```shellscript
+CORAL_TRACE_PARENT="00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01" \
+  coral sql "SELECT 1"
+```
+
+`CORAL_TRACE_PARENT` is the only environment variable that affects telemetry; everything else is configured through `config.toml`.
+
+## Verify the setup
+
+Run any query and confirm signals reach your backend:
+
+```shellscript
+coral sql "SELECT 1"
+```
+
+You should see:
+
+- a `coral.cli` trace with at least one child span
+- a `coral.query.count` counter increment with `status=ok`
+- a `coral.query.duration` histogram observation
+
+If nothing arrives, check that the OTLP collector is listening on `endpoint`/`v1/{traces,logs,metrics}` over HTTP, that any required `headers` are correct, and that the trace and log filters are not excluding your targets.
