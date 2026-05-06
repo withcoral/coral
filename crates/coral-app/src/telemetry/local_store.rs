@@ -1,30 +1,24 @@
-//! Parquet-backed span export for local trace capture.
+//! JSONL-backed span export for local trace capture.
 
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
+use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use arrow::array::{
-    Array as _, ArrayRef, BooleanArray, Int32Array, Int64Array, StringArray, UInt32Array,
-};
-use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
-use arrow::error::ArrowError;
-use arrow::record_batch::RecordBatch;
 use opentelemetry::trace::{SpanId, SpanKind, Status};
 use opentelemetry::{Array as OtelArray, KeyValue, Value as OtelValue};
 use opentelemetry_sdk::Resource;
 use opentelemetry_sdk::error::{OTelSdkError, OTelSdkResult};
 use opentelemetry_sdk::trace::{SpanData, SpanExporter};
-use parquet::arrow::ArrowWriter;
-use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-use parquet::errors::ParquetError;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Number as JsonNumber, Value as JsonValue, json};
 
-const PARQUET_BATCH_SIZE: usize = 1024;
+const JSONL_MAX_FILE_BYTES: u64 = 16 * 1024 * 1024;
+const JSONL_MAX_FILE_ROWS: usize = 50_000;
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum LocalTraceStoreError {
@@ -38,38 +32,35 @@ pub(crate) enum LocalTraceStoreError {
         path: PathBuf,
         source: std::io::Error,
     },
-    #[error("failed to publish local trace store file {from} to {to}: {source}")]
-    PublishFile {
-        from: PathBuf,
-        to: PathBuf,
+    #[error("failed to encode local trace store record: {source}")]
+    EncodeRecord { source: serde_json::Error },
+    #[error("failed to write local trace store file {path}: {source}")]
+    WriteFile {
+        path: PathBuf,
         source: std::io::Error,
     },
-    #[error("failed to encode local trace store file {path}: {source}")]
-    Arrow { path: PathBuf, source: ArrowError },
-    #[error("failed to write local trace store file {path}: {source}")]
-    Parquet { path: PathBuf, source: ParquetError },
+    #[error("failed to flush local trace store file {path}: {source}")]
+    FlushFile {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("local trace store writer mutex poisoned")]
+    WriterPoisoned,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct ParquetSpanExporter {
-    dir: PathBuf,
+pub(crate) struct JsonlSpanExporter {
+    writer: Arc<Mutex<RollingJsonlWriter>>,
     resource_json: Arc<Mutex<String>>,
     shutdown_called: Arc<AtomicBool>,
-    file_counter: Arc<AtomicU64>,
 }
 
-impl ParquetSpanExporter {
+impl JsonlSpanExporter {
     pub(crate) fn new(dir: PathBuf) -> Result<Self, LocalTraceStoreError> {
-        fs::create_dir_all(&dir).map_err(|source| LocalTraceStoreError::CreateDir {
-            path: dir.clone(),
-            source,
-        })?;
-
         Ok(Self {
-            dir,
+            writer: Arc::new(Mutex::new(RollingJsonlWriter::new(dir)?)),
             resource_json: Arc::new(Mutex::new("{}".to_string())),
             shutdown_called: Arc::new(AtomicBool::new(false)),
-            file_counter: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -80,25 +71,177 @@ impl ParquetSpanExporter {
     }
 }
 
-impl SpanExporter for ParquetSpanExporter {
+impl SpanExporter for JsonlSpanExporter {
     async fn export(&self, batch: Vec<SpanData>) -> OTelSdkResult {
         if self.shutdown_called.load(Ordering::Relaxed) {
             return Err(OTelSdkError::AlreadyShutdown);
         }
+        if batch.is_empty() {
+            return Ok(());
+        }
 
-        write_batch(&self.dir, &self.resource_json(), &self.file_counter, &batch)
+        let resource_json = self.resource_json();
+        let records = batch
+            .iter()
+            .map(|span| span_record(&resource_json, span))
+            .collect::<Vec<_>>();
+        self.writer
+            .lock()
+            .map_err(|_| {
+                OTelSdkError::InternalFailure(LocalTraceStoreError::WriterPoisoned.to_string())
+            })?
+            .write_records(&records)
             .map_err(|error| OTelSdkError::InternalFailure(error.to_string()))
     }
 
     fn shutdown_with_timeout(&mut self, _timeout: Duration) -> OTelSdkResult {
         self.shutdown_called.store(true, Ordering::Relaxed);
-        Ok(())
+        self.writer
+            .lock()
+            .map_err(|_| {
+                OTelSdkError::InternalFailure(LocalTraceStoreError::WriterPoisoned.to_string())
+            })?
+            .close_current()
+            .map_err(|error| OTelSdkError::InternalFailure(error.to_string()))
     }
 
     fn set_resource(&mut self, resource: &Resource) {
         if let Ok(mut resource_json) = self.resource_json.lock() {
             *resource_json = resource_json_from_resource(resource);
         }
+    }
+}
+
+#[derive(Debug)]
+struct RollingJsonlWriter {
+    dir: PathBuf,
+    file_counter: u64,
+    current: Option<OpenJsonlFile>,
+}
+
+#[derive(Debug)]
+struct OpenJsonlFile {
+    path: PathBuf,
+    writer: BufWriter<File>,
+    rows_written: usize,
+    bytes_written: u64,
+}
+
+impl RollingJsonlWriter {
+    fn new(dir: PathBuf) -> Result<Self, LocalTraceStoreError> {
+        fs::create_dir_all(&dir).map_err(|source| LocalTraceStoreError::CreateDir {
+            path: dir.clone(),
+            source,
+        })?;
+
+        Ok(Self {
+            dir,
+            file_counter: 0,
+            current: None,
+        })
+    }
+
+    fn write_records(&mut self, records: &[TraceSpanRecord]) -> Result<(), LocalTraceStoreError> {
+        if records.is_empty() {
+            return Ok(());
+        }
+
+        fs::create_dir_all(&self.dir).map_err(|source| LocalTraceStoreError::CreateDir {
+            path: self.dir.clone(),
+            source,
+        })?;
+
+        for record in records {
+            let mut line = serde_json::to_vec(record)
+                .map_err(|source| LocalTraceStoreError::EncodeRecord { source })?;
+            line.push(b'\n');
+
+            if self.should_roll(u64::try_from(line.len()).unwrap_or(u64::MAX)) {
+                self.close_current()?;
+            }
+
+            let current = self.ensure_current()?;
+            current
+                .writer
+                .write_all(&line)
+                .map_err(|source| LocalTraceStoreError::WriteFile {
+                    path: current.path.clone(),
+                    source,
+                })?;
+            current.rows_written = current.rows_written.saturating_add(1);
+            current.bytes_written = current
+                .bytes_written
+                .saturating_add(u64::try_from(line.len()).unwrap_or(u64::MAX));
+        }
+
+        self.flush_current()
+    }
+
+    fn should_roll(&self, next_record_bytes: u64) -> bool {
+        self.current.as_ref().is_some_and(|current| {
+            current.rows_written > 0
+                && (current.rows_written >= JSONL_MAX_FILE_ROWS
+                    || current.bytes_written.saturating_add(next_record_bytes)
+                        > JSONL_MAX_FILE_BYTES)
+        })
+    }
+
+    fn ensure_current(&mut self) -> Result<&mut OpenJsonlFile, LocalTraceStoreError> {
+        if self.current.is_none() {
+            let path = self.next_file_path();
+            let file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .map_err(|source| LocalTraceStoreError::CreateFile {
+                    path: path.clone(),
+                    source,
+                })?;
+            self.current = Some(OpenJsonlFile {
+                path,
+                writer: BufWriter::new(file),
+                rows_written: 0,
+                bytes_written: 0,
+            });
+        }
+
+        Ok(self.current.as_mut().expect("current writer was just set"))
+    }
+
+    fn next_file_path(&mut self) -> PathBuf {
+        let sequence = self.file_counter;
+        self.file_counter = self.file_counter.saturating_add(1);
+        let unix_nanos = unix_nanos(SystemTime::now());
+        self.dir.join(format!(
+            "spans-{unix_nanos:020}-{}-{sequence:016}.jsonl",
+            process::id()
+        ))
+    }
+
+    fn close_current(&mut self) -> Result<(), LocalTraceStoreError> {
+        if let Some(mut current) = self.current.take() {
+            current
+                .writer
+                .flush()
+                .map_err(|source| LocalTraceStoreError::FlushFile {
+                    path: current.path,
+                    source,
+                })?;
+        }
+        Ok(())
+    }
+
+    fn flush_current(&mut self) -> Result<(), LocalTraceStoreError> {
+        if let Some(current) = &mut self.current {
+            current
+                .writer
+                .flush()
+                .map_err(|source| LocalTraceStoreError::FlushFile {
+                    path: current.path.clone(),
+                    source,
+                })?;
+        }
+        Ok(())
     }
 }
 
@@ -121,14 +264,23 @@ pub(crate) enum TraceStoreError {
         path: PathBuf,
         source: std::io::Error,
     },
-    #[error("failed to decode local trace store file {path}: {source}")]
-    Arrow { path: PathBuf, source: ArrowError },
     #[error("failed to read local trace store file {path}: {source}")]
-    Parquet { path: PathBuf, source: ParquetError },
+    ReadFile {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("failed to decode local trace store file {path} line {line}: {source}")]
+    DecodeLine {
+        path: PathBuf,
+        line: usize,
+        source: serde_json::Error,
+    },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum StoredTraceStatus {
+    #[default]
     Unspecified,
     Ok,
     Error,
@@ -149,7 +301,7 @@ pub(crate) struct TraceSummaryRecord {
     pub(crate) row_count_recorded: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct TraceSpanRecord {
     pub(crate) trace_id: String,
     pub(crate) span_id: String,
@@ -157,6 +309,7 @@ pub(crate) struct TraceSpanRecord {
     pub(crate) parent_span_is_remote: bool,
     pub(crate) name: String,
     pub(crate) kind: String,
+    #[serde(default)]
     pub(crate) status: StoredTraceStatus,
     pub(crate) status_message: Option<String>,
     pub(crate) start_time_unix_nanos: i64,
@@ -173,9 +326,6 @@ pub(crate) struct TraceSpanRecord {
     pub(crate) trace_flags: i32,
     pub(crate) trace_state: String,
     pub(crate) is_remote: bool,
-    pub(crate) dropped_attributes_count: u32,
-    pub(crate) dropped_events_count: u32,
-    pub(crate) dropped_links_count: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -244,7 +394,7 @@ impl TraceStore {
 
     fn read_spans(&self) -> Result<Vec<TraceSpanRecord>, TraceStoreError> {
         let mut spans_by_id = HashMap::new();
-        for path in self.parquet_files()? {
+        for path in self.jsonl_files()? {
             for span in read_spans_file(&path)? {
                 spans_by_id.insert((span.trace_id.clone(), span.span_id.clone()), span);
             }
@@ -252,7 +402,7 @@ impl TraceStore {
         Ok(spans_by_id.into_values().collect())
     }
 
-    fn parquet_files(&self) -> Result<Vec<PathBuf>, TraceStoreError> {
+    fn jsonl_files(&self) -> Result<Vec<PathBuf>, TraceStoreError> {
         if !self.dir.exists() {
             return Ok(Vec::new());
         }
@@ -271,7 +421,7 @@ impl TraceStore {
             if path
                 .extension()
                 .and_then(std::ffi::OsStr::to_str)
-                .is_some_and(|extension| extension == "parquet")
+                .is_some_and(|extension| extension == "jsonl")
             {
                 files.push(path);
             }
@@ -286,30 +436,44 @@ fn read_spans_file(path: &Path) -> Result<Vec<TraceSpanRecord>, TraceStoreError>
         path: path.to_path_buf(),
         source,
     })?;
-    let reader = ParquetRecordBatchReaderBuilder::try_new(file)
-        .map_err(|source| TraceStoreError::Parquet {
-            path: path.to_path_buf(),
-            source,
-        })?
-        .with_batch_size(PARQUET_BATCH_SIZE)
-        .build()
-        .map_err(|source| TraceStoreError::Parquet {
-            path: path.to_path_buf(),
-            source,
-        })?;
+    let mut reader = BufReader::new(file);
     let mut spans = Vec::new();
-    for batch in reader {
-        let batch = batch.map_err(|source| TraceStoreError::Arrow {
-            path: path.to_path_buf(),
-            source,
-        })?;
-        spans.extend(
-            records_from_batch(&batch).map_err(|source| TraceStoreError::Arrow {
-                path: path.to_path_buf(),
-                source,
-            })?,
-        );
+    let mut line = String::new();
+    let mut line_number = 0;
+
+    loop {
+        line.clear();
+        let bytes_read =
+            reader
+                .read_line(&mut line)
+                .map_err(|source| TraceStoreError::ReadFile {
+                    path: path.to_path_buf(),
+                    source,
+                })?;
+        if bytes_read == 0 {
+            break;
+        }
+
+        line_number += 1;
+        let complete_line = line.ends_with('\n');
+        let trimmed = line.trim_end_matches(['\r', '\n']);
+        if trimmed.trim().is_empty() {
+            continue;
+        }
+
+        match serde_json::from_str::<TraceSpanRecord>(trimmed) {
+            Ok(span) => spans.push(span),
+            Err(_) if !complete_line => break,
+            Err(source) => {
+                return Err(TraceStoreError::DecodeLine {
+                    path: path.to_path_buf(),
+                    line: line_number,
+                    source,
+                });
+            }
+        }
     }
+
     Ok(spans)
 }
 
@@ -408,249 +572,6 @@ fn summary_from_aggregate(
     )
 }
 
-fn write_batch(
-    dir: &Path,
-    resource_json: &str,
-    file_counter: &AtomicU64,
-    batch: &[SpanData],
-) -> Result<(), LocalTraceStoreError> {
-    if batch.is_empty() {
-        return Ok(());
-    }
-
-    fs::create_dir_all(dir).map_err(|source| LocalTraceStoreError::CreateDir {
-        path: dir.to_path_buf(),
-        source,
-    })?;
-    let schema = trace_store_schema();
-    let record_batch = span_batch(schema.clone(), resource_json, batch).map_err(|source| {
-        LocalTraceStoreError::Arrow {
-            path: dir.to_path_buf(),
-            source,
-        }
-    })?;
-    let (temp_path, final_path) = next_batch_paths(dir, file_counter);
-    let file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temp_path)
-        .map_err(|source| LocalTraceStoreError::CreateFile {
-            path: temp_path.clone(),
-            source,
-        })?;
-    let mut writer = ArrowWriter::try_new(file, schema, None).map_err(|source| {
-        LocalTraceStoreError::Parquet {
-            path: temp_path.clone(),
-            source,
-        }
-    })?;
-    writer
-        .write(&record_batch)
-        .map_err(|source| LocalTraceStoreError::Parquet {
-            path: temp_path.clone(),
-            source,
-        })?;
-    writer
-        .close()
-        .map_err(|source| LocalTraceStoreError::Parquet {
-            path: temp_path.clone(),
-            source,
-        })?;
-    fs::rename(&temp_path, &final_path).map_err(|source| LocalTraceStoreError::PublishFile {
-        from: temp_path,
-        to: final_path,
-        source,
-    })
-}
-
-fn next_batch_paths(dir: &Path, file_counter: &AtomicU64) -> (PathBuf, PathBuf) {
-    let sequence = file_counter.fetch_add(1, Ordering::Relaxed);
-    let unix_nanos = unix_nanos(SystemTime::now());
-    let filename = format!(
-        "spans-{unix_nanos:020}-{}-{sequence:016}.parquet",
-        process::id()
-    );
-    let final_path = dir.join(filename);
-    let temp_path = final_path.with_extension("parquet.tmp");
-    (temp_path, final_path)
-}
-
-fn span_batch(
-    schema: SchemaRef,
-    resource_json: &str,
-    batch: &[SpanData],
-) -> Result<RecordBatch, ArrowError> {
-    let records = batch
-        .iter()
-        .map(|span| span_record(resource_json, span))
-        .collect::<Vec<_>>();
-    records_to_batch(schema, &records)
-}
-
-#[allow(
-    clippy::too_many_lines,
-    reason = "The Parquet record schema is intentionally explicit and column-oriented"
-)]
-fn records_to_batch(
-    schema: SchemaRef,
-    records: &[TraceSpanRecord],
-) -> Result<RecordBatch, ArrowError> {
-    let columns: Vec<ArrayRef> = vec![
-        Arc::new(StringArray::from(
-            records
-                .iter()
-                .map(|record| record.trace_id.as_str())
-                .collect::<Vec<_>>(),
-        )),
-        Arc::new(StringArray::from(
-            records
-                .iter()
-                .map(|record| record.span_id.as_str())
-                .collect::<Vec<_>>(),
-        )),
-        Arc::new(StringArray::from(
-            records
-                .iter()
-                .map(|record| record.parent_span_id.as_deref())
-                .collect::<Vec<_>>(),
-        )),
-        Arc::new(BooleanArray::from(
-            records
-                .iter()
-                .map(|record| record.parent_span_is_remote)
-                .collect::<Vec<_>>(),
-        )),
-        Arc::new(StringArray::from(
-            records
-                .iter()
-                .map(|record| record.name.as_str())
-                .collect::<Vec<_>>(),
-        )),
-        Arc::new(StringArray::from(
-            records
-                .iter()
-                .map(|record| record.kind.as_str())
-                .collect::<Vec<_>>(),
-        )),
-        Arc::new(StringArray::from(
-            records
-                .iter()
-                .map(|record| status_code(record.status))
-                .collect::<Vec<_>>(),
-        )),
-        Arc::new(StringArray::from(
-            records
-                .iter()
-                .map(|record| record.status_message.as_deref())
-                .collect::<Vec<_>>(),
-        )),
-        Arc::new(Int64Array::from(
-            records
-                .iter()
-                .map(|record| record.start_time_unix_nanos)
-                .collect::<Vec<_>>(),
-        )),
-        Arc::new(Int64Array::from(
-            records
-                .iter()
-                .map(|record| record.end_time_unix_nanos)
-                .collect::<Vec<_>>(),
-        )),
-        Arc::new(Int64Array::from(
-            records
-                .iter()
-                .map(|record| record.duration_nanos)
-                .collect::<Vec<_>>(),
-        )),
-        Arc::new(StringArray::from(
-            records
-                .iter()
-                .map(|record| record.attributes_json.as_str())
-                .collect::<Vec<_>>(),
-        )),
-        Arc::new(StringArray::from(
-            records
-                .iter()
-                .map(|record| record.events_json.as_str())
-                .collect::<Vec<_>>(),
-        )),
-        Arc::new(StringArray::from(
-            records
-                .iter()
-                .map(|record| record.links_json.as_str())
-                .collect::<Vec<_>>(),
-        )),
-        Arc::new(StringArray::from(
-            records
-                .iter()
-                .map(|record| record.resource_json.as_str())
-                .collect::<Vec<_>>(),
-        )),
-        Arc::new(StringArray::from(
-            records
-                .iter()
-                .map(|record| record.scope_name.as_str())
-                .collect::<Vec<_>>(),
-        )),
-        Arc::new(StringArray::from(
-            records
-                .iter()
-                .map(|record| record.scope_version.as_deref())
-                .collect::<Vec<_>>(),
-        )),
-        Arc::new(StringArray::from(
-            records
-                .iter()
-                .map(|record| record.scope_schema_url.as_deref())
-                .collect::<Vec<_>>(),
-        )),
-        Arc::new(StringArray::from(
-            records
-                .iter()
-                .map(|record| record.scope_attributes_json.as_str())
-                .collect::<Vec<_>>(),
-        )),
-        Arc::new(Int32Array::from(
-            records
-                .iter()
-                .map(|record| record.trace_flags)
-                .collect::<Vec<_>>(),
-        )),
-        Arc::new(StringArray::from(
-            records
-                .iter()
-                .map(|record| record.trace_state.as_str())
-                .collect::<Vec<_>>(),
-        )),
-        Arc::new(BooleanArray::from(
-            records
-                .iter()
-                .map(|record| record.is_remote)
-                .collect::<Vec<_>>(),
-        )),
-        Arc::new(UInt32Array::from(
-            records
-                .iter()
-                .map(|record| record.dropped_attributes_count)
-                .collect::<Vec<_>>(),
-        )),
-        Arc::new(UInt32Array::from(
-            records
-                .iter()
-                .map(|record| record.dropped_events_count)
-                .collect::<Vec<_>>(),
-        )),
-        Arc::new(UInt32Array::from(
-            records
-                .iter()
-                .map(|record| record.dropped_links_count)
-                .collect::<Vec<_>>(),
-        )),
-    ];
-
-    RecordBatch::try_new(schema, columns)
-}
-
 fn span_record(resource_json: &str, span: &SpanData) -> TraceSpanRecord {
     let span_context = &span.span_context;
     let parent_span_id =
@@ -686,146 +607,7 @@ fn span_record(resource_json: &str, span: &SpanData) -> TraceSpanRecord {
         trace_flags: i32::from(span_context.trace_flags().to_u8()),
         trace_state: span_context.trace_state().header(),
         is_remote: span_context.is_remote(),
-        dropped_attributes_count: span.dropped_attributes_count,
-        dropped_events_count: span.events.dropped_count,
-        dropped_links_count: span.links.dropped_count,
     }
-}
-
-fn records_from_batch(batch: &RecordBatch) -> Result<Vec<TraceSpanRecord>, ArrowError> {
-    let trace_id = string_column(batch, "trace_id")?;
-    let span_id = string_column(batch, "span_id")?;
-    let parent_span_id = string_column(batch, "parent_span_id")?;
-    let parent_span_is_remote = bool_column(batch, "parent_span_is_remote")?;
-    let name = string_column(batch, "name")?;
-    let kind = string_column(batch, "kind")?;
-    let status_code = string_column(batch, "status_code")?;
-    let status_message = string_column(batch, "status_message")?;
-    let start_time_unix_nanos = i64_column(batch, "start_time_unix_nanos")?;
-    let end_time_unix_nanos = i64_column(batch, "end_time_unix_nanos")?;
-    let duration_nanos = i64_column(batch, "duration_nanos")?;
-    let attributes_json = string_column(batch, "attributes_json")?;
-    let events_json = string_column(batch, "events_json")?;
-    let links_json = string_column(batch, "links_json")?;
-    let resource_json = string_column(batch, "resource_json")?;
-    let scope_name = string_column(batch, "scope_name")?;
-    let scope_version = string_column(batch, "scope_version")?;
-    let scope_schema_url = string_column(batch, "scope_schema_url")?;
-    let scope_attributes_json = string_column(batch, "scope_attributes_json")?;
-    let trace_flags = i32_column(batch, "trace_flags")?;
-    let trace_state = string_column(batch, "trace_state")?;
-    let is_remote = bool_column(batch, "is_remote")?;
-    let dropped_attributes_count = u32_column(batch, "dropped_attributes_count")?;
-    let dropped_events_count = u32_column(batch, "dropped_events_count")?;
-    let dropped_links_count = u32_column(batch, "dropped_links_count")?;
-
-    let mut records = Vec::with_capacity(batch.num_rows());
-    for row in 0..batch.num_rows() {
-        records.push(TraceSpanRecord {
-            trace_id: required_string(trace_id, row, "trace_id")?,
-            span_id: required_string(span_id, row, "span_id")?,
-            parent_span_id: optional_string(parent_span_id, row),
-            parent_span_is_remote: parent_span_is_remote.value(row),
-            name: required_string(name, row, "name")?,
-            kind: required_string(kind, row, "kind")?,
-            status: stored_status(&required_string(status_code, row, "status_code")?),
-            status_message: optional_string(status_message, row),
-            start_time_unix_nanos: start_time_unix_nanos.value(row),
-            end_time_unix_nanos: end_time_unix_nanos.value(row),
-            duration_nanos: duration_nanos.value(row),
-            attributes_json: required_string(attributes_json, row, "attributes_json")?,
-            events_json: required_string(events_json, row, "events_json")?,
-            links_json: required_string(links_json, row, "links_json")?,
-            resource_json: required_string(resource_json, row, "resource_json")?,
-            scope_name: required_string(scope_name, row, "scope_name")?,
-            scope_version: optional_string(scope_version, row),
-            scope_schema_url: optional_string(scope_schema_url, row),
-            scope_attributes_json: required_string(
-                scope_attributes_json,
-                row,
-                "scope_attributes_json",
-            )?,
-            trace_flags: trace_flags.value(row),
-            trace_state: required_string(trace_state, row, "trace_state")?,
-            is_remote: is_remote.value(row),
-            dropped_attributes_count: dropped_attributes_count.value(row),
-            dropped_events_count: dropped_events_count.value(row),
-            dropped_links_count: dropped_links_count.value(row),
-        });
-    }
-    Ok(records)
-}
-
-fn string_column<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a StringArray, ArrowError> {
-    typed_column(batch, name)
-}
-
-fn bool_column<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a BooleanArray, ArrowError> {
-    typed_column(batch, name)
-}
-
-fn i32_column<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a Int32Array, ArrowError> {
-    typed_column(batch, name)
-}
-
-fn i64_column<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a Int64Array, ArrowError> {
-    typed_column(batch, name)
-}
-
-fn u32_column<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a UInt32Array, ArrowError> {
-    typed_column(batch, name)
-}
-
-fn typed_column<'a, T: 'static>(batch: &'a RecordBatch, name: &str) -> Result<&'a T, ArrowError> {
-    batch
-        .column_by_name(name)
-        .ok_or_else(|| ArrowError::SchemaError(format!("missing trace store column '{name}'")))?
-        .as_any()
-        .downcast_ref::<T>()
-        .ok_or_else(|| ArrowError::SchemaError(format!("invalid trace store column '{name}'")))
-}
-
-fn required_string(column: &StringArray, row: usize, name: &str) -> Result<String, ArrowError> {
-    if column.is_null(row) {
-        return Err(ArrowError::SchemaError(format!(
-            "trace store column '{name}' is null"
-        )));
-    }
-    Ok(column.value(row).to_string())
-}
-
-fn optional_string(column: &StringArray, row: usize) -> Option<String> {
-    (!column.is_null(row)).then(|| column.value(row).to_string())
-}
-
-fn trace_store_schema() -> SchemaRef {
-    Arc::new(Schema::new(vec![
-        Field::new("trace_id", DataType::Utf8, false),
-        Field::new("span_id", DataType::Utf8, false),
-        Field::new("parent_span_id", DataType::Utf8, true),
-        Field::new("parent_span_is_remote", DataType::Boolean, false),
-        Field::new("name", DataType::Utf8, false),
-        Field::new("kind", DataType::Utf8, false),
-        Field::new("status_code", DataType::Utf8, false),
-        Field::new("status_message", DataType::Utf8, true),
-        Field::new("start_time_unix_nanos", DataType::Int64, false),
-        Field::new("end_time_unix_nanos", DataType::Int64, false),
-        Field::new("duration_nanos", DataType::Int64, false),
-        Field::new("attributes_json", DataType::Utf8, false),
-        Field::new("events_json", DataType::Utf8, false),
-        Field::new("links_json", DataType::Utf8, false),
-        Field::new("resource_json", DataType::Utf8, false),
-        Field::new("scope_name", DataType::Utf8, false),
-        Field::new("scope_version", DataType::Utf8, true),
-        Field::new("scope_schema_url", DataType::Utf8, true),
-        Field::new("scope_attributes_json", DataType::Utf8, false),
-        Field::new("trace_flags", DataType::Int32, false),
-        Field::new("trace_state", DataType::Utf8, false),
-        Field::new("is_remote", DataType::Boolean, false),
-        Field::new("dropped_attributes_count", DataType::UInt32, false),
-        Field::new("dropped_events_count", DataType::UInt32, false),
-        Field::new("dropped_links_count", DataType::UInt32, false),
-    ]))
 }
 
 fn parse_attributes(attributes_json: &str) -> Option<JsonValue> {
@@ -859,22 +641,6 @@ fn attr_u64(attributes: &JsonValue, key: &str) -> Option<u64> {
     }
 }
 
-fn stored_status(status_code: &str) -> StoredTraceStatus {
-    match status_code {
-        "ok" => StoredTraceStatus::Ok,
-        "error" => StoredTraceStatus::Error,
-        _ => StoredTraceStatus::Unspecified,
-    }
-}
-
-fn status_code(status: StoredTraceStatus) -> &'static str {
-    match status {
-        StoredTraceStatus::Unspecified => "unset",
-        StoredTraceStatus::Ok => "ok",
-        StoredTraceStatus::Error => "error",
-    }
-}
-
 fn usize_to_u32(value: usize) -> u32 {
     u32::try_from(value).unwrap_or(u32::MAX)
 }
@@ -903,13 +669,11 @@ fn resource_json_from_resource(resource: &Resource) -> String {
 
 fn events_json(span: &SpanData) -> JsonValue {
     json!({
-        "dropped_count": span.events.dropped_count,
         "events": span.events.events.iter().map(|event| {
             json!({
                 "name": event.name.as_ref(),
                 "time_unix_nanos": unix_nanos(event.timestamp),
                 "attributes": key_values_json(event.attributes.iter()),
-                "dropped_attributes_count": event.dropped_attributes_count,
             })
         }).collect::<Vec<_>>(),
     })
@@ -917,7 +681,6 @@ fn events_json(span: &SpanData) -> JsonValue {
 
 fn links_json(span: &SpanData) -> JsonValue {
     json!({
-        "dropped_count": span.links.dropped_count,
         "links": span.links.links.iter().map(|link| {
             let span_context = &link.span_context;
             json!({
@@ -927,7 +690,6 @@ fn links_json(span: &SpanData) -> JsonValue {
                 "trace_state": span_context.trace_state().header(),
                 "is_remote": span_context.is_remote(),
                 "attributes": key_values_json(link.attributes.iter()),
-                "dropped_attributes_count": link.dropped_attributes_count,
             })
         }).collect::<Vec<_>>(),
     })
@@ -1005,19 +767,20 @@ fn duration_nanos(start: SystemTime, end: SystemTime) -> i64 {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::path::Path;
 
     use opentelemetry::KeyValue;
     use opentelemetry::trace::{Span as _, SpanKind, Tracer, TracerProvider as _};
     use opentelemetry_sdk::trace::SdkTracerProvider;
     use tempfile::TempDir;
 
-    use super::{ParquetSpanExporter, StoredTraceStatus, TraceStore};
+    use super::{JsonlSpanExporter, StoredTraceStatus, TraceStore};
 
     #[test]
-    fn exports_finished_spans_to_parquet() {
+    fn exports_finished_spans_to_jsonl() {
         let temp = TempDir::new().expect("temp dir");
         let dir = temp.path().join("telemetry").join("traces");
-        let exporter = ParquetSpanExporter::new(dir.clone()).expect("parquet span exporter");
+        let exporter = JsonlSpanExporter::new(dir.clone()).expect("jsonl span exporter");
         let provider = SdkTracerProvider::builder()
             .with_resource(
                 opentelemetry_sdk::Resource::builder_empty()
@@ -1040,14 +803,7 @@ mod tests {
         span.end();
         provider.shutdown().expect("provider shutdown");
 
-        let parquet_files = fs::read_dir(&dir)
-            .expect("trace dir")
-            .filter_map(Result::ok)
-            .filter(|entry| {
-                entry.path().extension().and_then(|ext| ext.to_str()) == Some("parquet")
-            })
-            .count();
-        assert_eq!(parquet_files, 1);
+        assert_eq!(jsonl_file_count(&dir), 1);
 
         let store = TraceStore::new(dir);
         let trace_id = store
@@ -1073,10 +829,28 @@ mod tests {
     }
 
     #[test]
-    fn reads_trace_summaries_and_details_from_parquet() {
+    fn repeated_exports_append_to_one_jsonl_file() {
         let temp = TempDir::new().expect("temp dir");
         let dir = temp.path().join("telemetry").join("traces");
-        let exporter = ParquetSpanExporter::new(dir.clone()).expect("parquet span exporter");
+        let exporter = JsonlSpanExporter::new(dir.clone()).expect("jsonl span exporter");
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter)
+            .build();
+        let tracer = provider.tracer("local-store-test");
+
+        tracer.start("first").end();
+        tracer.start("second").end();
+        provider.shutdown().expect("provider shutdown");
+
+        assert_eq!(jsonl_file_count(&dir), 1);
+        assert_eq!(TraceStore::new(dir).list_traces(10, 0).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn reads_trace_summaries_and_details_from_jsonl() {
+        let temp = TempDir::new().expect("temp dir");
+        let dir = temp.path().join("telemetry").join("traces");
+        let exporter = JsonlSpanExporter::new(dir.clone()).expect("jsonl span exporter");
         let provider = SdkTracerProvider::builder()
             .with_simple_exporter(exporter)
             .build();
@@ -1111,6 +885,18 @@ mod tests {
     }
 
     #[test]
+    fn skips_incomplete_trailing_jsonl_record() {
+        let temp = TempDir::new().expect("temp dir");
+        let dir = temp.path().join("telemetry").join("traces");
+        fs::create_dir_all(&dir).expect("trace dir");
+        fs::write(dir.join("spans.jsonl"), "{\"trace_id\":").expect("write partial jsonl");
+
+        let store = TraceStore::new(dir);
+
+        assert!(store.list_traces(10, 0).expect("list traces").is_empty());
+    }
+
+    #[test]
     fn missing_trace_store_lists_empty_and_get_returns_not_found() {
         let temp = TempDir::new().expect("temp dir");
         let dir = temp.path().join("telemetry").join("traces");
@@ -1123,5 +909,13 @@ mod tests {
                 .is_empty()
         );
         assert!(store.get_trace("missing").is_err());
+    }
+
+    fn jsonl_file_count(dir: &Path) -> usize {
+        fs::read_dir(dir)
+            .expect("trace dir")
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("jsonl"))
+            .count()
     }
 }

@@ -204,10 +204,10 @@ fn process_executable_name() -> String {
 pub(crate) fn init_tracing(
     config: &TelemetryConfig,
     enable_stderr_logs: bool,
-    local_trace_store_dir: Option<PathBuf>,
+    internal_trace_store_dir: Option<PathBuf>,
 ) -> Result<(), AppError> {
     INIT.get_or_init(|| {
-        try_init_tracing(config, enable_stderr_logs, local_trace_store_dir)
+        try_init_tracing(config, enable_stderr_logs, internal_trace_store_dir)
             .map_err(|e| e.to_string())
     })
     .as_ref()
@@ -222,7 +222,7 @@ pub(crate) fn init_tracing(
 fn try_init_tracing(
     config: &TelemetryConfig,
     enable_stderr_logs: bool,
-    local_trace_store_dir: Option<PathBuf>,
+    internal_trace_store_dir: Option<PathBuf>,
 ) -> Result<(), AppError> {
     opentelemetry::global::set_text_map_propagator(TraceContextPropagator::new());
     let endpoint = config
@@ -239,8 +239,9 @@ fn try_init_tracing(
             .with_filter(log_filter.clone())
     });
 
-    let local_trace_store_dir = local_trace_store_dir.filter(|_| config.local_trace_store);
-    let should_export_traces = endpoint.is_some() || local_trace_store_dir.is_some();
+    let internal_trace_store_dir =
+        internal_trace_store_dir.filter(|_| config.enable_internal_tracing);
+    let should_export_traces = endpoint.is_some() || internal_trace_store_dir.is_some();
     let mut trace_filter_error = None;
     let otel_trace_layer = if should_export_traces {
         let resource = opentelemetry_sdk::Resource::builder()
@@ -301,8 +302,8 @@ fn try_init_tracing(
             }
         }
 
-        if let Some(path) = local_trace_store_dir {
-            let exporter = local_store::ParquetSpanExporter::new(path)
+        if let Some(path) = internal_trace_store_dir {
+            let exporter = local_store::JsonlSpanExporter::new(path)
                 .map_err(|e| AppError::InvalidInput(e.to_string()))?;
             builder = builder.with_span_processor(
                 opentelemetry_sdk::trace::BatchSpanProcessor::builder(exporter).build(),

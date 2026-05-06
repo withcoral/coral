@@ -112,8 +112,8 @@ fn trace_store_status(error: TraceStoreError) -> Status {
         }
         TraceStoreError::ReadDir { .. }
         | TraceStoreError::OpenFile { .. }
-        | TraceStoreError::Arrow { .. }
-        | TraceStoreError::Parquet { .. } => Status::new(Code::Internal, error.to_string()),
+        | TraceStoreError::ReadFile { .. }
+        | TraceStoreError::DecodeLine { .. } => Status::new(Code::Internal, error.to_string()),
     }
 }
 
@@ -164,9 +164,6 @@ fn trace_span_to_proto(span: TraceSpanRecord) -> TraceSpan {
         trace_flags: span.trace_flags,
         trace_state: span.trace_state,
         is_remote: span.is_remote,
-        dropped_attributes_count: span.dropped_attributes_count,
-        dropped_events_count: span.dropped_events_count,
-        dropped_links_count: span.dropped_links_count,
     }
 }
 

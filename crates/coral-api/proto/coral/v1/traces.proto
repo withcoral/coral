@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package coral.v1;
 
-// Query status derived from the locally captured OpenTelemetry spans.
+// Query status derived from locally captured spans.
 enum TraceStatus {
   // Status was not recorded or could not be inferred.
   TRACE_STATUS_UNSPECIFIED = 0;
@@ -25,11 +25,11 @@ message TraceSummary {
   // Derived trace status.
   TraceStatus status = 5;
   // Earliest span start time in Unix nanoseconds.
-  int64 start_time_unix_nanos = 6;
+  int64 start_time_unix_nanos = 6 [jstype = JS_STRING];
   // Latest span end time in Unix nanoseconds.
-  int64 end_time_unix_nanos = 7;
+  int64 end_time_unix_nanos = 7 [jstype = JS_STRING];
   // Wall-clock duration between the first span start and last span end.
-  int64 duration_nanos = 8;
+  int64 duration_nanos = 8 [jstype = JS_STRING];
   // Number of spans captured for this trace.
   uint32 span_count = 9;
   // Query row count when the trace includes a completed Coral query span.
@@ -61,7 +61,7 @@ message GetTraceRequest {
   string trace_id = 1;
 }
 
-// One stored OpenTelemetry span.
+// One stored trace span.
 message TraceSpan {
   // W3C trace identifier.
   string trace_id = 1;
@@ -73,25 +73,25 @@ message TraceSpan {
   bool parent_span_is_remote = 4;
   // Span display name.
   string name = 5;
-  // OpenTelemetry span kind, rendered as lowercase text.
+  // Span kind, rendered as lowercase text.
   string kind = 6;
-  // OpenTelemetry span status.
+  // Span status.
   TraceStatus status = 7;
   // Optional status message for error spans.
   string status_message = 8;
   // Span start time in Unix nanoseconds.
-  int64 start_time_unix_nanos = 9;
+  int64 start_time_unix_nanos = 9 [jstype = JS_STRING];
   // Span end time in Unix nanoseconds.
-  int64 end_time_unix_nanos = 10;
+  int64 end_time_unix_nanos = 10 [jstype = JS_STRING];
   // Span duration in nanoseconds.
-  int64 duration_nanos = 11;
-  // JSON object of OpenTelemetry span attributes.
+  int64 duration_nanos = 11 [jstype = JS_STRING];
+  // JSON object of span attributes.
   string attributes_json = 12;
-  // JSON payload of OpenTelemetry span events.
+  // JSON payload of span events.
   string events_json = 13;
-  // JSON payload of OpenTelemetry span links.
+  // JSON payload of span links.
   string links_json = 14;
-  // JSON object of OpenTelemetry resource attributes.
+  // JSON object of process resource attributes.
   string resource_json = 15;
   // Instrumentation scope name.
   string scope_name = 16;
@@ -107,12 +107,6 @@ message TraceSpan {
   string trace_state = 21;
   // Whether this span context was remote.
   bool is_remote = 22;
-  // Dropped span attribute count reported by OpenTelemetry.
-  uint32 dropped_attributes_count = 23;
-  // Dropped span event count reported by OpenTelemetry.
-  uint32 dropped_events_count = 24;
-  // Dropped span link count reported by OpenTelemetry.
-  uint32 dropped_links_count = 25;
 }
 
 // Trace detail for timeline and diagnostic views.
