@@ -214,7 +214,13 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
             .iter()
             .map(|tool| tool.name.as_ref())
             .collect::<Vec<_>>(),
-        vec!["sql", "list_tables", "search_tables", "describe_table"]
+        vec![
+            "sql",
+            "list_tables",
+            "search_tables",
+            "describe_table",
+            "list_columns"
+        ]
     );
     assert!(
         initial_tools[0]
@@ -522,6 +528,80 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
         .await
         .expect_err("blank table should fail");
 
+    let columns = client
+        .call_tool(
+            CallToolRequestParams::new("list_columns").with_arguments(json_object(&json!({
+                "schema": "local_messages",
+                "table": "messages",
+                "limit": 2
+            }))),
+        )
+        .await
+        .expect("list columns");
+    let columns = columns.structured_content.expect("structured content");
+    assert_eq!(columns["schema_name"], "local_messages");
+    assert_eq!(columns["table_name"], "messages");
+    assert_eq!(columns["total"], 3);
+    assert_eq!(columns["limit"], 2);
+    assert_eq!(columns["has_more"], true);
+    assert_eq!(columns["next_offset"], 2);
+    assert_eq!(columns["columns"][0]["column_name"], "type");
+    assert_eq!(columns["columns"][0]["data_type"], "Utf8");
+
+    let filtered_columns = client
+        .call_tool(
+            CallToolRequestParams::new("list_columns").with_arguments(json_object(&json!({
+                "schema": "local_messages",
+                "table": "messages",
+                "pattern": "SESSION"
+            }))),
+        )
+        .await
+        .expect("list filtered columns");
+    let filtered_columns = filtered_columns
+        .structured_content
+        .expect("structured content");
+    assert_eq!(filtered_columns["total"], 1);
+    assert_eq!(filtered_columns["columns"][0]["column_name"], "sessionId");
+    assert!(
+        filtered_columns["columns"][0]["matched_fields"]
+            .as_array()
+            .expect("matched fields")
+            .iter()
+            .any(|field| field == "column_name")
+    );
+
+    let missing_columns = client
+        .call_tool(
+            CallToolRequestParams::new("list_columns").with_arguments(json_object(&json!({
+                "schema": "local_messages",
+                "table": "missing"
+            }))),
+        )
+        .await
+        .expect("list columns for missing table");
+    let missing_columns = missing_columns
+        .structured_content
+        .expect("structured content");
+    assert_eq!(missing_columns["total"], 0);
+    assert!(
+        missing_columns["columns"]
+            .as_array()
+            .expect("columns")
+            .is_empty()
+    );
+
+    client
+        .call_tool(
+            CallToolRequestParams::new("list_columns").with_arguments(json_object(&json!({
+                "schema": "local_messages",
+                "table": "messages",
+                "pattern": ""
+            }))),
+        )
+        .await
+        .expect_err("empty column regex should fail");
+
     session.shutdown().await;
 }
 
@@ -549,10 +629,11 @@ async fn mcp_feedback_tool_persists_blocked_agent_report() {
             "list_tables",
             "search_tables",
             "describe_table",
+            "list_columns",
             "feedback"
         ]
     );
-    let feedback_annotations = tools[4].annotations.as_ref().expect("feedback annotations");
+    let feedback_annotations = tools[5].annotations.as_ref().expect("feedback annotations");
     assert_eq!(feedback_annotations.read_only_hint, Some(false));
     assert_eq!(feedback_annotations.destructive_hint, Some(false));
     assert_eq!(feedback_annotations.idempotent_hint, Some(false));

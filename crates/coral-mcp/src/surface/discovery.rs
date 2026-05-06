@@ -1,4 +1,6 @@
-use coral_api::v1::TableSummary as ProtoTableSummary;
+use coral_api::v1::{
+    Column as ProtoColumn, Table as ProtoTable, TableSummary as ProtoTableSummary,
+};
 use regex::{Regex, RegexBuilder};
 use rmcp::ErrorData;
 use serde_json::{Map, Value, json};
@@ -35,19 +37,61 @@ pub(crate) struct TableSummary {
     pub(crate) required_filters: Vec<String>,
 }
 
-#[expect(
-    dead_code,
-    reason = "Column summaries are shared discovery scaffolding for the follow-up column tool."
-)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ColumnSummary {
-    pub(crate) name: String,
+    pub(crate) schema_name: String,
+    pub(crate) table_name: String,
+    pub(crate) column_name: String,
     pub(crate) data_type: String,
     pub(crate) nullable: bool,
     pub(crate) is_virtual: bool,
     pub(crate) is_required_filter: bool,
     pub(crate) description: String,
     pub(crate) ordinal_position: u32,
+}
+
+impl ColumnSummary {
+    pub(crate) fn from_proto(table: &ProtoTable, column: &ProtoColumn) -> Self {
+        Self {
+            schema_name: table.schema_name.clone(),
+            table_name: table.name.clone(),
+            column_name: column.name.clone(),
+            data_type: column.data_type.clone(),
+            nullable: column.nullable,
+            is_virtual: column.is_virtual,
+            is_required_filter: column.is_required_filter,
+            description: column.description.clone(),
+            ordinal_position: column.ordinal_position,
+        }
+    }
+
+    pub(crate) fn matched_fields(&self, regex: &Regex) -> Vec<&'static str> {
+        let candidates = [
+            ("column_name", self.column_name.as_str()),
+            ("description", self.description.as_str()),
+            ("data_type", self.data_type.as_str()),
+        ];
+        candidates
+            .into_iter()
+            .filter_map(|(field, value)| regex.is_match(value).then_some(field))
+            .collect()
+    }
+
+    pub(crate) fn value(&self, matched_fields: Option<Vec<&'static str>>) -> Value {
+        let mut value = json!({
+            "column_name": self.column_name,
+            "data_type": self.data_type,
+            "is_nullable": self.nullable,
+            "is_virtual": self.is_virtual,
+            "is_required_filter": self.is_required_filter,
+            "description": self.description,
+            "ordinal_position": self.ordinal_position,
+        });
+        if let Some(matched_fields) = matched_fields {
+            value["matched_fields"] = json!(matched_fields);
+        }
+        value
+    }
 }
 
 impl TableSummary {
