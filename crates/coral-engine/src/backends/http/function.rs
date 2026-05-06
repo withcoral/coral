@@ -155,6 +155,7 @@ impl TableProvider for HttpSourceFunctionCallTableProvider {
             arg_values: self.arg_values.clone(),
             projection,
             limit,
+            statistics_plan: None,
         })
     }
 }

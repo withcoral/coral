@@ -4,15 +4,16 @@
     reason = "test code: assertion-style indexing is idiomatic in tests"
 )]
 
-use std::{fs, path::Path};
+use std::path::Path;
 
-use coral_engine::{CoralQuery, CoreError, StatusCode};
+use coral_engine::{CoralQuery, CoreError, StatisticsObservationScope, StatusCode};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
 use crate::harness::{
-    assert_row_count, assert_table_not_found, build_source, dir_url, execution_to_rows,
-    test_runtime, users_rows, write_jsonl_file,
+    assert_row_count, assert_table_not_found, build_source, dir_url,
+    execute_sql_with_trace_observations, execution_to_rows, test_runtime, users_rows,
+    write_jsonl_file,
 };
 
 fn jsonl_manifest(name: &str, dir: &Path, glob: &str) -> Value {
@@ -111,9 +112,8 @@ async fn select_all_from_jsonl_source() {
     write_jsonl_file(temp.path(), "users.jsonl", &users_rows());
     let source = build_source(jsonl_manifest("jsonl_users", temp.path(), "**/*.jsonl"));
 
-    let execution = CoralQuery::execute_sql(
+    let (execution, observations) = execute_sql_with_trace_observations(
         &[source],
-        test_runtime(),
         "SELECT id, name, email FROM jsonl_users.users ORDER BY id",
     )
     .await
@@ -121,6 +121,21 @@ async fn select_all_from_jsonl_source() {
 
     assert_row_count(&execution, 3);
     assert_eq!(execution_to_rows(&execution), users_rows());
+
+    assert_eq!(observations.len(), 1);
+    assert_eq!(
+        observations[0].scope,
+        StatisticsObservationScope::TableGlobal
+    );
+    let observed_columns = observations[0]
+        .columns
+        .iter()
+        .map(|column| column.column_name.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(observed_columns, vec!["id", "name", "email"]);
+    for column in &observations[0].columns {
+        assert_eq!(column.sample_count, 3);
+    }
 }
 
 #[tokio::test]
@@ -233,15 +248,13 @@ async fn select_with_column_projection() {
         "**/*.jsonl",
     ));
 
-    let rows = execution_to_rows(
-        &CoralQuery::execute_sql(
-            &[source],
-            test_runtime(),
-            "SELECT name FROM jsonl_projection.users ORDER BY name DESC",
-        )
-        .await
-        .expect("query should succeed"),
-    );
+    let (execution, observations) = execute_sql_with_trace_observations(
+        &[source],
+        "SELECT name FROM jsonl_projection.users ORDER BY name DESC",
+    )
+    .await
+    .expect("query should succeed");
+    let rows = execution_to_rows(&execution);
 
     assert_eq!(
         rows,
@@ -251,6 +264,18 @@ async fn select_with_column_projection() {
             json!({"name": "Ada"})
         ]
     );
+
+    assert_eq!(observations.len(), 1);
+    assert_eq!(observations[0].scope, StatisticsObservationScope::Unknown);
+    let observed_columns = observations[0]
+        .columns
+        .iter()
+        .map(|column| column.column_name.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(observed_columns, vec!["name"]);
+    for column in &observations[0].columns {
+        assert_eq!(column.sample_count, 3);
+    }
 }
 
 #[tokio::test]
@@ -259,17 +284,26 @@ async fn select_with_where_filter() {
     write_jsonl_file(temp.path(), "users.jsonl", &users_rows());
     let source = build_source(jsonl_manifest("jsonl_filter", temp.path(), "**/*.jsonl"));
 
-    let rows = execution_to_rows(
-        &CoralQuery::execute_sql(
-            &[source],
-            test_runtime(),
-            "SELECT id, name FROM jsonl_filter.users WHERE id = 2",
-        )
-        .await
-        .expect("query should succeed"),
-    );
+    let (execution, observations) = execute_sql_with_trace_observations(
+        &[source],
+        "SELECT id, name, email FROM jsonl_filter.users WHERE id = 2",
+    )
+    .await
+    .expect("query should succeed");
+    let rows = execution_to_rows(&execution);
 
-    assert_eq!(rows, vec![json!({"id": 2, "name": "Grace"})]);
+    assert_eq!(
+        rows,
+        vec![json!({"id": 2, "name": "Grace", "email": "grace@example.com"})]
+    );
+    assert_eq!(observations.len(), 1);
+    assert_eq!(
+        observations[0].scope,
+        StatisticsObservationScope::TableGlobal
+    );
+    for column in &observations[0].columns {
+        assert_eq!(column.sample_count, 3);
+    }
 }
 
 #[tokio::test]
@@ -297,28 +331,36 @@ async fn select_with_order_by_and_limit() {
 #[tokio::test]
 async fn select_with_limit_returns_rows() {
     let temp = TempDir::new().expect("temp dir");
-    fs::write(
-        temp.path().join("users.jsonl"),
-        b"{\"id\":1,\"name\":\"Ada\",\"email\":\"ada@example.com\"}\n{\"id\":2,\"name\":\"Grace\",\"email\":\"grace@example.com\"}\n",
-    )
-    .expect("jsonl fixture should be written");
+    write_jsonl_file(temp.path(), "one.jsonl", &users_rows()[..1]);
+    write_jsonl_file(temp.path(), "two.jsonl", &users_rows()[1..]);
     let source = build_source(jsonl_manifest(
         "jsonl_stream_limit",
         temp.path(),
         "**/*.jsonl",
     ));
 
-    let rows = execution_to_rows(
-        &CoralQuery::execute_sql(
-            &[source],
-            test_runtime(),
-            "SELECT id FROM jsonl_stream_limit.users LIMIT 1",
-        )
-        .await
-        .expect("query should succeed"),
-    );
+    let (execution, observations) = execute_sql_with_trace_observations(
+        &[source],
+        "SELECT id, name, email FROM jsonl_stream_limit.users LIMIT 1",
+    )
+    .await
+    .expect("query should succeed");
+    let rows = execution_to_rows(&execution);
 
-    assert_eq!(rows, vec![json!({"id": 1})]);
+    assert_eq!(rows.len(), 1);
+    assert!(
+        rows.iter().all(|row| row.get("id").is_some()),
+        "limited scan should return one projected row"
+    );
+    assert_eq!(observations.len(), 1);
+    assert_eq!(observations[0].scope, StatisticsObservationScope::Limited);
+    assert!(
+        observations[0]
+            .columns
+            .iter()
+            .all(|column| column.sample_count > 0),
+        "limited scan should emit the rows it consumed"
+    );
 }
 
 #[tokio::test]
@@ -327,17 +369,17 @@ async fn select_count_aggregation() {
     write_jsonl_file(temp.path(), "users.jsonl", &users_rows());
     let source = build_source(jsonl_manifest("jsonl_count", temp.path(), "**/*.jsonl"));
 
-    let rows = execution_to_rows(
-        &CoralQuery::execute_sql(
-            &[source],
-            test_runtime(),
-            "SELECT COUNT(*) AS n FROM jsonl_count.users",
-        )
-        .await
-        .expect("query should succeed"),
-    );
+    let (execution, observations) = execute_sql_with_trace_observations(
+        &[source],
+        "SELECT COUNT(*) AS n FROM jsonl_count.users",
+    )
+    .await
+    .expect("query should succeed");
+    let rows = execution_to_rows(&execution);
 
     assert_eq!(rows, vec![json!({"n": 3})]);
+
+    assert!(observations.is_empty());
 }
 
 #[tokio::test]

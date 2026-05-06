@@ -19,6 +19,10 @@ use datafusion::physical_plan::{
 use futures::{TryStreamExt, stream};
 use serde_json::Value;
 
+use crate::runtime::statistics::{
+    BatchStatisticsCollector, BatchStatisticsPlan, report_statistics_observation,
+};
+
 /// Fetches raw JSON rows for one logical table scan.
 #[async_trait]
 pub(crate) trait RowFetcher: fmt::Debug + Send + Sync {
@@ -42,6 +46,7 @@ pub(crate) struct JsonExec {
     fetcher: Fetcher,
     converter: Converter,
     projection: Option<Vec<usize>>,
+    statistics_plan: Option<BatchStatisticsPlan>,
 }
 
 impl fmt::Debug for JsonExec {
@@ -68,6 +73,52 @@ impl JsonExec {
         converter: Converter,
         projection: Option<Vec<usize>>,
     ) -> Result<Self> {
+        Self::new_inner(
+            source_name,
+            table_name,
+            schema,
+            fetcher,
+            converter,
+            projection,
+            None,
+        )
+    }
+
+    /// Build a `JsonExec` plan node that observes scan statistics.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `DataFusionError` if the requested projection does not match
+    /// the supplied schema.
+    pub(crate) fn new_with_statistics(
+        source_name: &str,
+        table_name: &str,
+        schema: SchemaRef,
+        fetcher: Fetcher,
+        converter: Converter,
+        projection: Option<Vec<usize>>,
+        statistics_plan: BatchStatisticsPlan,
+    ) -> Result<Self> {
+        Self::new_inner(
+            source_name,
+            table_name,
+            schema,
+            fetcher,
+            converter,
+            projection,
+            Some(statistics_plan),
+        )
+    }
+
+    fn new_inner(
+        source_name: &str,
+        table_name: &str,
+        schema: SchemaRef,
+        fetcher: Fetcher,
+        converter: Converter,
+        projection: Option<Vec<usize>>,
+        statistics_plan: Option<BatchStatisticsPlan>,
+    ) -> Result<Self> {
         let projected_schema = match &projection {
             Some(indices) => Arc::new(schema.project(indices).map_err(|error| {
                 datafusion::error::DataFusionError::ArrowError(Box::new(error), None)
@@ -89,6 +140,7 @@ impl JsonExec {
             fetcher,
             converter,
             projection,
+            statistics_plan,
         })
     }
 }
@@ -143,6 +195,7 @@ impl ExecutionPlan for JsonExec {
         let converter = self.converter.clone();
         let projected_schema = self.projected_schema.clone();
         let projection = self.projection.clone();
+        let statistics_plan = self.statistics_plan.clone();
         // Emit the fetched rows in `batch_size`-row chunks rather than a single
         // batch spanning the whole result set. Each chunk's `Vec<Value>` is
         // dropped as soon as it is converted, so the heavy serde_json
@@ -158,6 +211,8 @@ impl ExecutionPlan for JsonExec {
                 projection,
                 batch_size,
                 emitted: false,
+                statistics_plan,
+                statistics_collector: None,
             };
             Ok::<_, DataFusionError>(stream::try_unfold(state, next_projected_batch))
         })
@@ -178,6 +233,8 @@ struct ChunkState {
     projection: Option<Vec<usize>>,
     batch_size: usize,
     emitted: bool,
+    statistics_plan: Option<BatchStatisticsPlan>,
+    statistics_collector: Option<BatchStatisticsCollector>,
 }
 
 /// Pulls up to `batch_size` rows, converts them into one projected
@@ -187,11 +244,23 @@ struct ChunkState {
 async fn next_projected_batch(mut state: ChunkState) -> Result<Option<(RecordBatch, ChunkState)>> {
     let chunk: Vec<Value> = state.rows.by_ref().take(state.batch_size).collect();
     if chunk.is_empty() && state.emitted {
+        if let Some(collector) = state.statistics_collector.take()
+            && let Some(observation) = collector.finish()
+        {
+            report_statistics_observation(&observation);
+        }
         return Ok(None);
     }
     state.emitted = true;
 
     let batch = (state.converter)(&chunk)?;
+    if let Some(plan) = state.statistics_plan.take() {
+        state.statistics_collector = Some(BatchStatisticsCollector::new(plan, &batch.schema()));
+    }
+    if let Some(collector) = &mut state.statistics_collector {
+        collector.record_batch(&batch);
+    }
+
     let batch = match &state.projection {
         Some(indices) => batch
             .project(indices)
@@ -268,6 +337,8 @@ mod tests {
             projection: None,
             batch_size: 2,
             emitted: false,
+            statistics_plan: None,
+            statistics_collector: None,
         };
 
         let mut batches = Vec::new();
@@ -309,6 +380,8 @@ mod tests {
             projection: None,
             batch_size: 8,
             emitted: false,
+            statistics_plan: None,
+            statistics_collector: None,
         };
 
         let (batch, state) = futures::executor::block_on(next_projected_batch(state))

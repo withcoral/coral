@@ -21,6 +21,7 @@ use futures::TryStreamExt as _;
 use object_store::ObjectStore;
 
 use crate::backends::schema_from_columns;
+use crate::contracts::StatisticsObservationScope;
 use coral_spec::backends::file::{FileFormat, FileTableSpec};
 
 use super::file_groups::{FileGroupsForScan, file_groups_for_scan};
@@ -29,17 +30,30 @@ use super::metadata::FileMetadataColumns;
 use super::parquet_schema::infer_schema_expand_dicts;
 use super::partitions::{
     PartitionColumns, filter_is_supported_partition_filter, filter_references_partition,
+    partition_filter_column_names,
 };
+use super::{FileStatisticsRegistration, FileTableStatistics};
 
 #[derive(Debug)]
 pub(crate) struct FileTableProvider {
     inner: FileTableProviderInner,
+    statistics: Option<FileTableStatistics>,
+    filter_scope_mode: FilterScopeMode,
 }
 
 #[derive(Debug)]
 enum FileTableProviderInner {
     Listing(ListingTable),
     Metadata(MetadataFileTableProvider),
+}
+
+impl FileTableProviderInner {
+    fn schema(&self) -> SchemaRef {
+        match self {
+            Self::Listing(inner) => inner.schema(),
+            Self::Metadata(inner) => inner.schema.clone(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -62,12 +76,13 @@ impl FileTableProvider {
     /// Returns a `DataFusionError` if the file source configuration is
     /// invalid or the listing table cannot be constructed.
     #[cfg(test)]
-    pub(crate) fn try_new(
+    pub(super) fn try_new(
         ctx: &SessionContext,
         source_schema: &str,
         table: FileTableSpec,
         home_dir: Option<&Path>,
         resolved_inputs: &BTreeMap<String, String>,
+        statistics: Option<FileStatisticsRegistration>,
     ) -> Result<Self> {
         futures::executor::block_on(Self::try_new_async(
             ctx,
@@ -75,15 +90,17 @@ impl FileTableProvider {
             table,
             home_dir,
             resolved_inputs,
+            statistics,
         ))
     }
 
-    pub(crate) async fn try_new_async(
+    pub(super) async fn try_new_async(
         ctx: &SessionContext,
         source_schema: &str,
         table: FileTableSpec,
         home_dir: Option<&Path>,
         resolved_inputs: &BTreeMap<String, String>,
+        statistics: Option<FileStatisticsRegistration>,
     ) -> Result<Self> {
         let inner = Self::build_provider(
             ctx.clone(),
@@ -93,7 +110,25 @@ impl FileTableProvider {
             resolved_inputs,
         )
         .await?;
-        Ok(Self { inner })
+        let schema = inner.schema();
+        let table_metadata = super::registered_table(&table, &schema);
+        let statistics = statistics.map(|registration| {
+            FileTableStatistics::new(
+                source_schema,
+                table.name(),
+                table_metadata.schema_signature(),
+                schema.fields().len(),
+                registration,
+            )
+        });
+        Ok(Self {
+            inner,
+            statistics,
+            filter_scope_mode: FilterScopeMode::from_format(
+                table.format,
+                !table.source.partitions.is_empty(),
+            ),
+        })
     }
 
     async fn build_listing_table(
@@ -317,13 +352,66 @@ impl TableProvider for FileTableProvider {
         filters: &[Expr],
         limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        match &self.inner {
+        let exec = match &self.inner {
             FileTableProviderInner::Listing(inner) => {
                 inner.scan(state, projection, filters, limit).await
             }
             FileTableProviderInner::Metadata(inner) => {
                 inner.scan(state, projection, filters, limit).await
             }
+        }?;
+        Ok(match &self.statistics {
+            Some(statistics) => {
+                let scope = self.statistics_scope(statistics, projection, filters, limit);
+                statistics.observe_scan_with_scope(exec, scope)
+            }
+            None => exec,
+        })
+    }
+}
+
+impl FileTableProvider {
+    fn statistics_scope(
+        &self,
+        statistics: &FileTableStatistics,
+        projection: Option<&Vec<usize>>,
+        filters: &[Expr],
+        limit: Option<usize>,
+    ) -> StatisticsObservationScope {
+        if let FileTableProviderInner::Metadata(inner) = &self.inner {
+            return statistics.scope(
+                projection,
+                partition_filter_column_names(filters, &inner.partition_columns),
+                limit,
+            );
+        }
+
+        match self.filter_scope_mode {
+            FilterScopeMode::UnknownWhenPresent if !filters.is_empty() && limit.is_none() => {
+                StatisticsObservationScope::Unknown
+            }
+            FilterScopeMode::Ignored | FilterScopeMode::UnknownWhenPresent => {
+                statistics.scope(projection, Vec::new(), limit)
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum FilterScopeMode {
+    Ignored,
+    UnknownWhenPresent,
+}
+
+impl FilterScopeMode {
+    fn from_format(format: FileFormat, has_partitions: bool) -> Self {
+        if has_partitions {
+            return Self::UnknownWhenPresent;
+        }
+
+        match format {
+            FileFormat::Parquet => Self::UnknownWhenPresent,
+            FileFormat::Csv | FileFormat::Json | FileFormat::Jsonl => Self::Ignored,
         }
     }
 }
