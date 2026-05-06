@@ -333,6 +333,15 @@ fn table_not_found_hint(
         // schema for a close match — if `FROM account` has `stripe.accounts`
         // in the catalog, suggest the schema-qualified name instead of
         // sending the user to `coral.tables`.
+        if table.contains('.') {
+            if let Some(info) = known_tables
+                .iter()
+                .find(|info| format!("{}.{}", info.schema_name, info.table_name) == table)
+            {
+                return Some(quoted_qualified_table_hint(table, info));
+            }
+        }
+
         let table_lower = table.to_lowercase();
         let best = known_tables
             .iter()
@@ -399,6 +408,16 @@ fn table_not_found_hint(
     Some(did_you_mean_hint(&format_schema_table(best)))
 }
 
+fn quoted_qualified_table_hint(missing: &str, info: &TableInfo) -> String {
+    format!(
+        "`\"{missing}\"` is one quoted identifier, so SQL looks for a table literally named \
+         `{missing}`. Use `{}` or `{}` in `FROM`/`JOIN` clauses; do not quote the whole \
+         `schema.table` string.",
+        format_schema_table(info),
+        format_schema_table_fully_quoted(info)
+    )
+}
+
 /// Renders `schema.table` with per-component SQL quoting (dotted source
 /// names stay one quoted identifier; case-preserving names are quoted
 /// only when they would otherwise round-trip wrong).
@@ -407,6 +426,14 @@ fn format_schema_table(info: &TableInfo) -> String {
         "{}.{}",
         quote_dotted_identifier(&info.schema_name),
         quote_identifier(&info.table_name)
+    )
+}
+
+fn format_schema_table_fully_quoted(info: &TableInfo) -> String {
+    format!(
+        "{}.{}",
+        quote_identifier_always(&info.schema_name),
+        quote_identifier_always(&info.table_name)
     )
 }
 
@@ -523,6 +550,10 @@ fn quote_dotted_identifier(ident: &str) -> String {
     } else {
         quote_identifier(ident).into_owned()
     }
+}
+
+fn quote_identifier_always(ident: &str) -> String {
+    format!("\"{}\"", ident.replace('"', "\"\""))
 }
 
 #[cfg(test)]
@@ -738,6 +769,39 @@ mod tests {
     }
 
     #[test]
+    fn table_not_found_quoted_qualified_name_suggests_sql_reference() {
+        // `FROM "github.pulls"` reaches the planner as a single bare
+        // identifier under the synthetic `public` schema. When that flat
+        // string exactly matches a visible `schema_name.table_name`, point
+        // at the qualified SQL form before typo-based fallback can fire.
+        let tables = vec![table("github", "pulls")];
+        let err = StructuredQueryError::table_not_found("datafusion.public.github.pulls", &tables);
+
+        assert_eq!(err.metadata().get("schema"), None);
+        assert_eq!(
+            err.metadata().get("table").map(String::as_str),
+            Some("github.pulls")
+        );
+        let hint = err.hint().expect("hint should be present");
+        assert!(
+            hint.contains("`\"github.pulls\"` is one quoted identifier"),
+            "hint should explain whole-reference quoting, got: {hint}"
+        );
+        assert!(
+            hint.contains("`github.pulls`"),
+            "hint should suggest the SQL-safe unquoted qualified reference, got: {hint}"
+        );
+        assert!(
+            hint.contains("`\"github\".\"pulls\"`"),
+            "hint should show per-identifier quoting as the alternative, got: {hint}"
+        );
+        assert!(
+            hint.contains("do not quote the whole `schema.table` string"),
+            "hint should explicitly reject whole-reference quoting, got: {hint}"
+        );
+    }
+
+    #[test]
     fn table_not_found_real_public_schema_beats_synthetic_shortcut() {
         // If a user genuinely registered a source named `public`, don't
         // collapse the 2-part body — resolve against the catalog.
@@ -842,6 +906,12 @@ mod tests {
         assert_eq!(quote_dotted_identifier("foo.bar"), "\"foo.bar\"");
         assert_eq!(quote_dotted_identifier("hockey"), "hockey");
         assert_eq!(quote_dotted_identifier("Master"), "\"Master\"");
+    }
+
+    #[test]
+    fn quote_identifier_always_escapes_embedded_quotes() {
+        assert_eq!(quote_identifier_always("github"), "\"github\"");
+        assert_eq!(quote_identifier_always("git\"hub"), "\"git\"\"hub\"");
     }
 
     #[test]

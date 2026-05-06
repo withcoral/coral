@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use coral_engine::CoralQuery;
+use coral_engine::{CoralQuery, CoreError, StatusCode};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
@@ -47,6 +47,65 @@ async fn select_all_from_jsonl_source() {
 
     assert_row_count(&execution, 3);
     assert_eq!(execution_to_rows(&execution), users_rows());
+}
+
+#[tokio::test]
+async fn quoted_fully_qualified_table_reference_reports_sql_reference_hint() {
+    let temp = TempDir::new().expect("temp dir");
+    write_jsonl_file(
+        temp.path(),
+        "pulls.jsonl",
+        &[json!({"id": 1, "title": "Fix table hint"})],
+    );
+    let source = build_source(json!({
+        "name": "github",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "jsonl",
+        "tables": [{
+            "name": "pulls",
+            "description": "Pull requests fixture",
+            "source": {
+                "location": dir_url(temp.path()),
+                "glob": "**/*.jsonl"
+            },
+            "columns": [
+                { "name": "id", "type": "Int64" },
+                { "name": "title", "type": "Utf8" }
+            ]
+        }]
+    }));
+
+    let error =
+        CoralQuery::execute_sql(&[source], test_runtime(), "SELECT * FROM \"github.pulls\"")
+            .await
+            .expect_err("whole-reference quoted table should fail");
+
+    assert_eq!(error.status_code(), StatusCode::NotFound);
+    match error {
+        CoreError::QueryFailure(sqe) => {
+            assert_eq!(sqe.reason(), "TABLE_NOT_FOUND");
+            assert_eq!(sqe.metadata().get("schema"), None);
+            assert_eq!(
+                sqe.metadata().get("table").map(String::as_str),
+                Some("github.pulls")
+            );
+            let hint = sqe.hint().expect("hint should be present");
+            assert!(
+                hint.contains("`\"github.pulls\"` is one quoted identifier"),
+                "hint should explain the quoted-qualified mistake, got: {hint}"
+            );
+            assert!(
+                hint.contains("`github.pulls`"),
+                "hint should suggest the list_tables sql_reference form, got: {hint}"
+            );
+            assert!(
+                hint.contains("`\"github\".\"pulls\"`"),
+                "hint should show per-identifier quoting as valid SQL, got: {hint}"
+            );
+        }
+        other => panic!("expected CoreError::QueryFailure, got {other:?}"),
+    }
 }
 
 #[tokio::test]

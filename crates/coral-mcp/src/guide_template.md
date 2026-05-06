@@ -54,7 +54,8 @@ WHERE json_get_str(rules, 0, 'clauses', 0, 'values', 0) = 'phoebe-org';
 
 ## Query Guidance
 
-- Fully qualify tables in SQL, for example `slack.messages`.
+- Use each table's `sql_reference` from `list_tables` or `coral://tables` in `FROM` and `JOIN` clauses, for example `slack.messages`.
+- Do not quote the whole `schema.table` string. Write `github.pulls` or `"github"."pulls"`, not `"github.pulls"`.
 - Check `coral.tables.required_filters` and `coral.columns.is_required_filter` before querying tables that depend on filter-only inputs.
 - Cross-source joins work with standard SQL after source scans complete.
 - Use `LIKE` or `ILIKE` for SQL wildcard matching with `%` and `_`. `SIMILAR TO` uses regex-shaped patterns, so write `.*` instead of `%`, `.` instead of `_`, or escape literal percent/underscore characters as `\%` and `\_`.

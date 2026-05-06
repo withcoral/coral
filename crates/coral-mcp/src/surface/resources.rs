@@ -110,6 +110,7 @@ fn queryable_tables(tables: &[Table]) -> Vec<Value> {
         .map(|table| {
             json!({
                 "name": format!("{}.{}", table.schema_name, table.name),
+                "sql_reference": format_schema_table_equivalent(&table.schema_name, &table.name),
                 "description": table.description,
                 "required_filters": table.required_filters,
             })
@@ -132,11 +133,39 @@ fn first_visible_table(tables: &[Table]) -> Option<(&str, &str)> {
         .map(|table| (table.schema_name.as_str(), table.name.as_str()))
 }
 
+fn format_schema_table_equivalent(schema_name: &str, table_name: &str) -> String {
+    format!(
+        "{}.{}",
+        quote_identifier_if_needed(schema_name),
+        quote_identifier_if_needed(table_name)
+    )
+}
+
+fn quote_identifier_if_needed(identifier: &str) -> String {
+    if identifier_needs_quotes(identifier) {
+        format!("\"{}\"", identifier.replace('"', "\"\""))
+    } else {
+        identifier.to_string()
+    }
+}
+
+fn identifier_needs_quotes(identifier: &str) -> bool {
+    let mut chars = identifier.chars();
+    let Some(first) = chars.next() else {
+        return true;
+    };
+    if !(first.is_ascii_lowercase() || first == '_') {
+        return true;
+    }
+    !chars.all(|char| char.is_ascii_lowercase() || char.is_ascii_digit() || char == '_')
+}
+
 #[cfg(test)]
 mod tests {
     use coral_api::v1::{Source, Table, Workspace};
+    use serde_json::json;
 
-    use super::guide_resource_content;
+    use super::{format_schema_table_equivalent, guide_resource_content, list_tables_value};
 
     fn source(name: &str) -> Source {
         Source {
@@ -183,6 +212,47 @@ mod tests {
         assert!(content.contains("- coral: System metadata schema."));
         assert!(content.contains("Visible source schemas:"));
         assert!(content.contains("- slack"));
-        assert!(content.contains("Fully qualify tables in SQL, for example `slack.messages`."));
+        assert!(
+            content.contains(
+                "Use each table's `sql_reference` from `list_tables` or `coral://tables`"
+            )
+        );
+    }
+
+    #[test]
+    fn list_tables_value_includes_compatible_name_and_sql_reference() {
+        let value = list_tables_value(&[table("local_messages", "events")]);
+
+        assert_eq!(value["tables"][0]["name"], "local_messages.events");
+        assert_eq!(value["tables"][0]["sql_reference"], "local_messages.events");
+        assert_eq!(
+            value["tables"][0],
+            json!({
+                "name": "local_messages.events",
+                "sql_reference": "local_messages.events",
+                "description": "events description",
+                "required_filters": [],
+            })
+        );
+    }
+
+    #[test]
+    fn sql_reference_quotes_each_identifier_independently() {
+        assert_eq!(
+            format_schema_table_equivalent("github", "pulls"),
+            "github.pulls"
+        );
+        assert_eq!(
+            format_schema_table_equivalent("github", "Pull.Requests"),
+            "github.\"Pull.Requests\""
+        );
+        assert_eq!(
+            format_schema_table_equivalent("git.hub", "pulls"),
+            "\"git.hub\".pulls"
+        );
+        assert_eq!(
+            format_schema_table_equivalent("git\"hub", "pulls"),
+            "\"git\"\"hub\".pulls"
+        );
     }
 }
