@@ -6,8 +6,14 @@
 /// Re-exported local server builder for explicit local bootstrap scenarios.
 pub use coral_app::ServerBuilder;
 
+/// Re-exported local server mode for explicit local bootstrap scenarios.
+pub use coral_app::ServerMode;
+
 /// Re-exported local server handle for explicit local bootstrap scenarios.
 pub use coral_app::RunningServer;
+
+/// Re-exported static asset model for embedded UI server modes.
+pub use coral_app::{StaticAsset, StaticAssetsProvider};
 
 /// Re-exported local server startup error for explicit bootstrap surfaces.
 pub use coral_app::AppError as LocalServerError;

@@ -51,7 +51,7 @@ Shared client library used by both `coral-cli` and `coral-mcp`.
 | Owns               | Details                                                                              |
 | ------------------ | ------------------------------------------------------------------------------------ |
 | Endpoint dialing   | `AppClient::connect(endpoint)` builds typed gRPC clients for an existing endpoint    |
-| Explicit local bootstrap | `local::{ServerBuilder, RunningServer}` for callers that need local server control |
+| Explicit local bootstrap | `local::{ServerBuilder, ServerMode, RunningServer}` for callers that need local server control |
 | Result decoding    | Arrow IPC → record batches                                                           |
 | Error decoding     | Decodes AIP-193 `ErrorInfo` from `tonic::Status` details (`status_error.rs`)         |
 | Formatting helpers | `format_batches_table`, `format_batches_json`                                        |
