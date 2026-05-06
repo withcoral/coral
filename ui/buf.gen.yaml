@@ -1,11 +1,10 @@
 version: v2
 clean: true
 plugins:
-  - local: protoc-gen-ts
+  - remote: buf.build/bufbuild/es:v2.12.0
     out: src/generated
     opt:
-      - long_type_number
-      - server_none
+      - target=ts
 inputs:
   - directory: ../crates/coral-api/proto
     paths:
