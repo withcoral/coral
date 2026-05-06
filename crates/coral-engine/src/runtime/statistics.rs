@@ -728,8 +728,10 @@ fn record_bool_values(values: &mut HashSet<bool>, array: &dyn Array) -> Distinct
 mod tests {
     use std::sync::Arc;
 
-    use datafusion::arrow::array::{Float64Array, Int64Array, StringArray};
-    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::arrow::array::{
+        DictionaryArray, Float64Array, Int64Array, StringArray, StringViewArray, UInt16Array,
+    };
+    use datafusion::arrow::datatypes::{DataType, Field, Schema, UInt16Type};
 
     use super::{BatchStatisticsPlan, DISTINCT_COUNT_MAX_VALUES, collect_batch_statistics};
     use crate::contracts::{
@@ -855,6 +857,95 @@ mod tests {
             vec![Arc::new(StringArray::from(values))],
         )
         .expect("batch");
+        let signature = TableSchemaSignature {
+            columns: vec![ColumnSchemaSignature {
+                name: "name".to_string(),
+                data_type: "Utf8".to_string(),
+                nullable: true,
+                is_virtual: false,
+                is_required_filter: false,
+            }],
+            required_filters: Vec::new(),
+        };
+        let plan = BatchStatisticsPlan::table_global("local", "events", None, signature);
+
+        let observation = collect_batch_statistics(&plan, &[batch]).expect("observation");
+
+        let name = observation
+            .columns
+            .iter()
+            .find(|column| column.column_name == "name")
+            .expect("name stats");
+        assert_eq!(name.null_count.as_ref().expect("null count").value, 0);
+        assert!(name.approx_distinct_count.is_none());
+    }
+
+    #[test]
+    fn utf8_view_distinct_counts_are_collected() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "name",
+            DataType::Utf8View,
+            true,
+        )]));
+        let batch = datafusion::arrow::array::RecordBatch::try_new(
+            schema,
+            vec![Arc::new(StringViewArray::from(vec![
+                Some("alpha"),
+                Some("beta"),
+                None,
+                Some("alpha"),
+            ]))],
+        )
+        .expect("batch");
+        let signature = TableSchemaSignature {
+            columns: vec![ColumnSchemaSignature {
+                name: "name".to_string(),
+                data_type: "Utf8".to_string(),
+                nullable: true,
+                is_virtual: false,
+                is_required_filter: false,
+            }],
+            required_filters: Vec::new(),
+        };
+        let plan = BatchStatisticsPlan::table_global("local", "events", None, signature);
+
+        let observation = collect_batch_statistics(&plan, &[batch]).expect("observation");
+
+        let name = observation
+            .columns
+            .iter()
+            .find(|column| column.column_name == "name")
+            .expect("name stats");
+        assert_eq!(name.null_count.as_ref().expect("null count").value, 1);
+        assert_eq!(
+            name.approx_distinct_count
+                .as_ref()
+                .expect("distinct count")
+                .value,
+            2
+        );
+    }
+
+    #[test]
+    fn dictionary_utf8_distinct_counts_are_capped() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "name",
+            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+            true,
+        )]));
+        let keys = UInt16Array::from(
+            (0..=DISTINCT_COUNT_MAX_VALUES)
+                .map(|index| u16::try_from(index).expect("test value fits in u16"))
+                .collect::<Vec<_>>(),
+        );
+        let values = Arc::new(StringArray::from(
+            (0..=DISTINCT_COUNT_MAX_VALUES)
+                .map(|index| format!("value-{index}"))
+                .collect::<Vec<_>>(),
+        ));
+        let names = Arc::new(DictionaryArray::<UInt16Type>::try_new(keys, values).expect("dict"));
+        let batch =
+            datafusion::arrow::array::RecordBatch::try_new(schema, vec![names]).expect("batch");
         let signature = TableSchemaSignature {
             columns: vec![ColumnSchemaSignature {
                 name: "name".to_string(),
