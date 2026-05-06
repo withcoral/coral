@@ -656,6 +656,7 @@ async fn execute_request(
         let request_id = NEXT_HTTP_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
         let attempt = server_error_retries + throttle_retries + 1;
         let traced_url = sanitize_trace_url(&logged_url);
+        let graphql_query = graphql_query_from_body(body);
         let response = {
             let request_span = tracing::info_span!(
                 target: "coral_engine::http",
@@ -670,12 +671,16 @@ async fn execute_request(
                 http.request.body.size = request_body_size(body).unwrap_or_default(),
                 http.request.query_count = query_pairs.len(),
                 url.full = %traced_url,
+                graphql.query = field::Empty,
                 error = field::Empty,
                 exception.message = field::Empty,
                 coral.http.error.timeout = field::Empty,
                 coral.http.error.connect = field::Empty,
                 coral.http.error.request = field::Empty,
             );
+            if let Some(query) = graphql_query {
+                request_span.record("graphql.query", query);
+            }
             match http.execute(built).instrument(request_span.clone()).await {
                 Ok(response) => response,
                 Err(error) => {
@@ -1176,6 +1181,17 @@ fn request_body_size(body: Option<&RequestBody>) -> Option<usize> {
     }
 }
 
+fn graphql_query_from_body(body: Option<&RequestBody>) -> Option<&str> {
+    match body {
+        Some(RequestBody::Json(Value::Object(root))) => root
+            .get("query")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|query| !query.is_empty()),
+        Some(RequestBody::Json(_) | RequestBody::Text(_)) | None => None,
+    }
+}
+
 fn join_url(base: &str, path: &str) -> Result<String> {
     let trimmed = path.trim();
     if reqwest::Url::parse(trimmed).is_ok() || trimmed.starts_with("//") {
@@ -1397,9 +1413,10 @@ mod tests {
     use tokio::task::JoinHandle;
 
     use super::{
-        HttpSourceClient, PageState, RequestSpec as HttpRequestSpec, apply_pagination_body_fields,
-        apply_pagination_query_pairs, execute_request, extract_next_link_url, extract_rows,
-        join_url, normalize_base_url, page_is_exhausted, resolve_value_source, set_path_value,
+        HttpSourceClient, PageState, RequestBody, RequestSpec as HttpRequestSpec,
+        apply_pagination_body_fields, apply_pagination_query_pairs, execute_request,
+        extract_next_link_url, extract_rows, graphql_query_from_body, join_url, normalize_base_url,
+        page_is_exhausted, resolve_value_source, set_path_value,
     };
     use crate::backends::http::ProviderQueryError;
     use coral_spec::PaginationMode;
@@ -1493,6 +1510,31 @@ mod tests {
                 "Statistics": ["Average"]
             })
         );
+    }
+
+    #[test]
+    fn graphql_query_from_body_extracts_json_query_field() {
+        let body = RequestBody::Json(json!({
+            "query": "  query Users { users { id } }  ",
+            "variables": { "first": 10 }
+        }));
+
+        assert_eq!(
+            graphql_query_from_body(Some(&body)),
+            Some("query Users { users { id } }")
+        );
+    }
+
+    #[test]
+    fn graphql_query_from_body_ignores_missing_or_blank_query() {
+        let missing = RequestBody::Json(json!({ "variables": { "first": 10 } }));
+        let blank = RequestBody::Json(json!({ "query": "   " }));
+        let text = RequestBody::Text("query Users { users { id } }".to_string());
+
+        assert_eq!(graphql_query_from_body(Some(&missing)), None);
+        assert_eq!(graphql_query_from_body(Some(&blank)), None);
+        assert_eq!(graphql_query_from_body(Some(&text)), None);
+        assert_eq!(graphql_query_from_body(None), None);
     }
 
     fn request_json(request: &RequestSpec) -> serde_json::Value {
