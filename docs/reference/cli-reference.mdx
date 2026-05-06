@@ -124,10 +124,10 @@ coral ui
 
 The UI opens at `http://127.0.0.1:1457` by default, which only accepts connections from your machine. The command keeps running until you press `Ctrl-C`.
 
-Use `--addr` to bind a different address:
+The host is fixed to `127.0.0.1`. Use `--port` to bind a different loopback port:
 
 ```shellscript
-coral ui --addr 127.0.0.1:1458
+coral ui --port 1458
 ```
 
 ## `coral mcp-stdio`

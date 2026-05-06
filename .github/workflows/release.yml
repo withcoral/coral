@@ -30,8 +30,6 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: ui/package-lock.json
-      - name: Install protobuf compiler
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - name: Install UI dependencies
         run: npm ci --prefix ui
       - name: Build UI

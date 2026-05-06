@@ -35,8 +35,8 @@ fn server_help_does_not_require_app_bootstrap() {
         "expected server help text: {stdout}"
     );
     assert!(
-        stdout.contains("--addr <ADDR>"),
-        "expected server bind address option: {stdout}"
+        stdout.contains("--port <PORT>"),
+        "expected server port option: {stdout}"
     );
 }
 
@@ -55,8 +55,8 @@ fn ui_help_does_not_require_app_bootstrap() {
         "expected ui help text: {stdout}"
     );
     assert!(
-        stdout.contains("--addr <ADDR>"),
-        "expected ui bind address option: {stdout}"
+        stdout.contains("--port <PORT>"),
+        "expected ui port option: {stdout}"
     );
 }
 
