@@ -19,22 +19,36 @@ jobs:
     runs-on: ubuntu-latest
     env:
       TAG_NAME: ${{ github.event.release.tag_name || inputs.tag }}
+    outputs:
+      has-ui: ${{ steps.detect-ui.outputs.has-ui }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           ref: ${{ env.TAG_NAME }}
           persist-credentials: false
+      - name: Detect UI package
+        id: detect-ui
+        run: |
+          if [ -f ui/package-lock.json ]; then
+            echo "has-ui=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has-ui=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Set up Node
+        if: steps.detect-ui.outputs.has-ui == 'true'
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: ui/package-lock.json
       - name: Install UI dependencies
+        if: steps.detect-ui.outputs.has-ui == 'true'
         run: npm ci --prefix ui
       - name: Build UI
+        if: steps.detect-ui.outputs.has-ui == 'true'
         run: npm run build --prefix ui
       - name: Upload UI artifact
+        if: steps.detect-ui.outputs.has-ui == 'true'
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: ui-dist
@@ -67,6 +81,7 @@ jobs:
       - name: Ensure target is installed
         run: rustup target add ${{ matrix.target }}
       - name: Download UI artifact
+        if: needs.build-ui.outputs.has-ui == 'true'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: ui-dist
@@ -81,10 +96,15 @@ jobs:
           cargo binstall --no-confirm --force --disable-strategies compile cross@0.2.5
       - name: Build
         run: |
+          feature_args=""
+          if [ "${{ needs.build-ui.outputs.has-ui }}" = "true" ]; then
+            feature_args="--features embedded-ui"
+          fi
+
           if [ "${{ matrix.cross }}" = "true" ]; then
-            cross build --locked --release --target ${{ matrix.target }} --features embedded-ui
+            cross build --locked --release --target ${{ matrix.target }} $feature_args
           else
-            cargo build --locked --release --target ${{ matrix.target }} --features embedded-ui
+            cargo build --locked --release --target ${{ matrix.target }} $feature_args
           fi
       - name: Package
         run: |
