@@ -32,6 +32,7 @@ pub mod metrics;
 pub(crate) mod service;
 
 use crate::bootstrap::AppError;
+use crate::state::StatisticsObservationRecord;
 use crate::workspaces::WorkspaceName;
 pub use config::TelemetryConfig;
 use config::{DEFAULT_LOCAL_TRACE_FILTER, DEFAULT_LOG_FILTER, DEFAULT_TRACE_FILTER};
@@ -614,6 +615,25 @@ pub fn shutdown_tracing() {
     {
         tracing::warn!("OTEL logger provider shutdown error: {error}");
     }
+}
+
+pub(crate) fn force_flush_tracing() {
+    if let Ok(guard) = PROVIDER.lock()
+        && let Some(provider) = guard.as_ref()
+        && let Err(error) = provider.force_flush()
+    {
+        tracing::warn!("OTEL trace provider force_flush error: {error}");
+    }
+}
+
+pub(crate) async fn load_statistics_observations(
+    store: &InstalledLocalTraceStore,
+    workspace_name: &WorkspaceName,
+) -> Result<Vec<StatisticsObservationRecord>, AppError> {
+    local_store::TraceStore::with_retention(store.dir.clone(), store.retention)
+        .statistics_observations(workspace_name.as_str().to_string())
+        .await
+        .map_err(|error| AppError::InvalidInput(error.to_string()))
 }
 
 #[cfg(test)]

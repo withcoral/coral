@@ -12,6 +12,7 @@ use crate::credentials::CredentialStorageKind;
 use crate::sources::SourceName;
 use crate::sources::model::{InstalledSource, SourceOrigin};
 use crate::state::AppStateLayout;
+use crate::state::statistics;
 use crate::storage::fs::{self as storage_fs, FileLock};
 use crate::workspaces::{DeletedWorkspace, WorkspaceName, WorkspaceRecord, WorkspaceStore};
 
@@ -609,6 +610,19 @@ impl ConfigStore {
         self.update_catalog_unlocked(|catalog| catalog.upsert_source(workspace_name, source))
     }
 
+    /// Upserts one installed source and invalidates its persisted statistics
+    /// without taking the app state lock.
+    ///
+    /// Callers must already hold the state lock in exclusive mode.
+    pub(crate) fn upsert_source_and_invalidate_statistics_unlocked(
+        &self,
+        workspace_name: &WorkspaceName,
+        source: InstalledSource,
+    ) -> Result<(), AppError> {
+        statistics::invalidate_source_unlocked(&self.layout, workspace_name, &source.name)?;
+        self.upsert_source_unlocked(workspace_name, source)
+    }
+
     #[cfg(test)]
     pub(crate) fn upsert_source(
         &self,
@@ -633,6 +647,19 @@ impl ConfigStore {
         self.update_catalog_unlocked(|catalog| {
             catalog.remove_source(workspace_name, source_name);
         })
+    }
+
+    /// Removes one installed source and invalidates its persisted statistics
+    /// without taking the app state lock.
+    ///
+    /// Callers must already hold the state lock in exclusive mode.
+    pub(crate) fn remove_source_and_invalidate_statistics_unlocked(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> Result<(), AppError> {
+        statistics::invalidate_source_unlocked(&self.layout, workspace_name, source_name)?;
+        self.remove_source_unlocked(workspace_name, source_name)
     }
 
     #[cfg(test)]

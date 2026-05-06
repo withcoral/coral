@@ -306,7 +306,8 @@ impl ServerBuilder {
             query_runtime_context,
             layout.clone(),
             self.config.engine_extensions_providers,
-        );
+        )
+        .with_local_trace_store(active_trace_store.clone());
         let search_manager = SearchManager::new(layout, config_store);
         let trace_components =
             active_trace_store.map_or_else(TraceServerComponents::default, |store| {

@@ -2,6 +2,7 @@
 
 mod config;
 mod layout;
+mod statistics;
 
 pub(crate) use config::{AppConfig, ConfigStore};
 pub(crate) use config::{
@@ -9,3 +10,4 @@ pub(crate) use config::{
     set_raw_feature_override,
 };
 pub(crate) use layout::AppStateLayout;
+pub(crate) use statistics::{StatisticsObservationRecord, StatisticsStore};

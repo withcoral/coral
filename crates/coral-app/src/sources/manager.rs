@@ -545,7 +545,7 @@ impl SourceManager {
         }
         if let Err(error) = self
             .config_store
-            .remove_source_unlocked(workspace_name, source_name)
+            .remove_source_and_invalidate_statistics_unlocked(workspace_name, source_name)
         {
             let restore_dir_result = source_dir_backup.restore();
             self.restore_source_rollback_state_with_state_lock_held(
@@ -716,7 +716,7 @@ impl SourceManager {
         };
         if let Err(error) = self
             .config_store
-            .upsert_source_unlocked(workspace_name, stored.clone())
+            .upsert_source_and_invalidate_statistics_unlocked(workspace_name, stored.clone())
         {
             let restore_result = restore_materialization_backup(
                 &self.layout,
@@ -1172,6 +1172,12 @@ impl SourceManager {
             {
                 warn!("rollback: failed to remove source credential material: {e}");
             }
+            if let Err(e) = self
+                .config_store
+                .remove_source_unlocked(workspace_name, source_name)
+            {
+                warn!("rollback: failed to remove source config: {e}");
+            }
         }
     }
 
@@ -1563,6 +1569,10 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
+    use coral_engine::{
+        ColumnSchemaSignature, ColumnStatisticsObservation, StatisticPrecision, StatisticValue,
+        StatisticsObservation, StatisticsObservationScope, TableSchemaSignature,
+    };
     use tempfile::TempDir;
     use tokio::sync::mpsc;
     use tokio::task::JoinHandle;
@@ -1583,7 +1593,7 @@ mod tests {
     use crate::sources::catalog::describe_manifest;
     use crate::sources::materialization::{FINGERPRINT_FILENAME, PROJECTIONS_FILENAME};
     use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
-    use crate::state::{AppStateLayout, ConfigStore};
+    use crate::state::{AppStateLayout, ConfigStore, StatisticsStore};
     use crate::workspaces::WorkspaceName;
     use coral_spec::{ManifestInputKind, ManifestInputSpec};
 
@@ -2330,6 +2340,51 @@ tables:
         assert!(needs_stored);
     }
 
+    fn messages_statistics_observation() -> StatisticsObservation {
+        StatisticsObservation {
+            schema_name: "secured_messages".to_string(),
+            table_name: "messages".to_string(),
+            source_version: Some("0.1.0".to_string()),
+            schema_signature: TableSchemaSignature {
+                columns: vec![ColumnSchemaSignature {
+                    name: "id".to_string(),
+                    data_type: "Utf8".to_string(),
+                    nullable: false,
+                    is_virtual: false,
+                    is_required_filter: false,
+                }],
+                required_filters: Vec::new(),
+            },
+            scope: StatisticsObservationScope::TableGlobal,
+            observed_at: "2026-05-06T00:00:00Z".to_string(),
+            columns: vec![ColumnStatisticsObservation {
+                column_name: "id".to_string(),
+                sample_count: 3,
+                null_count: Some(StatisticValue {
+                    value: 0,
+                    precision: StatisticPrecision::ObservedSample,
+                }),
+                approx_distinct_count: Some(StatisticValue {
+                    value: 3,
+                    precision: StatisticPrecision::ObservedSample,
+                }),
+            }],
+        }
+    }
+
+    fn seed_messages_statistics(layout: &AppStateLayout) {
+        StatisticsStore::new(layout.clone())
+            .merge_observations(&default_workspace(), &[messages_statistics_observation()])
+            .expect("seed statistics");
+    }
+
+    fn assert_messages_statistics_invalidated(layout: &AppStateLayout) {
+        let profile = StatisticsStore::new(layout.clone())
+            .load_profile(&default_workspace())
+            .expect("load profile");
+        assert!(!profile.sources.contains_key("secured_messages"));
+    }
+
     #[test]
     fn discover_sources_omits_core_v4_preview_sources() {
         let temp = TempDir::new().expect("temp dir");
@@ -2776,6 +2831,38 @@ tables:
     }
 
     #[test]
+    fn import_source_invalidates_existing_statistics() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        seed_messages_statistics(&layout);
+        let config_store = ConfigStore::new(layout.clone());
+        let credential_store = CredentialStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(credential_store);
+        let manager =
+            SourceManager::new_for_tests(config_store, credential_manager, layout.clone());
+
+        manager
+            .import_source(
+                &default_workspace(),
+                &ImportSourceCommand {
+                    manifest_yaml: manifest_with_secret(),
+                    bindings: SourceBindings {
+                        variables: vec![],
+                        secrets: vec![SourceBinding {
+                            key: "API_TOKEN".to_string(),
+                            value: "secret-token".to_string(),
+                        }],
+                    },
+                },
+            )
+            .expect("import source");
+
+        assert_messages_statistics_invalidated(&layout);
+    }
+
+    #[test]
     fn import_source_without_secret_material_does_not_probe_keychain() {
         let temp = TempDir::new().expect("temp dir");
         let layout =
@@ -2818,6 +2905,42 @@ tables:
     }
 
     #[test]
+    fn delete_source_invalidates_existing_statistics() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let credential_store = CredentialStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(credential_store);
+        let manager =
+            SourceManager::new_for_tests(config_store, credential_manager, layout.clone());
+        let source_name = SourceName::parse("secured_messages").expect("source");
+        manager
+            .import_source(
+                &default_workspace(),
+                &ImportSourceCommand {
+                    manifest_yaml: manifest_with_secret(),
+                    bindings: SourceBindings {
+                        variables: vec![],
+                        secrets: vec![SourceBinding {
+                            key: "API_TOKEN".to_string(),
+                            value: "secret-token".to_string(),
+                        }],
+                    },
+                },
+            )
+            .expect("import source");
+        seed_messages_statistics(&layout);
+
+        manager
+            .delete_source(&default_workspace(), &source_name)
+            .expect("delete source");
+
+        assert_messages_statistics_invalidated(&layout);
+    }
+
+    #[test]
     fn import_missing_secret_does_not_probe_keychain_for_new_source() {
         let temp = TempDir::new().expect("temp dir");
         let layout =
@@ -2847,6 +2970,86 @@ tables:
                 .contains("missing required source secret 'API_TOKEN'"),
             "unexpected error: {error:#}"
         );
+    }
+
+    #[test]
+    fn import_discards_corrupt_statistics_profile() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let credential_store = CredentialStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(credential_store);
+        let manager =
+            SourceManager::new_for_tests(config_store, credential_manager, layout.clone());
+        let profile_path = layout.statistics_profile_file(&default_workspace());
+        std::fs::create_dir_all(profile_path.parent().expect("profile parent"))
+            .expect("profile dir");
+        std::fs::write(&profile_path, "{not-json").expect("write corrupt profile");
+
+        manager
+            .import_source(
+                &default_workspace(),
+                &ImportSourceCommand {
+                    manifest_yaml: manifest_with_secret(),
+                    bindings: SourceBindings {
+                        variables: vec![],
+                        secrets: vec![SourceBinding {
+                            key: "API_TOKEN".to_string(),
+                            value: "secret-token".to_string(),
+                        }],
+                    },
+                },
+            )
+            .expect("import source");
+
+        let profile = StatisticsStore::new(layout)
+            .load_profile(&default_workspace())
+            .expect("profile");
+        assert!(profile.sources.is_empty());
+    }
+
+    #[test]
+    fn delete_discards_corrupt_statistics_profile() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let credential_store = CredentialStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(credential_store);
+        let manager =
+            SourceManager::new_for_tests(config_store, credential_manager, layout.clone());
+        let source_name = SourceName::parse("secured_messages").expect("source");
+        manager
+            .import_source(
+                &default_workspace(),
+                &ImportSourceCommand {
+                    manifest_yaml: manifest_with_secret(),
+                    bindings: SourceBindings {
+                        variables: vec![],
+                        secrets: vec![SourceBinding {
+                            key: "API_TOKEN".to_string(),
+                            value: "secret-token".to_string(),
+                        }],
+                    },
+                },
+            )
+            .expect("import source");
+        let profile_path = layout.statistics_profile_file(&default_workspace());
+        std::fs::create_dir_all(profile_path.parent().expect("profile parent"))
+            .expect("profile dir");
+        std::fs::write(&profile_path, "{not-json").expect("write corrupt profile");
+
+        manager
+            .delete_source(&default_workspace(), &source_name)
+            .expect("delete source");
+
+        let profile = StatisticsStore::new(layout)
+            .load_profile(&default_workspace())
+            .expect("profile");
+        assert!(profile.sources.is_empty());
     }
 
     #[test]
