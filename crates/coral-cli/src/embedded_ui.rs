@@ -12,12 +12,6 @@ struct EmbeddedUiFiles;
 
 pub(crate) struct EmbeddedUi;
 
-impl EmbeddedUi {
-    pub(crate) fn is_available() -> bool {
-        EmbeddedUiFiles::get("index.html").is_some()
-    }
-}
-
 impl StaticAssetsProvider for EmbeddedUi {
     fn get(&self, path: &str) -> Option<StaticAsset> {
         let lookup = if path.is_empty() { "index.html" } else { path };
