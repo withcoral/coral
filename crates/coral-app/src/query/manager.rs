@@ -5,8 +5,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use coral_engine::{
-    CoralQuery, CoreError, QueryExecution, QueryRuntimeConfig, QueryRuntimeContext, QuerySource,
-    SourceValidationReport, StatusCode, TableInfo,
+    CoralQuery, CoreError, QueryExecution, QueryPlan, QueryRuntimeConfig, QueryRuntimeContext,
+    QuerySource, SourceValidationReport, StatusCode, TableInfo,
 };
 use coral_spec::{ManifestInputKind, ManifestInputSpec};
 use opentelemetry::trace::Status as OtelStatus;
@@ -120,6 +120,20 @@ impl QueryManager {
         }
 
         result
+    }
+
+    pub(crate) async fn plan_sql(
+        &self,
+        workspace_name: &WorkspaceName,
+        sql: &str,
+    ) -> Result<QueryPlan, QueryManagerError> {
+        let sources = self
+            .load_query_sources(workspace_name)
+            .map_err(QueryManagerError::App)?;
+        let runtime = self.runtime_config(&sources);
+        CoralQuery::plan_sql(&sources, runtime, sql)
+            .await
+            .map_err(QueryManagerError::Core)
     }
 
     pub(crate) async fn validate_source(

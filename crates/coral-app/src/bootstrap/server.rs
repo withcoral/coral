@@ -18,7 +18,9 @@ use coral_api::v1::feedback_service_server::FeedbackServiceServer;
 use coral_api::v1::query_service_server::QueryServiceServer;
 use coral_api::v1::source_service_server::SourceServiceServer;
 use coral_api::v1::trace_service_server::TraceServiceServer;
-use coral_api::{HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE};
+use coral_api::{
+    HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE, TRACE_RESPONSE_MAX_MESSAGE_SIZE,
+};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
@@ -235,11 +237,10 @@ impl ServerBuilder {
         let internal_trace_store_dir = telemetry_config
             .enable_internal_tracing
             .then(|| layout.local_trace_store_dir());
-        let trace_service = internal_trace_store_dir.clone().map(TraceService::new);
         crate::telemetry::init_tracing(
             &telemetry_config,
             self.config.enable_stderr_logs,
-            internal_trace_store_dir,
+            internal_trace_store_dir.clone(),
         )?;
         let config_store = ConfigStore::new(layout.clone());
         let secret_store = SecretStore::new(layout.clone());
@@ -253,6 +254,9 @@ impl ServerBuilder {
             layout,
             self.config.engine_extensions_providers,
         );
+        let trace_service = internal_trace_store_dir
+            .clone()
+            .map(|trace_store_dir| TraceService::new(trace_store_dir, query_manager.clone()));
         start_server(
             source_manager,
             query_manager,
@@ -356,9 +360,10 @@ async fn start_server(
                 .max_encoding_message_size(QUERY_RESPONSE_MAX_MESSAGE_SIZE),
         ));
     if let Some(trace_service) = trace_service {
-        routes = routes.add_service(GrpcMethodAnnotatedService::new(TraceServiceServer::new(
-            trace_service,
-        )));
+        routes = routes.add_service(GrpcMethodAnnotatedService::new(
+            TraceServiceServer::new(trace_service)
+                .max_encoding_message_size(TRACE_RESPONSE_MAX_MESSAGE_SIZE),
+        ));
     }
 
     let listener = TcpListener::bind(mode.bind_addr()).await?;
