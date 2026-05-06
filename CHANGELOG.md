@@ -1,5 +1,51 @@
 # Changelog
 
+## [0.2.0](https://github.com/withcoral/coral/compare/v0.1.5...v0.2.0) (2026-05-06)
+
+
+### ⚠ BREAKING CHANGES
+
+* **engine:** replace runtime provider with config ([#218](https://github.com/withcoral/coral/issues/218))
+
+### Features
+
+* adds notion source, adds support for iso8601 timestamp ([#266](https://github.com/withcoral/coral/issues/266)) ([b8a18d5](https://github.com/withcoral/coral/commit/b8a18d5ed013ba18d830329ca37811377585cb2c))
+* **app:** add OpenTelemetry tracing and metrics ([#37](https://github.com/withcoral/coral/issues/37)) ([f103711](https://github.com/withcoral/coral/commit/f1037114d9cb4e7cd4a560eb936be368830dcb60))
+* **cli:** add `source info` command ([#188](https://github.com/withcoral/coral/issues/188)) ([5722a73](https://github.com/withcoral/coral/commit/5722a733dd2ef5edae1a72964e14f0b3a4a33dba))
+* **engine:** add DataFusion query tracing instrumentation ([#273](https://github.com/withcoral/coral/issues/273)) ([9b3eb2b](https://github.com/withcoral/coral/commit/9b3eb2b397d0f7b6fbd633440356df837ec61d8c))
+* **http-dsl:** support text request bodies and JSONEachRow responses ([#204](https://github.com/withcoral/coral/issues/204)) ([50234ba](https://github.com/withcoral/coral/commit/50234ba9f065c22480b350f669508852984db81f))
+* **mcp:** add opt-in feedback tool ([#248](https://github.com/withcoral/coral/issues/248)) ([3279fcd](https://github.com/withcoral/coral/commit/3279fcd329bbd85bc57c9f5ad7b662f456161497))
+* **sources/sentry:** add query filter to sentry.issues ([#230](https://github.com/withcoral/coral/issues/230)) ([f9f00ed](https://github.com/withcoral/coral/commit/f9f00ed601e80b24b789956e6c820061d4a2db34))
+* **sources/sentry:** add short_id column ([#234](https://github.com/withcoral/coral/issues/234)) ([56cb697](https://github.com/withcoral/coral/commit/56cb697d56e8fd22e58e6f2a069a8244fc830287))
+* **spec:** decode base64 content columns ([#257](https://github.com/withcoral/coral/issues/257)) ([464a4b4](https://github.com/withcoral/coral/commit/464a4b49083f69ac11bde2ca62fcdffa4740026c))
+
+
+### Bug Fixes
+
+* **catalog:** expose column nullability ([#254](https://github.com/withcoral/coral/issues/254)) ([a3e517e](https://github.com/withcoral/coral/commit/a3e517ed5ee0827acacd29ee6b45ea563943d818))
+* **docs:** correct How Coral works wording ([#270](https://github.com/withcoral/coral/issues/270)) ([9616f87](https://github.com/withcoral/coral/commit/9616f8790eb05e84c78539bda3ace84cb65611ce))
+* **engine:** allow literal regex patterns and escaped SIMILAR TO wildcards ([#223](https://github.com/withcoral/coral/issues/223)) ([43bdd28](https://github.com/withcoral/coral/commit/43bdd285fa1592cb607a8ef6b9d685cddb54d6b9))
+* **engine:** include filters in provider hints ([#260](https://github.com/withcoral/coral/issues/260)) ([21e7ef2](https://github.com/withcoral/coral/commit/21e7ef2f7fcecbcc9a39ab917d454ad0f57c21f8))
+* **engine:** normalize HTTP provider transport errors ([#219](https://github.com/withcoral/coral/issues/219)) ([cea0000](https://github.com/withcoral/coral/commit/cea0000d76d560c49201f311684482590f7689a0))
+* **engine:** preserve file source input metadata ([#271](https://github.com/withcoral/coral/issues/271)) ([28bd32d](https://github.com/withcoral/coral/commit/28bd32d0510db4603de78ce3621f897536e30afd))
+* **engine:** redact request error URLs ([#238](https://github.com/withcoral/coral/issues/238)) ([b8e4094](https://github.com/withcoral/coral/commit/b8e4094093257a44e6d6eca7298fc41a9dab5f3b))
+* **engine:** use test_runtime() in http_tests after runtime config refactor ([#228](https://github.com/withcoral/coral/issues/228)) ([7159ce3](https://github.com/withcoral/coral/commit/7159ce3dd89adea7a69039f4def46fd0418640c6))
+* **engine:** validate regex-style query patterns ([#214](https://github.com/withcoral/coral/issues/214)) ([259cd27](https://github.com/withcoral/coral/commit/259cd27dc2ecbf0ffc5c2cb625b07df92952e30e))
+* **github:** include closed pulls by default ([#256](https://github.com/withcoral/coral/issues/256)) ([50ee0a4](https://github.com/withcoral/coral/commit/50ee0a40d31f74e11bee8c62aec06b4e7a7641d6))
+* **github:** project common nested arrays ([#259](https://github.com/withcoral/coral/issues/259)) ([537f508](https://github.com/withcoral/coral/commit/537f5086cae1f944b824d9ac194a053480e1c78e))
+* keep config file data when sources are modified ([#277](https://github.com/withcoral/coral/issues/277)) ([5347fba](https://github.com/withcoral/coral/commit/5347fbafadea46aec743a154535cd13e8bb00a83))
+* **linear:** add workflow and status metadata ([#251](https://github.com/withcoral/coral/issues/251)) ([8a715e9](https://github.com/withcoral/coral/commit/8a715e949e0d47fd6a03d1c9ae46dd96397905f4))
+* **linear:** expose richer issue and project metadata ([#249](https://github.com/withcoral/coral/issues/249)) ([2abd8b4](https://github.com/withcoral/coral/commit/2abd8b48df75863584dd87b67c6e478d6ef473ad))
+* **linear:** read comments by issue identifier ([#261](https://github.com/withcoral/coral/issues/261)) ([09d6360](https://github.com/withcoral/coral/commit/09d63604178f6c75875252aa8d75056040121934))
+* **output:** preserve null JSON fields ([#255](https://github.com/withcoral/coral/issues/255)) ([47b5dfe](https://github.com/withcoral/coral/commit/47b5dfe0ded3278287f310651d2755cdd274ea11))
+* **sources/cloudwatch_metrics:** expose metric statistics time filters ([#216](https://github.com/withcoral/coral/issues/216)) ([7c87c61](https://github.com/withcoral/coral/commit/7c87c61172ece56607859748f9294966912b92b1))
+* **spec:** reject duplicate table names ([#242](https://github.com/withcoral/coral/issues/242)) ([d78c4c8](https://github.com/withcoral/coral/commit/d78c4c87c358b55f797a2237a699cf0c27318c3c))
+
+
+### Code Refactoring
+
+* **engine:** replace runtime provider with config ([#218](https://github.com/withcoral/coral/issues/218)) ([6d70cc7](https://github.com/withcoral/coral/commit/6d70cc78b9fb9336be957115f77e438a9a2a748a))
+
 ## [0.1.5](https://github.com/withcoral/coral/compare/v0.1.4...v0.1.5) (2026-04-27)
 
 
