@@ -48,8 +48,14 @@ impl QueryServiceApi for QueryService {
             } else {
                 Some(schema_name)
             };
+            let table_name = request.table_name.trim();
+            let table_name = if table_name.is_empty() {
+                None
+            } else {
+                Some(table_name)
+            };
             let tables = queries
-                .list_tables(&workspace_name, schema_name)
+                .list_tables(&workspace_name, schema_name, table_name)
                 .await
                 .map_err(query_status)?;
             let total = tables.len();

@@ -107,6 +107,7 @@ impl GrpcHarness {
             .list_tables(Request::new(ListTablesRequest {
                 workspace: Some(default_workspace()),
                 schema_name: String::new(),
+                table_name: String::new(),
                 pagination: None,
                 omit_columns: false,
             }))

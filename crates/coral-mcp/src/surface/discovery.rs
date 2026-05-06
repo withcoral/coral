@@ -95,6 +95,16 @@ impl TableSummary {
             "matched_fields": matched_fields,
         })
     }
+
+    pub(crate) fn summary_value(&self) -> Value {
+        json!({
+            "schema_name": self.schema_name,
+            "table_name": self.table_name,
+            "name": format!("{}.{}", self.schema_name, self.table_name),
+            "description": self.description,
+            "required_filters": self.required_filters,
+        })
+    }
 }
 
 pub(crate) fn parse_pagination(

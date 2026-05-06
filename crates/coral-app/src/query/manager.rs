@@ -62,12 +62,13 @@ impl QueryManager {
         &self,
         workspace_name: &WorkspaceName,
         schema_filter: Option<&str>,
+        table_filter: Option<&str>,
     ) -> Result<Vec<TableInfo>, QueryManagerError> {
         let sources = self
             .load_query_sources(workspace_name)
             .map_err(QueryManagerError::App)?;
         let runtime = self.runtime_config(&sources);
-        CoralQuery::list_tables(&sources, runtime, schema_filter)
+        CoralQuery::list_tables(&sources, runtime, schema_filter, table_filter)
             .await
             .map_err(QueryManagerError::Core)
     }

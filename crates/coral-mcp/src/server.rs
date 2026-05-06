@@ -1,8 +1,11 @@
 //! RMCP server implementation for Coral's stdio MCP surface.
 
+use std::collections::BTreeSet;
+
 use coral_api::v1::{
     ExecuteSqlRequest, ListSourcesRequest, ListTablesRequest, ListTablesResponse,
-    PaginationRequest, Source, SubmitFeedbackRequest, TableSummary as ProtoTableSummary,
+    PaginationRequest, Source, SubmitFeedbackRequest, Table as ProtoTable,
+    TableSummary as ProtoTableSummary,
 };
 use coral_client::{
     AppClient, FeedbackClient, QueryClient, SourceClient, batches_to_json_rows,
@@ -17,15 +20,16 @@ use rmcp::{
     },
     service::{RequestContext, RoleServer},
 };
-use serde_json::Value;
+use serde_json::{Map, Value};
 use tonic::Request;
 
 use crate::{
     McpOptions,
     surface::{
-        TableSummary, build_tool_result, compile_metadata_regex, feedback_tool, guide_resource,
-        guide_resource_content, initial_instructions, internal_status, list_tables_arguments,
-        list_tables_tool, list_tables_value, page_items, paged_value, required_string_argument,
+        TableSummary, build_tool_result, compile_metadata_regex, describe_table_arguments,
+        describe_table_tool, feedback_tool, guide_resource, guide_resource_content,
+        initial_instructions, internal_status, list_tables_arguments, list_tables_tool,
+        list_tables_value, page_items, paged_value, required_string_argument,
         search_tables_arguments, search_tables_tool, sql_tool, status_to_error_data,
         tables_resource, tables_resource_content, tool_error_from_status, tool_error_result,
     },
@@ -36,6 +40,7 @@ const LIST_TABLES_UNBOUNDED_LIMIT: u32 = 0;
 
 struct LoadTablesParams<'a> {
     schema_name: Option<&'a str>,
+    table_name: Option<&'a str>,
     pagination: PaginationRequest,
     omit_columns: bool,
 }
@@ -78,6 +83,7 @@ impl CoralMcpServer {
             .list_tables(Request::new(ListTablesRequest {
                 workspace: Some(default_workspace()),
                 schema_name: params.schema_name.unwrap_or_default().to_string(),
+                table_name: params.table_name.unwrap_or_default().to_string(),
                 pagination: Some(params.pagination),
                 omit_columns: params.omit_columns,
             }))
@@ -86,9 +92,17 @@ impl CoralMcpServer {
     }
 
     async fn load_all_table_summaries(&self) -> Result<Vec<ProtoTableSummary>, tonic::Status> {
+        self.load_table_summaries(None).await
+    }
+
+    async fn load_table_summaries(
+        &self,
+        schema_name: Option<&str>,
+    ) -> Result<Vec<ProtoTableSummary>, tonic::Status> {
         Ok(self
             .load_tables(LoadTablesParams {
-                schema_name: None,
+                schema_name,
+                table_name: None,
                 pagination: PaginationRequest {
                     limit: LIST_TABLES_UNBOUNDED_LIMIT,
                     offset: 0,
@@ -99,9 +113,31 @@ impl CoralMcpServer {
             .table_summaries)
     }
 
+    async fn load_exact_table(
+        &self,
+        schema_name: &str,
+        table_name: &str,
+    ) -> Result<Option<ProtoTable>, tonic::Status> {
+        Ok(self
+            .load_tables(LoadTablesParams {
+                schema_name: Some(schema_name),
+                table_name: Some(table_name),
+                pagination: PaginationRequest {
+                    limit: LIST_TABLES_COUNT_LIMIT,
+                    offset: 0,
+                },
+                omit_columns: false,
+            })
+            .await?
+            .tables
+            .into_iter()
+            .find(|table| table.schema_name == schema_name && table.name == table_name))
+    }
+
     async fn load_table_count(&self) -> Result<usize, tonic::Status> {
         self.load_tables(LoadTablesParams {
             schema_name: None,
+            table_name: None,
             pagination: PaginationRequest {
                 limit: LIST_TABLES_COUNT_LIMIT,
                 offset: 0,
@@ -172,6 +208,131 @@ impl CoralMcpServer {
             "message": "Feedback report stored.",
         }))
     }
+
+    async fn search_tables_tool_result(
+        &self,
+        request_arguments: Option<&Map<String, Value>>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let arguments = search_tables_arguments(request_arguments)?;
+        let regex = compile_metadata_regex(&arguments.pattern, arguments.ignore_case)?;
+        match self.load_table_summaries(arguments.schema.as_deref()).await {
+            Ok(tables) => {
+                let mut matches = Vec::new();
+                for table in &tables {
+                    let summary = TableSummary::from_proto(table);
+                    let matched_fields = summary.matched_fields(&regex);
+                    if !matched_fields.is_empty() {
+                        matches.push(summary.search_result_value(&matched_fields));
+                    }
+                }
+                build_tool_result(paged_value(
+                    "tables",
+                    page_items(matches, arguments.pagination),
+                ))
+            }
+            Err(status) => Ok(tool_error_result(tool_error_from_status(
+                "Table search",
+                &status,
+            ))),
+        }
+    }
+
+    async fn describe_table_tool_result(
+        &self,
+        request_arguments: Option<&Map<String, Value>>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let arguments = describe_table_arguments(request_arguments)?;
+        match self
+            .load_exact_table(&arguments.schema, &arguments.table)
+            .await
+        {
+            Ok(Some(table)) => build_tool_result(describe_found_table_value(&table)),
+            Ok(None) => {
+                let all_tables = match self.load_all_table_summaries().await {
+                    Ok(tables) => tables,
+                    Err(status) => {
+                        return Ok(tool_error_result(tool_error_from_status(
+                            "Table description",
+                            &status,
+                        )));
+                    }
+                };
+                let all_summaries = table_summaries_from_proto(&all_tables);
+                build_tool_result(describe_missing_table_value(
+                    &arguments.schema,
+                    &arguments.table,
+                    &all_summaries,
+                ))
+            }
+            Err(status) => Ok(tool_error_result(tool_error_from_status(
+                "Table description",
+                &status,
+            ))),
+        }
+    }
+}
+
+fn table_summaries_from_proto(tables: &[ProtoTableSummary]) -> Vec<TableSummary> {
+    tables.iter().map(TableSummary::from_proto).collect()
+}
+
+fn describe_found_table_value(table: &ProtoTable) -> Value {
+    let column_count = u32::try_from(table.columns.len()).unwrap_or(u32::MAX);
+    serde_json::json!({
+        "found": true,
+        "schema_name": table.schema_name,
+        "table_name": table.name,
+        "name": format!("{}.{}", table.schema_name, table.name),
+        "description": table.description,
+        "guide": table.guide,
+        "required_filters": table.required_filters,
+        "column_count": column_count,
+        "columns_hint": "Query coral.columns for this schema/table ordered by ordinal_position to inspect columns.",
+    })
+}
+
+fn describe_missing_table_value(schema: &str, table: &str, summaries: &[TableSummary]) -> Value {
+    let available_schemas = summaries
+        .iter()
+        .map(|summary| summary.schema_name.as_str())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let same_schema_tables = summaries
+        .iter()
+        .filter(|summary| summary.schema_name == schema)
+        .take(10)
+        .map(TableSummary::summary_value)
+        .collect::<Vec<_>>();
+    let mut search_arguments = serde_json::json!({
+        "pattern": regex::escape(table),
+    });
+    if !same_schema_tables.is_empty() {
+        search_arguments["schema"] = serde_json::json!(schema);
+    }
+    let mut suggested_calls = vec![serde_json::json!({
+        "tool": "search_tables",
+        "arguments": search_arguments,
+    })];
+    if !same_schema_tables.is_empty() {
+        suggested_calls.push(serde_json::json!({
+            "tool": "list_tables",
+            "arguments": {
+                "schema": schema,
+                "limit": 10,
+            }
+        }));
+    }
+    serde_json::json!({
+        "found": false,
+        "requested": {
+            "schema": schema,
+            "table": table,
+        },
+        "available_schemas": available_schemas,
+        "same_schema_tables": same_schema_tables,
+        "suggested_calls": suggested_calls,
+    })
 }
 
 impl ServerHandler for CoralMcpServer {
@@ -199,6 +360,7 @@ impl ServerHandler for CoralMcpServer {
             sql_tool(&sources, visible_table_count),
             list_tables_tool(visible_table_count),
             search_tables_tool(visible_table_count),
+            describe_table_tool(),
         ];
         if self.options.feedback_enabled {
             tools.push(feedback_tool());
@@ -224,6 +386,7 @@ impl ServerHandler for CoralMcpServer {
                 match self
                     .load_tables(LoadTablesParams {
                         schema_name: arguments.schema.as_deref(),
+                        table_name: None,
                         pagination: PaginationRequest {
                             limit: arguments.limit,
                             offset: arguments.offset,
@@ -240,38 +403,12 @@ impl ServerHandler for CoralMcpServer {
                 }
             }
             "search_tables" => {
-                let arguments = search_tables_arguments(request.arguments.as_ref())?;
-                let regex = compile_metadata_regex(&arguments.pattern, arguments.ignore_case)?;
-                match self
-                    .load_tables(LoadTablesParams {
-                        schema_name: arguments.schema.as_deref(),
-                        pagination: PaginationRequest {
-                            limit: LIST_TABLES_UNBOUNDED_LIMIT,
-                            offset: 0,
-                        },
-                        omit_columns: true,
-                    })
+                self.search_tables_tool_result(request.arguments.as_ref())
                     .await
-                {
-                    Ok(response) => {
-                        let mut matches = Vec::new();
-                        for table in &response.table_summaries {
-                            let summary = TableSummary::from_proto(table);
-                            let matched_fields = summary.matched_fields(&regex);
-                            if !matched_fields.is_empty() {
-                                matches.push(summary.search_result_value(&matched_fields));
-                            }
-                        }
-                        build_tool_result(paged_value(
-                            "tables",
-                            page_items(matches, arguments.pagination),
-                        ))
-                    }
-                    Err(status) => Ok(tool_error_result(tool_error_from_status(
-                        "Table search",
-                        &status,
-                    ))),
-                }
+            }
+            "describe_table" => {
+                self.describe_table_tool_result(request.arguments.as_ref())
+                    .await
             }
             "feedback" if self.options.feedback_enabled => {
                 let trying_to_do =

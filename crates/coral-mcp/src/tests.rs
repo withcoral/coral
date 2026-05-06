@@ -181,7 +181,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
             .iter()
             .map(|tool| tool.name.as_ref())
             .collect::<Vec<_>>(),
-        vec!["sql", "list_tables", "search_tables"]
+        vec!["sql", "list_tables", "search_tables", "describe_table"]
     );
     assert!(
         initial_tools[0]
@@ -399,6 +399,85 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
         .await
         .expect_err("invalid regex should fail");
 
+    let described = client
+        .call_tool(
+            CallToolRequestParams::new("describe_table").with_arguments(json_object(&json!({
+                "schema": "local_messages",
+                "table": "messages"
+            }))),
+        )
+        .await
+        .expect("describe table");
+    let described = described.structured_content.expect("structured content");
+    assert_eq!(described["found"], true);
+    assert_eq!(described["name"], "local_messages.messages");
+    assert_eq!(described["column_count"], 3);
+    assert!(described["columns_hint"].as_str().is_some());
+    assert!(described["columns"].is_null());
+
+    let missing_table = client
+        .call_tool(
+            CallToolRequestParams::new("describe_table").with_arguments(json_object(&json!({
+                "schema": "local_messages",
+                "table": "missing"
+            }))),
+        )
+        .await
+        .expect("describe missing table");
+    assert_eq!(missing_table.is_error, Some(false));
+    let missing_table = missing_table
+        .structured_content
+        .expect("structured content");
+    assert_eq!(missing_table["found"], false);
+    assert_eq!(missing_table["requested"]["schema"], "local_messages");
+    assert_eq!(missing_table["requested"]["table"], "missing");
+    assert_eq!(
+        missing_table["same_schema_tables"][0]["name"],
+        "local_messages.events"
+    );
+    assert_eq!(missing_table["suggested_calls"][0]["tool"], "search_tables");
+    assert_eq!(
+        missing_table["suggested_calls"][0]["arguments"]["pattern"],
+        "missing"
+    );
+    assert_eq!(
+        missing_table["suggested_calls"][0]["arguments"]["schema"],
+        "local_messages"
+    );
+
+    let missing_schema = client
+        .call_tool(
+            CallToolRequestParams::new("describe_table").with_arguments(json_object(&json!({
+                "schema": "local_mesages",
+                "table": "missing["
+            }))),
+        )
+        .await
+        .expect("describe missing schema");
+    assert_eq!(missing_schema.is_error, Some(false));
+    let missing_schema = missing_schema
+        .structured_content
+        .expect("structured content");
+    assert_eq!(missing_schema["found"], false);
+    assert_eq!(
+        missing_schema["suggested_calls"][0]["arguments"]["pattern"],
+        r"missing\["
+    );
+    assert!(
+        missing_schema["suggested_calls"][0]["arguments"]["schema"].is_null(),
+        "search suggestion should not constrain a missing schema"
+    );
+
+    client
+        .call_tool(
+            CallToolRequestParams::new("describe_table").with_arguments(json_object(&json!({
+                "schema": "local_messages",
+                "table": " "
+            }))),
+        )
+        .await
+        .expect_err("blank table should fail");
+
     session.shutdown().await;
 }
 
@@ -420,9 +499,15 @@ async fn mcp_feedback_tool_persists_blocked_agent_report() {
             .iter()
             .map(|tool| tool.name.as_ref())
             .collect::<Vec<_>>(),
-        vec!["sql", "list_tables", "search_tables", "feedback"]
+        vec![
+            "sql",
+            "list_tables",
+            "search_tables",
+            "describe_table",
+            "feedback"
+        ]
     );
-    let feedback_annotations = tools[3].annotations.as_ref().expect("feedback annotations");
+    let feedback_annotations = tools[4].annotations.as_ref().expect("feedback annotations");
     assert_eq!(feedback_annotations.read_only_hint, Some(false));
     assert_eq!(feedback_annotations.destructive_hint, Some(false));
     assert_eq!(feedback_annotations.idempotent_hint, Some(false));

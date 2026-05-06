@@ -22,6 +22,11 @@ pub(crate) struct SearchTablesArguments {
     pub(crate) pagination: Pagination,
 }
 
+pub(crate) struct DescribeTableArguments {
+    pub(crate) schema: String,
+    pub(crate) table: String,
+}
+
 pub(crate) fn sql_tool(sources: &[Source], visible_table_count: usize) -> Tool {
     Tool::new(
         "sql",
@@ -129,6 +134,34 @@ pub(crate) fn search_tables_tool(visible_table_count: usize) -> Tool {
     )
 }
 
+pub(crate) fn describe_table_tool() -> Tool {
+    Tool::new(
+        "describe_table",
+        "Describe one queryable table without returning full column definitions.",
+        json_object_schema(&json!({
+            "type": "object",
+            "required": ["schema", "table"],
+            "properties": {
+                "schema": {
+                    "type": "string",
+                    "description": "Exact schema/source name."
+                },
+                "table": {
+                    "type": "string",
+                    "description": "Exact table name within the schema."
+                }
+            }
+        })),
+    )
+    .with_annotations(
+        ToolAnnotations::with_title("Describe Table")
+            .read_only(true)
+            .destructive(false)
+            .idempotent(true)
+            .open_world(false),
+    )
+}
+
 pub(crate) fn feedback_tool() -> Tool {
     Tool::new(
         "feedback",
@@ -195,6 +228,15 @@ pub(crate) fn search_tables_arguments(
         schema: optional_string_argument(arguments, "schema")?,
         ignore_case: optional_bool_argument(arguments, "ignore_case", true)?,
         pagination: parse_pagination_with_limits(arguments, 20, 100)?,
+    })
+}
+
+pub(crate) fn describe_table_arguments(
+    arguments: Option<&Map<String, Value>>,
+) -> Result<DescribeTableArguments, ErrorData> {
+    Ok(DescribeTableArguments {
+        schema: required_string_argument(arguments, "schema")?,
+        table: required_string_argument(arguments, "table")?,
     })
 }
 

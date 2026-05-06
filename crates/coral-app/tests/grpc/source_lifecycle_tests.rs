@@ -230,6 +230,7 @@ async fn list_tables_supports_legacy_full_response_and_paginated_summaries() {
         .list_tables(Request::new(ListTablesRequest {
             workspace: Some(default_workspace()),
             schema_name: String::new(),
+            table_name: String::new(),
             pagination: None,
             omit_columns: false,
         }))
@@ -251,6 +252,7 @@ async fn list_tables_supports_legacy_full_response_and_paginated_summaries() {
         .list_tables(Request::new(ListTablesRequest {
             workspace: Some(default_workspace()),
             schema_name: "local_messages".to_string(),
+            table_name: String::new(),
             pagination: Some(PaginationRequest {
                 limit: 2,
                 offset: 0,
@@ -275,11 +277,14 @@ async fn list_tables_supports_legacy_full_response_and_paginated_summaries() {
     );
     assert!(page.tables.is_empty());
 
+    assert_exact_table_filter(&harness).await;
+
     let unknown_schema = harness
         .query_client()
         .list_tables(Request::new(ListTablesRequest {
             workspace: Some(default_workspace()),
             schema_name: "missing".to_string(),
+            table_name: String::new(),
             pagination: Some(PaginationRequest {
                 limit: 2,
                 offset: 0,
@@ -297,6 +302,33 @@ async fn list_tables_supports_legacy_full_response_and_paginated_summaries() {
     assert!(unknown_schema.tables.is_empty());
     assert!(unknown_schema.table_summaries.is_empty());
     assert!(!unknown_schema_pagination.has_more);
+}
+
+async fn assert_exact_table_filter(harness: &GrpcHarness) {
+    let exact_table = harness
+        .query_client()
+        .list_tables(Request::new(ListTablesRequest {
+            workspace: Some(default_workspace()),
+            schema_name: "local_messages".to_string(),
+            table_name: "messages".to_string(),
+            pagination: Some(PaginationRequest {
+                limit: 1,
+                offset: 0,
+            }),
+            omit_columns: false,
+        }))
+        .await
+        .expect("exact table list tables")
+        .into_inner();
+    let exact_pagination = exact_table
+        .pagination
+        .as_ref()
+        .expect("exact table pagination");
+    assert_eq!(exact_pagination.total_count, 1);
+    assert_eq!(exact_table.tables.len(), 1);
+    assert_eq!(exact_table.tables[0].schema_name, "local_messages");
+    assert_eq!(exact_table.tables[0].name, "messages");
+    assert!(!exact_table.tables[0].columns.is_empty());
 }
 
 #[tokio::test]
@@ -1271,6 +1303,7 @@ async fn rejects_invalid_workspace_and_source_names() {
                 name: r"bad\workspace".to_string(),
             }),
             schema_name: String::new(),
+            table_name: String::new(),
             pagination: None,
             omit_columns: false,
         }))

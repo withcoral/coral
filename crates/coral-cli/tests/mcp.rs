@@ -70,7 +70,7 @@ async fn mcp_stdio_lists_tools_and_resources() -> Result<(), Box<dyn std::error:
             .iter()
             .map(|tool| tool.name.as_ref())
             .collect::<Vec<_>>(),
-        vec!["sql", "list_tables", "search_tables"]
+        vec!["sql", "list_tables", "search_tables", "describe_table"]
     );
     assert!(
         tools[0]
@@ -135,7 +135,13 @@ async fn mcp_stdio_enable_feedback_lists_feedback_tool() -> Result<(), Box<dyn s
             .iter()
             .map(|tool| tool.name.as_ref())
             .collect::<Vec<_>>(),
-        vec!["sql", "list_tables", "search_tables", "feedback"]
+        vec![
+            "sql",
+            "list_tables",
+            "search_tables",
+            "describe_table",
+            "feedback"
+        ]
     );
 
     client.cancel().await?;
@@ -151,6 +157,7 @@ async fn mcp_stdio_sql_and_list_tables_return_structured_content()
 
     assert_list_tables_tool(&client, &server).await?;
     assert_search_tables_tool(&client, &server).await?;
+    assert_describe_table_tool(&client).await?;
     assert_sql_tool(&client).await?;
 
     client.cancel().await?;
@@ -249,6 +256,23 @@ async fn assert_search_tables_tool(
             .iter()
             .any(|field| field == "guide")
     );
+    Ok(())
+}
+
+async fn assert_describe_table_tool(
+    client: &RunningService<RoleClient, ()>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let described = structured_tool_content(
+        client,
+        CallToolRequestParams::new("describe_table").with_arguments(json_object(&json!({
+            "schema": "local_messages",
+            "table": "messages"
+        }))),
+    )
+    .await?;
+    assert_eq!(described["found"], true);
+    assert_eq!(described["name"], "local_messages.messages");
+    assert_eq!(described["column_count"], 3);
     Ok(())
 }
 

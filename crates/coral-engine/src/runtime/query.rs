@@ -110,10 +110,15 @@ pub(crate) async fn build_runtime(
 }
 
 impl QueryRuntimeAdapter {
-    pub(crate) fn list_tables(&self, source_filter: Option<&str>) -> Vec<TableInfo> {
+    pub(crate) fn list_tables(
+        &self,
+        source_filter: Option<&str>,
+        table_filter: Option<&str>,
+    ) -> Vec<TableInfo> {
         self.tables
             .iter()
             .filter(|table| source_filter.is_none_or(|value| table.schema_name == value))
+            .filter(|table| table_filter.is_none_or(|value| table.table_name == value))
             .cloned()
             .collect()
     }

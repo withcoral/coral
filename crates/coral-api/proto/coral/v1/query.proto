@@ -53,6 +53,8 @@ message ListTablesRequest {
   PaginationRequest pagination = 3;
   // Whether table columns should be omitted from the response.
   bool omit_columns = 4;
+  // Optional exact table name within `schema_name`.
+  string table_name = 5;
 }
 
 // Returns the query-visible tables in one workspace.

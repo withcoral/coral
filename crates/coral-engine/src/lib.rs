@@ -41,7 +41,7 @@
 //! # async fn demo(
 //! #     sources: &[QuerySource],
 //! # ) -> Result<(), Box<dyn std::error::Error>> {
-//! let _ = CoralQuery::list_tables(sources, QueryRuntimeConfig::default(), None).await?;
+//! let _ = CoralQuery::list_tables(sources, QueryRuntimeConfig::default(), None, None).await?;
 //! # Ok(())
 //! # }
 //! # Ok(())
@@ -89,10 +89,11 @@ impl CoralQuery {
         sources: &[QuerySource],
         runtime: QueryRuntimeConfig,
         schema_filter: Option<&str>,
+        table_filter: Option<&str>,
     ) -> Result<Vec<TableInfo>, CoreError> {
         Ok(runtime::query::build_runtime(sources, runtime)
             .await?
-            .list_tables(schema_filter))
+            .list_tables(schema_filter, table_filter))
     }
 
     /// Executes one `SQL` statement over the provided source set.
@@ -143,7 +144,7 @@ impl CoralQuery {
     ) -> Result<SourceValidationReport, CoreError> {
         let query_runtime =
             runtime::query::build_runtime(std::slice::from_ref(source), runtime).await?;
-        let tables = query_runtime.list_tables(Some(source.source_name()));
+        let tables = query_runtime.list_tables(Some(source.source_name()), None);
         if tables.is_empty() {
             if let Some(failure) = query_runtime.registration_failure(source.source_name()) {
                 return Err(CoreError::FailedPrecondition(failure.detail.clone()));
