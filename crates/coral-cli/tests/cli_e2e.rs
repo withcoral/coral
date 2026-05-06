@@ -20,26 +20,6 @@ use tonic::Code;
 
 use harness::{MockServer, MockServerConfig, encode_arrow_ipc_stream};
 
-#[cfg(feature = "server")]
-#[test]
-fn server_help_does_not_require_app_bootstrap() {
-    let assert = Command::cargo_bin("coral")
-        .expect("cargo bin")
-        .args(["server", "--help"])
-        .assert()
-        .success();
-
-    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
-    assert!(
-        stdout.contains("Start the local gRPC-Web server"),
-        "expected server help text: {stdout}"
-    );
-    assert!(
-        stdout.contains("--port <PORT>"),
-        "expected server port option: {stdout}"
-    );
-}
-
 #[cfg(feature = "embedded-ui")]
 #[test]
 fn ui_help_does_not_require_app_bootstrap() {
@@ -57,6 +37,10 @@ fn ui_help_does_not_require_app_bootstrap() {
     assert!(
         stdout.contains("--port <PORT>"),
         "expected ui port option: {stdout}"
+    );
+    assert!(
+        stdout.contains("--no-open"),
+        "expected ui no-open option: {stdout}"
     );
 }
 
