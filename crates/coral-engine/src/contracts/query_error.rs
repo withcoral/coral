@@ -333,13 +333,12 @@ fn table_not_found_hint(
         // schema for a close match — if `FROM account` has `stripe.accounts`
         // in the catalog, suggest the schema-qualified name instead of
         // sending the user to `coral.tables`.
-        if table.contains('.') {
-            if let Some(info) = known_tables
+        if table.contains('.')
+            && let Some(info) = known_tables
                 .iter()
                 .find(|info| format!("{}.{}", info.schema_name, info.table_name) == table)
-            {
-                return Some(quoted_qualified_table_hint(table, info));
-            }
+        {
+            return Some(quoted_qualified_table_hint(table, info));
         }
 
         let table_lower = table.to_lowercase();
