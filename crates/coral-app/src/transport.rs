@@ -1,11 +1,15 @@
 //! Shared gRPC transport helpers for app-owned services.
 
+use std::future::Future;
+
 use coral_api::v1::{
     Column, QueryTestFailure, QueryTestResult, QueryTestSuccess, Source, Table,
     ValidateSourceResponse, Workspace, query_test_result,
 };
 use opentelemetry::propagation::Extractor;
-use tonic::Status;
+use opentelemetry::trace::Status as OtelStatus;
+use tonic::{Code, Status};
+use tracing::Instrument as _;
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
 use crate::bootstrap::{AppError, app_status, core_status};
@@ -44,9 +48,61 @@ pub(crate) fn grpc_span(
     name: &'static str,
 ) -> tracing::Span {
     let parent_cx = extract_trace_context(metadata);
-    let span = tracing::info_span!("grpc", grpc.method = name);
+    let span = tracing::info_span!(
+        "grpc",
+        grpc.method = name,
+        grpc.status_code = tracing::field::Empty,
+        grpc.code = tracing::field::Empty,
+        status = tracing::field::Empty,
+    );
     let _ = span.set_parent(parent_cx);
     span
+}
+
+pub(crate) async fn instrument_grpc<T, F>(span: tracing::Span, future: F) -> Result<T, Status>
+where
+    F: Future<Output = Result<T, Status>>,
+{
+    let result = future.instrument(span.clone()).await;
+    match &result {
+        Ok(_) => record_grpc_status(&span, Code::Ok),
+        Err(status) => record_grpc_status(&span, status.code()),
+    }
+    result
+}
+
+fn record_grpc_status(span: &tracing::Span, code: Code) {
+    span.record("grpc.status_code", code as i64);
+    span.record("grpc.code", grpc_code_label(code));
+    if code == Code::Ok {
+        span.record("status", "ok");
+        span.set_status(OtelStatus::Ok);
+    } else {
+        span.record("status", "error");
+        span.set_status(OtelStatus::error(grpc_code_label(code)));
+    }
+}
+
+fn grpc_code_label(code: Code) -> &'static str {
+    match code {
+        Code::Ok => "ok",
+        Code::Cancelled => "cancelled",
+        Code::Unknown => "unknown",
+        Code::InvalidArgument => "invalid_argument",
+        Code::DeadlineExceeded => "deadline_exceeded",
+        Code::NotFound => "not_found",
+        Code::AlreadyExists => "already_exists",
+        Code::PermissionDenied => "permission_denied",
+        Code::ResourceExhausted => "resource_exhausted",
+        Code::FailedPrecondition => "failed_precondition",
+        Code::Aborted => "aborted",
+        Code::OutOfRange => "out_of_range",
+        Code::Unimplemented => "unimplemented",
+        Code::Internal => "internal",
+        Code::Unavailable => "unavailable",
+        Code::DataLoss => "data_loss",
+        Code::Unauthenticated => "unauthenticated",
+    }
 }
 
 #[allow(
@@ -138,8 +194,8 @@ mod tests {
     use tonic::Code;
 
     use super::{
-        query_status, query_test_result_to_proto, table_to_proto, workspace_name_from_proto,
-        workspace_to_proto,
+        grpc_code_label, query_status, query_test_result_to_proto, table_to_proto,
+        workspace_name_from_proto, workspace_to_proto,
     };
     use crate::bootstrap::AppError;
     use crate::query::manager::QueryManagerError;
@@ -166,6 +222,17 @@ mod tests {
 
         assert_eq!(status.code(), Code::Unavailable);
         assert_eq!(status.message(), "unavailable: backend down");
+    }
+
+    #[test]
+    fn grpc_code_labels_are_low_cardinality() {
+        assert_eq!(grpc_code_label(Code::Ok), "ok");
+        assert_eq!(grpc_code_label(Code::InvalidArgument), "invalid_argument");
+        assert_eq!(
+            grpc_code_label(Code::FailedPrecondition),
+            "failed_precondition"
+        );
+        assert_eq!(grpc_code_label(Code::Unavailable), "unavailable");
     }
 
     #[test]

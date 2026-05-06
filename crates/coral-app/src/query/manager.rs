@@ -9,7 +9,9 @@ use coral_engine::{
     SourceValidationReport, TableInfo,
 };
 use coral_spec::{ManifestInputKind, ManifestInputSpec, parse_source_manifest_yaml};
+use opentelemetry::trace::Status as OtelStatus;
 use tracing::Instrument as _;
+use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
 use crate::bootstrap::AppError;
 use crate::query::extensions::{EngineExtensionsProvider, engine_extensions_for_providers};
@@ -75,7 +77,7 @@ impl QueryManager {
         sql: &str,
     ) -> Result<QueryExecution, QueryManagerError> {
         let started_at = Instant::now();
-        let query_span = create_query_span(sql);
+        let query_span = create_query_span(workspace_name, sql);
         let result = async {
             let sources = self
                 .load_query_sources(workspace_name)
@@ -100,9 +102,15 @@ impl QueryManager {
             let row_count = u64::try_from(execution.row_count()).unwrap_or(u64::MAX);
             query_span.record("row_count", row_count);
             query_span.record("status", "ok");
-            metrics.rows.record(row_count, &[]);
-        } else {
+            query_span.set_status(OtelStatus::Ok);
+            metrics
+                .rows
+                .record(row_count, std::slice::from_ref(&status));
+        } else if let Err(error) = &result {
+            let error_kind = query_error_kind(error);
             query_span.record("status", "error");
+            query_span.record("error.kind", error_kind);
+            query_span.set_status(OtelStatus::error(error_kind));
         }
 
         result
@@ -203,14 +211,24 @@ impl QueryManager {
     }
 }
 
-fn create_query_span(sql: &str) -> tracing::Span {
+fn create_query_span(workspace_name: &WorkspaceName, sql: &str) -> tracing::Span {
     tracing::info_span!(
         "coral.query",
         otel.name = "coral.query",
+        operation = "execute_sql",
+        workspace = %workspace_name.as_str(),
         sql = %sql,
         row_count = tracing::field::Empty,
         status = tracing::field::Empty,
+        error.kind = tracing::field::Empty,
     )
+}
+
+fn query_error_kind(error: &QueryManagerError) -> &'static str {
+    match error {
+        QueryManagerError::App(_) => "app",
+        QueryManagerError::Core(_) => "core",
+    }
 }
 
 fn validate_required_variables(

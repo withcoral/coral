@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use opentelemetry::metrics::MeterProvider as _;
 use opentelemetry::propagation::Extractor;
-use opentelemetry::trace::TracerProvider as _;
+use opentelemetry::trace::{Status as OtelStatus, TracerProvider as _};
 use opentelemetry_otlp::{
     LogExporter, MetricExporter, SpanExporter, WithExportConfig, WithHttpConfig,
 };
@@ -97,10 +97,22 @@ pub struct RunContext {
 }
 
 /// Runs `fut` under a root CLI span configured from `ctx`.
-pub async fn run_with_context<F: std::future::Future>(ctx: &RunContext, fut: F) -> F::Output {
+///
+/// The returned `Result` is also recorded on the root span as low-cardinality
+/// `status` and OTEL status data.
+///
+/// # Errors
+///
+/// Returns the same error produced by `fut`.
+pub async fn run_with_context<T, E, F>(ctx: &RunContext, fut: F) -> Result<T, E>
+where
+    F: std::future::Future<Output = Result<T, E>>,
+{
     use tracing::Instrument as _;
-    fut.instrument(build_root_span(ctx.trace_parent.as_deref()))
-        .await
+    let span = build_root_span(ctx.trace_parent.as_deref());
+    let result = fut.instrument(span.clone()).await;
+    record_run_status(&span, result.is_ok());
+    result
 }
 
 /// Builds a root CLI span, optionally parented to a W3C `traceparent` string.
@@ -109,7 +121,7 @@ pub async fn run_with_context<F: std::future::Future>(ctx: &RunContext, fut: F) 
 /// `None` for an unparented span. Use `.instrument(span).await` to run the
 /// CLI future under this span.
 pub fn build_root_span(traceparent: Option<&str>) -> tracing::Span {
-    let span = tracing::info_span!("coral.cli");
+    let span = tracing::info_span!("coral.cli", status = tracing::field::Empty);
     if let Some(tp) = traceparent {
         struct StringMapExtractor<'a>(&'a HashMap<String, String>);
         impl Extractor for StringMapExtractor<'_> {
@@ -127,6 +139,16 @@ pub fn build_root_span(traceparent: Option<&str>) -> tracing::Span {
         let _ = span.set_parent(parent_cx);
     }
     span
+}
+
+fn record_run_status(span: &tracing::Span, ok: bool) {
+    if ok {
+        span.record("status", "ok");
+        span.set_status(OtelStatus::Ok);
+    } else {
+        span.record("status", "error");
+        span.set_status(OtelStatus::error("error"));
+    }
 }
 
 pub(crate) fn init_tracing(

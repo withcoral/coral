@@ -6,11 +6,12 @@ use arrow::record_batch::RecordBatch;
 use coral_api::v1::query_service_server::QueryService as QueryServiceApi;
 use coral_api::v1::{ExecuteSqlRequest, ExecuteSqlResponse, ListTablesRequest, ListTablesResponse};
 use tonic::{Request, Response, Status};
-use tracing::Instrument as _;
 
 use crate::bootstrap::core_status;
 use crate::query::manager::QueryManager;
-use crate::transport::{grpc_span, query_status, table_to_proto, workspace_name_from_proto};
+use crate::transport::{
+    grpc_span, instrument_grpc, query_status, table_to_proto, workspace_name_from_proto,
+};
 
 #[derive(Clone)]
 pub(crate) struct QueryService {
@@ -33,7 +34,7 @@ impl QueryServiceApi for QueryService {
     ) -> Result<Response<ListTablesResponse>, Status> {
         let span = grpc_span(request.metadata(), "list_tables");
         let queries = self.queries.clone();
-        async move {
+        instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
             let tables = queries
@@ -44,8 +45,7 @@ impl QueryServiceApi for QueryService {
                 .map(|table| table_to_proto(&workspace_name, table))
                 .collect();
             Ok(Response::new(ListTablesResponse { tables }))
-        }
-        .instrument(span)
+        })
         .await
     }
 
@@ -55,7 +55,7 @@ impl QueryServiceApi for QueryService {
     ) -> Result<Response<ExecuteSqlResponse>, Status> {
         let span = grpc_span(request.metadata(), "execute_sql");
         let queries = self.queries.clone();
-        async move {
+        instrument_grpc(span, async move {
             let inner = request.into_inner();
             let workspace_name = workspace_name_from_proto(inner.workspace.as_ref())?;
             let execution = queries
@@ -72,8 +72,7 @@ impl QueryServiceApi for QueryService {
                 row_count: i64::try_from(execution.row_count()).unwrap_or(i64::MAX),
             };
             Ok(Response::new(response))
-        }
-        .instrument(span)
+        })
         .await
     }
 }
