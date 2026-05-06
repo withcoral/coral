@@ -4,6 +4,7 @@ mod catalog;
 mod error;
 mod query;
 mod query_error;
+mod statistics;
 
 pub use catalog::{
     CatalogInfo, ColumnInfo, DescribeTableInfo, TableFunctionArgumentInfo, TableFunctionInfo,
@@ -18,6 +19,11 @@ pub use query::{
     RuntimeSourceComponent, RuntimeSourcePackage, SourceValidationReport,
 };
 pub(crate) use query_error::{ColumnParts, TableRefParts};
+pub use statistics::{
+    ColumnSchemaSignature, ColumnStatistics, ColumnStatisticsObservation, SourceStatistics,
+    StatisticPrecision, StatisticValue, StatisticsObservation, StatisticsObservationScope,
+    StatisticsProfile, TableSchemaSignature, TableStatistics,
+};
 
 #[cfg(test)]
 pub(crate) use query_error::UNKNOWN_COLUMN_REASON;

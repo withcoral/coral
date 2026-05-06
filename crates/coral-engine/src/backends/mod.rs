@@ -119,6 +119,7 @@ pub(crate) fn compile_query_source(
         .collect::<Vec<_>>();
     Ok(composite::compile_source(
         source.source_name().to_string(),
+        source.version().unwrap_or_default().to_string(),
         compiled_components,
     ))
 }

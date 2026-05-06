@@ -40,7 +40,7 @@ use crate::{
     QueryExecutionProvenance, QueryMemoryConfig, QueryParameterValue, QueryParameters, QueryPlan,
     QueryResultObserver, QueryResultObserverError, QueryRuntimeConfig, QueryRuntimeContext,
     QuerySource, QueryTableFunctionUsage, QueryTableUsage, RequestAuthenticator, SourceDecorator,
-    SourceInputResolver, TableFunctionInfo, TableInfo,
+    SourceInputResolver, StatisticsProfile, TableFunctionInfo, TableInfo,
 };
 
 pub(crate) struct QueryRuntimeAdapter {
@@ -65,6 +65,7 @@ struct FallbackRuntimeConfig {
     runtime_context: QueryRuntimeContext,
     dependent_join: DependentJoinConfig,
     memory: QueryMemoryConfig,
+    statistics: StatisticsProfile,
     request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>>,
     source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
 }
@@ -99,6 +100,7 @@ async fn build_runtime_inner(
         memory,
         dependent_join,
         mut extensions,
+        statistics,
     } = runtime;
     let request_authenticators = extensions.request_authenticators.clone();
     let source_input_resolver = extensions.source_input_resolver.clone();
@@ -115,6 +117,7 @@ async fn build_runtime_inner(
             runtime_context: runtime_context.clone(),
             dependent_join: dependent_join.clone(),
             memory: memory.clone(),
+            statistics: statistics.clone(),
             request_authenticators: request_authenticators.clone(),
             source_input_resolver: source_input_resolver.clone(),
         })
@@ -128,6 +131,7 @@ async fn build_runtime_inner(
         extensions.source_decorators.as_mut_slice(),
         &dependent_join,
         &memory,
+        &statistics,
     )
     .await?;
 
@@ -151,6 +155,7 @@ async fn build_registered_runtime(
     source_decorators: &mut [Box<dyn SourceDecorator>],
     dependent_join: &DependentJoinConfig,
     memory: &QueryMemoryConfig,
+    statistics: &StatisticsProfile,
 ) -> Result<RegisteredRuntime, CoreError> {
     let ctx = build_session_context(dependent_join, memory)?;
     let registration = register_runtime_sources(
@@ -162,7 +167,7 @@ async fn build_registered_runtime(
         source_decorators,
     )
     .await?;
-    catalog::register(&ctx, &registration.active_sources)
+    catalog::register(&ctx, &registration.active_sources, statistics)
         .map_err(|err| datafusion_to_core(&err, &[]))?;
     let tables = catalog::collect_tables(&registration.active_sources);
     let table_functions = catalog::collect_table_functions(&registration.active_sources);
@@ -784,6 +789,7 @@ impl FallbackRuntimeConfig {
             source_decorators.as_mut_slice(),
             &self.dependent_join.without_rewrites(),
             &self.memory,
+            &self.statistics,
         )
         .await
     }
@@ -949,6 +955,7 @@ mod tests {
             memory: QueryMemoryConfig {
                 limit: Some(MemorySize::from_str("1Ki").unwrap()),
             },
+            statistics: StatisticsProfile::empty(),
             request_authenticators: HashMap::new(),
             source_input_resolver: None,
         };

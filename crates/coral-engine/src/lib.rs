@@ -68,13 +68,16 @@ pub use composition::{
     SourceInputResolutionContext, SourceInputResolver, SourceInputResolverError, SourceTables,
 };
 pub use contracts::{
-    CatalogInfo, ColumnInfo, CoreError, DependentJoinConfig, DependentJoinSourceConfig,
-    DescribeTableInfo, EffectiveDependentJoinConfig, MemorySize, QueryExecution,
-    QueryExecutionProvenance, QueryMemoryConfig, QueryParameterValue, QueryParameters, QueryPlan,
-    QueryRuntimeConfig, QueryRuntimeContext, QuerySource, QueryTableFunctionUsage, QueryTableUsage,
-    QueryTestFailure, QueryTestResult, QueryTestSuccess, RuntimeSourceComponent,
-    RuntimeSourcePackage, SourceValidationReport, StatusCode, StructuredQueryError,
-    TableFunctionArgumentInfo, TableFunctionInfo, TableFunctionResultColumnInfo, TableInfo,
+    CatalogInfo, ColumnInfo, ColumnSchemaSignature, ColumnStatistics, ColumnStatisticsObservation,
+    CoreError, DependentJoinConfig, DependentJoinSourceConfig, DescribeTableInfo,
+    EffectiveDependentJoinConfig, MemorySize, QueryExecution, QueryExecutionProvenance,
+    QueryMemoryConfig, QueryParameterValue, QueryParameters, QueryPlan, QueryRuntimeConfig,
+    QueryRuntimeContext, QuerySource, QueryTableFunctionUsage, QueryTableUsage, QueryTestFailure,
+    QueryTestResult, QueryTestSuccess, RuntimeSourceComponent, RuntimeSourcePackage,
+    SourceStatistics, SourceValidationReport, StatisticPrecision, StatisticValue,
+    StatisticsObservation, StatisticsObservationScope, StatisticsProfile, StatusCode,
+    StructuredQueryError, TableFunctionArgumentInfo, TableFunctionInfo,
+    TableFunctionResultColumnInfo, TableInfo, TableSchemaSignature, TableStatistics,
 };
 
 /// High-level query operations for the local query engine.

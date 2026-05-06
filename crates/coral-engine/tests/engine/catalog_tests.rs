@@ -648,6 +648,7 @@ async fn coral_search_metadata_appends_columns_without_shifting_existing_ordinal
             .schema()
             .iter()
             .map(|column| column.name.as_str())
+            .take(10)
             .collect::<Vec<_>>(),
         vec![
             "schema_name",
@@ -660,6 +661,21 @@ async fn coral_search_metadata_appends_columns_without_shifting_existing_ordinal
             "is_required_filter",
             "description",
             "filter_mode",
+        ]
+    );
+    assert_eq!(
+        columns
+            .schema()
+            .iter()
+            .map(|column| column.name.as_str())
+            .skip(10)
+            .collect::<Vec<_>>(),
+        vec![
+            "null_fraction",
+            "approx_distinct_count",
+            "stats_sample_count",
+            "stats_observed_at",
+            "stats_precision",
         ]
     );
 }
