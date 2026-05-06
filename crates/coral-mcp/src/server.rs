@@ -2,7 +2,7 @@
 
 use coral_api::v1::{
     ExecuteSqlRequest, ListSourcesRequest, ListTablesRequest, ListTablesResponse,
-    PaginationRequest, Source, SubmitFeedbackRequest, TableSummary,
+    PaginationRequest, Source, SubmitFeedbackRequest, TableSummary as ProtoTableSummary,
 };
 use coral_client::{
     AppClient, FeedbackClient, QueryClient, SourceClient, batches_to_json_rows,
@@ -23,9 +23,10 @@ use tonic::Request;
 use crate::{
     McpOptions,
     surface::{
-        build_tool_result, feedback_tool, guide_resource, guide_resource_content,
-        initial_instructions, internal_status, list_tables_arguments, list_tables_tool,
-        list_tables_value, required_string_argument, sql_tool, status_to_error_data,
+        TableSummary, build_tool_result, compile_metadata_regex, feedback_tool, guide_resource,
+        guide_resource_content, initial_instructions, internal_status, list_tables_arguments,
+        list_tables_tool, list_tables_value, page_items, paged_value, required_string_argument,
+        search_tables_arguments, search_tables_tool, sql_tool, status_to_error_data,
         tables_resource, tables_resource_content, tool_error_from_status, tool_error_result,
     },
 };
@@ -84,7 +85,7 @@ impl CoralMcpServer {
             .into_inner())
     }
 
-    async fn load_all_table_summaries(&self) -> Result<Vec<TableSummary>, tonic::Status> {
+    async fn load_all_table_summaries(&self) -> Result<Vec<ProtoTableSummary>, tonic::Status> {
         Ok(self
             .load_tables(LoadTablesParams {
                 schema_name: None,
@@ -121,7 +122,7 @@ impl CoralMcpServer {
 
     async fn load_sources_and_table_summaries(
         &self,
-    ) -> Result<(Vec<Source>, Vec<TableSummary>), tonic::Status> {
+    ) -> Result<(Vec<Source>, Vec<ProtoTableSummary>), tonic::Status> {
         tokio::try_join!(self.load_sources(), self.load_all_table_summaries())
     }
 
@@ -197,6 +198,7 @@ impl ServerHandler for CoralMcpServer {
         let mut tools = vec![
             sql_tool(&sources, visible_table_count),
             list_tables_tool(visible_table_count),
+            search_tables_tool(visible_table_count),
         ];
         if self.options.feedback_enabled {
             tools.push(feedback_tool());
@@ -233,6 +235,40 @@ impl ServerHandler for CoralMcpServer {
                     Ok(response) => build_tool_result(list_tables_value(&response)),
                     Err(status) => Ok(tool_error_result(tool_error_from_status(
                         "Table listing",
+                        &status,
+                    ))),
+                }
+            }
+            "search_tables" => {
+                let arguments = search_tables_arguments(request.arguments.as_ref())?;
+                let regex = compile_metadata_regex(&arguments.pattern, arguments.ignore_case)?;
+                match self
+                    .load_tables(LoadTablesParams {
+                        schema_name: arguments.schema.as_deref(),
+                        pagination: PaginationRequest {
+                            limit: LIST_TABLES_UNBOUNDED_LIMIT,
+                            offset: 0,
+                        },
+                        omit_columns: true,
+                    })
+                    .await
+                {
+                    Ok(response) => {
+                        let mut matches = Vec::new();
+                        for table in &response.table_summaries {
+                            let summary = TableSummary::from_proto(table);
+                            let matched_fields = summary.matched_fields(&regex);
+                            if !matched_fields.is_empty() {
+                                matches.push(summary.search_result_value(&matched_fields));
+                            }
+                        }
+                        build_tool_result(paged_value(
+                            "tables",
+                            page_items(matches, arguments.pagination),
+                        ))
+                    }
+                    Err(status) => Ok(tool_error_result(tool_error_from_status(
+                        "Table search",
                         &status,
                     ))),
                 }

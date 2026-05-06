@@ -61,4 +61,5 @@ WHERE json_get_str(rules, 0, 'clauses', 0, 'values', 0) = 'phoebe-org';
 - Use `LIKE` or `ILIKE` for SQL wildcard matching with `%` and `_`. `SIMILAR TO` uses regex-shaped patterns, so write `.*` instead of `%`, `.` instead of `_`, or escape literal percent/underscore characters as `\%` and `\_`.
 - Regex operators such as `~` and `~*` treat `%` and `_` as ordinary literal characters.
 - `list_tables` shows queryable fully qualified tables in pages; pass `schema`, `limit`, and `offset` to narrow large catalogs.
+- `search_tables` searches table names, descriptions, guides, and required filters with a Rust regex; use it before broad SQL metadata scans when you know part of the table name or required filters.
 - `coral://tables` shows table summaries for all installed sources; `coral.tables`, `coral.columns`, and `coral.inputs` provide richer SQL metadata.

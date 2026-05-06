@@ -7,10 +7,19 @@ use rmcp::{
 };
 use serde_json::{Map, Value, json};
 
+use super::{Pagination, parse_pagination, parse_pagination_with_limits};
+
 pub(crate) struct ListTablesArguments {
     pub(crate) schema: Option<String>,
     pub(crate) limit: u32,
     pub(crate) offset: u32,
+}
+
+pub(crate) struct SearchTablesArguments {
+    pub(crate) pattern: String,
+    pub(crate) schema: Option<String>,
+    pub(crate) ignore_case: bool,
+    pub(crate) pagination: Pagination,
 }
 
 pub(crate) fn sql_tool(sources: &[Source], visible_table_count: usize) -> Tool {
@@ -74,6 +83,52 @@ pub(crate) fn list_tables_tool(visible_table_count: usize) -> Tool {
     )
 }
 
+pub(crate) fn search_tables_tool(visible_table_count: usize) -> Tool {
+    Tool::new(
+        "search_tables",
+        search_tables_description(visible_table_count),
+        json_object_schema(&json!({
+            "type": "object",
+            "required": ["pattern"],
+            "properties": {
+                "pattern": {
+                    "type": "string",
+                    "description": "Rust regex pattern to match table metadata."
+                },
+                "schema": {
+                    "type": "string",
+                    "description": "Optional exact schema/source name to search."
+                },
+                "ignore_case": {
+                    "type": "boolean",
+                    "description": "Whether regex matching is case-insensitive. Defaults to true."
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum tables to return, from 1 to 100. Defaults to 20.",
+                    "minimum": 1,
+                    "maximum": 100,
+                    "default": 20
+                },
+                "offset": {
+                    "type": "integer",
+                    "description": "Number of matching tables to skip. Defaults to 0.",
+                    "minimum": 0,
+                    "maximum": u32::MAX,
+                    "default": 0
+                }
+            }
+        })),
+    )
+    .with_annotations(
+        ToolAnnotations::with_title("Search Tables")
+            .read_only(true)
+            .destructive(false)
+            .idempotent(true)
+            .open_world(false),
+    )
+}
+
 pub(crate) fn feedback_tool() -> Tool {
     Tool::new(
         "feedback",
@@ -124,10 +179,22 @@ pub(crate) fn required_string_argument(
 pub(crate) fn list_tables_arguments(
     arguments: Option<&Map<String, Value>>,
 ) -> Result<ListTablesArguments, ErrorData> {
+    let pagination = parse_pagination(arguments)?;
     Ok(ListTablesArguments {
         schema: optional_string_argument(arguments, "schema")?,
-        limit: optional_u32_argument(arguments, "limit", 50, 1, 200)?,
-        offset: optional_u32_argument(arguments, "offset", 0, 0, u32::MAX)?,
+        limit: pagination.limit,
+        offset: pagination.offset,
+    })
+}
+
+pub(crate) fn search_tables_arguments(
+    arguments: Option<&Map<String, Value>>,
+) -> Result<SearchTablesArguments, ErrorData> {
+    Ok(SearchTablesArguments {
+        pattern: required_string_argument(arguments, "pattern")?,
+        schema: optional_string_argument(arguments, "schema")?,
+        ignore_case: optional_bool_argument(arguments, "ignore_case", true)?,
+        pagination: parse_pagination_with_limits(arguments, 20, 100)?,
     })
 }
 
@@ -158,7 +225,13 @@ fn list_tables_description(visible_table_count: usize) -> String {
     )
 }
 
-fn optional_string_argument(
+fn search_tables_description(visible_table_count: usize) -> String {
+    format!(
+        "Search queryable table metadata with a Rust regex. {visible_table_count} table(s) are currently visible."
+    )
+}
+
+pub(crate) fn optional_string_argument(
     arguments: Option<&Map<String, Value>>,
     key: &str,
 ) -> Result<Option<String>, ErrorData> {
@@ -176,30 +249,16 @@ fn optional_string_argument(
     }
 }
 
-fn optional_u32_argument(
+fn optional_bool_argument(
     arguments: Option<&Map<String, Value>>,
     key: &str,
-    default: u32,
-    min: u32,
-    max: u32,
-) -> Result<u32, ErrorData> {
+    default: bool,
+) -> Result<bool, ErrorData> {
     let Some(value) = arguments.and_then(|arguments| arguments.get(key)) else {
         return Ok(default);
     };
-    let value = value.as_i64().ok_or_else(|| {
-        ErrorData::invalid_params(format!("argument '{key}' must be an integer"), None)
-    })?;
-    if value < i64::from(min) || value > i64::from(max) {
-        return Err(ErrorData::invalid_params(
-            format!("argument '{key}' must be between {min} and {max}"),
-            None,
-        ));
-    }
-    u32::try_from(value).map_err(|_| {
-        ErrorData::invalid_params(
-            format!("argument '{key}' must be between {min} and {max}"),
-            None,
-        )
+    value.as_bool().ok_or_else(|| {
+        ErrorData::invalid_params(format!("argument '{key}' must be a boolean"), None)
     })
 }
 

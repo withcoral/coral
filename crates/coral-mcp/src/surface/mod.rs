@@ -1,9 +1,14 @@
 //! Focused helpers for the Coral MCP surface.
 
+mod discovery;
 mod errors;
 mod resources;
 mod tools;
 
+pub(crate) use discovery::{
+    Pagination, TableSummary, compile_metadata_regex, page_items, paged_value, parse_pagination,
+    parse_pagination_with_limits,
+};
 pub(crate) use errors::{
     internal_status, status_to_error_data, tool_error_from_status, tool_error_result,
 };
@@ -13,5 +18,5 @@ pub(crate) use resources::{
 };
 pub(crate) use tools::{
     build_tool_result, feedback_tool, list_tables_arguments, list_tables_tool,
-    required_string_argument, sql_tool,
+    required_string_argument, search_tables_arguments, search_tables_tool, sql_tool,
 };

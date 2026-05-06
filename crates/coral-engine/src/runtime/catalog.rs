@@ -99,6 +99,7 @@ pub(crate) fn collect_tables(active_sources: &[RegisteredSource]) -> Vec<TableIn
                 schema_name: source.schema_name.clone(),
                 table_name: table.table_name.clone(),
                 description: table.description.clone(),
+                guide: table.guide.clone(),
                 columns: table
                     .columns
                     .iter()

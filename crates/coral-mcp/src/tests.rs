@@ -181,7 +181,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
             .iter()
             .map(|tool| tool.name.as_ref())
             .collect::<Vec<_>>(),
-        vec!["sql", "list_tables"]
+        vec!["sql", "list_tables", "search_tables"]
     );
     assert!(
         initial_tools[0]
@@ -234,6 +234,13 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
             .description
             .as_deref()
             .expect("tables description")
+            .contains("3 table(s) are currently visible")
+    );
+    assert!(
+        updated_tools[2]
+            .description
+            .as_deref()
+            .expect("table search description")
             .contains("3 table(s) are currently visible")
     );
 
@@ -342,6 +349,56 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
         .await
         .expect_err("limit zero should be invalid");
 
+    let search = client
+        .call_tool(
+            CallToolRequestParams::new("search_tables").with_arguments(json_object(&json!({
+                "pattern": "^MESSAGES$",
+                "schema": "local_messages",
+                "ignore_case": true
+            }))),
+        )
+        .await
+        .expect("search tables");
+    let search = search.structured_content.expect("structured content");
+    assert_eq!(search["total"], 1);
+    assert_eq!(search["tables"][0]["name"], "local_messages.messages");
+    assert_eq!(
+        search["tables"][0]["sql_reference"],
+        "local_messages.messages"
+    );
+    assert!(
+        search["tables"][0]["matched_fields"]
+            .as_array()
+            .expect("matched fields")
+            .iter()
+            .any(|field| field == "table_name")
+    );
+
+    let search_page = client
+        .call_tool(
+            CallToolRequestParams::new("search_tables").with_arguments(json_object(&json!({
+                "pattern": "Fixture",
+                "schema": "local_messages",
+                "limit": 2
+            }))),
+        )
+        .await
+        .expect("search table page");
+    let search_page = search_page.structured_content.expect("structured content");
+    assert_eq!(search_page["total"], 3);
+    assert_eq!(search_page["limit"], 2);
+    assert_eq!(search_page["has_more"], true);
+    assert_eq!(search_page["next_offset"], 2);
+
+    client
+        .call_tool(
+            CallToolRequestParams::new("search_tables").with_arguments(json_object(&json!({
+                "pattern": "["
+            }))),
+        )
+        .await
+        .expect_err("invalid regex should fail");
+
     session.shutdown().await;
 }
 
@@ -363,9 +420,9 @@ async fn mcp_feedback_tool_persists_blocked_agent_report() {
             .iter()
             .map(|tool| tool.name.as_ref())
             .collect::<Vec<_>>(),
-        vec!["sql", "list_tables", "feedback"]
+        vec!["sql", "list_tables", "search_tables", "feedback"]
     );
-    let feedback_annotations = tools[2].annotations.as_ref().expect("feedback annotations");
+    let feedback_annotations = tools[3].annotations.as_ref().expect("feedback annotations");
     assert_eq!(feedback_annotations.read_only_hint, Some(false));
     assert_eq!(feedback_annotations.destructive_hint, Some(false));
     assert_eq!(feedback_annotations.idempotent_hint, Some(false));

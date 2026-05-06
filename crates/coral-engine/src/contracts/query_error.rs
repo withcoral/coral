@@ -612,6 +612,7 @@ mod tests {
             schema_name: schema.to_string(),
             table_name: name.to_string(),
             description: String::new(),
+            guide: String::new(),
             columns: vec![],
             required_filters: vec![],
         }

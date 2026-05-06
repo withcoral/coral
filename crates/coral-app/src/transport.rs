@@ -147,6 +147,7 @@ pub(crate) fn table_summary_to_proto(
         name: table.table_name,
         description: table.description,
         required_filters: table.required_filters,
+        guide: table.guide,
     }
 }
 
@@ -171,6 +172,7 @@ fn table_to_proto_with_columns(
         description: table.description,
         columns,
         required_filters: table.required_filters,
+        guide: table.guide,
     }
 }
 
@@ -284,6 +286,7 @@ mod tests {
             schema_name: "demo".to_string(),
             table_name: "users".to_string(),
             description: "User records".to_string(),
+            guide: "Filter by org_id.".to_string(),
             columns: vec![ColumnInfo {
                 name: "id".to_string(),
                 data_type: "Int64".to_string(),
@@ -298,6 +301,7 @@ mod tests {
         assert_eq!(proto.schema_name, "demo");
         assert_eq!(proto.name, "users");
         assert_eq!(proto.description, "User records");
+        assert_eq!(proto.guide, "Filter by org_id.");
         assert_eq!(proto.columns.len(), 1);
         assert_eq!(proto.columns[0].name, "id");
         assert_eq!(proto.columns[0].data_type, "Int64");
@@ -312,6 +316,7 @@ mod tests {
             schema_name: "demo".to_string(),
             table_name: "users".to_string(),
             description: "User records".to_string(),
+            guide: "Filter by org_id.".to_string(),
             columns: vec![ColumnInfo {
                 name: "id".to_string(),
                 data_type: "Int64".to_string(),
@@ -326,6 +331,7 @@ mod tests {
         assert_eq!(proto.schema_name, "demo");
         assert_eq!(proto.name, "users");
         assert_eq!(proto.description, "User records");
+        assert_eq!(proto.guide, "Filter by org_id.");
         assert_eq!(proto.required_filters, vec!["org_id"]);
     }
 

@@ -52,6 +52,7 @@ fn mock_table(schema_name: &str, name: &str) -> Table {
         schema_name: schema_name.to_string(),
         name: name.to_string(),
         description: String::new(),
+        guide: String::new(),
         columns: Vec::new(),
         required_filters: Vec::new(),
     }
@@ -63,6 +64,7 @@ fn mock_visible_table() -> Table {
         schema_name: "local_messages".to_string(),
         name: "messages".to_string(),
         description: "Fixture messages".to_string(),
+        guide: "Query fixture messages.".to_string(),
         columns: vec![
             Column {
                 name: "type".to_string(),
@@ -84,9 +86,11 @@ fn mock_visible_tables() -> Vec<Table> {
     let mut sessions = mock_visible_table();
     sessions.name = "sessions".to_string();
     sessions.description = "Fixture sessions".to_string();
+    sessions.guide = "Query fixture sessions.".to_string();
     let mut events = mock_visible_table();
     events.name = "events".to_string();
     events.description = "Fixture events".to_string();
+    events.guide = "Query fixture events.".to_string();
     vec![events, messages, sessions]
 }
 
@@ -97,10 +101,15 @@ fn table_summary(table: &Table) -> TableSummary {
         name: table.name.clone(),
         description: table.description.clone(),
         required_filters: table.required_filters.clone(),
+        guide: table.guide.clone(),
     }
 }
 
 fn mock_sql_response(sql: &str) -> ExecuteSqlResponse {
+    if sql.contains("FROM coral.tables") {
+        return mock_coral_tables_response();
+    }
+
     let (schema, batch, row_count) = if sql.contains("local_messages.messages") {
         let schema = Schema::new(vec![Field::new("text", DataType::Utf8, false)]);
         let batch = RecordBatch::try_new(
@@ -122,6 +131,44 @@ fn mock_sql_response(sql: &str) -> ExecuteSqlResponse {
     ExecuteSqlResponse {
         arrow_ipc_stream: encode_arrow_ipc_stream(&schema, &[batch]).expect("encode arrow ipc"),
         row_count,
+    }
+}
+
+fn mock_coral_tables_response() -> ExecuteSqlResponse {
+    let schema = Schema::new(vec![
+        Field::new("schema_name", DataType::Utf8, false),
+        Field::new("table_name", DataType::Utf8, false),
+        Field::new("description", DataType::Utf8, false),
+        Field::new("guide", DataType::Utf8, false),
+        Field::new("required_filters", DataType::Utf8, false),
+    ]);
+    let batch = RecordBatch::try_new(
+        Arc::new(schema.clone()),
+        vec![
+            Arc::new(StringArray::from(vec![
+                "local_messages",
+                "local_messages",
+                "local_messages",
+            ])),
+            Arc::new(StringArray::from(vec!["events", "messages", "sessions"])),
+            Arc::new(StringArray::from(vec![
+                "Fixture events",
+                "Fixture messages",
+                "Fixture sessions",
+            ])),
+            Arc::new(StringArray::from(vec![
+                "Query fixture events.",
+                "Query fixture messages.",
+                "Query fixture sessions.",
+            ])),
+            Arc::new(StringArray::from(vec!["", "owner,repo", ""])),
+        ],
+    )
+    .expect("build coral.tables batch");
+
+    ExecuteSqlResponse {
+        arrow_ipc_stream: encode_arrow_ipc_stream(&schema, &[batch]).expect("encode arrow ipc"),
+        row_count: 3,
     }
 }
 

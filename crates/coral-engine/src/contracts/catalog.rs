@@ -20,6 +20,8 @@ pub struct TableInfo {
     pub table_name: String,
     /// User-facing table description.
     pub description: String,
+    /// User-facing query guidance.
+    pub guide: String,
     /// Exposed columns for the table.
     pub columns: Vec<ColumnInfo>,
     /// Required filter names for the table.

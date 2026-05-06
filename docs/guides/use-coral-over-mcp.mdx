@@ -16,12 +16,14 @@ Before setting up a client, make sure you have [connected at least one source](/
 | -------- | ---------------- | ------------------------------------------------------- |
 | Tool     | `sql`            | Run a SQL query                                         |
 | Tool     | `list_tables`    | List queryable fully qualified tables with pagination   |
+| Tool     | `search_tables`  | Search table metadata with a Rust regex                 |
 | Tool     | `feedback`       | Store a local blocked-agent feedback report when enabled |
 | Resource | `coral://guide`  | Usage guide for agents                                  |
 | Resource | `coral://tables` | JSON summaries of queryable tables and required filters |
 
 Clients see the same installed sources and query results as `coral sql`. You set up sources with the CLI, then agents query them over MCP.
 `list_tables` returns table summaries in pages and accepts optional `schema`, `limit`, and `offset` arguments. Use each table's `sql_reference` value in `FROM` and `JOIN` clauses. Do not quote the whole `schema.table` string: write `github.pulls` or `"github"."pulls"`, not `"github.pulls"`.
+`search_tables` accepts a required `pattern` plus optional `schema`, `ignore_case`, `limit`, and `offset` arguments for deterministic regex matching over table names, descriptions, guides, and required filters.
 For richer metadata, have the agent query `coral.tables`, `coral.columns`, and `coral.inputs` over the `sql` tool instead of relying only on `list_tables` or `coral://tables`.
 Start Coral as `coral mcp-stdio --enable-feedback` to expose the optional `feedback` tool. Agents can call `feedback` when they get blocked or repeat a pattern that is not working. Coral stores the report locally with what the agent was trying to do, what it tried, and where it got stuck.
 
@@ -191,7 +193,7 @@ Once your client is connected, ask the agent to list available tables or run a s
 
 > "Run a small Coral query against `coral.tables`."
 
-The agent should call `list_tables` or query `coral.tables` and return the schemas from your installed sources. Large catalogs should be paged with `limit` and `offset`.
+The agent should call `list_tables`, `search_tables`, or query `coral.tables` and return the schemas from your installed sources. Large catalogs should be paged with `limit` and `offset`.
 
 ## Troubleshooting
 

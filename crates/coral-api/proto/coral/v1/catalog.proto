@@ -28,6 +28,8 @@ message Table {
   repeated Column columns = 5;
   // Required filter names, if any.
   repeated string required_filters = 6;
+  // User-facing query guidance.
+  string guide = 7;
 }
 
 // Table metadata without full column definitions.
@@ -42,4 +44,6 @@ message TableSummary {
   string description = 4;
   // Filter names that must be constrained when querying this table.
   repeated string required_filters = 5;
+  // User-facing query guidance.
+  string guide = 6;
 }

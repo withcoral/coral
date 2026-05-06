@@ -5,7 +5,7 @@ use coral_api::v1::{ListTablesResponse, Source, Table, TableSummary};
 use rmcp::model::{AnnotateAble, RawResource, Resource};
 use serde_json::{Value, json};
 
-static INITIAL_INSTRUCTIONS: &str = "You are connected to Coral. Read `coral://guide` for query patterns, use `list_tables` to inspect queryable tables, and use `sql` against `coral.tables` and `coral.columns` for discovery.";
+static INITIAL_INSTRUCTIONS: &str = "You are connected to Coral. Read `coral://guide` for query patterns, use `list_tables` and `search_tables` to inspect queryable tables, and use `sql` against `coral.tables` and `coral.columns` for deeper discovery.";
 static GUIDE_TEMPLATE: &str = include_str!("../guide_template.md");
 
 pub(crate) fn initial_instructions() -> &'static str {
@@ -112,6 +112,7 @@ fn queryable_tables(tables: &[TableSummary]) -> Vec<Value> {
                 "name": format!("{}.{}", table.schema_name, table.name),
                 "sql_reference": format_schema_table_equivalent(&table.schema_name, &table.name),
                 "description": table.description,
+                "guide": table.guide,
                 "required_filters": table.required_filters,
             })
         })
@@ -139,6 +140,7 @@ fn table_to_summary(table: &Table) -> TableSummary {
         name: table.name.clone(),
         description: table.description.clone(),
         required_filters: table.required_filters.clone(),
+        guide: table.guide.clone(),
     }
 }
 
@@ -151,7 +153,7 @@ fn first_visible_table(tables: &[TableSummary]) -> Option<(&str, &str)> {
         .map(|table| (table.schema_name.as_str(), table.name.as_str()))
 }
 
-fn format_schema_table_equivalent(schema_name: &str, table_name: &str) -> String {
+pub(crate) fn format_schema_table_equivalent(schema_name: &str, table_name: &str) -> String {
     format!(
         "{}.{}",
         quote_identifier_if_needed(schema_name),
@@ -207,6 +209,7 @@ mod tests {
             name: name.to_string(),
             description: format!("{name} description"),
             required_filters: Vec::new(),
+            guide: format!("Query {name}."),
         }
     }
 
@@ -260,6 +263,7 @@ mod tests {
                 "name": "local_messages.events",
                 "sql_reference": "local_messages.events",
                 "description": "events description",
+                "guide": "Query events.",
                 "required_filters": [],
             })
         );
