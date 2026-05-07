@@ -814,7 +814,10 @@ mod tests {
         // string exactly matches a visible `schema_name.table_name`, point
         // at the qualified SQL form before typo-based fallback can fire.
         let tables = vec![table("github", "pulls")];
-        let err = StructuredQueryError::table_not_found("datafusion.public.github.pulls", &tables);
+        let err = StructuredQueryError::table_not_found(
+            &tr(&["datafusion", "public", "github.pulls"]),
+            &tables,
+        );
 
         assert_eq!(err.metadata().get("schema"), None);
         assert_eq!(
