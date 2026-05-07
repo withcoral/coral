@@ -4,12 +4,14 @@ package coral.v1;
 
 import "coral/v1/catalog.proto";
 import "coral/v1/resources.proto";
-import "google/protobuf/empty.proto";
 
 // How one installed source entered Coral ownership.
 enum SourceOrigin {
+  // Source origin was not specified.
   SOURCE_ORIGIN_UNSPECIFIED = 0;
+  // Source was installed from Coral's bundled source catalog.
   SOURCE_ORIGIN_BUNDLED = 1;
+  // Source was imported from a user-supplied manifest.
   SOURCE_ORIGIN_IMPORTED = 2;
 }
 
@@ -52,8 +54,11 @@ message Source {
 
 // Input kinds that Coral prompts for while installing or importing a source.
 enum SourceInputKind {
+  // Source input kind was not specified.
   SOURCE_INPUT_KIND_UNSPECIFIED = 0;
+  // Source input is a visible non-secret variable.
   SOURCE_INPUT_KIND_VARIABLE = 1;
+  // Source input is a secret value.
   SOURCE_INPUT_KIND_SECRET = 2;
 }
 
@@ -111,6 +116,12 @@ message CreateBundledSourceRequest {
   repeated SourceSecret secrets = 4;
 }
 
+// Returns the installed bundled source.
+message CreateBundledSourceResponse {
+  // The installed source resource.
+  Source source = 1;
+}
+
 // Imports one user-supplied source manifest into Coral ownership.
 message ImportSourceRequest {
   // Owning workspace resource.
@@ -121,6 +132,12 @@ message ImportSourceRequest {
   repeated SourceVariable variables = 3;
   // Source-owned secret values.
   repeated SourceSecret secrets = 4;
+}
+
+// Returns the imported source.
+message ImportSourceResponse {
+  // The imported source resource.
+  Source source = 1;
 }
 
 // Lists all registered sources in one workspace.
@@ -143,12 +160,24 @@ message GetSourceRequest {
   string name = 2;
 }
 
+// Returns one registered source.
+message GetSourceResponse {
+  // The registered source resource.
+  Source source = 1;
+}
+
 // Fetches source metadata by identifier.
 message GetSourceInfoRequest {
   // Owning workspace resource.
   Workspace workspace = 1;
   // Bare source name to fetch metadata for.
   string name = 2;
+}
+
+// Returns source metadata.
+message GetSourceInfoResponse {
+  // Metadata for the installed or bundled source.
+  SourceInfo source_info = 1;
 }
 
 // Deletes one registered source and its managed artifacts.
@@ -158,6 +187,9 @@ message DeleteSourceRequest {
   // Bare source name to remove.
   string name = 2;
 }
+
+// Confirms source deletion.
+message DeleteSourceResponse {}
 
 // Validates that a registered source is queryable.
 message ValidateSourceRequest {
@@ -209,15 +241,15 @@ service SourceService {
   // Lists all registered sources.
   rpc ListSources(ListSourcesRequest) returns (ListSourcesResponse);
   // Fetches one registered source.
-  rpc GetSource(GetSourceRequest) returns (Source);
+  rpc GetSource(GetSourceRequest) returns (GetSourceResponse);
   // Fetches metadata for one installed or bundled source.
-  rpc GetSourceInfo(GetSourceInfoRequest) returns (SourceInfo);
+  rpc GetSourceInfo(GetSourceInfoRequest) returns (GetSourceInfoResponse);
   // Installs one bundled source.
-  rpc CreateBundledSource(CreateBundledSourceRequest) returns (Source);
+  rpc CreateBundledSource(CreateBundledSourceRequest) returns (CreateBundledSourceResponse);
   // Imports one user-provided source manifest.
-  rpc ImportSource(ImportSourceRequest) returns (Source);
+  rpc ImportSource(ImportSourceRequest) returns (ImportSourceResponse);
   // Deletes a registered source.
-  rpc DeleteSource(DeleteSourceRequest) returns (google.protobuf.Empty);
+  rpc DeleteSource(DeleteSourceRequest) returns (DeleteSourceResponse);
   // Validates that a registered source is queryable.
   rpc ValidateSource(ValidateSourceRequest) returns (ValidateSourceResponse);
 }

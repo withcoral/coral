@@ -14,12 +14,13 @@ use assert_cmd::Command;
 use coral_api::v1::query_service_server::{QueryService, QueryServiceServer};
 use coral_api::v1::source_service_server::{SourceService, SourceServiceServer};
 use coral_api::v1::{
-    Column, CreateBundledSourceRequest, DeleteSourceRequest, DiscoverSourcesRequest,
-    DiscoverSourcesResponse, ExecuteSqlRequest, ExecuteSqlResponse, GetSourceInfoRequest,
-    GetSourceRequest, ImportSourceRequest, ListSourcesRequest, ListSourcesResponse,
-    ListTablesRequest, ListTablesResponse, PaginationResponse, Source, SourceInfo, SourceInputKind,
-    SourceInputSpec, SourceOrigin, Table, TableSummary, ValidateSourceRequest,
-    ValidateSourceResponse, Workspace,
+    Column, CreateBundledSourceRequest, CreateBundledSourceResponse, DeleteSourceRequest,
+    DeleteSourceResponse, DiscoverSourcesRequest, DiscoverSourcesResponse, ExecuteSqlRequest,
+    ExecuteSqlResponse, GetSourceInfoRequest, GetSourceInfoResponse, GetSourceRequest,
+    GetSourceResponse, ImportSourceRequest, ImportSourceResponse, ListSourcesRequest,
+    ListSourcesResponse, ListTablesRequest, ListTablesResponse, PaginationResponse, Source,
+    SourceInfo, SourceInputKind, SourceInputSpec, SourceOrigin, Table, TableSummary,
+    ValidateSourceRequest, ValidateSourceResponse, Workspace,
 };
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
@@ -483,63 +484,71 @@ impl SourceService for MockSourceService {
     async fn get_source(
         &self,
         request: Request<GetSourceRequest>,
-    ) -> Result<Response<Source>, Status> {
+    ) -> Result<Response<GetSourceResponse>, Status> {
         self.captured
             .get_source
             .lock()
             .expect("get_source capture")
             .push(request.into_inner());
-        Ok(Response::new(mock_source()))
+        Ok(Response::new(GetSourceResponse {
+            source: Some(mock_source()),
+        }))
     }
 
     async fn get_source_info(
         &self,
         request: Request<GetSourceInfoRequest>,
-    ) -> Result<Response<SourceInfo>, Status> {
+    ) -> Result<Response<GetSourceInfoResponse>, Status> {
         let request = request.into_inner();
         self.captured
             .get_source_info
             .lock()
             .expect("get_source_info capture")
             .push(request.clone());
-        Ok(Response::new(mock_source_info(&request.name)?))
+        Ok(Response::new(GetSourceInfoResponse {
+            source_info: Some(mock_source_info(&request.name)?),
+        }))
     }
 
     async fn create_bundled_source(
         &self,
         request: Request<CreateBundledSourceRequest>,
-    ) -> Result<Response<Source>, Status> {
+    ) -> Result<Response<CreateBundledSourceResponse>, Status> {
         self.captured
             .create_bundled_source
             .lock()
             .expect("create_bundled_source capture")
             .push(request.into_inner());
-        Ok(Response::new(mock_source()))
+        Ok(Response::new(CreateBundledSourceResponse {
+            source: Some(mock_source()),
+        }))
     }
 
     async fn import_source(
         &self,
         request: Request<ImportSourceRequest>,
-    ) -> Result<Response<Source>, Status> {
+    ) -> Result<Response<ImportSourceResponse>, Status> {
         self.captured
             .import_source
             .lock()
             .expect("import_source capture")
             .push(request.into_inner());
-        Ok(Response::new(mock_source()))
+        Ok(Response::new(ImportSourceResponse {
+            source: Some(mock_source()),
+        }))
     }
 
     async fn delete_source(
         &self,
         request: Request<DeleteSourceRequest>,
-    ) -> Result<Response<()>, Status> {
+    ) -> Result<Response<DeleteSourceResponse>, Status> {
         self.captured
             .delete_source
             .lock()
             .expect("delete_source capture")
             .push(request.into_inner());
         self.config.delete_source.clone().into_tonic_result()?;
-        Ok(Response::new(()))
+        Ok(Response::new(DeleteSourceResponse {}))
     }
 
     async fn validate_source(

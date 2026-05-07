@@ -2,11 +2,12 @@
 
 use coral_api::v1::source_service_server::SourceService as SourceServiceApi;
 use coral_api::v1::{
-    CreateBundledSourceRequest, DeleteSourceRequest, DiscoverSourcesRequest,
-    DiscoverSourcesResponse, GetSourceInfoRequest, GetSourceRequest, ImportSourceRequest,
-    ListSourcesRequest, ListSourcesResponse, Source, SourceInfo, SourceInputKind, SourceInputSpec,
-    SourceOrigin as ProtoSourceOrigin, SourceSecret, SourceVariable, ValidateSourceRequest,
-    ValidateSourceResponse,
+    CreateBundledSourceRequest, CreateBundledSourceResponse, DeleteSourceRequest,
+    DeleteSourceResponse, DiscoverSourcesRequest, DiscoverSourcesResponse, GetSourceInfoRequest,
+    GetSourceInfoResponse, GetSourceRequest, GetSourceResponse, ImportSourceRequest,
+    ImportSourceResponse, ListSourcesRequest, ListSourcesResponse, Source, SourceInfo,
+    SourceInputKind, SourceInputSpec, SourceOrigin as ProtoSourceOrigin, SourceSecret,
+    SourceVariable, ValidateSourceRequest, ValidateSourceResponse,
 };
 use coral_spec::{ManifestInputKind, ManifestInputSpec};
 use tonic::{Request, Response, Status};
@@ -84,7 +85,7 @@ impl SourceServiceApi for SourceService {
     async fn get_source(
         &self,
         request: Request<GetSourceRequest>,
-    ) -> Result<Response<Source>, Status> {
+    ) -> Result<Response<GetSourceResponse>, Status> {
         let span = grpc_span(request.metadata(), "get_source");
         let sources = self.sources.clone();
         instrument_grpc(span, async move {
@@ -94,10 +95,9 @@ impl SourceServiceApi for SourceService {
             let source = sources
                 .get_source(&workspace_name, &source_name)
                 .map_err(app_status)?;
-            Ok(Response::new(installed_source_to_proto(
-                &workspace_name,
-                source,
-            )))
+            Ok(Response::new(GetSourceResponse {
+                source: Some(installed_source_to_proto(&workspace_name, source)),
+            }))
         })
         .await
     }
@@ -105,7 +105,7 @@ impl SourceServiceApi for SourceService {
     async fn get_source_info(
         &self,
         request: Request<GetSourceInfoRequest>,
-    ) -> Result<Response<SourceInfo>, Status> {
+    ) -> Result<Response<GetSourceInfoResponse>, Status> {
         let span = grpc_span(request.metadata(), "get_source_info");
         let sources = self.sources.clone();
         instrument_grpc(span, async move {
@@ -115,7 +115,9 @@ impl SourceServiceApi for SourceService {
             let source = sources
                 .get_source_info(&workspace_name, &source_name)
                 .map_err(app_status)?;
-            Ok(Response::new(candidate_source_to_proto(source)))
+            Ok(Response::new(GetSourceInfoResponse {
+                source_info: Some(candidate_source_to_proto(source)),
+            }))
         })
         .await
     }
@@ -123,7 +125,7 @@ impl SourceServiceApi for SourceService {
     async fn create_bundled_source(
         &self,
         request: Request<CreateBundledSourceRequest>,
-    ) -> Result<Response<Source>, Status> {
+    ) -> Result<Response<CreateBundledSourceResponse>, Status> {
         let span = grpc_span(request.metadata(), "create_bundled_source");
         let sources = self.sources.clone();
         instrument_grpc(span, async move {
@@ -137,10 +139,9 @@ impl SourceServiceApi for SourceService {
             let installed = sources
                 .create_bundled_source(&workspace_name, &command)
                 .map_err(app_status)?;
-            Ok(Response::new(installed_source_to_proto(
-                &workspace_name,
-                installed,
-            )))
+            Ok(Response::new(CreateBundledSourceResponse {
+                source: Some(installed_source_to_proto(&workspace_name, installed)),
+            }))
         })
         .await
     }
@@ -148,7 +149,7 @@ impl SourceServiceApi for SourceService {
     async fn import_source(
         &self,
         request: Request<ImportSourceRequest>,
-    ) -> Result<Response<Source>, Status> {
+    ) -> Result<Response<ImportSourceResponse>, Status> {
         let span = grpc_span(request.metadata(), "import_source");
         let sources = self.sources.clone();
         instrument_grpc(span, async move {
@@ -161,10 +162,9 @@ impl SourceServiceApi for SourceService {
             let installed = sources
                 .import_source(&workspace_name, &command)
                 .map_err(app_status)?;
-            Ok(Response::new(installed_source_to_proto(
-                &workspace_name,
-                installed,
-            )))
+            Ok(Response::new(ImportSourceResponse {
+                source: Some(installed_source_to_proto(&workspace_name, installed)),
+            }))
         })
         .await
     }
@@ -172,7 +172,7 @@ impl SourceServiceApi for SourceService {
     async fn delete_source(
         &self,
         request: Request<DeleteSourceRequest>,
-    ) -> Result<Response<()>, Status> {
+    ) -> Result<Response<DeleteSourceResponse>, Status> {
         let span = grpc_span(request.metadata(), "delete_source");
         let sources = self.sources.clone();
         instrument_grpc(span, async move {
@@ -182,7 +182,7 @@ impl SourceServiceApi for SourceService {
             sources
                 .delete_source(&workspace_name, &source_name)
                 .map_err(app_status)?;
-            Ok(Response::new(()))
+            Ok(Response::new(DeleteSourceResponse {}))
         })
         .await
     }
