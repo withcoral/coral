@@ -180,21 +180,22 @@ impl QueryRuntimeAdapter {
             .await
             .map_err(|err| datafusion_to_core(&err, &self.tables))?;
         let unoptimized_logical_plan = df.logical_plan().display_indent_schema().to_string();
-        let optimized_logical_plan = df
-            .clone()
-            .into_optimized_plan()
-            .map_err(|err| datafusion_to_core(&err, &self.tables))?
-            .display_indent_schema()
-            .to_string();
-        let physical_plan = df
-            .create_physical_plan()
+        let (session_state, logical_plan) = df.into_parts();
+        let optimized_logical_plan = session_state
+            .optimize(&logical_plan)
+            .map_err(|err| datafusion_to_core(&err, &self.tables))?;
+        let optimized_logical_plan_display =
+            optimized_logical_plan.display_indent_schema().to_string();
+        let physical_plan = session_state
+            .query_planner()
+            .create_physical_plan(&optimized_logical_plan, &session_state)
             .await
             .map_err(|err| datafusion_to_core(&err, &self.tables))?;
         let physical_plan = displayable(physical_plan.as_ref()).indent(true).to_string();
 
         Ok(QueryPlan::new(
             unoptimized_logical_plan,
-            optimized_logical_plan,
+            optimized_logical_plan_display,
             physical_plan,
         ))
     }

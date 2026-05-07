@@ -207,7 +207,7 @@ impl QueryRuntimeConfig {
     }
 }
 
-/// Recreated `DataFusion` plans for one `SQL` statement.
+/// Recreated query-engine plan renderings for one `SQL` statement.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueryPlan {
     unoptimized_logical: String,
@@ -217,7 +217,7 @@ pub struct QueryPlan {
 
 impl QueryPlan {
     #[must_use]
-    /// Builds one query-plan snapshot from `DataFusion` plan renderings.
+    /// Builds one query-plan snapshot from engine plan renderings.
     pub fn new(
         unoptimized_logical_plan: String,
         optimized_logical_plan: String,
