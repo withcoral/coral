@@ -5,7 +5,7 @@ use std::sync::Arc;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::prelude::{SQLOptions, SessionConfig, SessionContext};
-use datafusion_tracing::InstrumentationOptions;
+use datafusion_tracing::{InstrumentationOptions, RuleInstrumentationOptions};
 
 use crate::backends::compile_query_source;
 use crate::runtime::catalog;
@@ -47,6 +47,11 @@ pub(crate) async fn build_runtime(
         .with_default_features()
         .with_physical_optimizer_rule(instrument_rule)
         .build();
+    let session_state = datafusion_tracing::instrument_rules_with_trace_spans!(
+        target: "coral_engine::datafusion",
+        options: RuleInstrumentationOptions::full(),
+        state: session_state
+    );
     let mut ctx = SessionContext::new_with_state(session_state);
     register_json_support(&mut ctx).map_err(|err| datafusion_to_core(&err, &[]))?;
     register_pattern_validator(&mut ctx).map_err(|err| datafusion_to_core(&err, &[]))?;
