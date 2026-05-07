@@ -66,9 +66,9 @@ pub use composition::{
     SourceTables,
 };
 pub use contracts::{
-    ColumnInfo, CoreError, QueryExecution, QueryRuntimeConfig, QueryRuntimeContext, QuerySource,
-    QueryTestFailure, QueryTestResult, QueryTestSuccess, SourceValidationReport, StatusCode,
-    StructuredQueryError, TableInfo,
+    ColumnInfo, CoreError, QueryExecution, QueryPlan, QueryRuntimeConfig, QueryRuntimeContext,
+    QuerySource, QueryTestFailure, QueryTestResult, QueryTestSuccess, SourceValidationReport,
+    StatusCode, StructuredQueryError, TableInfo,
 };
 
 /// High-level query operations for the local query engine.
@@ -114,6 +114,30 @@ impl CoralQuery {
         runtime::query::build_runtime(sources, runtime)
             .await?
             .execute_sql(sql)
+            .await
+    }
+
+    /// Produces logical and physical plan renderings for one `SQL` statement.
+    ///
+    /// This plans against the provided source set and current runtime state. It
+    /// does not execute the SQL statement.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if the SQL is empty, if source compilation fails,
+    /// or if the query engine cannot plan the statement.
+    pub async fn plan_sql(
+        sources: &[QuerySource],
+        runtime: QueryRuntimeConfig,
+        sql: &str,
+    ) -> Result<QueryPlan, CoreError> {
+        if sql.trim().is_empty() {
+            return Err(CoreError::InvalidInput("SQL must not be empty".to_string()));
+        }
+
+        runtime::query::build_runtime(sources, runtime)
+            .await?
+            .plan_sql(sql)
             .await
     }
 

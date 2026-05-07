@@ -202,6 +202,48 @@ impl QueryRuntimeConfig {
     }
 }
 
+/// Query-engine plan renderings for one `SQL` statement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueryPlan {
+    unoptimized_logical: String,
+    optimized_logical: String,
+    physical: String,
+}
+
+impl QueryPlan {
+    #[must_use]
+    /// Builds one query-plan snapshot from engine plan renderings.
+    pub fn new(
+        unoptimized_logical_plan: String,
+        optimized_logical_plan: String,
+        physical_plan: String,
+    ) -> Self {
+        Self {
+            unoptimized_logical: unoptimized_logical_plan,
+            optimized_logical: optimized_logical_plan,
+            physical: physical_plan,
+        }
+    }
+
+    #[must_use]
+    /// Returns the parsed logical plan before logical optimizer rules run.
+    pub fn unoptimized_logical_plan(&self) -> &str {
+        &self.unoptimized_logical
+    }
+
+    #[must_use]
+    /// Returns the logical plan after logical optimizer rules run.
+    pub fn optimized_logical_plan(&self) -> &str {
+        &self.optimized_logical
+    }
+
+    #[must_use]
+    /// Returns the physical execution plan after physical optimizer rules run.
+    pub fn physical_plan(&self) -> &str {
+        &self.physical
+    }
+}
+
 /// The fully materialized result of executing one `SQL` statement.
 #[derive(Debug, Clone)]
 pub struct QueryExecution {

@@ -9,8 +9,8 @@ use std::fs;
 use coral_api::v1::{
     CreateBundledSourceRequest, DeleteSourceRequest, DiscoverSourcesRequest, ExecuteSqlRequest,
     GetSourceInfoRequest, GetSourceRequest, ImportSourceRequest, ListTablesRequest,
-    PaginationRequest, QueryTestFailure, QueryTestSuccess, SourceOrigin, SourceSecret,
-    SourceVariable, ValidateSourceRequest, Workspace, query_test_result,
+    PaginationRequest, PlanSqlRequest, QueryTestFailure, QueryTestSuccess, SourceOrigin,
+    SourceSecret, SourceVariable, ValidateSourceRequest, Workspace, query_test_result,
 };
 use coral_client::default_workspace;
 use tempfile::TempDir;
@@ -335,6 +335,39 @@ async fn assert_exact_table_filter(harness: &GrpcHarness) {
     assert_eq!(exact_table.tables[0].schema_name, "local_messages");
     assert_eq!(exact_table.tables[0].name, "messages");
     assert!(!exact_table.tables[0].columns.is_empty());
+}
+
+#[tokio::test]
+async fn plan_sql_returns_logical_and_physical_plans() {
+    let harness = GrpcHarness::new().await;
+    harness
+        .import_source(
+            fixture_manifest_yaml(harness.temp_path()),
+            Vec::new(),
+            Vec::new(),
+        )
+        .await;
+
+    let response = harness
+        .query_client()
+        .plan_sql(Request::new(PlanSqlRequest {
+            workspace: Some(default_workspace()),
+            sql: "SELECT text FROM local_messages.messages ORDER BY text".to_string(),
+        }))
+        .await
+        .expect("plan sql")
+        .into_inner();
+    let plan = response.plan.expect("query plan");
+
+    assert!(
+        plan.unoptimized_logical_plan
+            .contains("local_messages.messages")
+    );
+    assert!(
+        plan.optimized_logical_plan
+            .contains("local_messages.messages")
+    );
+    assert!(plan.physical_plan.contains("Exec"));
 }
 
 #[tokio::test]

@@ -6,7 +6,7 @@ use arrow::record_batch::RecordBatch;
 use coral_api::v1::query_service_server::QueryService as QueryServiceApi;
 use coral_api::v1::{
     ExecuteSqlRequest, ExecuteSqlResponse, ListTablesRequest, ListTablesResponse,
-    PaginationResponse,
+    PaginationResponse, PlanSqlRequest, PlanSqlResponse, QueryPlan as QueryPlanProto,
 };
 use tonic::{Request, Response, Status};
 
@@ -124,6 +124,26 @@ impl QueryServiceApi for QueryService {
         })
         .await
     }
+
+    async fn plan_sql(
+        &self,
+        request: Request<PlanSqlRequest>,
+    ) -> Result<Response<PlanSqlResponse>, Status> {
+        let span = grpc_span(&request);
+        let queries = self.queries.clone();
+        instrument_grpc(span, async move {
+            let inner = request.into_inner();
+            let workspace_name = workspace_name_from_proto(inner.workspace.as_ref())?;
+            let plan = queries
+                .plan_sql(&workspace_name, &inner.sql)
+                .await
+                .map_err(query_status)?;
+            Ok(Response::new(PlanSqlResponse {
+                plan: Some(query_plan_to_proto(&plan)),
+            }))
+        })
+        .await
+    }
 }
 
 fn paginate_tables(
@@ -141,6 +161,14 @@ fn paginate_tables(
 
 fn count_to_u32(count: usize) -> u32 {
     u32::try_from(count).unwrap_or(u32::MAX)
+}
+
+fn query_plan_to_proto(plan: &coral_engine::QueryPlan) -> QueryPlanProto {
+    QueryPlanProto {
+        unoptimized_logical_plan: plan.unoptimized_logical_plan().to_string(),
+        optimized_logical_plan: plan.optimized_logical_plan().to_string(),
+        physical_plan: plan.physical_plan().to_string(),
+    }
 }
 
 fn encode_arrow_ipc_stream(

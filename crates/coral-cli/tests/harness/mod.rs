@@ -18,9 +18,9 @@ use coral_api::v1::{
     DeleteSourceResponse, DiscoverSourcesRequest, DiscoverSourcesResponse, ExecuteSqlRequest,
     ExecuteSqlResponse, GetSourceInfoRequest, GetSourceInfoResponse, GetSourceRequest,
     GetSourceResponse, ImportSourceRequest, ImportSourceResponse, ListSourcesRequest,
-    ListSourcesResponse, ListTablesRequest, ListTablesResponse, PaginationResponse, Source,
-    SourceInfo, SourceInputKind, SourceInputSpec, SourceOrigin, Table, TableSummary,
-    ValidateSourceRequest, ValidateSourceResponse, Workspace,
+    ListSourcesResponse, ListTablesRequest, ListTablesResponse, PaginationResponse, PlanSqlRequest,
+    PlanSqlResponse, QueryPlan, Source, SourceInfo, SourceInputKind, SourceInputSpec, SourceOrigin,
+    Table, TableSummary, ValidateSourceRequest, ValidateSourceResponse, Workspace,
 };
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
@@ -507,6 +507,19 @@ impl QueryService for MockQueryService {
         };
 
         Ok(Response::new(response))
+    }
+
+    async fn plan_sql(
+        &self,
+        _request: Request<PlanSqlRequest>,
+    ) -> Result<Response<PlanSqlResponse>, Status> {
+        Ok(Response::new(PlanSqlResponse {
+            plan: Some(QueryPlan {
+                unoptimized_logical_plan: "LogicalPlan".to_string(),
+                optimized_logical_plan: "OptimizedLogicalPlan".to_string(),
+                physical_plan: "PhysicalPlan".to_string(),
+            }),
+        }))
     }
 }
 
