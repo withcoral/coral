@@ -69,13 +69,9 @@ pub(crate) fn validate_http_table(
 
 pub(crate) fn validate_http_function_names(
     source_name: &str,
-    table_names: impl IntoIterator<Item = impl AsRef<str>>,
+    _table_names: impl IntoIterator<Item = impl AsRef<str>>,
     functions: &[SourceTableFunctionSpec],
 ) -> Result<()> {
-    let table_names = table_names
-        .into_iter()
-        .map(|name| name.as_ref().to_string())
-        .collect::<HashSet<_>>();
     let mut function_names = HashSet::new();
 
     for function in functions {
@@ -83,12 +79,6 @@ pub(crate) fn validate_http_function_names(
             &function.name,
             &format!("source '{source_name}' function name"),
         )?;
-        if table_names.contains(&function.name) {
-            return Err(ManifestError::validation(format!(
-                "source '{source_name}' declares both a table and function named '{}'",
-                function.name
-            )));
-        }
         if !function_names.insert(function.name.as_str()) {
             return Err(ManifestError::validation(format!(
                 "source '{source_name}' function '{}' is declared more than once",
@@ -900,7 +890,7 @@ mod tests {
     }
 
     #[test]
-    fn validate_http_function_names_rejects_table_name_collisions() {
+    fn validate_http_function_names_allows_table_name_collisions() {
         let function = SourceTableFunctionSpec {
             name: "messages".to_string(),
             description: String::new(),
@@ -912,14 +902,8 @@ mod tests {
             columns: vec![],
         };
 
-        let error = validate_http_function_names("demo", ["messages"], &[function])
-            .expect_err("function should not share a table name");
-
-        assert!(
-            error
-                .to_string()
-                .contains("declares both a table and function named 'messages'")
-        );
+        validate_http_function_names("demo", ["messages"], &[function])
+            .expect("function calls are disambiguated from table scans by SQL args");
     }
 
     #[test]
