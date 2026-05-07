@@ -100,7 +100,8 @@ pub(crate) async fn build_runtime(
             .iter()
             .flat_map(|source| source.table_functions.iter().cloned())
             .collect(),
-    );
+    )
+    .map_err(|err| datafusion_to_core(&err, &tables))?;
     if !source_functions.is_empty() {
         ctx.register_relation_planner(Arc::new(source_functions))
             .map_err(|err| datafusion_to_core(&err, &tables))?;

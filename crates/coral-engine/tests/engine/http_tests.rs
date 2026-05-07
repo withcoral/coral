@@ -332,6 +332,15 @@ async fn source_scoped_table_function_builds_http_search_request() {
     .await;
 }
 
+#[tokio::test]
+async fn source_scoped_table_function_normalizes_unquoted_sql_identifiers() {
+    assert_search_function_query(
+        "SELECT title, score \
+         FROM SEARCH.SEARCH_ISSUES(MODE => 'hybrid', Q => 'flaky cleanup repo:withcoral/coral')",
+    )
+    .await;
+}
+
 async fn assert_search_function_query(sql: &str) {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
