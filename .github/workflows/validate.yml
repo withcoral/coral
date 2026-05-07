@@ -128,7 +128,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install ryl
-        run: cargo install ryl
+        run: cargo install ryl --locked
 
       - name: Run make lint-sources
         run: make lint-sources

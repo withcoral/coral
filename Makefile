@@ -1,9 +1,9 @@
 rust-checks:
 	cargo fmt --all -- --check
 	cargo check --workspace --all-targets --all-features --locked
-	cargo clippy --workspace --all-targets --all-features -- -D warnings
+	cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 	cargo test --workspace --all-targets --all-features --locked
-	RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps
+	RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps --locked
 
 # ----------------------------------------------------------------------------
 # Source manifest linting
@@ -29,13 +29,13 @@ fix-sources:
 #   make docs-check      # CI freshness check: non-zero exit if stale
 
 docs-generate:
-	cargo run -p xtask -- generate-docs \
+	cargo run --locked -p xtask -- generate-docs \
 	  --sources-dir sources \
 	  --index docs/reference/bundled-sources.mdx \
 	  --docs-json docs/docs.json
 
 docs-check:
-	cargo run -p xtask -- generate-docs \
+	cargo run --locked -p xtask -- generate-docs \
 	  --sources-dir sources \
 	  --index docs/reference/bundled-sources.mdx \
 	  --docs-json docs/docs.json \
