@@ -14,10 +14,10 @@
 /xtask/ @withcoral/repo-ops @withcoral/docs
 
 # Project docs.
-/AGENTS.md @withcoral/core-maintainers
+AGENTS.md @withcoral/core-maintainers
 /CONTRIBUTING.md @withcoral/core-maintainers
 /SECURITY.md @withcoral/core-maintainers
-/README.md @withcoral/core-maintainers @withcoral/docs
+/README.md @withcoral/core-maintainers
 
 # Docs.
 /docs/ @withcoral/docs

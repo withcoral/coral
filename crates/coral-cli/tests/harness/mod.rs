@@ -17,8 +17,9 @@ use coral_api::v1::{
     Column, CreateBundledSourceRequest, DeleteSourceRequest, DiscoverSourcesRequest,
     DiscoverSourcesResponse, ExecuteSqlRequest, ExecuteSqlResponse, GetSourceInfoRequest,
     GetSourceRequest, ImportSourceRequest, ListSourcesRequest, ListSourcesResponse,
-    ListTablesRequest, ListTablesResponse, Source, SourceInfo, SourceInputKind, SourceInputSpec,
-    SourceOrigin, Table, ValidateSourceRequest, ValidateSourceResponse, Workspace,
+    ListTablesRequest, ListTablesResponse, PaginationResponse, Source, SourceInfo, SourceInputKind,
+    SourceInputSpec, SourceOrigin, Table, TableSummary, ValidateSourceRequest,
+    ValidateSourceResponse, Workspace,
 };
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
@@ -74,6 +75,27 @@ fn mock_visible_table() -> Table {
             },
         ],
         required_filters: Vec::new(),
+    }
+}
+
+fn mock_visible_tables() -> Vec<Table> {
+    let messages = mock_visible_table();
+    let mut sessions = mock_visible_table();
+    sessions.name = "sessions".to_string();
+    sessions.description = "Fixture sessions".to_string();
+    let mut events = mock_visible_table();
+    events.name = "events".to_string();
+    events.description = "Fixture events".to_string();
+    vec![events, messages, sessions]
+}
+
+fn table_summary(table: &Table) -> TableSummary {
+    TableSummary {
+        workspace: table.workspace.clone(),
+        schema_name: table.schema_name.clone(),
+        name: table.name.clone(),
+        description: table.description.clone(),
+        required_filters: table.required_filters.clone(),
     }
 }
 
@@ -340,13 +362,57 @@ impl QueryService for MockQueryService {
         &self,
         request: Request<ListTablesRequest>,
     ) -> Result<Response<ListTablesResponse>, Status> {
+        let request = request.into_inner();
         self.captured
             .list_tables
             .lock()
             .expect("list_tables capture")
-            .push(request.into_inner());
+            .push(request.clone());
+        let mut tables = mock_visible_tables()
+            .into_iter()
+            .filter(|table| {
+                request.schema_name.is_empty() || table.schema_name == request.schema_name
+            })
+            .collect::<Vec<_>>();
+        let total = u32::try_from(tables.len()).unwrap_or(u32::MAX);
+        let pagination = request.pagination.unwrap_or_default();
+        let offset = usize::try_from(pagination.offset).expect("offset");
+        let limit = usize::try_from(pagination.limit).expect("limit");
+        tables = if limit == 0 {
+            tables.into_iter().skip(offset).collect()
+        } else {
+            tables.into_iter().skip(offset).take(limit).collect()
+        };
+        let table_summaries = if request.omit_columns {
+            tables.iter().map(table_summary).collect()
+        } else {
+            Vec::new()
+        };
+        let returned_count = if request.omit_columns {
+            u32::try_from(table_summaries.len()).unwrap_or(u32::MAX)
+        } else {
+            u32::try_from(tables.len()).unwrap_or(u32::MAX)
+        };
+        if request.omit_columns {
+            tables.clear();
+        }
+        let has_more =
+            pagination.limit != 0 && pagination.offset.saturating_add(returned_count) < total;
+        let next_offset = if has_more {
+            pagination.offset.saturating_add(returned_count)
+        } else {
+            0
+        };
         Ok(Response::new(ListTablesResponse {
-            tables: vec![mock_visible_table()],
+            tables,
+            table_summaries,
+            pagination: Some(PaginationResponse {
+                total_count: total,
+                limit: pagination.limit,
+                offset: pagination.offset,
+                has_more,
+                next_offset,
+            }),
         }))
     }
 
@@ -585,6 +651,14 @@ impl MockServer {
             .list_sources
             .lock()
             .expect("list_sources capture")
+            .clone()
+    }
+
+    pub(crate) fn list_tables_requests(&self) -> Vec<ListTablesRequest> {
+        self.captured
+            .list_tables
+            .lock()
+            .expect("list_tables capture")
             .clone()
     }
 

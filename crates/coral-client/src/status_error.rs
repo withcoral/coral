@@ -9,10 +9,11 @@
 
 use std::collections::HashMap;
 
+pub use coral_api::CORAL_ERROR_DOMAIN;
+use coral_api::{
+    CORAL_ERROR_METADATA_DETAIL, CORAL_ERROR_METADATA_HINT, CORAL_ERROR_METADATA_SUMMARY,
+};
 use tonic_types::{ErrorDetail, StatusExt as _};
-
-/// Coral error domain used in `google.rpc.ErrorInfo`.
-pub const CORAL_ERROR_DOMAIN: &str = "coral.withcoral.com";
 
 /// Result of decoding a structured query error from a `tonic::Status`.
 pub enum DecodedStatusError {
@@ -82,10 +83,12 @@ pub fn decode_status_error(status: &tonic::Status) -> DecodedStatusError {
         Some(info) => {
             let mut metadata = info.metadata;
             let summary = metadata
-                .remove("summary")
+                .remove(CORAL_ERROR_METADATA_SUMMARY)
                 .unwrap_or_else(|| status.message().to_string());
-            let detail = metadata.remove("detail").unwrap_or_default();
-            let hint = metadata.remove("hint");
+            let detail = metadata
+                .remove(CORAL_ERROR_METADATA_DETAIL)
+                .unwrap_or_default();
+            let hint = metadata.remove(CORAL_ERROR_METADATA_HINT);
             DecodedStatusError::Structured(Box::new(CoralQueryError {
                 reason: info.reason,
                 summary,

@@ -11,22 +11,20 @@ inputs:
     hint: |
       Base URL of your Atlassian Cloud site, without the `/wiki` suffix
       (for example `https://acme.atlassian.net`).
-  CONFLUENCE_BASIC_AUTH:
+  CONFLUENCE_EMAIL:
+    kind: variable
+    hint: |
+      Email address for your Atlassian account.
+  CONFLUENCE_API_TOKEN:
     kind: secret
     hint: |
-      Use Base64-encoded `email:api_token` credentials for Confluence
-      Cloud Basic auth.
       Create an API token at
-      [Atlassian API token settings](https://id.atlassian.com/manage-profile/security/api-tokens),
-      then encode `email:api_token`.
-      Example: `printf '%s' 'you@example.com:YOUR_CONFLUENCE_API_TOKEN' | base64`.
+      [Atlassian API token settings](https://id.atlassian.com/manage-profile/security/api-tokens).
 base_url: "{{input.CONFLUENCE_BASE_URL}}"
 auth:
-  type: HeaderAuth
-  headers:
-    - name: Authorization
-      from: template
-      template: Basic {{input.CONFLUENCE_BASIC_AUTH}}
+  type: BasicAuth
+  username: "{{input.CONFLUENCE_EMAIL}}"
+  password: "{{input.CONFLUENCE_API_TOKEN}}"
 request_headers:
   - name: Accept
     from: literal

@@ -30436,8 +30436,9 @@ tables:
   - name: contents
     description: Get repository content
     guide: >
-      Requires owner, repo, and path. Most useful optional filters: ref. Keep queries repository-scoped;
-      fan out across repos client-side when you need broader coverage.
+      Requires owner, repo, and path. Select `content_text` for decoded UTF-8 file contents when GitHub returns base64
+      content; keep `content` only when you need the raw API payload. Most useful optional filters: ref. Keep queries
+      repository-scoped; fan out across repos client-side when you need broader coverage.
     filters:
       - name: owner
         required: true
@@ -30503,10 +30504,22 @@ tables:
         type: Utf8
         nullable: true
         virtual: false
+        description: Raw content returned by GitHub, usually base64 for files.
         expr:
           kind: path
           path:
             - content
+      - name: content_text
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Decoded UTF-8 file content when the GitHub content payload is base64 text.
+        expr:
+          kind: base64_decode
+          expr:
+            kind: path
+            path:
+              - content
       - name: download_url
         type: Utf8
         nullable: true
@@ -55618,11 +55631,34 @@ tables:
         type: Utf8
         nullable: true
         virtual: false
-        description: Steps in this job.
+        description: Raw step objects as JSON text. Use step_names or failed_step_names for compact projections.
         expr:
           kind: path
           path:
             - steps
+      - name: step_names
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Comma-separated workflow job step names.
+        expr:
+          kind: join_array_path
+          path:
+            - steps
+          item_path:
+            - name
+      - name: failed_step_names
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Comma-separated workflow job step names whose conclusion is failure.
+        expr:
+          kind: join_tag_values
+          path:
+            - steps
+          key: failure
+          key_field: conclusion
+          value_field: name
       - name: url
         type: Utf8
         nullable: true
@@ -64144,10 +64180,22 @@ tables:
         type: Utf8
         nullable: true
         virtual: false
+        description: Raw label objects as JSON text. Use label_names for a compact comma-separated projection.
         expr:
           kind: path
           path:
             - labels
+      - name: label_names
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Comma-separated runner label names.
+        expr:
+          kind: join_array_path
+          path:
+            - labels
+          item_path:
+            - name
       - name: name
         type: Utf8
         nullable: true
@@ -90409,8 +90457,10 @@ tables:
   - name: pulls
     description: List pull requests
     guide: >
-      Requires owner and repo. Most useful optional filters: state, head, base. Add pull_number to jump
-      from the default list call to a specific record lookup.
+      Requires owner and repo. By default this table requests state=all from GitHub so aggregates include open and closed
+      pull requests; add state when you need only open, closed, or all. Other useful optional filters are head and base. Add
+      pull_number to jump from the default list call to a specific record lookup. GitHub only populates diff-stat columns
+      such as additions, deletions, and changed_files on that per-PR lookup, so include pull_number before using them.
     filters:
       - name: owner
         required: true
@@ -90437,6 +90487,7 @@ tables:
         - name: state
           from: filter
           key: state
+          default: all
         - name: head
           from: filter
           key: head
@@ -90664,6 +90715,7 @@ tables:
         type: Int64
         nullable: true
         virtual: false
+        description: Lines added. GitHub only populates this on the per-PR lookup, so filter pull_number before using it.
         expr:
           kind: path
           path:
@@ -92268,6 +92320,7 @@ tables:
         type: Int64
         nullable: true
         virtual: false
+        description: Number of changed files. GitHub only populates this on the per-PR lookup, so filter pull_number before using it.
         expr:
           kind: path
           path:
@@ -92324,6 +92377,7 @@ tables:
         type: Int64
         nullable: true
         virtual: false
+        description: Lines deleted. GitHub only populates this on the per-PR lookup, so filter pull_number before using it.
         expr:
           kind: path
           path:
@@ -93737,10 +93791,22 @@ tables:
         type: Utf8
         nullable: true
         virtual: false
+        description: Raw label objects as JSON text. Use label_names for a compact comma-separated projection.
         expr:
           kind: path
           path:
             - labels
+      - name: label_names
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Comma-separated pull request label names.
+        expr:
+          kind: join_array_path
+          path:
+            - labels
+          item_path:
+            - name
       - name: locked
         type: Boolean
         nullable: true
@@ -94439,18 +94505,42 @@ tables:
         type: Utf8
         nullable: true
         virtual: false
+        description: Raw requested reviewer objects as JSON text. Use requested_reviewer_logins for a compact comma-separated projection.
         expr:
           kind: path
           path:
             - requested_reviewers
+      - name: requested_reviewer_logins
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Comma-separated logins for requested reviewers.
+        expr:
+          kind: join_array_path
+          path:
+            - requested_reviewers
+          item_path:
+            - login
       - name: requested_teams
         type: Utf8
         nullable: true
         virtual: false
+        description: Raw requested team objects as JSON text. Use requested_team_names for a compact comma-separated projection.
         expr:
           kind: path
           path:
             - requested_teams
+      - name: requested_team_names
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Comma-separated names for requested teams.
+        expr:
+          kind: join_array_path
+          path:
+            - requested_teams
+          item_path:
+            - name
       - name: review_comment_url
         type: Utf8
         nullable: true
@@ -94487,6 +94577,7 @@ tables:
         type: Utf8
         nullable: true
         virtual: false
+        description: Pull request state returned by GitHub. The list request defaults to state=all unless you filter state explicitly.
         expr:
           kind: path
           path:
@@ -145012,11 +145103,13 @@ tables:
   - name: repositories
     description: List public repositories
     guide: >
-      Use this table to scan public repositories or switch into org-scoped repository lists. Works
-      without WHERE filters. Use LIMIT on the public /repositories feed; add org with one of
-      secret_name, migration_id, runner_group_id, pat_request_id, pat_id, or name to hit the
-      matching org route.
+      Use this table to scan public repositories or switch into user/org-scoped repository lists.
+      Works without WHERE filters. Use LIMIT on the public /repositories feed; filter by
+      owner__login for one user's public repositories; add org with one of secret_name,
+      migration_id, runner_group_id, pat_request_id, pat_id, or name to hit the matching org route.
     filters:
+      - name: owner__login
+        required: false
       - name: secret_name
         required: false
       - name: migration_id
@@ -145035,6 +145128,10 @@ tables:
       method: GET
       path: /repositories
     requests:
+      - when_filters:
+          - owner__login
+        method: GET
+        path: /users/{{filter.owner__login}}/repos
       - when_filters:
           - secret_name
         method: GET

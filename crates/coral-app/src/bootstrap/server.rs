@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 
+use coral_api::v1::feedback_service_server::FeedbackServiceServer;
 use coral_api::v1::query_service_server::QueryServiceServer;
 use coral_api::v1::source_service_server::SourceServiceServer;
 use coral_api::{HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE};
@@ -17,17 +18,21 @@ use tonic::transport::Server;
 use super::env::AppEnvironment;
 use super::error::AppError;
 use crate::EngineExtensionsProvider;
+use crate::feedback::manager::FeedbackManager;
+use crate::feedback::service::FeedbackService;
 use crate::query::manager::QueryManager;
 use crate::query::service::QueryService;
 use crate::sources::manager::SourceManager;
 use crate::sources::service::SourceService;
 use crate::state::{AppStateLayout, ConfigStore, SecretStore};
+use crate::telemetry::TelemetryConfig;
 
 /// Server-side bootstrap configuration for the Coral server.
 #[derive(Clone)]
 pub(crate) struct ServerConfig {
     config_dir: Option<PathBuf>,
     engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+    enable_stderr_logs: bool,
 }
 
 impl Default for ServerConfig {
@@ -43,6 +48,7 @@ impl ServerConfig {
         Self {
             config_dir: None,
             engine_extensions_providers: Vec::new(),
+            enable_stderr_logs: false,
         }
     }
 
@@ -60,6 +66,12 @@ impl ServerConfig {
     ) -> Self {
         self.engine_extensions_providers
             .push(engine_extensions_provider);
+        self
+    }
+
+    #[must_use]
+    pub(crate) fn with_stderr_logs(mut self, enable_stderr_logs: bool) -> Self {
+        self.enable_stderr_logs = enable_stderr_logs;
         self
     }
 }
@@ -101,6 +113,17 @@ impl ServerBuilder {
         self
     }
 
+    #[must_use]
+    /// Enables or disables local stderr log rendering for this server.
+    ///
+    /// `MCP` stdio adapters can enable this for diagnostics while keeping
+    /// stdout reserved for protocol messages. Other command surfaces should
+    /// leave it disabled and rely on OTEL export for logs.
+    pub fn with_stderr_logs(mut self, enable_stderr_logs: bool) -> Self {
+        self.config = self.config.with_stderr_logs(enable_stderr_logs);
+        self
+    }
+
     /// Starts the Coral gRPC server on loopback TCP.
     ///
     /// Coral keeps a real local gRPC boundary here so the public client talks
@@ -119,10 +142,13 @@ impl ServerBuilder {
                 .or_else(|| env.coral_config_dir_override()),
         )?;
         layout.ensure()?;
+        let telemetry_config = TelemetryConfig::load(&layout)?;
+        crate::telemetry::init_tracing(&telemetry_config, self.config.enable_stderr_logs)?;
         let config_store = ConfigStore::new(layout.clone());
         let secret_store = SecretStore::new(layout.clone());
         let source_manager =
             SourceManager::new(config_store.clone(), secret_store.clone(), layout.clone());
+        let feedback_manager = FeedbackManager::new(layout.clone());
         let query_manager = QueryManager::new(
             config_store,
             secret_store,
@@ -130,7 +156,7 @@ impl ServerBuilder {
             layout,
             self.config.engine_extensions_providers,
         );
-        start_server(source_manager, query_manager).await
+        start_server(source_manager, query_manager, feedback_manager).await
     }
 }
 
@@ -199,9 +225,11 @@ impl Drop for RunningServer {
 async fn start_server(
     source_manager: SourceManager,
     query_manager: QueryManager,
+    feedback_manager: FeedbackManager,
 ) -> Result<RunningServer, AppError> {
     let source_service = SourceService::new(source_manager, query_manager.clone());
     let query_service = QueryService::new(query_manager);
+    let feedback_service = FeedbackService::new(feedback_manager);
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
     let endpoint_uri = format!("http://{}", listener.local_addr()?);
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
@@ -210,6 +238,7 @@ async fn start_server(
         Server::builder()
             .http2_max_header_list_size(HTTP2_MAX_HEADER_LIST_SIZE)
             .add_service(SourceServiceServer::new(source_service))
+            .add_service(FeedbackServiceServer::new(feedback_service))
             .add_service(
                 QueryServiceServer::new(query_service)
                     .max_encoding_message_size(QUERY_RESPONSE_MAX_MESSAGE_SIZE),
@@ -229,6 +258,7 @@ async fn start_server(
 
 #[cfg(test)]
 mod tests {
+    use std::net::{Ipv4Addr, TcpListener};
     use std::sync::Arc;
 
     use coral_api::v1::query_service_client::QueryServiceClient;
@@ -241,6 +271,7 @@ mod tests {
     use tonic::transport::Endpoint;
 
     use super::{ServerBuilder, start_server};
+    use crate::feedback::manager::FeedbackManager;
     use crate::query::manager::QueryManager;
     use crate::sources::manager::SourceManager;
     use crate::state::{AppStateLayout, ConfigStore, SecretStore};
@@ -259,8 +290,16 @@ mod tests {
             .add_engine_extensions_provider(Arc::new(NoopEngineExtensionsProvider));
     }
 
+    fn loopback_sockets_available() -> bool {
+        TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).is_ok()
+    }
+
     #[tokio::test]
     async fn file_tilde_sources_resolve_from_app_owned_runtime_context() {
+        if !loopback_sockets_available() {
+            return;
+        }
+
         let temp = TempDir::new().expect("temp dir");
         let fake_home = temp.path().join("fake-home");
         let config_dir = temp.path().join("coral-config");
@@ -280,6 +319,7 @@ mod tests {
             SecretStore::new(layout.clone()),
             layout.clone(),
         );
+        let feedback_manager = FeedbackManager::new(layout.clone());
         let query_manager = QueryManager::new(
             ConfigStore::new(layout.clone()),
             SecretStore::new(layout.clone()),
@@ -289,7 +329,7 @@ mod tests {
             layout,
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
-        let running = start_server(source_manager, query_manager)
+        let running = start_server(source_manager, query_manager, feedback_manager)
             .await
             .expect("start server");
         let channel = Endpoint::from_shared(running.endpoint_uri().to_string())
@@ -358,6 +398,7 @@ tables:
             SecretStore::new(layout.clone()),
             layout.clone(),
         );
+        let feedback_manager = FeedbackManager::new(layout.clone());
         let query_manager = QueryManager::new(
             ConfigStore::new(layout.clone()),
             SecretStore::new(layout.clone()),
@@ -365,7 +406,7 @@ tables:
             layout,
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
-        let running = start_server(source_manager, query_manager)
+        let running = start_server(source_manager, query_manager, feedback_manager)
             .await
             .expect("start server");
         let channel = Endpoint::from_shared(running.endpoint_uri().to_string())
@@ -446,6 +487,7 @@ tables:
             SecretStore::new(layout.clone()),
             layout.clone(),
         );
+        let feedback_manager = FeedbackManager::new(layout.clone());
         let query_manager = QueryManager::new(
             ConfigStore::new(layout.clone()),
             SecretStore::new(layout.clone()),
@@ -453,7 +495,7 @@ tables:
             layout,
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
-        let running = start_server(source_manager, query_manager)
+        let running = start_server(source_manager, query_manager, feedback_manager)
             .await
             .expect("start server");
         let channel = Endpoint::from_shared(running.endpoint_uri().to_string())

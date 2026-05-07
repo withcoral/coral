@@ -116,12 +116,31 @@ fn plain_fallback(operation: &str, code: tonic::Code) -> (String, Option<String>
 }
 
 pub(crate) fn status_to_error_data(status: &tonic::Status) -> ErrorData {
-    match status.code() {
-        tonic::Code::NotFound => ErrorData::resource_not_found(status.message().to_string(), None),
-        tonic::Code::InvalidArgument => {
-            ErrorData::invalid_params(status.message().to_string(), None)
+    match decode_status_error(status) {
+        DecodedStatusError::Structured(error) => {
+            let mut data = json!({
+                "detail": error.detail,
+                "grpc_code": status.code().to_string(),
+                "reason": error.reason,
+                "retryable": error.retryable,
+                "metadata": error.metadata,
+            });
+            if let Some(hint) = error.hint {
+                data["hint"] = Value::String(hint);
+            }
+            match status.code() {
+                tonic::Code::NotFound => ErrorData::resource_not_found(error.summary, Some(data)),
+                tonic::Code::InvalidArgument => {
+                    ErrorData::invalid_params(error.summary, Some(data))
+                }
+                _ => ErrorData::internal_error(error.summary, Some(data)),
+            }
         }
-        _ => ErrorData::internal_error(status.message().to_string(), None),
+        DecodedStatusError::Plain(message) => match status.code() {
+            tonic::Code::NotFound => ErrorData::resource_not_found(message, None),
+            tonic::Code::InvalidArgument => ErrorData::invalid_params(message, None),
+            _ => ErrorData::internal_error(message, None),
+        },
     }
 }
 
@@ -133,12 +152,13 @@ pub(crate) fn internal_status(error: &serde_json::Error) -> tonic::Status {
 mod tests {
     use std::collections::HashMap;
 
+    use rmcp::model::ErrorCode;
     use tonic::{Code, Status};
     use tonic_types::{ErrorDetail, StatusExt as _};
 
     use coral_client::CORAL_ERROR_DOMAIN;
 
-    use super::{ToolError, tool_error_from_status, tool_error_result};
+    use super::{ToolError, status_to_error_data, tool_error_from_status, tool_error_result};
 
     #[test]
     fn tool_error_result_includes_structured_error_payload() {
@@ -297,5 +317,49 @@ mod tests {
         let error = tool_error_from_status("Query", &status);
         assert!(error.retryable, "plain Unavailable should be retryable");
         assert_eq!(error.summary, "Query is unavailable");
+    }
+
+    #[test]
+    fn structured_status_to_error_data_preserves_summary_and_metadata() {
+        let status = build_coral_status(
+            "MISSING_REQUIRED_FILTER",
+            vec![
+                (
+                    "summary",
+                    "github.pulls requires `WHERE owner = <constant>`",
+                ),
+                ("detail", "missing required filter"),
+                ("hint", "Add a constant equality filter on `owner`."),
+                ("schema", "github"),
+                ("table", "pulls"),
+            ],
+            false,
+        );
+
+        let error = status_to_error_data(&status);
+
+        assert_eq!(error.code, ErrorCode::INTERNAL_ERROR);
+        assert_eq!(
+            error.message,
+            "github.pulls requires `WHERE owner = <constant>`"
+        );
+        let data = error.data.expect("structured data");
+        assert_eq!(data["detail"], "missing required filter");
+        assert_eq!(data["hint"], "Add a constant equality filter on `owner`.");
+        assert_eq!(data["reason"], "MISSING_REQUIRED_FILTER");
+        assert_eq!(data["retryable"], false);
+        assert_eq!(data["metadata"]["schema"], "github");
+        assert_eq!(data["metadata"]["table"], "pulls");
+    }
+
+    #[test]
+    fn plain_status_to_error_data_keeps_legacy_message() {
+        let status = Status::new(Code::NotFound, "resource not found: github.pulls");
+
+        let error = status_to_error_data(&status);
+
+        assert_eq!(error.code, ErrorCode::RESOURCE_NOT_FOUND);
+        assert_eq!(error.message, "resource not found: github.pulls");
+        assert!(error.data.is_none());
     }
 }

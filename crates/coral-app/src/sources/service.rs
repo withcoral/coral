@@ -14,10 +14,13 @@ use tonic::{Request, Response, Status};
 use crate::bootstrap::app_status;
 use crate::query::manager::QueryManager;
 use crate::sources::SourceName;
-use crate::sources::manager::SourceManager;
+use crate::sources::manager::{
+    CreateBundledSourceCommand, ImportSourceCommand, SourceBinding, SourceBindings, SourceManager,
+};
 use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
 use crate::transport::{
-    query_status, validate_source_response_to_proto, workspace_name_from_proto, workspace_to_proto,
+    grpc_span, instrument_grpc, query_status, validate_source_response_to_proto,
+    workspace_name_from_proto, workspace_to_proto,
 };
 use crate::workspaces::WorkspaceName;
 
@@ -42,131 +45,198 @@ impl SourceServiceApi for SourceService {
         &self,
         request: Request<DiscoverSourcesRequest>,
     ) -> Result<Response<DiscoverSourcesResponse>, Status> {
-        let request = request.into_inner();
-        let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-        let sources = self
-            .sources
-            .discover_sources(&workspace_name)
-            .map_err(app_status)?
-            .into_iter()
-            .map(candidate_source_to_proto)
-            .collect();
-        Ok(Response::new(DiscoverSourcesResponse { sources }))
+        let span = grpc_span(request.metadata(), "discover_sources");
+        let sources = self.sources.clone();
+        instrument_grpc(span, async move {
+            let request = request.into_inner();
+            let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            let sources = sources
+                .discover_sources(&workspace_name)
+                .map_err(app_status)?
+                .into_iter()
+                .map(candidate_source_to_proto)
+                .collect();
+            Ok(Response::new(DiscoverSourcesResponse { sources }))
+        })
+        .await
     }
 
     async fn list_sources(
         &self,
         request: Request<ListSourcesRequest>,
     ) -> Result<Response<ListSourcesResponse>, Status> {
-        let request = request.into_inner();
-        let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-        let sources: Vec<_> = self
-            .sources
-            .list_workspace_sources(&workspace_name)
-            .map_err(app_status)?
-            .into_iter()
-            .map(|source| installed_source_to_proto(&workspace_name, source))
-            .collect();
-        Ok(Response::new(ListSourcesResponse { sources }))
+        let span = grpc_span(request.metadata(), "list_sources");
+        let sources = self.sources.clone();
+        instrument_grpc(span, async move {
+            let request = request.into_inner();
+            let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            let sources: Vec<_> = sources
+                .list_workspace_sources(&workspace_name)
+                .map_err(app_status)?
+                .into_iter()
+                .map(|source| installed_source_to_proto(&workspace_name, source))
+                .collect();
+            Ok(Response::new(ListSourcesResponse { sources }))
+        })
+        .await
     }
 
     async fn get_source(
         &self,
         request: Request<GetSourceRequest>,
     ) -> Result<Response<Source>, Status> {
-        let request = request.into_inner();
-        let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-        let source_name = SourceName::parse(&request.name).map_err(app_status)?;
-        let source = self
-            .sources
-            .get_source(&workspace_name, &source_name)
-            .map_err(app_status)?;
-        Ok(Response::new(installed_source_to_proto(
-            &workspace_name,
-            source,
-        )))
+        let span = grpc_span(request.metadata(), "get_source");
+        let sources = self.sources.clone();
+        instrument_grpc(span, async move {
+            let request = request.into_inner();
+            let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            let source_name = SourceName::parse(&request.name).map_err(app_status)?;
+            let source = sources
+                .get_source(&workspace_name, &source_name)
+                .map_err(app_status)?;
+            Ok(Response::new(installed_source_to_proto(
+                &workspace_name,
+                source,
+            )))
+        })
+        .await
     }
 
     async fn get_source_info(
         &self,
         request: Request<GetSourceInfoRequest>,
     ) -> Result<Response<SourceInfo>, Status> {
-        let request = request.into_inner();
-        let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-        let source_name = SourceName::parse(&request.name).map_err(app_status)?;
-        let source = self
-            .sources
-            .get_source_info(&workspace_name, &source_name)
-            .map_err(app_status)?;
-        Ok(Response::new(candidate_source_to_proto(source)))
+        let span = grpc_span(request.metadata(), "get_source_info");
+        let sources = self.sources.clone();
+        instrument_grpc(span, async move {
+            let request = request.into_inner();
+            let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            let source_name = SourceName::parse(&request.name).map_err(app_status)?;
+            let source = sources
+                .get_source_info(&workspace_name, &source_name)
+                .map_err(app_status)?;
+            Ok(Response::new(candidate_source_to_proto(source)))
+        })
+        .await
     }
 
     async fn create_bundled_source(
         &self,
         request: Request<CreateBundledSourceRequest>,
     ) -> Result<Response<Source>, Status> {
-        let request = request.into_inner();
-        let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-        let bundled_name = SourceName::parse(&request.name).map_err(app_status)?;
-        let installed = self
-            .sources
-            .create_bundled_source(&workspace_name, &bundled_name, &request)
-            .map_err(app_status)?;
-        Ok(Response::new(installed_source_to_proto(
-            &workspace_name,
-            installed,
-        )))
+        let span = grpc_span(request.metadata(), "create_bundled_source");
+        let sources = self.sources.clone();
+        instrument_grpc(span, async move {
+            let request = request.into_inner();
+            let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            let bundled_name = SourceName::parse(&request.name).map_err(app_status)?;
+            let command = CreateBundledSourceCommand {
+                name: bundled_name,
+                bindings: source_bindings_from_proto(request.variables, request.secrets),
+            };
+            let installed = sources
+                .create_bundled_source(&workspace_name, &command)
+                .map_err(app_status)?;
+            Ok(Response::new(installed_source_to_proto(
+                &workspace_name,
+                installed,
+            )))
+        })
+        .await
     }
 
     async fn import_source(
         &self,
         request: Request<ImportSourceRequest>,
     ) -> Result<Response<Source>, Status> {
-        let request = request.into_inner();
-        let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-        let installed = self
-            .sources
-            .import_source(&workspace_name, &request)
-            .map_err(app_status)?;
-        Ok(Response::new(installed_source_to_proto(
-            &workspace_name,
-            installed,
-        )))
+        let span = grpc_span(request.metadata(), "import_source");
+        let sources = self.sources.clone();
+        instrument_grpc(span, async move {
+            let request = request.into_inner();
+            let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            let command = ImportSourceCommand {
+                manifest_yaml: request.manifest_yaml,
+                bindings: source_bindings_from_proto(request.variables, request.secrets),
+            };
+            let installed = sources
+                .import_source(&workspace_name, &command)
+                .map_err(app_status)?;
+            Ok(Response::new(installed_source_to_proto(
+                &workspace_name,
+                installed,
+            )))
+        })
+        .await
     }
 
     async fn delete_source(
         &self,
         request: Request<DeleteSourceRequest>,
     ) -> Result<Response<()>, Status> {
-        let request = request.into_inner();
-        let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-        let source_name = SourceName::parse(&request.name).map_err(app_status)?;
-        let _installed = self
-            .sources
-            .delete_source(&workspace_name, &source_name)
-            .map_err(app_status)?;
-        Ok(Response::new(()))
+        let span = grpc_span(request.metadata(), "delete_source");
+        let sources = self.sources.clone();
+        instrument_grpc(span, async move {
+            let request = request.into_inner();
+            let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            let source_name = SourceName::parse(&request.name).map_err(app_status)?;
+            sources
+                .delete_source(&workspace_name, &source_name)
+                .map_err(app_status)?;
+            Ok(Response::new(()))
+        })
+        .await
     }
 
     async fn validate_source(
         &self,
         request: Request<ValidateSourceRequest>,
     ) -> Result<Response<ValidateSourceResponse>, Status> {
-        let request = request.into_inner();
-        let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-        let source_name = SourceName::parse(&request.name).map_err(app_status)?;
-        let result = self
-            .queries
-            .validate_source(&workspace_name, &source_name)
-            .await
-            .map_err(query_status)?;
-        let crate::query::manager::ValidatedSource { source, report } = result;
-        let source = installed_source_to_proto(&workspace_name, source);
-        Ok(Response::new(validate_source_response_to_proto(
-            source,
-            &workspace_name,
-            report,
-        )))
+        let span = grpc_span(request.metadata(), "validate_source");
+        let queries = self.queries.clone();
+        instrument_grpc(span, async move {
+            let request = request.into_inner();
+            let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            let source_name = SourceName::parse(&request.name).map_err(app_status)?;
+            let result = queries
+                .validate_source(&workspace_name, &source_name)
+                .await
+                .map_err(query_status)?;
+            let crate::query::manager::ValidatedSource { source, report } = result;
+            let source = installed_source_to_proto(&workspace_name, source);
+            Ok(Response::new(validate_source_response_to_proto(
+                source,
+                &workspace_name,
+                report,
+            )))
+        })
+        .await
+    }
+}
+
+fn source_bindings_from_proto(
+    variables: Vec<SourceVariable>,
+    secrets: Vec<SourceSecret>,
+) -> SourceBindings {
+    SourceBindings {
+        variables: variables
+            .into_iter()
+            .map(source_variable_from_proto)
+            .collect(),
+        secrets: secrets.into_iter().map(source_secret_from_proto).collect(),
+    }
+}
+
+fn source_variable_from_proto(variable: SourceVariable) -> SourceBinding {
+    SourceBinding {
+        key: variable.key,
+        value: variable.value,
+    }
+}
+
+fn source_secret_from_proto(secret: SourceSecret) -> SourceBinding {
+    SourceBinding {
+        key: secret.key,
+        value: secret.value,
     }
 }
 

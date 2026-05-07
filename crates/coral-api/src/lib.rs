@@ -56,3 +56,15 @@ pub const QUERY_RESPONSE_MAX_MESSAGE_SIZE: usize = 64 * 1024 * 1024;
 /// HPACK-encoded request headers on the way in. 128 KiB gives plenty of
 /// headroom in both directions.
 pub const HTTP2_MAX_HEADER_LIST_SIZE: u32 = 128 * 1024;
+
+/// Coral error domain used in `google.rpc.ErrorInfo`.
+pub const CORAL_ERROR_DOMAIN: &str = "coral.withcoral.com";
+
+/// Reserved `ErrorInfo.metadata` key for a one-line error summary.
+pub const CORAL_ERROR_METADATA_SUMMARY: &str = "summary";
+
+/// Reserved `ErrorInfo.metadata` key for a longer error explanation.
+pub const CORAL_ERROR_METADATA_DETAIL: &str = "detail";
+
+/// Reserved `ErrorInfo.metadata` key for actionable recovery guidance.
+pub const CORAL_ERROR_METADATA_HINT: &str = "hint";

@@ -3,6 +3,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use chrono::DateTime;
 use datafusion::arrow::array::{
     Array, BooleanArray, Float64Array, Int64Array, RecordBatch, StringArray,
     TimestampMicrosecondArray,
@@ -106,15 +109,12 @@ fn eval_expr(expr: &ExprSpec, row: &Value, filters: &HashMap<String, String>) ->
         ExprSpec::FromFilter { key } => filters.get(key).map(|v| Value::String(v.clone())),
         ExprSpec::Literal { value } => Some(value.clone()),
         ExprSpec::Null => None,
-        ExprSpec::JoinArray { path, separator } => {
-            let values = get_path_value(row, path)?.as_array()?;
-            let joined = values
-                .iter()
-                .filter_map(value_to_string_for_join)
-                .collect::<Vec<_>>()
-                .join(separator);
-            Some(Value::String(joined))
-        }
+        ExprSpec::JoinArray { path, separator } => eval_join_array(row, path, separator),
+        ExprSpec::JoinArrayPath {
+            path,
+            item_path,
+            separator,
+        } => eval_join_array_path(row, path, item_path, separator),
         ExprSpec::TagValue {
             path,
             key,
@@ -185,6 +185,7 @@ fn eval_expr(expr: &ExprSpec, row: &Value, filters: &HashMap<String, String>) ->
         ExprSpec::FormatTimestamp { expr, input } => {
             eval_format_timestamp(expr, input, row, filters)
         }
+        ExprSpec::Base64Decode { expr } => eval_base64_decode(expr, row, filters),
         ExprSpec::Replace { expr, from, to } => {
             let raw = to_utf8(eval_expr(expr, row, filters))?;
             Some(Value::String(raw.replace(from, to)))
@@ -203,17 +204,29 @@ fn eval_format_timestamp(
 ) -> Option<Value> {
     let value = eval_expr(expr, row, filters)?;
     let micros = match &value {
-        Value::String(s) => parse_epoch_micros(s, input),
+        Value::String(s) => parse_timestamp_micros(s, input),
         Value::Number(n) => {
             // serde_json stores numbers as f64 internally, so precision may
             // already be reduced. Try the string representation first to
             // recover as much precision as possible.
             let s = n.to_string();
-            parse_epoch_micros(&s, input)
+            parse_timestamp_micros(&s, input)
         }
         _ => None,
     }?;
     Some(Value::Number(micros.into()))
+}
+
+fn parse_timestamp_micros(s: &str, input: &TimestampInput) -> Option<i64> {
+    match input {
+        TimestampInput::Seconds | TimestampInput::Milliseconds => parse_epoch_micros(s, input),
+        TimestampInput::Iso8601 => parse_iso8601_micros(s),
+    }
+}
+
+/// Parse an ISO 8601 / RFC 3339 timestamp string into epoch microseconds.
+fn parse_iso8601_micros(s: &str) -> Option<i64> {
+    Some(DateTime::parse_from_rfc3339(s).ok()?.timestamp_micros())
 }
 
 /// Parse a timestamp string into epoch microseconds without intermediate
@@ -224,14 +237,31 @@ fn parse_epoch_micros(s: &str, input: &TimestampInput) -> Option<i64> {
     let frac_width: usize = match input {
         TimestampInput::Seconds => 6,
         TimestampInput::Milliseconds => 3,
+        TimestampInput::Iso8601 => return None,
     };
     let padded = format!("{frac_str:0<frac_width$}");
     let frac: i64 = padded[..frac_width].parse().ok()?;
     let multiplier: i64 = match input {
         TimestampInput::Seconds => 1_000_000,
         TimestampInput::Milliseconds => 1_000,
+        TimestampInput::Iso8601 => return None,
     };
     Some(whole * multiplier + frac)
+}
+
+fn eval_base64_decode(
+    expr: &ExprSpec,
+    row: &Value,
+    filters: &HashMap<String, String>,
+) -> Option<Value> {
+    let raw = to_utf8(eval_expr(expr, row, filters))?;
+    let compact = raw
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .collect::<String>();
+    let decoded = BASE64_STANDARD.decode(compact).ok()?;
+    let text = String::from_utf8(decoded).ok()?;
+    Some(Value::String(text))
 }
 
 fn eval_template(
@@ -279,6 +309,32 @@ fn eval_template(
     }
 
     Some(Value::String(result))
+}
+
+fn eval_join_array(row: &Value, path: &[String], separator: &str) -> Option<Value> {
+    let values = get_path_value(row, path)?.as_array()?;
+    let joined = values
+        .iter()
+        .filter_map(value_to_string_for_join)
+        .collect::<Vec<_>>()
+        .join(separator);
+    Some(Value::String(joined))
+}
+
+fn eval_join_array_path(
+    row: &Value,
+    path: &[String],
+    item_path: &[String],
+    separator: &str,
+) -> Option<Value> {
+    let values = get_path_value(row, path)?.as_array()?;
+    let joined = values
+        .iter()
+        .filter_map(|item| get_path_value(item, item_path))
+        .filter_map(value_to_string_for_join)
+        .collect::<Vec<_>>()
+        .join(separator);
+    Some(Value::String(joined))
 }
 
 fn value_to_string_for_join(value: &Value) -> Option<String> {
@@ -358,11 +414,13 @@ fn to_bool(value: Option<Value>) -> Option<bool> {
 
 #[cfg(test)]
 mod tests {
-    use super::{convert_items, eval_template};
+    use super::{convert_items, eval_template, parse_iso8601_micros};
     use crate::backends::schema_from_columns;
     use coral_spec::backends::http::HttpTableSpec;
-    use coral_spec::{ExprSpec, ParsedTemplate, RequestSpec, parse_source_manifest_value};
-    use datafusion::arrow::array::{Array, BooleanArray, StringArray};
+    use coral_spec::{
+        ExprSpec, ParsedTemplate, RequestSpec, TimestampInput, parse_source_manifest_value,
+    };
+    use datafusion::arrow::array::{Array, BooleanArray, StringArray, TimestampMicrosecondArray};
     use serde_json::{Value, json};
     use std::collections::HashMap;
 
@@ -420,6 +478,10 @@ mod tests {
                 "from": from,
                 "to": to,
             }),
+            ExprSpec::Base64Decode { expr } => json!({
+                "kind": "base64_decode",
+                "expr": expr_json(expr),
+            }),
             ExprSpec::JoinTagValues {
                 path,
                 key,
@@ -434,8 +496,62 @@ mod tests {
                 "value_field": value_field,
                 "separator": separator,
             }),
+            ExprSpec::FormatTimestamp { expr, input } => json!({
+                "kind": "format_timestamp",
+                "expr": expr_json(expr),
+                "input": match input {
+                    TimestampInput::Seconds => "seconds",
+                    TimestampInput::Milliseconds => "milliseconds",
+                    TimestampInput::Iso8601 => "iso8601",
+                },
+            }),
+            ExprSpec::JoinArrayPath {
+                path,
+                item_path,
+                separator,
+            } => json!({
+                "kind": "join_array_path",
+                "path": path,
+                "item_path": item_path,
+                "separator": separator,
+            }),
             other => panic!("unsupported test expr: {other:?}"),
         }
+    }
+
+    #[test]
+    fn format_timestamp_parses_iso8601_strings() {
+        let table = table_with_expr(
+            "created_time",
+            "Timestamp",
+            &ExprSpec::FormatTimestamp {
+                input: TimestampInput::Iso8601,
+                expr: Box::new(ExprSpec::Path {
+                    path: vec!["created_time".into()],
+                }),
+            },
+        );
+        let schema = schema_from_columns(table.columns(), "test", table.name()).unwrap();
+        let items = vec![serde_json::json!({
+            "created_time": "2026-03-11T12:34:56.123456Z"
+        })];
+
+        let batch = convert_items(table.columns(), schema, &HashMap::new(), &items).unwrap();
+        let col = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<TimestampMicrosecondArray>()
+            .unwrap();
+
+        assert_eq!(col.value(0), 1_773_232_496_123_456);
+    }
+
+    #[test]
+    fn parse_iso8601_micros_returns_epoch_microseconds() {
+        assert_eq!(
+            parse_iso8601_micros("2026-03-11T12:34:56.123456Z"),
+            Some(1_773_232_496_123_456)
+        );
     }
 
     #[test]
@@ -554,6 +670,43 @@ mod tests {
     }
 
     #[test]
+    fn join_array_path_concatenates_nested_scalar_values() {
+        let table = table_with_expr(
+            "label_names",
+            "Utf8",
+            &ExprSpec::JoinArrayPath {
+                path: vec!["labels".into(), "nodes".into()],
+                item_path: vec!["name".into()],
+                separator: ",".into(),
+            },
+        );
+        let schema = schema_from_columns(table.columns(), "test", table.name()).unwrap();
+        let items = vec![
+            serde_json::json!({
+                "labels": {
+                    "nodes": [
+                        {"name": "bug"},
+                        {"name": "customer"},
+                        {"color": "#fff"}
+                    ]
+                }
+            }),
+            serde_json::json!({"labels": {"nodes": []}}),
+            serde_json::json!({"labels": {"nodes": [{"name": null}]}}),
+        ];
+        let batch = convert_items(table.columns(), schema, &HashMap::new(), &items).unwrap();
+        assert_eq!(batch.num_rows(), 3);
+        let col = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(col.value(0), "bug,customer");
+        assert_eq!(col.value(1), "");
+        assert_eq!(col.value(2), "");
+    }
+
+    #[test]
     fn boolean_columns_preserve_nulls_and_false_values() {
         let table = table_with_expr(
             "enabled",
@@ -606,6 +759,32 @@ mod tests {
             .downcast_ref::<StringArray>()
             .unwrap();
         assert_eq!(col.value(0), "hello-world");
+    }
+
+    #[test]
+    fn base64_decode_expr_decodes_wrapped_utf8_text() {
+        let table = table_with_expr(
+            "content_text",
+            "Utf8",
+            &ExprSpec::Base64Decode {
+                expr: Box::new(ExprSpec::Path {
+                    path: vec!["content".into()],
+                }),
+            },
+        );
+        let schema = schema_from_columns(table.columns(), "test", table.name()).unwrap();
+        let items = vec![
+            serde_json::json!({"content": "aGVs\nbG8="}),
+            serde_json::json!({"content": "not base64"}),
+        ];
+        let batch = convert_items(table.columns(), schema, &HashMap::new(), &items).unwrap();
+        let col = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(col.value(0), "hello");
+        assert!(col.is_null(1));
     }
 
     #[test]

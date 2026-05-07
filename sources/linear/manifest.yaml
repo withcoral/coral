@@ -280,6 +280,7 @@ tables:
                 nodes {
                   id
                   name
+                  description
                   slugId
                   state
                   progress
@@ -342,6 +343,14 @@ tables:
           kind: path
           path:
             - name
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Project description
+        expr:
+          kind: path
+          path:
+            - description
       - name: slug_id
         type: Utf8
         nullable: true
@@ -374,6 +383,22 @@ tables:
           kind: path
           path:
             - targetDate
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Creation timestamp
+        expr:
+          kind: path
+          path:
+            - createdAt
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: Updated timestamp
+        expr:
+          kind: path
+          path:
+            - updatedAt
       - name: team_id
         type: Utf8
         nullable: true
@@ -797,9 +822,9 @@ tables:
   - name: project_updates
     description: Updates for a specific Linear project
     guide: |
-      Requires `project_id` from `linear.projects`. The `body` field
-      contains the written update; timestamps make this useful for progress
-      reporting.
+      Requires `project_id` from `linear.projects`. Use `health`, `url`,
+      author fields, and timestamps for project status reporting. Join
+      `project_id` back to `linear.projects` when you need project names.
     request:
       method: POST
       path: /graphql
@@ -815,9 +840,18 @@ tables:
                 projectUpdates(first: $first, after: $after) {
                   nodes {
                     id
+                    slugId
                     body
+                    health
+                    url
                     createdAt
                     updatedAt
+                    user {
+                      id
+                      name
+                      displayName
+                      email
+                    }
                   }
                   pageInfo {
                     endCursor
@@ -882,6 +916,66 @@ tables:
           kind: path
           path:
             - body
+      - name: slug_id
+        type: Utf8
+        nullable: true
+        description: Project update short slug identifier
+        expr:
+          kind: path
+          path:
+            - slugId
+      - name: health
+        type: Utf8
+        nullable: true
+        description: "Project update health: onTrack, atRisk, or offTrack"
+        expr:
+          kind: path
+          path:
+            - health
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Project update URL
+        expr:
+          kind: path
+          path:
+            - url
+      - name: author_id
+        type: Utf8
+        nullable: true
+        description: Project update author user ID
+        expr:
+          kind: path
+          path:
+            - user
+            - id
+      - name: author_name
+        type: Utf8
+        nullable: true
+        description: Project update author name
+        expr:
+          kind: path
+          path:
+            - user
+            - name
+      - name: author_display_name
+        type: Utf8
+        nullable: true
+        description: Project update author display name
+        expr:
+          kind: path
+          path:
+            - user
+            - displayName
+      - name: author_email
+        type: Utf8
+        nullable: true
+        description: Project update author email
+        expr:
+          kind: path
+          path:
+            - user
+            - email
       - name: created_at
         type: Utf8
         nullable: true
@@ -1002,8 +1096,13 @@ tables:
     description: Issues in the Linear workspace
     guide: |
       Optional project filters are useful for narrowing large workspaces.
-      Join `team_id`, `project_id`, and assignee columns back to `teams`,
-      `projects`, and `users`.
+      Join `team_id`, `project_id`, `creator_id`, and assignee columns back
+      to `teams`, `projects`, and `users`. Common reporting recipes include
+      backlog by team (`SELECT team_key, state_name, COUNT(*) FROM
+      linear.issues GROUP BY team_key, state_name`), project completion
+      rollups (`GROUP BY project_name` with `completed_at IS NOT NULL`), and
+      readiness checks with `parent_identifier`, `state_type`, `due_date`,
+      and SLA timestamp columns.
     filters:
       - name: project_id
       - name: project_milestone_id
@@ -1025,10 +1124,20 @@ tables:
                   title
                   description
                   priority
+                  priorityLabel
                   estimate
                   createdAt
                   updatedAt
+                  startedAt
                   completedAt
+                  canceledAt
+                  dueDate
+                  branchName
+                  slaStartedAt
+                  slaBreachesAt
+                  slaHighRiskAt
+                  slaMediumRiskAt
+                  slaType
                   url
                   team {
                     id
@@ -1037,18 +1146,36 @@ tables:
                   state {
                     id
                     name
+                    type
                   }
                   assignee {
                     id
                     name
                     email
                   }
+                  creator {
+                    id
+                    name
+                    displayName
+                    email
+                  }
                   project {
                     id
+                    name
+                    slugId
+                  }
+                  parent {
+                    id
+                    identifier
                   }
                   projectMilestone {
                     id
                     name
+                  }
+                  labels {
+                    nodes {
+                      name
+                    }
                   }
                 }
                 pageInfo {
@@ -1147,6 +1274,14 @@ tables:
           kind: path
           path:
             - priority
+      - name: priority_label
+        type: Utf8
+        nullable: true
+        description: Issue priority label
+        expr:
+          kind: path
+          path:
+            - priorityLabel
       - name: estimate
         type: Int64
         nullable: true
@@ -1191,6 +1326,15 @@ tables:
           path:
             - state
             - name
+      - name: state_type
+        type: Utf8
+        nullable: true
+        description: Workflow state type
+        expr:
+          kind: path
+          path:
+            - state
+            - type
       - name: assignee_id
         type: Utf8
         nullable: true
@@ -1218,6 +1362,42 @@ tables:
           path:
             - assignee
             - email
+      - name: creator_id
+        type: Utf8
+        nullable: true
+        description: Creator user ID
+        expr:
+          kind: path
+          path:
+            - creator
+            - id
+      - name: creator_name
+        type: Utf8
+        nullable: true
+        description: Creator name
+        expr:
+          kind: path
+          path:
+            - creator
+            - name
+      - name: creator_display_name
+        type: Utf8
+        nullable: true
+        description: Creator display name
+        expr:
+          kind: path
+          path:
+            - creator
+            - displayName
+      - name: creator_email
+        type: Utf8
+        nullable: true
+        description: Creator email
+        expr:
+          kind: path
+          path:
+            - creator
+            - email
       - name: created_at
         type: Utf8
         nullable: true
@@ -1243,6 +1423,24 @@ tables:
           path:
             - project
             - id
+      - name: parent_id
+        type: Utf8
+        nullable: true
+        description: Parent issue ID
+        expr:
+          kind: path
+          path:
+            - parent
+            - id
+      - name: parent_identifier
+        type: Utf8
+        nullable: true
+        description: Parent issue identifier
+        expr:
+          kind: path
+          path:
+            - parent
+            - identifier
       - name: project_milestone_id
         type: Utf8
         nullable: true
@@ -1269,6 +1467,115 @@ tables:
           kind: path
           path:
             - completedAt
+      - name: started_at
+        type: Utf8
+        nullable: true
+        description: Start timestamp
+        expr:
+          kind: path
+          path:
+            - startedAt
+      - name: canceled_at
+        type: Utf8
+        nullable: true
+        description: Cancellation timestamp
+        expr:
+          kind: path
+          path:
+            - canceledAt
+      - name: due_date
+        type: Utf8
+        nullable: true
+        description: Due date
+        expr:
+          kind: path
+          path:
+            - dueDate
+      - name: branch_name
+        type: Utf8
+        nullable: true
+        description: Git branch name associated with the issue
+        expr:
+          kind: path
+          path:
+            - branchName
+      - name: sla_started_at
+        type: Utf8
+        nullable: true
+        description: SLA start timestamp
+        expr:
+          kind: path
+          path:
+            - slaStartedAt
+      - name: sla_breaches_at
+        type: Utf8
+        nullable: true
+        description: SLA breach timestamp
+        expr:
+          kind: path
+          path:
+            - slaBreachesAt
+      - name: sla_high_risk_at
+        type: Utf8
+        nullable: true
+        description: SLA high-risk timestamp
+        expr:
+          kind: path
+          path:
+            - slaHighRiskAt
+      - name: sla_medium_risk_at
+        type: Utf8
+        nullable: true
+        description: SLA medium-risk timestamp
+        expr:
+          kind: path
+          path:
+            - slaMediumRiskAt
+      - name: sla_type
+        type: Utf8
+        nullable: true
+        description: SLA type
+        expr:
+          kind: path
+          path:
+            - slaType
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Issue URL
+        expr:
+          kind: path
+          path:
+            - url
+      - name: project_name
+        type: Utf8
+        nullable: true
+        description: Project name
+        expr:
+          kind: path
+          path:
+            - project
+            - name
+      - name: project_slug_id
+        type: Utf8
+        nullable: true
+        description: Project short slug identifier
+        expr:
+          kind: path
+          path:
+            - project
+            - slugId
+      - name: label_names
+        type: Utf8
+        nullable: true
+        description: Comma-separated issue label names
+        expr:
+          kind: join_array_path
+          path:
+            - labels
+            - nodes
+          item_path:
+            - name
   - name: issue_comments
     description: Comments for a specific Linear issue
     guide: |
@@ -1292,6 +1599,12 @@ tables:
                     body
                     createdAt
                     updatedAt
+                    user {
+                      id
+                      name
+                      displayName
+                      email
+                    }
                   }
                   pageInfo {
                     endCursor
@@ -1356,6 +1669,42 @@ tables:
           kind: path
           path:
             - body
+      - name: author_id
+        type: Utf8
+        nullable: true
+        description: Comment author user ID
+        expr:
+          kind: path
+          path:
+            - user
+            - id
+      - name: author_name
+        type: Utf8
+        nullable: true
+        description: Comment author name
+        expr:
+          kind: path
+          path:
+            - user
+            - name
+      - name: author_display_name
+        type: Utf8
+        nullable: true
+        description: Comment author display name
+        expr:
+          kind: path
+          path:
+            - user
+            - displayName
+      - name: author_email
+        type: Utf8
+        nullable: true
+        description: Comment author email
+        expr:
+          kind: path
+          path:
+            - user
+            - email
       - name: created_at
         type: Utf8
         nullable: true
@@ -1374,6 +1723,172 @@ tables:
             - updatedAt
     filters:
       - name: issue_id
+        required: true
+  - name: issue_comments_by_identifier
+    description: Comments for a specific Linear issue identifier
+    guide: |
+      Requires a human issue identifier such as `SOURCE-496`. Use this table
+      when you have an issue key from Linear UI, Slack, or another tool and
+      need the discussion trail without first looking up the internal issue
+      UUID.
+    request:
+      method: POST
+      path: /graphql
+      query: []
+      body:
+        - path:
+            - query
+          from: literal
+          value: |
+            query IssueCommentsByIdentifier($teamKey: String!, $issueNumber: Float!, $first: Int!, $after: String) {
+              issues(filter: { team: { key: { eq: $teamKey } }, number: { eq: $issueNumber } }, first: 1) {
+                nodes {
+                  id
+                  identifier
+                  comments(first: $first, after: $after) {
+                    nodes {
+                      id
+                      body
+                      createdAt
+                      updatedAt
+                      user {
+                        id
+                        name
+                        displayName
+                        email
+                      }
+                    }
+                    pageInfo {
+                      endCursor
+                    }
+                  }
+                }
+              }
+            }
+        - path:
+            - variables
+            - teamKey
+          from: filter_split
+          key: issue_identifier
+          separator: "-"
+          part: 0
+        - path:
+            - variables
+            - issueNumber
+          from: filter_split_int
+          key: issue_identifier
+          separator: "-"
+          part: 1
+        - path:
+            - variables
+            - first
+          from: literal
+          value: 100
+    response:
+      rows_path:
+        - data
+        - issues
+        - nodes
+        - "0"
+        - comments
+        - nodes
+    pagination:
+      mode: cursor_body
+      cursor_body_path:
+        - variables
+        - after
+      response_cursor_path:
+        - data
+        - issues
+        - nodes
+        - "0"
+        - comments
+        - pageInfo
+        - endCursor
+      page_size:
+        default: 100
+        max: 250
+        body_path:
+          - variables
+          - first
+    columns:
+      - name: issue_identifier
+        type: Utf8
+        nullable: false
+        description: Issue identifier filter, for example SOURCE-496
+        expr:
+          kind: from_filter
+          key: issue_identifier
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Comment ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: body
+        type: Utf8
+        nullable: true
+        description: Comment body
+        expr:
+          kind: path
+          path:
+            - body
+      - name: author_id
+        type: Utf8
+        nullable: true
+        description: Comment author user ID
+        expr:
+          kind: path
+          path:
+            - user
+            - id
+      - name: author_name
+        type: Utf8
+        nullable: true
+        description: Comment author name
+        expr:
+          kind: path
+          path:
+            - user
+            - name
+      - name: author_display_name
+        type: Utf8
+        nullable: true
+        description: Comment author display name
+        expr:
+          kind: path
+          path:
+            - user
+            - displayName
+      - name: author_email
+        type: Utf8
+        nullable: true
+        description: Comment author email
+        expr:
+          kind: path
+          path:
+            - user
+            - email
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Creation timestamp
+        expr:
+          kind: path
+          path:
+            - createdAt
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: Updated timestamp
+        expr:
+          kind: path
+          path:
+            - updatedAt
+    filters:
+      - name: issue_identifier
         required: true
   - name: team_issues
     description: Issues for a specific Linear team

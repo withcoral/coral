@@ -17,6 +17,8 @@ coral sql "<SQL>"
 | ---------- | ----------------- | ------- | ------------- |
 | `--format` | `table` \| `json` | `table` | Output format |
 
+JSON output is an array of row objects. Selected nullable columns are included with explicit `null` values when the row value is null.
+
 ## `coral source`
 
 Manage configured sources, either the bundled ones, or your custom source specs.
@@ -127,9 +129,9 @@ This server exposes:
 | Type     | Name             | Description                      |
 | -------- | ---------------- | -------------------------------- |
 | Tool     | `sql`            | Run a SQL query                  |
-| Tool     | `list_tables`    | List all available tables        |
+| Tool     | `list_tables`    | List available tables by page    |
 | Resource | `coral://guide`  | Usage guide for agents           |
-| Resource | `coral://tables` | Schema for all installed sources |
+| Resource | `coral://tables` | Table summaries for all sources  |
 
 ## `coral completion <SHELL>`
 

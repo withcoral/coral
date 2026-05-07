@@ -227,6 +227,7 @@ struct CatalogColumn {
     table_name: String,
     column_name: String,
     data_type: String,
+    is_nullable: bool,
     is_virtual: bool,
     is_required_filter: bool,
     description: String,
@@ -244,6 +245,7 @@ fn build_columns_table(active_sources: &[RegisteredSource]) -> Result<MemTable> 
         Field::new("ordinal_position", DataType::Int32, false),
         Field::new("column_name", DataType::Utf8, false),
         Field::new("data_type", DataType::Utf8, false),
+        Field::new("is_nullable", DataType::Boolean, false),
         Field::new("is_virtual", DataType::Boolean, false),
         Field::new("is_required_filter", DataType::Boolean, false),
         Field::new("description", DataType::Utf8, false),
@@ -262,6 +264,7 @@ fn build_columns_table(active_sources: &[RegisteredSource]) -> Result<MemTable> 
                         table_name: table.table_name.clone(),
                         column_name: column.name.clone(),
                         data_type: column.data_type.clone(),
+                        is_nullable: column.nullable,
                         is_virtual: column.is_virtual,
                         is_required_filter: column.is_required_filter,
                         description: column.description.clone(),
@@ -306,6 +309,11 @@ fn build_columns_table(active_sources: &[RegisteredSource]) -> Result<MemTable> 
                 rows.iter()
                     .map(|row| Some(row.data_type.as_str()))
                     .collect::<StringArray>(),
+            ),
+            Arc::new(
+                rows.iter()
+                    .map(|row| Some(row.is_nullable))
+                    .collect::<BooleanArray>(),
             ),
             Arc::new(
                 rows.iter()

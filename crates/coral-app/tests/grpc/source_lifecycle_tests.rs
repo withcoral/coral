@@ -3,8 +3,8 @@ use std::fs;
 use coral_api::v1::{
     CreateBundledSourceRequest, DeleteSourceRequest, DiscoverSourcesRequest, ExecuteSqlRequest,
     GetSourceInfoRequest, GetSourceRequest, ImportSourceRequest, ListTablesRequest,
-    QueryTestFailure, QueryTestSuccess, SourceOrigin, SourceSecret, SourceVariable,
-    ValidateSourceRequest, Workspace, query_test_result,
+    PaginationRequest, QueryTestFailure, QueryTestSuccess, SourceOrigin, SourceSecret,
+    SourceVariable, ValidateSourceRequest, Workspace, query_test_result,
 };
 use coral_client::default_workspace;
 use tempfile::TempDir;
@@ -12,8 +12,9 @@ use tonic::Request;
 
 use crate::harness::{
     FailingHttpFixture, GrpcHarness, fixture_manifest_with_inputs_yaml,
-    fixture_manifest_with_required_inputs_yaml, fixture_manifest_with_test_queries_yaml,
-    fixture_manifest_yaml, invalid_manifest_yaml, source_dir,
+    fixture_manifest_with_multiple_tables_yaml, fixture_manifest_with_required_inputs_yaml,
+    fixture_manifest_with_test_queries_yaml, fixture_manifest_yaml, invalid_manifest_yaml,
+    source_dir,
 };
 
 #[tokio::test]
@@ -205,6 +206,91 @@ async fn validate_source_returns_tables() {
         .await;
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0]["text"], "hello");
+}
+
+#[tokio::test]
+async fn list_tables_supports_legacy_full_response_and_paginated_summaries() {
+    let harness = GrpcHarness::new().await;
+    harness
+        .import_source(
+            fixture_manifest_with_multiple_tables_yaml(harness.temp_path()),
+            Vec::new(),
+            Vec::new(),
+        )
+        .await;
+
+    let legacy = harness
+        .query_client()
+        .list_tables(Request::new(ListTablesRequest {
+            workspace: Some(default_workspace()),
+            schema_name: String::new(),
+            pagination: None,
+            omit_columns: false,
+        }))
+        .await
+        .expect("legacy list tables")
+        .into_inner();
+    let legacy_pagination = legacy.pagination.as_ref().expect("legacy pagination");
+    assert_eq!(legacy_pagination.total_count, 3);
+    assert_eq!(legacy_pagination.limit, 0);
+    assert_eq!(legacy_pagination.offset, 0);
+    assert!(!legacy_pagination.has_more);
+    assert_eq!(legacy.tables.len(), 3);
+    assert!(legacy.table_summaries.is_empty());
+    assert_eq!(legacy.tables[0].name, "events");
+    assert!(!legacy.tables[0].columns.is_empty());
+
+    let page = harness
+        .query_client()
+        .list_tables(Request::new(ListTablesRequest {
+            workspace: Some(default_workspace()),
+            schema_name: "local_messages".to_string(),
+            pagination: Some(PaginationRequest {
+                limit: 2,
+                offset: 0,
+            }),
+            omit_columns: true,
+        }))
+        .await
+        .expect("paginated list tables")
+        .into_inner();
+    let page_pagination = page.pagination.as_ref().expect("page pagination");
+    assert_eq!(page_pagination.total_count, 3);
+    assert_eq!(page_pagination.limit, 2);
+    assert_eq!(page_pagination.offset, 0);
+    assert!(page_pagination.has_more);
+    assert_eq!(page_pagination.next_offset, 2);
+    assert_eq!(
+        page.table_summaries
+            .iter()
+            .map(|table| table.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["events", "messages"]
+    );
+    assert!(page.tables.is_empty());
+
+    let unknown_schema = harness
+        .query_client()
+        .list_tables(Request::new(ListTablesRequest {
+            workspace: Some(default_workspace()),
+            schema_name: "missing".to_string(),
+            pagination: Some(PaginationRequest {
+                limit: 2,
+                offset: 0,
+            }),
+            omit_columns: true,
+        }))
+        .await
+        .expect("unknown schema list tables")
+        .into_inner();
+    let unknown_schema_pagination = unknown_schema
+        .pagination
+        .as_ref()
+        .expect("unknown schema pagination");
+    assert_eq!(unknown_schema_pagination.total_count, 0);
+    assert!(unknown_schema.tables.is_empty());
+    assert!(unknown_schema.table_summaries.is_empty());
+    assert!(!unknown_schema_pagination.has_more);
 }
 
 #[tokio::test]
@@ -1050,21 +1136,22 @@ async fn config_persists_across_rebuilds_without_local_trace_state() {
 }
 
 #[tokio::test]
-async fn corrupted_config_surfaces_internal_error() {
+async fn corrupted_config_fails_at_startup() {
+    use coral_client::local::ServerBuilder;
+
     let temp = TempDir::new().expect("temp dir");
     let config_dir = temp.path().join("coral-config");
     fs::create_dir_all(&config_dir).expect("create config dir");
     fs::write(config_dir.join("config.toml"), "[[sources]\n").expect("write invalid config");
 
-    let harness = GrpcHarness::start_with_config_dir(config_dir).await;
-    let error = harness
-        .source_client()
-        .discover_sources(Request::new(DiscoverSourcesRequest {
-            workspace: Some(default_workspace()),
-        }))
-        .await
-        .expect_err("corrupted config should surface as an error");
-    assert_eq!(error.code(), tonic::Code::Internal);
+    assert!(
+        ServerBuilder::new()
+            .with_config_dir(&config_dir)
+            .start()
+            .await
+            .is_err(),
+        "corrupted config should prevent server startup"
+    );
 }
 
 #[cfg(unix)]
@@ -1171,6 +1258,9 @@ async fn rejects_invalid_workspace_and_source_names() {
             workspace: Some(Workspace {
                 name: r"bad\workspace".to_string(),
             }),
+            schema_name: String::new(),
+            pagination: None,
+            omit_columns: false,
         }))
         .await
         .expect_err("workspace with backslash should fail");
@@ -1185,4 +1275,65 @@ async fn rejects_invalid_workspace_and_source_names() {
         .await
         .expect_err("source name with backslash should fail");
     assert_eq!(invalid_source_name.code(), tonic::Code::InvalidArgument);
+}
+
+#[tokio::test]
+async fn adding_source_preserves_otel_config_and_existing_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    let config_dir = temp.path().join("coral-config");
+    fs::create_dir_all(&config_dir).expect("create config dir");
+
+    // Pre-populate the config with an [otel] section and an existing source.
+    fs::write(
+        config_dir.join("config.toml"),
+        r#"version = 1
+
+[otel]
+endpoint = "http://localhost:4318"
+headers = "from=config"
+
+[workspaces.default.sources.demo]
+version = "0.1.0"
+variables = {}
+secrets = []
+origin = "imported"
+"#,
+    )
+    .expect("write initial config");
+
+    let harness = GrpcHarness::start_with_config_dir(config_dir.clone()).await;
+    let manifest_yaml = fixture_manifest_yaml(temp.path());
+
+    harness
+        .import_source(manifest_yaml, Vec::new(), Vec::new())
+        .await;
+
+    let config_raw =
+        fs::read_to_string(config_dir.join("config.toml")).expect("read config after import");
+
+    // The [otel] section and its values must survive the round-trip.
+    assert!(
+        config_raw.contains("[otel]"),
+        "otel section should be preserved"
+    );
+    assert!(
+        config_raw.contains("endpoint = \"http://localhost:4318\""),
+        "otel endpoint should be preserved"
+    );
+    assert!(
+        config_raw.contains("headers = \"from=config\""),
+        "otel headers should be preserved"
+    );
+
+    // The pre-existing source must still be present.
+    assert!(
+        config_raw.contains("[workspaces.default.sources.demo]"),
+        "pre-existing source should be preserved"
+    );
+
+    // The newly imported source must now also be present.
+    assert!(
+        config_raw.contains("[workspaces.default.sources.local_messages]"),
+        "newly added source should be in config"
+    );
 }

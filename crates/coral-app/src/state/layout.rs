@@ -62,6 +62,14 @@ impl AppStateLayout {
         self.workspace_dir(workspace_name).join("sources")
     }
 
+    pub(crate) fn feedback_dir(&self, workspace_name: &WorkspaceName) -> PathBuf {
+        self.workspace_dir(workspace_name).join("feedback")
+    }
+
+    pub(crate) fn feedback_reports_file(&self, workspace_name: &WorkspaceName) -> PathBuf {
+        self.feedback_dir(workspace_name).join("reports.jsonl")
+    }
+
     pub(crate) fn source_dir(
         &self,
         workspace_name: &WorkspaceName,
@@ -114,6 +122,10 @@ mod tests {
         assert_eq!(
             layout.secret_file(&workspace_name, &source_name),
             std::path::Path::new("/tmp/coral-config/workspaces/default/sources/github/secrets.env")
+        );
+        assert_eq!(
+            layout.feedback_reports_file(&workspace_name),
+            std::path::Path::new("/tmp/coral-config/workspaces/default/feedback/reports.jsonl")
         );
     }
 }

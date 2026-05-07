@@ -4,19 +4,21 @@ This source connects Coral to an OpenObserve instance over HTTP.
 
 ## Auth
 
-Set `OPENOBSERVE_BASIC_AUTH` to the base64-encoded `user:password` value that should be sent in the `Authorization: Basic ...` header.
+Set `OPENOBSERVE_USERNAME` and `OPENOBSERVE_PASSWORD`. Coral sends them with HTTP Basic auth.
 
 Example:
 
 ```text
-echo -n 'user@example.com:password' | base64
+export OPENOBSERVE_USERNAME="user@example.com"
+export OPENOBSERVE_PASSWORD="password"
 ```
 
 ## Inputs
 
 - `OPENOBSERVE_URL`: Base URL for the OpenObserve instance, for example `http://localhost:5080`
 - `OPENOBSERVE_ORG`: OpenObserve organization name. Defaults to `default`
-- `OPENOBSERVE_BASIC_AUTH`: Base64-encoded `user:password` for HTTP Basic auth
+- `OPENOBSERVE_USERNAME`: Username or email for HTTP Basic auth
+- `OPENOBSERVE_PASSWORD`: Password for HTTP Basic auth
 
 ## Example Queries
 

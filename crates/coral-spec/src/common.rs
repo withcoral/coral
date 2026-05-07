@@ -313,6 +313,16 @@ pub enum ValueSourceSpec {
         #[serde(default)]
         default: Option<bool>,
     },
+    FilterSplit {
+        key: String,
+        separator: String,
+        part: usize,
+    },
+    FilterSplitInt {
+        key: String,
+        separator: String,
+        part: usize,
+    },
     Input {
         key: String,
     },
@@ -677,6 +687,12 @@ pub enum ExprSpec {
         #[serde(default = "default_separator")]
         separator: String,
     },
+    JoinArrayPath {
+        path: Vec<String>,
+        item_path: Vec<String>,
+        #[serde(default = "default_separator")]
+        separator: String,
+    },
     TagValue {
         path: Vec<String>,
         key: String,
@@ -714,6 +730,9 @@ pub enum ExprSpec {
         #[serde(default)]
         input: TimestampInput,
     },
+    Base64Decode {
+        expr: Box<ExprSpec>,
+    },
     Replace {
         expr: Box<ExprSpec>,
         from: String,
@@ -734,6 +753,8 @@ pub enum TimestampInput {
     Seconds,
     /// Milliseconds since Unix epoch.
     Milliseconds,
+    /// ISO 8601 / RFC 3339 timestamp string.
+    Iso8601,
 }
 
 fn default_separator() -> String {

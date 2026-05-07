@@ -55,6 +55,11 @@ root.
 - `manager.rs` files own app-level orchestration. They coordinate installed
   state, secrets, manifests, rollback, runtime setup, and engine calls. They
   should not know about tonic request or response types.
+- For all service calls, keep protobuf request/response types confined to the
+  service edge. Convert request data into small app-local command, query, or
+  binding structs before calling managers; do not pass `coral_api::v1`
+  request/response/message types into managers, state helpers, or other
+  app-owned domain code.
 - `workspaces/name.rs` and `sources/name.rs` own the checked app-local identity
   types. Parse `WorkspaceName` and `SourceName` at persistence and service
   boundaries so managers and state/layout code stay transport-free and do not

@@ -45,7 +45,7 @@ enum Command {
     /// Interactive wizard to set up Coral and explore use cases
     Onboard,
     /// Start the MCP server over stdio
-    McpStdio,
+    McpStdio(McpStdioArgs),
     /// Generate shell completion scripts
     Completion(CompletionArgs),
 }
@@ -65,6 +65,14 @@ struct SqlArgs {
     format: OutputFormat,
     /// SQL query to execute
     sql: String,
+}
+
+#[derive(Debug, Args)]
+/// Start the MCP server over stdio
+struct McpStdioArgs {
+    /// Expose the feedback submission tool.
+    #[arg(long)]
+    enable_feedback: bool,
 }
 
 #[derive(Debug, Args)]
@@ -152,15 +160,35 @@ impl CliExitError {
     }
 }
 
+/// Returns whether this CLI invocation should render telemetry logs to stderr.
+///
+/// `MCP` stdio reserves stdout for protocol messages, so stderr is the only
+/// local diagnostics stream that can be safely exposed while the server is
+/// running.
+#[must_use]
+pub fn enables_stderr_logs() -> bool {
+    command_enables_stderr_logs(std::env::args_os())
+}
+
+fn command_enables_stderr_logs<I, T>(args: I) -> bool
+where
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString> + Clone,
+{
+    matches!(
+        Cli::try_parse_from(args).map(|cli| cli.command),
+        Ok(Command::McpStdio(_))
+    )
+}
+
 /// Parses CLI arguments and runs the shared Coral CLI.
 ///
 /// # Errors
 ///
 /// Returns an error if argument parsing, command execution, or output
 /// formatting fails.
-pub async fn run(app: AppClient) -> Result<(), anyhow::Error> {
-    let cli = Cli::parse();
-    run_parsed(app, cli).await
+pub async fn run(app: AppClient, ctx: coral_app::RunContext) -> Result<(), anyhow::Error> {
+    coral_app::run_with_context(&ctx, Box::pin(run_parsed(app, Cli::parse()))).await
 }
 
 async fn run_parsed(app: AppClient, cli: Cli) -> Result<(), anyhow::Error> {
@@ -239,8 +267,14 @@ async fn run_parsed(app: AppClient, cli: Cli) -> Result<(), anyhow::Error> {
         Command::Onboard => {
             onboard::run(&app).await?;
         }
-        Command::McpStdio => {
-            coral_mcp::run_stdio_with_client(app).await?;
+        Command::McpStdio(args) => {
+            coral_mcp::run_stdio_with_client(
+                app,
+                coral_mcp::McpOptions {
+                    feedback_enabled: args.enable_feedback,
+                },
+            )
+            .await?;
         }
         Command::Completion(args) => {
             let mut cmd = Cli::command();
@@ -366,4 +400,28 @@ async fn run_source_add(app: &AppClient, args: SourceAddArgs) -> Result<(), anyh
     };
     println!("Added source {}", response.name);
     source_ops::validate_and_warn(app, &response.name, source_ops::TableDisplayLimit::DEFAULT).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::command_enables_stderr_logs;
+
+    #[test]
+    fn mcp_stdio_invocation_enables_stderr_logs() {
+        assert!(command_enables_stderr_logs(["coral", "mcp-stdio"]));
+    }
+
+    #[test]
+    fn mcp_stdio_with_feedback_invocation_enables_stderr_logs() {
+        assert!(command_enables_stderr_logs([
+            "coral",
+            "mcp-stdio",
+            "--enable-feedback"
+        ]));
+    }
+
+    #[test]
+    fn non_mcp_invocation_disables_stderr_logs() {
+        assert!(!command_enables_stderr_logs(["coral", "sql", "SELECT 1"]));
+    }
 }

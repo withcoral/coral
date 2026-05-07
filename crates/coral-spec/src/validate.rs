@@ -172,6 +172,8 @@ fn validate_value_source(
         ValueSourceSpec::Filter { key, .. }
         | ValueSourceSpec::FilterInt { key, .. }
         | ValueSourceSpec::FilterBool { key, .. }
+        | ValueSourceSpec::FilterSplit { key, .. }
+        | ValueSourceSpec::FilterSplitInt { key, .. }
             if !known_filters.contains(key) =>
         {
             return Err(ManifestError::validation(format!(
@@ -400,6 +402,70 @@ mod tests {
             &PaginationSpec::default(),
         )
         .expect_err("route request should reject unknown filters");
+
+        assert!(
+            error
+                .to_string()
+                .contains("references unknown filter 'missing'")
+        );
+    }
+
+    #[test]
+    fn validate_http_table_rejects_unknown_filter_split_bindings() {
+        let request = RequestSpec {
+            query: vec![QueryParamSpec {
+                name: "team_key".to_string(),
+                value: ValueSourceSpec::FilterSplit {
+                    key: "missing".to_string(),
+                    separator: "-".to_string(),
+                    part: 0,
+                },
+            }],
+            ..base_request()
+        };
+
+        let error = validate_http_table(
+            "demo",
+            "messages",
+            &test_filters(),
+            &[test_column()],
+            &request,
+            &[],
+            &PaginationSpec::default(),
+        )
+        .expect_err("filter_split should reject unknown filters");
+
+        assert!(
+            error
+                .to_string()
+                .contains("references unknown filter 'missing'")
+        );
+    }
+
+    #[test]
+    fn validate_http_table_rejects_unknown_filter_split_int_bindings() {
+        let request = RequestSpec {
+            query: vec![QueryParamSpec {
+                name: "issue_number".to_string(),
+                value: ValueSourceSpec::FilterSplitInt {
+                    key: "missing".to_string(),
+                    separator: "-".to_string(),
+                    part: 1,
+                },
+            }],
+            ..base_request()
+        };
+
+        let error = validate_http_table(
+            "demo",
+            "messages",
+            &test_filters(),
+            &[test_column()],
+            &request,
+            &[],
+            &PaginationSpec::default(),
+        )
+        .expect_err("filter_split_int should reject unknown filters");
 
         assert!(
             error
