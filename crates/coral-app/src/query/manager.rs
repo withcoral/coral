@@ -8,7 +8,7 @@ use coral_engine::{
     CoralQuery, CoreError, QueryExecution, QueryRuntimeConfig, QueryRuntimeContext, QuerySource,
     SourceValidationReport, TableInfo,
 };
-use coral_spec::{ManifestInputKind, ManifestInputSpec, parse_source_manifest_yaml};
+use coral_spec::{ManifestInputKind, ManifestInputSpec};
 use opentelemetry::trace::Status as OtelStatus;
 use tracing::Instrument as _;
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
@@ -170,9 +170,7 @@ impl QueryManager {
         source: &InstalledSource,
     ) -> Result<(QuerySource, String), AppError> {
         let installed = resolve_installed_manifest(workspace_name, source, &self.layout)?;
-        let manifest_yaml = installed.manifest_yaml;
-        let source_spec = parse_source_manifest_yaml(&manifest_yaml)
-            .map_err(|error| AppError::InvalidInput(error.to_string()))?;
+        let source_spec = installed.source_spec;
         validate_required_variables(source, source_spec.declared_inputs())?;
         let stored_secrets = self
             .secret_store
