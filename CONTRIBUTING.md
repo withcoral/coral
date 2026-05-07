@@ -74,6 +74,13 @@ cargo test --workspace --all-targets --all-features --locked
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps --locked
 ```
 
+If a Cargo command fails because the lockfile needs to be updated but
+`--locked` was passed, refresh `Cargo.lock` with the narrowest practical
+command, such as `cargo update -p <crate>`, then commit the lockfile with the
+matching `Cargo.toml` change. For broader dependency changes, run one normal
+Cargo build without `--locked` to regenerate the lockfile before rerunning the
+locked checks.
+
 ### Source manifest linting
 
 Source manifests under `sources/*/manifest.yaml` are checked with
