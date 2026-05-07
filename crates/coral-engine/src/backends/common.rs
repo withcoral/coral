@@ -1,6 +1,7 @@
 //! Shared internal backend contracts and registry-visible metadata.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::fmt::Write;
 use std::sync::Arc;
 
 use crate::{QueryRuntimeContext, RequestAuthenticator};
@@ -67,7 +68,29 @@ pub(crate) struct RegisteredSource {
 
 pub(crate) struct BackendRegistration {
     pub(crate) tables: HashMap<String, Arc<dyn TableProvider>>,
+    pub(crate) table_functions: Vec<BackendTableFunctionRegistration>,
     pub(crate) source: RegisteredSource,
+}
+
+pub(crate) struct BackendTableFunctionRegistration {
+    pub(crate) internal_name: String,
+    pub(crate) function: Arc<dyn datafusion::catalog::TableFunctionImpl>,
+}
+
+pub(crate) fn internal_table_function_name(schema: &str, function: &str) -> String {
+    format!(
+        "__coral_udtf_{}_{}",
+        hex_encode(schema),
+        hex_encode(function)
+    )
+}
+
+fn hex_encode(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len() * 2);
+    for byte in value.as_bytes() {
+        write!(&mut encoded, "{byte:02x}").expect("write to string");
+    }
+    encoded
 }
 
 pub(crate) struct BackendCompileRequest<'a> {

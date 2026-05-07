@@ -81,7 +81,7 @@ impl RowFetcher for HttpFetchPlan {
     }
 }
 
-fn http_json_exec(
+pub(crate) fn http_json_exec(
     backend: HttpSourceClient,
     source_schema: &str,
     target: HttpFetchTarget,

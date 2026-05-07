@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use coral_spec::backends::http::HttpTableSpec;
-use coral_spec::{ColumnSpec, PaginationSpec, RequestSpec, ResponseSpec};
+use coral_spec::{ColumnSpec, PaginationSpec, RequestSpec, ResponseSpec, SourceTableFunctionSpec};
 
 /// The HTTP request/response description needed to fetch rows.
 ///
@@ -52,6 +52,17 @@ impl HttpFetchTarget {
             resolved_request,
             response: Arc::clone(&self.response),
             pagination: Arc::clone(&self.pagination),
+        }
+    }
+
+    pub(crate) fn from_function(function: &SourceTableFunctionSpec) -> Self {
+        Self {
+            name: Arc::from(function.name.as_str()),
+            columns: Arc::from(function.columns.clone()),
+            fetch_limit_default: function.fetch_limit_default,
+            resolved_request: function.request.clone(),
+            response: Arc::new(function.response.clone()),
+            pagination: Arc::new(function.pagination.clone()),
         }
     }
 

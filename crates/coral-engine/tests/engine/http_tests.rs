@@ -48,6 +48,58 @@ fn base_http_manifest(name: &str, base_url: &str) -> Value {
     })
 }
 
+fn search_function_manifest(name: &str, base_url: &str) -> Value {
+    json!({
+        "name": name,
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": base_url,
+        "tables": [{
+            "name": "placeholder",
+            "description": "Placeholder table",
+            "request": {
+                "method": "GET",
+                "path": "/api/placeholder"
+            },
+            "columns": [
+                { "name": "id", "type": "Utf8" }
+            ]
+        }],
+        "functions": [{
+            "name": "search_issues",
+            "description": "Search issues",
+            "args": [
+                {
+                    "name": "q",
+                    "required": true,
+                    "bind": { "arg": "q" }
+                },
+                {
+                    "name": "mode",
+                    "values": ["lexical", "semantic", "hybrid"],
+                    "bind": { "arg": "search_type" }
+                }
+            ],
+            "request": {
+                "method": "GET",
+                "path": "/api/search/issues",
+                "query": [
+                    { "name": "q", "from": "arg", "key": "q" },
+                    { "name": "search_type", "from": "arg", "key": "search_type" }
+                ]
+            },
+            "response": {
+                "rows_path": ["items"]
+            },
+            "columns": [
+                { "name": "title", "type": "Utf8" },
+                { "name": "score", "type": "Float64" }
+            ]
+        }]
+    })
+}
+
 #[derive(Debug)]
 struct TestRequestAuthenticator;
 
@@ -239,6 +291,87 @@ async fn select_with_where_filter_pushdown() {
     );
 
     assert_eq!(rows, vec![json!({"id": 2, "name": "Grace"})]);
+}
+
+#[tokio::test]
+async fn internal_table_function_builds_http_search_request() {
+    assert_search_function_query(
+        "SELECT title, score \
+         FROM __coral_udtf_736561726368_7365617263685f697373756573(\
+           'flaky cleanup repo:withcoral/coral', 'hybrid')",
+    )
+    .await;
+}
+
+async fn assert_search_function_query(sql: &str) {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/search/issues"))
+        .and(query_param("q", "flaky cleanup repo:withcoral/coral"))
+        .and(query_param("search_type", "hybrid"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [{
+                "title": "Flaky workspace cleanup",
+                "score": 9.5
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let source = build_source(search_function_manifest("search", &server.uri()));
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(&[source], test_runtime(), sql)
+            .await
+            .expect("query should succeed"),
+    );
+
+    assert_eq!(
+        rows,
+        vec![json!({
+            "title": "Flaky workspace cleanup",
+            "score": 9.5
+        })]
+    );
+}
+
+#[tokio::test]
+async fn table_function_rejects_invalid_argument_values() {
+    let server = MockServer::start().await;
+    let source = build_source(search_function_manifest("bad_mode_search", &server.uri()));
+
+    let error = CoralQuery::execute_sql(
+        &[source],
+        test_runtime(),
+        "SELECT title FROM __coral_udtf_6261645f6d6f64655f736561726368_7365617263685f697373756573(\
+           'flaky', 'banana')",
+    )
+    .await
+    .expect_err("invalid function argument should fail planning");
+
+    assert!(
+        error
+            .to_string()
+            .contains("bad_mode_search.search_issues argument 'mode' has invalid value 'banana'"),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
+async fn table_function_does_not_expose_request_args_as_columns() {
+    let server = MockServer::start().await;
+    let source = build_source(search_function_manifest("conflict_search", &server.uri()));
+
+    let error = CoralQuery::execute_sql(
+        &[source],
+        test_runtime(),
+        "SELECT title FROM __coral_udtf_636f6e666c6963745f736561726368_7365617263685f697373756573(\
+           'flaky') WHERE q = 'raw'",
+    )
+    .await
+    .expect_err("request args should not be queryable as result columns");
+
+    assert!(error.to_string().contains('q'), "unexpected error: {error}");
 }
 
 #[tokio::test]

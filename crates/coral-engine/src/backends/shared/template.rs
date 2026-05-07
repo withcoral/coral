@@ -28,31 +28,18 @@ pub(crate) fn resolve_value_source(
             .get(key)
             .map(|v| Value::String(v.clone()))
             .or_else(|| default.clone())),
+        ValueSourceSpec::Arg { key, default } => Ok(filters
+            .get(key)
+            .map(|v| Value::String(v.clone()))
+            .or_else(|| default.clone())),
         ValueSourceSpec::FilterInt { key, default } => {
-            let value = if let Some(filter) = filters.get(key) {
-                let parsed = filter.parse::<i64>().map_err(|error| {
-                    DataFusionError::Execution(format!(
-                        "filter '{key}' value '{filter}' is not a valid i64: {error}"
-                    ))
-                })?;
-                Some(json!(parsed))
-            } else {
-                default.map(|value| json!(value))
-            };
-            Ok(value)
+            parse_i64_value(filters, key, *default, "filter")
+        }
+        ValueSourceSpec::ArgInt { key, default } => {
+            parse_i64_value(filters, key, *default, "function argument")
         }
         ValueSourceSpec::FilterBool { key, default } => {
-            let value = if let Some(filter) = filters.get(key) {
-                let parsed = filter.parse::<bool>().map_err(|error| {
-                    DataFusionError::Execution(format!(
-                        "filter '{key}' value '{filter}' is not a valid bool: {error}"
-                    ))
-                })?;
-                Some(json!(parsed))
-            } else {
-                default.map(|value| json!(value))
-            };
-            Ok(value)
+            parse_bool_value(filters, key, *default, "filter")
         }
         ValueSourceSpec::FilterSplit {
             key,
@@ -65,22 +52,10 @@ pub(crate) fn resolve_value_source(
             key,
             separator,
             part,
-        } => {
-            let Some(raw) = split_filter_part(filters, key, separator, *part)? else {
-                return Ok(None);
-            };
-            let parsed = raw.parse::<i64>().map_err(|error| {
-                DataFusionError::Execution(format!(
-                    "filter '{key}' split part {part} value '{raw}' is not a valid i64: {error}"
-                ))
-            })?;
-            Ok(Some(json!(parsed)))
+        } => parse_split_i64_value(filters, key, separator, *part),
+        ValueSourceSpec::ArgBool { key, default } => {
+            parse_bool_value(filters, key, *default, "function argument")
         }
-        ValueSourceSpec::Arg { key, .. }
-        | ValueSourceSpec::ArgInt { key, .. }
-        | ValueSourceSpec::ArgBool { key, .. } => Err(DataFusionError::Execution(format!(
-            "function argument '{key}' cannot be resolved outside a function request"
-        ))),
         ValueSourceSpec::Input { key } => Ok(resolved_inputs.get(key).cloned().map(Value::String)),
         ValueSourceSpec::State { key } => Ok(state.get(key).map(|v| Value::String(v.clone()))),
         ValueSourceSpec::NowEpochMinusSeconds { seconds } => {
@@ -96,6 +71,57 @@ pub(crate) fn resolve_value_source(
             Ok(Some(json!(value)))
         }
     }
+}
+
+fn parse_i64_value(
+    values: &HashMap<String, String>,
+    key: &str,
+    default: Option<i64>,
+    label: &str,
+) -> Result<Option<Value>> {
+    let Some(raw) = values.get(key) else {
+        return Ok(default.map(|value| json!(value)));
+    };
+    let parsed = raw.parse::<i64>().map_err(|error| {
+        DataFusionError::Execution(format!(
+            "{label} '{key}' value '{raw}' is not a valid i64: {error}"
+        ))
+    })?;
+    Ok(Some(json!(parsed)))
+}
+
+fn parse_bool_value(
+    values: &HashMap<String, String>,
+    key: &str,
+    default: Option<bool>,
+    label: &str,
+) -> Result<Option<Value>> {
+    let Some(raw) = values.get(key) else {
+        return Ok(default.map(|value| json!(value)));
+    };
+    let parsed = raw.parse::<bool>().map_err(|error| {
+        DataFusionError::Execution(format!(
+            "{label} '{key}' value '{raw}' is not a valid bool: {error}"
+        ))
+    })?;
+    Ok(Some(json!(parsed)))
+}
+
+fn parse_split_i64_value(
+    filters: &HashMap<String, String>,
+    key: &str,
+    separator: &str,
+    part: usize,
+) -> Result<Option<Value>> {
+    let Some(raw) = split_filter_part(filters, key, separator, part)? else {
+        return Ok(None);
+    };
+    let parsed = raw.parse::<i64>().map_err(|error| {
+        DataFusionError::Execution(format!(
+            "filter '{key}' split part {part} value '{raw}' is not a valid i64: {error}"
+        ))
+    })?;
+    Ok(Some(json!(parsed)))
 }
 
 fn split_filter_part(
@@ -169,6 +195,16 @@ fn resolve_template_token(
             .or(default)
             .ok_or_else(|| {
                 DataFusionError::Execution(format!("missing filter '{}'", token.key()))
+            });
+    }
+
+    if token.namespace() == &TemplateNamespace::Arg {
+        return filters
+            .get(token.key())
+            .cloned()
+            .or(default)
+            .ok_or_else(|| {
+                DataFusionError::Execution(format!("missing request argument '{}'", token.key()))
             });
     }
 
