@@ -19,13 +19,11 @@ inputs:
   AWS_ACCESS_KEY_ID:
     kind: secret
     hint: |
-      AWS access key ID from an AWS access key pair with the CloudWatch
-      read permissions needed for the tables you plan to query.
+      AWS access key ID with the CloudWatch read permissions.
   AWS_SECRET_ACCESS_KEY:
     kind: secret
     hint: |
-      AWS secret access key from the same access key pair as
-      `AWS_ACCESS_KEY_ID`.
+      AWS secret access key.
       Coral does not read your AWS CLI profile, AWS SSO cache, or
       `AWS_PROFILE` at query time for this bundled source.
 base_url: https://monitoring.{{input.AWS_REGION}}.{{input.AWS_ENDPOINT_SUFFIX}}
@@ -89,35 +87,35 @@ tables:
         type: Utf8
         nullable: true
         description: Metric namespace.
-        expr: {kind: path, path: [Namespace]}
+        expr: { kind: path, path: [Namespace] }
       - name: metric_name
         type: Utf8
         nullable: true
         description: Metric name.
-        expr: {kind: path, path: [MetricName]}
+        expr: { kind: path, path: [MetricName] }
       - name: dimensions
         type: Utf8
         nullable: true
         description: Metric dimensions as JSON objects.
-        expr: {kind: join_array, path: [Dimensions]}
+        expr: { kind: join_array, path: [Dimensions] }
       - name: recently_active
         type: Utf8
         nullable: true
         virtual: true
         description: Virtual filter. Use PT3H to request recently active metrics.
-        expr: {kind: from_filter, key: recently_active}
+        expr: { kind: from_filter, key: recently_active }
       - name: include_linked_accounts
         type: Boolean
         nullable: true
         virtual: true
         description: Virtual filter for cross-account observability.
-        expr: {kind: from_filter, key: include_linked_accounts}
+        expr: { kind: from_filter, key: include_linked_accounts }
       - name: owning_account
         type: Utf8
         nullable: true
         virtual: true
         description: Virtual filter for the owning source account ID.
-        expr: {kind: from_filter, key: owning_account}
+        expr: { kind: from_filter, key: owning_account }
     filters:
       - name: namespace
       - name: metric_name
@@ -203,25 +201,25 @@ tables:
         nullable: true
         virtual: true
         description: Metric namespace filter.
-        expr: {kind: from_filter, key: namespace}
+        expr: { kind: from_filter, key: namespace }
       - name: metric_name
         type: Utf8
         nullable: true
         virtual: true
         description: Metric name filter.
-        expr: {kind: from_filter, key: metric_name}
+        expr: { kind: from_filter, key: metric_name }
       - name: start_time
         type: Utf8
         nullable: true
         virtual: true
         description: CloudWatch start time filter.
-        expr: {kind: from_filter, key: start_time}
+        expr: { kind: from_filter, key: start_time }
       - name: end_time
         type: Utf8
         nullable: true
         virtual: true
         description: CloudWatch end time filter.
-        expr: {kind: from_filter, key: end_time}
+        expr: { kind: from_filter, key: end_time }
       - name: timestamp
         type: Timestamp
         nullable: true
@@ -229,49 +227,49 @@ tables:
         expr:
           kind: format_timestamp
           input: seconds
-          expr: {kind: path, path: [Timestamp]}
+          expr: { kind: path, path: [Timestamp] }
       - name: average
         type: Float64
         nullable: true
         description: Average value.
-        expr: {kind: path, path: [Average]}
+        expr: { kind: path, path: [Average] }
       - name: minimum
         type: Float64
         nullable: true
         description: Minimum value.
-        expr: {kind: path, path: [Minimum]}
+        expr: { kind: path, path: [Minimum] }
       - name: maximum
         type: Float64
         nullable: true
         description: Maximum value.
-        expr: {kind: path, path: [Maximum]}
+        expr: { kind: path, path: [Maximum] }
       - name: sum
         type: Float64
         nullable: true
         description: Sum value.
-        expr: {kind: path, path: [Sum]}
+        expr: { kind: path, path: [Sum] }
       - name: sample_count
         type: Float64
         nullable: true
         description: Number of samples.
-        expr: {kind: path, path: [SampleCount]}
+        expr: { kind: path, path: [SampleCount] }
       - name: unit
         type: Utf8
         nullable: true
         description: Datapoint unit.
-        expr: {kind: path, path: [Unit]}
+        expr: { kind: path, path: [Unit] }
       - name: dimension_name
         type: Utf8
         nullable: true
         virtual: true
         description: First dimension name filter.
-        expr: {kind: from_filter, key: dimension_name}
+        expr: { kind: from_filter, key: dimension_name }
       - name: dimension_value
         type: Utf8
         nullable: true
         virtual: true
         description: First dimension value filter.
-        expr: {kind: from_filter, key: dimension_value}
+        expr: { kind: from_filter, key: dimension_value }
     filters:
       - name: namespace
         required: true
@@ -327,67 +325,67 @@ tables:
         type: Utf8
         nullable: false
         description: Alarm name.
-        expr: {kind: path, path: [AlarmName]}
+        expr: { kind: path, path: [AlarmName] }
       - name: alarm_arn
         type: Utf8
         nullable: true
         description: Alarm ARN.
-        expr: {kind: path, path: [AlarmArn]}
+        expr: { kind: path, path: [AlarmArn] }
       - name: state_value
         type: Utf8
         nullable: true
         description: Alarm state.
-        expr: {kind: path, path: [StateValue]}
+        expr: { kind: path, path: [StateValue] }
       - name: state_reason
         type: Utf8
         nullable: true
         description: Human-readable state reason.
-        expr: {kind: path, path: [StateReason]}
+        expr: { kind: path, path: [StateReason] }
       - name: metric_name
         type: Utf8
         nullable: true
         description: Metric name watched by the alarm.
-        expr: {kind: path, path: [MetricName]}
+        expr: { kind: path, path: [MetricName] }
       - name: namespace
         type: Utf8
         nullable: true
         description: Metric namespace watched by the alarm.
-        expr: {kind: path, path: [Namespace]}
+        expr: { kind: path, path: [Namespace] }
       - name: dimensions
         type: Utf8
         nullable: true
         description: Alarm metric dimensions as JSON objects.
-        expr: {kind: join_array, path: [Dimensions]}
+        expr: { kind: join_array, path: [Dimensions] }
       - name: comparison_operator
         type: Utf8
         nullable: true
         description: Comparison operator.
-        expr: {kind: path, path: [ComparisonOperator]}
+        expr: { kind: path, path: [ComparisonOperator] }
       - name: threshold
         type: Float64
         nullable: true
         description: Alarm threshold.
-        expr: {kind: path, path: [Threshold]}
+        expr: { kind: path, path: [Threshold] }
       - name: period
         type: Int64
         nullable: true
         description: Evaluation period in seconds.
-        expr: {kind: path, path: [Period]}
+        expr: { kind: path, path: [Period] }
       - name: evaluation_periods
         type: Int64
         nullable: true
         description: Number of periods evaluated.
-        expr: {kind: path, path: [EvaluationPeriods]}
+        expr: { kind: path, path: [EvaluationPeriods] }
       - name: actions_enabled
         type: Boolean
         nullable: true
         description: Whether actions are enabled.
-        expr: {kind: path, path: [ActionsEnabled]}
+        expr: { kind: path, path: [ActionsEnabled] }
       - name: alarm_actions
         type: Utf8
         nullable: true
         description: Alarm action ARNs.
-        expr: {kind: join_array, path: [AlarmActions]}
+        expr: { kind: join_array, path: [AlarmActions] }
       - name: state_updated_timestamp
         type: Timestamp
         nullable: true
@@ -395,7 +393,7 @@ tables:
         expr:
           kind: format_timestamp
           input: seconds
-          expr: {kind: path, path: [StateUpdatedTimestamp]}
+          expr: { kind: path, path: [StateUpdatedTimestamp] }
     filters:
       - name: alarm_name_prefix
       - name: action_prefix
@@ -438,37 +436,37 @@ tables:
         type: Utf8
         nullable: false
         description: Alarm name.
-        expr: {kind: path, path: [AlarmName]}
+        expr: { kind: path, path: [AlarmName] }
       - name: alarm_arn
         type: Utf8
         nullable: true
         description: Alarm ARN.
-        expr: {kind: path, path: [AlarmArn]}
+        expr: { kind: path, path: [AlarmArn] }
       - name: alarm_rule
         type: Utf8
         nullable: true
         description: Composite alarm rule.
-        expr: {kind: path, path: [AlarmRule]}
+        expr: { kind: path, path: [AlarmRule] }
       - name: state_value
         type: Utf8
         nullable: true
         description: Alarm state.
-        expr: {kind: path, path: [StateValue]}
+        expr: { kind: path, path: [StateValue] }
       - name: state_reason
         type: Utf8
         nullable: true
         description: Human-readable state reason.
-        expr: {kind: path, path: [StateReason]}
+        expr: { kind: path, path: [StateReason] }
       - name: actions_enabled
         type: Boolean
         nullable: true
         description: Whether actions are enabled.
-        expr: {kind: path, path: [ActionsEnabled]}
+        expr: { kind: path, path: [ActionsEnabled] }
       - name: alarm_actions
         type: Utf8
         nullable: true
         description: Alarm action ARNs.
-        expr: {kind: join_array, path: [AlarmActions]}
+        expr: { kind: join_array, path: [AlarmActions] }
       - name: state_updated_timestamp
         type: Timestamp
         nullable: true
@@ -476,7 +474,7 @@ tables:
         expr:
           kind: format_timestamp
           input: seconds
-          expr: {kind: path, path: [StateUpdatedTimestamp]}
+          expr: { kind: path, path: [StateUpdatedTimestamp] }
     filters:
       - name: alarm_name_prefix
       - name: action_prefix
@@ -523,12 +521,12 @@ tables:
         type: Utf8
         nullable: true
         description: Alarm name.
-        expr: {kind: path, path: [AlarmName]}
+        expr: { kind: path, path: [AlarmName] }
       - name: alarm_type
         type: Utf8
         nullable: true
         description: Alarm type.
-        expr: {kind: path, path: [AlarmType]}
+        expr: { kind: path, path: [AlarmType] }
       - name: timestamp
         type: Timestamp
         nullable: true
@@ -536,22 +534,22 @@ tables:
         expr:
           kind: format_timestamp
           input: seconds
-          expr: {kind: path, path: [Timestamp]}
+          expr: { kind: path, path: [Timestamp] }
       - name: history_item_type
         type: Utf8
         nullable: true
         description: History item type.
-        expr: {kind: path, path: [HistoryItemType]}
+        expr: { kind: path, path: [HistoryItemType] }
       - name: history_summary
         type: Utf8
         nullable: true
         description: History summary.
-        expr: {kind: path, path: [HistorySummary]}
+        expr: { kind: path, path: [HistorySummary] }
       - name: history_data
         type: Utf8
         nullable: true
         description: Raw history data JSON string.
-        expr: {kind: path, path: [HistoryData]}
+        expr: { kind: path, path: [HistoryData] }
     filters:
       - name: alarm_name
       - name: history_item_type
@@ -584,12 +582,12 @@ tables:
         type: Utf8
         nullable: false
         description: Dashboard name.
-        expr: {kind: path, path: [DashboardName]}
+        expr: { kind: path, path: [DashboardName] }
       - name: dashboard_arn
         type: Utf8
         nullable: true
         description: Dashboard ARN.
-        expr: {kind: path, path: [DashboardArn]}
+        expr: { kind: path, path: [DashboardArn] }
       - name: last_modified
         type: Timestamp
         nullable: true
@@ -597,12 +595,12 @@ tables:
         expr:
           kind: format_timestamp
           input: milliseconds
-          expr: {kind: path, path: [LastModified]}
+          expr: { kind: path, path: [LastModified] }
       - name: size
         type: Int64
         nullable: true
         description: Dashboard body size in bytes.
-        expr: {kind: path, path: [Size]}
+        expr: { kind: path, path: [Size] }
     filters:
       - name: dashboard_name_prefix
 
@@ -627,17 +625,17 @@ tables:
         type: Utf8
         nullable: false
         description: Dashboard name.
-        expr: {kind: path, path: [DashboardName]}
+        expr: { kind: path, path: [DashboardName] }
       - name: dashboard_arn
         type: Utf8
         nullable: true
         description: Dashboard ARN.
-        expr: {kind: path, path: [DashboardArn]}
+        expr: { kind: path, path: [DashboardArn] }
       - name: dashboard_body
         type: Utf8
         nullable: true
         description: Dashboard body JSON.
-        expr: {kind: path, path: [DashboardBody]}
+        expr: { kind: path, path: [DashboardBody] }
     filters:
       - name: dashboard_name
         required: true
@@ -667,27 +665,27 @@ tables:
         type: Utf8
         nullable: false
         description: Metric stream name.
-        expr: {kind: path, path: [Name]}
+        expr: { kind: path, path: [Name] }
       - name: arn
         type: Utf8
         nullable: true
         description: Metric stream ARN.
-        expr: {kind: path, path: [Arn]}
+        expr: { kind: path, path: [Arn] }
       - name: firehose_arn
         type: Utf8
         nullable: true
         description: Destination Firehose ARN.
-        expr: {kind: path, path: [FirehoseArn]}
+        expr: { kind: path, path: [FirehoseArn] }
       - name: state
         type: Utf8
         nullable: true
         description: Metric stream state.
-        expr: {kind: path, path: [State]}
+        expr: { kind: path, path: [State] }
       - name: output_format
         type: Utf8
         nullable: true
         description: Metric stream output format.
-        expr: {kind: path, path: [OutputFormat]}
+        expr: { kind: path, path: [OutputFormat] }
       - name: creation_date
         type: Timestamp
         nullable: true
@@ -695,7 +693,7 @@ tables:
         expr:
           kind: format_timestamp
           input: seconds
-          expr: {kind: path, path: [CreationDate]}
+          expr: { kind: path, path: [CreationDate] }
       - name: last_update_date
         type: Timestamp
         nullable: true
@@ -703,7 +701,7 @@ tables:
         expr:
           kind: format_timestamp
           input: seconds
-          expr: {kind: path, path: [LastUpdateDate]}
+          expr: { kind: path, path: [LastUpdateDate] }
 
   - name: metric_stream
     description: Details for one CloudWatch metric stream returned by GetMetricStream.
@@ -726,42 +724,42 @@ tables:
         type: Utf8
         nullable: false
         description: Metric stream name.
-        expr: {kind: path, path: [Name]}
+        expr: { kind: path, path: [Name] }
       - name: arn
         type: Utf8
         nullable: true
         description: Metric stream ARN.
-        expr: {kind: path, path: [Arn]}
+        expr: { kind: path, path: [Arn] }
       - name: firehose_arn
         type: Utf8
         nullable: true
         description: Destination Firehose ARN.
-        expr: {kind: path, path: [FirehoseArn]}
+        expr: { kind: path, path: [FirehoseArn] }
       - name: role_arn
         type: Utf8
         nullable: true
         description: Role ARN used by the metric stream.
-        expr: {kind: path, path: [RoleArn]}
+        expr: { kind: path, path: [RoleArn] }
       - name: state
         type: Utf8
         nullable: true
         description: Metric stream state.
-        expr: {kind: path, path: [State]}
+        expr: { kind: path, path: [State] }
       - name: output_format
         type: Utf8
         nullable: true
         description: Metric stream output format.
-        expr: {kind: path, path: [OutputFormat]}
+        expr: { kind: path, path: [OutputFormat] }
       - name: include_filters
         type: Utf8
         nullable: true
         description: Included namespace filters as JSON objects.
-        expr: {kind: join_array, path: [IncludeFilters]}
+        expr: { kind: join_array, path: [IncludeFilters] }
       - name: exclude_filters
         type: Utf8
         nullable: true
         description: Excluded namespace filters as JSON objects.
-        expr: {kind: join_array, path: [ExcludeFilters]}
+        expr: { kind: join_array, path: [ExcludeFilters] }
     filters:
       - name: name
         required: true
@@ -789,17 +787,17 @@ tables:
         nullable: false
         virtual: true
         description: Resource ARN filter.
-        expr: {kind: from_filter, key: resource_arn}
+        expr: { kind: from_filter, key: resource_arn }
       - name: key
         type: Utf8
         nullable: false
         description: Tag key.
-        expr: {kind: path, path: [Key]}
+        expr: { kind: path, path: [Key] }
       - name: value
         type: Utf8
         nullable: true
         description: Tag value.
-        expr: {kind: path, path: [Value]}
+        expr: { kind: path, path: [Value] }
     filters:
       - name: resource_arn
         required: true
