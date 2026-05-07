@@ -352,9 +352,7 @@ fn table_not_found_hint(
         // in the catalog, suggest the schema-qualified name instead of
         // sending the user to `coral.tables`.
         if table.contains('.')
-            && let Some(info) = known_tables
-                .iter()
-                .find(|info| format!("{}.{}", info.schema_name, info.table_name) == table)
+            && let Some(info) = quoted_qualified_table_match(table, known_tables)
         {
             return Some(quoted_qualified_table_hint(table, info));
         }
@@ -425,14 +423,42 @@ fn table_not_found_hint(
     Some(did_you_mean_hint(&format_schema_table(best)))
 }
 
+fn quoted_qualified_table_match<'a>(
+    table: &str,
+    known_tables: &'a [TableInfo],
+) -> Option<&'a TableInfo> {
+    if let Some(exact) = known_tables
+        .iter()
+        .find(|info| raw_schema_table_name(info) == table)
+    {
+        return Some(exact);
+    }
+
+    let mut matches = known_tables
+        .iter()
+        .filter(|info| raw_schema_table_name(info).eq_ignore_ascii_case(table));
+    let first = matches.next()?;
+    matches.next().is_none().then_some(first)
+}
+
 fn quoted_qualified_table_hint(missing: &str, info: &TableInfo) -> String {
+    let reference = format_schema_table(info);
+    let fully_quoted_reference = format_schema_table_fully_quoted(info);
+    let suggestions = if reference == fully_quoted_reference {
+        format!("`{reference}`")
+    } else {
+        format!("`{reference}` or `{fully_quoted_reference}`")
+    };
+
     format!(
         "`\"{missing}\"` is one quoted identifier, so SQL looks for a table literally named \
-         `{missing}`. Use `{}` or `{}` in `FROM`/`JOIN` clauses; do not quote the whole \
+         `{missing}`. Use {suggestions} in `FROM`/`JOIN` clauses; do not quote the whole \
          `schema.table` string.",
-        format_schema_table(info),
-        format_schema_table_fully_quoted(info)
     )
+}
+
+fn raw_schema_table_name(info: &TableInfo) -> String {
+    format!("{}.{}", info.schema_name, info.table_name)
 }
 
 /// Renders `schema.table` with per-component SQL quoting (dotted source
@@ -840,6 +866,49 @@ mod tests {
         assert!(
             hint.contains("do not quote the whole `schema.table` string"),
             "hint should explicitly reject whole-reference quoting, got: {hint}"
+        );
+    }
+
+    #[test]
+    fn table_not_found_quoted_qualified_name_matches_unique_case_insensitive_reference() {
+        let tables = vec![table("GitHub", "Pulls")];
+        let err = StructuredQueryError::table_not_found(
+            &tr(&["datafusion", "public", "github.pulls"]),
+            &tables,
+        );
+
+        assert_eq!(err.metadata().get("schema"), None);
+        assert_eq!(
+            err.metadata().get("table").map(String::as_str),
+            Some("github.pulls")
+        );
+        let hint = err.hint().expect("hint should be present");
+        assert!(
+            hint.contains("`\"github.pulls\"` is one quoted identifier"),
+            "hint should explain whole-reference quoting, got: {hint}"
+        );
+        assert!(
+            hint.contains("`\"GitHub\".\"Pulls\"`"),
+            "hint should suggest the case-preserved table reference, got: {hint}"
+        );
+        assert!(
+            !hint.contains("or `\"GitHub\".\"Pulls\"`"),
+            "hint should not duplicate equivalent suggestions, got: {hint}"
+        );
+    }
+
+    #[test]
+    fn table_not_found_quoted_qualified_name_ignores_ambiguous_case_insensitive_reference() {
+        let tables = vec![table("GitHub", "Pulls"), table("github", "PULLS")];
+        let err = StructuredQueryError::table_not_found(
+            &tr(&["datafusion", "public", "github.pulls"]),
+            &tables,
+        );
+
+        let hint = err.hint().expect("hint should be present");
+        assert!(
+            !hint.contains("`\"github.pulls\"` is one quoted identifier"),
+            "ambiguous case-insensitive matches should not pick an arbitrary table, got: {hint}"
         );
     }
 
