@@ -76,7 +76,7 @@ Three query instruments are exported on a 5-second periodic reader:
 | ------------------------ | --------- | ----------- | ----------------- | ----------------------------------------- |
 | `coral.query.count`      | Counter   | `{queries}` | `status=ok\|error` | Total queries executed.                   |
 | `coral.query.duration`   | Histogram | `s`         | `status=ok\|error` | Query execution latency in seconds.       |
-| `coral.query.rows`       | Histogram | `{rows}`    | —                 | Rows returned per successful query.       |
+| `coral.query.rows`       | Histogram | `{rows}`    | `status=ok`       | Rows returned per successful query.       |
 
 ## Distributed tracing
 
