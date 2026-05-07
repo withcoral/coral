@@ -316,7 +316,6 @@ fn http_manifest_with_function() -> Value {
         }],
         "functions": [{
             "name": "search_issues",
-            "kind": "search",
             "description": "Search issues",
             "args": [
                 {
@@ -402,7 +401,7 @@ async fn coral_table_functions_lists_source_functions() {
         &CoralQuery::execute_sql(
             &sources,
             test_runtime(),
-            "SELECT schema_name, public_name, kind, description, arguments_json, result_columns_json \
+            "SELECT schema_name, function_name, description, arguments_json, result_columns_json \
              FROM coral.table_functions WHERE schema_name = 'searchy'",
         )
         .await
@@ -412,8 +411,7 @@ async fn coral_table_functions_lists_source_functions() {
     assert_eq!(rows.len(), 1);
     let row = &rows[0];
     assert_eq!(row["schema_name"], "searchy");
-    assert_eq!(row["public_name"], "searchy.search_issues");
-    assert_eq!(row["kind"], "search");
+    assert_eq!(row["function_name"], "search_issues");
     assert_eq!(row["description"], "Search issues");
     assert_eq!(
         serde_json::from_str::<Value>(row["arguments_json"].as_str().unwrap()).unwrap(),

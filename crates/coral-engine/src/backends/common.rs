@@ -38,8 +38,6 @@ pub(crate) struct RegisteredTable {
 pub(crate) struct RegisteredTableFunction {
     pub(crate) schema_name: String,
     pub(crate) function_name: String,
-    pub(crate) public_name: String,
-    pub(crate) kind: String,
     pub(crate) description: String,
     pub(crate) arguments_json: String,
     pub(crate) result_columns_json: String,
@@ -200,7 +198,6 @@ pub(crate) fn build_registered_table_function(
     schema_name: &str,
     function: &SourceTableFunctionSpec,
 ) -> RegisteredTableFunction {
-    let public_name = format!("{schema_name}.{}", function.name);
     let arguments = function
         .args
         .iter()
@@ -227,12 +224,6 @@ pub(crate) fn build_registered_table_function(
     RegisteredTableFunction {
         schema_name: schema_name.to_string(),
         function_name: function.name.clone(),
-        public_name,
-        kind: if function.kind.is_empty() {
-            "table".to_string()
-        } else {
-            function.kind.clone()
-        },
         description: function.description.clone(),
         arguments_json: serde_json::to_string(&arguments).expect("arguments json"),
         result_columns_json: serde_json::to_string(&result_columns).expect("result columns json"),

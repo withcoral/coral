@@ -53,8 +53,7 @@ pub(crate) fn register(ctx: &SessionContext, active_sources: &[RegisteredSource]
 fn build_table_functions_table(active_sources: &[RegisteredSource]) -> Result<MemTable> {
     let schema = Arc::new(Schema::new(vec![
         Field::new("schema_name", DataType::Utf8, false),
-        Field::new("public_name", DataType::Utf8, false),
-        Field::new("kind", DataType::Utf8, false),
+        Field::new("function_name", DataType::Utf8, false),
         Field::new("description", DataType::Utf8, false),
         Field::new("arguments_json", DataType::Utf8, false),
         Field::new("result_columns_json", DataType::Utf8, false),
@@ -72,8 +71,7 @@ fn build_table_functions_table(active_sources: &[RegisteredSource]) -> Result<Me
         schema.clone(),
         vec![
             utf8_column(rows.iter().map(|row| Some(row.schema_name.as_str()))),
-            utf8_column(rows.iter().map(|row| Some(row.public_name.as_str()))),
-            utf8_column(rows.iter().map(|row| Some(row.kind.as_str()))),
+            utf8_column(rows.iter().map(|row| Some(row.function_name.as_str()))),
             utf8_column(rows.iter().map(|row| Some(row.description.as_str()))),
             utf8_column(rows.iter().map(|row| Some(row.arguments_json.as_str()))),
             utf8_column(
