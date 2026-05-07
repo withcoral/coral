@@ -8,7 +8,7 @@ use datafusion::sql::sqlparser::parser::Parser;
 
 use crate::backends::http::ProviderQueryError;
 use crate::contracts::{ColumnParts, StructuredQueryError, TableRefParts};
-use crate::{CoreError, SourceDecoratorError, TableInfo};
+use crate::{CoreError, QueryResultObserverError, SourceDecoratorError, TableInfo};
 
 pub(crate) fn datafusion_to_core(error: &DataFusionError, tables: &[TableInfo]) -> CoreError {
     datafusion_to_core_with_sql(error, tables, None)
@@ -49,6 +49,15 @@ pub(crate) fn source_decorator_error_to_core(error: &SourceDecoratorError) -> Co
     match error {
         SourceDecoratorError::InvalidInput(detail) => CoreError::InvalidInput(detail.clone()),
         SourceDecoratorError::FailedPrecondition(detail) => {
+            CoreError::FailedPrecondition(detail.clone())
+        }
+    }
+}
+
+pub(crate) fn query_result_observer_error_to_core(error: &QueryResultObserverError) -> CoreError {
+    match error {
+        QueryResultObserverError::InvalidInput(detail) => CoreError::InvalidInput(detail.clone()),
+        QueryResultObserverError::FailedPrecondition(detail) => {
             CoreError::FailedPrecondition(detail.clone())
         }
     }

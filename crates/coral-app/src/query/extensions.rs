@@ -49,6 +49,9 @@ pub(crate) fn engine_extensions_for_providers(
         let extra = provider.extensions_for(selected_sources);
         merged.source_decorators.extend(extra.source_decorators);
         merged
+            .query_result_observers
+            .extend(extra.query_result_observers);
+        merged
             .request_authenticators
             .extend(extra.request_authenticators);
     }
@@ -59,7 +62,12 @@ pub(crate) fn engine_extensions_for_providers(
 mod tests {
     use std::collections::BTreeMap;
 
-    use coral_engine::{RequestAuthenticator, RequestAuthenticatorError};
+    use arrow::datatypes::Schema;
+    use arrow::record_batch::RecordBatch;
+    use coral_engine::{
+        QueryResultObserver, QueryResultObserverError, RequestAuthenticator,
+        RequestAuthenticatorError,
+    };
     use reqwest::header::{HeaderName, HeaderValue};
 
     use super::*;
@@ -84,6 +92,25 @@ mod tests {
         }
     }
 
+    struct TestObserver {
+        name: &'static str,
+    }
+
+    impl QueryResultObserver for TestObserver {
+        fn name(&self) -> &'static str {
+            self.name
+        }
+
+        fn observe_result(
+            &self,
+            _sql: &str,
+            _schema: &Schema,
+            _batches: &[RecordBatch],
+        ) -> Result<(), QueryResultObserverError> {
+            Ok(())
+        }
+    }
+
     struct TestEngineExtensionsProvider {
         key: &'static str,
         name: &'static str,
@@ -100,11 +127,26 @@ mod tests {
         }
     }
 
+    struct TestObserverProvider {
+        name: &'static str,
+    }
+
+    impl EngineExtensionsProvider for TestObserverProvider {
+        fn extensions_for(&self, _selected_sources: &[QuerySource]) -> EngineExtensions {
+            let mut extensions = EngineExtensions::default();
+            extensions
+                .query_result_observers
+                .push(Arc::new(TestObserver { name: self.name }));
+            extensions
+        }
+    }
+
     #[test]
     fn noop_provider_installs_no_extensions() {
         let extensions = NoopEngineExtensionsProvider.extensions_for(&[]);
 
         assert!(extensions.source_decorators.is_empty());
+        assert!(extensions.query_result_observers.is_empty());
         assert!(extensions.request_authenticators.is_empty());
     }
 
@@ -145,5 +187,22 @@ mod tests {
 
         assert_eq!(base_authenticator.name(), "base");
         assert_eq!(extra_authenticator.name(), "extra");
+    }
+
+    #[test]
+    fn provider_lists_merge_query_result_observers_in_call_order() {
+        let providers = vec![
+            Arc::new(TestObserverProvider { name: "base" }) as Arc<dyn EngineExtensionsProvider>,
+            Arc::new(TestObserverProvider { name: "extra" }),
+        ];
+
+        let extensions = engine_extensions_for_providers(&providers, &[]);
+        let observer_names = extensions
+            .query_result_observers
+            .iter()
+            .map(|observer| observer.name())
+            .collect::<Vec<_>>();
+
+        assert_eq!(observer_names, ["base", "extra"]);
     }
 }

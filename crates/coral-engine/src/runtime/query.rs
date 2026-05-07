@@ -9,18 +9,24 @@ use datafusion_tracing::{InstrumentationOptions, RuleInstrumentationOptions};
 
 use crate::backends::compile_query_source;
 use crate::runtime::catalog;
-use crate::runtime::error::{datafusion_to_core, datafusion_to_core_with_sql};
+use crate::runtime::error::{
+    datafusion_to_core, datafusion_to_core_with_sql, query_result_observer_error_to_core,
+};
 use crate::runtime::json::register_json_support;
 use crate::runtime::pattern_validator::register_pattern_validator;
 use crate::runtime::registry::{
     CompiledQuerySource, SourceRegistrationCandidate, SourceRegistrationFailure, register_sources,
 };
-use crate::{CoreError, QueryExecution, QueryRuntimeConfig, QuerySource, TableInfo};
+use crate::{
+    CoreError, QueryExecution, QueryResultObserver, QueryResultObserverError, QueryRuntimeConfig,
+    QuerySource, TableInfo,
+};
 
 pub(crate) struct QueryRuntimeAdapter {
     ctx: Arc<SessionContext>,
     tables: Vec<TableInfo>,
     failures: Vec<SourceRegistrationFailure>,
+    query_result_observers: Vec<Arc<dyn QueryResultObserver>>,
 }
 
 pub(crate) async fn build_runtime(
@@ -99,6 +105,7 @@ pub(crate) async fn build_runtime(
         ctx,
         tables,
         failures: registration.failures,
+        query_result_observers: extensions.query_result_observers,
     })
 }
 
@@ -131,7 +138,22 @@ impl QueryRuntimeAdapter {
             .collect()
             .await
             .map_err(|err| datafusion_to_core(&err, &self.tables))?;
+        self.observe_query_result(sql, arrow_schema.as_ref(), &batches)?;
         Ok(QueryExecution::new(arrow_schema, batches))
+    }
+
+    fn observe_query_result(
+        &self,
+        sql: &str,
+        schema: &arrow::datatypes::Schema,
+        batches: &[arrow::record_batch::RecordBatch],
+    ) -> Result<(), CoreError> {
+        for observer in &self.query_result_observers {
+            observer
+                .observe_result(sql, schema, batches)
+                .map_err(|error| query_result_observer_error(observer.name(), &error))?;
+        }
+        Ok(())
     }
 }
 
@@ -140,4 +162,17 @@ fn read_only_sql_options() -> SQLOptions {
         .with_allow_ddl(false)
         .with_allow_dml(false)
         .with_allow_statements(false)
+}
+
+fn query_result_observer_error(name: &str, error: &QueryResultObserverError) -> CoreError {
+    let core = query_result_observer_error_to_core(error);
+    match core {
+        CoreError::InvalidInput(detail) => {
+            CoreError::InvalidInput(format!("query result observer '{name}': {detail}"))
+        }
+        CoreError::FailedPrecondition(detail) => {
+            CoreError::FailedPrecondition(format!("query result observer '{name}': {detail}"))
+        }
+        other => other,
+    }
 }

@@ -1,8 +1,10 @@
-//! Advanced composition seams for source registration.
+//! Advanced composition seams for engine extension points.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
+use arrow::datatypes::Schema;
+use arrow::record_batch::RecordBatch;
 use datafusion::datasource::TableProvider;
 use reqwest::header::{HeaderName, HeaderValue};
 
@@ -16,6 +18,8 @@ pub type SourceTables = HashMap<String, Arc<dyn TableProvider>>;
 pub struct EngineExtensions {
     /// Registration-time table decorators for the selected source set.
     pub source_decorators: Vec<Box<dyn SourceDecorator>>,
+    /// Post-query observers invoked after successful SQL result collection.
+    pub query_result_observers: Vec<Arc<dyn QueryResultObserver>>,
     /// Request-time custom authenticators keyed by `auth.authenticator`.
     pub request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>>,
 }
@@ -41,6 +45,31 @@ pub enum SourceDecoratorError {
 }
 
 impl SourceDecoratorError {
+    #[must_use]
+    /// Builds an invalid-input error.
+    pub fn invalid_input(detail: impl Into<String>) -> Self {
+        Self::InvalidInput(detail.into())
+    }
+
+    #[must_use]
+    /// Builds a failed-precondition error.
+    pub fn failed_precondition(detail: impl Into<String>) -> Self {
+        Self::FailedPrecondition(detail.into())
+    }
+}
+
+/// Neutral error type for query-result observer failures.
+#[derive(Debug, thiserror::Error)]
+pub enum QueryResultObserverError {
+    /// The observer was configured with invalid input.
+    #[error("{0}")]
+    InvalidInput(String),
+    /// The observer could not proceed because a precondition was unmet.
+    #[error("{0}")]
+    FailedPrecondition(String),
+}
+
+impl QueryResultObserverError {
     #[must_use]
     /// Builds an invalid-input error.
     pub fn invalid_input(detail: impl Into<String>) -> Self {
@@ -110,6 +139,31 @@ pub trait RequestAuthenticator: Send + Sync + std::fmt::Debug {
     ) -> Result<(), RequestAuthenticatorError> {
         Ok(())
     }
+}
+
+/// Post-query hook for observing fully materialized successful query results.
+///
+/// Observers run after `DataFusion` successfully collects result batches and
+/// before [`crate::QueryExecution`] is returned. They receive read-only
+/// references to the final SQL text, Arrow schema, and result batches; observer
+/// implementations must not rely on mutating the returned query result.
+pub trait QueryResultObserver: Send + Sync {
+    /// Stable observer name used in diagnostics.
+    fn name(&self) -> &'static str;
+
+    /// Observes one successful query result.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QueryResultObserverError`] if the observer cannot process the
+    /// final result. Observer failures fail the query after SQL execution has
+    /// succeeded.
+    fn observe_result(
+        &self,
+        sql: &str,
+        schema: &Schema,
+        batches: &[RecordBatch],
+    ) -> Result<(), QueryResultObserverError>;
 }
 
 /// Registration-time hook for wrapping or replacing a source's table providers.
