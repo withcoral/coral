@@ -4,7 +4,7 @@ resolver = "2"
 
 [workspace.package]
 edition = "2024"
-version = "0.1.5" # x-release-please-version
+version = "0.2.0" # x-release-please-version
 license = "Apache-2.0"
 rust-version = "1.95"
 

@@ -145103,11 +145103,13 @@ tables:
   - name: repositories
     description: List public repositories
     guide: >
-      Use this table to scan public repositories or switch into org-scoped repository lists. Works
-      without WHERE filters. Use LIMIT on the public /repositories feed; add org with one of
-      secret_name, migration_id, runner_group_id, pat_request_id, pat_id, or name to hit the
-      matching org route.
+      Use this table to scan public repositories or switch into user/org-scoped repository lists.
+      Works without WHERE filters. Use LIMIT on the public /repositories feed; filter by
+      owner__login for one user's public repositories; add org with one of secret_name,
+      migration_id, runner_group_id, pat_request_id, pat_id, or name to hit the matching org route.
     filters:
+      - name: owner__login
+        required: false
       - name: secret_name
         required: false
       - name: migration_id
@@ -145126,6 +145128,10 @@ tables:
       method: GET
       path: /repositories
     requests:
+      - when_filters:
+          - owner__login
+        method: GET
+        path: /users/{{filter.owner__login}}/repos
       - when_filters:
           - secret_name
         method: GET

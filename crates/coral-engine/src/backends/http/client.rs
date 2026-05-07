@@ -1544,6 +1544,26 @@ mod tests {
                 "key": key,
                 "default": default,
             }),
+            ValueSourceSpec::FilterSplit {
+                key,
+                separator,
+                part,
+            } => json!({
+                "from": "filter_split",
+                "key": key,
+                "separator": separator,
+                "part": part,
+            }),
+            ValueSourceSpec::FilterSplitInt {
+                key,
+                separator,
+                part,
+            } => json!({
+                "from": "filter_split_int",
+                "key": key,
+                "separator": separator,
+                "part": part,
+            }),
             ValueSourceSpec::Input { key } => json!({
                 "from": "input",
                 "key": key,
@@ -1711,6 +1731,83 @@ mod tests {
             error
                 .to_string()
                 .contains("filter 'start_time' value 'not-a-number' is not a valid i64")
+        );
+    }
+
+    #[test]
+    fn resolve_value_source_splits_filter_parts() {
+        let filters = HashMap::from([("issue_identifier".to_string(), "SOURCE-496".to_string())]);
+
+        let team = resolve_value_source(
+            &ValueSourceSpec::FilterSplit {
+                key: "issue_identifier".to_string(),
+                separator: "-".to_string(),
+                part: 0,
+            },
+            &filters,
+            &HashMap::new(),
+            &BTreeMap::new(),
+        )
+        .expect("split filter should resolve");
+        let number = resolve_value_source(
+            &ValueSourceSpec::FilterSplitInt {
+                key: "issue_identifier".to_string(),
+                separator: "-".to_string(),
+                part: 1,
+            },
+            &filters,
+            &HashMap::new(),
+            &BTreeMap::new(),
+        )
+        .expect("split integer filter should resolve");
+
+        assert_eq!(team, Some(json!("SOURCE")));
+        assert_eq!(number, Some(json!(496)));
+    }
+
+    #[test]
+    fn resolve_value_source_rejects_missing_filter_split_part() {
+        let filters = HashMap::from([("issue_identifier".to_string(), "SOURCE496".to_string())]);
+
+        let error = resolve_value_source(
+            &ValueSourceSpec::FilterSplit {
+                key: "issue_identifier".to_string(),
+                separator: "-".to_string(),
+                part: 1,
+            },
+            &filters,
+            &HashMap::new(),
+            &BTreeMap::new(),
+        )
+        .expect_err("missing split part should fail");
+
+        assert!(
+            error.to_string().contains(
+                "filter 'issue_identifier' value 'SOURCE496' does not contain split part 1"
+            )
+        );
+    }
+
+    #[test]
+    fn resolve_value_source_rejects_missing_filter_split_int_part() {
+        let filters = HashMap::from([("issue_identifier".to_string(), "SOURCE496".to_string())]);
+
+        let error = resolve_value_source(
+            &ValueSourceSpec::FilterSplitInt {
+                key: "issue_identifier".to_string(),
+                separator: "-".to_string(),
+                part: 1,
+            },
+            &filters,
+            &HashMap::new(),
+            &BTreeMap::new(),
+        )
+        .expect_err("missing split integer part should fail");
+
+        assert!(
+            error.to_string().contains(
+                "filter 'issue_identifier' value 'SOURCE496' does not contain split part 1"
+            )
         );
     }
 

@@ -68,14 +68,14 @@ async fn mcp_stdio_lists_tools_and_resources() -> Result<(), Box<dyn std::error:
             .description
             .as_deref()
             .expect("sql description")
-            .contains("1 visible SQL schema(s) are currently available")
+            .contains("3 table(s) are currently visible")
     );
     assert!(
         tools[1]
             .description
             .as_deref()
             .expect("list_tables description")
-            .contains("1 table(s) are currently visible")
+            .contains("3 table(s) are currently visible")
     );
 
     let resources = client.list_all_resources().await?;
@@ -94,14 +94,14 @@ async fn mcp_stdio_lists_tools_and_resources() -> Result<(), Box<dyn std::error:
     assert!(guide_text.contains("## Available Schemas"));
     assert!(guide_text.contains("- local_messages"));
     assert!(guide_text.contains(
-        "FROM coral.columns WHERE schema_name = 'local_messages' AND table_name = 'messages'"
+        "FROM coral.columns WHERE schema_name = 'local_messages' AND table_name = 'events'"
     ));
 
     let tables = client
         .read_resource(ReadResourceRequestParams::new("coral://tables"))
         .await?;
     let tables_json: Value = serde_json::from_str(text_content(&tables))?;
-    assert_eq!(tables_json["tables"][0]["name"], "local_messages.messages");
+    assert_eq!(tables_json["tables"][0]["name"], "local_messages.events");
 
     client.cancel().await?;
     server.shutdown().await;
@@ -137,10 +137,37 @@ async fn mcp_stdio_sql_and_list_tables_return_structured_content()
         .call_tool(CallToolRequestParams::new("list_tables"))
         .await?;
     assert_eq!(tables.is_error, Some(false));
+    let structured_tables = tables.structured_content.expect("structured content");
+    assert_eq!(structured_tables["total"], 3);
+    assert_eq!(structured_tables["limit"], 50);
+    assert_eq!(structured_tables["offset"], 0);
+    assert_eq!(structured_tables["has_more"], false);
     assert_eq!(
-        tables.structured_content.expect("structured content")["tables"][0]["name"],
-        "local_messages.messages"
+        structured_tables["tables"][0]["name"],
+        "local_messages.events"
     );
+    assert!(structured_tables["tables"][0]["columns"].is_null());
+    let requests = server.list_tables_requests();
+    let request = requests.last().expect("list tables request");
+    assert_eq!(request.schema_name, "");
+    let request_pagination = request.pagination.as_ref().expect("request pagination");
+    assert_eq!(request_pagination.limit, 50);
+    assert_eq!(request_pagination.offset, 0);
+    assert!(request.omit_columns);
+
+    let paginated = client
+        .call_tool(
+            CallToolRequestParams::new("list_tables").with_arguments(json_object(&json!({
+                "schema": "local_messages",
+                "limit": 2,
+                "offset": 0
+            }))),
+        )
+        .await?;
+    let paginated = paginated.structured_content.expect("structured content");
+    assert_eq!(paginated["total"], 3);
+    assert_eq!(paginated["has_more"], true);
+    assert_eq!(paginated["next_offset"], 2);
 
     let sql = client
         .call_tool(
@@ -184,7 +211,7 @@ async fn mcp_stdio_tool_errors_do_not_end_the_session() -> Result<(), Box<dyn st
     assert_eq!(tables.is_error, Some(false));
     assert_eq!(
         tables.structured_content.expect("structured content")["tables"][0]["name"],
-        "local_messages.messages"
+        "local_messages.events"
     );
 
     client.cancel().await?;

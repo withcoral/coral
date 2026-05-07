@@ -313,6 +313,16 @@ pub enum ValueSourceSpec {
         #[serde(default)]
         default: Option<bool>,
     },
+    FilterSplit {
+        key: String,
+        separator: String,
+        part: usize,
+    },
+    FilterSplitInt {
+        key: String,
+        separator: String,
+        part: usize,
+    },
     Input {
         key: String,
     },

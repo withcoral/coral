@@ -10,7 +10,6 @@ use coral_api::v1::{
 };
 use coral_spec::{ManifestInputKind, ManifestInputSpec};
 use tonic::{Request, Response, Status};
-use tracing::Instrument as _;
 
 use crate::bootstrap::app_status;
 use crate::query::manager::QueryManager;
@@ -18,8 +17,8 @@ use crate::sources::SourceName;
 use crate::sources::manager::SourceManager;
 use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
 use crate::transport::{
-    grpc_span, query_status, validate_source_response_to_proto, workspace_name_from_proto,
-    workspace_to_proto,
+    grpc_span, instrument_grpc, query_status, validate_source_response_to_proto,
+    workspace_name_from_proto, workspace_to_proto,
 };
 use crate::workspaces::WorkspaceName;
 
@@ -46,7 +45,7 @@ impl SourceServiceApi for SourceService {
     ) -> Result<Response<DiscoverSourcesResponse>, Status> {
         let span = grpc_span(request.metadata(), "discover_sources");
         let sources = self.sources.clone();
-        async move {
+        instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
             let sources = sources
@@ -56,8 +55,7 @@ impl SourceServiceApi for SourceService {
                 .map(candidate_source_to_proto)
                 .collect();
             Ok(Response::new(DiscoverSourcesResponse { sources }))
-        }
-        .instrument(span)
+        })
         .await
     }
 
@@ -67,7 +65,7 @@ impl SourceServiceApi for SourceService {
     ) -> Result<Response<ListSourcesResponse>, Status> {
         let span = grpc_span(request.metadata(), "list_sources");
         let sources = self.sources.clone();
-        async move {
+        instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
             let sources: Vec<_> = sources
@@ -77,8 +75,7 @@ impl SourceServiceApi for SourceService {
                 .map(|source| installed_source_to_proto(&workspace_name, source))
                 .collect();
             Ok(Response::new(ListSourcesResponse { sources }))
-        }
-        .instrument(span)
+        })
         .await
     }
 
@@ -88,7 +85,7 @@ impl SourceServiceApi for SourceService {
     ) -> Result<Response<Source>, Status> {
         let span = grpc_span(request.metadata(), "get_source");
         let sources = self.sources.clone();
-        async move {
+        instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
             let source_name = SourceName::parse(&request.name).map_err(app_status)?;
@@ -99,8 +96,7 @@ impl SourceServiceApi for SourceService {
                 &workspace_name,
                 source,
             )))
-        }
-        .instrument(span)
+        })
         .await
     }
 
@@ -110,7 +106,7 @@ impl SourceServiceApi for SourceService {
     ) -> Result<Response<SourceInfo>, Status> {
         let span = grpc_span(request.metadata(), "get_source_info");
         let sources = self.sources.clone();
-        async move {
+        instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
             let source_name = SourceName::parse(&request.name).map_err(app_status)?;
@@ -118,8 +114,7 @@ impl SourceServiceApi for SourceService {
                 .get_source_info(&workspace_name, &source_name)
                 .map_err(app_status)?;
             Ok(Response::new(candidate_source_to_proto(source)))
-        }
-        .instrument(span)
+        })
         .await
     }
 
@@ -129,7 +124,7 @@ impl SourceServiceApi for SourceService {
     ) -> Result<Response<Source>, Status> {
         let span = grpc_span(request.metadata(), "create_bundled_source");
         let sources = self.sources.clone();
-        async move {
+        instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
             let bundled_name = SourceName::parse(&request.name).map_err(app_status)?;
@@ -140,8 +135,7 @@ impl SourceServiceApi for SourceService {
                 &workspace_name,
                 installed,
             )))
-        }
-        .instrument(span)
+        })
         .await
     }
 
@@ -151,7 +145,7 @@ impl SourceServiceApi for SourceService {
     ) -> Result<Response<Source>, Status> {
         let span = grpc_span(request.metadata(), "import_source");
         let sources = self.sources.clone();
-        async move {
+        instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
             let installed = sources
@@ -161,8 +155,7 @@ impl SourceServiceApi for SourceService {
                 &workspace_name,
                 installed,
             )))
-        }
-        .instrument(span)
+        })
         .await
     }
 
@@ -172,7 +165,7 @@ impl SourceServiceApi for SourceService {
     ) -> Result<Response<()>, Status> {
         let span = grpc_span(request.metadata(), "delete_source");
         let sources = self.sources.clone();
-        async move {
+        instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
             let source_name = SourceName::parse(&request.name).map_err(app_status)?;
@@ -180,8 +173,7 @@ impl SourceServiceApi for SourceService {
                 .delete_source(&workspace_name, &source_name)
                 .map_err(app_status)?;
             Ok(Response::new(()))
-        }
-        .instrument(span)
+        })
         .await
     }
 
@@ -191,7 +183,7 @@ impl SourceServiceApi for SourceService {
     ) -> Result<Response<ValidateSourceResponse>, Status> {
         let span = grpc_span(request.metadata(), "validate_source");
         let queries = self.queries.clone();
-        async move {
+        instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
             let source_name = SourceName::parse(&request.name).map_err(app_status)?;
@@ -206,8 +198,7 @@ impl SourceServiceApi for SourceService {
                 &workspace_name,
                 report,
             )))
-        }
-        .instrument(span)
+        })
         .await
     }
 }

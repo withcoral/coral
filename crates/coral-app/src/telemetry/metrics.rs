@@ -140,7 +140,10 @@ pub(crate) mod test_support {
 
 #[cfg(test)]
 mod tests {
-    use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData, ResourceMetrics};
+    use opentelemetry::Value;
+    use opentelemetry_sdk::metrics::data::{
+        AggregatedMetrics, Histogram, MetricData, ResourceMetrics,
+    };
 
     use super::metrics;
 
@@ -170,6 +173,27 @@ mod tests {
         })
     }
 
+    fn histogram_has_status(metrics: &[ResourceMetrics], name: &str, status: &str) -> bool {
+        find_metric(metrics, name).is_some_and(|metric| match metric.data() {
+            AggregatedMetrics::F64(MetricData::Histogram(histogram)) => {
+                histogram_data_has_status(histogram, status)
+            }
+            AggregatedMetrics::U64(MetricData::Histogram(histogram)) => {
+                histogram_data_has_status(histogram, status)
+            }
+            _ => false,
+        })
+    }
+
+    fn histogram_data_has_status<T>(histogram: &Histogram<T>, status: &str) -> bool {
+        histogram.data_points().any(|point| {
+            point.attributes().any(|attr| {
+                attr.key.as_str() == "status"
+                    && matches!(&attr.value, Value::String(value) if value.as_str() == status)
+            })
+        })
+    }
+
     fn counter_total(metrics: &[ResourceMetrics], name: &str) -> u64 {
         find_metric(metrics, name).map_or(0, |metric| match metric.data() {
             AggregatedMetrics::U64(MetricData::Sum(sum)) => sum
@@ -192,12 +216,13 @@ mod tests {
         metrics.count.add(1, std::slice::from_ref(&err));
         metrics.duration.record(0.5, std::slice::from_ref(&ok));
         metrics.duration.record(0.1, std::slice::from_ref(&err));
-        metrics.rows.record(7, &[]);
+        metrics.rows.record(7, std::slice::from_ref(&ok));
 
         super::test_support::flush_metrics();
         let finished = exporter.get_finished_metrics().expect("finished metrics");
         assert_eq!(counter_total(&finished, "coral.query.count"), 3);
         assert_eq!(histogram_total_count(&finished, "coral.query.duration"), 2);
         assert_eq!(histogram_total_count(&finished, "coral.query.rows"), 1);
+        assert!(histogram_has_status(&finished, "coral.query.rows", "ok"));
     }
 }

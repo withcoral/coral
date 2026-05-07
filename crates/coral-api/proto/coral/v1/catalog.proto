@@ -29,3 +29,17 @@ message Table {
   // Required filter names, if any.
   repeated string required_filters = 6;
 }
+
+// Table metadata without full column definitions.
+message TableSummary {
+  // Workspace that scopes this table.
+  Workspace workspace = 1;
+  // Source schema that owns the table.
+  string schema_name = 2;
+  // Table name within the schema.
+  string name = 3;
+  // Human-readable table description.
+  string description = 4;
+  // Filter names that must be constrained when querying this table.
+  repeated string required_filters = 5;
+}

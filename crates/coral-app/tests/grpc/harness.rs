@@ -104,6 +104,9 @@ impl GrpcHarness {
         self.query_client()
             .list_tables(Request::new(ListTablesRequest {
                 workspace: Some(default_workspace()),
+                schema_name: String::new(),
+                pagination: None,
+                omit_columns: false,
             }))
             .await
             .expect("list tables")
@@ -196,6 +199,53 @@ impl Drop for FailingHttpFixture {
 
 pub(crate) fn fixture_manifest_yaml(root: &Path) -> String {
     fixture_manifest_with_test_queries_yaml(root, &[])
+}
+
+pub(crate) fn fixture_manifest_with_multiple_tables_yaml(root: &Path) -> String {
+    let data_dir = root.join("fixture-data");
+    fs::create_dir_all(&data_dir).expect("create data dir");
+    fs::write(
+        data_dir.join("messages.jsonl"),
+        r#"{"type":"user","sessionId":"s1","text":"hello"}
+{"type":"assistant","sessionId":"s1","text":"world"}
+"#,
+    )
+    .expect("write jsonl");
+    let table_source = json!({
+        "location": format!("file://{}/", data_dir.display()),
+        "glob": "**/*.jsonl",
+    });
+    let table_columns = json!([
+        {"name": "type", "type": "Utf8"},
+        {"name": "sessionId", "type": "Utf8"},
+        {"name": "text", "type": "Utf8"},
+    ]);
+    manifest_yaml(&json!({
+        "name": "local_messages",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "jsonl",
+        "tables": [
+            {
+                "name": "events",
+                "description": "Fixture events",
+                "source": table_source.clone(),
+                "columns": table_columns.clone(),
+            },
+            {
+                "name": "messages",
+                "description": "Fixture messages",
+                "source": table_source.clone(),
+                "columns": table_columns.clone(),
+            },
+            {
+                "name": "sessions",
+                "description": "Fixture sessions",
+                "source": table_source,
+                "columns": table_columns,
+            },
+        ],
+    }))
 }
 
 pub(crate) fn fixture_manifest_with_test_queries_yaml(
