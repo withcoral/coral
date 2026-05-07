@@ -8,6 +8,7 @@ use crate::state::AppStateLayout;
 pub(super) const DEFAULT_TRACE_FILTER: &str = "coral_app=trace,coral_client=trace,coral_mcp=trace,coral_engine=trace,coral_engine::datafusion=off";
 pub(super) const DEFAULT_LOG_FILTER: &str = "coral_app=info,coral_engine=info";
 const DEFAULT_SERVICE_NAME: &str = "coral";
+const DEFAULT_INTERNAL_HTTP_BODY_MAX_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Default, Deserialize)]
 struct TelemetryConfigFile {
@@ -25,6 +26,8 @@ pub struct TelemetryConfig {
     pub(crate) trace_filter: String,
     pub(crate) service_name: String,
     pub(crate) enable_internal_tracing: bool,
+    pub(crate) record_internal_http_bodies: bool,
+    pub(crate) internal_http_body_max_bytes: usize,
 }
 
 impl Default for TelemetryConfig {
@@ -36,6 +39,8 @@ impl Default for TelemetryConfig {
             trace_filter: DEFAULT_TRACE_FILTER.to_string(),
             service_name: DEFAULT_SERVICE_NAME.to_string(),
             enable_internal_tracing: false,
+            record_internal_http_bodies: false,
+            internal_http_body_max_bytes: DEFAULT_INTERNAL_HTTP_BODY_MAX_BYTES,
         }
     }
 }
@@ -55,6 +60,12 @@ impl TelemetryConfig {
         };
 
         Ok(config)
+    }
+
+    #[must_use]
+    pub(crate) fn internal_http_body_recording_max_bytes(&self) -> Option<usize> {
+        (self.enable_internal_tracing && self.record_internal_http_bodies)
+            .then_some(self.internal_http_body_max_bytes)
     }
 }
 
@@ -92,6 +103,8 @@ log_filter = "info"
 trace_filter = "coral_app=debug"
 service_name = "from-config"
 enable_internal_tracing = true
+record_internal_http_bodies = true
+internal_http_body_max_bytes = 42
 "#,
         )
         .expect("write config");
@@ -104,5 +117,19 @@ enable_internal_tracing = true
         assert_eq!(config.trace_filter, "coral_app=debug");
         assert_eq!(config.service_name, "from-config");
         assert!(config.enable_internal_tracing);
+        assert!(config.record_internal_http_bodies);
+        assert_eq!(config.internal_http_body_max_bytes, 42);
+        assert_eq!(config.internal_http_body_recording_max_bytes(), Some(42));
+    }
+
+    #[test]
+    fn http_body_recording_requires_internal_tracing() {
+        let config = TelemetryConfig {
+            record_internal_http_bodies: true,
+            internal_http_body_max_bytes: 8,
+            ..TelemetryConfig::default()
+        };
+
+        assert_eq!(config.internal_http_body_recording_max_bytes(), None);
     }
 }

@@ -795,6 +795,7 @@ mod tests {
             .with_kind(SpanKind::Internal)
             .with_attributes([
                 KeyValue::new("test.attribute", "value"),
+                KeyValue::new("coral.http.request.body", r#"{"query":"Ada"}"#),
                 KeyValue::new("sql", "SELECT 1"),
                 KeyValue::new("status", "ok"),
                 KeyValue::new("row_count", 1_i64),
@@ -820,6 +821,11 @@ mod tests {
             detail.spans[0]
                 .attributes_json
                 .contains(r#""test.attribute":"value""#)
+        );
+        assert!(
+            detail.spans[0]
+                .attributes_json
+                .contains(r#""coral.http.request.body":"{\"query\":\"Ada\"}""#)
         );
         assert!(
             detail.spans[0]

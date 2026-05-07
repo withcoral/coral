@@ -180,6 +180,11 @@ impl SourceValidationReport {
 pub struct QueryRuntimeContext {
     /// Current user's home directory for local path resolution.
     pub home_dir: Option<PathBuf>,
+    /// Max UTF-8 bytes to record for HTTP request/response bodies on trace spans.
+    ///
+    /// `None` disables body recording. Callers should only enable this when the
+    /// local in-process trace store is active.
+    pub http_trace_body_max_bytes: Option<usize>,
 }
 
 /// Owned runtime-build inputs needed while compiling and registering sources.

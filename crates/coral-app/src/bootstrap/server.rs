@@ -247,10 +247,14 @@ impl ServerBuilder {
         let source_manager =
             SourceManager::new(config_store.clone(), secret_store.clone(), layout.clone());
         let feedback_manager = FeedbackManager::new(layout.clone());
+        let mut query_runtime_context = env.query_runtime_context();
+        query_runtime_context.http_trace_body_max_bytes =
+            telemetry_config.internal_http_body_recording_max_bytes();
+
         let query_manager = QueryManager::new(
             config_store,
             secret_store,
-            env.query_runtime_context(),
+            query_runtime_context,
             layout,
             self.config.engine_extensions_providers,
         );
@@ -927,6 +931,7 @@ enable_internal_tracing = true
             SecretStore::new(layout.clone()),
             QueryRuntimeContext {
                 home_dir: Some(fake_home.clone()),
+                ..QueryRuntimeContext::default()
             },
             layout,
             vec![Arc::new(NoopEngineExtensionsProvider)],
@@ -1010,7 +1015,7 @@ tables:
         let query_manager = QueryManager::new(
             ConfigStore::new(layout.clone()),
             SecretStore::new(layout.clone()),
-            QueryRuntimeContext { home_dir: None },
+            QueryRuntimeContext::default(),
             layout,
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
@@ -1105,7 +1110,7 @@ tables:
         let query_manager = QueryManager::new(
             ConfigStore::new(layout.clone()),
             SecretStore::new(layout.clone()),
-            QueryRuntimeContext { home_dir: None },
+            QueryRuntimeContext::default(),
             layout,
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );

@@ -15,7 +15,7 @@ use opentelemetry_otlp::{
 use opentelemetry_sdk::logs::SdkLoggerProvider;
 use opentelemetry_sdk::metrics::SdkMeterProvider;
 use opentelemetry_sdk::propagation::TraceContextPropagator;
-use opentelemetry_sdk::trace::SdkTracerProvider;
+use opentelemetry_sdk::trace::{SdkTracerProvider, SpanData, SpanExporter};
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 use tracing_subscriber::Layer as _;
 use tracing_subscriber::filter::Targets;
@@ -38,6 +38,58 @@ static LOGGER_PROVIDER: Mutex<Option<SdkLoggerProvider>> = Mutex::new(None);
 static METER_PROVIDER: Mutex<Option<SdkMeterProvider>> = Mutex::new(None);
 
 const METRICS_INTERVAL: Duration = Duration::from_secs(5);
+const LOCAL_HTTP_BODY_ATTRIBUTE_PREFIXES: &[&str] =
+    &["coral.http.request.body", "coral.http.response.body"];
+
+#[derive(Debug)]
+struct HttpBodyFilteringSpanExporter<E> {
+    inner: E,
+}
+
+impl<E> HttpBodyFilteringSpanExporter<E> {
+    fn new(inner: E) -> Self {
+        Self { inner }
+    }
+}
+
+impl<E> SpanExporter for HttpBodyFilteringSpanExporter<E>
+where
+    E: SpanExporter,
+{
+    async fn export(&self, mut batch: Vec<SpanData>) -> opentelemetry_sdk::error::OTelSdkResult {
+        for span in &mut batch {
+            strip_local_http_body_attributes(span);
+        }
+        self.inner.export(batch).await
+    }
+
+    fn shutdown_with_timeout(
+        &mut self,
+        timeout: Duration,
+    ) -> opentelemetry_sdk::error::OTelSdkResult {
+        self.inner.shutdown_with_timeout(timeout)
+    }
+
+    fn force_flush(&mut self) -> opentelemetry_sdk::error::OTelSdkResult {
+        self.inner.force_flush()
+    }
+
+    fn set_resource(&mut self, resource: &opentelemetry_sdk::Resource) {
+        self.inner.set_resource(resource);
+    }
+}
+
+fn strip_local_http_body_attributes(span: &mut SpanData) {
+    span.attributes
+        .retain(|attribute| !is_local_http_body_attribute(attribute.key.as_str()));
+}
+
+fn is_local_http_body_attribute(key: &str) -> bool {
+    LOCAL_HTTP_BODY_ATTRIBUTE_PREFIXES.iter().any(|prefix| {
+        key.strip_prefix(prefix)
+            .is_some_and(|suffix| suffix.is_empty() || suffix.starts_with('.'))
+    })
+}
 
 fn build_log_filter(filter: Option<&str>) -> (EnvFilter, Option<String>) {
     let Some(filter) = filter else {
@@ -261,6 +313,7 @@ fn try_init_tracing(
                 .with_headers(headers.clone())
                 .build()
                 .map_err(|e| AppError::InvalidInput(e.to_string()))?;
+            let trace_exporter = HttpBodyFilteringSpanExporter::new(trace_exporter);
             builder = builder.with_span_processor(
                 opentelemetry_sdk::trace::BatchSpanProcessor::builder(trace_exporter).build(),
             );
@@ -396,9 +449,13 @@ pub fn shutdown_tracing() {
 mod tests {
     use std::collections::HashMap;
 
+    use opentelemetry::KeyValue;
+    use opentelemetry::trace::{Span as _, SpanKind, Tracer, TracerProvider as _};
+    use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+
     use super::{
-        DEFAULT_LOG_FILTER, DEFAULT_TRACE_FILTER, build_log_filter, build_trace_targets,
-        normalize_otlp_endpoint, parse_headers,
+        DEFAULT_LOG_FILTER, DEFAULT_TRACE_FILTER, HttpBodyFilteringSpanExporter, build_log_filter,
+        build_trace_targets, normalize_otlp_endpoint, parse_headers,
     };
 
     #[test]
@@ -449,6 +506,49 @@ mod tests {
         assert!(targets.would_enable("coral_mcp::server", &tracing::Level::TRACE));
         assert!(targets.would_enable("coral_engine::http", &tracing::Level::TRACE));
         assert!(!targets.would_enable("coral_engine::datafusion", &tracing::Level::TRACE));
+    }
+
+    #[test]
+    fn otlp_trace_export_filter_strips_local_http_body_attributes() {
+        let memory = InMemorySpanExporter::default();
+        let filtered_exporter = HttpBodyFilteringSpanExporter::new(memory.clone());
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(filtered_exporter)
+            .build();
+        let tracer = provider.tracer("filter-test");
+        let mut span = tracer
+            .span_builder("http.response")
+            .with_kind(SpanKind::Client)
+            .with_attributes([
+                KeyValue::new("coral.http.request.body", r#"{"token":"secret"}"#),
+                KeyValue::new("coral.http.response.body.truncated", true),
+                KeyValue::new("http.response.status_code", 200_i64),
+            ])
+            .start(&tracer);
+        span.end();
+        provider.force_flush().expect("flush spans");
+
+        let spans = memory.get_finished_spans().expect("finished spans");
+        let attributes = &spans[0].attributes;
+
+        assert!(!attributes.iter().any(|attribute| {
+            attribute
+                .key
+                .as_str()
+                .starts_with("coral.http.request.body")
+        }));
+        assert!(!attributes.iter().any(|attribute| {
+            attribute
+                .key
+                .as_str()
+                .starts_with("coral.http.response.body")
+        }));
+        assert!(
+            attributes
+                .iter()
+                .any(|attribute| attribute.key.as_str() == "http.response.status_code")
+        );
+        provider.shutdown().expect("provider shutdown");
     }
 
     #[test]
