@@ -114,11 +114,18 @@ pub(crate) async fn validate_source(
     app: &AppClient,
     name: &str,
 ) -> Result<ValidateSourceResponse, anyhow::Error> {
+    Ok(validate_source_request(app, source_name_arg(Some(name))?).await?)
+}
+
+async fn validate_source_request(
+    app: &AppClient,
+    name: String,
+) -> Result<ValidateSourceResponse, tonic::Status> {
     Ok(app
         .source_client()
         .validate_source(Request::new(ValidateSourceRequest {
             workspace: Some(default_workspace()),
-            name: source_name_arg(Some(name))?,
+            name,
         }))
         .await?
         .into_inner())
@@ -377,44 +384,47 @@ pub(crate) async fn test_and_print(
     source_name: &str,
     limit: TableDisplayLimit,
     severity_mode: ValidationSeverityMode,
-) -> Result<(), anyhow::Error> {
+) -> Result<(), crate::CliError> {
     let normalized = source_name_arg(Some(source_name))?;
-    let err = match validate_and_print(app, &normalized, limit, severity_mode).await {
-        Ok(()) => return Ok(()),
-        Err(err) => err,
+    let response = match validate_source_request(app, normalized.clone()).await {
+        Ok(response) => response,
+        Err(status) if status.code() == tonic::Code::NotFound => {
+            return source_test_not_found_error(app, &normalized, status).await;
+        }
+        Err(status) => return Err(anyhow::Error::from(status).into()),
     };
-
-    let is_not_found = err
-        .downcast_ref::<tonic::Status>()
-        .is_some_and(|status| status.code() == tonic::Code::NotFound);
-    if !is_not_found {
-        return Err(err);
+    print_validation_pretty(&response, limit)?;
+    match validation_follow_up(&response, severity_mode) {
+        ValidationFollowUp::None => Ok(()),
+        ValidationFollowUp::Warn(message) => {
+            eprintln!("Warning: {message}");
+            Ok(())
+        }
+        ValidationFollowUp::Fail(message) => Err(anyhow::anyhow!(message).into()),
     }
+}
 
+async fn source_test_not_found_error(
+    app: &AppClient,
+    source_name: &str,
+    original_status: tonic::Status,
+) -> Result<(), crate::CliError> {
     // Discovery failure must not mask the original validation error.
     let Ok(available) = discover_sources(app).await else {
-        return Err(err);
+        return Err(anyhow::Error::from(original_status).into());
     };
     if available
         .iter()
-        .any(|source| source.name == normalized && !source.installed)
+        .any(|source| source.name == source_name && !source.installed)
     {
-        return Err(source_not_installed_error(&normalized));
+        return Err(crate::CliError::SourceNotInstalled {
+            source_name: source_name.to_string(),
+        });
     }
 
-    Err(source_not_found_error(&normalized))
-}
-
-fn source_not_installed_error(source_name: &str) -> anyhow::Error {
-    anyhow::anyhow!(
-        "source '{source_name}' is not installed. Run `coral source add {source_name}` to install it, then retry `coral source test {source_name}`."
-    )
-}
-
-fn source_not_found_error(source_name: &str) -> anyhow::Error {
-    anyhow::anyhow!(
-        "source '{source_name}' was not found. Run `coral source list` to see installed sources or `coral source discover` to see bundled sources available to install."
-    )
+    Err(crate::CliError::SourceNotFound {
+        source_name: source_name.to_string(),
+    })
 }
 
 pub(crate) fn print_validation_pretty(

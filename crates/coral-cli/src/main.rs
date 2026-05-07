@@ -24,11 +24,11 @@ async fn main() -> Result<(), anyhow::Error> {
     match result {
         Ok(()) => Ok(()),
         Err(error) => {
-            if let Some(cli_error) = error.downcast_ref::<coral_cli::CliExitError>() {
-                eprint!("{}", cli_error.rendered_stderr());
+            if let Some(rendered_stderr) = error.rendered_stderr() {
+                eprint!("{rendered_stderr}");
                 std::process::exit(1);
             }
-            Err(error)
+            Err(error.into())
         }
     }
 }
