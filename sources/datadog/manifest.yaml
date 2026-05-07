@@ -46,7 +46,6 @@ test_queries:
   - SELECT * FROM datadog.monitors LIMIT 1
 functions:
   - name: search_monitors
-    kind: search
     description: Search Datadog monitors.
     args:
       - name: query

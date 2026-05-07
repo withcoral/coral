@@ -43,7 +43,6 @@ test_queries:
   - SELECT * FROM github.meta LIMIT 1
 functions:
   - name: search_code
-    kind: search
     description: Search GitHub code.
     args:
       - name: q
@@ -106,7 +105,6 @@ functions:
         nullable: true
         expr: { kind: path, path: [score] }
   - name: search_issues
-    kind: search
     description: Search GitHub issues and pull requests.
     args:
       - name: q
