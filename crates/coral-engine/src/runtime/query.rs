@@ -9,7 +9,7 @@ use datafusion_tracing::InstrumentationOptions;
 
 use crate::backends::compile_query_source;
 use crate::runtime::catalog;
-use crate::runtime::error::datafusion_to_core;
+use crate::runtime::error::{datafusion_to_core, datafusion_to_core_with_sql};
 use crate::runtime::json::register_json_support;
 use crate::runtime::pattern_validator::register_pattern_validator;
 use crate::runtime::registry::{
@@ -120,7 +120,7 @@ impl QueryRuntimeAdapter {
             .ctx
             .sql_with_options(sql, read_only_sql_options())
             .await
-            .map_err(|err| datafusion_to_core(&err, &self.tables))?;
+            .map_err(|err| datafusion_to_core_with_sql(&err, &self.tables, Some(sql)))?;
         let arrow_schema = Arc::new(df.schema().as_arrow().clone());
         let batches = df
             .collect()
