@@ -6,6 +6,7 @@ use crate::bootstrap::AppError;
 use crate::state::AppStateLayout;
 
 pub(super) const DEFAULT_TRACE_FILTER: &str = "coral_app=trace,coral_client=trace,coral_mcp=trace,coral_engine=trace,coral_engine::datafusion=off";
+pub(super) const DEFAULT_INTERNAL_TRACE_FILTER: &str = "coral_app=trace,coral_client=trace,coral_mcp=trace,coral_engine=trace,coral_engine::datafusion=trace";
 pub(super) const DEFAULT_LOG_FILTER: &str = "coral_app=info,coral_engine=info";
 const DEFAULT_SERVICE_NAME: &str = "coral";
 const DEFAULT_INTERNAL_HTTP_BODY_MAX_BYTES: usize = 64 * 1024;

@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
+use opentelemetry::Value as OtelValue;
 use opentelemetry::metrics::MeterProvider as _;
 use opentelemetry::propagation::Extractor;
 use opentelemetry::trace::{Status as OtelStatus, TracerProvider as _};
@@ -30,7 +31,7 @@ pub(crate) mod service;
 
 use crate::bootstrap::AppError;
 pub use config::TelemetryConfig;
-use config::{DEFAULT_LOG_FILTER, DEFAULT_TRACE_FILTER};
+use config::{DEFAULT_INTERNAL_TRACE_FILTER, DEFAULT_LOG_FILTER, DEFAULT_TRACE_FILTER};
 
 static INIT: OnceLock<Result<(), String>> = OnceLock::new();
 static PROVIDER: Mutex<Option<SdkTracerProvider>> = Mutex::new(None);
@@ -79,6 +80,46 @@ where
     }
 }
 
+#[derive(Debug)]
+struct TargetFilteringSpanExporter<E> {
+    inner: E,
+    targets: Targets,
+}
+
+impl<E> TargetFilteringSpanExporter<E> {
+    fn new(inner: E, targets: Targets) -> Self {
+        Self { inner, targets }
+    }
+}
+
+impl<E> SpanExporter for TargetFilteringSpanExporter<E>
+where
+    E: SpanExporter,
+{
+    async fn export(&self, mut batch: Vec<SpanData>) -> opentelemetry_sdk::error::OTelSdkResult {
+        batch.retain(|span| span_matches_targets(span, &self.targets));
+        if batch.is_empty() {
+            return Ok(());
+        }
+        self.inner.export(batch).await
+    }
+
+    fn shutdown_with_timeout(
+        &mut self,
+        timeout: Duration,
+    ) -> opentelemetry_sdk::error::OTelSdkResult {
+        self.inner.shutdown_with_timeout(timeout)
+    }
+
+    fn force_flush(&mut self) -> opentelemetry_sdk::error::OTelSdkResult {
+        self.inner.force_flush()
+    }
+
+    fn set_resource(&mut self, resource: &opentelemetry_sdk::Resource) {
+        self.inner.set_resource(resource);
+    }
+}
+
 fn strip_local_http_body_attributes(span: &mut SpanData) {
     span.attributes
         .retain(|attribute| !is_local_http_body_attribute(attribute.key.as_str()));
@@ -89,6 +130,37 @@ fn is_local_http_body_attribute(key: &str) -> bool {
         key.strip_prefix(prefix)
             .is_some_and(|suffix| suffix.is_empty() || suffix.starts_with('.'))
     })
+}
+
+fn span_matches_targets(span: &SpanData, targets: &Targets) -> bool {
+    let Some(target) = span_string_attribute(span, "target") else {
+        return false;
+    };
+    let Some(level) = span_level_attribute(span) else {
+        return false;
+    };
+    targets.would_enable(&target, &level)
+}
+
+fn span_string_attribute(span: &SpanData, key: &str) -> Option<String> {
+    span.attributes
+        .iter()
+        .find(|attribute| attribute.key.as_str() == key)
+        .and_then(|attribute| match &attribute.value {
+            OtelValue::String(value) => Some(value.to_string()),
+            _ => None,
+        })
+}
+
+fn span_level_attribute(span: &SpanData) -> Option<tracing::Level> {
+    match span_string_attribute(span, "level")?.as_str() {
+        "TRACE" => Some(tracing::Level::TRACE),
+        "DEBUG" => Some(tracing::Level::DEBUG),
+        "INFO" => Some(tracing::Level::INFO),
+        "WARN" => Some(tracing::Level::WARN),
+        "ERROR" => Some(tracing::Level::ERROR),
+        _ => None,
+    }
 }
 
 fn build_log_filter(filter: Option<&str>) -> (EnvFilter, Option<String>) {
@@ -102,16 +174,38 @@ fn build_log_filter(filter: Option<&str>) -> (EnvFilter, Option<String>) {
     }
 }
 
-fn build_trace_targets(filter: &str) -> (Targets, Option<String>) {
+fn build_trace_targets(filter: &str, fallback_filter: &str) -> (Targets, Option<String>) {
     match filter.parse() {
         Ok(targets) => (targets, None),
         Err(error) => (
-            DEFAULT_TRACE_FILTER
+            fallback_filter
                 .parse()
-                .expect("default trace filter must be valid"),
+                .expect("fallback trace filter must be valid"),
             Some(error.to_string()),
         ),
     }
+}
+
+fn trace_layer_filter(
+    otlp_filter: Option<&str>,
+    internal_trace_store_enabled: bool,
+) -> (Targets, Option<String>) {
+    let Some(otlp_filter) = otlp_filter else {
+        return build_trace_targets(DEFAULT_INTERNAL_TRACE_FILTER, DEFAULT_INTERNAL_TRACE_FILTER);
+    };
+    let (otlp_targets, error) = build_trace_targets(otlp_filter, DEFAULT_TRACE_FILTER);
+    if internal_trace_store_enabled {
+        let effective_otlp_filter = if error.is_some() {
+            DEFAULT_TRACE_FILTER
+        } else {
+            otlp_filter
+        };
+        return build_trace_targets(
+            &format!("{effective_otlp_filter},{DEFAULT_INTERNAL_TRACE_FILTER}"),
+            DEFAULT_INTERNAL_TRACE_FILTER,
+        );
+    }
+    (otlp_targets, error)
 }
 
 fn initialize_metrics(meter_provider: Option<&SdkMeterProvider>) {
@@ -293,6 +387,7 @@ fn try_init_tracing(
 
     let internal_trace_store_dir =
         internal_trace_store_dir.filter(|_| config.enable_internal_tracing);
+    let internal_trace_store_enabled = internal_trace_store_dir.is_some();
     let should_export_traces = endpoint.is_some() || internal_trace_store_dir.is_some();
     let mut trace_filter_error = None;
     let otel_trace_layer = if should_export_traces {
@@ -307,6 +402,9 @@ fn try_init_tracing(
         let mut builder = SdkTracerProvider::builder().with_resource(resource.clone());
 
         if let Some(ref endpoint) = endpoint {
+            let (otlp_trace_targets, error) =
+                build_trace_targets(&config.trace_filter, DEFAULT_TRACE_FILTER);
+            trace_filter_error = error;
             let trace_exporter = OtlpSpanExporter::builder()
                 .with_http()
                 .with_endpoint(normalize_otlp_endpoint(endpoint, "traces"))
@@ -314,6 +412,8 @@ fn try_init_tracing(
                 .build()
                 .map_err(|e| AppError::InvalidInput(e.to_string()))?;
             let trace_exporter = HttpBodyFilteringSpanExporter::new(trace_exporter);
+            let trace_exporter =
+                TargetFilteringSpanExporter::new(trace_exporter, otlp_trace_targets);
             builder = builder.with_span_processor(
                 opentelemetry_sdk::trace::BatchSpanProcessor::builder(trace_exporter).build(),
             );
@@ -358,6 +458,9 @@ fn try_init_tracing(
         if let Some(path) = internal_trace_store_dir {
             let exporter = local_store::JsonlSpanExporter::new(path)
                 .map_err(|e| AppError::InvalidInput(e.to_string()))?;
+            let (internal_trace_targets, _) =
+                build_trace_targets(DEFAULT_INTERNAL_TRACE_FILTER, DEFAULT_INTERNAL_TRACE_FILTER);
+            let exporter = TargetFilteringSpanExporter::new(exporter, internal_trace_targets);
             builder = builder.with_span_processor(
                 opentelemetry_sdk::trace::BatchSpanProcessor::builder(exporter).build(),
             );
@@ -365,10 +468,16 @@ fn try_init_tracing(
 
         let provider = builder.build();
         let tracer = provider.tracer("coral");
-        let (trace_targets, error) = build_trace_targets(&config.trace_filter);
-        trace_filter_error = error;
+        let (trace_targets, layer_filter_error) = trace_layer_filter(
+            endpoint.as_deref().map(|_| config.trace_filter.as_str()),
+            internal_trace_store_enabled,
+        );
+        if trace_filter_error.is_none() {
+            trace_filter_error = layer_filter_error;
+        }
         let layer = tracing_opentelemetry::layer()
             .with_tracer(tracer)
+            .with_level(true)
             .with_filter(trace_targets);
 
         if let Ok(mut guard) = PROVIDER.lock() {
@@ -452,10 +561,12 @@ mod tests {
     use opentelemetry::KeyValue;
     use opentelemetry::trace::{Span as _, SpanKind, Tracer, TracerProvider as _};
     use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+    use tracing_subscriber::layer::SubscriberExt as _;
 
     use super::{
-        DEFAULT_LOG_FILTER, DEFAULT_TRACE_FILTER, HttpBodyFilteringSpanExporter, build_log_filter,
-        build_trace_targets, normalize_otlp_endpoint, parse_headers,
+        DEFAULT_INTERNAL_TRACE_FILTER, DEFAULT_LOG_FILTER, DEFAULT_TRACE_FILTER,
+        HttpBodyFilteringSpanExporter, TargetFilteringSpanExporter, build_log_filter,
+        build_trace_targets, normalize_otlp_endpoint, parse_headers, trace_layer_filter,
     };
 
     #[test]
@@ -489,8 +600,9 @@ mod tests {
 
     #[test]
     fn invalid_trace_filter_falls_back_to_default() {
-        let (targets, error) = build_trace_targets("coral_app=[");
-        let (expected, default_error) = build_trace_targets(DEFAULT_TRACE_FILTER);
+        let (targets, error) = build_trace_targets("coral_app=[", DEFAULT_TRACE_FILTER);
+        let (expected, default_error) =
+            build_trace_targets(DEFAULT_TRACE_FILTER, DEFAULT_TRACE_FILTER);
 
         assert_eq!(format!("{targets:?}"), format!("{expected:?}"));
         assert!(error.is_some());
@@ -499,13 +611,75 @@ mod tests {
 
     #[test]
     fn default_trace_filter_keeps_http_and_disables_datafusion() {
-        let (targets, error) = build_trace_targets(DEFAULT_TRACE_FILTER);
+        let (targets, error) = build_trace_targets(DEFAULT_TRACE_FILTER, DEFAULT_TRACE_FILTER);
 
         assert!(error.is_none());
         assert!(targets.would_enable("coral_client::grpc", &tracing::Level::TRACE));
         assert!(targets.would_enable("coral_mcp::server", &tracing::Level::TRACE));
         assert!(targets.would_enable("coral_engine::http", &tracing::Level::TRACE));
         assert!(!targets.would_enable("coral_engine::datafusion", &tracing::Level::TRACE));
+    }
+
+    #[test]
+    fn internal_trace_filter_includes_datafusion() {
+        let (targets, error) =
+            build_trace_targets(DEFAULT_INTERNAL_TRACE_FILTER, DEFAULT_INTERNAL_TRACE_FILTER);
+
+        assert!(error.is_none());
+        assert!(targets.would_enable("coral_engine::http", &tracing::Level::TRACE));
+        assert!(targets.would_enable("coral_engine::datafusion", &tracing::Level::TRACE));
+    }
+
+    #[test]
+    fn combined_trace_layer_filter_can_widen_for_internal_traces() {
+        let (targets, error) = trace_layer_filter(Some(DEFAULT_TRACE_FILTER), true);
+
+        assert!(error.is_none());
+        assert!(targets.would_enable("coral_engine::http", &tracing::Level::TRACE));
+        assert!(targets.would_enable("coral_engine::datafusion", &tracing::Level::TRACE));
+    }
+
+    #[test]
+    fn target_filtering_exporter_filters_finished_spans() {
+        let memory = InMemorySpanExporter::default();
+        let (targets, error) = build_trace_targets(
+            "coral_app=info,coral_engine::datafusion=off",
+            DEFAULT_TRACE_FILTER,
+        );
+        assert!(error.is_none());
+        let exporter = TargetFilteringSpanExporter::new(memory.clone(), targets);
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter)
+            .build();
+        let tracer = provider.tracer("filter-test");
+        let layer = tracing_opentelemetry::layer()
+            .with_tracer(tracer)
+            .with_level(true);
+        let subscriber = tracing_subscriber::Registry::default().with(layer);
+
+        tracing::subscriber::with_default(subscriber, || {
+            let kept = tracing::info_span!(target: "coral_app", "kept");
+            let _kept = kept.enter();
+
+            let dropped_debug = tracing::debug_span!(target: "coral_app", "dropped_debug");
+            let _dropped_debug = dropped_debug.enter();
+
+            let dropped_datafusion =
+                tracing::trace_span!(target: "coral_engine::datafusion", "dropped_datafusion");
+            let _dropped_datafusion = dropped_datafusion.enter();
+        });
+        provider.force_flush().expect("flush spans");
+
+        let mut span_names = memory
+            .get_finished_spans()
+            .expect("finished spans")
+            .into_iter()
+            .map(|span| span.name.to_string())
+            .collect::<Vec<_>>();
+        span_names.sort();
+
+        assert_eq!(span_names, vec!["kept"]);
+        provider.shutdown().expect("provider shutdown");
     }
 
     #[test]
