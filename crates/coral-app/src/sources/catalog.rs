@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 
-use coral_spec::parse_source_manifest_yaml;
+use coral_spec::{ValidatedSourceManifest, parse_source_manifest_yaml};
 
 use crate::bootstrap::AppError;
 use crate::sources::SourceName;
@@ -19,7 +19,7 @@ pub(crate) struct BundledSourceManifest {
 
 #[derive(Debug, Clone)]
 pub(crate) struct InstalledSourceManifest {
-    pub(crate) manifest_yaml: String,
+    pub(crate) source_spec: ValidatedSourceManifest,
     pub(crate) candidate: CandidateSource,
 }
 
@@ -70,7 +70,9 @@ pub(crate) fn resolve_installed_manifest(
             std::fs::read_to_string(layout.manifest_file(workspace_name, &source.name))?
         }
     };
-    let mut candidate = describe_manifest(&manifest_yaml, source.origin, false)?;
+    let source_spec = parse_source_manifest_yaml(&manifest_yaml)
+        .map_err(|error| AppError::InvalidInput(error.to_string()))?;
+    let mut candidate = candidate_from_manifest(&source_spec, source.origin, false)?;
     if candidate.name != source.name {
         return Err(AppError::FailedPrecondition(format!(
             "installed source '{}' does not match manifest name '{}'",
@@ -79,7 +81,7 @@ pub(crate) fn resolve_installed_manifest(
     }
     candidate.installed = true;
     Ok(InstalledSourceManifest {
-        manifest_yaml,
+        source_spec,
         candidate,
     })
 }
@@ -91,6 +93,14 @@ pub(crate) fn describe_manifest(
 ) -> Result<CandidateSource, AppError> {
     let manifest = parse_source_manifest_yaml(manifest_yaml)
         .map_err(|error| AppError::InvalidInput(error.to_string()))?;
+    candidate_from_manifest(&manifest, origin, installed)
+}
+
+fn candidate_from_manifest(
+    manifest: &ValidatedSourceManifest,
+    origin: SourceOrigin,
+    installed: bool,
+) -> Result<CandidateSource, AppError> {
     Ok(CandidateSource {
         name: SourceName::parse(manifest.schema_name())?,
         description: manifest.description().to_string(),

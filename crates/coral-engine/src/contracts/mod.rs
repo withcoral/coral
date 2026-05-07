@@ -11,7 +11,7 @@ pub use query::{
     QueryExecution, QueryRuntimeConfig, QueryRuntimeContext, QuerySource, QueryTestFailure,
     QueryTestResult, QueryTestSuccess, SourceValidationReport,
 };
-pub(crate) use query_error::ColumnParts;
+pub(crate) use query_error::{ColumnParts, TableRefParts};
 
 #[cfg(test)]
 pub(crate) use query_error::UNKNOWN_COLUMN_REASON;

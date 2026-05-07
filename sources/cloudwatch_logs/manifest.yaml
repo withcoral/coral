@@ -23,7 +23,9 @@ inputs:
   AWS_SECRET_ACCESS_KEY:
     kind: secret
     hint: |
-      AWS secret access key for SigV4 signing.
+      AWS secret access key.
+      Coral does not read your AWS CLI profile, AWS SSO cache, or
+      `AWS_PROFILE` at query time for this bundled source.
 base_url: https://logs.{{input.AWS_REGION}}.{{input.AWS_ENDPOINT_SUFFIX}}
 auth:
   type: CustomAuth

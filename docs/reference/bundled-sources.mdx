@@ -87,7 +87,9 @@ AWS access key ID with CloudWatch Logs read permissions.
 
 `AWS_SECRET_ACCESS_KEY` (required)
 
-AWS secret access key for SigV4 signing.
+AWS secret access key.
+Coral does not read your AWS CLI profile, AWS SSO cache, or
+`AWS_PROFILE` at query time for this bundled source.
 
 ### `cloudwatch_metrics`
 
@@ -104,12 +106,13 @@ regions. Use the appropriate suffix for other partitions.
 
 `AWS_ACCESS_KEY_ID` (required)
 
-AWS access key ID with the CloudWatch read permissions needed for
-the tables you plan to query.
+AWS access key ID with the CloudWatch read permissions.
 
 `AWS_SECRET_ACCESS_KEY` (required)
 
-AWS secret access key for SigV4 signing.
+AWS secret access key.
+Coral does not read your AWS CLI profile, AWS SSO cache, or
+`AWS_PROFILE` at query time for this bundled source.
 
 ### `confluence`
 

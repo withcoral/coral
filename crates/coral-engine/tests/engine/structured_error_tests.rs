@@ -150,6 +150,34 @@ async fn unqualified_table_suggests_schema_qualified_name() {
 }
 
 #[tokio::test]
+async fn quoted_dotted_missing_table_stays_one_identifier() {
+    let temp = TempDir::new().expect("temp dir");
+    write_jsonl_file(
+        temp.path(),
+        "rows.jsonl",
+        &[json!({"id": 1, "playerID": "ov8"})],
+    );
+    let source = build_source(manifest("hockey", "player.stats", temp.path()));
+
+    let error = CoralQuery::execute_sql(&[source], test_runtime(), "SELECT * FROM \"player.stat\"")
+        .await
+        .expect_err("unknown quoted dotted table should fail");
+
+    let sqe = structured(error);
+    assert_eq!(sqe.reason(), "TABLE_NOT_FOUND");
+    assert_eq!(sqe.metadata().get("schema"), None);
+    assert_eq!(
+        sqe.metadata().get("table").map(String::as_str),
+        Some("player.stat")
+    );
+    let hint = sqe.hint().expect("hint should be present");
+    assert!(
+        hint.contains("hockey.\"player.stats\""),
+        "hint should preserve the dotted table as a quoted identifier, got: {hint}"
+    );
+}
+
+#[tokio::test]
 async fn unknown_column_on_aliased_join_suggests_case_preserved_quoted_name() {
     // Real-world shape: an agent discovers `playerID` in `coral.columns`
     // and writes a self-join `ON g.playerID = m.playerID`. DataFusion

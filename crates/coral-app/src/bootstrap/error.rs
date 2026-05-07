@@ -1,14 +1,14 @@
 //! Defines bootstrap and application-management errors for the local app.
 
+use coral_api::{
+    CORAL_ERROR_DOMAIN, CORAL_ERROR_METADATA_DETAIL, CORAL_ERROR_METADATA_HINT,
+    CORAL_ERROR_METADATA_SUMMARY,
+};
 use coral_engine::{CoreError, StatusCode};
 use tonic::{Code, Status};
 use tonic_types::{ErrorDetail, StatusExt as _};
 
 use crate::state::CredentialsError;
-
-/// Coral error domain for `google.rpc.ErrorInfo`.
-/// Matches `coral_client::CORAL_ERROR_DOMAIN`.
-const CORAL_ERROR_DOMAIN: &str = "coral.withcoral.com";
 
 /// Errors surfaced by the local application layer.
 #[derive(Debug, thiserror::Error)]
@@ -96,15 +96,18 @@ pub(crate) fn core_status(error: CoreError) -> Status {
     match error {
         CoreError::QueryFailure(sqe) => {
             let mut metadata = sqe.metadata().clone();
-            metadata.insert("summary".to_string(), sqe.summary().to_string());
+            metadata.insert(
+                CORAL_ERROR_METADATA_SUMMARY.to_string(),
+                sqe.summary().to_string(),
+            );
             if !sqe.detail().is_empty() {
                 metadata.insert(
-                    "detail".to_string(),
+                    CORAL_ERROR_METADATA_DETAIL.to_string(),
                     truncate_status_detail(sqe.detail().to_string()),
                 );
             }
             if let Some(hint) = sqe.hint() {
-                metadata.insert("hint".to_string(), hint.to_string());
+                metadata.insert(CORAL_ERROR_METADATA_HINT.to_string(), hint.to_string());
             }
 
             let mut details: Vec<ErrorDetail> = vec![ErrorDetail::ErrorInfo(

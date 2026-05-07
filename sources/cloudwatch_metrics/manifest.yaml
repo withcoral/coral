@@ -19,12 +19,13 @@ inputs:
   AWS_ACCESS_KEY_ID:
     kind: secret
     hint: |
-      AWS access key ID with the CloudWatch read permissions needed for
-      the tables you plan to query.
+      AWS access key ID with the CloudWatch read permissions.
   AWS_SECRET_ACCESS_KEY:
     kind: secret
     hint: |
-      AWS secret access key for SigV4 signing.
+      AWS secret access key.
+      Coral does not read your AWS CLI profile, AWS SSO cache, or
+      `AWS_PROFILE` at query time for this bundled source.
 base_url: https://monitoring.{{input.AWS_REGION}}.{{input.AWS_ENDPOINT_SUFFIX}}
 auth:
   type: CustomAuth
