@@ -104,7 +104,7 @@ functions:
         type: Float64
         nullable: true
         expr: { kind: path, path: [score] }
-  - name: search_issues
+  - name: find_issues
     description: Search GitHub issues and pull requests.
     args:
       - name: q
