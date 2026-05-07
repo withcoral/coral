@@ -150,8 +150,6 @@ pub struct FilterSpec {
 pub struct SourceTableFunctionSpec {
     pub name: String,
     #[serde(default)]
-    pub kind: String,
-    #[serde(default)]
     pub description: String,
     #[serde(default)]
     pub fetch_limit_default: Option<usize>,

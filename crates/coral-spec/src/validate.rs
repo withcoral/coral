@@ -638,7 +638,6 @@ mod tests {
     fn function_with_request_value(value: ValueSourceSpec) -> SourceTableFunctionSpec {
         SourceTableFunctionSpec {
             name: "search".to_string(),
-            kind: String::new(),
             description: String::new(),
             fetch_limit_default: None,
             args: vec![TableFunctionArgSpec {
@@ -904,7 +903,6 @@ mod tests {
     fn validate_http_function_names_rejects_table_name_collisions() {
         let function = SourceTableFunctionSpec {
             name: "messages".to_string(),
-            kind: String::new(),
             description: String::new(),
             fetch_limit_default: None,
             args: vec![],
