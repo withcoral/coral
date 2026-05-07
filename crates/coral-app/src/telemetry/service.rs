@@ -1,24 +1,19 @@
 //! Implements the gRPC `TraceService` for local trace inspection.
 
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use coral_api::v1::trace_service_server::TraceService as TraceServiceApi;
 use coral_api::v1::{
-    GetTraceRequest, GetTraceResponse, ListTracesRequest, ListTracesResponse, RecreatedQueryPlan,
-    TraceSpan, TraceStatus, TraceSummary,
+    GetTraceRequest, GetTraceResponse, ListTracesRequest, ListTracesResponse, TraceSpan,
+    TraceStatus, TraceSummary,
 };
-use coral_engine::QueryPlan;
-use serde_json::Value as JsonValue;
 use tonic::{Code, Request, Response, Status};
 
-use crate::query::manager::{QueryManager, QueryManagerError};
 use crate::telemetry::local_store::{
     StoredTraceStatus, TraceDetailRecord, TraceSpanRecord, TraceStore, TraceStoreError,
     TraceSummaryRecord,
 };
 use crate::transport::{grpc_span, instrument_grpc};
-use crate::workspaces::WorkspaceName;
 
 const DEFAULT_TRACE_PAGE_SIZE: usize = 50;
 const MAX_TRACE_PAGE_SIZE: usize = 200;
@@ -26,14 +21,12 @@ const MAX_TRACE_PAGE_SIZE: usize = 200;
 #[derive(Clone)]
 pub(crate) struct TraceService {
     traces: TraceStore,
-    queries: QueryManager,
 }
 
 impl TraceService {
-    pub(crate) fn new(trace_store_file: PathBuf, queries: QueryManager) -> Self {
+    pub(crate) fn new(trace_store_file: PathBuf) -> Self {
         Self {
             traces: TraceStore::new(trace_store_file),
-            queries,
         }
     }
 }
@@ -73,7 +66,6 @@ impl TraceServiceApi for TraceService {
     ) -> Result<Response<GetTraceResponse>, Status> {
         let span = grpc_span(&request);
         let traces = self.traces.clone();
-        let queries = self.queries.clone();
         instrument_grpc(span, async move {
             let request = request.into_inner();
             if request.trace_id.trim().is_empty() {
@@ -85,8 +77,7 @@ impl TraceServiceApi for TraceService {
             let trace = traces
                 .get_trace(&request.trace_id)
                 .map_err(trace_store_status)?;
-            let recreated_plan = recreate_query_plan(&queries, &trace).await;
-            Ok(Response::new(trace_detail_to_proto(trace, recreated_plan)))
+            Ok(Response::new(trace_detail_to_proto(trace)))
         })
         .await
     }
@@ -126,110 +117,10 @@ fn trace_store_status(error: TraceStoreError) -> Status {
     }
 }
 
-async fn recreate_query_plan(
-    queries: &QueryManager,
-    trace: &TraceDetailRecord,
-) -> Option<RecreatedQueryPlan> {
-    let (workspace, sql) = query_span_inputs(trace)?;
-    let generated_at_unix_nanos = unix_nanos(SystemTime::now());
-    let workspace_name = match WorkspaceName::parse(&workspace) {
-        Ok(workspace_name) => workspace_name,
-        Err(error) => {
-            return Some(plan_error_proto(
-                workspace,
-                sql,
-                generated_at_unix_nanos,
-                error.to_string(),
-            ));
-        }
-    };
-
-    match queries.plan_sql(&workspace_name, &sql).await {
-        Ok(plan) => Some(plan_to_proto(
-            workspace,
-            sql,
-            generated_at_unix_nanos,
-            &plan,
-        )),
-        Err(error) => Some(plan_error_proto(
-            workspace,
-            sql,
-            generated_at_unix_nanos,
-            query_manager_error_message(error),
-        )),
-    }
-}
-
-fn query_span_inputs(trace: &TraceDetailRecord) -> Option<(String, String)> {
-    trace.spans.iter().find_map(|span| {
-        if span.name != "coral.query" {
-            return None;
-        }
-        let attributes = serde_json::from_str::<JsonValue>(&span.attributes_json).ok()?;
-        let workspace = attr_string(&attributes, "workspace")?;
-        let sql = attr_string(&attributes, "sql")?;
-        Some((workspace, sql))
-    })
-}
-
-fn attr_string(attributes: &JsonValue, key: &str) -> Option<String> {
-    match attributes.get(key)? {
-        JsonValue::String(value) => Some(value.clone()),
-        JsonValue::Number(value) => Some(value.to_string()),
-        JsonValue::Bool(value) => Some(value.to_string()),
-        _ => None,
-    }
-}
-
-fn plan_to_proto(
-    workspace: String,
-    sql: String,
-    generated_at_unix_nanos: i64,
-    plan: &QueryPlan,
-) -> RecreatedQueryPlan {
-    RecreatedQueryPlan {
-        workspace,
-        sql,
-        unoptimized_logical_plan: plan.unoptimized_logical_plan().to_string(),
-        optimized_logical_plan: plan.optimized_logical_plan().to_string(),
-        physical_plan: plan.physical_plan().to_string(),
-        generated_at_unix_nanos,
-        error: String::new(),
-    }
-}
-
-fn plan_error_proto(
-    workspace: String,
-    sql: String,
-    generated_at_unix_nanos: i64,
-    error: String,
-) -> RecreatedQueryPlan {
-    RecreatedQueryPlan {
-        workspace,
-        sql,
-        unoptimized_logical_plan: String::new(),
-        optimized_logical_plan: String::new(),
-        physical_plan: String::new(),
-        generated_at_unix_nanos,
-        error,
-    }
-}
-
-fn query_manager_error_message(error: QueryManagerError) -> String {
-    match error {
-        QueryManagerError::App(error) => error.to_string(),
-        QueryManagerError::Core(error) => error.to_string(),
-    }
-}
-
-fn trace_detail_to_proto(
-    trace: TraceDetailRecord,
-    recreated_plan: Option<RecreatedQueryPlan>,
-) -> GetTraceResponse {
+fn trace_detail_to_proto(trace: TraceDetailRecord) -> GetTraceResponse {
     GetTraceResponse {
         summary: Some(trace_summary_to_proto(trace.summary)),
         spans: trace.spans.into_iter().map(trace_span_to_proto).collect(),
-        recreated_plan,
     }
 }
 
@@ -284,20 +175,9 @@ fn trace_status_to_proto(status: StoredTraceStatus) -> TraceStatus {
     }
 }
 
-fn unix_nanos(time: SystemTime) -> i64 {
-    let nanos = time
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    i64::try_from(nanos).unwrap_or(i64::MAX)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{normalize_page_size, parse_page_token, query_span_inputs};
-    use crate::telemetry::local_store::{
-        StoredTraceStatus, TraceDetailRecord, TraceSpanRecord, TraceSummaryRecord,
-    };
+    use super::{normalize_page_size, parse_page_token};
 
     #[test]
     fn page_size_defaults_and_caps() {
@@ -312,53 +192,5 @@ mod tests {
         assert_eq!(parse_page_token("").expect("empty token"), 0);
         assert_eq!(parse_page_token("25").expect("offset token"), 25);
         assert!(parse_page_token("not-an-offset").is_err());
-    }
-
-    #[test]
-    fn query_span_inputs_reads_workspace_and_sql() {
-        let trace = TraceDetailRecord {
-            summary: TraceSummaryRecord {
-                trace_id: "trace".to_string(),
-                root_span_id: "span".to_string(),
-                name: "coral.query".to_string(),
-                query: "SELECT 1".to_string(),
-                status: StoredTraceStatus::Ok,
-                start_time_unix_nanos: 1,
-                end_time_unix_nanos: 2,
-                duration_nanos: 1,
-                span_count: 1,
-                row_count: 1,
-                row_count_recorded: true,
-            },
-            spans: vec![TraceSpanRecord {
-                trace_id: "trace".to_string(),
-                span_id: "span".to_string(),
-                parent_span_id: None,
-                parent_span_is_remote: false,
-                name: "coral.query".to_string(),
-                kind: "internal".to_string(),
-                status: StoredTraceStatus::Ok,
-                status_message: None,
-                start_time_unix_nanos: 1,
-                end_time_unix_nanos: 2,
-                duration_nanos: 1,
-                attributes_json: r#"{"workspace":"default","sql":"SELECT 1"}"#.to_string(),
-                events_json: "{}".to_string(),
-                links_json: "{}".to_string(),
-                resource_json: "{}".to_string(),
-                scope_name: "coral".to_string(),
-                scope_version: None,
-                scope_schema_url: None,
-                scope_attributes_json: "{}".to_string(),
-                trace_flags: 1,
-                trace_state: String::new(),
-                is_remote: false,
-            }],
-        };
-
-        assert_eq!(
-            query_span_inputs(&trace),
-            Some(("default".to_string(), "SELECT 1".to_string()))
-        );
     }
 }

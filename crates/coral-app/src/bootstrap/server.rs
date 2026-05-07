@@ -258,9 +258,7 @@ impl ServerBuilder {
             layout,
             self.config.engine_extensions_providers,
         );
-        let trace_service = internal_trace_store_dir
-            .clone()
-            .map(|trace_store_dir| TraceService::new(trace_store_dir, query_manager.clone()));
+        let trace_service = internal_trace_store_dir.clone().map(TraceService::new);
         start_server(
             source_manager,
             query_manager,

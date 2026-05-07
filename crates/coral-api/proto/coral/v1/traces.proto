@@ -109,35 +109,12 @@ message TraceSpan {
   bool is_remote = 22;
 }
 
-// Query plans recreated from the current workspace/source state for the SQL
-// stored on a trace's Coral query span. These plans are diagnostic snapshots and
-// may differ from the plans used when the original query ran.
-message RecreatedQueryPlan {
-  // Workspace used to recreate the plan.
-  string workspace = 1;
-  // SQL text used to recreate the plan.
-  string sql = 2;
-  // Parsed logical plan before logical optimization.
-  string unoptimized_logical_plan = 3;
-  // Logical plan after logical optimization.
-  string optimized_logical_plan = 4;
-  // Physical execution plan after physical optimization.
-  string physical_plan = 5;
-  // Time the plan was recreated in Unix nanoseconds.
-  int64 generated_at_unix_nanos = 6 [jstype = JS_STRING];
-  // Error encountered while recreating the plan. Empty when plan recreation
-  // succeeded.
-  string error = 7;
-}
-
 // Trace detail for timeline and diagnostic views.
 message GetTraceResponse {
   // Summary for the trace.
   TraceSummary summary = 1;
   // Spans ordered by start time.
   repeated TraceSpan spans = 2;
-  // Current-state plan recreation for query traces, when available.
-  RecreatedQueryPlan recreated_plan = 3;
 }
 
 // Local trace inspection APIs.

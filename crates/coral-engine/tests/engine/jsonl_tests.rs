@@ -115,25 +115,6 @@ async fn quoted_fully_qualified_table_reference_reports_sql_reference_hint() {
 }
 
 #[tokio::test]
-async fn plan_sql_returns_logical_and_physical_plans() {
-    let temp = TempDir::new().expect("temp dir");
-    write_jsonl_file(temp.path(), "users.jsonl", &users_rows());
-    let source = build_source(jsonl_manifest("jsonl_plan", temp.path(), "**/*.jsonl"));
-
-    let plan = CoralQuery::plan_sql(
-        &[source],
-        test_runtime(),
-        "SELECT id, name FROM jsonl_plan.users WHERE id > 1 ORDER BY name",
-    )
-    .await
-    .expect("query should plan");
-
-    assert!(plan.unoptimized_logical_plan().contains("jsonl_plan.users"));
-    assert!(plan.optimized_logical_plan().contains("jsonl_plan.users"));
-    assert!(plan.physical_plan().contains("Exec"));
-}
-
-#[tokio::test]
 async fn select_with_column_projection() {
     let temp = TempDir::new().expect("temp dir");
     write_jsonl_file(temp.path(), "users.jsonl", &users_rows());

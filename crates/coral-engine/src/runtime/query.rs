@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use datafusion::execution::SessionStateBuilder;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
-use datafusion::physical_plan::displayable;
 use datafusion::prelude::{SQLOptions, SessionConfig, SessionContext};
 use datafusion_tracing::{InstrumentationOptions, RuleInstrumentationOptions};
 
@@ -20,8 +19,8 @@ use crate::runtime::registry::{
 };
 use crate::runtime::source_functions::SourceFunctionRegistry;
 use crate::{
-    CoreError, QueryExecution, QueryPlan, QueryResultObserver, QueryResultObserverError,
-    QueryRuntimeConfig, QuerySource, TableInfo,
+    CoreError, QueryExecution, QueryResultObserver, QueryResultObserverError, QueryRuntimeConfig,
+    QuerySource, TableInfo,
 };
 
 pub(crate) struct QueryRuntimeAdapter {
@@ -171,33 +170,6 @@ impl QueryRuntimeAdapter {
                 .map_err(|error| query_result_observer_error(observer.name(), &error))?;
         }
         Ok(())
-    }
-
-    pub(crate) async fn plan_sql(&self, sql: &str) -> Result<QueryPlan, CoreError> {
-        let df = self
-            .ctx
-            .sql_with_options(sql, read_only_sql_options())
-            .await
-            .map_err(|err| datafusion_to_core(&err, &self.tables))?;
-        let unoptimized_logical_plan = df.logical_plan().display_indent_schema().to_string();
-        let (session_state, logical_plan) = df.into_parts();
-        let optimized_logical_plan = session_state
-            .optimize(&logical_plan)
-            .map_err(|err| datafusion_to_core(&err, &self.tables))?;
-        let optimized_logical_plan_display =
-            optimized_logical_plan.display_indent_schema().to_string();
-        let physical_plan = session_state
-            .query_planner()
-            .create_physical_plan(&optimized_logical_plan, &session_state)
-            .await
-            .map_err(|err| datafusion_to_core(&err, &self.tables))?;
-        let physical_plan = displayable(physical_plan.as_ref()).indent(true).to_string();
-
-        Ok(QueryPlan::new(
-            unoptimized_logical_plan,
-            optimized_logical_plan_display,
-            physical_plan,
-        ))
     }
 }
 
