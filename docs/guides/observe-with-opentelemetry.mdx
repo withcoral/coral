@@ -3,7 +3,7 @@ title: "Observe Coral with OpenTelemetry"
 description: "Export Coral traces, logs, and metrics to any OTLP-compatible backend."
 ---
 
-Coral can emit traces, logs, and metrics over OTLP/HTTP to any compatible backend (Grafana, Honeycomb, OpenObserve, Jaeger, Datadog Agent, etc.). Telemetry is **off by default** and activates only when you set an `[otel]` section with an endpoint in your `config.toml`.
+Coral can emit traces, logs, and metrics over OTLP/HTTP to any compatible backend (Grafana, Honeycomb, OpenObserve, Jaeger, Datadog Agent, etc.). Telemetry is **off by default**. External export activates when you set an `[otel]` section with an endpoint in your `config.toml`; local trace inspection can be enabled without an OTLP endpoint.
 
 ## Enable telemetry
 
@@ -18,17 +18,41 @@ Coral picks up the new settings on the next invocation, and spans, logs, and met
 
 The `endpoint` is the OTLP/HTTP base URL. Coral automatically appends `/v1/traces`, `/v1/logs`, and `/v1/metrics` for each signal, so you do not need to set those paths yourself. If you point at a URL that already includes one of those suffixes, Coral strips it before re-appending the right one per signal.
 
+## Local trace inspection
+
+To inspect traces in Coral's local UI without running an external OpenTelemetry store, enable internal tracing:
+
+```toml
+[otel]
+enable_internal_tracing = true
+```
+
+Internal tracing captures the same query, source-loading, HTTP, and DataFusion spans that Coral can export over OTLP. It also includes DataFusion optimizer-rule spans by default so the local trace view can show the planning work that happened for a query. This local filter is separate from `trace_filter`, which only controls OTLP span export.
+
+To include HTTP request and response bodies in local traces, opt in explicitly:
+
+```toml
+[otel]
+enable_internal_tracing = true
+record_internal_http_bodies = true
+```
+
+HTTP bodies are kept out of OTLP export even when local body recording is enabled.
+
 ## Configuration reference
 
 All telemetry settings live under `[otel]` in `config.toml`. There are no environment variable overrides except for [`CORAL_TRACE_PARENT`](#distributed-tracing).
 
-| Key            | Type   | Default                                                                | Description                                                                       |
-| -------------- | ------ | ---------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| `endpoint`     | string | unset                                                                  | OTLP/HTTP base URL. When unset, no traces, logs, or metrics are exported.         |
-| `headers`      | string | unset                                                                  | Comma-separated `key=value` pairs sent on every OTLP request (e.g. auth headers). |
-| `log_filter`   | string | `coral_app=info,coral_engine=info`                                     | `tracing-subscriber` filter applied to logs (OTLP and stderr).                    |
-| `trace_filter` | string | `coral_app=trace,coral_client=trace,coral_mcp=trace,coral_engine=trace,coral_engine::datafusion=off` | `tracing-subscriber` filter applied to OTLP spans.                                |
-| `service_name` | string | `coral`                                                                | Value of the `service.name` resource attribute on every signal.                   |
+| Key                            | Type    | Default                                                                | Description                                                                       |
+| ------------------------------ | ------- | ---------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| `endpoint`                     | string  | unset                                                                  | OTLP/HTTP base URL. When unset, no signals are exported to an external collector. |
+| `headers`                      | string  | unset                                                                  | Comma-separated `key=value` pairs sent on every OTLP request (e.g. auth headers). |
+| `log_filter`                   | string  | `coral_app=info,coral_engine=info`                                     | `tracing-subscriber` filter applied to logs (OTLP and stderr).                    |
+| `trace_filter`                 | string  | `coral_app=trace,coral_client=trace,coral_mcp=trace,coral_engine=trace,coral_engine::datafusion=off` | `tracing-subscriber` filter applied to OTLP spans.                                |
+| `service_name`                 | string  | `coral`                                                                | Value of the `service.name` resource attribute on every signal.                   |
+| `enable_internal_tracing`      | boolean | `false`                                                                | Enables local trace inspection without requiring an OTLP collector.               |
+| `record_internal_http_bodies`  | boolean | `false`                                                                | Records HTTP request and response bodies in local traces when internal tracing is enabled. |
+| `internal_http_body_max_bytes` | integer | `65536`                                                                | Maximum request or response body bytes recorded in a local trace.                 |
 
 Example with auth headers and a hosted endpoint:
 
