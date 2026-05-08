@@ -258,7 +258,9 @@ impl ServerBuilder {
             layout,
             self.config.engine_extensions_providers,
         );
-        let trace_service = internal_trace_store_dir.clone().map(TraceService::new);
+        let trace_service = internal_trace_store_dir
+            .clone()
+            .map(|dir| TraceService::new(dir, telemetry_config.internal_trace_retention()));
         start_server(
             source_manager,
             query_manager,
@@ -626,11 +628,27 @@ enable_internal_tracing = true
         .expect("write telemetry config");
     }
 
+    fn disable_internal_tracing(config_dir: &Path) {
+        std::fs::create_dir_all(config_dir).expect("create config dir");
+        std::fs::write(
+            config_dir.join("config.toml"),
+            r"
+version = 1
+
+[otel]
+enable_internal_tracing = false
+",
+        )
+        .expect("write telemetry config");
+    }
+
     #[tokio::test]
     async fn trace_service_is_unregistered_when_local_store_is_disabled() {
         let temp = TempDir::new().expect("temp dir");
+        let config_dir = temp.path().join("coral-config");
+        disable_internal_tracing(&config_dir);
         let server = ServerBuilder::new()
-            .with_config_dir(temp.path().join("coral-config"))
+            .with_config_dir(config_dir)
             .start()
             .await
             .expect("start server");

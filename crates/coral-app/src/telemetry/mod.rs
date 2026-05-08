@@ -456,8 +456,9 @@ fn try_init_tracing(
         }
 
         if let Some(path) = internal_trace_store_dir {
-            let exporter = local_store::JsonlSpanExporter::new(path)
-                .map_err(|e| AppError::InvalidInput(e.to_string()))?;
+            let exporter =
+                local_store::JsonlSpanExporter::new(path, config.internal_trace_retention())
+                    .map_err(|e| AppError::InvalidInput(e.to_string()))?;
             let (internal_trace_targets, _) =
                 build_trace_targets(DEFAULT_INTERNAL_TRACE_FILTER, DEFAULT_INTERNAL_TRACE_FILTER);
             let exporter = TargetFilteringSpanExporter::new(exporter, internal_trace_targets);

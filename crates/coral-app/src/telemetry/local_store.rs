@@ -19,6 +19,8 @@ use serde_json::{Map as JsonMap, Number as JsonNumber, Value as JsonValue, json}
 
 const JSONL_MAX_FILE_BYTES: u64 = 16 * 1024 * 1024;
 const JSONL_MAX_FILE_ROWS: usize = 50_000;
+const JSONL_MAX_FILE_AGE: Duration = Duration::from_hours(24);
+const JSONL_PRUNE_INTERVAL: Duration = Duration::from_hours(1);
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum LocalTraceStoreError {
@@ -29,6 +31,11 @@ pub(crate) enum LocalTraceStoreError {
     },
     #[error("failed to create local trace store file {path}: {source}")]
     CreateFile {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("failed to read local trace store directory {path}: {source}")]
+    ReadDir {
         path: PathBuf,
         source: std::io::Error,
     },
@@ -44,6 +51,16 @@ pub(crate) enum LocalTraceStoreError {
         path: PathBuf,
         source: std::io::Error,
     },
+    #[error("failed to read local trace store file metadata {path}: {source}")]
+    FileMetadata {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("failed to remove expired local trace store file {path}: {source}")]
+    RemoveFile {
+        path: PathBuf,
+        source: std::io::Error,
+    },
     #[error("local trace store writer mutex poisoned")]
     WriterPoisoned,
 }
@@ -56,9 +73,9 @@ pub(crate) struct JsonlSpanExporter {
 }
 
 impl JsonlSpanExporter {
-    pub(crate) fn new(dir: PathBuf) -> Result<Self, LocalTraceStoreError> {
+    pub(crate) fn new(dir: PathBuf, retention: Duration) -> Result<Self, LocalTraceStoreError> {
         Ok(Self {
-            writer: Arc::new(Mutex::new(RollingJsonlWriter::new(dir)?)),
+            writer: Arc::new(Mutex::new(RollingJsonlWriter::new(dir, retention)?)),
             resource_json: Arc::new(Mutex::new("{}".to_string())),
             shutdown_called: Arc::new(AtomicBool::new(false)),
         })
@@ -115,6 +132,8 @@ impl SpanExporter for JsonlSpanExporter {
 #[derive(Debug)]
 struct RollingJsonlWriter {
     dir: PathBuf,
+    retention: Duration,
+    last_prune: Option<SystemTime>,
     file_counter: u64,
     current: Option<OpenJsonlFile>,
 }
@@ -122,20 +141,23 @@ struct RollingJsonlWriter {
 #[derive(Debug)]
 struct OpenJsonlFile {
     path: PathBuf,
+    created_at: SystemTime,
     writer: BufWriter<File>,
     rows_written: usize,
     bytes_written: u64,
 }
 
 impl RollingJsonlWriter {
-    fn new(dir: PathBuf) -> Result<Self, LocalTraceStoreError> {
-        fs::create_dir_all(&dir).map_err(|source| LocalTraceStoreError::CreateDir {
-            path: dir.clone(),
-            source,
-        })?;
+    fn new(dir: PathBuf, retention: Duration) -> Result<Self, LocalTraceStoreError> {
+        let now = SystemTime::now();
+        if dir.exists() {
+            prune_expired_jsonl_files(&dir, retention, now)?;
+        }
 
         Ok(Self {
             dir,
+            retention,
+            last_prune: Some(now),
             file_counter: 0,
             current: None,
         })
@@ -151,6 +173,10 @@ impl RollingJsonlWriter {
             source,
         })?;
 
+        let now = SystemTime::now();
+        self.roll_current_if_stale(now)?;
+        self.prune_if_due(now)?;
+
         for record in records {
             let mut line = serde_json::to_vec(record)
                 .map_err(|source| LocalTraceStoreError::EncodeRecord { source })?;
@@ -160,7 +186,7 @@ impl RollingJsonlWriter {
                 self.close_current()?;
             }
 
-            let current = self.ensure_current()?;
+            let current = self.ensure_current(SystemTime::now())?;
             current
                 .writer
                 .write_all(&line)
@@ -177,6 +203,28 @@ impl RollingJsonlWriter {
         self.flush_current()
     }
 
+    fn roll_current_if_stale(&mut self, now: SystemTime) -> Result<(), LocalTraceStoreError> {
+        if self.current.as_ref().is_some_and(|current| {
+            now.duration_since(current.created_at)
+                .is_ok_and(|age| age >= JSONL_MAX_FILE_AGE)
+        }) {
+            self.close_current()?;
+        }
+        Ok(())
+    }
+
+    fn prune_if_due(&mut self, now: SystemTime) -> Result<(), LocalTraceStoreError> {
+        let should_prune = self.last_prune.is_none_or(|last_prune| {
+            now.duration_since(last_prune)
+                .is_ok_and(|age| age >= JSONL_PRUNE_INTERVAL)
+        });
+        if should_prune {
+            prune_expired_jsonl_files(&self.dir, self.retention, now)?;
+            self.last_prune = Some(now);
+        }
+        Ok(())
+    }
+
     fn should_roll(&self, next_record_bytes: u64) -> bool {
         self.current.as_ref().is_some_and(|current| {
             current.rows_written > 0
@@ -186,9 +234,12 @@ impl RollingJsonlWriter {
         })
     }
 
-    fn ensure_current(&mut self) -> Result<&mut OpenJsonlFile, LocalTraceStoreError> {
+    fn ensure_current(
+        &mut self,
+        now: SystemTime,
+    ) -> Result<&mut OpenJsonlFile, LocalTraceStoreError> {
         if self.current.is_none() {
-            let path = self.next_file_path();
+            let path = self.next_file_path(now);
             let file = OpenOptions::new()
                 .write(true)
                 .create_new(true)
@@ -199,6 +250,7 @@ impl RollingJsonlWriter {
                 })?;
             self.current = Some(OpenJsonlFile {
                 path,
+                created_at: now,
                 writer: BufWriter::new(file),
                 rows_written: 0,
                 bytes_written: 0,
@@ -208,10 +260,10 @@ impl RollingJsonlWriter {
         Ok(self.current.as_mut().expect("current writer was just set"))
     }
 
-    fn next_file_path(&mut self) -> PathBuf {
+    fn next_file_path(&mut self, now: SystemTime) -> PathBuf {
         let sequence = self.file_counter;
         self.file_counter = self.file_counter.saturating_add(1);
-        let unix_nanos = unix_nanos(SystemTime::now());
+        let unix_nanos = unix_nanos(now);
         self.dir.join(format!(
             "spans-{unix_nanos:020}-{}-{sequence:016}.jsonl",
             process::id()
@@ -245,9 +297,70 @@ impl RollingJsonlWriter {
     }
 }
 
+fn prune_expired_jsonl_files(
+    dir: &Path,
+    retention: Duration,
+    now: SystemTime,
+) -> Result<(), LocalTraceStoreError> {
+    let cutoff = now.checked_sub(retention).unwrap_or(UNIX_EPOCH);
+    for entry in fs::read_dir(dir).map_err(|source| LocalTraceStoreError::ReadDir {
+        path: dir.to_path_buf(),
+        source,
+    })? {
+        let entry = entry.map_err(|source| LocalTraceStoreError::ReadDir {
+            path: dir.to_path_buf(),
+            source,
+        })?;
+        let path = entry.path();
+        if path
+            .extension()
+            .and_then(std::ffi::OsStr::to_str)
+            .is_none_or(|extension| extension != "jsonl")
+        {
+            continue;
+        }
+        let timestamp = jsonl_file_timestamp(&path)?;
+        if timestamp <= cutoff {
+            fs::remove_file(&path)
+                .map_err(|source| LocalTraceStoreError::RemoveFile { path, source })?;
+        }
+    }
+    Ok(())
+}
+
+fn jsonl_file_timestamp(path: &Path) -> Result<SystemTime, LocalTraceStoreError> {
+    if let Some(timestamp) = path
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .and_then(parse_jsonl_file_timestamp)
+    {
+        return Ok(timestamp);
+    }
+
+    path.metadata()
+        .and_then(|metadata| metadata.modified())
+        .map_err(|source| LocalTraceStoreError::FileMetadata {
+            path: path.to_path_buf(),
+            source,
+        })
+}
+
+fn parse_jsonl_file_timestamp(file_name: &str) -> Option<SystemTime> {
+    let unix_nanos = file_name
+        .strip_prefix("spans-")?
+        .split('-')
+        .next()?
+        .parse::<u128>()
+        .ok()?;
+    let secs = u64::try_from(unix_nanos / 1_000_000_000).ok()?;
+    let nanos = u32::try_from(unix_nanos % 1_000_000_000).ok()?;
+    UNIX_EPOCH.checked_add(Duration::new(secs, nanos))
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct TraceStore {
     dir: PathBuf,
+    retention: Option<Duration>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -275,6 +388,8 @@ pub(crate) enum TraceStoreError {
         line: usize,
         source: serde_json::Error,
     },
+    #[error("failed to prune expired local trace store files: {source}")]
+    PruneExpired { source: LocalTraceStoreError },
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -343,8 +458,19 @@ struct TraceAggregate {
 }
 
 impl TraceStore {
+    #[cfg(test)]
     pub(crate) fn new(dir: PathBuf) -> Self {
-        Self { dir }
+        Self {
+            dir,
+            retention: None,
+        }
+    }
+
+    pub(crate) fn with_retention(dir: PathBuf, retention: Duration) -> Self {
+        Self {
+            dir,
+            retention: Some(retention),
+        }
     }
 
     pub(crate) fn list_traces(
@@ -393,6 +519,7 @@ impl TraceStore {
     }
 
     fn read_spans(&self) -> Result<Vec<TraceSpanRecord>, TraceStoreError> {
+        self.prune_expired()?;
         let mut spans_by_id = HashMap::new();
         for path in self.jsonl_files()? {
             for span in read_spans_file(&path)? {
@@ -400,6 +527,16 @@ impl TraceStore {
             }
         }
         Ok(spans_by_id.into_values().collect())
+    }
+
+    fn prune_expired(&self) -> Result<(), TraceStoreError> {
+        if let Some(retention) = self.retention
+            && self.dir.exists()
+        {
+            prune_expired_jsonl_files(&self.dir, retention, SystemTime::now())
+                .map_err(|source| TraceStoreError::PruneExpired { source })?;
+        }
+        Ok(())
     }
 
     fn jsonl_files(&self) -> Result<Vec<PathBuf>, TraceStoreError> {
@@ -768,19 +905,26 @@ fn duration_nanos(start: SystemTime, end: SystemTime) -> i64 {
 mod tests {
     use std::fs;
     use std::path::Path;
+    use std::time::{Duration, SystemTime};
 
     use opentelemetry::KeyValue;
     use opentelemetry::trace::{Span as _, SpanKind, Tracer, TracerProvider as _};
     use opentelemetry_sdk::trace::SdkTracerProvider;
     use tempfile::TempDir;
 
-    use super::{JsonlSpanExporter, StoredTraceStatus, TraceStore};
+    use super::{
+        JSONL_MAX_FILE_AGE, JsonlSpanExporter, RollingJsonlWriter, StoredTraceStatus,
+        TraceSpanRecord, TraceStore, unix_nanos,
+    };
+
+    const TRACE_RETENTION: Duration = Duration::from_hours(7 * 24);
 
     #[test]
     fn exports_finished_spans_to_jsonl() {
         let temp = TempDir::new().expect("temp dir");
         let dir = temp.path().join("telemetry").join("traces");
-        let exporter = JsonlSpanExporter::new(dir.clone()).expect("jsonl span exporter");
+        let exporter =
+            JsonlSpanExporter::new(dir.clone(), TRACE_RETENTION).expect("jsonl span exporter");
         let provider = SdkTracerProvider::builder()
             .with_resource(
                 opentelemetry_sdk::Resource::builder_empty()
@@ -838,7 +982,8 @@ mod tests {
     fn repeated_exports_append_to_one_jsonl_file() {
         let temp = TempDir::new().expect("temp dir");
         let dir = temp.path().join("telemetry").join("traces");
-        let exporter = JsonlSpanExporter::new(dir.clone()).expect("jsonl span exporter");
+        let exporter =
+            JsonlSpanExporter::new(dir.clone(), TRACE_RETENTION).expect("jsonl span exporter");
         let provider = SdkTracerProvider::builder()
             .with_simple_exporter(exporter)
             .build();
@@ -856,7 +1001,8 @@ mod tests {
     fn reads_trace_summaries_and_details_from_jsonl() {
         let temp = TempDir::new().expect("temp dir");
         let dir = temp.path().join("telemetry").join("traces");
-        let exporter = JsonlSpanExporter::new(dir.clone()).expect("jsonl span exporter");
+        let exporter =
+            JsonlSpanExporter::new(dir.clone(), TRACE_RETENTION).expect("jsonl span exporter");
         let provider = SdkTracerProvider::builder()
             .with_simple_exporter(exporter)
             .build();
@@ -917,11 +1063,116 @@ mod tests {
         assert!(store.get_trace("missing").is_err());
     }
 
+    #[test]
+    fn exporter_prunes_expired_jsonl_files_on_startup() {
+        let temp = TempDir::new().expect("temp dir");
+        let dir = temp.path().join("telemetry").join("traces");
+        fs::create_dir_all(&dir).expect("trace dir");
+        let old_path = dir.join(timestamped_jsonl_path(
+            SystemTime::now() - Duration::from_hours(8 * 24),
+        ));
+        let fresh_path = dir.join(timestamped_jsonl_path(SystemTime::now()));
+        fs::write(&old_path, "{}\n").expect("write expired trace file");
+        fs::write(&fresh_path, "{}\n").expect("write fresh trace file");
+
+        let _exporter =
+            JsonlSpanExporter::new(dir.clone(), TRACE_RETENTION).expect("jsonl span exporter");
+
+        assert!(!old_path.exists());
+        assert!(fresh_path.exists());
+    }
+
+    #[test]
+    fn trace_store_prunes_expired_jsonl_files_on_read() {
+        let temp = TempDir::new().expect("temp dir");
+        let dir = temp.path().join("telemetry").join("traces");
+        fs::create_dir_all(&dir).expect("trace dir");
+        let old_path = dir.join(timestamped_jsonl_path(
+            SystemTime::now() - Duration::from_hours(8 * 24),
+        ));
+        let fresh_path = dir.join(timestamped_jsonl_path(SystemTime::now()));
+        write_record_file(&old_path, &trace_record("old-trace", "old-span"));
+        write_record_file(&fresh_path, &trace_record("fresh-trace", "fresh-span"));
+        let store = TraceStore::with_retention(dir, TRACE_RETENTION);
+
+        let traces = store.list_traces(10, 0).expect("list traces");
+
+        assert!(!old_path.exists());
+        assert!(fresh_path.exists());
+        assert_eq!(traces.len(), 1);
+        assert_eq!(traces[0].trace_id, "fresh-trace");
+    }
+
+    #[test]
+    fn rolling_writer_rolls_stale_current_file() {
+        let temp = TempDir::new().expect("temp dir");
+        let dir = temp.path().join("telemetry").join("traces");
+        let mut writer =
+            RollingJsonlWriter::new(dir.clone(), TRACE_RETENTION).expect("jsonl writer");
+
+        writer
+            .write_records(&[trace_record("trace-1", "span-1")])
+            .expect("write first record");
+        let first_path = writer.current.as_mut().expect("open file").path.clone();
+        writer.current.as_mut().expect("open file").created_at =
+            SystemTime::now() - JSONL_MAX_FILE_AGE - Duration::from_secs(1);
+
+        writer
+            .write_records(&[trace_record("trace-2", "span-2")])
+            .expect("write second record");
+
+        assert_ne!(
+            &writer.current.as_ref().expect("open replacement").path,
+            &first_path
+        );
+        assert_eq!(jsonl_file_count(&dir), 2);
+    }
+
     fn jsonl_file_count(dir: &Path) -> usize {
         fs::read_dir(dir)
             .expect("trace dir")
             .filter_map(Result::ok)
             .filter(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("jsonl"))
             .count()
+    }
+
+    fn timestamped_jsonl_path(timestamp: SystemTime) -> String {
+        format!(
+            "spans-{:020}-test-0000000000000000.jsonl",
+            unix_nanos(timestamp)
+        )
+    }
+
+    fn write_record_file(path: &Path, record: &TraceSpanRecord) {
+        let mut line = serde_json::to_string(record).expect("serialize record");
+        line.push('\n');
+        fs::write(path, line).expect("write trace record");
+    }
+
+    fn trace_record(trace_id: &str, span_id: &str) -> TraceSpanRecord {
+        TraceSpanRecord {
+            trace_id: trace_id.to_string(),
+            span_id: span_id.to_string(),
+            parent_span_id: None,
+            parent_span_is_remote: false,
+            name: "coral.query".to_string(),
+            kind: "internal".to_string(),
+            status: StoredTraceStatus::Ok,
+            status_message: None,
+            start_time_unix_nanos: 1,
+            end_time_unix_nanos: 2,
+            duration_nanos: 1,
+            attributes_json: "{}".to_string(),
+            events_json: "[]".to_string(),
+            links_json: "[]".to_string(),
+            resource_json: "{}".to_string(),
+            scope_name: "test".to_string(),
+            scope_version: None,
+            scope_schema_url: None,
+            scope_attributes_json: "{}".to_string(),
+            trace_flags: 0,
+            trace_state: String::new(),
+            is_remote: false,
+        }
     }
 }

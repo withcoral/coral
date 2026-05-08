@@ -1,5 +1,7 @@
 //! Telemetry configuration loading from app state.
 
+use std::time::Duration;
+
 use serde::Deserialize;
 
 use crate::bootstrap::AppError;
@@ -10,6 +12,8 @@ pub(super) const DEFAULT_INTERNAL_TRACE_FILTER: &str = "coral_app=trace,coral_cl
 pub(super) const DEFAULT_LOG_FILTER: &str = "coral_app=info,coral_engine=info";
 const DEFAULT_SERVICE_NAME: &str = "coral";
 const DEFAULT_INTERNAL_HTTP_BODY_MAX_BYTES: usize = 64 * 1024;
+const DEFAULT_INTERNAL_TRACE_RETENTION_DAYS: u64 = 7;
+const HOURS_PER_DAY: u64 = 24;
 
 #[derive(Debug, Clone, Default, Deserialize)]
 struct TelemetryConfigFile {
@@ -27,6 +31,7 @@ pub struct TelemetryConfig {
     pub(crate) trace_filter: String,
     pub(crate) service_name: String,
     pub(crate) enable_internal_tracing: bool,
+    pub(crate) internal_trace_retention_days: u64,
     pub(crate) record_internal_http_bodies: bool,
     pub(crate) internal_http_body_max_bytes: usize,
 }
@@ -39,7 +44,8 @@ impl Default for TelemetryConfig {
             log_filter: None,
             trace_filter: DEFAULT_TRACE_FILTER.to_string(),
             service_name: DEFAULT_SERVICE_NAME.to_string(),
-            enable_internal_tracing: false,
+            enable_internal_tracing: true,
+            internal_trace_retention_days: DEFAULT_INTERNAL_TRACE_RETENTION_DAYS,
             record_internal_http_bodies: false,
             internal_http_body_max_bytes: DEFAULT_INTERNAL_HTTP_BODY_MAX_BYTES,
         }
@@ -68,10 +74,21 @@ impl TelemetryConfig {
         (self.enable_internal_tracing && self.record_internal_http_bodies)
             .then_some(self.internal_http_body_max_bytes)
     }
+
+    #[must_use]
+    pub(crate) fn internal_trace_retention(&self) -> Duration {
+        Duration::from_hours(
+            self.internal_trace_retention_days
+                .max(1)
+                .saturating_mul(HOURS_PER_DAY),
+        )
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use tempfile::TempDir;
 
     use super::TelemetryConfig;
@@ -104,6 +121,7 @@ log_filter = "info"
 trace_filter = "coral_app=debug"
 service_name = "from-config"
 enable_internal_tracing = true
+internal_trace_retention_days = 14
 record_internal_http_bodies = true
 internal_http_body_max_bytes = 42
 "#,
@@ -118,6 +136,11 @@ internal_http_body_max_bytes = 42
         assert_eq!(config.trace_filter, "coral_app=debug");
         assert_eq!(config.service_name, "from-config");
         assert!(config.enable_internal_tracing);
+        assert_eq!(config.internal_trace_retention_days, 14);
+        assert_eq!(
+            config.internal_trace_retention(),
+            Duration::from_hours(14 * 24)
+        );
         assert!(config.record_internal_http_bodies);
         assert_eq!(config.internal_http_body_max_bytes, 42);
         assert_eq!(config.internal_http_body_recording_max_bytes(), Some(42));
@@ -126,6 +149,7 @@ internal_http_body_max_bytes = 42
     #[test]
     fn http_body_recording_requires_internal_tracing() {
         let config = TelemetryConfig {
+            enable_internal_tracing: false,
             record_internal_http_bodies: true,
             internal_http_body_max_bytes: 8,
             ..TelemetryConfig::default()

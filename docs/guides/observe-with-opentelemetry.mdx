@@ -3,7 +3,7 @@ title: "Observe Coral with OpenTelemetry"
 description: "Export Coral traces, logs, and metrics to any OTLP-compatible backend."
 ---
 
-Coral can emit traces, logs, and metrics over OTLP/HTTP to any compatible backend (Grafana, Honeycomb, OpenObserve, Jaeger, Datadog Agent, etc.). Telemetry is **off by default**. External export activates when you set an `[otel]` section with an endpoint in your `config.toml`; local trace inspection can be enabled without an OTLP endpoint.
+Coral can emit traces, logs, and metrics over OTLP/HTTP to any compatible backend (Grafana, Honeycomb, OpenObserve, Jaeger, Datadog Agent, etc.). External export is **off by default** and activates when you set an `[otel]` section with an endpoint in your `config.toml`. Local trace inspection is enabled by default and does not require an OTLP endpoint.
 
 ## Enable telemetry
 
@@ -18,16 +18,23 @@ Coral picks up the new settings on the next invocation, and spans, logs, and met
 
 The `endpoint` is the OTLP/HTTP base URL. Coral automatically appends `/v1/traces`, `/v1/logs`, and `/v1/metrics` for each signal, so you do not need to set those paths yourself. If you point at a URL that already includes one of those suffixes, Coral strips it before re-appending the right one per signal.
 
-## Local trace inspection
+## Local Trace Inspection
 
-To inspect traces in Coral's local UI without running an external OpenTelemetry store, enable internal tracing:
+Coral keeps a local trace history for the UI by default. Local traces include query, source-loading, HTTP, and DataFusion spans. They also include DataFusion optimizer-rule spans so the trace view can show the planning work that happened for a query. This local filter is separate from `trace_filter`, which only controls OTLP span export.
+
+By default, Coral retains seven days of local spans. To change that window:
 
 ```toml
 [otel]
-enable_internal_tracing = true
+internal_trace_retention_days = 14
 ```
 
-Internal tracing captures the same query, source-loading, HTTP, and DataFusion spans that Coral can export over OTLP. It also includes DataFusion optimizer-rule spans by default so the local trace view can show the planning work that happened for a query. This local filter is separate from `trace_filter`, which only controls OTLP span export.
+To disable local trace inspection:
+
+```toml
+[otel]
+enable_internal_tracing = false
+```
 
 To include HTTP request and response bodies in local traces, opt in explicitly:
 
@@ -50,7 +57,8 @@ All telemetry settings live under `[otel]` in `config.toml`. There are no enviro
 | `log_filter`                   | string  | `coral_app=info,coral_engine=info`                                     | `tracing-subscriber` filter applied to logs (OTLP and stderr).                    |
 | `trace_filter`                 | string  | `coral_app=trace,coral_client=trace,coral_mcp=trace,coral_engine=trace,coral_engine::datafusion=off` | `tracing-subscriber` filter applied to OTLP spans.                                |
 | `service_name`                 | string  | `coral`                                                                | Value of the `service.name` resource attribute on every signal.                   |
-| `enable_internal_tracing`      | boolean | `false`                                                                | Enables local trace inspection without requiring an OTLP collector.               |
+| `enable_internal_tracing`      | boolean | `true`                                                                 | Enables local trace inspection without requiring an OTLP collector.               |
+| `internal_trace_retention_days` | integer | `7`                                                                    | Number of days of local trace spans to retain.                                    |
 | `record_internal_http_bodies`  | boolean | `false`                                                                | Records HTTP request and response bodies in local traces when internal tracing is enabled. |
 | `internal_http_body_max_bytes` | integer | `65536`                                                                | Maximum request or response body bytes recorded in a local trace.                 |
 

@@ -1160,6 +1160,17 @@ async fn config_persists_across_rebuilds_without_local_trace_state() {
     let temp = TempDir::new().expect("temp dir");
     let manifest_yaml = fixture_manifest_yaml(temp.path());
     let config_dir = temp.path().join("coral-config");
+    fs::create_dir_all(&config_dir).expect("create config dir");
+    fs::write(
+        config_dir.join("config.toml"),
+        r"
+version = 1
+
+[otel]
+enable_internal_tracing = false
+",
+    )
+    .expect("write config");
 
     {
         let harness = GrpcHarness::start_with_config_dir(config_dir.clone()).await;

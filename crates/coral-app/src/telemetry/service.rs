@@ -1,6 +1,7 @@
 //! Implements the gRPC `TraceService` for local trace inspection.
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use coral_api::v1::trace_service_server::TraceService as TraceServiceApi;
 use coral_api::v1::{
@@ -24,9 +25,9 @@ pub(crate) struct TraceService {
 }
 
 impl TraceService {
-    pub(crate) fn new(trace_store_file: PathBuf) -> Self {
+    pub(crate) fn new(trace_store_file: PathBuf, retention: Duration) -> Self {
         Self {
-            traces: TraceStore::new(trace_store_file),
+            traces: TraceStore::with_retention(trace_store_file, retention),
         }
     }
 }
@@ -113,7 +114,8 @@ fn trace_store_status(error: TraceStoreError) -> Status {
         TraceStoreError::ReadDir { .. }
         | TraceStoreError::OpenFile { .. }
         | TraceStoreError::ReadFile { .. }
-        | TraceStoreError::DecodeLine { .. } => Status::new(Code::Internal, error.to_string()),
+        | TraceStoreError::DecodeLine { .. }
+        | TraceStoreError::PruneExpired { .. } => Status::new(Code::Internal, error.to_string()),
     }
 }
 
