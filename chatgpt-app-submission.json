@@ -1,0 +1,132 @@
+{
+  "$schema": "https://developers.openai.com/apps-sdk/schemas/chatgpt-app-submission.v1.json",
+  "schema_version": 1,
+  "app_info": {
+    "display_name": "Coral",
+    "subtitle": "Query data with SQL",
+    "description": "Coral gives ChatGPT a SQL interface to configured local and API-backed data sources. Users can discover available tables, run focused SQL queries, join data across sources such as GitHub, Linear, Slack, Datadog, and local files, and submit feedback when Coral blocks progress.",
+    "category": "DEVELOPER_TOOLS"
+  },
+  "tools": {
+    "sql": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Executes a SQL statement against configured Coral sources and returns result rows without creating, updating, or deleting records.",
+        "open_world_justification": "May read from configured external API-backed sources as part of query execution.",
+        "destructive_justification": "Does not delete, overwrite, revoke access, send messages, or perform irreversible actions."
+      }
+    },
+    "list_tables": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Lists Coral table metadata and does not modify source configuration or backing data.",
+        "open_world_justification": "Reads the local Coral catalog instead of contacting public internet systems or changing third-party state.",
+        "destructive_justification": "Does not delete, overwrite, revoke access, or perform irreversible actions."
+      }
+    },
+    "feedback": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Stores a feedback report describing where the user was blocked, so it changes Coral feedback state.",
+        "open_world_justification": "Stores feedback through Coral and does not publish content or change public internet state.",
+        "destructive_justification": "Creates a feedback report but does not delete, overwrite, revoke access, or perform irreversible actions."
+      }
+    }
+  },
+  "test_cases": [
+    {
+      "description": "Discover available Coral tables before choosing a query.",
+      "user_prompt": "Show me the Coral tables available for GitHub and Linear.",
+      "file_attachment_urls": null,
+      "tools_triggered": "list_tables",
+      "expected_output": "Returns matching table names with enough catalog detail for the user to choose a follow-up query.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Run a focused SQL query against a connected source.",
+      "user_prompt": "Find my open GitHub pull requests that are waiting for review.",
+      "file_attachment_urls": null,
+      "tools_triggered": "sql",
+      "expected_output": "Returns relevant pull request rows from the configured GitHub source without modifying GitHub.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Join data across source-control and issue-tracker tables.",
+      "user_prompt": "Which Linear issues are linked to open GitHub pull requests in the current repository?",
+      "file_attachment_urls": null,
+      "tools_triggered": "list_tables, sql",
+      "expected_output": "Returns compact joined results that connect issue identifiers with pull request state and URLs.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Page through a large table catalog.",
+      "user_prompt": "List the next 25 Datadog-related Coral tables after the first page.",
+      "file_attachment_urls": null,
+      "tools_triggered": "list_tables",
+      "expected_output": "Returns the requested page of matching table metadata and preserves pagination context.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Use SQL to retrieve observability context for an engineering task.",
+      "user_prompt": "Look up recent Datadog alerts related to the checkout service and summarize the affected monitors.",
+      "file_attachment_urls": null,
+      "tools_triggered": "sql",
+      "expected_output": "Returns alert or monitor rows from the configured observability source and summarizes the relevant findings.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Submit feedback when Coral blocks progress.",
+      "user_prompt": "Coral could not expose any Slack tables while I was trying to investigate an incident. File feedback with what I tried and where I got stuck.",
+      "file_attachment_urls": null,
+      "tools_triggered": "feedback",
+      "expected_output": "Stores a feedback report and returns a feedback identifier plus confirmation.",
+      "expected_output_url": null
+    }
+  ],
+  "negative_test_cases": [
+    {
+      "description": "Do not trigger for creating records in external systems.",
+      "user_prompt": "Create a GitHub issue for this bug and assign it to me.",
+      "file_attachment_urls": null,
+      "tools_triggered": null,
+      "expected_output": "The app should not be invoked because Coral exposes read/query workflows and does not create GitHub issues.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Do not trigger for sending messages.",
+      "user_prompt": "Send a Slack message to the incident channel saying the fix has shipped.",
+      "file_attachment_urls": null,
+      "tools_triggered": null,
+      "expected_output": "The app should not be invoked because Coral does not send Slack messages or publish chat content.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Do not trigger for credential or source installation workflows.",
+      "user_prompt": "Add a new Jira source to Coral and save my API token.",
+      "file_attachment_urls": null,
+      "tools_triggered": null,
+      "expected_output": "The app should not be invoked because the MCP tools do not install sources or manage credentials.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Do not trigger for destructive data-management requests.",
+      "user_prompt": "Delete all stored feedback reports from Coral.",
+      "file_attachment_urls": null,
+      "tools_triggered": null,
+      "expected_output": "The app should not be invoked because the exposed tools do not delete feedback reports or perform destructive admin actions.",
+      "expected_output_url": null
+    }
+  ]
+}
