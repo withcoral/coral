@@ -37,6 +37,7 @@ If the source you need is not available, you can extend Coral by [writing a cust
 | [slack](#slack) | `http` | Query channels, messages, thread replies, and users from your Slack workspace. |
 | [statusgator](#statusgator) | `http` | Query status boards, monitors, incidents, history, service components, subscribers, users, and monitoring regions from StatusGator. |
 | [stripe](#stripe) | `http` | Query customers, charges, subscriptions, invoices, payments, products, prices, refunds, disputes, payouts, balance transactions, and events from Stripe. |
+| [wandb](#wandb) | `http` | Query the authenticated viewer, projects, runs, and sampled run metrics from Weights & Biases (W&B Cloud or self-hosted). |
 
 ## Supported data source types
 
@@ -344,6 +345,22 @@ permissions for the resources you plan to query.
 You can also use secret keys (`sk_test_` or `sk_live_`), but
 restricted keys limit access to only the required endpoints.
 See [Stripe API key docs](https://docs.stripe.com/keys).
+
+### `wandb`
+
+`WANDB_BASE_URL` (optional)<br />
+default `https://api.wandb.ai`
+
+Base URL of your W&B instance. Use `https://api.wandb.ai` for W&B
+Cloud (the default) or your self-hosted host (for example
+`https://wandb.example.com`). The GraphQL endpoint is at `/graphql`.
+
+`WANDB_API_KEY` (required)
+
+Personal API key for W&B. Generate one at
+[https://wandb.ai/authorize](https://wandb.ai/authorize) (or
+`https://<your-host>/authorize` for self-hosted). Coral uses the
+key for HTTP Basic auth with username `api`.
 
 ## Don't see what you need?
 

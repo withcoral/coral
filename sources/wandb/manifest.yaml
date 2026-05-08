@@ -1,0 +1,1063 @@
+dsl_version: 3
+name: wandb
+version: 0.1.0
+backend: http
+description: >-
+  Query the authenticated viewer, projects, runs, and sampled run metrics
+  from Weights & Biases (W&B Cloud or self-hosted).
+inputs:
+  WANDB_BASE_URL:
+    kind: variable
+    default: https://api.wandb.ai
+    hint: |
+      Base URL of your W&B instance. Use `https://api.wandb.ai` for W&B
+      Cloud (the default) or your self-hosted host (for example
+      `https://wandb.example.com`). The GraphQL endpoint is at `/graphql`.
+  WANDB_API_KEY:
+    kind: secret
+    hint: |
+      Personal API key for W&B. Generate one at
+      [https://wandb.ai/authorize](https://wandb.ai/authorize) (or
+      `https://<your-host>/authorize` for self-hosted). Coral uses the
+      key for HTTP Basic auth with username `api`.
+base_url: "{{input.WANDB_BASE_URL}}"
+auth:
+  type: BasicAuth
+  username: api
+  password: "{{input.WANDB_API_KEY}}"
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+  - name: Content-Type
+    from: literal
+    value: application/json
+test_queries:
+  - SELECT * FROM wandb.viewer LIMIT 1
+tables:
+  - name: viewer
+    description: Authenticated W&B user (single row)
+    guide: |
+      Returns the viewer record for the API key in use. Useful for
+      confirming connectivity and discovering the default `entity` value
+      to feed into project- and run-scoped tables.
+    request:
+      method: POST
+      path: /graphql
+      query: []
+      body:
+        - path:
+            - query
+          from: literal
+          value: |
+            query Viewer {
+              viewer {
+                id
+                username
+                name
+                email
+                entity
+                photoUrl
+                admin
+                createdAt
+              }
+            }
+    response:
+      rows_path:
+        - data
+        - viewer
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Viewer ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: username
+        type: Utf8
+        nullable: true
+        description: Viewer username
+        expr:
+          kind: path
+          path:
+            - username
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Display name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: email
+        type: Utf8
+        nullable: true
+        description: Email address
+        expr:
+          kind: path
+          path:
+            - email
+      - name: entity
+        type: Utf8
+        nullable: true
+        description: Default entity (personal username or team)
+        expr:
+          kind: path
+          path:
+            - entity
+      - name: photo_url
+        type: Utf8
+        nullable: true
+        description: Profile photo URL
+        expr:
+          kind: path
+          path:
+            - photoUrl
+      - name: admin
+        type: Boolean
+        nullable: true
+        description: Whether the viewer is a W&B admin
+        expr:
+          kind: path
+          path:
+            - admin
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Account creation timestamp
+        expr:
+          kind: path
+          path:
+            - createdAt
+  - name: projects
+    description: Projects within a W&B entity
+    guide: |
+      Requires `entity_name` (a W&B username or team). Use this to
+      discover `project_name` values for downstream run and metric
+      tables. Pass `order` (for example `-last_active` or
+      `-created_at`) to push sort order down to the W&B API so `LIMIT`
+      reads only the newest pages.
+    filters:
+      - name: entity_name
+        required: true
+      - name: order
+        required: false
+    request:
+      method: POST
+      path: /graphql
+      query: []
+      body:
+        - path:
+            - query
+          from: literal
+          value: |
+            query Projects($entityName: String!, $first: Int!, $after: String, $order: String) {
+              projects(entityName: $entityName, first: $first, after: $after, order: $order) {
+                edges {
+                  node {
+                    id
+                    name
+                    entityName
+                    description
+                    createdAt
+                    updatedAt
+                    lastActive
+                    access
+                    isBenchmark
+                    totalRuns
+                  }
+                }
+                pageInfo {
+                  endCursor
+                  hasNextPage
+                }
+              }
+            }
+        - path:
+            - variables
+            - entityName
+          from: filter
+          key: entity_name
+        - path:
+            - variables
+            - order
+          from: filter
+          key: order
+        - path:
+            - variables
+            - first
+          from: literal
+          value: 100
+    response:
+      rows_path:
+        - data
+        - projects
+        - edges
+    pagination:
+      mode: cursor_body
+      cursor_body_path:
+        - variables
+        - after
+      response_cursor_path:
+        - data
+        - projects
+        - pageInfo
+        - endCursor
+      page_size:
+        default: 100
+        max: 200
+        body_path:
+          - variables
+          - first
+    columns:
+      - name: entity_name
+        type: Utf8
+        nullable: false
+        description: Entity name filter
+        expr:
+          kind: from_filter
+          key: entity_name
+      - name: order
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: |
+          Optional W&B sort order (e.g. `-last_active`, `-created_at`).
+          Pass via `WHERE "order" = '-last_active'` to push sort down to
+          the W&B API and avoid paginating all projects.
+        expr:
+          kind: from_filter
+          key: order
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Project ID
+        expr:
+          kind: path
+          path:
+            - node
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Project name (slug)
+        expr:
+          kind: path
+          path:
+            - node
+            - name
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Project description
+        expr:
+          kind: path
+          path:
+            - node
+            - description
+      - name: access
+        type: Utf8
+        nullable: true
+        description: Visibility (e.g. PRIVATE, USER_READ, TEAM_READ)
+        expr:
+          kind: path
+          path:
+            - node
+            - access
+      - name: is_benchmark
+        type: Boolean
+        nullable: true
+        description: Whether the project is a benchmark
+        expr:
+          kind: path
+          path:
+            - node
+            - isBenchmark
+      - name: total_runs
+        type: Int64
+        nullable: true
+        description: Total run count
+        expr:
+          kind: path
+          path:
+            - node
+            - totalRuns
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Creation timestamp
+        expr:
+          kind: path
+          path:
+            - node
+            - createdAt
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: Last update timestamp
+        expr:
+          kind: path
+          path:
+            - node
+            - updatedAt
+      - name: last_active
+        type: Utf8
+        nullable: true
+        description: Last activity timestamp
+        expr:
+          kind: path
+          path:
+            - node
+            - lastActive
+  - name: runs
+    description: Runs within a W&B project
+    guide: |
+      Requires `entity_name` and `project_name` (discover via
+      `wandb.projects`). Pass `order` (for example `-created_at` or
+      `-heartbeatAt`) to push sort order down to the W&B API so `LIMIT`
+      reads only the newest pages. For a direct lookup by run name, use
+      `wandb.run` instead of scanning this list table. `summary_metrics`
+      is a JSON-encoded string — parse it with SQL JSON functions.
+    filters:
+      - name: entity_name
+        required: true
+      - name: project_name
+        required: true
+      - name: order
+        required: false
+    request:
+      method: POST
+      path: /graphql
+      query: []
+      body:
+        - path:
+            - query
+          from: literal
+          value: |
+            query Runs($entityName: String!, $projectName: String!, $first: Int!, $after: String, $order: String) {
+              project(entityName: $entityName, name: $projectName) {
+                id
+                name
+                runs(first: $first, after: $after, order: $order) {
+                  edges {
+                    node {
+                      id
+                      name
+                      displayName
+                      state
+                      running
+                      createdAt
+                      updatedAt
+                      heartbeatAt
+                      summaryMetrics
+                      group
+                      jobType
+                      sweepName
+                    }
+                  }
+                  pageInfo {
+                    endCursor
+                    hasNextPage
+                  }
+                }
+              }
+            }
+        - path:
+            - variables
+            - entityName
+          from: filter
+          key: entity_name
+        - path:
+            - variables
+            - projectName
+          from: filter
+          key: project_name
+        - path:
+            - variables
+            - order
+          from: filter
+          key: order
+        - path:
+            - variables
+            - first
+          from: literal
+          value: 100
+    response:
+      rows_path:
+        - data
+        - project
+        - runs
+        - edges
+    pagination:
+      mode: cursor_body
+      cursor_body_path:
+        - variables
+        - after
+      response_cursor_path:
+        - data
+        - project
+        - runs
+        - pageInfo
+        - endCursor
+      page_size:
+        default: 100
+        max: 500
+        body_path:
+          - variables
+          - first
+    columns:
+      - name: entity_name
+        type: Utf8
+        nullable: false
+        description: Entity name filter
+        expr:
+          kind: from_filter
+          key: entity_name
+      - name: project_name
+        type: Utf8
+        nullable: false
+        description: Project name filter
+        expr:
+          kind: from_filter
+          key: project_name
+      - name: order
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: |
+          Optional W&B sort order (e.g. `-created_at`, `-heartbeatAt`).
+          Pass via `WHERE "order" = '-created_at'` to push sort down to
+          the W&B API and avoid paginating all runs.
+        expr:
+          kind: from_filter
+          key: order
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Run ID (immutable)
+        expr:
+          kind: path
+          path:
+            - node
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Run short name (used in URLs)
+        expr:
+          kind: path
+          path:
+            - node
+            - name
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: Human-readable run name
+        expr:
+          kind: path
+          path:
+            - node
+            - displayName
+      - name: state
+        type: Utf8
+        nullable: true
+        description: Run state (running, finished, crashed, failed, killed)
+        expr:
+          kind: path
+          path:
+            - node
+            - state
+      - name: running
+        type: Boolean
+        nullable: true
+        description: Whether the run is currently active
+        expr:
+          kind: path
+          path:
+            - node
+            - running
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Creation timestamp
+        expr:
+          kind: path
+          path:
+            - node
+            - createdAt
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: Last update timestamp
+        expr:
+          kind: path
+          path:
+            - node
+            - updatedAt
+      - name: heartbeat_at
+        type: Utf8
+        nullable: true
+        description: Last heartbeat timestamp
+        expr:
+          kind: path
+          path:
+            - node
+            - heartbeatAt
+      - name: summary_metrics
+        type: Utf8
+        nullable: true
+        description: JSON-encoded summary metrics (parse with json functions)
+        expr:
+          kind: path
+          path:
+            - node
+            - summaryMetrics
+      - name: group
+        type: Utf8
+        nullable: true
+        description: Run group name
+        expr:
+          kind: path
+          path:
+            - node
+            - group
+      - name: job_type
+        type: Utf8
+        nullable: true
+        description: Run job type
+        expr:
+          kind: path
+          path:
+            - node
+            - jobType
+      - name: sweep_name
+        type: Utf8
+        nullable: true
+        description: Parent sweep name, if any
+        expr:
+          kind: path
+          path:
+            - node
+            - sweepName
+  - name: run
+    description: Direct lookup for a single W&B run
+    guide: |
+      Requires `entity_name`, `project_name`, and `run_name` (the run ID
+      from W&B URLs and `wandb.runs.name`, NOT `display_name`). Use this
+      table when you already know the run and want current status,
+      heartbeat, and summary metrics without paging through
+      `wandb.runs`. `summary_metrics` is a JSON-encoded string — parse it
+      with SQL JSON functions.
+
+      Example — pull final summary values:
+
+      ```sql
+      SELECT
+        json_get_float(summary_metrics, 'eval/val_loss') AS val_loss,
+        json_get_float(summary_metrics, 'train/train_loss') AS train_loss
+      FROM wandb.run
+      WHERE entity_name = 'my-team'
+        AND project_name = 'my-project'
+        AND run_name = 'cc568gi2';
+      ```
+    filters:
+      - name: entity_name
+        required: true
+      - name: project_name
+        required: true
+      - name: run_name
+        required: true
+    request:
+      method: POST
+      path: /graphql
+      query: []
+      body:
+        - path:
+            - query
+          from: literal
+          value: |
+            query Run($entityName: String!, $projectName: String!, $runName: String!) {
+              project(entityName: $entityName, name: $projectName) {
+                id
+                name
+                run(name: $runName) {
+                  id
+                  name
+                  displayName
+                  state
+                  running
+                  createdAt
+                  updatedAt
+                  heartbeatAt
+                  summaryMetrics
+                  group
+                  jobType
+                  sweepName
+                }
+              }
+            }
+        - path:
+            - variables
+            - entityName
+          from: filter
+          key: entity_name
+        - path:
+            - variables
+            - projectName
+          from: filter
+          key: project_name
+        - path:
+            - variables
+            - runName
+          from: filter
+          key: run_name
+    response:
+      rows_path:
+        - data
+        - project
+        - run
+      allow_404_empty: true
+    pagination:
+      mode: none
+    columns:
+      - name: entity_name
+        type: Utf8
+        nullable: false
+        description: Entity name filter
+        expr:
+          kind: from_filter
+          key: entity_name
+      - name: project_name
+        type: Utf8
+        nullable: false
+        description: Project name filter
+        expr:
+          kind: from_filter
+          key: project_name
+      - name: run_name
+        type: Utf8
+        nullable: false
+        description: Run name filter
+        expr:
+          kind: from_filter
+          key: run_name
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Run ID (immutable)
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Run short name (used in URLs)
+        expr:
+          kind: path
+          path:
+            - name
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: Human-readable run name
+        expr:
+          kind: path
+          path:
+            - displayName
+      - name: state
+        type: Utf8
+        nullable: true
+        description: Run state (running, finished, crashed, failed, killed)
+        expr:
+          kind: path
+          path:
+            - state
+      - name: running
+        type: Boolean
+        nullable: true
+        description: Whether the run is currently active
+        expr:
+          kind: path
+          path:
+            - running
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Creation timestamp
+        expr:
+          kind: path
+          path:
+            - createdAt
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: Last update timestamp
+        expr:
+          kind: path
+          path:
+            - updatedAt
+      - name: heartbeat_at
+        type: Utf8
+        nullable: true
+        description: Last heartbeat timestamp
+        expr:
+          kind: path
+          path:
+            - heartbeatAt
+      - name: summary_metrics
+        type: Utf8
+        nullable: true
+        description: JSON-encoded summary metrics (parse with json functions)
+        expr:
+          kind: path
+          path:
+            - summaryMetrics
+      - name: group
+        type: Utf8
+        nullable: true
+        description: Run group name
+        expr:
+          kind: path
+          path:
+            - group
+      - name: job_type
+        type: Utf8
+        nullable: true
+        description: Run job type
+        expr:
+          kind: path
+          path:
+            - jobType
+      - name: sweep_name
+        type: Utf8
+        nullable: true
+        description: Parent sweep name, if any
+        expr:
+          kind: path
+          path:
+            - sweepName
+  - name: run_history
+    description: Per-step metric history for a single W&B run
+    guide: |
+      Returns the sampled training/eval history for a single run. Each
+      row is a JSON-encoded entry — extract metrics with `json_get_*`.
+      Requires `entity_name`, `project_name`, and `run_name` (the run
+      ID from `wandb.runs.name`, NOT `display_name`). Optional
+      `samples` controls how many points the W&B server returns
+      (default ~500, sampled across the run, not "latest N");
+      `min_step` and `max_step` bound the step range. For a cleaner
+      single-metric shape, prefer `wandb.run_metric_history`.
+
+      Example — pull the training-loss curve:
+
+      ```sql
+      SELECT
+        json_get_int(data, '_step') AS step,
+        json_get_float(data, 'train/train_loss') AS train_loss
+      FROM wandb.run_history
+      WHERE entity_name  = 'my-team'
+        AND project_name = 'my-project'
+        AND run_name     = 'cc568gi2'
+        AND samples      = 1000
+      ORDER BY step;
+      ```
+    filters:
+      - name: entity_name
+        required: true
+      - name: project_name
+        required: true
+      - name: run_name
+        required: true
+      - name: samples
+        required: false
+      - name: min_step
+        required: false
+      - name: max_step
+        required: false
+    request:
+      method: POST
+      path: /graphql
+      query: []
+      body:
+        - path:
+            - query
+          from: literal
+          value: |
+            query RunHistory($entityName: String!, $projectName: String!, $runName: String!, $samples: Int, $minStep: Int64, $maxStep: Int64) {
+              project(entityName: $entityName, name: $projectName) {
+                id
+                run(name: $runName) {
+                  id
+                  history(samples: $samples, minStep: $minStep, maxStep: $maxStep)
+                }
+              }
+            }
+        - path:
+            - variables
+            - entityName
+          from: filter
+          key: entity_name
+        - path:
+            - variables
+            - projectName
+          from: filter
+          key: project_name
+        - path:
+            - variables
+            - runName
+          from: filter
+          key: run_name
+        - path:
+            - variables
+            - samples
+          from: filter_int
+          key: samples
+        - path:
+            - variables
+            - minStep
+          from: filter_int
+          key: min_step
+        - path:
+            - variables
+            - maxStep
+          from: filter_int
+          key: max_step
+    response:
+      rows_path:
+        - data
+        - project
+        - run
+        - history
+    pagination:
+      mode: none
+    columns:
+      - name: entity_name
+        type: Utf8
+        nullable: false
+        description: Entity name filter
+        expr:
+          kind: from_filter
+          key: entity_name
+      - name: project_name
+        type: Utf8
+        nullable: false
+        description: Project name filter
+        expr:
+          kind: from_filter
+          key: project_name
+      - name: run_name
+        type: Utf8
+        nullable: false
+        description: Run name (slug) filter
+        expr:
+          kind: from_filter
+          key: run_name
+      - name: samples
+        type: Int64
+        nullable: true
+        virtual: true
+        description: Optional max number of sampled points (default ~500)
+        expr:
+          kind: from_filter
+          key: samples
+      - name: min_step
+        type: Int64
+        nullable: true
+        virtual: true
+        description: Optional inclusive lower bound on `_step`
+        expr:
+          kind: from_filter
+          key: min_step
+      - name: max_step
+        type: Int64
+        nullable: true
+        virtual: true
+        description: Optional inclusive upper bound on `_step`
+        expr:
+          kind: from_filter
+          key: max_step
+      - name: data
+        type: Utf8
+        nullable: true
+        description: |
+          JSON-encoded history entry. Use json_get_* (e.g.
+          `json_get_int(data, '_step')`,
+          `json_get(data, 'train/train_loss')`) to extract metrics.
+        expr:
+          kind: current_row
+  - name: run_metric_history
+    description: Per-step sampled values for one W&B metric in a run
+    guide: |
+      Requires `entity_name`, `project_name`, `run_name`, and
+      `metric_name`. This is the Coral-native shape for a single training
+      curve: one row per sampled step with a typed `value` column. Optional
+      `samples` controls how many points W&B returns (default ~500,
+      sampled across the run, not "latest N"); `min_step` and `max_step`
+      bound the step range. For final/current values, use
+      `json_get_float(summary_metrics, '<metric>')` from `wandb.run`.
+      `metric_name` must be a constant equality filter; use `UNION ALL`
+      when selecting multiple metric curves.
+
+      Example — pull a loss curve:
+
+      ```sql
+      SELECT step, value AS train_loss
+      FROM wandb.run_metric_history
+      WHERE entity_name = 'my-team'
+        AND project_name = 'my-project'
+        AND run_name = 'cc568gi2'
+        AND metric_name = 'train/train_loss'
+        AND samples = 1000
+      ORDER BY step;
+      ```
+    filters:
+      - name: entity_name
+        required: true
+      - name: project_name
+        required: true
+      - name: run_name
+        required: true
+      - name: metric_name
+        required: true
+      - name: samples
+        required: false
+      - name: min_step
+        required: false
+      - name: max_step
+        required: false
+    request:
+      method: POST
+      path: /graphql
+      query: []
+      body:
+        - path:
+            - query
+          from: literal
+          value: |
+            query RunMetricHistory($entityName: String!, $projectName: String!, $runName: String!, $spec: JSONString!) {
+              project(entityName: $entityName, name: $projectName) {
+                id
+                run(name: $runName) {
+                  id
+                  sampledHistory(specs: [$spec])
+                }
+              }
+            }
+        - path:
+            - variables
+            - entityName
+          from: filter
+          key: entity_name
+        - path:
+            - variables
+            - projectName
+          from: filter
+          key: project_name
+        - path:
+            - variables
+            - runName
+          from: filter
+          key: run_name
+        - path:
+            - variables
+            - spec
+          from: template
+          template: '{"keys":["_step","{{filter.metric_name}}"],"samples":{{filter.samples|500}},"minStep":{{filter.min_step|0}},"maxStep":{{filter.max_step|1000000000000}}}'
+    response:
+      rows_path:
+        - data
+        - project
+        - run
+        - sampledHistory
+        - "0"
+    pagination:
+      mode: none
+    columns:
+      - name: entity_name
+        type: Utf8
+        nullable: false
+        description: Entity name filter
+        expr:
+          kind: from_filter
+          key: entity_name
+      - name: project_name
+        type: Utf8
+        nullable: false
+        description: Project name filter
+        expr:
+          kind: from_filter
+          key: project_name
+      - name: run_name
+        type: Utf8
+        nullable: false
+        description: Run name / ID filter
+        expr:
+          kind: from_filter
+          key: run_name
+      - name: metric_name
+        type: Utf8
+        nullable: false
+        description: Metric key to extract from each history row
+        expr:
+          kind: from_filter
+          key: metric_name
+      - name: samples
+        type: Int64
+        nullable: true
+        virtual: true
+        description: Optional max number of sampled points (default ~500)
+        expr:
+          kind: from_filter
+          key: samples
+      - name: min_step
+        type: Int64
+        nullable: true
+        virtual: true
+        description: Optional inclusive lower bound on `_step`
+        expr:
+          kind: from_filter
+          key: min_step
+      - name: max_step
+        type: Int64
+        nullable: true
+        virtual: true
+        description: Optional inclusive upper bound on `_step`
+        expr:
+          kind: from_filter
+          key: max_step
+      - name: step
+        type: Int64
+        nullable: true
+        description: History `_step`
+        expr:
+          kind: path
+          path:
+            - _step
+      - name: timestamp
+        type: Float64
+        nullable: true
+        description: History `_timestamp`, if present
+        expr:
+          kind: path
+          path:
+            - _timestamp
+      - name: value
+        type: Float64
+        nullable: true
+        description: Metric value for `metric_name`
+        expr:
+          kind: object_filter_path
+          path: []
+          filter_key: metric_name
+          item_path: []
+      - name: data
+        type: Json
+        nullable: true
+        description: Full history entry JSON
+        expr:
+          kind: current_row
