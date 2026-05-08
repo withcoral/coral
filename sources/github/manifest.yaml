@@ -87,27 +87,27 @@ functions:
       - name: name
         type: Utf8
         nullable: true
-        expr: { kind: path, path: [name] }
+        expr: {kind: path, path: [name]}
       - name: path
         type: Utf8
         nullable: true
-        expr: { kind: path, path: [path] }
+        expr: {kind: path, path: [path]}
       - name: html_url
         type: Utf8
         nullable: true
-        expr: { kind: path, path: [html_url] }
+        expr: {kind: path, path: [html_url]}
       - name: language
         type: Utf8
         nullable: true
-        expr: { kind: path, path: [language] }
+        expr: {kind: path, path: [language]}
       - name: score
         type: Float64
         nullable: true
-        expr: { kind: path, path: [score] }
+        expr: {kind: path, path: [score]}
       - name: repository_full_name
         type: Utf8
         nullable: true
-        expr: { kind: path, path: [repository, full_name] }
+        expr: {kind: path, path: [repository, full_name]}
   - name: search_commits
     description: Search GitHub commits.
     args:
@@ -153,27 +153,27 @@ functions:
       - name: sha
         type: Utf8
         nullable: true
-        expr: { kind: path, path: [sha] }
+        expr: {kind: path, path: [sha]}
       - name: html_url
         type: Utf8
         nullable: true
-        expr: { kind: path, path: [html_url] }
+        expr: {kind: path, path: [html_url]}
       - name: message
         type: Utf8
         nullable: true
-        expr: { kind: path, path: [commit, message] }
+        expr: {kind: path, path: [commit, message]}
       - name: author_login
         type: Utf8
         nullable: true
-        expr: { kind: path, path: [author, login] }
+        expr: {kind: path, path: [author, login]}
       - name: repository_full_name
         type: Utf8
         nullable: true
-        expr: { kind: path, path: [repository, full_name] }
+        expr: {kind: path, path: [repository, full_name]}
       - name: score
         type: Float64
         nullable: true
-        expr: { kind: path, path: [score] }
+        expr: {kind: path, path: [score]}
   - name: search_issues
     description: Search GitHub issues and pull requests.
     args:
@@ -232,31 +232,31 @@ functions:
       - name: title
         type: Utf8
         nullable: true
-        expr: { kind: path, path: [title] }
+        expr: {kind: path, path: [title]}
       - name: html_url
         type: Utf8
         nullable: true
-        expr: { kind: path, path: [html_url] }
+        expr: {kind: path, path: [html_url]}
       - name: score
         type: Float64
         nullable: true
-        expr: { kind: path, path: [score] }
+        expr: {kind: path, path: [score]}
       - name: state
         type: Utf8
         nullable: true
-        expr: { kind: path, path: [state] }
+        expr: {kind: path, path: [state]}
       - name: number
         type: Int64
         nullable: true
-        expr: { kind: path, path: [number] }
+        expr: {kind: path, path: [number]}
       - name: user_login
         type: Utf8
         nullable: true
-        expr: { kind: path, path: [user, login] }
+        expr: {kind: path, path: [user, login]}
       - name: repository_url
         type: Utf8
         nullable: true
-        expr: { kind: path, path: [repository_url] }
+        expr: {kind: path, path: [repository_url]}
   - name: search_labels
     description: Search GitHub labels in a repository.
     args:
@@ -309,27 +309,27 @@ functions:
       - name: id
         type: Int64
         nullable: true
-        expr: { kind: path, path: [id] }
+        expr: {kind: path, path: [id]}
       - name: name
         type: Utf8
         nullable: true
-        expr: { kind: path, path: [name] }
+        expr: {kind: path, path: [name]}
       - name: description
         type: Utf8
         nullable: true
-        expr: { kind: path, path: [description] }
+        expr: {kind: path, path: [description]}
       - name: color
         type: Utf8
         nullable: true
-        expr: { kind: path, path: [color] }
+        expr: {kind: path, path: [color]}
       - name: url
         type: Utf8
         nullable: true
-        expr: { kind: path, path: [url] }
+        expr: {kind: path, path: [url]}
       - name: score
         type: Float64
         nullable: true
-        expr: { kind: path, path: [score] }
+        expr: {kind: path, path: [score]}
   - name: search_repositories
     description: Search GitHub repositories.
     args:
@@ -375,39 +375,39 @@ functions:
       - name: id
         type: Int64
         nullable: true
-        expr: { kind: path, path: [id] }
+        expr: {kind: path, path: [id]}
       - name: full_name
         type: Utf8
         nullable: true
-        expr: { kind: path, path: [full_name] }
+        expr: {kind: path, path: [full_name]}
       - name: html_url
         type: Utf8
         nullable: true
-        expr: { kind: path, path: [html_url] }
+        expr: {kind: path, path: [html_url]}
       - name: description
         type: Utf8
         nullable: true
-        expr: { kind: path, path: [description] }
+        expr: {kind: path, path: [description]}
       - name: language
         type: Utf8
         nullable: true
-        expr: { kind: path, path: [language] }
+        expr: {kind: path, path: [language]}
       - name: stargazers_count
         type: Int64
         nullable: true
-        expr: { kind: path, path: [stargazers_count] }
+        expr: {kind: path, path: [stargazers_count]}
       - name: forks_count
         type: Int64
         nullable: true
-        expr: { kind: path, path: [forks_count] }
+        expr: {kind: path, path: [forks_count]}
       - name: updated_at
         type: Utf8
         nullable: true
-        expr: { kind: path, path: [updated_at] }
+        expr: {kind: path, path: [updated_at]}
       - name: score
         type: Float64
         nullable: true
-        expr: { kind: path, path: [score] }
+        expr: {kind: path, path: [score]}
   - name: search_topics
     description: Search GitHub topics.
     args:
@@ -441,27 +441,27 @@ functions:
       - name: name
         type: Utf8
         nullable: true
-        expr: { kind: path, path: [name] }
+        expr: {kind: path, path: [name]}
       - name: display_name
         type: Utf8
         nullable: true
-        expr: { kind: path, path: [display_name] }
+        expr: {kind: path, path: [display_name]}
       - name: short_description
         type: Utf8
         nullable: true
-        expr: { kind: path, path: [short_description] }
+        expr: {kind: path, path: [short_description]}
       - name: description
         type: Utf8
         nullable: true
-        expr: { kind: path, path: [description] }
+        expr: {kind: path, path: [description]}
       - name: repository_count
         type: Utf8
         nullable: true
-        expr: { kind: path, path: [repository_count] }
+        expr: {kind: path, path: [repository_count]}
       - name: score
         type: Float64
         nullable: true
-        expr: { kind: path, path: [score] }
+        expr: {kind: path, path: [score]}
   - name: search_users
     description: Search GitHub users.
     args:
@@ -507,35 +507,35 @@ functions:
       - name: login
         type: Utf8
         nullable: true
-        expr: { kind: path, path: [login] }
+        expr: {kind: path, path: [login]}
       - name: html_url
         type: Utf8
         nullable: true
-        expr: { kind: path, path: [html_url] }
+        expr: {kind: path, path: [html_url]}
       - name: type
         type: Utf8
         nullable: true
-        expr: { kind: path, path: [type] }
+        expr: {kind: path, path: [type]}
       - name: name
         type: Utf8
         nullable: true
-        expr: { kind: path, path: [name] }
+        expr: {kind: path, path: [name]}
       - name: company
         type: Utf8
         nullable: true
-        expr: { kind: path, path: [company] }
+        expr: {kind: path, path: [company]}
       - name: location
         type: Utf8
         nullable: true
-        expr: { kind: path, path: [location] }
+        expr: {kind: path, path: [location]}
       - name: bio
         type: Utf8
         nullable: true
-        expr: { kind: path, path: [bio] }
+        expr: {kind: path, path: [bio]}
       - name: score
         type: Float64
         nullable: true
-        expr: { kind: path, path: [score] }
+        expr: {kind: path, path: [score]}
 tables:
   - name: accepted_assignments
     description: List accepted assignments for an assignment
