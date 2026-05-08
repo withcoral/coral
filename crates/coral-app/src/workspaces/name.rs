@@ -1,10 +1,9 @@
 use std::fmt;
 
+pub use coral_api::DEFAULT_WORKSPACE_ID;
+
 use crate::bootstrap::AppError;
 use crate::identity::parse_path_segment;
-
-/// Canonical default workspace name used across local Coral surfaces.
-pub const DEFAULT_WORKSPACE_ID: &str = "default";
 
 /// App-owned identity for one validated workspace name.
 ///

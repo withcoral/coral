@@ -10,7 +10,7 @@ publish = false
 workspace = true
 
 [dependencies]
-arrow.workspace = true
+arrow = { workspace = true, features = ["prettyprint"] }
 opentelemetry.workspace = true
 opentelemetry_sdk.workspace = true
 serde_json.workspace = true

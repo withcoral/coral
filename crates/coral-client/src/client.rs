@@ -12,7 +12,7 @@ use crate::error::ClientError;
 use crate::propagation::TraceContextInterceptor;
 
 /// Default workspace used by local Coral clients.
-pub use coral_app::DEFAULT_WORKSPACE_ID;
+pub use coral_api::DEFAULT_WORKSPACE_ID;
 
 #[must_use]
 /// Returns the default workspace used by local Coral clients.
