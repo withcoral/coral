@@ -1,3 +1,6 @@
+install:
+	cargo install --path crates/coral-cli --locked
+
 rust-checks:
 	cargo fmt --all -- --check
 	cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
