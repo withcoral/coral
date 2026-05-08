@@ -6,12 +6,10 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use coral_engine::{
     CoralQuery, CoreError, EngineExtensions, QueryRuntimeConfig, QueryRuntimeContext,
-    RequestAuthenticator, RequestAuthenticatorError, SourceCapabilities, SourceDecorator,
-    SourceDecoratorError, StatusCode,
+    RequestAuthenticator, RequestAuthenticatorError, StatusCode,
 };
 use reqwest::header::{AUTHORIZATION, HeaderName, HeaderValue};
 use serde_json::{Value, json};
@@ -124,51 +122,6 @@ fn hex_encode(value: &str) -> String {
 
 #[derive(Debug)]
 struct TestRequestAuthenticator;
-
-struct RecordingSourceDecorator {
-    saw_table_function: Arc<AtomicBool>,
-}
-
-struct TableOnlySourceDecorator;
-
-impl SourceDecorator for TableOnlySourceDecorator {
-    fn name(&self) -> &'static str {
-        "table_only"
-    }
-
-    fn decorate_source(
-        &mut self,
-        _source: &coral_engine::QuerySource,
-        tables: coral_engine::SourceTables,
-    ) -> Result<coral_engine::SourceTables, SourceDecoratorError> {
-        Ok(tables)
-    }
-}
-
-impl SourceDecorator for RecordingSourceDecorator {
-    fn name(&self) -> &'static str {
-        "recording"
-    }
-
-    fn decorate_source(
-        &mut self,
-        _source: &coral_engine::QuerySource,
-        tables: coral_engine::SourceTables,
-    ) -> Result<coral_engine::SourceTables, SourceDecoratorError> {
-        Ok(tables)
-    }
-
-    fn decorate_source_capabilities(
-        &mut self,
-        _source: &coral_engine::QuerySource,
-        capabilities: SourceCapabilities,
-    ) -> Result<SourceCapabilities, SourceDecoratorError> {
-        if !capabilities.table_functions.is_empty() {
-            self.saw_table_function.store(true, Ordering::SeqCst);
-        }
-        Ok(capabilities)
-    }
-}
 
 impl RequestAuthenticator for TestRequestAuthenticator {
     fn name(&self) -> &'static str {
@@ -537,58 +490,6 @@ async fn table_function_request_headers_do_not_resolve_filters_from_args() {
 
     assert!(
         error.to_string().contains("missing filter 'q'"),
-        "unexpected error: {error}"
-    );
-}
-
-#[tokio::test]
-async fn source_decorators_receive_table_functions() {
-    let saw_table_function = Arc::new(AtomicBool::new(false));
-    let mut extensions = EngineExtensions::default();
-    extensions
-        .source_decorators
-        .push(Box::new(RecordingSourceDecorator {
-            saw_table_function: saw_table_function.clone(),
-        }));
-
-    let source = build_source(search_function_manifest(
-        "decorated_function_source",
-        "https://api.example.com",
-    ));
-    CoralQuery::list_tables(
-        &[source],
-        QueryRuntimeConfig::new(QueryRuntimeContext::default(), extensions),
-        None,
-    )
-    .await
-    .expect("runtime build should succeed");
-
-    assert!(saw_table_function.load(Ordering::SeqCst));
-}
-
-#[tokio::test]
-async fn table_only_source_decorators_fail_closed_for_table_functions() {
-    let mut extensions = EngineExtensions::default();
-    extensions
-        .source_decorators
-        .push(Box::new(TableOnlySourceDecorator));
-
-    let source = build_source(search_function_manifest(
-        "table_only_decorator_source",
-        "https://api.example.com",
-    ));
-    let error = CoralQuery::list_tables(
-        &[source],
-        QueryRuntimeConfig::new(QueryRuntimeContext::default(), extensions),
-        None,
-    )
-    .await
-    .expect_err("table-only decorators must not silently bypass table functions");
-
-    assert!(
-        error.to_string().contains(
-            "source decorator 'table_only': source decorator does not handle table functions"
-        ),
         "unexpected error: {error}"
     );
 }
