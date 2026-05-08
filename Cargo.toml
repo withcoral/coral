@@ -17,7 +17,28 @@ unused_crate_dependencies = "warn"
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -2 }
+# enforcement
+allow_attributes = "warn"
 allow_attributes_without_reason = "warn"
+# don't panic
+unwrap_used = "warn"
+get_unwrap = "warn"
+unwrap_in_result = "warn"
+indexing_slicing = "warn"
+string_slice = "warn"
+panic_in_result_fn = "warn"
+unchecked_time_subtraction = "warn"
+# don't fail silently
+let_underscore_must_use = "warn"
+unused_result_ok = "warn"
+map_err_ignore = "warn"
+assertions_on_result_states = "warn"
+# easy wins
+dbg_macro = "warn"
+mem_forget = "warn"
+rc_mutex = "warn"
+float_cmp_const = "warn"
+lossy_float_literal = "warn"
 disallowed_methods = "deny"
 print_stderr = "warn"
 print_stdout = "warn"
