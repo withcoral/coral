@@ -36,7 +36,7 @@ To disable local trace inspection:
 enable_internal_tracing = false
 ```
 
-HTTP request and response bodies are recorded in local traces by default, up to `internal_http_body_max_bytes` bytes per body. To disable local body recording:
+HTTP request and response bodies are recorded in local traces by default, up to `internal_http_body_max_bytes` bytes per body (`65536` by default). To disable local body recording:
 
 ```toml
 [otel]
