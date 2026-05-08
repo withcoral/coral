@@ -185,10 +185,10 @@ impl TableProvider for HttpSourceTableProvider {
         filters: &[Expr],
         limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        let request_values = extract_filter_values(filters, self.table.filters());
+        let filter_values = extract_filter_values(filters, self.table.filters());
 
         for required in self.table.filters().iter().filter(|f| f.required) {
-            if !request_values.contains_key(&required.name) {
+            if !filter_values.contains_key(&required.name) {
                 return Err(DataFusionError::External(Box::new(
                     ProviderQueryError::MissingRequiredFilter {
                         schema: self.source_schema.clone(),
@@ -199,8 +199,8 @@ impl TableProvider for HttpSourceTableProvider {
             }
         }
 
-        let request_value_keys: HashSet<String> = request_values.keys().cloned().collect();
-        let active_request = self.table.resolve_request(&request_value_keys).clone();
+        let filter_value_keys: HashSet<String> = filter_values.keys().cloned().collect();
+        let active_request = self.table.resolve_request(&filter_value_keys).clone();
         let target = self.target.with_resolved_request(active_request);
 
         http_json_exec(HttpJsonExecRequest {
@@ -208,7 +208,7 @@ impl TableProvider for HttpSourceTableProvider {
             source_schema: &self.source_schema,
             target,
             schema: self.schema.clone(),
-            filter_values: request_values,
+            filter_values,
             arg_values: HashMap::new(),
             projection,
             limit,
