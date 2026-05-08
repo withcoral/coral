@@ -1,0 +1,33 @@
+{
+  "name": "coral",
+  "version": "0.2.0",
+  "description": "Query GitHub, Jira, Slack, Datadog, Linear, and other sources with Coral SQL from Codex.",
+  "author": {
+    "name": "Coral",
+    "email": "legal@withcoral.com",
+    "url": "https://withcoral.com/"
+  },
+  "homepage": "https://withcoral.com",
+  "repository": "https://github.com/withcoral/coral",
+  "license": "Apache-2.0",
+  "keywords": ["coral", "sql"],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "apps": "./.app.json",
+  "interface": {
+    "displayName": "Coral",
+    "shortDescription": "Query anything with SQL",
+    "longDescription": "Use Coral query connected data sources such as GitHub, Jira, Slack, Datadog, Linear, Sentry, and local files from Codex. Run SQL over installed sources, join results across systems, and bring issue, PR, alert, incident, chat, and file context into coding tasks.",
+    "developerName": "Coral",
+    "category": "Engineering",
+    "capabilities": ["Interactive", "Read"],
+    "websiteURL": "https://withcoral.com/",
+    "privacyPolicyURL": "https://withcoral.com/privacy",
+    "termsOfServiceURL": "https://withcoral.com/terms",
+    "defaultPrompt": ["Check related issues, PRs, alerts, and Slack context"],
+    "brandColor": "#398125",
+    "composerIcon": "./assets/icon.png",
+    "logo": "./assets/icon.png",
+    "screenshots": []
+  }
+}
