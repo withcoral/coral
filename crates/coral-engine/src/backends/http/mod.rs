@@ -105,7 +105,7 @@ impl CompiledBackendSource for HttpCompiledSource {
                     self.manifest.common.name.clone(),
                     function.clone(),
                 )?);
-            table_functions.insert(internal_name, function_impl);
+            table_functions.insert(internal_name.clone(), function_impl);
             table_function_infos.push(build_registered_table_function(
                 &self.manifest.common.name,
                 function,
