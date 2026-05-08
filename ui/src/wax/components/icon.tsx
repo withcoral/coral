@@ -1,11 +1,11 @@
 import classnames from 'classnames'
-import { ChevronDown, ChevronRight, CircleAlert, Columns3, Database, Loader, PanelLeft, Play, Plus, RefreshCw, Search, Table2, X } from 'lucide-react'
+import { Activity, ArrowDown, ArrowUp, ChevronDown, ChevronRight, CircleAlert, Columns3, Database, Loader, PanelLeft, Play, Plus, RefreshCw, Search, Table2, X } from 'lucide-react'
 
 import { CoralIcon } from '@/wax/components/icon/custom-icons/coral'
 import { iconContainer } from '@/wax/components/icon.css'
 
 export type IconColor = 'disabled' | 'error' | 'info' | 'inherit' | 'orange' | 'placeholder' | 'primary' | 'secondary' | 'success' | 'tertiary' | 'warning'
-export type IconName = 'Coral' | 'PanelLeft' | 'Database' | 'Search' | 'X' | 'ChevronDown' | 'ChevronRight' | 'Table2' | 'Columns3' | 'Plus' | 'Play' | 'Loader' | 'RefreshCw' | 'CircleAlert'
+export type IconName = 'Coral' | 'PanelLeft' | 'Database' | 'Search' | 'X' | 'ChevronDown' | 'ChevronRight' | 'ArrowUp' | 'ArrowDown' | 'Table2' | 'Columns3' | 'Plus' | 'Play' | 'Loader' | 'RefreshCw' | 'CircleAlert' | 'Activity'
 export interface IconProps {
   className?: string
   color?: IconColor
@@ -15,12 +15,15 @@ export interface IconProps {
 export type IconSize = '14' | '16' | '18' | '20' | '24' | '30'
 
 const iconMap = {
+  Activity,
   PanelLeft,
   Database,
   Search,
   X,
   ChevronDown,
   ChevronRight,
+  ArrowUp,
+  ArrowDown,
   Table2,
   Columns3,
   Plus,

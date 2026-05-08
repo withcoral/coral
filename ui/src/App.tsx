@@ -1,5 +1,5 @@
 import { Shell } from '@/components/shell'
-import { Placeholder } from '@/views/Placeholder'
+import { TracesPage } from '@/views/TracesPage'
 import { useThemeClassOnBody } from '@/wax/theme/theme-provider'
 import '@/app.css'
 
@@ -8,7 +8,7 @@ export function App() {
 
   return (
     <Shell>
-      <Placeholder />
+      <TracesPage />
     </Shell>
   )
 }
