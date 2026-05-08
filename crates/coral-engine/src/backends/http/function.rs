@@ -19,7 +19,7 @@ use datafusion::logical_expr::{Expr, TableProviderFilterPushDown, TableType};
 use datafusion::physical_plan::ExecutionPlan;
 
 use crate::backends::http::HttpSourceClient;
-use crate::backends::http::provider::http_json_exec;
+use crate::backends::http::provider::{HttpJsonExecRequest, http_json_exec};
 use crate::backends::http::target::HttpFetchTarget;
 use crate::backends::schema_from_columns;
 use crate::backends::shared::filter_expr::literal_to_string;
@@ -79,10 +79,10 @@ impl HttpSourceTableFunction {
 
 impl TableFunctionImpl for HttpSourceTableFunction {
     fn call(&self, args: &[Expr]) -> Result<Arc<dyn TableProvider>> {
-        let request_values = bind_function_args(&self.state.source_schema, &self.spec, args)?;
+        let arg_values = bind_function_args(&self.state.source_schema, &self.spec, args)?;
         Ok(Arc::new(HttpSourceFunctionCallTableProvider {
             state: Arc::clone(&self.state),
-            request_values,
+            arg_values,
         }))
     }
 }
@@ -91,7 +91,7 @@ impl TableFunctionImpl for HttpSourceTableFunction {
 /// already bound into HTTP request values.
 struct HttpSourceFunctionCallTableProvider {
     state: Arc<HttpSourceFunctionState>,
-    request_values: HashMap<String, String>,
+    arg_values: HashMap<String, String>,
 }
 
 impl fmt::Debug for HttpSourceFunctionCallTableProvider {
@@ -99,7 +99,7 @@ impl fmt::Debug for HttpSourceFunctionCallTableProvider {
         f.debug_struct("HttpSourceFunctionCallTableProvider")
             .field("source_schema", &self.state.source_schema)
             .field("function", &self.state.function_name)
-            .field("request_values", &self.request_values.keys())
+            .field("arg_values", &self.arg_values.keys())
             .finish_non_exhaustive()
     }
 }
@@ -137,15 +137,16 @@ impl TableProvider for HttpSourceFunctionCallTableProvider {
         _filters: &[Expr],
         limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        http_json_exec(
-            self.state.backend.clone(),
-            &self.state.source_schema,
-            (*self.state.target).clone(),
-            self.state.schema.clone(),
-            self.request_values.clone(),
+        http_json_exec(HttpJsonExecRequest {
+            backend: self.state.backend.clone(),
+            source_schema: &self.state.source_schema,
+            target: (*self.state.target).clone(),
+            schema: self.state.schema.clone(),
+            filter_values: HashMap::new(),
+            arg_values: self.arg_values.clone(),
             projection,
             limit,
-        )
+        })
     }
 }
 
@@ -161,7 +162,7 @@ fn bind_function_args(
     ensure_no_extra_args(&context, function.args.len(), args.len())?;
 
     let mut required_missing = Vec::new();
-    let mut request_values = HashMap::with_capacity(function.args.len());
+    let mut arg_values = HashMap::with_capacity(function.args.len());
 
     for (index, spec) in function.args.iter().enumerate() {
         let Some(value) = resolve_call_arg_literal(&context, spec.name.as_str(), args.get(index))?
@@ -172,7 +173,7 @@ fn bind_function_args(
             continue;
         };
         ensure_call_arg_allowed_value(&context, spec.name.as_str(), &value, &spec.values)?;
-        request_values.insert(spec.bind.arg.clone(), value);
+        arg_values.insert(spec.bind.arg.clone(), value);
     }
 
     if !required_missing.is_empty() {
@@ -184,7 +185,7 @@ fn bind_function_args(
         )));
     }
 
-    Ok(request_values)
+    Ok(arg_values)
 }
 
 fn ensure_no_extra_args(

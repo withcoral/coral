@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write;
 use std::sync::Arc;
 
-use crate::{QueryRuntimeContext, RequestAuthenticator};
+use crate::{QueryRuntimeContext, RequestAuthenticator, SourceTableFunctions};
 use async_trait::async_trait;
 use coral_spec::backends::file::PartitionColumnSpec;
 use coral_spec::{
@@ -68,13 +68,8 @@ pub(crate) struct RegisteredSource {
 
 pub(crate) struct BackendRegistration {
     pub(crate) tables: HashMap<String, Arc<dyn TableProvider>>,
-    pub(crate) table_functions: Vec<BackendTableFunctionRegistration>,
+    pub(crate) table_functions: SourceTableFunctions,
     pub(crate) source: RegisteredSource,
-}
-
-pub(crate) struct BackendTableFunctionRegistration {
-    pub(crate) internal_name: String,
-    pub(crate) function: Arc<dyn datafusion::catalog::TableFunctionImpl>,
 }
 
 /// Build a collision-free `DataFusion` UDTF name for a source-scoped function.

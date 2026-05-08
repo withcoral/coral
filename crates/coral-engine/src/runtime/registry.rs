@@ -5,12 +5,13 @@ use std::sync::Arc;
 use datafusion::error::{DataFusionError, Result as DataFusionResult};
 use datafusion::prelude::SessionContext;
 
-use crate::backends::{
-    BackendRegistration, BackendTableFunctionRegistration, CompiledBackendSource, RegisteredSource,
-};
+use crate::backends::{BackendRegistration, CompiledBackendSource, RegisteredSource};
 use crate::runtime::error::{datafusion_to_core, source_decorator_error_to_core};
 use crate::runtime::schema_provider::StaticSchemaProvider;
-use crate::{CoreError, QuerySource, SourceDecorator, SourceFailurePolicy};
+use crate::{
+    CoreError, QuerySource, SourceCapabilities, SourceDecorator, SourceFailurePolicy,
+    SourceTableFunctions,
+};
 
 const RESERVED_SCHEMA_NAMES: &[&str] = &["coral", "coral_admin"];
 
@@ -107,14 +108,23 @@ pub(crate) async fn register_sources(
                             table_functions,
                             source: registered_source,
                         } = registration;
-                        let decorated_tables =
-                            decorate_source_tables(source_decorators, query_source, tables)?;
+                        let decorated_capabilities = decorate_source_capabilities(
+                            source_decorators,
+                            query_source,
+                            SourceCapabilities {
+                                tables,
+                                table_functions,
+                            },
+                        )?;
                         match catalog.register_schema(
                             compiled_source.schema_name(),
-                            Arc::new(StaticSchemaProvider::new(decorated_tables)),
+                            Arc::new(StaticSchemaProvider::new(decorated_capabilities.tables)),
                         ) {
                             Ok(_) => {
-                                register_table_functions(ctx, table_functions);
+                                register_table_functions(
+                                    ctx,
+                                    decorated_capabilities.table_functions,
+                                );
                                 result.active_sources.push(registered_source);
                             }
                             Err(error) => {
@@ -224,12 +234,9 @@ fn push_source_failure(
     result.failures.push(failure);
 }
 
-fn register_table_functions(
-    ctx: &SessionContext,
-    table_functions: Vec<BackendTableFunctionRegistration>,
-) {
-    for table_function in table_functions {
-        ctx.register_udtf(&table_function.internal_name, table_function.function);
+fn register_table_functions(ctx: &SessionContext, table_functions: SourceTableFunctions) {
+    for (internal_name, function) in table_functions {
+        ctx.register_udtf(&internal_name, function);
     }
 }
 
@@ -245,17 +252,17 @@ fn prepare_source_decorators(
     Ok(())
 }
 
-fn decorate_source_tables(
+fn decorate_source_capabilities(
     source_decorators: &mut [Box<dyn SourceDecorator>],
     source: &QuerySource,
-    mut tables: crate::SourceTables,
-) -> std::result::Result<crate::SourceTables, CoreError> {
+    mut capabilities: SourceCapabilities,
+) -> std::result::Result<SourceCapabilities, CoreError> {
     for decorator in source_decorators {
-        tables = decorator
-            .decorate_source(source, tables)
+        capabilities = decorator
+            .decorate_source_capabilities(source, capabilities)
             .map_err(|error| source_decorator_error(decorator.name(), &error))?;
     }
-    Ok(tables)
+    Ok(capabilities)
 }
 
 fn handle_source_registration_failure(

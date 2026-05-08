@@ -6,10 +6,12 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use coral_engine::{
     CoralQuery, CoreError, EngineExtensions, QueryRuntimeConfig, QueryRuntimeContext,
-    RequestAuthenticator, RequestAuthenticatorError, StatusCode,
+    RequestAuthenticator, RequestAuthenticatorError, SourceCapabilities, SourceDecorator,
+    SourceDecoratorError, StatusCode,
 };
 use reqwest::header::{AUTHORIZATION, HeaderName, HeaderValue};
 use serde_json::{Value, json};
@@ -101,6 +103,8 @@ fn search_function_manifest(name: &str, base_url: &str) -> Value {
 }
 
 fn internal_table_function_name(schema: &str, function: &str) -> String {
+    // PR #306 only registers DataFusion's flat internal UDTF. The public
+    // source-scoped planner in the next stack PR owns this mapping for users.
     format!(
         "__coral_udtf_{}_{}",
         hex_encode(schema),
@@ -120,6 +124,51 @@ fn hex_encode(value: &str) -> String {
 
 #[derive(Debug)]
 struct TestRequestAuthenticator;
+
+struct RecordingSourceDecorator {
+    saw_table_function: Arc<AtomicBool>,
+}
+
+struct TableOnlySourceDecorator;
+
+impl SourceDecorator for TableOnlySourceDecorator {
+    fn name(&self) -> &'static str {
+        "table_only"
+    }
+
+    fn decorate_source(
+        &mut self,
+        _source: &coral_engine::QuerySource,
+        tables: coral_engine::SourceTables,
+    ) -> Result<coral_engine::SourceTables, SourceDecoratorError> {
+        Ok(tables)
+    }
+}
+
+impl SourceDecorator for RecordingSourceDecorator {
+    fn name(&self) -> &'static str {
+        "recording"
+    }
+
+    fn decorate_source(
+        &mut self,
+        _source: &coral_engine::QuerySource,
+        tables: coral_engine::SourceTables,
+    ) -> Result<coral_engine::SourceTables, SourceDecoratorError> {
+        Ok(tables)
+    }
+
+    fn decorate_source_capabilities(
+        &mut self,
+        _source: &coral_engine::QuerySource,
+        capabilities: SourceCapabilities,
+    ) -> Result<SourceCapabilities, SourceDecoratorError> {
+        if !capabilities.table_functions.is_empty() {
+            self.saw_table_function.store(true, Ordering::SeqCst);
+        }
+        Ok(capabilities)
+    }
+}
 
 impl RequestAuthenticator for TestRequestAuthenticator {
     fn name(&self) -> &'static str {
@@ -433,6 +482,113 @@ async fn table_function_does_not_expose_request_args_as_columns() {
 
     assert!(
         error.to_string().contains("No column named `q`"),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
+async fn table_request_headers_do_not_resolve_args_from_filters() {
+    let server = MockServer::start().await;
+    let mut manifest = base_http_manifest("http_arg_header", &server.uri());
+    manifest["request_headers"] = json!([{
+        "name": "X-Request-Arg",
+        "from": "template",
+        "template": "{{arg.id}}"
+    }]);
+    manifest["tables"][0]["filters"] = json!([{ "name": "id" }]);
+    manifest["tables"][0]["request"]["query"] = json!([
+        { "name": "id", "from": "filter", "key": "id" }
+    ]);
+
+    let source = build_source(manifest);
+    let error = CoralQuery::execute_sql(
+        &[source],
+        test_runtime(),
+        "SELECT id FROM http_arg_header.users WHERE id = 2",
+    )
+    .await
+    .expect_err("table filters must not populate function arguments");
+
+    assert!(
+        error.to_string().contains("missing request argument 'id'"),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
+async fn table_function_request_headers_do_not_resolve_filters_from_args() {
+    let server = MockServer::start().await;
+    let mut manifest = search_function_manifest("function_filter_header", &server.uri());
+    manifest["request_headers"] = json!([{
+        "name": "X-Filter",
+        "from": "template",
+        "template": "{{filter.q}}"
+    }]);
+    let source = build_source(manifest);
+    let function_name = internal_table_function_name("function_filter_header", "search_issues");
+
+    let error = CoralQuery::execute_sql(
+        &[source],
+        test_runtime(),
+        &format!("SELECT title FROM {function_name}('flaky')"),
+    )
+    .await
+    .expect_err("function args must not populate table filters");
+
+    assert!(
+        error.to_string().contains("missing filter 'q'"),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
+async fn source_decorators_receive_table_functions() {
+    let saw_table_function = Arc::new(AtomicBool::new(false));
+    let mut extensions = EngineExtensions::default();
+    extensions
+        .source_decorators
+        .push(Box::new(RecordingSourceDecorator {
+            saw_table_function: saw_table_function.clone(),
+        }));
+
+    let source = build_source(search_function_manifest(
+        "decorated_function_source",
+        "https://api.example.com",
+    ));
+    CoralQuery::list_tables(
+        &[source],
+        QueryRuntimeConfig::new(QueryRuntimeContext::default(), extensions),
+        None,
+    )
+    .await
+    .expect("runtime build should succeed");
+
+    assert!(saw_table_function.load(Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn table_only_source_decorators_fail_closed_for_table_functions() {
+    let mut extensions = EngineExtensions::default();
+    extensions
+        .source_decorators
+        .push(Box::new(TableOnlySourceDecorator));
+
+    let source = build_source(search_function_manifest(
+        "table_only_decorator_source",
+        "https://api.example.com",
+    ));
+    let error = CoralQuery::list_tables(
+        &[source],
+        QueryRuntimeConfig::new(QueryRuntimeContext::default(), extensions),
+        None,
+    )
+    .await
+    .expect_err("table-only decorators must not silently bypass table functions");
+
+    assert!(
+        error.to_string().contains(
+            "source decorator 'table_only': source decorator does not handle table functions"
+        ),
         "unexpected error: {error}"
     );
 }

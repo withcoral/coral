@@ -11,10 +11,10 @@ use datafusion::prelude::SessionContext;
 
 use crate::RequestAuthenticator;
 use crate::backends::{
-    BackendCompileRequest, BackendRegistration, BackendTableFunctionRegistration,
-    CompiledBackendSource, RegisteredSource, RegisteredTable, build_registered_inputs,
-    build_registered_table, build_registered_table_function, internal_table_function_name,
-    registered_columns_from_specs, required_filter_names,
+    BackendCompileRequest, BackendRegistration, CompiledBackendSource, RegisteredSource,
+    RegisteredTable, build_registered_inputs, build_registered_table,
+    build_registered_table_function, internal_table_function_name, registered_columns_from_specs,
+    required_filter_names,
 };
 use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec};
 pub(crate) mod auth;
@@ -93,20 +93,19 @@ impl CompiledBackendSource for HttpCompiledSource {
             tables.insert(table.name().to_string(), provider);
             table_infos.push(registered_table(table));
         }
-        let mut table_functions = Vec::with_capacity(self.manifest.functions.len());
+        let mut table_functions =
+            crate::SourceTableFunctions::with_capacity(self.manifest.functions.len());
         let mut table_function_infos = Vec::with_capacity(self.manifest.functions.len());
         for function in &self.manifest.functions {
             let internal_name =
                 internal_table_function_name(&self.manifest.common.name, &function.name);
-            let function_impl = function::HttpSourceTableFunction::new(
-                backend.clone(),
-                self.manifest.common.name.clone(),
-                function.clone(),
-            )?;
-            table_functions.push(BackendTableFunctionRegistration {
-                internal_name: internal_name.clone(),
-                function: Arc::new(function_impl),
-            });
+            let function_impl: Arc<dyn datafusion::catalog::TableFunctionImpl> =
+                Arc::new(function::HttpSourceTableFunction::new(
+                    backend.clone(),
+                    self.manifest.common.name.clone(),
+                    function.clone(),
+                )?);
+            table_functions.insert(internal_name, function_impl);
             table_function_infos.push(build_registered_table_function(
                 &self.manifest.common.name,
                 function,
