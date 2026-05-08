@@ -593,18 +593,16 @@ pub(crate) fn validate_template(
 mod tests {
     use std::collections::HashMap;
 
-    use super::{validate_filters_and_column_exprs, validate_http_table, validate_table_names};
+    use super::{
+        validate_filters_and_column_exprs, validate_http_function, validate_http_function_names,
+        validate_http_table, validate_table_names,
+    };
     use crate::common::{
         ColumnSpec, ExprSpec, FilterMode, FilterSpec, FunctionArgBinding, PaginationSpec,
         QueryParamSpec, RequestRouteSpec, RequestSpec, SourceTableFunctionSpec,
         TableFunctionArgSpec, ValueSourceSpec,
     };
     use crate::template::ParsedTemplate;
-
-    use super::{
-        validate_filters_and_column_exprs, validate_http_function, validate_http_function_names,
-        validate_http_table,
-    };
 
     fn test_column() -> ColumnSpec {
         ColumnSpec {
