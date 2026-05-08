@@ -309,20 +309,57 @@ fn http_manifest_with_function() -> Value {
         "dsl_version": 3,
         "backend": "http",
         "base_url": "https://example.com",
-        "tables": [{
-            "name": "placeholder",
-            "description": "Placeholder table",
-            "request": {
-                "method": "GET",
-                "path": "/placeholder"
+        "tables": [
+            {
+                "name": "placeholder",
+                "description": "Placeholder table",
+                "filters": [{
+                    "name": "query",
+                    "type": "Utf8",
+                    "description": "Provider-native placeholder search text",
+                    "mode": "search"
+                }],
+                "search_limits": {
+                    "default_top_k": 10,
+                    "max_top_k": 50,
+                    "max_calls_per_query": 1
+                },
+                "request": {
+                    "method": "GET",
+                    "path": "/placeholder"
+                },
+                "columns": [
+                    { "name": "id", "type": "Utf8" },
+                    {
+                        "name": "query",
+                        "type": "Utf8",
+                        "virtual": true,
+                        "expr": { "kind": "from_filter", "key": "query" }
+                    }
+                ]
             },
-            "columns": [
-                { "name": "id", "type": "Utf8" }
-            ]
-        }],
+            {
+                "name": "issue_details",
+                "description": "Issue detail rows",
+                "filters": [{ "name": "issue_id", "required": true }],
+                "request": {
+                    "method": "GET",
+                    "path": "/issues/{{filter.issue_id}}"
+                },
+                "columns": [
+                    { "name": "id", "type": "Utf8" }
+                ]
+            }
+        ],
         "functions": [{
             "name": "search_issues",
+            "kind": "search",
             "description": "Search issues",
+            "search_limits": {
+                "default_top_k": 5,
+                "max_top_k": 100,
+                "max_calls_per_query": 1
+            },
             "args": [
                 {
                     "name": "q",
@@ -347,6 +384,7 @@ fn http_manifest_with_function() -> Value {
                 "rows_path": ["items"]
             },
             "columns": [
+                { "name": "id", "type": "Utf8" },
                 { "name": "title", "type": "Utf8" },
                 { "name": "score", "type": "Float64" }
             ]
@@ -407,7 +445,7 @@ async fn coral_table_functions_lists_source_functions() {
         &CoralQuery::execute_sql(
             &sources,
             test_runtime(),
-            "SELECT schema_name, function_name, description, arguments_json, result_columns_json \
+            "SELECT schema_name, function_name, kind, description, arguments_json, result_columns_json, search_limits_json \
              FROM coral.table_functions WHERE schema_name = 'searchy'",
         )
         .await
@@ -418,6 +456,7 @@ async fn coral_table_functions_lists_source_functions() {
     let row = &rows[0];
     assert_eq!(row["schema_name"], "searchy");
     assert_eq!(row["function_name"], "search_issues");
+    assert_eq!(row["kind"], "search");
     assert_eq!(row["description"], "Search issues");
     assert_eq!(
         serde_json::from_str::<Value>(row["arguments_json"].as_str().unwrap()).unwrap(),
@@ -429,9 +468,157 @@ async fn coral_table_functions_lists_source_functions() {
     assert_eq!(
         serde_json::from_str::<Value>(row["result_columns_json"].as_str().unwrap()).unwrap(),
         json!([
+            { "name": "id", "type": "Utf8", "nullable": true, "description": "" },
             { "name": "title", "type": "Utf8", "nullable": true, "description": "" },
             { "name": "score", "type": "Float64", "nullable": true, "description": "" }
         ])
+    );
+    assert_eq!(
+        serde_json::from_str::<Value>(row["search_limits_json"].as_str().unwrap()).unwrap(),
+        json!({
+            "default_top_k": 5,
+            "max_top_k": 100,
+            "max_calls_per_query": 1
+        })
+    );
+}
+
+#[tokio::test]
+async fn coral_search_metadata_appends_columns_without_shifting_existing_ordinals() {
+    let sources = vec![build_source(http_manifest_with_function())];
+
+    let table_functions = CoralQuery::execute_sql(
+        &sources,
+        test_runtime(),
+        "SELECT * FROM coral.table_functions WHERE schema_name = 'searchy'",
+    )
+    .await
+    .expect("table function catalog query should succeed");
+    assert_eq!(
+        table_functions
+            .schema()
+            .iter()
+            .map(|column| column.name.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "schema_name",
+            "function_name",
+            "description",
+            "arguments_json",
+            "result_columns_json",
+            "kind",
+            "search_limits_json",
+        ]
+    );
+
+    let columns = CoralQuery::execute_sql(
+        &sources,
+        test_runtime(),
+        "SELECT * FROM coral.columns \
+         WHERE schema_name = 'searchy' AND table_name = 'placeholder' \
+         LIMIT 1",
+    )
+    .await
+    .expect("columns catalog query should succeed");
+    assert_eq!(
+        columns
+            .schema()
+            .iter()
+            .map(|column| column.name.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "schema_name",
+            "table_name",
+            "ordinal_position",
+            "column_name",
+            "data_type",
+            "is_nullable",
+            "is_virtual",
+            "is_required_filter",
+            "description",
+            "filter_mode",
+        ]
+    );
+}
+
+#[tokio::test]
+async fn coral_tables_exposes_search_limits() {
+    let sources = vec![build_source(http_manifest_with_function())];
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &sources,
+            test_runtime(),
+            "SELECT search_limits_json FROM coral.tables \
+             WHERE schema_name = 'searchy' AND table_name = 'placeholder'",
+        )
+        .await
+        .expect("tables catalog query should succeed"),
+    );
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        serde_json::from_str::<Value>(rows[0]["search_limits_json"].as_str().unwrap()).unwrap(),
+        json!({
+            "default_top_k": 10,
+            "max_top_k": 50,
+            "max_calls_per_query": 1
+        })
+    );
+}
+
+#[tokio::test]
+async fn coral_filters_lists_filter_metadata() {
+    let sources = vec![build_source(http_manifest_with_function())];
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &sources,
+            test_runtime(),
+            "SELECT table_name, filter_name, filter_mode, is_required, data_type, description \
+             FROM coral.filters WHERE schema_name = 'searchy' AND filter_mode = 'search'",
+        )
+        .await
+        .expect("filters catalog query should succeed"),
+    );
+
+    assert_eq!(
+        rows,
+        vec![json!({
+            "table_name": "placeholder",
+            "filter_name": "query",
+            "filter_mode": "search",
+            "is_required": false,
+            "data_type": "Utf8",
+            "description": "Provider-native placeholder search text",
+        })]
+    );
+}
+
+#[tokio::test]
+async fn coral_columns_exposes_filter_mode_for_virtual_filters() {
+    let sources = vec![build_source(http_manifest_with_function())];
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &sources,
+            test_runtime(),
+            "SELECT column_name, is_virtual, is_required_filter, filter_mode \
+             FROM coral.columns \
+             WHERE schema_name = 'searchy' AND table_name = 'placeholder' AND column_name = 'query'",
+        )
+        .await
+        .expect("columns catalog query should succeed"),
+    );
+
+    assert_eq!(
+        rows,
+        vec![json!({
+            "column_name": "query",
+            "is_virtual": true,
+            "is_required_filter": false,
+            "filter_mode": "search",
+        })]
     );
 }
 
@@ -456,9 +643,10 @@ async fn list_catalog_matches_table_function_metadata() {
         function.arguments[1].values,
         ["lexical", "semantic", "hybrid"]
     );
-    assert_eq!(function.result_columns.len(), 2);
-    assert_eq!(function.result_columns[0].name, "title");
-    assert_eq!(function.result_columns[1].data_type, "Float64");
+    assert_eq!(function.result_columns.len(), 3);
+    assert_eq!(function.result_columns[0].name, "id");
+    assert_eq!(function.result_columns[1].name, "title");
+    assert_eq!(function.result_columns[2].data_type, "Float64");
 }
 
 #[tokio::test]
@@ -469,8 +657,14 @@ async fn list_catalog_collects_tables_and_functions_together() {
         .await
         .expect("list_catalog should succeed");
 
-    assert_eq!(catalog.tables.len(), 1);
-    assert_eq!(catalog.tables[0].table_name, "placeholder");
+    assert_eq!(
+        catalog
+            .tables
+            .iter()
+            .map(|table| table.table_name.as_str())
+            .collect::<Vec<_>>(),
+        ["issue_details", "placeholder"]
+    );
     assert_eq!(catalog.table_functions.len(), 1);
     assert_eq!(catalog.table_functions[0].function_name, "search_issues");
 }

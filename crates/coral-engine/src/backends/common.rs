@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use coral_spec::backends::file::PartitionColumnSpec;
 use coral_spec::{
     ColumnSpec, FilterSpec, ManifestDataType, ManifestInputKind, ManifestInputSpec,
-    SourceTableFunctionSpec, TableCommon,
+    SearchLimitsSpec, SourceTableFunctionSpec, TableCommon,
 };
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use datafusion::catalog::TableFunctionImpl;
@@ -26,6 +26,7 @@ pub(crate) struct RegisteredColumn {
     pub(crate) nullable: bool,
     pub(crate) is_virtual: bool,
     pub(crate) is_required_filter: bool,
+    pub(crate) filter_mode: Option<String>,
     pub(crate) description: String,
 }
 
@@ -35,7 +36,9 @@ pub(crate) struct RegisteredTable {
     pub(crate) description: String,
     pub(crate) guide: String,
     pub(crate) columns: Vec<RegisteredColumn>,
+    pub(crate) filters: Vec<RegisteredFilter>,
     pub(crate) required_filters: Vec<String>,
+    pub(crate) search_limits_json: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -43,10 +46,21 @@ pub(crate) struct RegisteredTableFunction {
     pub(crate) schema_name: String,
     pub(crate) function_name: String,
     pub(crate) internal_name: String,
+    pub(crate) kind: String,
     pub(crate) description: String,
     pub(crate) arguments: Vec<RegisteredTableFunctionArgument>,
     pub(crate) result_columns: Vec<RegisteredTableFunctionResultColumn>,
     pub(crate) arg_names: Vec<String>,
+    pub(crate) search_limits_json: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RegisteredFilter {
+    pub(crate) name: String,
+    pub(crate) mode: String,
+    pub(crate) required: bool,
+    pub(crate) data_type: String,
+    pub(crate) description: String,
 }
 
 #[derive(Debug, Clone)]
@@ -140,37 +154,62 @@ pub(crate) fn required_filter_names(filters: &[FilterSpec]) -> Vec<String> {
         .collect()
 }
 
+pub(crate) fn registered_filters_from_specs(filters: &[FilterSpec]) -> Vec<RegisteredFilter> {
+    filters
+        .iter()
+        .map(|filter| RegisteredFilter {
+            name: filter.name.clone(),
+            mode: filter.mode.as_str().to_string(),
+            required: filter.required,
+            data_type: filter.data_type.clone(),
+            description: filter.description.clone(),
+        })
+        .collect()
+}
+
 pub(crate) fn registered_columns_from_specs(
     columns: &[ColumnSpec],
-    required_filters: &[String],
+    filters: &[FilterSpec],
 ) -> Vec<RegisteredColumn> {
     columns
         .iter()
-        .map(|column| RegisteredColumn {
-            name: column.name.clone(),
-            data_type: column.data_type.clone(),
-            nullable: column.nullable,
-            is_virtual: column.r#virtual,
-            is_required_filter: required_filters.iter().any(|filter| filter == &column.name),
-            description: column.description.clone(),
+        .map(|column| {
+            let filter = filters
+                .iter()
+                .find(|filter| filter.name == column.name.as_str());
+            RegisteredColumn {
+                name: column.name.clone(),
+                data_type: column.data_type.clone(),
+                nullable: column.nullable,
+                is_virtual: column.r#virtual,
+                is_required_filter: filter.is_some_and(|filter| filter.required),
+                filter_mode: filter.map(|filter| filter.mode.as_str().to_string()),
+                description: column.description.clone(),
+            }
         })
         .collect()
 }
 
 pub(crate) fn registered_columns_from_schema(
     schema: &SchemaRef,
-    required_filters: &[String],
+    filters: &[FilterSpec],
 ) -> Vec<RegisteredColumn> {
     schema
         .fields()
         .iter()
-        .map(|field| RegisteredColumn {
-            name: field.name().clone(),
-            data_type: field.data_type().to_string(),
-            nullable: field.is_nullable(),
-            is_virtual: false,
-            is_required_filter: required_filters.iter().any(|filter| filter == field.name()),
-            description: String::new(),
+        .map(|field| {
+            let filter = filters
+                .iter()
+                .find(|filter| filter.name == field.name().as_str());
+            RegisteredColumn {
+                name: field.name().clone(),
+                data_type: field.data_type().to_string(),
+                nullable: field.is_nullable(),
+                is_virtual: false,
+                is_required_filter: filter.is_some_and(|filter| filter.required),
+                filter_mode: filter.map(|filter| filter.mode.as_str().to_string()),
+                description: String::new(),
+            }
         })
         .collect()
 }
@@ -233,7 +272,9 @@ pub(crate) fn build_registered_table(
         description: common.description.clone(),
         guide: common.guide.clone(),
         columns,
+        filters: registered_filters_from_specs(&common.filters),
         required_filters,
+        search_limits_json: common.search_limits.as_ref().map(serialize_search_limits),
     }
 }
 
@@ -265,11 +306,17 @@ pub(crate) fn build_registered_table_function(
         schema_name: schema_name.to_string(),
         function_name: function.name.clone(),
         internal_name,
+        kind: function.kind.as_str().to_string(),
         description: function.description.clone(),
         arguments,
         result_columns,
         arg_names: function.args.iter().map(|arg| arg.name.clone()).collect(),
+        search_limits_json: function.search_limits.as_ref().map(serialize_search_limits),
     }
+}
+
+fn serialize_search_limits(limits: &SearchLimitsSpec) -> String {
+    serde_json::to_string(limits).expect("search limits json")
 }
 
 pub(crate) fn manifest_data_type_to_arrow(data_type: ManifestDataType) -> DataType {
