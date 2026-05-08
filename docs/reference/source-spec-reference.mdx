@@ -330,6 +330,12 @@ need a backing table.
 ```yaml
 functions:
   - name: search_issues
+    kind: search
+    description: Search provider issues
+    search_limits:
+      default_top_k: 10
+      max_top_k: 100
+      max_calls_per_query: 1
     args:
       - name: q
         required: true
@@ -365,6 +371,8 @@ functions:
       offset_start: 0
       link_header_require_results: false
     columns:
+      - name: id
+        type: Utf8
       - name: title
         type: Utf8
       - name: html_url
@@ -376,6 +384,20 @@ functions:
 Use `bind.arg` when a SQL argument should populate a differently named request
 argument. Function request values can then reference those bound arguments with
 `from: arg`.
+
+`kind: search` marks a provider-native retrieval surface. Search functions
+return provider-ranked candidate rows, not exhaustive SQL-filtered tables. Use
+named SQL arguments when calling them:
+
+```sql
+SELECT id, title, html_url
+FROM github.search_issues(q => 'repo:withcoral/coral source functions')
+LIMIT 10;
+```
+
+`search_limits` values must be positive. `default_top_k` and `max_top_k` are
+capped at 1000, `max_calls_per_query` is capped at 100, and
+`max_top_k * max_calls_per_query` cannot exceed 10000 candidates.
 
 ### HTTP authentication
 
