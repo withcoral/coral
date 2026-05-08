@@ -245,7 +245,7 @@ fn table_summary(table: &TableInfo) -> (String, String, String) {
     )
 }
 
-#[allow(
+#[expect(
     dead_code,
     reason = "Reserved for targeted schema assertions as this suite grows."
 )]

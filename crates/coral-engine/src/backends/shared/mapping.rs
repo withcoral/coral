@@ -20,10 +20,6 @@ use coral_spec::{
     TimestampInput,
 };
 
-#[allow(
-    clippy::implicit_hasher,
-    reason = "This helper operates on caller-provided HashMaps that always use the default hasher"
-)]
 /// Convert backend `JSON` rows into a typed `RecordBatch`.
 ///
 /// # Errors
@@ -366,9 +362,8 @@ fn to_json_utf8(value: Option<Value>) -> Option<String> {
     }
 }
 
-#[allow(
+#[expect(
     clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
     clippy::cast_possible_wrap,
     reason = "JSON numeric coercion intentionally accepts lossy conversions into i64 for downstream consumers"
 )]
@@ -384,7 +379,7 @@ fn to_i64(value: Option<Value>) -> Option<i64> {
     }
 }
 
-#[allow(
+#[expect(
     clippy::cast_precision_loss,
     reason = "JSON numeric coercion intentionally permits i64-to-f64 precision loss"
 )]

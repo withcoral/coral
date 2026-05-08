@@ -206,10 +206,6 @@ pub struct RequestRouteSpec {
 }
 
 /// Supported HTTP methods in the source-spec DSL.
-#[allow(
-    clippy::upper_case_acronyms,
-    reason = "The manifest format uses conventional HTTP method spellings."
-)]
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum HttpMethod {

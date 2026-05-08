@@ -140,7 +140,7 @@ fn extract_column_equality(
     Some((col_name, value))
 }
 
-#[allow(
+#[expect(
     clippy::match_same_arms,
     reason = "These match arms look similar but operate on different expression variants and value widths"
 )]

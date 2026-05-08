@@ -25,14 +25,14 @@
 //! assert_eq!(request.sql, "select 1");
 //! ```
 
-#[allow(
+#[expect(
+    clippy::allow_attributes,
     clippy::allow_attributes_without_reason,
     clippy::default_trait_access,
     clippy::doc_markdown,
     clippy::missing_errors_doc,
     clippy::must_use_candidate,
     clippy::too_many_lines,
-    missing_docs,
     reason = "This module is generated from protobuf/tonic definitions."
 )]
 /// Generated `coral.v1` `protobuf` messages, enums, and `gRPC` services.

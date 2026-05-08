@@ -161,7 +161,7 @@ pub(crate) fn init_tracing(
     Ok(())
 }
 
-#[allow(
+#[expect(
     clippy::too_many_lines,
     reason = "Initialization configures three OTLP pipelines in one place"
 )]

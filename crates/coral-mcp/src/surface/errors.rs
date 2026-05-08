@@ -19,7 +19,7 @@ pub(crate) struct ToolError {
     pub(crate) metadata: HashMap<String, String>,
 }
 
-#[allow(
+#[expect(
     clippy::needless_pass_by_value,
     reason = "callers always pass an owned ToolError that is not used after this call"
 )]

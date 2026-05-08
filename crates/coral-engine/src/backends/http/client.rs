@@ -139,7 +139,7 @@ impl HttpSourceClient {
         })
     }
 
-    #[allow(
+    #[expect(
         clippy::too_many_lines,
         reason = "Paginated fetch logic is stateful and easier to audit in one sequential function"
     )]
@@ -561,7 +561,7 @@ fn validate_header_inputs(
     Ok(())
 }
 
-#[allow(
+#[expect(
     clippy::too_many_lines,
     reason = "HTTP request execution keeps retry, auth, logging, and response handling in one audited flow"
 )]
@@ -1347,7 +1347,7 @@ fn set_path_value_at(cursor: &mut Value, path: &[String], value: Value) -> Resul
     set_path_value_at(next, tail, value)
 }
 
-#[allow(
+#[expect(
     clippy::unnecessary_wraps,
     reason = "Keeping a Result return type preserves a uniform extraction interface for callers"
 )]
@@ -1392,7 +1392,7 @@ fn extract_rows(target: &HttpFetchTarget, payload: &Value) -> Result<Vec<Value>>
                             let Some(value) = pair.get(1).and_then(Value::as_f64) else {
                                 continue;
                             };
-                            #[allow(
+                            #[expect(
                                 clippy::cast_possible_truncation,
                                 reason = "Series timestamps are integral epoch values that fit in i64"
                             )]

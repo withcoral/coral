@@ -80,7 +80,7 @@ fn truncate_status_detail(detail: String) -> String {
     format!("{}{MARKER}", &detail[..cut])
 }
 
-#[allow(
+#[expect(
     clippy::needless_pass_by_value,
     reason = "used directly as a map_err adapter across tonic service handlers"
 )]
@@ -88,10 +88,6 @@ pub(crate) fn app_status(error: AppError) -> Status {
     Status::new(app_code(&error), truncate_status_detail(error.to_string()))
 }
 
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "used directly as a map_err adapter across tonic service handlers"
-)]
 pub(crate) fn core_status(error: CoreError) -> Status {
     match error {
         CoreError::QueryFailure(sqe) => {

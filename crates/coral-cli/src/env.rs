@@ -8,7 +8,7 @@ const CORAL_ENDPOINT_ENV: &str = "CORAL_ENDPOINT";
 
 /// Reads the feature-gated endpoint override used by CLI integration tests.
 #[cfg(feature = "cli-test-server")]
-#[allow(
+#[expect(
     clippy::disallowed_methods,
     reason = "This feature-gated test hook owns the CORAL_ENDPOINT bootstrap override."
 )]
@@ -22,7 +22,7 @@ pub fn bootstrap_endpoint() -> Option<String> {
 const CORAL_TRACE_PARENT_ENV: &str = "CORAL_TRACE_PARENT";
 
 /// Reads the optional W3C `traceparent` used to link CLI spans to a parent trace.
-#[allow(
+#[expect(
     clippy::disallowed_methods,
     reason = "CORAL_TRACE_PARENT is a CLI-owned per-invocation distributed tracing seed."
 )]

@@ -105,10 +105,6 @@ fn grpc_code_label(code: Code) -> &'static str {
     }
 }
 
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "used directly as a map_err adapter across tonic service handlers"
-)]
 pub(crate) fn query_status(error: QueryManagerError) -> Status {
     match error {
         QueryManagerError::App(error) => app_status(error),

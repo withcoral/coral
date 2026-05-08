@@ -279,10 +279,6 @@ struct CatalogColumn {
     ordinal_position: usize,
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "The metadata batch builder keeps the fixed coral.columns layout in one place."
-)]
 fn build_columns_table(active_sources: &[RegisteredSource]) -> Result<MemTable> {
     let schema = Arc::new(Schema::new(vec![
         Field::new("schema_name", DataType::Utf8, false),

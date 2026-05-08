@@ -52,7 +52,7 @@ pub(crate) fn assert_row_count(execution: &QueryExecution, expected: usize) {
     assert_eq!(execution_to_rows(execution).len(), expected);
 }
 
-#[allow(
+#[expect(
     dead_code,
     reason = "retained for other engine tests that may assert invalid input"
 )]

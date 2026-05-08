@@ -84,7 +84,7 @@ pub(crate) fn resolve_value_source(
         ValueSourceSpec::Input { key } => Ok(resolved_inputs.get(key).cloned().map(Value::String)),
         ValueSourceSpec::State { key } => Ok(state.get(key).map(|v| Value::String(v.clone()))),
         ValueSourceSpec::NowEpochMinusSeconds { seconds } => {
-            #[allow(
+            #[expect(
                 clippy::cast_possible_wrap,
                 reason = "Current Unix epoch seconds fit within i64 for centuries"
             )]

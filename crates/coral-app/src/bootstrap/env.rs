@@ -31,7 +31,7 @@ impl AppEnvironment {
     }
 }
 
-#[allow(
+#[expect(
     clippy::disallowed_methods,
     reason = "coral-app is the single owner of process environment access."
 )]
@@ -44,7 +44,7 @@ mod tests {
     use super::{AppEnvironment, CORAL_CONFIG_DIR, coral_config_dir_override};
 
     #[test]
-    #[allow(
+    #[expect(
         clippy::disallowed_methods,
         reason = "This test intentionally controls CORAL_CONFIG_DIR to validate the app-owned accessor."
     )]
