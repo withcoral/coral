@@ -155,6 +155,10 @@ fn bind_function_args(
     function: &SourceTableFunctionSpec,
     args: &[Expr],
 ) -> Result<HashMap<String, String>> {
+    // CONTRACT with `SourceFunctionRegistry`: source-scoped SQL calls are
+    // lowered to positional internal UDTF calls in manifest arg order. Omitted
+    // optional args arrive here as NULL, so required-arg validation belongs here
+    // after NULLs have been interpreted as absent.
     let context = FunctionCallContext {
         source_schema,
         function_name: function.name.as_str(),

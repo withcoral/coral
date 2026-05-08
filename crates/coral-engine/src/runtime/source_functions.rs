@@ -1,4 +1,11 @@
 //! Source-scoped table function relation planning.
+//!
+//! `DataFusion` registers UDTFs in a flat namespace, while Coral exposes them
+//! as source-scoped SQL relations like `github.find_issues(...)`. Backends
+//! register hidden internal UDTF names, and this relation planner rewrites the
+//! source-scoped relation into the internal function call. Argument names are
+//! lowered into manifest order here; backend-specific validation and execution
+//! stay with the table function implementation.
 
 use std::collections::{HashMap, HashSet};
 
@@ -25,8 +32,17 @@ pub(crate) struct SourceFunctionRegistry {
 
 #[derive(Debug, Clone)]
 struct SourceFunctionEntry {
-    registered: RegisteredTableFunction,
+    internal_name: String,
+    display_name: String,
     arg_lookup_names: Vec<String>,
+    arg_lookup: HashSet<String>,
+}
+
+struct SourceFunctionName {
+    lookup_schema: String,
+    lookup_function: String,
+    display_schema: String,
+    display_function: String,
 }
 
 impl SourceFunctionRegistry {
@@ -37,11 +53,14 @@ impl SourceFunctionRegistry {
             let schema_name = function.schema_name.clone();
             let function_name = function.function_name.clone();
             let arg_lookup_names = function.arg_names.clone();
+            let display_name = source_function_display_name(&function);
             schemas.insert(schema_name.clone());
             registered.insert(
                 (schema_name, function_name),
                 SourceFunctionEntry {
-                    registered: function,
+                    internal_name: function.internal_name,
+                    display_name,
+                    arg_lookup: arg_lookup_names.iter().cloned().collect(),
                     arg_lookup_names,
                 },
             );
@@ -61,13 +80,19 @@ impl SourceFunctionRegistry {
         mut relation: TableFactor,
         context: &dyn RelationPlannerContext,
     ) -> Result<SourceFunctionRewrite> {
-        let Some((schema, function_name)) = source_function_name(&relation, context) else {
+        let Some(source_function) = source_function_name(&relation, context) else {
             return Ok(SourceFunctionRewrite::PassThrough(relation));
         };
-        let Some(function) = self.functions.get(&(schema.clone(), function_name.clone())) else {
-            if self.schemas.contains(&schema) {
+        let Some(function) = self.functions.get(&(
+            source_function.lookup_schema.clone(),
+            source_function.lookup_function.clone(),
+        )) else {
+            if self.schemas.contains(&source_function.lookup_schema) {
                 return Err(DataFusionError::Plan(format!(
-                    "unknown source table function {schema}.{function_name}"
+                    "unknown source table function {}.{}{}",
+                    source_function.display_schema,
+                    source_function.display_function,
+                    self.available_functions_hint(&source_function.lookup_schema)
                 )));
             }
             return Ok(SourceFunctionRewrite::PassThrough(relation));
@@ -83,13 +108,29 @@ impl SourceFunctionRegistry {
             context,
         )?;
 
-        *name = ObjectName::from(vec![Ident::new(function.registered.internal_name.clone())]);
+        *name = ObjectName::from(vec![Ident::new(function.internal_name.clone())]);
         *args = Some(TableFunctionArgs {
             args: lowered_args,
             settings: None,
         });
 
         Ok(SourceFunctionRewrite::Rewritten(relation))
+    }
+
+    fn available_functions_hint(&self, schema: &str) -> String {
+        let mut names: Vec<&str> = self
+            .functions
+            .iter()
+            .filter_map(|((entry_schema, _), function)| {
+                (entry_schema == schema).then_some(function.display_name.as_str())
+            })
+            .collect();
+        names.sort_unstable();
+        if names.is_empty() {
+            String::new()
+        } else {
+            format!("; available functions: {}", names.join(", "))
+        }
     }
 }
 
@@ -116,7 +157,7 @@ impl RelationPlanner for SourceFunctionRegistry {
 fn source_function_name(
     relation: &TableFactor,
     context: &dyn RelationPlannerContext,
-) -> Option<(String, String)> {
+) -> Option<SourceFunctionName> {
     let TableFactor::Table {
         name,
         args: Some(_),
@@ -128,9 +169,14 @@ fn source_function_name(
     if name.0.len() != 2 {
         return None;
     }
-    let schema = context.normalize_ident(name.0[0].as_ident()?.clone());
-    let function = context.normalize_ident(name.0[1].as_ident()?.clone());
-    Some((schema, function))
+    let schema = name.0[0].as_ident()?.clone();
+    let function = name.0[1].as_ident()?.clone();
+    Some(SourceFunctionName {
+        lookup_schema: context.normalize_ident(schema.clone()),
+        lookup_function: context.normalize_ident(function.clone()),
+        display_schema: schema.value,
+        display_function: function.value,
+    })
 }
 
 fn named_args_to_positional(
@@ -138,7 +184,7 @@ fn named_args_to_positional(
     args: &TableFunctionArgs,
     context: &dyn RelationPlannerContext,
 ) -> Result<Vec<FunctionArg>> {
-    let display_name = source_function_display_name(&function.registered);
+    let display_name = &function.display_name;
     let mut named = HashMap::new();
     let mut seen = HashSet::new();
     for arg in &args.args {
@@ -148,6 +194,12 @@ fn named_args_to_positional(
                 if !seen.insert(key.clone()) {
                     return Err(DataFusionError::Plan(format!(
                         "{display_name} duplicate argument '{}'",
+                        name.value
+                    )));
+                }
+                if !function.arg_lookup.contains(&key) {
+                    return Err(DataFusionError::Plan(format!(
+                        "{display_name} unknown argument '{}'",
                         name.value
                     )));
                 }
@@ -166,14 +218,10 @@ fn named_args_to_positional(
         }
     }
 
-    for key in named.keys() {
-        if !function.arg_lookup_names.iter().any(|arg| arg == key) {
-            return Err(DataFusionError::Plan(format!(
-                "{display_name} unknown argument '{key}'"
-            )));
-        }
-    }
-
+    // CONTRACT with `HttpSourceTableFunction::call`: the internal UDTF is
+    // positional, so this planner emits exactly one slot per manifest argument.
+    // Missing named args are padded with NULL; the backend binder interprets
+    // those NULLs as absent and performs required-argument validation there.
     Ok(function
         .arg_lookup_names
         .iter()
