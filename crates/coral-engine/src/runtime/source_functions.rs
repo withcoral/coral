@@ -1,10 +1,10 @@
 //! Source-scoped table function relation planning.
 //!
-//! DataFusion registers UDTFs in one flat namespace. Coral exposes source
+//! `DataFusion` registers UDTFs in one flat namespace. Coral exposes source
 //! functions as scoped SQL relations like `github.find_issues(...)`. Backends
 //! therefore register hidden internal UDTF names, and this planner rewrites the
 //! scoped relation into the hidden function call before handing planning back
-//! to DataFusion.
+//! to `DataFusion`.
 
 use std::collections::{HashMap, HashSet};
 
@@ -105,9 +105,8 @@ impl RelationPlanner for SourceFunctionRegistry {
 
         let Some(function) = self.find(&call) else {
             if self.owns_schema(&call) {
-                return Err(call.unknown_function_error(
-                    self.available_functions_hint(&call.lookup_key.schema),
-                ));
+                let hint = self.available_functions_hint(&call.lookup_key.schema);
+                return Err(call.unknown_function_error(&hint));
             }
             return Ok(original_relation(relation));
         };
@@ -180,7 +179,7 @@ impl SourceFunctionCall {
         })
     }
 
-    fn unknown_function_error(&self, hint: String) -> DataFusionError {
+    fn unknown_function_error(&self, hint: &str) -> DataFusionError {
         DataFusionError::Plan(format!(
             "unknown source table function {}{}",
             self.display_name, hint
