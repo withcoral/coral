@@ -17,7 +17,6 @@ use datafusion::datasource::TableProvider;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::logical_expr::{Expr, TableProviderFilterPushDown, TableType};
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion::scalar::ScalarValue;
 
 use crate::backends::http::HttpSourceClient;
 use crate::backends::http::provider::http_json_exec;
@@ -218,7 +217,12 @@ fn resolve_call_arg_literal(
 }
 
 fn is_null_literal(expr: &Expr) -> bool {
-    matches!(expr, Expr::Literal(ScalarValue::Null, _))
+    match expr {
+        Expr::Literal(value, _) => value.is_null(),
+        Expr::Cast(cast) => is_null_literal(cast.expr.as_ref()),
+        Expr::TryCast(cast) => is_null_literal(cast.expr.as_ref()),
+        _ => false,
+    }
 }
 
 fn ensure_call_arg_allowed_value(

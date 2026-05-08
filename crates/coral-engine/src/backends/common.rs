@@ -77,6 +77,11 @@ pub(crate) struct BackendTableFunctionRegistration {
     pub(crate) function: Arc<dyn datafusion::catalog::TableFunctionImpl>,
 }
 
+/// Build a collision-free `DataFusion` UDTF name for a source-scoped function.
+///
+/// `DataFusion`'s UDTF registry is flat, so both source schema and public
+/// function name are hex-encoded to preserve arbitrary valid identifiers
+/// without delimiter collisions.
 pub(crate) fn internal_table_function_name(schema: &str, function: &str) -> String {
     format!(
         "__coral_udtf_{}_{}",
@@ -88,7 +93,7 @@ pub(crate) fn internal_table_function_name(schema: &str, function: &str) -> Stri
 fn hex_encode(value: &str) -> String {
     let mut encoded = String::with_capacity(value.len() * 2);
     for byte in value.as_bytes() {
-        write!(&mut encoded, "{byte:02x}").expect("write to string");
+        write!(&mut encoded, "{byte:02x}").expect("writing to a String never fails");
     }
     encoded
 }

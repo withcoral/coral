@@ -100,6 +100,24 @@ fn search_function_manifest(name: &str, base_url: &str) -> Value {
     })
 }
 
+fn internal_table_function_name(schema: &str, function: &str) -> String {
+    format!(
+        "__coral_udtf_{}_{}",
+        hex_encode(schema),
+        hex_encode(function)
+    )
+}
+
+fn hex_encode(value: &str) -> String {
+    use std::fmt::Write as _;
+
+    let mut encoded = String::with_capacity(value.len() * 2);
+    for byte in value.as_bytes() {
+        write!(&mut encoded, "{byte:02x}").expect("writing to a String never fails");
+    }
+    encoded
+}
+
 #[derive(Debug)]
 struct TestRequestAuthenticator;
 
@@ -295,11 +313,11 @@ async fn select_with_where_filter_pushdown() {
 
 #[tokio::test]
 async fn internal_table_function_builds_http_search_request() {
-    assert_search_function_query(
+    let function_name = internal_table_function_name("search", "search_issues");
+    assert_search_function_query(&format!(
         "SELECT title, score \
-         FROM __coral_udtf_736561726368_7365617263685f697373756573(\
-           'flaky cleanup repo:withcoral/coral', 'hybrid')",
-    )
+         FROM {function_name}('flaky cleanup repo:withcoral/coral', 'hybrid')"
+    ))
     .await;
 }
 
@@ -336,15 +354,57 @@ async fn assert_search_function_query(sql: &str) {
 }
 
 #[tokio::test]
+async fn table_function_treats_typed_null_as_omitted_optional_argument() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/search/issues"))
+        .and(query_param("q", "flaky cleanup repo:withcoral/coral"))
+        .and(query_param_is_missing("search_type"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [{
+                "title": "Flaky workspace cleanup",
+                "score": 9.5
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let source = build_source(search_function_manifest("null_arg_search", &server.uri()));
+    let function_name = internal_table_function_name("null_arg_search", "search_issues");
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            &format!(
+                "SELECT title, score FROM {function_name}(\
+                 'flaky cleanup repo:withcoral/coral', CAST(NULL AS VARCHAR))"
+            ),
+        )
+        .await
+        .expect("typed null optional argument should be omitted"),
+    );
+
+    assert_eq!(
+        rows,
+        vec![json!({
+            "title": "Flaky workspace cleanup",
+            "score": 9.5
+        })]
+    );
+}
+
+#[tokio::test]
 async fn table_function_rejects_invalid_argument_values() {
     let server = MockServer::start().await;
     let source = build_source(search_function_manifest("bad_mode_search", &server.uri()));
+    let function_name = internal_table_function_name("bad_mode_search", "search_issues");
 
     let error = CoralQuery::execute_sql(
         &[source],
         test_runtime(),
-        "SELECT title FROM __coral_udtf_6261645f6d6f64655f736561726368_7365617263685f697373756573(\
-           'flaky', 'banana')",
+        &format!("SELECT title FROM {function_name}('flaky', 'banana')"),
     )
     .await
     .expect_err("invalid function argument should fail planning");
@@ -361,17 +421,20 @@ async fn table_function_rejects_invalid_argument_values() {
 async fn table_function_does_not_expose_request_args_as_columns() {
     let server = MockServer::start().await;
     let source = build_source(search_function_manifest("conflict_search", &server.uri()));
+    let function_name = internal_table_function_name("conflict_search", "search_issues");
 
     let error = CoralQuery::execute_sql(
         &[source],
         test_runtime(),
-        "SELECT title FROM __coral_udtf_636f6e666c6963745f736561726368_7365617263685f697373756573(\
-           'flaky') WHERE q = 'raw'",
+        &format!("SELECT title FROM {function_name}('flaky') WHERE q = 'raw'"),
     )
     .await
     .expect_err("request args should not be queryable as result columns");
 
-    assert!(error.to_string().contains('q'), "unexpected error: {error}");
+    assert!(
+        error.to_string().contains("No column named `q`"),
+        "unexpected error: {error}"
+    );
 }
 
 #[tokio::test]
