@@ -98,18 +98,27 @@ impl SourceFunctionRegistry {
             return Ok(SourceFunctionRewrite::PassThrough(relation));
         };
 
-        let TableFactor::Table { name, args, .. } = &mut relation else {
+        let TableFactor::Table {
+            name,
+            args: table_args,
+            ..
+        } = &mut relation
+        else {
             unreachable!("source_function_name only matches table relations");
         };
-        let lowered_args = named_args_to_positional(
-            function,
-            args.as_ref()
-                .expect("source_function_name only matches table relations with args"),
-            context,
-        )?;
+        let args = table_args
+            .as_ref()
+            .expect("source_function_name only matches table relations with args");
+        if args.settings.is_some() {
+            return Err(DataFusionError::Plan(format!(
+                "source table function {}.{} does not support SETTINGS",
+                source_function.display_schema, source_function.display_function
+            )));
+        }
+        let lowered_args = named_args_to_positional(function, args, context)?;
 
         *name = ObjectName::from(vec![Ident::new(function.internal_name.clone())]);
-        *args = Some(TableFunctionArgs {
+        *table_args = Some(TableFunctionArgs {
             args: lowered_args,
             settings: None,
         });
@@ -200,6 +209,15 @@ fn named_args_to_positional(
                 if !function.arg_lookup.contains(&key) {
                     return Err(DataFusionError::Plan(format!(
                         "{display_name} unknown argument '{}'",
+                        name.value
+                    )));
+                }
+                if matches!(
+                    arg,
+                    FunctionArgExpr::Wildcard | FunctionArgExpr::QualifiedWildcard(_)
+                ) {
+                    return Err(DataFusionError::Plan(format!(
+                        "{display_name} argument '{}' does not support wildcard values",
                         name.value
                     )));
                 }
