@@ -6,7 +6,7 @@ use tonic::{Request, Response, Status};
 
 use crate::bootstrap::app_status;
 use crate::feedback::manager::{FeedbackManager, FeedbackReport};
-use crate::transport::{workspace_name_from_proto, workspace_to_proto};
+use crate::transport::{grpc_span, instrument_grpc, workspace_name_from_proto, workspace_to_proto};
 
 #[derive(Clone)]
 pub(crate) struct FeedbackService {
@@ -25,20 +25,24 @@ impl FeedbackServiceApi for FeedbackService {
         &self,
         request: Request<SubmitFeedbackRequest>,
     ) -> Result<Response<SubmitFeedbackResponse>, Status> {
-        let request = request.into_inner();
-        let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-        let report = self
-            .feedback
-            .submit_feedback(
-                &workspace_name,
-                &request.trying_to_do,
-                &request.tried,
-                &request.stuck,
-            )
-            .map_err(app_status)?;
-        Ok(Response::new(SubmitFeedbackResponse {
-            report: Some(feedback_report_to_proto(report)),
-        }))
+        let span = grpc_span(&request);
+        let feedback = self.feedback.clone();
+        instrument_grpc(span, async move {
+            let request = request.into_inner();
+            let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            let report = feedback
+                .submit_feedback(
+                    &workspace_name,
+                    &request.trying_to_do,
+                    &request.tried,
+                    &request.stuck,
+                )
+                .map_err(app_status)?;
+            Ok(Response::new(SubmitFeedbackResponse {
+                report: Some(feedback_report_to_proto(report)),
+            }))
+        })
+        .await
     }
 }
 

@@ -16,6 +16,7 @@
 
 mod client;
 mod error;
+mod grpc;
 pub mod local;
 mod propagation;
 mod status_error;

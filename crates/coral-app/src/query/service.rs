@@ -36,7 +36,7 @@ impl QueryServiceApi for QueryService {
         &self,
         request: Request<ListTablesRequest>,
     ) -> Result<Response<ListTablesResponse>, Status> {
-        let span = grpc_span(request.metadata(), "list_tables");
+        let span = grpc_span(&request);
         let queries = self.queries.clone();
         instrument_grpc(span, async move {
             let request = request.into_inner();
@@ -102,7 +102,7 @@ impl QueryServiceApi for QueryService {
         &self,
         request: Request<ExecuteSqlRequest>,
     ) -> Result<Response<ExecuteSqlResponse>, Status> {
-        let span = grpc_span(request.metadata(), "execute_sql");
+        let span = grpc_span(&request);
         let queries = self.queries.clone();
         instrument_grpc(span, async move {
             let inner = request.into_inner();

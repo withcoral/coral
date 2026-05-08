@@ -46,7 +46,7 @@ impl SourceServiceApi for SourceService {
         &self,
         request: Request<DiscoverSourcesRequest>,
     ) -> Result<Response<DiscoverSourcesResponse>, Status> {
-        let span = grpc_span(request.metadata(), "discover_sources");
+        let span = grpc_span(&request);
         let sources = self.sources.clone();
         instrument_grpc(span, async move {
             let request = request.into_inner();
@@ -66,7 +66,7 @@ impl SourceServiceApi for SourceService {
         &self,
         request: Request<ListSourcesRequest>,
     ) -> Result<Response<ListSourcesResponse>, Status> {
-        let span = grpc_span(request.metadata(), "list_sources");
+        let span = grpc_span(&request);
         let sources = self.sources.clone();
         instrument_grpc(span, async move {
             let request = request.into_inner();
@@ -86,7 +86,7 @@ impl SourceServiceApi for SourceService {
         &self,
         request: Request<GetSourceRequest>,
     ) -> Result<Response<GetSourceResponse>, Status> {
-        let span = grpc_span(request.metadata(), "get_source");
+        let span = grpc_span(&request);
         let sources = self.sources.clone();
         instrument_grpc(span, async move {
             let request = request.into_inner();
@@ -106,7 +106,7 @@ impl SourceServiceApi for SourceService {
         &self,
         request: Request<GetSourceInfoRequest>,
     ) -> Result<Response<GetSourceInfoResponse>, Status> {
-        let span = grpc_span(request.metadata(), "get_source_info");
+        let span = grpc_span(&request);
         let sources = self.sources.clone();
         instrument_grpc(span, async move {
             let request = request.into_inner();
@@ -126,7 +126,7 @@ impl SourceServiceApi for SourceService {
         &self,
         request: Request<CreateBundledSourceRequest>,
     ) -> Result<Response<CreateBundledSourceResponse>, Status> {
-        let span = grpc_span(request.metadata(), "create_bundled_source");
+        let span = grpc_span(&request);
         let sources = self.sources.clone();
         instrument_grpc(span, async move {
             let request = request.into_inner();
@@ -150,7 +150,7 @@ impl SourceServiceApi for SourceService {
         &self,
         request: Request<ImportSourceRequest>,
     ) -> Result<Response<ImportSourceResponse>, Status> {
-        let span = grpc_span(request.metadata(), "import_source");
+        let span = grpc_span(&request);
         let sources = self.sources.clone();
         instrument_grpc(span, async move {
             let request = request.into_inner();
@@ -173,7 +173,7 @@ impl SourceServiceApi for SourceService {
         &self,
         request: Request<DeleteSourceRequest>,
     ) -> Result<Response<DeleteSourceResponse>, Status> {
-        let span = grpc_span(request.metadata(), "delete_source");
+        let span = grpc_span(&request);
         let sources = self.sources.clone();
         instrument_grpc(span, async move {
             let request = request.into_inner();
@@ -191,7 +191,7 @@ impl SourceServiceApi for SourceService {
         &self,
         request: Request<ValidateSourceRequest>,
     ) -> Result<Response<ValidateSourceResponse>, Status> {
-        let span = grpc_span(request.metadata(), "validate_source");
+        let span = grpc_span(&request);
         let queries = self.queries.clone();
         instrument_grpc(span, async move {
             let request = request.into_inner();
