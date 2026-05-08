@@ -14,6 +14,7 @@ const DEFAULT_SERVICE_NAME: &str = "coral";
 const DEFAULT_INTERNAL_HTTP_BODY_MAX_BYTES: usize = 64 * 1024;
 const DEFAULT_INTERNAL_TRACE_RETENTION_DAYS: u64 = 7;
 const HOURS_PER_DAY: u64 = 24;
+const SECONDS_PER_HOUR: u64 = 60 * 60;
 
 #[derive(Debug, Clone, Default, Deserialize)]
 struct TelemetryConfigFile {
@@ -77,10 +78,11 @@ impl TelemetryConfig {
 
     #[must_use]
     pub(crate) fn internal_trace_retention(&self) -> Duration {
-        Duration::from_hours(
+        Duration::from_secs(
             self.internal_trace_retention_days
                 .max(1)
-                .saturating_mul(HOURS_PER_DAY),
+                .saturating_mul(HOURS_PER_DAY)
+                .saturating_mul(SECONDS_PER_HOUR),
         )
     }
 }
@@ -162,5 +164,18 @@ internal_http_body_max_bytes = 42
         };
 
         assert_eq!(config.internal_http_body_recording_max_bytes(), None);
+    }
+
+    #[test]
+    fn internal_trace_retention_saturates_large_day_values() {
+        let config = TelemetryConfig {
+            internal_trace_retention_days: u64::MAX,
+            ..TelemetryConfig::default()
+        };
+
+        assert_eq!(
+            config.internal_trace_retention(),
+            Duration::from_secs(u64::MAX)
+        );
     }
 }
