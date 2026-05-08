@@ -191,7 +191,10 @@ impl QueryRuntimeAdapter {
             .create_physical_plan(&optimized_logical_plan, &session_state)
             .await
             .map_err(|err| datafusion_to_core(&err, &self.tables))?;
-        let physical_plan = displayable(physical_plan.as_ref()).indent(true).to_string();
+        let physical_plan = displayable(physical_plan.as_ref())
+            .set_show_schema(true)
+            .indent(true)
+            .to_string();
 
         Ok(QueryPlan::new(
             unoptimized_logical_plan,
