@@ -110,6 +110,10 @@ jobs:
 
       - name: Run zizmor
         uses: zizmorcore/zizmor-action@71321a20a9ded102f6e9ce5718a2fcec2c4f70d8 # v0.5.2
+        with:
+          annotations: ${{ github.event_name == 'pull_request' }}
+          advanced-security: ${{ github.event_name != 'pull_request' }}
+          min-severity: low
 
   source-lint:
     name: Lint source manifests
@@ -132,7 +136,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install ryl
-        run: cargo install ryl
+        run: cargo install ryl --locked
 
       - name: Run make lint-sources
         run: make lint-sources

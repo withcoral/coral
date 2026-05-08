@@ -19,9 +19,14 @@ auth:
     - name: Authorization
       from: template
       template: Bearer {{input.INCIDENT_IO_API_KEY}}
+test_queries:
+  - SELECT * FROM incident_io.actions LIMIT 1
 tables:
   - name: actions
     description: List
+    guide: >-
+      Use this table to list actions. Prefer filtering by `incident_id`, `incident_mode`,
+      `id` to keep result sets small.
     filters:
       - name: incident_id
         required: false
@@ -543,6 +548,9 @@ tables:
             - updated_at
   - name: alert_attributes
     description: List
+    guide: >-
+      Use this table to list alert attributes. Prefer filtering by `id` to keep result sets
+      small.
     filters:
       - name: id
         required: false
@@ -690,6 +698,9 @@ tables:
             - type
   - name: alert_routes
     description: List
+    guide: >-
+      Use this table to list alert routes. Prefer filtering by `id` to keep result sets
+      small.
     filters:
       - name: id
         required: false
@@ -1111,6 +1122,9 @@ tables:
             - name
   - name: alert_sources
     description: List
+    guide: >-
+      Use this table to list alert sources. Prefer filtering by `id` to keep result sets
+      small.
     filters:
       - name: id
         required: false
@@ -1737,6 +1751,9 @@ tables:
             - value
   - name: alerts
     description: List
+    guide: >-
+      Use this table to list alerts. Prefer filtering by `deduplication_key`, `status`,
+      `alert_source`, `created_at` to keep result sets small.
     filters:
       - name: deduplication_key
         required: false
@@ -2027,6 +2044,8 @@ tables:
             - updated_at
   - name: api_keys
     description: List
+    guide: >-
+      Use this table to list api keys. Prefer filtering by `id` to keep result sets small.
     filters:
       - name: id
         required: false
@@ -2348,6 +2367,9 @@ tables:
             - token_last_issued_at
   - name: catalog_entries
     description: ListEntries
+    guide: >-
+      Use this table to list catalog entries. It requires `catalog_type_id`, so start from
+      those IDs before joining outward.
     filters:
       - name: catalog_type_id
         required: true
@@ -2835,6 +2857,9 @@ tables:
             - updated_at
   - name: catalog_resources
     description: ListResources
+    guide: >-
+      Use this table to list catalog resources. Query it directly when you need the full
+      list; it works best as a lookup or dimension table.
     request:
       method: GET
       path: /v3/catalog_resources
@@ -2897,6 +2922,9 @@ tables:
             - value_docstring
   - name: catalog_types
     description: ListTypes
+    guide: >-
+      Use this table to list catalog types. Prefer filtering by `id` to keep result sets
+      small.
     filters:
       - name: id
         required: false
@@ -3371,6 +3399,9 @@ tables:
             - use_name_as_identifier
   - name: content
     description: ShowContent
+    guide: >-
+      Use this table to show content. It requires `id`, so start from those IDs before
+      joining outward.
     filters:
       - name: id
         required: true
@@ -3406,6 +3437,9 @@ tables:
             - markdown
   - name: custom_field_options
     description: List
+    guide: >-
+      Use this table to list custom field options. It requires `custom_field_id`, so start
+      from those IDs before joining outward.
     filters:
       - name: custom_field_id
         required: true
@@ -3525,6 +3559,9 @@ tables:
             - value
   - name: custom_fields
     description: List
+    guide: >-
+      Use this table to list custom fields. Prefer filtering by `id` to keep result sets
+      small.
     filters:
       - name: id
         required: false
@@ -3790,6 +3827,9 @@ tables:
             - updated_at
   - name: escalation_paths
     description: ListPaths
+    guide: >-
+      Use this table to list escalation paths. Prefer filtering by `id` to keep result sets
+      small.
     filters:
       - name: id
         required: false
@@ -4000,6 +4040,9 @@ tables:
             - working_hours
   - name: escalations
     description: List
+    guide: >-
+      Use this table to list escalations. Prefer filtering by `escalation_path`, `status`,
+      `alert`, `created_at` to keep result sets small.
     filters:
       - name: escalation_path
         required: false
@@ -4484,6 +4527,9 @@ tables:
             - updated_at
   - name: follow_ups
     description: List
+    guide: >-
+      Use this table to list follow ups. Prefer filtering by `incident_id`, `incident_mode`,
+      `id` to keep result sets small.
     filters:
       - name: incident_id
         required: false
@@ -5224,6 +5270,9 @@ tables:
             - updated_at
   - name: identity
     description: Identity
+    guide: >-
+      Use this table to get identity details. Query it directly when you need this singleton
+      or config payload.
     request:
       method: GET
       path: /v1/identity
@@ -5297,6 +5346,9 @@ tables:
             - teams
   - name: incident_alerts
     description: ListIncidentAlerts
+    guide: >-
+      Use this table to list Incident Alerts. Prefer filtering by `alert_id`, `incident_id`
+      to keep result sets small.
     filters:
       - name: alert_id
         required: false
@@ -5552,6 +5604,9 @@ tables:
           key: incident_id
   - name: incident_attachments
     description: List
+    guide: >-
+      Use this table to list incident attachments. It requires `incident_id`, so start from
+      those IDs before joining outward.
     filters:
       - name: incident_id
         required: true
@@ -5655,6 +5710,9 @@ tables:
             - title
   - name: incident_relationships
     description: List
+    guide: >-
+      Use this table to list incident relationships. It requires `incident_id`, so start
+      from those IDs before joining outward.
     filters:
       - name: incident_id
         required: true
@@ -5725,6 +5783,9 @@ tables:
             - page_size
   - name: incident_roles
     description: List
+    guide: >-
+      Use this table to list incident roles. Prefer filtering by `id` to keep result sets
+      small.
     filters:
       - name: id
         required: false
@@ -5910,6 +5971,9 @@ tables:
             - updated_at
   - name: incident_statuses
     description: List
+    guide: >-
+      Use this table to list incident statuses. Prefer filtering by `id` to keep result sets
+      small.
     filters:
       - name: id
         required: false
@@ -6072,6 +6136,9 @@ tables:
             - updated_at
   - name: incident_timestamps
     description: List
+    guide: >-
+      Use this table to list incident timestamps. Prefer filtering by `id` to keep result
+      sets small.
     filters:
       - name: id
         required: false
@@ -6162,6 +6229,9 @@ tables:
             - rank
   - name: incident_types
     description: List
+    guide: >-
+      Use this table to list incident types. Prefer filtering by `id` to keep result sets
+      small.
     filters:
       - name: id
         required: false
@@ -6347,6 +6417,9 @@ tables:
             - updated_at
   - name: incident_updates
     description: List
+    guide: >-
+      Use this table to list incident updates. Prefer filtering by `incident_id` to keep
+      result sets small.
     filters:
       - name: incident_id
         required: false
@@ -6729,6 +6802,9 @@ tables:
             - name
   - name: incidents
     description: List
+    guide: >-
+      Use this table to list incidents. Prefer filtering by `sort_by`, `filter_mode`,
+      `status`, `status_category` to keep result sets small.
     filters:
       - name: sort_by
         required: false
@@ -8108,6 +8184,9 @@ tables:
             - workload_minutes_working
   - name: ip_allowlists
     description: ShowIPAllowlist
+    guide: >-
+      Use this table to show ip allowlists. Query it directly when you need the full list;
+      it works best as a lookup or dimension table.
     request:
       method: GET
       path: /v1/ip_allowlists
@@ -8171,6 +8250,9 @@ tables:
             - version
   - name: maintenance_windows
     description: List
+    guide: >-
+      Use this table to list maintenance windows. Prefer filtering by `status`, `id` to keep
+      result sets small.
     filters:
       - name: status
         required: false
@@ -8760,6 +8842,9 @@ tables:
             - updated_at
   - name: notification_methods
     description: ListNotificationMethods
+    guide: >-
+      Use this table to list Notification Methods. It requires `user_id`, so start from
+      those IDs before joining outward.
     filters:
       - name: user_id
         required: true
@@ -8824,6 +8909,9 @@ tables:
           key: user_id
   - name: openapi_json
     description: OpenAPI
+    guide: >-
+      OpenAPI document. Query this singleton endpoint when you need the raw v2 API
+      specification JSON.
     request:
       method: GET
       path: /v1/openapi.json
@@ -8845,6 +8933,9 @@ tables:
           kind: current_row
   - name: openapi_v3_json
     description: OpenAPIV3
+    guide: >-
+      OpenAPI v3 document. Query this singleton endpoint when you need the raw v3 API
+      specification JSON.
     request:
       method: GET
       path: /v1/openapiV3.json
@@ -8866,6 +8957,9 @@ tables:
           kind: current_row
   - name: postmortem_documents
     description: List
+    guide: >-
+      Use this table to list postmortem documents. Prefer filtering by `incident_id`,
+      `sort_by`, `id` to keep result sets small.
     filters:
       - name: incident_id
         required: false
@@ -9093,6 +9187,9 @@ tables:
             - updated_at
   - name: replicas
     description: ListScheduleReplicas
+    guide: >-
+      Use this table to list Schedule Replicas. It requires `schedule_id`, so start from
+      those IDs before joining outward.
     filters:
       - name: schedule_id
         required: true
@@ -9334,6 +9431,9 @@ tables:
             - user_statuses
   - name: response_incidents
     description: ListResponseIncidents
+    guide: >-
+      Use this table to list Response Incidents. It requires `status_page_id`,
+      `status_page_incident_id`, so start from those IDs before joining outward.
     filters:
       - name: status_page_id
         required: true
@@ -9378,6 +9478,9 @@ tables:
             - incidents
   - name: schedule_entries
     description: ListScheduleEntries
+    guide: >-
+      Use this table to list Schedule Entries. It requires `schedule_id`, so start from
+      those IDs before joining outward.
     filters:
       - name: schedule_id
         required: true
@@ -9497,6 +9600,8 @@ tables:
           key: schedule_id
   - name: schedules
     description: List
+    guide: >-
+      Use this table to list schedules. Prefer filtering by `id` to keep result sets small.
     filters:
       - name: id
         required: false
@@ -9760,6 +9865,8 @@ tables:
             - updated_at
   - name: severities
     description: List
+    guide: >-
+      Use this table to list severities. Prefer filtering by `id` to keep result sets small.
     filters:
       - name: id
         required: false
@@ -9907,6 +10014,9 @@ tables:
             - updated_at
   - name: status_page_incidents
     description: ListStatusPageIncidents
+    guide: >-
+      Use this table to list Status Page Incidents. It requires `status_page_id`, so start
+      from those IDs before joining outward.
     filters:
       - name: status_page_id
         required: true
@@ -10156,6 +10266,9 @@ tables:
             - updates
   - name: status_page_maintenances
     description: ListStatusPageMaintenances
+    guide: >-
+      Use this table to list Status Page Maintenances. It requires `status_page_id`, so
+      start from those IDs before joining outward.
     filters:
       - name: status_page_id
         required: true
@@ -10405,6 +10518,9 @@ tables:
             - updates
   - name: status_page_structures
     description: ShowStatusPageStructure
+    guide: >-
+      Use this table to show Status Page Structure. It requires `status_page_id`, so start
+      from those IDs before joining outward.
     filters:
       - name: status_page_id
         required: true
@@ -10449,6 +10565,9 @@ tables:
           key: status_page_id
   - name: status_pages
     description: ListStatusPages
+    guide: >-
+      Use this table to list Status Pages. Query it directly when you need the full list; it
+      works best as a lookup or dimension table.
     request:
       method: GET
       path: /v2/status_pages
@@ -10506,6 +10625,8 @@ tables:
             - public_url
   - name: teams
     description: List
+    guide: >-
+      Use this table to list teams. Prefer filtering by `id` to keep result sets small.
     filters:
       - name: id
         required: false
@@ -10659,6 +10780,9 @@ tables:
             - name
   - name: users
     description: List
+    guide: >-
+      Use this table to list users. Prefer filtering by `email`, `slack_user_id`, `id` to
+      keep result sets small.
     filters:
       - name: email
         required: false
@@ -10920,6 +11044,9 @@ tables:
             - slack_user_id
   - name: workflows
     description: ListWorkflows
+    guide: >-
+      Use this table to list workflows. Prefer filtering by `skip_step_upgrades`, `id` to
+      keep result sets small.
     filters:
       - name: skip_step_upgrades
         required: false

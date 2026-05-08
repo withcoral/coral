@@ -25,7 +25,7 @@ use coral_spec::backends::http::HttpTableSpec;
 pub(crate) struct HttpSourceTableProvider {
     backend: HttpSourceClient,
     source_schema: String,
-    table: HttpTableSpec,
+    table: Arc<HttpTableSpec>,
     schema: SchemaRef,
 }
 
@@ -54,7 +54,7 @@ impl HttpSourceTableProvider {
         Ok(Self {
             backend,
             source_schema,
-            table,
+            table: Arc::new(table),
             schema,
         })
     }
@@ -64,7 +64,7 @@ impl HttpSourceTableProvider {
 struct HttpFetchPlan {
     backend: HttpSourceClient,
     table: Arc<HttpTableSpec>,
-    filters: HashMap<String, String>,
+    filters: Arc<HashMap<String, String>>,
     limit: Option<usize>,
 }
 
@@ -72,7 +72,7 @@ struct HttpFetchPlan {
 impl RowFetcher for HttpFetchPlan {
     async fn fetch(&self) -> Result<Vec<Value>> {
         self.backend
-            .fetch(self.table.as_ref(), &self.filters, self.limit)
+            .fetch(self.table.as_ref(), self.filters.as_ref(), self.limit)
             .await
     }
 }
@@ -135,18 +135,24 @@ impl TableProvider for HttpSourceTableProvider {
             }
         }
 
+        let table = self.table.clone();
+        let filters = Arc::new(filter_values);
         let fetcher = Arc::new(HttpFetchPlan {
             backend: self.backend.clone(),
-            table: Arc::new(self.table.clone()),
-            filters: filter_values.clone(),
+            table: table.clone(),
+            filters: filters.clone(),
             limit,
         });
 
         let schema = self.schema.clone();
-        let table = self.table.clone();
-        let filters_for_convert = filter_values;
+        let filters_for_convert = filters;
         let converter = Arc::new(move |items: &[Value]| {
-            convert_items(table.columns(), schema.clone(), &filters_for_convert, items)
+            convert_items(
+                table.columns(),
+                schema.clone(),
+                filters_for_convert.as_ref(),
+                items,
+            )
         });
 
         let exec = JsonExec::new(
@@ -167,6 +173,23 @@ fn classify_filter(
     allowed: &HashSet<&str>,
     filter_modes: &HashMap<&str, FilterMode>,
 ) -> TableProviderFilterPushDown {
+    if let Expr::Column(col) = expr
+        && allowed.contains(col.name())
+    {
+        return TableProviderFilterPushDown::Exact;
+    }
+    if let Expr::Not(inner) = expr
+        && let Expr::Column(col) = inner.as_ref()
+        && allowed.contains(col.name())
+    {
+        return TableProviderFilterPushDown::Exact;
+    }
+    if let Expr::IsTrue(inner) | Expr::IsFalse(inner) = expr
+        && let Expr::Column(col) = inner.as_ref()
+        && allowed.contains(col.name())
+    {
+        return TableProviderFilterPushDown::Exact;
+    }
     if let Expr::BinaryExpr(binary) = expr
         && binary.op == Operator::Eq
         && let Expr::Column(col) = binary.left.as_ref()
@@ -201,6 +224,7 @@ mod tests {
         Expr, Operator, TableProviderFilterPushDown, binary_expr, expr::Like, lit,
     };
     use std::collections::{HashMap, HashSet};
+    use std::ops::Not;
 
     fn allowed<'a>(names: &'a [&'a str]) -> HashSet<&'a str> {
         names.iter().copied().collect()
@@ -262,5 +286,43 @@ mod tests {
             &modes(&[("query", FilterMode::Search)]),
         );
         assert_eq!(pushdown, TableProviderFilterPushDown::Inexact);
+    }
+
+    #[test]
+    fn boolean_column_filter_pushes_down_exactly() {
+        let pushdown = classify_filter(&col("descending"), &allowed(&["descending"]), &modes(&[]));
+        assert_eq!(pushdown, TableProviderFilterPushDown::Exact);
+    }
+
+    #[test]
+    fn negated_boolean_column_filter_pushes_down_exactly() {
+        let pushdown = classify_filter(
+            &col("descending").not(),
+            &allowed(&["descending"]),
+            &modes(&[]),
+        );
+        assert_eq!(pushdown, TableProviderFilterPushDown::Exact);
+    }
+
+    #[test]
+    fn boolean_is_true_and_is_false_push_down_exactly() {
+        for expr in [
+            Expr::IsTrue(Box::new(col("descending"))),
+            Expr::IsFalse(Box::new(col("descending"))),
+        ] {
+            let pushdown = classify_filter(&expr, &allowed(&["descending"]), &modes(&[]));
+            assert_eq!(pushdown, TableProviderFilterPushDown::Exact);
+        }
+    }
+
+    #[test]
+    fn null_inclusive_boolean_is_predicates_are_not_pushed_down() {
+        for expr in [
+            Expr::IsNotTrue(Box::new(col("descending"))),
+            Expr::IsNotFalse(Box::new(col("descending"))),
+        ] {
+            let pushdown = classify_filter(&expr, &allowed(&["descending"]), &modes(&[]));
+            assert_eq!(pushdown, TableProviderFilterPushDown::Unsupported);
+        }
     }
 }

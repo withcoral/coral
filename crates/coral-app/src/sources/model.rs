@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use coral_spec::ManifestInputSpec;
 use serde::{Deserialize, Serialize};
 
 use crate::sources::SourceName;
@@ -12,24 +13,9 @@ pub(crate) struct CandidateSource {
     pub(crate) name: SourceName,
     pub(crate) description: String,
     pub(crate) version: String,
-    pub(crate) inputs: Vec<CandidateSourceInput>,
+    pub(crate) inputs: Vec<ManifestInputSpec>,
     pub(crate) installed: bool,
     pub(crate) origin: SourceOrigin,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CandidateSourceInput {
-    pub(crate) key: String,
-    pub(crate) kind: CandidateSourceInputKind,
-    pub(crate) required: bool,
-    pub(crate) default_value: String,
-    pub(crate) hint: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CandidateSourceInputKind {
-    Variable,
-    Secret,
 }
 
 /// App-owned model for one source installed in a workspace.

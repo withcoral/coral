@@ -6,19 +6,13 @@ use std::sync::Arc;
 use arrow::array::{Int64Array, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
-use coral_engine::{
-    CoreError, QueryExecution, QueryRuntimeContext, QueryRuntimeProvider, QuerySource, StatusCode,
-};
+use coral_engine::{CoreError, QueryExecution, QueryRuntimeConfig, QuerySource, StatusCode};
 use coral_spec::parse_source_manifest_value;
 use parquet::arrow::ArrowWriter;
 use serde_json::{Value, json};
 
-pub(crate) struct TestRuntime;
-
-impl QueryRuntimeProvider for TestRuntime {
-    fn runtime_context(&self) -> QueryRuntimeContext {
-        QueryRuntimeContext::default()
-    }
+pub(crate) fn test_runtime() -> QueryRuntimeConfig {
+    QueryRuntimeConfig::default()
 }
 
 pub(crate) fn build_source(value: Value) -> QuerySource {

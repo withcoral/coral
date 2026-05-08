@@ -14,6 +14,7 @@ fn main() {
             &[
                 "proto/coral/v1/catalog.proto",
                 "proto/coral/v1/resources.proto",
+                "proto/coral/v1/feedback.proto",
                 "proto/coral/v1/sources.proto",
                 "proto/coral/v1/query.proto",
             ],

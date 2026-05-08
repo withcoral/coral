@@ -14,11 +14,12 @@ use assert_cmd::Command;
 use coral_api::v1::query_service_server::{QueryService, QueryServiceServer};
 use coral_api::v1::source_service_server::{SourceService, SourceServiceServer};
 use coral_api::v1::{
-    AvailableSource, Column, CreateBundledSourceRequest, DeleteSourceRequest,
-    DiscoverSourcesRequest, DiscoverSourcesResponse, ExecuteSqlRequest, ExecuteSqlResponse,
+    Column, CreateBundledSourceRequest, DeleteSourceRequest, DiscoverSourcesRequest,
+    DiscoverSourcesResponse, ExecuteSqlRequest, ExecuteSqlResponse, GetSourceInfoRequest,
     GetSourceRequest, ImportSourceRequest, ListSourcesRequest, ListSourcesResponse,
-    ListTablesRequest, ListTablesResponse, Source, SourceInputKind, SourceInputSpec, SourceOrigin,
-    Table, ValidateSourceRequest, ValidateSourceResponse, Workspace,
+    ListTablesRequest, ListTablesResponse, PaginationResponse, Source, SourceInfo, SourceInputKind,
+    SourceInputSpec, SourceOrigin, Table, TableSummary, ValidateSourceRequest,
+    ValidateSourceResponse, Workspace,
 };
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
@@ -77,6 +78,27 @@ fn mock_visible_table() -> Table {
     }
 }
 
+fn mock_visible_tables() -> Vec<Table> {
+    let messages = mock_visible_table();
+    let mut sessions = mock_visible_table();
+    sessions.name = "sessions".to_string();
+    sessions.description = "Fixture sessions".to_string();
+    let mut events = mock_visible_table();
+    events.name = "events".to_string();
+    events.description = "Fixture events".to_string();
+    vec![events, messages, sessions]
+}
+
+fn table_summary(table: &Table) -> TableSummary {
+    TableSummary {
+        workspace: table.workspace.clone(),
+        schema_name: table.schema_name.clone(),
+        name: table.name.clone(),
+        description: table.description.clone(),
+        required_filters: table.required_filters.clone(),
+    }
+}
+
 fn mock_sql_response(sql: &str) -> ExecuteSqlResponse {
     let (schema, batch, row_count) = if sql.contains("local_messages.messages") {
         let schema = Schema::new(vec![Field::new("text", DataType::Utf8, false)]);
@@ -105,7 +127,7 @@ fn mock_sql_response(sql: &str) -> ExecuteSqlResponse {
 fn mock_discover_response() -> DiscoverSourcesResponse {
     DiscoverSourcesResponse {
         sources: vec![
-            AvailableSource {
+            SourceInfo {
                 name: "github".to_string(),
                 description: "GitHub data".to_string(),
                 version: "1.0.0".to_string(),
@@ -114,12 +136,12 @@ fn mock_discover_response() -> DiscoverSourcesResponse {
                     kind: SourceInputKind::Secret as i32,
                     required: true,
                     default_value: String::new(),
-                    hint: String::new(),
+                    hint: "Create a token at github.com/settings/tokens".to_string(),
                 }],
                 installed: true,
                 origin: SourceOrigin::Bundled as i32,
             },
-            AvailableSource {
+            SourceInfo {
                 name: "slack".to_string(),
                 description: "Slack data".to_string(),
                 version: "2.1.0".to_string(),
@@ -139,6 +161,42 @@ fn mock_validate_response() -> ValidateSourceResponse {
             mock_table("github", "pull_requests"),
         ],
         query_tests: Vec::new(),
+    }
+}
+
+fn mock_source_info(name: &str) -> Result<SourceInfo, Status> {
+    match name {
+        "github" => Ok(SourceInfo {
+            name: "github".to_string(),
+            description: "GitHub data".to_string(),
+            version: "1.0.0".to_string(),
+            inputs: vec![SourceInputSpec {
+                key: "GITHUB_TOKEN".to_string(),
+                kind: SourceInputKind::Secret as i32,
+                required: true,
+                default_value: String::new(),
+                hint: "Create a token at github.com/settings/tokens".to_string(),
+            }],
+            installed: true,
+            origin: SourceOrigin::Bundled as i32,
+        }),
+        "slack" => Ok(SourceInfo {
+            name: "slack".to_string(),
+            description: "Slack data".to_string(),
+            version: "2.1.0".to_string(),
+            inputs: Vec::new(),
+            installed: false,
+            origin: SourceOrigin::Bundled as i32,
+        }),
+        "jira" => Ok(SourceInfo {
+            name: "jira".to_string(),
+            description: "Jira data".to_string(),
+            version: "2.0.0".to_string(),
+            inputs: Vec::new(),
+            installed: true,
+            origin: SourceOrigin::Imported as i32,
+        }),
+        _ => Err(Status::not_found(format!("unknown source '{name}'"))),
     }
 }
 
@@ -270,6 +328,7 @@ struct Captured {
     discover_sources: Mutex<Vec<DiscoverSourcesRequest>>,
     list_sources: Mutex<Vec<ListSourcesRequest>>,
     get_source: Mutex<Vec<GetSourceRequest>>,
+    get_source_info: Mutex<Vec<GetSourceInfoRequest>>,
     create_bundled_source: Mutex<Vec<CreateBundledSourceRequest>>,
     import_source: Mutex<Vec<ImportSourceRequest>>,
     delete_source: Mutex<Vec<DeleteSourceRequest>>,
@@ -303,13 +362,57 @@ impl QueryService for MockQueryService {
         &self,
         request: Request<ListTablesRequest>,
     ) -> Result<Response<ListTablesResponse>, Status> {
+        let request = request.into_inner();
         self.captured
             .list_tables
             .lock()
             .expect("list_tables capture")
-            .push(request.into_inner());
+            .push(request.clone());
+        let mut tables = mock_visible_tables()
+            .into_iter()
+            .filter(|table| {
+                request.schema_name.is_empty() || table.schema_name == request.schema_name
+            })
+            .collect::<Vec<_>>();
+        let total = u32::try_from(tables.len()).unwrap_or(u32::MAX);
+        let pagination = request.pagination.unwrap_or_default();
+        let offset = usize::try_from(pagination.offset).expect("offset");
+        let limit = usize::try_from(pagination.limit).expect("limit");
+        tables = if limit == 0 {
+            tables.into_iter().skip(offset).collect()
+        } else {
+            tables.into_iter().skip(offset).take(limit).collect()
+        };
+        let table_summaries = if request.omit_columns {
+            tables.iter().map(table_summary).collect()
+        } else {
+            Vec::new()
+        };
+        let returned_count = if request.omit_columns {
+            u32::try_from(table_summaries.len()).unwrap_or(u32::MAX)
+        } else {
+            u32::try_from(tables.len()).unwrap_or(u32::MAX)
+        };
+        if request.omit_columns {
+            tables.clear();
+        }
+        let has_more =
+            pagination.limit != 0 && pagination.offset.saturating_add(returned_count) < total;
+        let next_offset = if has_more {
+            pagination.offset.saturating_add(returned_count)
+        } else {
+            0
+        };
         Ok(Response::new(ListTablesResponse {
-            tables: vec![mock_visible_table()],
+            tables,
+            table_summaries,
+            pagination: Some(PaginationResponse {
+                total_count: total,
+                limit: pagination.limit,
+                offset: pagination.offset,
+                has_more,
+                next_offset,
+            }),
         }))
     }
 
@@ -387,6 +490,19 @@ impl SourceService for MockSourceService {
             .expect("get_source capture")
             .push(request.into_inner());
         Ok(Response::new(mock_source()))
+    }
+
+    async fn get_source_info(
+        &self,
+        request: Request<GetSourceInfoRequest>,
+    ) -> Result<Response<SourceInfo>, Status> {
+        let request = request.into_inner();
+        self.captured
+            .get_source_info
+            .lock()
+            .expect("get_source_info capture")
+            .push(request.clone());
+        Ok(Response::new(mock_source_info(&request.name)?))
     }
 
     async fn create_bundled_source(
@@ -535,6 +651,22 @@ impl MockServer {
             .list_sources
             .lock()
             .expect("list_sources capture")
+            .clone()
+    }
+
+    pub(crate) fn list_tables_requests(&self) -> Vec<ListTablesRequest> {
+        self.captured
+            .list_tables
+            .lock()
+            .expect("list_tables capture")
+            .clone()
+    }
+
+    pub(crate) fn get_source_info_requests(&self) -> Vec<GetSourceInfoRequest> {
+        self.captured
+            .get_source_info
+            .lock()
+            .expect("get_source_info capture")
             .clone()
     }
 

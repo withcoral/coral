@@ -33,7 +33,7 @@ jobs:
 
       - name: Build with timings
         run: |
-          cargo build --bin coral --timings 2>&1 | tee build-output.txt
+          cargo build --locked --bin coral --timings 2>&1 | tee build-output.txt
           echo ""
           echo "=== Cache effectiveness ==="
           compiled=$(grep -c "^   Compiling" build-output.txt || true)

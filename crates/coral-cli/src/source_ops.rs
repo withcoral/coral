@@ -3,9 +3,9 @@ use std::io::{IsTerminal, stdin, stdout};
 use std::path::Path;
 
 use coral_api::v1::{
-    AvailableSource, CreateBundledSourceRequest, DeleteSourceRequest, DiscoverSourcesRequest,
+    CreateBundledSourceRequest, DeleteSourceRequest, DiscoverSourcesRequest, GetSourceInfoRequest,
     ImportSourceRequest, ListSourcesRequest, QueryTestFailure, QueryTestSuccess, Source,
-    SourceInputKind, SourceInputSpec, SourceOrigin, SourceSecret, SourceVariable,
+    SourceInfo, SourceInputKind, SourceInputSpec, SourceOrigin, SourceSecret, SourceVariable,
     ValidateSourceRequest, ValidateSourceResponse, query_test_result,
 };
 use coral_client::{AppClient, default_workspace};
@@ -52,9 +52,7 @@ impl TableDisplayLimit {
     pub(crate) const DEFAULT: Self = Self::Max(MAX_TABLES_PER_SCHEMA);
 }
 
-pub(crate) async fn discover_sources(
-    app: &AppClient,
-) -> Result<Vec<AvailableSource>, anyhow::Error> {
+pub(crate) async fn discover_sources(app: &AppClient) -> Result<Vec<SourceInfo>, anyhow::Error> {
     Ok(app
         .source_client()
         .discover_sources(Request::new(DiscoverSourcesRequest {
@@ -116,11 +114,18 @@ pub(crate) async fn validate_source(
     app: &AppClient,
     name: &str,
 ) -> Result<ValidateSourceResponse, anyhow::Error> {
+    Ok(validate_source_request(app, source_name_arg(Some(name))?).await?)
+}
+
+async fn validate_source_request(
+    app: &AppClient,
+    name: String,
+) -> Result<ValidateSourceResponse, tonic::Status> {
     Ok(app
         .source_client()
         .validate_source(Request::new(ValidateSourceRequest {
             workspace: Some(default_workspace()),
-            name: source_name_arg(Some(name))?,
+            name,
         }))
         .await?
         .into_inner())
@@ -132,6 +137,69 @@ pub(crate) fn load_validated_manifest_file(
     let manifest_yaml = std::fs::read_to_string(file)?;
     let manifest = parse_source_manifest_yaml(manifest_yaml.as_str())?;
     Ok((manifest_yaml, manifest))
+}
+
+pub(crate) async fn print_source_info(
+    app: &AppClient,
+    name: &str,
+    verbose: bool,
+) -> Result<(), anyhow::Error> {
+    let source = app
+        .source_client()
+        .get_source_info(Request::new(GetSourceInfoRequest {
+            workspace: Some(default_workspace()),
+            name: source_name_arg(Some(name))?,
+        }))
+        .await?
+        .into_inner();
+    print_source_info_response(&source, verbose);
+    Ok(())
+}
+
+fn print_source_info_response(source: &SourceInfo, verbose: bool) {
+    let status = if source.installed {
+        style("installed").green().to_string()
+    } else {
+        style("not installed").dim().to_string()
+    };
+
+    println!("{}", style(&source.name).bold());
+    println!("  Status:      {status}");
+    println!("  Origin:      {}", source_origin_label(source.origin));
+    println!("  Version:     {}", source.version);
+    if !source.description.is_empty() {
+        println!("  Description: {}", source.description);
+    }
+
+    if source.inputs.is_empty() {
+        return;
+    }
+
+    println!();
+    println!("  {}", style("Inputs").bold());
+    for input in &source.inputs {
+        let kind_label = match SourceInputKind::try_from(input.kind) {
+            Ok(SourceInputKind::Variable) => "variable",
+            Ok(SourceInputKind::Secret) => "secret",
+            Ok(SourceInputKind::Unspecified) | Err(_) => "unknown",
+        };
+        let requirement = if input.required {
+            "required"
+        } else {
+            "optional"
+        };
+        println!(
+            "    {} {}",
+            style(&input.key).bold(),
+            style(format!("({kind_label}, {requirement})")).dim()
+        );
+        if !input.default_value.is_empty() {
+            println!("      default: {}", input.default_value);
+        }
+        if verbose && !input.hint.is_empty() {
+            println!("      {}", style(&input.hint).dim());
+        }
+    }
 }
 
 pub(crate) async fn delete_source(app: &AppClient, name: &str) -> Result<(), anyhow::Error> {
@@ -163,6 +231,9 @@ pub(crate) fn source_name_arg(name: Option<&str>) -> Result<String, anyhow::Erro
         return Err(anyhow::anyhow!(
             "source name must not contain '/' or '\\\\'"
         ));
+    }
+    if name == "." || name == ".." {
+        return Err(anyhow::anyhow!("source name must not be '.' or '..'"));
     }
     Ok(name.to_string())
 }
@@ -306,6 +377,54 @@ pub(crate) async fn validate_and_warn(
         eprintln!("Warning: validation failed: {err}");
     }
     Ok(())
+}
+
+pub(crate) async fn test_and_print(
+    app: &AppClient,
+    source_name: &str,
+    limit: TableDisplayLimit,
+    severity_mode: ValidationSeverityMode,
+) -> Result<(), crate::CliError> {
+    let normalized = source_name_arg(Some(source_name))?;
+    let response = match validate_source_request(app, normalized.clone()).await {
+        Ok(response) => response,
+        Err(status) if status.code() == tonic::Code::NotFound => {
+            return source_test_not_found_error(app, &normalized, status).await;
+        }
+        Err(status) => return Err(anyhow::Error::from(status).into()),
+    };
+    print_validation_pretty(&response, limit)?;
+    match validation_follow_up(&response, severity_mode) {
+        ValidationFollowUp::None => Ok(()),
+        ValidationFollowUp::Warn(message) => {
+            eprintln!("Warning: {message}");
+            Ok(())
+        }
+        ValidationFollowUp::Fail(message) => Err(anyhow::anyhow!(message).into()),
+    }
+}
+
+async fn source_test_not_found_error(
+    app: &AppClient,
+    source_name: &str,
+    original_status: tonic::Status,
+) -> Result<(), crate::CliError> {
+    // Discovery failure must not mask the original validation error.
+    let Ok(available) = discover_sources(app).await else {
+        return Err(anyhow::Error::from(original_status).into());
+    };
+    if available
+        .iter()
+        .any(|source| source.name == source_name && !source.installed)
+    {
+        return Err(crate::CliError::SourceNotInstalled {
+            source_name: source_name.to_string(),
+        });
+    }
+
+    Err(crate::CliError::SourceNotFound {
+        source_name: source_name.to_string(),
+    })
 }
 
 pub(crate) fn print_validation_pretty(
@@ -529,7 +648,7 @@ mod tests {
 
     use super::{
         ValidationFollowUp, ValidationSeverityMode, collect_inputs_with, finalize_input_value,
-        validation_follow_up,
+        source_name_arg, validation_follow_up,
     };
 
     #[test]
@@ -618,6 +737,15 @@ mod tests {
         assert!(message.contains("LINEAR_API_KEY"));
         assert!(message.contains("OTHER_KEY"));
         assert!(message.contains("--interactive"));
+    }
+
+    #[test]
+    fn source_name_arg_rejects_dot_segments() {
+        let error = source_name_arg(Some("..")).expect_err("dot segment should fail");
+        assert!(error.to_string().contains("must not be '.' or '..'"));
+
+        let error = source_name_arg(Some(" . ")).expect_err("dot segment should fail");
+        assert!(error.to_string().contains("must not be '.' or '..'"));
     }
 
     #[test]

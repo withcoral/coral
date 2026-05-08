@@ -2,13 +2,11 @@
 
 use std::collections::BTreeSet;
 
-use coral_spec::{ManifestInputKind, ManifestInputSpec, parse_source_manifest_yaml};
+use coral_spec::{ValidatedSourceManifest, parse_source_manifest_yaml};
 
 use crate::bootstrap::AppError;
 use crate::sources::SourceName;
-use crate::sources::model::{
-    CandidateSource, CandidateSourceInput, CandidateSourceInputKind, InstalledSource, SourceOrigin,
-};
+use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
 use crate::state::AppStateLayout;
 use crate::workspaces::WorkspaceName;
 
@@ -21,7 +19,7 @@ pub(crate) struct BundledSourceManifest {
 
 #[derive(Debug, Clone)]
 pub(crate) struct InstalledSourceManifest {
-    pub(crate) manifest_yaml: String,
+    pub(crate) source_spec: ValidatedSourceManifest,
     pub(crate) candidate: CandidateSource,
 }
 
@@ -72,7 +70,9 @@ pub(crate) fn resolve_installed_manifest(
             std::fs::read_to_string(layout.manifest_file(workspace_name, &source.name))?
         }
     };
-    let mut candidate = describe_manifest(&manifest_yaml, source.origin, false)?;
+    let source_spec = parse_source_manifest_yaml(&manifest_yaml)
+        .map_err(|error| AppError::InvalidInput(error.to_string()))?;
+    let mut candidate = candidate_from_manifest(&source_spec, source.origin, false)?;
     if candidate.name != source.name {
         return Err(AppError::FailedPrecondition(format!(
             "installed source '{}' does not match manifest name '{}'",
@@ -81,7 +81,7 @@ pub(crate) fn resolve_installed_manifest(
     }
     candidate.installed = true;
     Ok(InstalledSourceManifest {
-        manifest_yaml,
+        source_spec,
         candidate,
     })
 }
@@ -93,45 +93,33 @@ pub(crate) fn describe_manifest(
 ) -> Result<CandidateSource, AppError> {
     let manifest = parse_source_manifest_yaml(manifest_yaml)
         .map_err(|error| AppError::InvalidInput(error.to_string()))?;
+    candidate_from_manifest(&manifest, origin, installed)
+}
+
+fn candidate_from_manifest(
+    manifest: &ValidatedSourceManifest,
+    origin: SourceOrigin,
+    installed: bool,
+) -> Result<CandidateSource, AppError> {
     Ok(CandidateSource {
         name: SourceName::parse(manifest.schema_name())?,
         description: manifest.description().to_string(),
         version: manifest.source_version().to_string(),
-        inputs: manifest
-            .declared_inputs()
-            .iter()
-            .cloned()
-            .map(candidate_input_spec)
-            .collect(),
+        inputs: manifest.declared_inputs().to_vec(),
         installed,
         origin,
     })
-}
-
-fn candidate_input_spec(input: ManifestInputSpec) -> CandidateSourceInput {
-    CandidateSourceInput {
-        key: input.key,
-        kind: candidate_input_kind(input.kind),
-        required: input.required,
-        default_value: input.default_value,
-        hint: input.hint,
-    }
-}
-
-fn candidate_input_kind(kind: ManifestInputKind) -> CandidateSourceInputKind {
-    match kind {
-        ManifestInputKind::Variable => CandidateSourceInputKind::Variable,
-        ManifestInputKind::Secret => CandidateSourceInputKind::Secret,
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
 
+    use coral_spec::ManifestInputKind;
+
     use super::{describe_manifest, list_bundled_sources};
     use crate::sources::SourceName;
-    use crate::sources::model::{CandidateSourceInputKind, SourceOrigin};
+    use crate::sources::model::SourceOrigin;
 
     #[test]
     fn bundled_sources_load_through_catalog() {
@@ -188,9 +176,9 @@ tables:
         .expect("describe manifest");
         assert_eq!(source.inputs.len(), 2);
         assert_eq!(source.inputs[0].key, "API_BASE");
-        assert_eq!(source.inputs[0].kind, CandidateSourceInputKind::Variable);
+        assert_eq!(source.inputs[0].kind, ManifestInputKind::Variable);
         assert_eq!(source.inputs[1].key, "API_TOKEN");
-        assert_eq!(source.inputs[1].kind, CandidateSourceInputKind::Secret);
+        assert_eq!(source.inputs[1].kind, ManifestInputKind::Secret);
     }
 
     #[test]

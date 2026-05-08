@@ -2,11 +2,14 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use datafusion::error::{DataFusionError, Result};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde_json::{Map, Value, json};
+use tracing::Instrument as _;
+use tracing::field;
 
 use crate::RequestAuthenticator;
 use crate::backends::http::ProviderQueryError;
@@ -19,13 +22,15 @@ use crate::backends::shared::template::{
 };
 use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec, RateLimitSpec};
 use coral_spec::{
-    AuthSpec, HeaderSpec, HttpMethod, PageSizeSpec, ParsedTemplate, RequestRouteSpec,
-    RequestSpec as ManifestRequestSpec, RowStrategy, ValidatedPagination, ValidatedPaginationMode,
+    AuthSpec, BodySpec, HeaderSpec, HttpMethod, PageSizeSpec, ParsedTemplate, RequestRouteSpec,
+    RequestSpec as ManifestRequestSpec, ResponseBodyFormat, RowStrategy, ValidatedPagination,
+    ValidatedPaginationMode,
 };
 
 const DEFAULT_MAX_PAGES: usize = 10_000;
 const DEFAULT_HTTP_REQUEST_TIMEOUT_SECS: u64 = 30;
 const DEFAULT_HTTP_USER_AGENT: &str = concat!("coral/", env!("CARGO_PKG_VERSION"));
+static NEXT_HTTP_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Executes manifest-driven HTTP requests for one registered source.
 #[derive(Clone)]
@@ -61,6 +66,13 @@ struct PageState {
     next_url: Option<String>,
 }
 
+/// Concrete request body shape passed to the HTTP layer.
+#[derive(Debug, Clone)]
+enum RequestBody {
+    Json(Value),
+    Text(String),
+}
+
 struct RequestSpec<'a> {
     auth: &'a AuthSpec,
     request_headers: &'a [HeaderSpec],
@@ -71,7 +83,8 @@ struct RequestSpec<'a> {
     base_url: &'a str,
     url: &'a str,
     query_pairs: &'a [(String, String)],
-    body: Option<&'a Value>,
+    body: Option<&'a RequestBody>,
+    response_format: ResponseBodyFormat,
     source_schema: &'a str,
     rate_limit: &'a RateLimitSpec,
     filters: &'a HashMap<String, String>,
@@ -145,7 +158,15 @@ impl HttpSourceClient {
         let pagination = table
             .pagination
             .validated(&self.source_schema, table.name())
-            .map_err(|error| DataFusionError::Execution(error.to_string()))?;
+            .map_err(|error| {
+                provider_error(ProviderQueryError::Pagination {
+                    source_schema: self.source_schema.clone(),
+                    table: table.name().to_string(),
+                    method: None,
+                    url: None,
+                    detail: error.to_string(),
+                })
+            })?;
         let page_size = resolve_page_size(pagination.page_size.as_ref(), sql_limit);
 
         let filter_keys: HashSet<String> = filters.keys().cloned().collect();
@@ -166,11 +187,13 @@ impl HttpSourceClient {
         loop {
             page_count += 1;
             if page_count > max_pages {
-                return Err(DataFusionError::Execution(format!(
-                    "source '{}' table '{}' exceeded pagination max_pages={max_pages}",
-                    self.source_schema,
-                    table.name()
-                )));
+                return Err(provider_error(ProviderQueryError::Pagination {
+                    source_schema: self.source_schema.clone(),
+                    table: table.name().to_string(),
+                    method: None,
+                    url: None,
+                    detail: format!("exceeded pagination max_pages={max_pages}"),
+                }));
             }
 
             let base_url = render_template(
@@ -216,7 +239,10 @@ impl HttpSourceClient {
                     &pagination,
                     &state,
                     page_size,
-                )?;
+                )
+                .map_err(|error| {
+                    pagination_error(&self.source_schema, table.name(), None, Some(&url), &error)
+                })?;
 
                 let mut body = build_request_body(
                     active_request,
@@ -224,7 +250,17 @@ impl HttpSourceClient {
                     &state,
                     self.resolved_inputs.as_ref(),
                 )?;
-                apply_pagination_body_fields(&mut body, table, &pagination, &state, page_size)?;
+                apply_pagination_body_fields(
+                    &mut body,
+                    &active_request.body,
+                    table,
+                    &pagination,
+                    &state,
+                    page_size,
+                )
+                .map_err(|error| {
+                    pagination_error(&self.source_schema, table.name(), None, Some(&url), &error)
+                })?;
                 (query_pairs, body)
             };
 
@@ -243,6 +279,7 @@ impl HttpSourceClient {
                     url: &url,
                     query_pairs: &query_pairs,
                     body: body.as_ref(),
+                    response_format: table.response.format,
                     source_schema: &self.source_schema,
                     rate_limit: &self.rate_limit,
                     filters,
@@ -278,6 +315,7 @@ impl HttpSourceClient {
                             status: None,
                             method: None,
                             url: None,
+                            filters: filters.clone(),
                             detail: err,
                         },
                     )));
@@ -321,7 +359,15 @@ impl HttpSourceClient {
                     }
                     let step = offset
                         .resolve_step(page_size, &self.source_schema, table.name())
-                        .map_err(|error| DataFusionError::Execution(error.to_string()))?;
+                        .map_err(|error| {
+                            provider_error(ProviderQueryError::Pagination {
+                                source_schema: self.source_schema.clone(),
+                                table: table.name().to_string(),
+                                method: None,
+                                url: None,
+                                detail: error.to_string(),
+                            })
+                        })?;
                     state.offset = state.offset.saturating_add(step);
                 }
                 ValidatedPaginationMode::LinkHeader | ValidatedPaginationMode::Auto => {
@@ -469,19 +515,32 @@ fn validate_request_template_inputs(
             )
         })?;
     }
-    for field in &request.body {
-        let field_path = if field.path.is_empty() {
-            "<root>".to_string()
-        } else {
-            field.path.join(".")
-        };
-        validate_value_source_inputs(&field.value, resolved_inputs).map_err(|error| {
-            registration_error(
-                source_name,
-                &format!("table '{table_name}' {request_label} body field '{field_path}'"),
-                &error,
-            )
-        })?;
+    match &request.body {
+        BodySpec::Json { fields } => {
+            for field in fields {
+                let field_path = if field.path.is_empty() {
+                    "<root>".to_string()
+                } else {
+                    field.path.join(".")
+                };
+                validate_value_source_inputs(&field.value, resolved_inputs).map_err(|error| {
+                    registration_error(
+                        source_name,
+                        &format!("table '{table_name}' {request_label} body field '{field_path}'"),
+                        &error,
+                    )
+                })?;
+            }
+        }
+        BodySpec::Text { content } => {
+            validate_value_source_inputs(content, resolved_inputs).map_err(|error| {
+                registration_error(
+                    source_name,
+                    &format!("table '{table_name}' {request_label} body text"),
+                    &error,
+                )
+            })?;
+        }
     }
     Ok(())
 }
@@ -509,6 +568,11 @@ async fn execute_request(
     request_timeout: Duration,
     request: RequestSpec<'_>,
 ) -> Result<Option<(Value, Option<String>)>> {
+    enum ResponseOutcome {
+        Done(Result<Option<(Value, Option<String>)>>),
+        Retry(Duration),
+    }
+
     let RequestSpec {
         auth,
         request_headers,
@@ -520,6 +584,7 @@ async fn execute_request(
         url,
         query_pairs,
         body,
+        response_format,
         source_schema,
         rate_limit,
         filters,
@@ -555,6 +620,14 @@ async fn execute_request(
                 header_map.insert(name, value);
             }
         }
+        if matches!(body, Some(RequestBody::Text(_)))
+            && !header_map.contains_key(reqwest::header::CONTENT_TYPE)
+        {
+            header_map.insert(
+                reqwest::header::CONTENT_TYPE,
+                HeaderValue::from_static("text/plain"),
+            );
+        }
         if !header_map.is_empty() {
             request = request.headers(header_map);
         }
@@ -563,110 +636,320 @@ async fn execute_request(
             request = request.query(query_pairs);
         }
 
-        if let Some(body) = body {
-            request = request.json(body);
+        match body {
+            Some(RequestBody::Json(value)) => {
+                request = request.json(value);
+            }
+            Some(RequestBody::Text(text)) => {
+                request = request.body(text.clone());
+            }
+            None => {}
         }
 
         let logged_url = build_logged_url(url, query_pairs);
-        let _logged_body = body
-            .and_then(|b| serde_json::to_string_pretty(b).ok())
-            .filter(|s| !s.is_empty());
+        let _logged_body = body.and_then(|b| match b {
+            RequestBody::Json(value) => serde_json::to_string_pretty(value).ok(),
+            RequestBody::Text(text) => Some(text.clone()),
+        });
 
         let built = resolve_auth_headers(auth, request, request_authenticators, resolved_inputs)?;
+        let request_id = NEXT_HTTP_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
+        let attempt = server_error_retries + throttle_retries + 1;
+        let traced_url = sanitize_trace_url(&logged_url);
+        let response = {
+            let request_span = tracing::info_span!(
+                target: "coral_engine::http",
+                "http.request",
+                otel.name = "http.request",
+                coral.source = source_schema,
+                coral.table = table_name,
+                coral.http.request_id = request_id,
+                coral.http.attempt = attempt,
+                http.request.method = method_label,
+                http.request.body.present = body.is_some(),
+                http.request.body.size = request_body_size(body).unwrap_or_default(),
+                http.request.query_count = query_pairs.len(),
+                url.full = %traced_url,
+                error = field::Empty,
+                exception.message = field::Empty,
+                coral.http.error.timeout = field::Empty,
+                coral.http.error.connect = field::Empty,
+                coral.http.error.request = field::Empty,
+            );
+            match http.execute(built).instrument(request_span.clone()).await {
+                Ok(response) => response,
+                Err(error) => {
+                    request_span.record("error", true);
+                    request_span.record("exception.message", trace_reqwest_error(&error));
+                    request_span.record("coral.http.error.timeout", error.is_timeout());
+                    request_span.record("coral.http.error.connect", error.is_connect());
+                    request_span.record("coral.http.error.request", error.is_request());
+                    return Err(request_error(
+                        source_schema,
+                        table_name,
+                        method_label,
+                        &logged_url,
+                        request_timeout,
+                        &error,
+                    ));
+                }
+            }
+        };
 
-        let response = http.execute(built).await.map_err(|error| {
-            request_error(
-                "request",
+        let status = response.status();
+        let outcome = 'response: {
+            let response_span = tracing::info_span!(
+                target: "coral_engine::http",
+                "http.response",
+                otel.name = "http.response",
+                coral.source = source_schema,
+                coral.table = table_name,
+                coral.http.request_id = request_id,
+                coral.http.attempt = attempt,
+                http.request.method = method_label,
+                http.response.status_code = status.as_u16(),
+                http.response.body.size = field::Empty,
+                url.full = %traced_url,
+                error = field::Empty,
+                exception.message = field::Empty,
+            );
+            if let Some(length) = response.content_length() {
+                response_span.record("http.response.body.size", length);
+            }
+
+            match check_rate_limit(status, response.headers(), rate_limit, throttle_retries) {
+                RateLimitDecision::Continue => {}
+                RateLimitDecision::Retry(wait) => {
+                    response_span.record("error", true);
+                    response_span.record("exception.message", "rate limited; retrying");
+                    throttle_retries += 1;
+                    break 'response ResponseOutcome::Retry(wait);
+                }
+                RateLimitDecision::Fail(error) => {
+                    response_span.record("error", true);
+                    response_span.record("exception.message", field::display(&error));
+                    break 'response ResponseOutcome::Done(Err(DataFusionError::External(
+                        Box::new(ProviderQueryError::RateLimited {
+                            source_schema: source_schema.to_string(),
+                            table: table_name.to_string(),
+                            method: Some(method_label.to_string()),
+                            url: Some(logged_url.clone()),
+                            detail: error.to_string(),
+                        }),
+                    )));
+                }
+            }
+
+            if status.is_server_error() && server_error_retries < 2 {
+                response_span.record("error", true);
+                response_span.record("exception.message", "server error; retrying");
+                server_error_retries += 1;
+                break 'response ResponseOutcome::Retry(Duration::from_secs(2));
+            }
+
+            if status == reqwest::StatusCode::NOT_FOUND && allow_404_empty {
+                break 'response ResponseOutcome::Done(Ok(None));
+            }
+
+            if !status.is_success() {
+                response_span.record("error", true);
+                let body = response
+                    .text()
+                    .instrument(response_span.clone())
+                    .await
+                    .unwrap_or_default();
+                response_span.record("http.response.body.size", body.len());
+                response_span.record(
+                    "exception.message",
+                    field::display(response_error_summary(status, &body)),
+                );
+                break 'response ResponseOutcome::Done(Err(DataFusionError::External(Box::new(
+                    ProviderQueryError::ApiRequest {
+                        source_schema: source_schema.to_string(),
+                        table: table_name.to_string(),
+                        status: Some(status.as_u16()),
+                        method: Some(method_label.to_string()),
+                        url: Some(logged_url.clone()),
+                        filters: filters.clone(),
+                        detail: body,
+                    },
+                ))));
+            }
+
+            let next_url =
+                extract_next_link_url(response.headers(), base_url, link_header_require_results)
+                    .map_err(|error| {
+                        response_span.record("error", true);
+                        response_span.record("exception.message", field::display(&error));
+                        pagination_error(
+                            source_schema,
+                            table_name,
+                            Some(method_label),
+                            Some(&logged_url),
+                            &error,
+                        )
+                    });
+            let next_url = match next_url {
+                Ok(next_url) => next_url,
+                Err(error) => break 'response ResponseOutcome::Done(Err(error)),
+            };
+
+            let payload = decode_response_body(
+                response,
+                response_format,
+                source_schema,
+                table_name,
                 method_label,
                 &logged_url,
-                request_timeout,
-                &error,
             )
-        })?;
+            .instrument(response_span.clone())
+            .await
+            .inspect_err(|error| {
+                response_span.record("error", true);
+                response_span.record("exception.message", field::display(&error));
+            })
+            .map(|payload| Some((payload, next_url)));
+            ResponseOutcome::Done(payload)
+        };
 
-        match check_rate_limit(
-            response.status(),
-            response.headers(),
-            rate_limit,
-            throttle_retries,
-        ) {
-            RateLimitDecision::Continue => {}
-            RateLimitDecision::Retry(wait) => {
-                throttle_retries += 1;
+        match outcome {
+            ResponseOutcome::Done(result) => return result,
+            ResponseOutcome::Retry(wait) => {
                 tokio::time::sleep(wait).await;
-                continue;
             }
-            RateLimitDecision::Fail(error) => {
-                return Err(DataFusionError::External(Box::new(
-                    ProviderQueryError::RateLimited {
+        }
+    }
+}
+
+async fn decode_response_body(
+    response: reqwest::Response,
+    format: ResponseBodyFormat,
+    source_schema: &str,
+    table_name: &str,
+    method_label: &str,
+    logged_url: &str,
+) -> Result<Value> {
+    match format {
+        ResponseBodyFormat::Json => response.json().await.map_err(|error| {
+            decode_error(source_schema, table_name, method_label, logged_url, &error)
+        }),
+        ResponseBodyFormat::JsonEachRow => {
+            let text = response.text().await.map_err(|error| {
+                decode_error(source_schema, table_name, method_label, logged_url, &error)
+            })?;
+            let mut rows = Vec::new();
+            for (index, line) in text.lines().enumerate() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                let row: Value = serde_json::from_str(trimmed).map_err(|error| {
+                    provider_error(ProviderQueryError::Decode {
                         source_schema: source_schema.to_string(),
                         table: table_name.to_string(),
                         method: Some(method_label.to_string()),
-                        url: Some(logged_url),
-                        detail: error.to_string(),
-                    },
-                )));
+                        url: Some(logged_url.to_string()),
+                        detail: format!(
+                            "source API response decoding failed: json_each_row line {} is not valid JSON: {error}",
+                            index + 1
+                        ),
+                    })
+                })?;
+                rows.push(row);
             }
+            Ok(Value::Array(rows))
         }
-
-        if response.status().is_server_error() && server_error_retries < 2 {
-            server_error_retries += 1;
-            tokio::time::sleep(Duration::from_secs(2)).await;
-            continue;
-        }
-
-        if response.status() == reqwest::StatusCode::NOT_FOUND && allow_404_empty {
-            return Ok(None);
-        }
-
-        let next_url =
-            extract_next_link_url(response.headers(), base_url, link_header_require_results)?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            return Err(DataFusionError::External(Box::new(
-                ProviderQueryError::ApiRequest {
-                    source_schema: source_schema.to_string(),
-                    table: table_name.to_string(),
-                    status: Some(status.as_u16()),
-                    method: Some(method_label.to_string()),
-                    url: Some(logged_url),
-                    detail: body,
-                },
-            )));
-        }
-
-        let payload: Value = response.json().await.map_err(|error| {
-            request_error(
-                "response decoding",
-                method_label,
-                &logged_url,
-                request_timeout,
-                &error,
-            )
-        })?;
-        return Ok(Some((payload, next_url)));
     }
 }
 
 fn request_error(
-    stage: &str,
+    source_schema: &str,
+    table_name: &str,
     method_label: &str,
     logged_url: &str,
     request_timeout: Duration,
     error: &reqwest::Error,
 ) -> DataFusionError {
-    if error.is_timeout() {
-        return DataFusionError::Execution(format!(
-            "source API {stage} timed out for {method_label} {logged_url} after {}s",
+    let detail = if error.is_timeout() {
+        format!(
+            "source API request timed out after {}s",
             request_timeout.as_secs_f64()
-        ));
-    }
+        )
+    } else {
+        "source API request failed before a response was received".to_string()
+    };
 
-    DataFusionError::Execution(format!(
-        "source API {stage} failed for {method_label} {logged_url}: {error}"
-    ))
+    provider_error(ProviderQueryError::Request {
+        source_schema: source_schema.to_string(),
+        table: table_name.to_string(),
+        method: Some(method_label.to_string()),
+        url: Some(logged_url.to_string()),
+        detail,
+        timed_out: error.is_timeout(),
+    })
+}
+
+fn trace_reqwest_error(error: &reqwest::Error) -> &'static str {
+    if error.is_timeout() {
+        "source API request timed out"
+    } else if error.is_connect() {
+        "source API connection failed"
+    } else if error.is_request() {
+        "source API request failed before a response was received"
+    } else {
+        "source API request failed"
+    }
+}
+
+fn response_error_summary(status: reqwest::StatusCode, body: &str) -> String {
+    format!(
+        "upstream returned HTTP {}; body_bytes={}",
+        status.as_u16(),
+        body.len()
+    )
+}
+
+fn decode_error(
+    source_schema: &str,
+    table_name: &str,
+    method_label: &str,
+    logged_url: &str,
+    error: &reqwest::Error,
+) -> DataFusionError {
+    provider_error(ProviderQueryError::Decode {
+        source_schema: source_schema.to_string(),
+        table: table_name.to_string(),
+        method: Some(method_label.to_string()),
+        url: Some(logged_url.to_string()),
+        detail: format!("source API response decoding failed: {error}"),
+    })
+}
+
+fn pagination_error(
+    source_schema: &str,
+    table_name: &str,
+    method_label: Option<&str>,
+    logged_url: Option<&str>,
+    error: &DataFusionError,
+) -> DataFusionError {
+    provider_error(ProviderQueryError::Pagination {
+        source_schema: source_schema.to_string(),
+        table: table_name.to_string(),
+        method: method_label.map(ToOwned::to_owned),
+        url: logged_url.map(ToOwned::to_owned),
+        detail: datafusion_detail(error),
+    })
+}
+
+fn provider_error(error: ProviderQueryError) -> DataFusionError {
+    DataFusionError::External(Box::new(error))
+}
+
+fn datafusion_detail(error: &DataFusionError) -> String {
+    match error {
+        DataFusionError::Execution(detail) => detail.clone(),
+        other => other.to_string(),
+    }
 }
 
 fn http_method_label(method: HttpMethod) -> &'static str {
@@ -753,48 +1036,66 @@ fn build_request_body(
     filters: &HashMap<String, String>,
     state: &PageState,
     resolved_inputs: &BTreeMap<String, String>,
-) -> Result<Option<Value>> {
-    if request.body.is_empty() {
-        return Ok(None);
-    }
-
+) -> Result<Option<RequestBody>> {
     let state_values = pagination_state_values(state);
-    let mut root = Value::Object(Map::new());
-
-    for field in &request.body {
-        if let Some(value) =
-            resolve_value_source(&field.value, filters, &state_values, resolved_inputs)?
-        {
-            set_path_value(&mut root, &field.path, value)?;
+    match &request.body {
+        BodySpec::Json { fields } => {
+            if fields.is_empty() {
+                return Ok(None);
+            }
+            let mut root = Value::Object(Map::new());
+            for field in fields {
+                if let Some(value) =
+                    resolve_value_source(&field.value, filters, &state_values, resolved_inputs)?
+                {
+                    set_path_value(&mut root, &field.path, value)?;
+                }
+            }
+            Ok(Some(RequestBody::Json(root)))
+        }
+        BodySpec::Text { content } => {
+            let Some(value) =
+                resolve_value_source(content, filters, &state_values, resolved_inputs)?
+            else {
+                return Ok(None);
+            };
+            Ok(Some(RequestBody::Text(value_to_string(&value))))
         }
     }
-
-    Ok(Some(root))
 }
 
 fn apply_pagination_body_fields(
-    body: &mut Option<Value>,
+    body: &mut Option<RequestBody>,
+    body_spec: &BodySpec,
     table: &HttpTableSpec,
     pagination: &ValidatedPagination,
     state: &PageState,
     page_size: Option<usize>,
 ) -> Result<()> {
-    if body.is_none()
-        && pagination
-            .page_size
-            .as_ref()
-            .is_none_or(|s| s.body_path.is_empty())
-        && !(matches!(pagination.mode, ValidatedPaginationMode::CursorBody)
-            && !table.pagination.cursor_body_path.is_empty()
-            && state.cursor.is_some())
-    {
+    let needs_page_size_body = page_size
+        .zip(pagination.page_size.as_ref())
+        .is_some_and(|(_, spec)| !spec.body_path.is_empty());
+    let needs_cursor_body = matches!(pagination.mode, ValidatedPaginationMode::CursorBody)
+        && !table.pagination.cursor_body_path.is_empty()
+        && state.cursor.is_some();
+
+    if !needs_page_size_body && !needs_cursor_body {
         return Ok(());
     }
 
-    if body.is_none() {
-        *body = Some(Value::Object(Map::new()));
+    if matches!(body_spec, BodySpec::Text { .. }) || matches!(body, Some(RequestBody::Text(_))) {
+        return Err(DataFusionError::Execution(
+            "pagination body fields are not supported with text request bodies".to_string(),
+        ));
     }
-    let root = body.as_mut().expect("body is present");
+
+    if body.is_none() {
+        *body = Some(RequestBody::Json(Value::Object(Map::new())));
+    }
+    let root = match body.as_mut().expect("body is present") {
+        RequestBody::Json(root) => root,
+        RequestBody::Text(_) => unreachable!("text body rejected above"),
+    };
 
     if let (Some(page_size), Some(spec)) = (page_size, pagination.page_size.as_ref())
         && !spec.body_path.is_empty()
@@ -852,6 +1153,29 @@ fn build_logged_url(url: &str, query_pairs: &[(String, String)]) -> String {
     }
 }
 
+fn sanitize_trace_url(raw: &str) -> String {
+    let Ok(mut url) = reqwest::Url::parse(raw) else {
+        let without_fragment = raw.split_once('#').map_or(raw, |(before, _)| before);
+        return without_fragment
+            .split_once('?')
+            .map_or(without_fragment, |(before, _)| before)
+            .to_string();
+    };
+    url.set_query(None);
+    url.set_fragment(None);
+    let _ = url.set_username("");
+    let _ = url.set_password(None);
+    url.to_string()
+}
+
+fn request_body_size(body: Option<&RequestBody>) -> Option<usize> {
+    match body {
+        Some(RequestBody::Json(value)) => serde_json::to_vec(value).ok().map(|body| body.len()),
+        Some(RequestBody::Text(text)) => Some(text.len()),
+        None => None,
+    }
+}
+
 fn join_url(base: &str, path: &str) -> Result<String> {
     let trimmed = path.trim();
     if reqwest::Url::parse(trimmed).is_ok() || trimmed.starts_with("//") {
@@ -887,29 +1211,42 @@ fn set_path_value(root: &mut Value, path: &[String], value: Value) -> Result<()>
         return Ok(());
     }
 
-    let mut cursor = root;
-    for key in &path[..path.len() - 1] {
-        if !cursor.is_object() {
-            *cursor = Value::Object(Map::new());
+    set_path_value_at(root, path, value)
+}
+
+fn set_path_value_at(cursor: &mut Value, path: &[String], value: Value) -> Result<()> {
+    let Some((head, tail)) = path.split_first() else {
+        *cursor = value;
+        return Ok(());
+    };
+
+    if let Ok(index) = head.parse::<usize>() {
+        if !cursor.is_array() {
+            *cursor = Value::Array(Vec::new());
         }
-        let obj = cursor.as_object_mut().ok_or_else(|| {
-            DataFusionError::Execution("failed to create JSON object path".to_string())
+        let array = cursor.as_array_mut().ok_or_else(|| {
+            DataFusionError::Execution("failed to create JSON array path".to_string())
         })?;
-        cursor = obj
-            .entry(key.clone())
-            .or_insert_with(|| Value::Object(Map::new()));
+        if array.len() <= index {
+            const MAX_JSON_ARRAY_INDEX: usize = 10_000;
+            if index > MAX_JSON_ARRAY_INDEX {
+                return Err(DataFusionError::Execution(format!(
+                    "JSON array index {index} exceeds supported maximum {MAX_JSON_ARRAY_INDEX}"
+                )));
+            }
+            array.resize_with(index + 1, || Value::Null);
+        }
+        return set_path_value_at(&mut array[index], tail, value);
     }
 
-    let last = path
-        .last()
-        .cloned()
-        .ok_or_else(|| DataFusionError::Execution("invalid empty JSON path segment".to_string()))?;
-
+    if !cursor.is_object() {
+        *cursor = Value::Object(Map::new());
+    }
     let obj = cursor.as_object_mut().ok_or_else(|| {
-        DataFusionError::Execution("failed to assign JSON path value".to_string())
+        DataFusionError::Execution("failed to create JSON object path".to_string())
     })?;
-    obj.insert(last, value);
-    Ok(())
+    let next = obj.entry(head.clone()).or_insert(Value::Null);
+    set_path_value_at(next, tail, value)
 }
 
 #[allow(
@@ -1053,21 +1390,24 @@ mod tests {
     use std::collections::{BTreeMap, HashMap};
     use std::time::Duration;
 
+    use datafusion::error::DataFusionError;
     use reqwest::header::{HeaderMap, HeaderValue};
     use serde_json::json;
     use tokio::net::TcpListener;
     use tokio::task::JoinHandle;
 
     use super::{
-        HttpSourceClient, PageState, RequestSpec as HttpRequestSpec, apply_pagination_query_pairs,
-        execute_request, extract_next_link_url, extract_rows, join_url, normalize_base_url,
-        page_is_exhausted, resolve_value_source,
+        HttpSourceClient, PageState, RequestSpec as HttpRequestSpec, apply_pagination_body_fields,
+        apply_pagination_query_pairs, execute_request, extract_next_link_url, extract_rows,
+        join_url, normalize_base_url, page_is_exhausted, resolve_value_source, set_path_value,
     };
+    use crate::backends::http::ProviderQueryError;
     use coral_spec::PaginationMode;
     use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec, RateLimitSpec};
     use coral_spec::{
-        AuthSpec, HttpMethod, PaginationSpec, ParsedTemplate, RequestSpec, RowStrategy,
-        ValidatedPaginationMode, ValueSourceSpec, parse_source_manifest_value,
+        AuthSpec, BodySpec, HttpMethod, PaginationSpec, ParsedTemplate, RequestSpec,
+        ResponseBodyFormat, RowStrategy, ValidatedPaginationMode, ValueSourceSpec,
+        parse_source_manifest_value,
     };
 
     fn parse_http_manifest(value: serde_json::Value) -> HttpSourceManifest {
@@ -1112,7 +1452,62 @@ mod tests {
         .expect("table should exist")
     }
 
+    #[test]
+    fn set_path_value_builds_arrays_from_numeric_segments() {
+        let mut root = json!({});
+
+        set_path_value(
+            &mut root,
+            &[
+                "Dimensions".to_string(),
+                "0".to_string(),
+                "Name".to_string(),
+            ],
+            json!("ClusterName"),
+        )
+        .expect("path assignment should succeed");
+        set_path_value(
+            &mut root,
+            &[
+                "Dimensions".to_string(),
+                "0".to_string(),
+                "Value".to_string(),
+            ],
+            json!("titaness"),
+        )
+        .expect("path assignment should succeed");
+        set_path_value(
+            &mut root,
+            &["Statistics".to_string(), "0".to_string()],
+            json!("Average"),
+        )
+        .expect("path assignment should succeed");
+
+        assert_eq!(
+            root,
+            json!({
+                "Dimensions": [{
+                    "Name": "ClusterName",
+                    "Value": "titaness"
+                }],
+                "Statistics": ["Average"]
+            })
+        );
+    }
+
     fn request_json(request: &RequestSpec) -> serde_json::Value {
+        let body = match &request.body {
+            BodySpec::Json { fields } => fields
+                .iter()
+                .map(|field| {
+                    json!({
+                        "path": field.path,
+                        "value": value_source_json(&field.value),
+                    })
+                })
+                .collect::<Vec<_>>(),
+            BodySpec::Text { .. } => Vec::new(),
+        };
         json!({
             "method": format!("{:?}", request.method),
             "path": request.path,
@@ -1120,10 +1515,7 @@ mod tests {
                 "name": query.name,
                 "value": value_source_json(&query.value),
             })).collect::<Vec<_>>(),
-            "body": request.body.iter().map(|field| json!({
-                "path": field.path,
-                "value": value_source_json(&field.value),
-            })).collect::<Vec<_>>(),
+            "body": body,
             "headers": request.headers.iter().map(|header| json!({
                 "name": header.name,
                 "value": value_source_json(&header.value),
@@ -1144,6 +1536,46 @@ mod tests {
             }),
             ValueSourceSpec::FilterInt { key, default } => json!({
                 "from": "filter_int",
+                "key": key,
+                "default": default,
+            }),
+            ValueSourceSpec::FilterBool { key, default } => json!({
+                "from": "filter_bool",
+                "key": key,
+                "default": default,
+            }),
+            ValueSourceSpec::FilterSplit {
+                key,
+                separator,
+                part,
+            } => json!({
+                "from": "filter_split",
+                "key": key,
+                "separator": separator,
+                "part": part,
+            }),
+            ValueSourceSpec::FilterSplitInt {
+                key,
+                separator,
+                part,
+            } => json!({
+                "from": "filter_split_int",
+                "key": key,
+                "separator": separator,
+                "part": part,
+            }),
+            ValueSourceSpec::Arg { key, default } => json!({
+                "from": "arg",
+                "key": key,
+                "default": default,
+            }),
+            ValueSourceSpec::ArgInt { key, default } => json!({
+                "from": "arg_int",
+                "key": key,
+                "default": default,
+            }),
+            ValueSourceSpec::ArgBool { key, default } => json!({
+                "from": "arg_bool",
                 "key": key,
                 "default": default,
             }),
@@ -1315,6 +1747,101 @@ mod tests {
                 .to_string()
                 .contains("filter 'start_time' value 'not-a-number' is not a valid i64")
         );
+    }
+
+    #[test]
+    fn resolve_value_source_splits_filter_parts() {
+        let filters = HashMap::from([("issue_identifier".to_string(), "SOURCE-496".to_string())]);
+
+        let team = resolve_value_source(
+            &ValueSourceSpec::FilterSplit {
+                key: "issue_identifier".to_string(),
+                separator: "-".to_string(),
+                part: 0,
+            },
+            &filters,
+            &HashMap::new(),
+            &BTreeMap::new(),
+        )
+        .expect("split filter should resolve");
+        let number = resolve_value_source(
+            &ValueSourceSpec::FilterSplitInt {
+                key: "issue_identifier".to_string(),
+                separator: "-".to_string(),
+                part: 1,
+            },
+            &filters,
+            &HashMap::new(),
+            &BTreeMap::new(),
+        )
+        .expect("split integer filter should resolve");
+
+        assert_eq!(team, Some(json!("SOURCE")));
+        assert_eq!(number, Some(json!(496)));
+    }
+
+    #[test]
+    fn resolve_value_source_rejects_missing_filter_split_part() {
+        let filters = HashMap::from([("issue_identifier".to_string(), "SOURCE496".to_string())]);
+
+        let error = resolve_value_source(
+            &ValueSourceSpec::FilterSplit {
+                key: "issue_identifier".to_string(),
+                separator: "-".to_string(),
+                part: 1,
+            },
+            &filters,
+            &HashMap::new(),
+            &BTreeMap::new(),
+        )
+        .expect_err("missing split part should fail");
+
+        assert!(
+            error.to_string().contains(
+                "filter 'issue_identifier' value 'SOURCE496' does not contain split part 1"
+            )
+        );
+    }
+
+    #[test]
+    fn resolve_value_source_rejects_missing_filter_split_int_part() {
+        let filters = HashMap::from([("issue_identifier".to_string(), "SOURCE496".to_string())]);
+
+        let error = resolve_value_source(
+            &ValueSourceSpec::FilterSplitInt {
+                key: "issue_identifier".to_string(),
+                separator: "-".to_string(),
+                part: 1,
+            },
+            &filters,
+            &HashMap::new(),
+            &BTreeMap::new(),
+        )
+        .expect_err("missing split integer part should fail");
+
+        assert!(
+            error.to_string().contains(
+                "filter 'issue_identifier' value 'SOURCE496' does not contain split part 1"
+            )
+        );
+    }
+
+    #[test]
+    fn resolve_value_source_parses_filter_bools_as_bools() {
+        let filters = HashMap::from([("descending".to_string(), "false".to_string())]);
+
+        let value = resolve_value_source(
+            &ValueSourceSpec::FilterBool {
+                key: "descending".to_string(),
+                default: None,
+            },
+            &filters,
+            &HashMap::new(),
+            &BTreeMap::new(),
+        )
+        .expect("bool filter should resolve");
+
+        assert_eq!(value, Some(json!(false)));
     }
 
     #[test]
@@ -1587,7 +2114,7 @@ mod tests {
                 method: HttpMethod::GET,
                 path: ParsedTemplate::parse("/items").expect("template"),
                 query: vec![],
-                body: vec![],
+                body: BodySpec::default(),
                 headers: vec![],
             },
         );
@@ -1628,6 +2155,55 @@ mod tests {
     }
 
     #[test]
+    fn apply_pagination_body_fields_rejects_declared_text_body_even_when_absent() {
+        let table = test_http_table_spec(
+            &json!([]),
+            &RequestSpec {
+                method: HttpMethod::GET,
+                path: ParsedTemplate::parse("/items").expect("template"),
+                query: vec![],
+                body: BodySpec::default(),
+                headers: vec![],
+            },
+        );
+        let body_spec = BodySpec::Text {
+            content: ValueSourceSpec::Filter {
+                key: "sql".to_string(),
+                default: None,
+            },
+        };
+        let pagination = PaginationSpec {
+            page_size: Some(coral_spec::PageSizeSpec {
+                default: 25,
+                max: 100,
+                query_param: None,
+                body_path: vec!["limit".to_string()],
+            }),
+            ..PaginationSpec::default()
+        }
+        .validated("demo", "items")
+        .unwrap();
+        let mut body = None;
+
+        let error = apply_pagination_body_fields(
+            &mut body,
+            &body_spec,
+            &table,
+            &pagination,
+            &PageState::default(),
+            Some(25),
+        )
+        .expect_err("text request bodies must not receive pagination body fields");
+
+        assert!(
+            error
+                .to_string()
+                .contains("pagination body fields are not supported with text request bodies")
+        );
+        assert!(body.is_none());
+    }
+
+    #[test]
     fn page_is_exhausted_handles_empty_short_and_full_pages() {
         for (rows_on_page, page_size, expected) in
             [(0, Some(50), true), (24, Some(25), true), (24, None, false)]
@@ -1646,7 +2222,7 @@ mod tests {
                 method: HttpMethod::GET,
                 path: ParsedTemplate::parse("/items").expect("template"),
                 query: vec![],
-                body: vec![],
+                body: BodySpec::default(),
                 headers: vec![],
             },
         );
@@ -1809,7 +2385,7 @@ mod tests {
             .build()
             .expect("build test client");
         let url = format!("{base_url}/items");
-        let query_pairs = Vec::new();
+        let query_pairs = vec![("api_key".to_string(), "secret-token".to_string())];
         let filters = HashMap::new();
         let state = HashMap::new();
         let resolved_inputs = BTreeMap::new();
@@ -1828,6 +2404,7 @@ mod tests {
                 url: &url,
                 query_pairs: &query_pairs,
                 body: None,
+                response_format: ResponseBodyFormat::default(),
                 source_schema: "demo",
                 rate_limit: &RateLimitSpec::default(),
                 filters: &filters,
@@ -1840,7 +2417,36 @@ mod tests {
         .await
         .expect_err("hung upstream should time out");
 
-        assert!(error.to_string().contains("timed out"));
+        match error {
+            DataFusionError::External(inner) => {
+                let provider_error = inner
+                    .downcast_ref::<ProviderQueryError>()
+                    .expect("timeout should be a provider query error");
+                match provider_error {
+                    ProviderQueryError::Request {
+                        source_schema,
+                        table,
+                        detail,
+                        timed_out,
+                        ..
+                    } => {
+                        assert_eq!(source_schema, "demo");
+                        assert_eq!(table, "items");
+                        assert!(*timed_out);
+                        assert!(detail.contains("timed out"));
+                        assert!(!detail.contains("secret-token"));
+                    }
+                    other => panic!("expected request provider error, got {other:?}"),
+                }
+                let structured = provider_error.to_structured();
+                assert_eq!(
+                    structured.metadata().get("url").map(String::as_str),
+                    Some(format!("{base_url}/items").as_str())
+                );
+                assert!(!structured.detail().contains("secret-token"));
+            }
+            other => panic!("expected external provider error, got {other:?}"),
+        }
         task.abort();
     }
 

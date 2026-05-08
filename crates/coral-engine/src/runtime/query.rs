@@ -2,19 +2,20 @@
 
 use std::sync::Arc;
 
+use datafusion::execution::SessionStateBuilder;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::prelude::{SQLOptions, SessionConfig, SessionContext};
+use datafusion_tracing::{InstrumentationOptions, RuleInstrumentationOptions};
 
 use crate::backends::compile_query_source;
 use crate::runtime::catalog;
-use crate::runtime::error::datafusion_to_core;
+use crate::runtime::error::{datafusion_to_core, datafusion_to_core_with_sql};
 use crate::runtime::json::register_json_support;
+use crate::runtime::pattern_validator::register_pattern_validator;
 use crate::runtime::registry::{
     CompiledQuerySource, SourceRegistrationCandidate, SourceRegistrationFailure, register_sources,
 };
-use crate::{
-    CoreError, EngineExtensions, QueryExecution, QueryRuntimeProvider, QuerySource, TableInfo,
-};
+use crate::{CoreError, QueryExecution, QueryRuntimeConfig, QuerySource, TableInfo};
 
 pub(crate) struct QueryRuntimeAdapter {
     ctx: Arc<SessionContext>,
@@ -24,7 +25,7 @@ pub(crate) struct QueryRuntimeAdapter {
 
 pub(crate) async fn build_runtime(
     sources: &[QuerySource],
-    runtime: &dyn QueryRuntimeProvider,
+    runtime: QueryRuntimeConfig,
 ) -> Result<QueryRuntimeAdapter, CoreError> {
     let session_config = SessionConfig::new().with_information_schema(true);
     let runtime_env = Arc::new(
@@ -33,19 +34,36 @@ pub(crate) async fn build_runtime(
             .build()
             .map_err(|err| datafusion_to_core(&err, &[]))?,
     );
-    let mut ctx = SessionContext::new_with_config_rt(session_config, runtime_env);
+    let exec_options = InstrumentationOptions::builder()
+        .record_metrics(true)
+        .build();
+    let instrument_rule = datafusion_tracing::instrument_with_trace_spans!(
+        target: "coral_engine::datafusion",
+        options: exec_options
+    );
+    let session_state = SessionStateBuilder::new()
+        .with_config(session_config)
+        .with_runtime_env(runtime_env)
+        .with_default_features()
+        .with_physical_optimizer_rule(instrument_rule)
+        .build();
+    let session_state = datafusion_tracing::instrument_rules_with_trace_spans!(
+        target: "coral_engine::datafusion",
+        options: RuleInstrumentationOptions::full(),
+        state: session_state
+    );
+    let mut ctx = SessionContext::new_with_state(session_state);
     register_json_support(&mut ctx).map_err(|err| datafusion_to_core(&err, &[]))?;
+    register_pattern_validator(&mut ctx).map_err(|err| datafusion_to_core(&err, &[]))?;
     let ctx = Arc::new(ctx);
 
-    let runtime_context = runtime.runtime_context();
-    let mut build_options: EngineExtensions = runtime.engine_extensions();
+    let QueryRuntimeConfig {
+        context: runtime_context,
+        mut extensions,
+    } = runtime;
     let mut source_candidates = Vec::new();
     for source in sources {
-        match compile_query_source(
-            source,
-            &runtime_context,
-            &build_options.request_authenticators,
-        ) {
+        match compile_query_source(source, &runtime_context, &extensions.request_authenticators) {
             Ok(compiled) => {
                 source_candidates.push(SourceRegistrationCandidate::Compiled(
                     CompiledQuerySource {
@@ -63,7 +81,7 @@ pub(crate) async fn build_runtime(
     let registration = register_sources(
         &ctx,
         source_candidates,
-        build_options.source_decorators.as_mut_slice(),
+        extensions.source_decorators.as_mut_slice(),
     )
     .await?;
     catalog::register(&ctx, &registration.active_sources)
@@ -107,7 +125,7 @@ impl QueryRuntimeAdapter {
             .ctx
             .sql_with_options(sql, read_only_sql_options())
             .await
-            .map_err(|err| datafusion_to_core(&err, &self.tables))?;
+            .map_err(|err| datafusion_to_core_with_sql(&err, &self.tables, Some(sql)))?;
         let arrow_schema = Arc::new(df.schema().as_arrow().clone());
         let batches = df
             .collect()

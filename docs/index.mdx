@@ -27,7 +27,7 @@ Coral supports a number of [popular data sources](/reference/bundled-sources) bu
    Connect GitHub, Slack, Datadog, and other [bundled sources](/reference/bundled-sources) to your workspace. For example:
 
     ```shellscript
-    coral source add github
+    coral source add --interactive github
     ```
 
     [Go to the quickstart](/getting-started/quickstart)
@@ -75,11 +75,13 @@ Full [benchmark report](https://withcoral.com/benchmarks).
 
 ## How Coral works
 
-Coral sits between you and your data sources: you (or your agent) write SQL, and Coral translates it into API calls or file reads, then returns a single query result.
+Coral sits between your agents and your data sources: your agents write SQL, and Coral translates it into API calls or file reads, then returns a single query result.
 
-For example, here's Coral answering the question:
+You can ask your agents complex questions about your data:
 
-> Which Sentry errors create the most noise in Slack, and who is working on them?
+![coral sql demo](/images/claude-query-example.png)
+
+Or run SQL queries yourself:
 
 ![coral sql demo](/images/coral-sql-join.gif)
 
@@ -113,7 +115,7 @@ graph LR
     FS -.->|File path| Disk
 ```
 
-For the full internals, crates, gRPC transport, DataFusion integration, see the [architecture page](/contributors/architecture).
+For the full internals, crates, gRPC transport, DataFusion integration, see the [architecture page](/project/architecture).
 
 ## Quick links
 

@@ -41,6 +41,46 @@ pub(crate) fn resolve_value_source(
             };
             Ok(value)
         }
+        ValueSourceSpec::FilterBool { key, default } => {
+            let value = if let Some(filter) = filters.get(key) {
+                let parsed = filter.parse::<bool>().map_err(|error| {
+                    DataFusionError::Execution(format!(
+                        "filter '{key}' value '{filter}' is not a valid bool: {error}"
+                    ))
+                })?;
+                Some(json!(parsed))
+            } else {
+                default.map(|value| json!(value))
+            };
+            Ok(value)
+        }
+        ValueSourceSpec::FilterSplit {
+            key,
+            separator,
+            part,
+        } => {
+            split_filter_part(filters, key, separator, *part).map(|value| value.map(Value::String))
+        }
+        ValueSourceSpec::FilterSplitInt {
+            key,
+            separator,
+            part,
+        } => {
+            let Some(raw) = split_filter_part(filters, key, separator, *part)? else {
+                return Ok(None);
+            };
+            let parsed = raw.parse::<i64>().map_err(|error| {
+                DataFusionError::Execution(format!(
+                    "filter '{key}' split part {part} value '{raw}' is not a valid i64: {error}"
+                ))
+            })?;
+            Ok(Some(json!(parsed)))
+        }
+        ValueSourceSpec::Arg { key, .. }
+        | ValueSourceSpec::ArgInt { key, .. }
+        | ValueSourceSpec::ArgBool { key, .. } => Err(DataFusionError::Execution(format!(
+            "function argument '{key}' cannot be resolved outside a function request"
+        ))),
         ValueSourceSpec::Input { key } => Ok(resolved_inputs.get(key).cloned().map(Value::String)),
         ValueSourceSpec::State { key } => Ok(state.get(key).map(|v| Value::String(v.clone()))),
         ValueSourceSpec::NowEpochMinusSeconds { seconds } => {
@@ -56,6 +96,25 @@ pub(crate) fn resolve_value_source(
             Ok(Some(json!(value)))
         }
     }
+}
+
+fn split_filter_part(
+    filters: &HashMap<String, String>,
+    key: &str,
+    separator: &str,
+    part: usize,
+) -> Result<Option<String>> {
+    let Some(filter) = filters.get(key) else {
+        return Ok(None);
+    };
+    filter
+        .split(separator)
+        .nth(part)
+        .map_or_else(|| {
+            Err(DataFusionError::Execution(format!(
+                "filter '{key}' value '{filter}' does not contain split part {part} using separator '{separator}'"
+            )))
+        }, |value| Ok(Some(value.to_string())))
 }
 
 /// Render a parsed template into a concrete string.
@@ -177,6 +236,12 @@ pub(crate) fn validate_value_source_inputs(
         ValueSourceSpec::Literal { .. }
         | ValueSourceSpec::Filter { .. }
         | ValueSourceSpec::FilterInt { .. }
+        | ValueSourceSpec::FilterBool { .. }
+        | ValueSourceSpec::FilterSplit { .. }
+        | ValueSourceSpec::FilterSplitInt { .. }
+        | ValueSourceSpec::Arg { .. }
+        | ValueSourceSpec::ArgInt { .. }
+        | ValueSourceSpec::ArgBool { .. }
         | ValueSourceSpec::State { .. }
         | ValueSourceSpec::NowEpochMinusSeconds { .. } => Ok(()),
     }

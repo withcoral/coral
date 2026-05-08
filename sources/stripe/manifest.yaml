@@ -27,6 +27,7 @@ test_queries:
 tables:
   - name: account
     description: Retrieve account
+    guide: "Account. Singleton endpoint for the authenticated Stripe API key."
     request:
       method: GET
       path: /v1/account
@@ -2383,6 +2384,7 @@ tables:
             - type
   - name: account_bank_accounts
     description: Retrieve an external account
+    guide: "Bank accounts. Scope with account. Returns one row per request."
     filters:
       - name: account
         required: true
@@ -2841,6 +2843,7 @@ tables:
             - tokenization_method
   - name: accounts
     description: List all connected accounts
+    guide: "Accounts. Use account to fetch one row. Useful filter: created."
     filters:
       - name: created
         required: false
@@ -5236,6 +5239,7 @@ tables:
             - type
   - name: active_entitlements
     description: List all active entitlements
+    guide: "Active entitlements. Use id to fetch one row. Useful filter: customer."
     filters:
       - name: customer
         required: true
@@ -5321,6 +5325,7 @@ tables:
             - object
   - name: alerts
     description: List billing alerts
+    guide: "Alerts. Use id to fetch one row. Useful filters: alert_type and meter."
     filters:
       - name: alert_type
         required: false
@@ -5469,6 +5474,7 @@ tables:
             - recurrence
   - name: amount_details_line_items
     description: List all PaymentIntent LineItems
+    guide: "Amount details line items. Scope with intent. List endpoint."
     filters:
       - name: intent
         required: true
@@ -5730,6 +5736,7 @@ tables:
             - unit_of_measure
   - name: app_secret_find
     description: Find a Secret
+    guide: "Secrets find. Returns one row per request. Useful filters: name and scope."
     filters:
       - name: name
         required: true
@@ -5859,6 +5866,7 @@ tables:
             - user
   - name: application_fee_refunds
     description: Retrieve an application fee refund
+    guide: "Refunds. Scope with fee. Returns one row per request."
     filters:
       - name: fee
         required: true
@@ -5951,6 +5959,7 @@ tables:
             - object
   - name: application_fees
     description: List all application fees
+    guide: "Application fees. Use id to fetch one row. Useful filters: charge and created."
     filters:
       - name: charge
         required: false
@@ -6227,6 +6236,7 @@ tables:
             - url
   - name: authorizations
     description: List all authorizations
+    guide: "Authorizations. Use authorization to fetch one row. Useful filters: card and cardholder."
     filters:
       - name: card
         required: false
@@ -7115,6 +7125,7 @@ tables:
             - wallet
   - name: balance
     description: Retrieve balance
+    guide: "Balance. Singleton endpoint for the authenticated Stripe API key."
     request:
       method: GET
       path: /v1/balance
@@ -7234,6 +7245,7 @@ tables:
             - pending
   - name: balance_settings
     description: Retrieve balance settings
+    guide: "Balance settings. Singleton endpoint for the authenticated Stripe API key."
     request:
       method: GET
       path: /v1/balance_settings
@@ -7362,6 +7374,7 @@ tables:
             - delay_days_override
   - name: balance_transactions
     description: List all balance transactions
+    guide: "Balance transactions. Use id to fetch one row. Useful filters: created and currency."
     filters:
       - name: created
         required: false
@@ -7579,6 +7592,7 @@ tables:
             - type
   - name: billing_portal_configurations
     description: List portal configurations
+    guide: "Configurations. Use configuration to fetch one row. Useful filters: active and is_default."
     filters:
       - name: active
         required: false
@@ -8060,6 +8074,7 @@ tables:
             - updated
   - name: calculations
     description: Retrieve a Tax Calculation
+    guide: "Tax calculation breakdown. Scope with calculation to inspect the returned breakdown for that calculation."
     filters:
       - name: calculation
         required: true
@@ -8215,6 +8230,7 @@ tables:
             - taxable_amount
   - name: capabilities
     description: List all account capabilities
+    guide: "Capabilities. Scope with account. Use capability to fetch one row."
     filters:
       - name: account
         required: true
@@ -8482,6 +8498,7 @@ tables:
             - status
   - name: cardholders
     description: List all cardholders
+    guide: "Cardholders. Use cardholder to fetch one row. Useful filters: created and email."
     filters:
       - name: created
         required: false
@@ -8947,6 +8964,7 @@ tables:
             - type
   - name: cash_balance
     description: Retrieve a cash balance
+    guide: "Cash balance. Scope with customer. Returns one row per request."
     filters:
       - name: customer
         required: true
@@ -9039,6 +9057,7 @@ tables:
             - using_merchant_default
   - name: cash_balance_transactions
     description: List cash balance transactions
+    guide: "Cash balance transactions. Scope with customer. Use transaction to fetch one row."
     filters:
       - name: customer
         required: true
@@ -9344,6 +9363,7 @@ tables:
             - payment_intent
   - name: charge_refunds
     description: List all refunds
+    guide: "Refunds. Scope with charge. Use refund to fetch one row."
     filters:
       - name: charge
         required: true
@@ -10317,6 +10337,7 @@ tables:
             - transfer_reversal
   - name: charge_search
     description: Search charges
+    guide: "Charges search. Use this search endpoint when list filters are too restrictive. Useful filter: query."
     filters:
       - name: query
         required: true
@@ -14240,6 +14261,7 @@ tables:
             - transfer_group
   - name: charges
     description: List all charges
+    guide: "Charges. Use charge to fetch one row. Useful filters: created and customer."
     filters:
       - name: created
         required: false
@@ -18184,6 +18206,7 @@ tables:
             - transfer_group
   - name: checkout_sessions
     description: List all Checkout Sessions
+    guide: "Sessions. Use session to fetch one row. Useful filters: created and customer."
     filters:
       - name: created
         required: false
@@ -21345,6 +21368,7 @@ tables:
             - display
   - name: climate_products
     description: List products
+    guide: "Products. Use product to fetch one row."
     filters:
       - name: product
         required: false
@@ -21487,6 +21511,7 @@ tables:
             - suppliers
   - name: computed_upfront_line_items
     description: Retrieve a quote's upfront line items
+    guide: "Computed upfront line items. Scope with quote. List endpoint."
     filters:
       - name: quote
         required: true
@@ -21668,6 +21693,7 @@ tables:
             - taxes
   - name: confirmation_tokens
     description: Retrieve a ConfirmationToken
+    guide: "Confirmation tokens. Scope with confirmation_token. Returns one row per request."
     filters:
       - name: confirmation_token
         required: true
@@ -23638,6 +23664,7 @@ tables:
             - use_stripe_sdk
   - name: country_specs
     description: List Country Specs
+    guide: "Country specs. Use country to fetch one row."
     filters:
       - name: country
         required: false
@@ -23806,6 +23833,7 @@ tables:
             - minimum
   - name: coupons
     description: List all coupons
+    guide: "Coupons. Use coupon to fetch one row. Useful filter: created."
     filters:
       - name: created
         required: false
@@ -24014,6 +24042,7 @@ tables:
             - valid
   - name: credit_balance_summary
     description: Retrieve the credit balance summary for a customer
+    guide: "Credit balance summary. Returns one row per request. Useful filters: customer and customer_account."
     filters:
       - name: customer
         required: false
@@ -24102,6 +24131,7 @@ tables:
             - object
   - name: credit_balance_transactions
     description: List credit balance transactions
+    guide: "Credit balance transactions. Use id to fetch one row. Useful filters: credit_grant and customer."
     filters:
       - name: credit_grant
         required: false
@@ -24390,6 +24420,7 @@ tables:
             - type
   - name: credit_grants
     description: List credit grants
+    guide: "Credit grants. Use id to fetch one row. Useful filters: customer and customer_account."
     filters:
       - name: customer
         required: false
@@ -24653,6 +24684,7 @@ tables:
             - voided_at
   - name: credit_note_lines
     description: Retrieve a credit note's line items
+    guide: "Lines. Scope with credit_note. List endpoint."
     filters:
       - name: credit_note
         required: true
@@ -24829,6 +24861,7 @@ tables:
             - unit_amount_decimal
   - name: credit_note_preview_lines
     description: Retrieve a credit note preview's line items
+    guide: "Lines. List endpoint. Useful filters: amount and credit_amount."
     filters:
       - name: amount
         required: false
@@ -25159,6 +25192,7 @@ tables:
             - unit_amount_decimal
   - name: credit_notes
     description: List all credit notes
+    guide: "Credit notes. Use id to fetch one row. Useful filters: created and customer."
     filters:
       - name: created
         required: false
@@ -25614,6 +25648,7 @@ tables:
             - voided_at
   - name: credit_reversals
     description: List all CreditReversals
+    guide: "Credit reversals. Use credit_reversal to fetch one row. Useful filters: financial_account and received_credit."
     filters:
       - name: financial_account
         required: true
@@ -25800,6 +25835,7 @@ tables:
             - transaction
   - name: customer_balance_transactions
     description: List customer balance transactions
+    guide: "Balance transactions. Scope with customer. Use transaction to fetch one row. Useful filters: created and invoice."
     filters:
       - name: created
         required: false
@@ -25987,6 +26023,7 @@ tables:
             - type
   - name: customer_bank_accounts
     description: List all bank accounts
+    guide: "Bank accounts. Scope with customer. Use id to fetch one row."
     filters:
       - name: customer
         required: true
@@ -26277,6 +26314,7 @@ tables:
             - status
   - name: customer_cards
     description: List all cards
+    guide: "Cards. Scope with customer. Use id to fetch one row."
     filters:
       - name: customer
         required: true
@@ -26615,6 +26653,7 @@ tables:
             - tokenization_method
   - name: customer_payment_methods
     description: List a Customer's PaymentMethods
+    guide: "Payment methods. Scope with customer. Use payment_method to fetch one row. Useful filters: allow_redisplay and type."
     filters:
       - name: allow_redisplay
         required: false
@@ -28712,6 +28751,7 @@ tables:
             - zip
   - name: customer_search
     description: Search customers
+    guide: "Customers search. Use this search endpoint when list filters are too restrictive. Useful filter: query."
     filters:
       - name: query
         required: true
@@ -29467,6 +29507,7 @@ tables:
             - test_clock
   - name: customer_sources
     description: List sources for a specified customer.
+    guide: "Sources. Scope with customer. Use id to fetch one row. Useful filter: object."
     filters:
       - name: customer
         required: true
@@ -34225,6 +34266,7 @@ tables:
             - statement_descriptor
   - name: customer_subscriptions
     description: List active subscriptions
+    guide: "Subscriptions. Scope with customer. Use subscription_exposed_id to fetch one row."
     filters:
       - name: customer
         required: true
@@ -35249,6 +35291,7 @@ tables:
             - trial_start
   - name: customer_tax_ids
     description: List all Customer tax IDs
+    guide: "Tax ids. Scope with customer. Use id to fetch one row."
     filters:
       - name: customer
         required: true
@@ -35487,6 +35530,7 @@ tables:
             - verified_name
   - name: customers
     description: List all customers
+    guide: "Customers. Use customer to fetch one row. Useful filters: created and email."
     filters:
       - name: created
         required: false
@@ -36251,6 +36295,7 @@ tables:
             - test_clock
   - name: debit_reversals
     description: List all DebitReversals
+    guide: "Debit reversals. Use debit_reversal to fetch one row. Useful filters: financial_account and received_debit."
     filters:
       - name: financial_account
         required: true
@@ -36466,6 +36511,7 @@ tables:
             - transaction
   - name: discount
     description: customer_discount
+    guide: "Discount. Scope with customer. Returns one row per request. Useful filter: subscription_exposed_id."
     filters:
       - name: customer
         required: true
@@ -36637,6 +36683,7 @@ tables:
           key: subscription_exposed_id
   - name: dispute
     description: Retrieve a dispute for a specified charge.
+    guide: "Dispute balance transactions. Scope with charge to inspect the balance transactions attached to that charge's dispute."
     filters:
       - name: charge
         required: true
@@ -36810,6 +36857,7 @@ tables:
             - type
   - name: disputes
     description: List all disputes
+    guide: "Disputes. Use dispute to fetch one row. Useful filters: charge and created."
     filters:
       - name: charge
         required: false
@@ -37611,6 +37659,7 @@ tables:
             - type
   - name: domains
     description: List apple pay domains.
+    guide: "Domains. Use domain to fetch one row. Useful filter: domain_name."
     filters:
       - name: domain_name
         required: false
@@ -37693,6 +37742,7 @@ tables:
             - object
   - name: early_fraud_warnings
     description: List all early fraud warnings
+    guide: "Early fraud warnings. Use early_fraud_warning to fetch one row. Useful filters: charge and created."
     filters:
       - name: charge
         required: false
@@ -37814,6 +37864,7 @@ tables:
             - payment_intent
   - name: entitlement_features
     description: List all features
+    guide: "Features. Use id to fetch one row. Useful filters: archived and lookup_key."
     filters:
       - name: archived
         required: false
@@ -37922,6 +37973,7 @@ tables:
             - object
   - name: event_summaries
     description: List billing meter event summaries
+    guide: "Event summaries. Use id to fetch one row. Useful filters: customer and end_time."
     filters:
       - name: customer
         required: true
@@ -38042,6 +38094,7 @@ tables:
           key: value_grouping_window
   - name: events
     description: List all events
+    guide: "Events. Use id to fetch one row. Useful filters: created and delivery_success."
     filters:
       - name: created
         required: false
@@ -38245,6 +38298,7 @@ tables:
           key: types
   - name: exchange_rates
     description: List all exchange rates
+    guide: "Exchange rates. Use rate_id to fetch one row."
     filters:
       - name: rate_id
         required: false
@@ -38305,6 +38359,7 @@ tables:
             - rates
   - name: external_accounts
     description: List all external accounts
+    guide: "External accounts. Scope with account. Use id to fetch one row. Useful filter: object."
     filters:
       - name: account
         required: true
@@ -38778,6 +38833,7 @@ tables:
             - tokenization_method
   - name: file_links
     description: List all file links
+    guide: "File links. Use link to fetch one row. Useful filters: created and expired."
     filters:
       - name: created
         required: false
@@ -38908,6 +38964,7 @@ tables:
             - url
   - name: files
     description: List all files
+    guide: "Files. Use file to fetch one row. Useful filters: created and purpose."
     filters:
       - name: created
         required: false
@@ -39091,6 +39148,7 @@ tables:
             - url
   - name: financial_accounts
     description: List all FinancialAccounts
+    guide: "Financial accounts. Use financial_account to fetch one row. Useful filters: created and status."
     filters:
       - name: created
         required: false
@@ -39442,6 +39500,7 @@ tables:
             - type
   - name: financial_connection_accounts
     description: List Accounts
+    guide: "Accounts. Use account to fetch one row. Useful filters: account_holder and session."
     filters:
       - name: account_holder
         required: false
@@ -39996,6 +40055,7 @@ tables:
             - status
   - name: financial_connection_sessions
     description: Retrieve a Session
+    guide: "Sessions. Scope with session. Returns one row per request."
     filters:
       - name: session
         required: true
@@ -40211,6 +40271,7 @@ tables:
           key: session
   - name: financial_connection_transactions
     description: List Transactions
+    guide: "Transactions. Use transaction to fetch one row. Useful filters: account and transacted_at."
     filters:
       - name: account
         required: true
@@ -40388,6 +40449,7 @@ tables:
             - updated
   - name: get_application_fees_id_refunds
     description: List all application fee refunds
+    guide: "Application fee refunds. Scope with application fee id to list refunds for that fee."
     filters:
       - name: id
         required: true
@@ -40480,6 +40542,7 @@ tables:
             - object
   - name: history
     description: List all balance transactions
+    guide: "Balance history. Use id to fetch one row. Useful filters: created and currency."
     filters:
       - name: created
         required: false
@@ -40697,6 +40760,7 @@ tables:
             - type
   - name: inbound_transfers
     description: List all InboundTransfers
+    guide: "Inbound transfers. Use id to fetch one row. Useful filters: financial_account and status."
     filters:
       - name: financial_account
         required: true
@@ -41111,6 +41175,7 @@ tables:
             - transaction
   - name: invoice_lines
     description: Retrieve an invoice's line items
+    guide: "Lines. Scope with invoice. List endpoint."
     filters:
       - name: invoice
         required: true
@@ -41504,6 +41569,7 @@ tables:
             - taxes
   - name: invoice_payments
     description: List all payments for an invoice
+    guide: "Invoice payments. Use invoice_payment to fetch one row. Useful filters: created and invoice."
     filters:
       - name: created
         required: false
@@ -41727,6 +41793,7 @@ tables:
             - paid_at
   - name: invoice_rendering_templates
     description: List all invoice rendering templates
+    guide: "Invoice rendering templates. Use template to fetch one row. Useful filters: status and version."
     filters:
       - name: status
         required: false
@@ -41844,6 +41911,7 @@ tables:
             - version
   - name: invoice_search
     description: Search invoices
+    guide: "Invoices search. Use this search endpoint when list filters are too restrictive. Useful filter: query."
     filters:
       - name: query
         required: true
@@ -43614,6 +43682,7 @@ tables:
             - webhooks_delivered_at
   - name: invoiceitems
     description: List all invoice items
+    guide: "Invoiceitems. Use invoiceitem to fetch one row. Useful filters: created and customer."
     filters:
       - name: created
         required: false
@@ -44016,6 +44085,7 @@ tables:
             - test_clock
   - name: invoices
     description: List all invoices
+    guide: "Invoices. Use invoice to fetch one row. Useful filters: collection_method and created."
     filters:
       - name: collection_method
         required: false
@@ -45822,6 +45892,7 @@ tables:
             - webhooks_delivered_at
   - name: issuing_cards
     description: List all cards
+    guide: "Cards. Use card to fetch one row. Useful filters: cardholder and created."
     filters:
       - name: cardholder
         required: false
@@ -46543,6 +46614,7 @@ tables:
             - primary_account_identifier
   - name: issuing_disputes
     description: List all disputes
+    guide: "Disputes. Use dispute to fetch one row. Useful filters: created and status."
     filters:
       - name: created
         required: false
@@ -47339,6 +47411,7 @@ tables:
             - type
   - name: issuing_tokens
     description: List all issuing tokens for card
+    guide: "Tokens. Use token to fetch one row. Useful filters: card and created."
     filters:
       - name: card
         required: true
@@ -47804,6 +47877,7 @@ tables:
             - wallet_provider
   - name: issuing_transactions
     description: List all transactions
+    guide: "Transactions. Use transaction to fetch one row. Useful filters: card and cardholder."
     filters:
       - name: card
         required: false
@@ -48463,6 +48537,7 @@ tables:
             - wallet
   - name: line_items
     description: Retrieve a Checkout Session's line items
+    guide: "Line items. Scope with session. List endpoint. Useful filters: payment_link and quote."
     filters:
       - name: session
         required: true
@@ -48669,6 +48744,7 @@ tables:
           key: quote
   - name: link_account_sessions
     description: Retrieve a Session
+    guide: "Link account sessions. Scope with session. Returns one row per request."
     filters:
       - name: session
         required: true
@@ -48881,6 +48957,7 @@ tables:
           key: session
   - name: linked_accounts
     description: List Accounts
+    guide: "Linked accounts. Use account to fetch one row. Useful filters: account_holder and session."
     filters:
       - name: account_holder
         required: false
@@ -49432,6 +49509,7 @@ tables:
             - status
   - name: locations
     description: List all Locations
+    guide: "Locations. Use location to fetch one row."
     filters:
       - name: location
         required: false
@@ -49778,6 +49856,7 @@ tables:
             - phone
   - name: mandate_notifications
     description: Retrieve a Source MandateNotification
+    guide: "Mandate notifications. Scope with source and mandate_notification. Returns one row per request."
     filters:
       - name: mandate_notification
         required: true
@@ -49961,6 +50040,7 @@ tables:
             - type
   - name: mandates
     description: Retrieve a Mandate
+    guide: "Mandates. Scope with mandate. Returns one row per request."
     filters:
       - name: mandate
         required: true
@@ -50630,6 +50710,7 @@ tables:
             - type
   - name: meters
     description: List billing meters
+    guide: "Meters. Use id to fetch one row. Useful filter: status."
     filters:
       - name: status
         required: false
@@ -50824,6 +50905,7 @@ tables:
             - event_payload_key
   - name: orders
     description: List orders
+    guide: "Orders. Use order to fetch one row."
     filters:
       - name: order
         required: false
@@ -51141,6 +51223,7 @@ tables:
             - supplier
   - name: outbound_payments
     description: List all OutboundPayments
+    guide: "Outbound payments. Use id to fetch one row. Useful filters: created and customer."
     filters:
       - name: created
         required: false
@@ -51713,6 +51796,7 @@ tables:
             - transaction
   - name: outbound_transfers
     description: List all OutboundTransfers
+    guide: "Outbound transfers. Use outbound_transfer to fetch one row. Useful filters: financial_account and status."
     filters:
       - name: financial_account
         required: true
@@ -52244,6 +52328,7 @@ tables:
             - transaction
   - name: owners
     description: List Account Owners
+    guide: "Owners. Scope with account. List endpoint. Useful filter: ownership."
     filters:
       - name: account
         required: true
@@ -52358,6 +52443,7 @@ tables:
             - refreshed_at
   - name: payment_attempt_records
     description: List Payment Attempt Records
+    guide: "Payment attempt records. Use id to fetch one row. Useful filter: payment_record."
     filters:
       - name: payment_record
         required: true
@@ -55952,6 +56038,7 @@ tables:
             - phone
   - name: payment_intent_search
     description: Search PaymentIntents
+    guide: "Payment intents search. Use this search endpoint when list filters are too restrictive. Useful filter: query."
     filters:
       - name: query
         required: true
@@ -63361,6 +63448,7 @@ tables:
             - transfer_group
   - name: payment_intents
     description: List all PaymentIntents
+    guide: "Payment intents. Use intent to fetch one row. Useful filters: created and customer."
     filters:
       - name: created
         required: false
@@ -70812,6 +70900,7 @@ tables:
             - transfer_group
   - name: payment_links
     description: List all payment links
+    guide: "Payment links. Use payment_link to fetch one row. Useful filter: active."
     filters:
       - name: active
         required: false
@@ -71830,6 +71919,7 @@ tables:
             - url
   - name: payment_method_configurations
     description: List payment method configurations
+    guide: "Payment method configurations. Use configuration to fetch one row. Useful filter: application."
     filters:
       - name: application
         required: false
@@ -75301,6 +75391,7 @@ tables:
             - value
   - name: payment_method_domains
     description: List payment method domains
+    guide: "Payment method domains. Use payment_method_domain to fetch one row. Useful filters: domain_name and enabled."
     filters:
       - name: domain_name
         required: false
@@ -75638,6 +75729,7 @@ tables:
             - error_message
   - name: payment_methods
     description: List PaymentMethods
+    guide: "Payment methods. Use payment_method to fetch one row. Useful filters: allow_redisplay and customer."
     filters:
       - name: allow_redisplay
         required: false
@@ -77714,6 +77806,7 @@ tables:
             - zip
   - name: payment_records
     description: Retrieve a Payment Record
+    guide: "Payment records. Returns one row per request."
     filters:
       - name: id
         required: true
@@ -81294,6 +81387,7 @@ tables:
             - phone
   - name: payouts
     description: List all payouts
+    guide: "Payouts. Use payout to fetch one row. Useful filters: arrival_date and created."
     filters:
       - name: arrival_date
         required: false
@@ -81611,6 +81705,7 @@ tables:
             - type
   - name: pdf
     description: Download quote PDF
+    guide: "Quotes pdf. Scope with quote. Returns one row per request."
     filters:
       - name: quote
         required: true
@@ -81642,6 +81737,7 @@ tables:
           key: quote
   - name: people
     description: List all persons
+    guide: "People. Scope with account. Use person to fetch one row. Useful filter: relationship."
     filters:
       - name: account
         required: true
@@ -82701,6 +82797,7 @@ tables:
             - status
   - name: personalization_designs
     description: List all personalization designs
+    guide: "Personalization designs. Use personalization_design to fetch one row. Useful filters: lookup_keys and preferences."
     filters:
       - name: lookup_keys
         required: false
@@ -82953,6 +83050,7 @@ tables:
             - status
   - name: persons
     description: List all persons
+    guide: "Persons. Scope with account. Use person to fetch one row. Useful filter: relationship."
     filters:
       - name: account
         required: true
@@ -84012,6 +84110,7 @@ tables:
             - status
   - name: physical_bundles
     description: List all physical bundles
+    guide: "Physical bundles. Use physical_bundle to fetch one row. Useful filters: status and type."
     filters:
       - name: status
         required: false
@@ -84147,6 +84246,7 @@ tables:
             - type
   - name: plans
     description: List all plans
+    guide: "Plans. Use plan to fetch one row. Useful filters: active and created."
     filters:
       - name: active
         required: false
@@ -84440,6 +84540,7 @@ tables:
             - usage_type
   - name: preview
     description: Preview a credit note
+    guide: "Credit notes preview. Returns one row per request. Useful filters: amount and credit_amount."
     filters:
       - name: amount
         required: false
@@ -84947,6 +85048,7 @@ tables:
             - voided_at
   - name: price_search
     description: Search prices
+    guide: "Prices search. Use this search endpoint when list filters are too restrictive. Useful filter: query."
     filters:
       - name: query
         required: true
@@ -85256,6 +85358,7 @@ tables:
             - unit_amount_decimal
   - name: prices
     description: List all prices
+    guide: "Prices. Use price to fetch one row. Useful filters: active and created."
     filters:
       - name: active
         required: false
@@ -85638,6 +85741,7 @@ tables:
             - up_to
   - name: product_features
     description: List all features attached to a product
+    guide: "Features. Scope with product. Use id to fetch one row."
     filters:
       - name: product
         required: true
@@ -85710,6 +85814,7 @@ tables:
           key: product
   - name: product_search
     description: Search products
+    guide: "Products search. Use this search endpoint when list filters are too restrictive. Useful filter: query."
     filters:
       - name: query
         required: true
@@ -85944,6 +86049,7 @@ tables:
             - url
   - name: products
     description: List all products
+    guide: "Products. Use id to fetch one row. Useful filters: active and created."
     filters:
       - name: active
         required: false
@@ -86206,6 +86312,7 @@ tables:
             - url
   - name: promotion_codes
     description: List all promotion codes
+    guide: "Promotion codes. Use promotion_code to fetch one row. Useful filters: active and code."
     filters:
       - name: active
         required: false
@@ -86463,6 +86570,7 @@ tables:
             - times_redeemed
   - name: quotes
     description: List all quotes
+    guide: "Quotes. Use quote to fetch one row. Useful filters: customer and customer_account."
     filters:
       - name: customer
         required: false
@@ -87340,6 +87448,7 @@ tables:
             - destination
   - name: readers
     description: List all Readers
+    guide: "Readers. Use reader to fetch one row. Useful filters: device_type and location."
     filters:
       - name: device_type
         required: false
@@ -87882,6 +87991,7 @@ tables:
             - status
   - name: received_credits
     description: List all ReceivedCredits
+    guide: "Received credits. Use id to fetch one row. Useful filters: financial_account and linked_flows."
     filters:
       - name: financial_account
         required: true
@@ -88346,6 +88456,7 @@ tables:
             - transaction
   - name: received_debits
     description: List all ReceivedDebits
+    guide: "Received debits. Use id to fetch one row. Useful filters: financial_account and status."
     filters:
       - name: financial_account
         required: true
@@ -88747,6 +88858,7 @@ tables:
             - transaction
   - name: refunds
     description: List all refunds
+    guide: "Refunds. Use refund to fetch one row. Useful filters: charge and created."
     filters:
       - name: charge
         required: false
@@ -89729,6 +89841,7 @@ tables:
             - transfer_reversal
   - name: registrations
     description: List registrations
+    guide: "Registrations. Use id to fetch one row. Useful filter: status."
     filters:
       - name: status
         required: false
@@ -92261,6 +92374,7 @@ tables:
             - status
   - name: report_runs
     description: List all Report Runs
+    guide: "Report runs. Use report_run to fetch one row. Useful filter: created."
     filters:
       - name: created
         required: false
@@ -92473,6 +92587,7 @@ tables:
             - succeeded_at
   - name: report_types
     description: List all Report Types
+    guide: "Report types. Use report_type to fetch one row."
     filters:
       - name: report_type
         required: false
@@ -92586,6 +92701,7 @@ tables:
             - version
   - name: requests
     description: List all ForwardingRequests
+    guide: "Requests. Use id to fetch one row. Useful filter: created."
     filters:
       - name: created
         required: false
@@ -92794,6 +92910,7 @@ tables:
             - url
   - name: reviews
     description: List all open reviews
+    guide: "Reviews. Use review to fetch one row. Useful filter: created."
     filters:
       - name: created
         required: false
@@ -93049,6 +93166,7 @@ tables:
             - version
   - name: scheduled_query_runs
     description: List all scheduled query runs
+    guide: "Scheduled query runs. Use scheduled_query_run to fetch one row."
     filters:
       - name: scheduled_query_run
         required: false
@@ -93189,6 +93307,7 @@ tables:
             - title
   - name: secrets
     description: List secrets
+    guide: "Secrets. List endpoint. Useful filter: scope."
     filters:
       - name: scope
         required: true
@@ -93314,6 +93433,7 @@ tables:
             - user
   - name: settings
     description: Retrieve settings
+    guide: "Settings. Singleton endpoint for the authenticated Stripe API key."
     request:
       method: GET
       path: /v1/tax/settings
@@ -93514,6 +93634,7 @@ tables:
             - missing_fields
   - name: settlements
     description: Retrieve a settlement
+    guide: "Settlements. Scope with settlement. Returns one row per request."
     filters:
       - name: settlement
         required: true
@@ -93692,6 +93813,7 @@ tables:
             - transaction_count
   - name: setup_attempts
     description: List all SetupAttempts
+    guide: "Setup attempts. List endpoint. Useful filters: created and setup_intent."
     filters:
       - name: created
         required: false
@@ -94677,6 +94799,7 @@ tables:
             - usage
   - name: setup_intents
     description: List all SetupIntents
+    guide: "Setup intents. Use intent to fetch one row. Useful filters: attach_to_self and created."
     filters:
       - name: attach_to_self
         required: false
@@ -95824,6 +95947,7 @@ tables:
             - usage
   - name: shipping_rates
     description: List all shipping rates
+    guide: "Shipping rates. Use shipping_rate_token to fetch one row. Useful filters: active and created."
     filters:
       - name: active
         required: false
@@ -96079,6 +96203,7 @@ tables:
             - type
   - name: source_transactions
     description: List source transactions for a given source.
+    guide: "Source transactions. Scope with source. Use source_transaction to fetch one row."
     filters:
       - name: source
         required: true
@@ -96447,6 +96572,7 @@ tables:
             - type
   - name: sources
     description: Retrieve a source
+    guide: "Sources. Scope with source. Returns one row per request. Useful filter: client_secret."
     filters:
       - name: client_secret
         required: false
@@ -98627,6 +98753,7 @@ tables:
             - statement_descriptor
   - name: subscription_items
     description: List all subscription items
+    guide: "Subscription items. Use item to fetch one row. Useful filter: subscription."
     filters:
       - name: subscription
         required: true
@@ -98783,6 +98910,7 @@ tables:
             - tax_rates
   - name: subscription_schedules
     description: List all schedules
+    guide: "Subscription schedules. Use schedule to fetch one row. Useful filters: canceled_at and completed_at."
     filters:
       - name: canceled_at
         required: false
@@ -99655,6 +99783,7 @@ tables:
             - trial_end
   - name: subscription_search
     description: Search subscriptions
+    guide: "Subscriptions search. Use this search endpoint when list filters are too restrictive. Useful filter: query."
     filters:
       - name: query
         required: true
@@ -100666,6 +100795,7 @@ tables:
             - trial_start
   - name: subscriptions
     description: List subscriptions
+    guide: "Subscriptions. Use subscription_exposed_id to fetch one row. Useful filters: automatic_tax and collection_method."
     filters:
       - name: automatic_tax
         required: false
@@ -101747,6 +101877,7 @@ tables:
             - trial_start
   - name: suppliers
     description: List suppliers
+    guide: "Suppliers. Use supplier to fetch one row."
     filters:
       - name: supplier
         required: false
@@ -101888,6 +102019,7 @@ tables:
           key: supplier
   - name: tax_association_find
     description: Find a Tax Association
+    guide: "Associations find. List endpoint. Useful filter: payment_intent."
     filters:
       - name: payment_intent
         required: true
@@ -101974,6 +102106,7 @@ tables:
             - status
   - name: tax_calculation_line_items
     description: Retrieve a calculation's line items
+    guide: "Line items. Scope with calculation. List endpoint."
     filters:
       - name: calculation
         required: true
@@ -102109,6 +102242,7 @@ tables:
             - tax_code
   - name: tax_codes
     description: List all tax codes
+    guide: "Tax codes. Use id to fetch one row."
     filters:
       - name: id
         required: false
@@ -102170,6 +102304,7 @@ tables:
             - object
   - name: tax_ids
     description: List all tax IDs
+    guide: "Tax ids. Use id to fetch one row. Useful filter: owner."
     filters:
       - name: owner
         required: false
@@ -102411,6 +102546,7 @@ tables:
             - verified_name
   - name: tax_rates
     description: List all tax rates
+    guide: "Tax rates. Use tax_rate to fetch one row. Useful filters: active and created."
     filters:
       - name: active
         required: false
@@ -102642,6 +102778,7 @@ tables:
             - tax_type
   - name: tax_transaction_line_items
     description: Retrieve a transaction's line items
+    guide: "Line items. Scope with transaction. List endpoint."
     filters:
       - name: transaction
         required: true
@@ -102795,6 +102932,7 @@ tables:
             - type
   - name: tax_transactions
     description: Retrieve a transaction
+    guide: "Transactions. Scope with transaction. Returns one row per request."
     filters:
       - name: transaction
         required: true
@@ -103250,6 +103388,7 @@ tables:
             - type
   - name: terminal_configurations
     description: List all Configurations
+    guide: "Configurations. Use configuration to fetch one row. Useful filter: is_account_default."
     filters:
       - name: is_account_default
         required: false
@@ -104552,6 +104691,7 @@ tables:
             - type
   - name: test_clocks
     description: List all test clocks
+    guide: "Test clocks. Use test_clock to fetch one row."
     filters:
       - name: test_clock
         required: false
@@ -104684,6 +104824,7 @@ tables:
           key: test_clock
   - name: tokens
     description: Retrieve a token
+    guide: "Tokens. Scope with token. Returns one row per request."
     filters:
       - name: token
         required: true
@@ -104792,6 +104933,7 @@ tables:
             - used
   - name: topups
     description: List all top-ups
+    guide: "Topups. Use topup to fetch one row. Useful filters: amount and created."
     filters:
       - name: amount
         required: false
@@ -104986,6 +105128,7 @@ tables:
             - transfer_group
   - name: transaction_entries
     description: List all TransactionEntries
+    guide: "Transaction entries. Use id to fetch one row. Useful filters: created and effective_at."
     filters:
       - name: created
         required: false
@@ -105288,6 +105431,7 @@ tables:
             - type
   - name: transfer_reversal
     description: Retrieve a reversal
+    guide: "Reversals. Scope with transfer. Returns one row per request."
     filters:
       - name: id
         required: true
@@ -105398,6 +105542,7 @@ tables:
             - transfer
   - name: transfer_reversals
     description: List all reversals
+    guide: "Reversals. Use id to fetch one row."
     filters:
       - name: id
         required: true
@@ -105508,6 +105653,7 @@ tables:
             - transfer
   - name: transfers
     description: List all transfers
+    guide: "Transfers. Use transfer to fetch one row. Useful filters: created and destination."
     filters:
       - name: created
         required: false
@@ -105750,6 +105896,7 @@ tables:
             - transfer_group
   - name: treasury_financial_account_features
     description: Retrieve FinancialAccount Features
+    guide: "Features. Scope with financial_account. Returns one row per request."
     filters:
       - name: financial_account
         required: true
@@ -106195,6 +106342,7 @@ tables:
             - status_details
   - name: treasury_transactions
     description: List all Transactions
+    guide: "Transactions. Use id to fetch one row. Useful filters: created and financial_account."
     filters:
       - name: created
         required: false
@@ -106574,6 +106722,7 @@ tables:
             - void_at
   - name: value_list_items
     description: List all value list items
+    guide: "Value list items. Use item to fetch one row. Useful filters: created and value."
     filters:
       - name: created
         required: false
@@ -106686,6 +106835,7 @@ tables:
             - value_list
   - name: value_lists
     description: List all value lists
+    guide: "Value lists. Use value_list to fetch one row. Useful filters: alias and contains."
     filters:
       - name: alias
         required: false
@@ -106874,6 +107024,7 @@ tables:
           key: value_list
   - name: verification_reports
     description: List VerificationReports
+    guide: "Verification reports. Use report to fetch one row. Useful filters: client_reference_id and created."
     filters:
       - name: client_reference_id
         required: false
@@ -107743,6 +107894,7 @@ tables:
             - verification_session
   - name: verification_sessions
     description: List VerificationSessions
+    guide: "Verification sessions. Use session to fetch one row. Useful filters: client_reference_id and created."
     filters:
       - name: client_reference_id
         required: false
@@ -108388,6 +108540,7 @@ tables:
             - unparsed_sex
   - name: webhook_endpoints
     description: List all webhook endpoints
+    guide: "Webhook endpoints. Use webhook_endpoint to fetch one row."
     filters:
       - name: webhook_endpoint
         required: false

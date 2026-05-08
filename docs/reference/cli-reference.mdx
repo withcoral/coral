@@ -17,6 +17,8 @@ coral sql "<SQL>"
 | ---------- | ----------------- | ------- | ------------- |
 | `--format` | `table` \| `json` | `table` | Output format |
 
+JSON output is an array of row objects. Selected nullable columns are included with explicit `null` values when the row value is null.
+
 ## `coral source`
 
 Manage configured sources, either the bundled ones, or your custom source specs.
@@ -37,6 +39,20 @@ List sources currently installed.
 
 ```shellscript
 coral source list
+```
+
+### `coral source info <NAME>`
+
+Show metadata for a source: whether it is installed, its origin, version, description, and inputs. Works for bundled sources and imported sources installed via `coral source add --file`.
+
+```shellscript
+coral source info datadog
+```
+
+Pass `-v/--verbose` for more detailed output.
+
+```shellscript
+coral source info datadog --verbose
 ```
 
 ### `coral source add <NAME>`
@@ -113,6 +129,20 @@ This server exposes:
 | Type     | Name             | Description                      |
 | -------- | ---------------- | -------------------------------- |
 | Tool     | `sql`            | Run a SQL query                  |
-| Tool     | `list_tables`    | List all available tables        |
+| Tool     | `list_tables`    | List available tables by page    |
 | Resource | `coral://guide`  | Usage guide for agents           |
-| Resource | `coral://tables` | Schema for all installed sources |
+| Resource | `coral://tables` | Table summaries for all sources  |
+
+## `coral completion <SHELL>`
+
+Generate a shell completion script and write it to standard output. Supported shells are `bash`, `zsh`, `fish`, `elvish`, and `powershell`.
+
+```shellscript
+coral completion zsh > ~/.zsh/completions/_coral
+```
+
+To enable completions in the current shell without installing them:
+
+```shellscript
+source <(coral completion bash)
+```

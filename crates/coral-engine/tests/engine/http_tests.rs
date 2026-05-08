@@ -2,16 +2,18 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use coral_engine::{
-    CoralQuery, CoreError, EngineExtensions, QueryRuntimeContext, QueryRuntimeProvider,
+    CoralQuery, CoreError, EngineExtensions, QueryRuntimeConfig, QueryRuntimeContext,
     RequestAuthenticator, RequestAuthenticatorError, StatusCode,
 };
 use reqwest::header::{AUTHORIZATION, HeaderName, HeaderValue};
 use serde_json::{Value, json};
-use wiremock::matchers::{header, method, path, query_param, query_param_is_missing};
+use wiremock::matchers::{
+    body_json, body_string, header, method, path, query_param, query_param_is_missing,
+};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use crate::harness::{
-    TestRuntime, build_source, build_source_with_secrets, execution_to_rows, users_rows,
+    build_source, build_source_with_secrets, execution_to_rows, test_runtime, users_rows,
 };
 
 fn base_http_manifest(name: &str, base_url: &str) -> Value {
@@ -79,21 +81,13 @@ impl RequestAuthenticator for TestRequestAuthenticator {
     }
 }
 
-struct TestAuthRuntime;
-
-impl QueryRuntimeProvider for TestAuthRuntime {
-    fn runtime_context(&self) -> QueryRuntimeContext {
-        QueryRuntimeContext::default()
-    }
-
-    fn engine_extensions(&self) -> EngineExtensions {
-        let mut extensions = EngineExtensions::default();
-        extensions.request_authenticators.insert(
-            "test_signer".to_string(),
-            Arc::new(TestRequestAuthenticator),
-        );
-        extensions
-    }
+fn test_auth_runtime() -> QueryRuntimeConfig {
+    let mut extensions = EngineExtensions::default();
+    extensions.request_authenticators.insert(
+        "test_signer".to_string(),
+        Arc::new(TestRequestAuthenticator),
+    );
+    QueryRuntimeConfig::new(QueryRuntimeContext::default(), extensions)
 }
 
 #[tokio::test]
@@ -110,7 +104,7 @@ async fn select_all_from_http_source() {
     let rows = execution_to_rows(
         &CoralQuery::execute_sql(
             &[source],
-            &TestRuntime,
+            test_runtime(),
             "SELECT id, name, email FROM http_users.users ORDER BY id",
         )
         .await
@@ -134,7 +128,7 @@ async fn select_with_column_projection() {
     let rows = execution_to_rows(
         &CoralQuery::execute_sql(
             &[source],
-            &TestRuntime,
+            test_runtime(),
             "SELECT name, email FROM http_projection.users ORDER BY name",
         )
         .await
@@ -165,7 +159,7 @@ async fn select_with_order_by() {
     let rows = execution_to_rows(
         &CoralQuery::execute_sql(
             &[source],
-            &TestRuntime,
+            test_runtime(),
             "SELECT name FROM http_order.users ORDER BY name DESC",
         )
         .await
@@ -196,7 +190,7 @@ async fn select_with_limit() {
     let rows = execution_to_rows(
         &CoralQuery::execute_sql(
             &[source],
-            &TestRuntime,
+            test_runtime(),
             "SELECT * FROM http_limit.users LIMIT 2",
         )
         .await
@@ -231,7 +225,7 @@ async fn select_with_where_filter_pushdown() {
     let rows = execution_to_rows(
         &CoralQuery::execute_sql(
             &[source],
-            &TestRuntime,
+            test_runtime(),
             "SELECT id, name FROM http_filter.users WHERE id = 2",
         )
         .await
@@ -239,6 +233,55 @@ async fn select_with_where_filter_pushdown() {
     );
 
     assert_eq!(rows, vec![json!({"id": 2, "name": "Grace"})]);
+}
+
+#[tokio::test]
+async fn boolean_filter_bool_is_predicate_sends_json_bool_body() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/users/search"))
+        .and(body_json(json!({ "includeArchived": false })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            json!({ "data": [json!({"id": 2, "name": "Grace", "email": "grace@example.com"})] }),
+        ))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut manifest = base_http_manifest("http_bool_filter", &server.uri());
+    let table = &mut manifest["tables"][0];
+    table["filters"] = json!([{ "name": "include_archived" }]);
+    table["request"] = json!({
+        "method": "POST",
+        "path": "/api/users/search",
+        "body": [
+            {
+                "path": ["includeArchived"],
+                "from": "filter_bool",
+                "key": "include_archived"
+            }
+        ]
+    });
+    table["columns"].as_array_mut().unwrap().push(json!({
+        "name": "include_archived",
+        "type": "Boolean",
+        "nullable": true,
+        "virtual": true,
+        "expr": { "kind": "from_filter", "key": "include_archived" }
+    }));
+    let source = build_source(manifest);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT id, include_archived FROM http_bool_filter.users WHERE include_archived IS FALSE",
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(rows, vec![json!({"id": 2, "include_archived": false})]);
 }
 
 #[tokio::test]
@@ -255,7 +298,7 @@ async fn select_count_aggregation() {
     let rows = execution_to_rows(
         &CoralQuery::execute_sql(
             &[source],
-            &TestRuntime,
+            test_runtime(),
             "SELECT COUNT(*) AS n FROM http_count.users",
         )
         .await
@@ -299,7 +342,7 @@ async fn pagination_page_mode() {
     let rows = execution_to_rows(
         &CoralQuery::execute_sql(
             &[source],
-            &TestRuntime,
+            test_runtime(),
             "SELECT id, name, email FROM http_page.users ORDER BY id",
         )
         .await
@@ -343,7 +386,7 @@ async fn pagination_offset_mode() {
     let rows = execution_to_rows(
         &CoralQuery::execute_sql(
             &[source],
-            &TestRuntime,
+            test_runtime(),
             "SELECT id, name, email FROM http_offset.users ORDER BY id",
         )
         .await
@@ -383,7 +426,7 @@ async fn pagination_link_header() {
     let rows = execution_to_rows(
         &CoralQuery::execute_sql(
             &[source],
-            &TestRuntime,
+            test_runtime(),
             "SELECT id, name, email FROM http_link.users ORDER BY id",
         )
         .await
@@ -421,7 +464,7 @@ async fn auth_headers_sent_correctly() {
     let rows = execution_to_rows(
         &CoralQuery::execute_sql(
             &[source],
-            &TestRuntime,
+            test_runtime(),
             "SELECT COUNT(*) AS n FROM http_auth.users",
         )
         .await
@@ -457,7 +500,7 @@ async fn custom_authenticator_signs_final_request() {
     let rows = execution_to_rows(
         &CoralQuery::execute_sql(
             &[source],
-            &TestAuthRuntime,
+            test_auth_runtime(),
             "SELECT COUNT(*) AS n FROM http_custom_auth.users",
         )
         .await
@@ -479,7 +522,7 @@ async fn api_returns_500() {
 
     let source = build_source(base_http_manifest("http_500", &server.uri()));
 
-    let error = CoralQuery::execute_sql(&[source], &TestRuntime, "SELECT * FROM http_500.users")
+    let error = CoralQuery::execute_sql(&[source], test_runtime(), "SELECT * FROM http_500.users")
         .await
         .expect_err("500 should fail");
 
@@ -497,6 +540,50 @@ async fn api_returns_500() {
 }
 
 #[tokio::test]
+async fn api_returns_500_with_bad_link_header_still_reports_api_failure() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .respond_with(
+            ResponseTemplate::new(500)
+                .append_header(
+                    "Link",
+                    "<https://example.invalid/api/users?page=2>; rel=\"next\"",
+                )
+                .set_body_string("boom"),
+        )
+        .expect(3)
+        .mount(&server)
+        .await;
+
+    let mut manifest = base_http_manifest("http_500_bad_link", &server.uri());
+    manifest["tables"][0]["pagination"] = json!({
+        "mode": "link_header"
+    });
+    let source = build_source(manifest);
+
+    let error = CoralQuery::execute_sql(
+        &[source],
+        test_runtime(),
+        "SELECT * FROM http_500_bad_link.users",
+    )
+    .await
+    .expect_err("500 should fail as an API request error");
+
+    assert_eq!(error.status_code(), StatusCode::Unavailable);
+    match &error {
+        CoreError::QueryFailure(sqe) => {
+            assert_eq!(sqe.reason(), "PROVIDER_REQUEST_FAILED");
+            assert!(sqe.retryable());
+            assert_eq!(sqe.metadata().get("http_status").unwrap(), "500");
+            assert_eq!(sqe.metadata().get("source").unwrap(), "http_500_bad_link");
+            assert_eq!(sqe.metadata().get("provider_failure_stage"), None);
+        }
+        other => panic!("unexpected 500 error variant: {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn api_returns_401() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
@@ -508,7 +595,7 @@ async fn api_returns_401() {
 
     let source = build_source(base_http_manifest("http_401", &server.uri()));
 
-    let error = CoralQuery::execute_sql(&[source], &TestRuntime, "SELECT * FROM http_401.users")
+    let error = CoralQuery::execute_sql(&[source], test_runtime(), "SELECT * FROM http_401.users")
         .await
         .expect_err("401 should fail");
 
@@ -627,7 +714,7 @@ async fn slack_messages_have_formatted_ts_and_permalink() {
     let rows = execution_to_rows(
         &CoralQuery::execute_sql(
             &[source],
-            &TestRuntime,
+            test_runtime(),
             "SELECT ts, permalink, user_id, text FROM slack_ts.messages WHERE channel = 'C123456' ORDER BY ts",
         )
         .await
@@ -665,10 +752,13 @@ async fn missing_required_filter_surfaces_structured_error() {
     ]);
     let source = build_source(manifest);
 
-    let error =
-        CoralQuery::execute_sql(&[source], &TestRuntime, "SELECT * FROM http_required.users")
-            .await
-            .expect_err("query without the required filter should fail");
+    let error = CoralQuery::execute_sql(
+        &[source],
+        test_runtime(),
+        "SELECT * FROM http_required.users",
+    )
+    .await
+    .expect_err("query without the required filter should fail");
 
     assert_eq!(error.status_code(), StatusCode::FailedPrecondition);
     match &error {
@@ -697,14 +787,357 @@ async fn api_returns_malformed_json() {
 
     let source = build_source(base_http_manifest("http_bad_json", &server.uri()));
 
-    let error =
-        CoralQuery::execute_sql(&[source], &TestRuntime, "SELECT * FROM http_bad_json.users")
-            .await
-            .expect_err("malformed json should fail");
+    let error = CoralQuery::execute_sql(
+        &[source],
+        test_runtime(),
+        "SELECT * FROM http_bad_json.users",
+    )
+    .await
+    .expect_err("malformed json should fail");
 
-    assert_eq!(error.status_code(), StatusCode::Internal);
+    assert_eq!(error.status_code(), StatusCode::FailedPrecondition);
     match error {
-        CoreError::Internal(detail) => assert!(detail.contains("response decoding failed")),
+        CoreError::QueryFailure(sqe) => {
+            assert_eq!(sqe.reason(), "PROVIDER_REQUEST_FAILED");
+            assert_eq!(sqe.summary(), "Source response decode failed");
+            assert!(!sqe.retryable());
+            assert_eq!(sqe.metadata().get("source").unwrap(), "http_bad_json");
+            assert_eq!(sqe.metadata().get("table").unwrap(), "users");
+            assert_eq!(
+                sqe.metadata().get("provider_failure_stage").unwrap(),
+                "decode"
+            );
+            assert!(sqe.detail().contains("response decoding failed"));
+        }
         other => panic!("unexpected malformed-json error variant: {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn pagination_link_header_cross_origin_surfaces_structured_error() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .append_header(
+                    "Link",
+                    "<https://example.invalid/api/users?page=2>; rel=\"next\"",
+                )
+                .set_body_json(json!({ "data": [] })),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut manifest = base_http_manifest("http_bad_pagination", &server.uri());
+    manifest["tables"][0]["pagination"] = json!({
+        "mode": "link_header"
+    });
+    let source = build_source(manifest);
+
+    let error = CoralQuery::execute_sql(
+        &[source],
+        test_runtime(),
+        "SELECT * FROM http_bad_pagination.users",
+    )
+    .await
+    .expect_err("cross-origin pagination link should fail");
+
+    assert_eq!(error.status_code(), StatusCode::FailedPrecondition);
+    match error {
+        CoreError::QueryFailure(sqe) => {
+            assert_eq!(sqe.reason(), "PROVIDER_REQUEST_FAILED");
+            assert_eq!(sqe.summary(), "Source pagination failed");
+            assert!(!sqe.retryable());
+            assert_eq!(sqe.metadata().get("source").unwrap(), "http_bad_pagination");
+            assert_eq!(sqe.metadata().get("table").unwrap(), "users");
+            assert_eq!(
+                sqe.metadata().get("provider_failure_stage").unwrap(),
+                "pagination"
+            );
+            assert!(
+                sqe.detail()
+                    .contains("pagination next link must stay on origin")
+            );
+        }
+        other => panic!("unexpected pagination error variant: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn text_body_sends_raw_sql_with_default_content_type() {
+    let server = MockServer::start().await;
+    let sql = "SELECT id, name, email FROM users WHERE id = 2 FORMAT JSONEachRow";
+    Mock::given(method("POST"))
+        .and(path("/query"))
+        .and(header("content-type", "text/plain"))
+        .and(body_string(sql))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string("{\"id\":2,\"name\":\"Grace\",\"email\":\"grace@example.com\"}\n"),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let manifest = json!({
+        "name": "http_text_body",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": &server.uri(),
+        "tables": [{
+            "name": "users",
+            "description": "users via SQL",
+            "request": {
+                "method": "POST",
+                "path": "/query",
+                "body": {
+                    "format": "text",
+                    "content": {
+                        "from": "literal",
+                        "value": "SELECT id, name, email FROM users WHERE id = 2 FORMAT JSONEachRow"
+                    }
+                }
+            },
+            "response": {
+                "format": "json_each_row"
+            },
+            "columns": [
+                { "name": "id", "type": "Int64" },
+                { "name": "name", "type": "Utf8" },
+                { "name": "email", "type": "Utf8" }
+            ]
+        }]
+    });
+
+    let source = build_source(manifest);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT id, name, email FROM http_text_body.users",
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(
+        rows,
+        vec![json!({"id": 2, "name": "Grace", "email": "grace@example.com"})]
+    );
+}
+
+#[tokio::test]
+async fn text_body_respects_explicit_content_type_override() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/sql"))
+        .and(header("content-type", "application/sql"))
+        .and(body_string("SELECT 1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": [] })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let manifest = json!({
+        "name": "http_ct_override",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": &server.uri(),
+        "tables": [{
+            "name": "items",
+            "description": "items via SQL",
+            "request": {
+                "method": "POST",
+                "path": "/sql",
+                "headers": [{
+                    "name": "Content-Type",
+                    "from": "literal",
+                    "value": "application/sql"
+                }],
+                "body": {
+                    "format": "text",
+                    "content": { "from": "literal", "value": "SELECT 1" }
+                }
+            },
+            "response": {
+                "rows_path": ["data"]
+            },
+            "columns": [{ "name": "id", "type": "Int64" }]
+        }]
+    });
+
+    let source = build_source(manifest);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT COUNT(*) AS n FROM http_ct_override.items",
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(rows, vec![json!({"n": 0})]);
+}
+
+#[tokio::test]
+async fn text_body_omits_absent_optional_content() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/sql"))
+        .and(body_string(""))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": [] })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let manifest = json!({
+        "name": "http_optional_text_body",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": &server.uri(),
+        "tables": [{
+            "name": "items",
+            "description": "items via optional SQL",
+            "filters": [{ "name": "sql" }],
+            "request": {
+                "method": "POST",
+                "path": "/sql",
+                "body": {
+                    "format": "text",
+                    "content": { "from": "filter", "key": "sql" }
+                }
+            },
+            "response": {
+                "rows_path": ["data"]
+            },
+            "columns": [{ "name": "id", "type": "Int64" }]
+        }]
+    });
+
+    let source = build_source(manifest);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT COUNT(*) AS n FROM http_optional_text_body.items",
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(rows, vec![json!({"n": 0})]);
+}
+
+#[tokio::test]
+async fn json_each_row_response_parses_newline_delimited_rows() {
+    let server = MockServer::start().await;
+    let body = "{\"id\":1,\"name\":\"Ada\"}\n\n\
+                {\"id\":2,\"name\":\"Grace\"}\n\
+                {\"id\":3,\"name\":\"Linus\"}\n";
+    Mock::given(method("GET"))
+        .and(path("/logs"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(body))
+        .mount(&server)
+        .await;
+
+    let manifest = json!({
+        "name": "http_ndjson",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": &server.uri(),
+        "tables": [{
+            "name": "logs",
+            "description": "newline-delimited logs",
+            "request": { "method": "GET", "path": "/logs" },
+            "response": { "format": "json_each_row" },
+            "columns": [
+                { "name": "id", "type": "Int64" },
+                { "name": "name", "type": "Utf8" }
+            ]
+        }]
+    });
+
+    let source = build_source(manifest);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT id, name FROM http_ndjson.logs ORDER BY id",
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(
+        rows,
+        vec![
+            json!({"id": 1, "name": "Ada"}),
+            json!({"id": 2, "name": "Grace"}),
+            json!({"id": 3, "name": "Linus"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn legacy_json_body_array_form_still_works() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(body_json(json!({ "query": "{ users { id name email } }" })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "users": users_rows() }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let manifest = json!({
+        "name": "http_legacy_body",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": &server.uri(),
+        "tables": [{
+            "name": "users",
+            "description": "graphql users",
+            "request": {
+                "method": "POST",
+                "path": "/graphql",
+                "body": [
+                    { "path": ["query"], "from": "literal", "value": "{ users { id name email } }" }
+                ]
+            },
+            "response": { "rows_path": ["data", "users"] },
+            "columns": [
+                { "name": "id", "type": "Int64" },
+                { "name": "name", "type": "Utf8" },
+                { "name": "email", "type": "Utf8" }
+            ]
+        }]
+    });
+
+    let source = build_source(manifest);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT id, name, email FROM http_legacy_body.users ORDER BY id",
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(rows, users_rows());
 }

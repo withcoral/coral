@@ -11,9 +11,11 @@ Coral gives agents a local-first SQL runtime over APIs, files, and other data
 sources. Query it from the CLI, inspect schemas and tables, or expose the same
 runtime over MCP so agents can use it without bespoke tool glue.
 
-Here's Coral answering the question:
+You can ask your agents complex questions about your data:
 
-> "Which Sentry errors create the most noise in Slack, and who is working on them?"
+![coral sql demo](./docs/images/claude-query-example.png)
+
+Or run SQL queries yourself:
 
 ![coral sql demo](./docs/images/coral-sql-join.gif)
 
@@ -47,7 +49,7 @@ Full [benchmark report](https://withcoral.com/benchmarks).
 
 ## How Coral works
 
-Coral sits between you and your data sources: you (or your agent) write SQL,
+Coral sits between your agents and your data sources: your agents write SQL,
 and Coral translates it into API calls or file reads, then returns a single
 result set.
 
@@ -98,10 +100,10 @@ JOIN github.pulls p ON p.html_url = a.url
 WHERE p.owner = 'withcoral' AND p.repo = 'coral'
 ```
 
-**Authentication.** On `coral source add`, Coral prompts for the variables and
-secrets declared by the source spec (API tokens, workspace IDs, file paths,
-and so on). These are stored locally and used only at query time; credentials
-never leave your machine.
+**Authentication.** On `coral source add`, Coral reads variables and secrets
+from matching environment variables, or prompts for them when you pass
+`--interactive`. These values are stored locally and used only at query time;
+credentials never leave your machine.
 
 **Built for production.** Coral is a read layer by design. For read tasks, SQL
 outperforms per-source tool calls when complexity outgrows a single API call:
@@ -110,7 +112,7 @@ lets the query pick just the columns it needs. Query pushdown and caching
 keep things responsive and cut unnecessary API traffic.
 
 For a deeper understanding of the internals, see the
-[architecture page](https://withcoral.com/docs/contributors/architecture).
+[architecture page](https://withcoral.com/docs/project/architecture).
 
 ## Bundled sources
 
@@ -154,14 +156,16 @@ This lists the bundled sources available in your build.
 
 ### 3. Add a source
 
-For example, add GitHub:
+For example, add GitHub interactively:
 
 ```bash
-coral source add github
+coral source add --interactive github
 ```
 
-Coral prompts for any required variables or secrets. Once connected, the
-source's data is available as SQL tables. To update a source's credentials
+Coral prompts for any required variables or secrets. For scripted setup, omit
+`--interactive` and provide each input as an environment variable of the same
+name, such as `GITHUB_TOKEN=ghp_... coral source add github`. Once connected,
+the source's data is available as SQL tables. To update a source's credentials
 later, run the same command again.
 
 ### 4. Query your data

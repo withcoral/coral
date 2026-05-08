@@ -1,7 +1,7 @@
 //! Filesystem helpers for private directories, atomic writes, and file locks.
 
 use std::fs::{self, File, OpenOptions};
-use std::io;
+use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 
 use fs2::FileExt;
@@ -24,6 +24,16 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     replace_atomic(&temp_path, path)?;
     set_file_permissions_private(path)?;
     Ok(())
+}
+
+pub(crate) fn append_file_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    if let Some(parent) = path.parent() {
+        ensure_dir(parent)?;
+    }
+    let mut file = open_append_file_private(path)?;
+    set_file_permissions_private(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()
 }
 
 pub(crate) fn replace_atomic(from: &Path, to: &Path) -> io::Result<()> {
@@ -87,6 +97,22 @@ fn open_lock_file(path: &Path) -> io::Result<File> {
         .read(true)
         .write(true)
         .open(path)
+}
+
+#[cfg(unix)]
+fn open_append_file_private(path: &Path) -> io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .open(path)
+}
+
+#[cfg(not(unix))]
+fn open_append_file_private(path: &Path) -> io::Result<File> {
+    OpenOptions::new().create(true).append(true).open(path)
 }
 
 fn temp_path_for(path: &Path) -> PathBuf {

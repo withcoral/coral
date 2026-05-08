@@ -25,18 +25,10 @@
 //! ```no_run
 //! use std::collections::BTreeMap;
 //!
-//! use coral_engine::{CoralQuery, QueryRuntimeContext, QueryRuntimeProvider, QuerySource};
+//! use coral_engine::{CoralQuery, QueryRuntimeConfig, QuerySource};
 //! use coral_spec::parse_source_manifest_yaml;
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!
-//! struct EmptyRuntime;
-//!
-//! impl QueryRuntimeProvider for EmptyRuntime {
-//!     fn runtime_context(&self) -> QueryRuntimeContext {
-//!         QueryRuntimeContext::default()
-//!     }
-//! }
 //!
 //! # let source_spec = parse_source_manifest_yaml(
 //! #     "name: demo\nversion: 0.1.0\ndsl_version: 3\nbackend: jsonl\ntables: []",
@@ -46,12 +38,10 @@
 //! #     BTreeMap::new(),
 //! #     BTreeMap::new(),
 //! # )];
-//! # let provider = EmptyRuntime;
 //! # async fn demo(
 //! #     sources: &[QuerySource],
-//! #     provider: &dyn QueryRuntimeProvider,
 //! # ) -> Result<(), Box<dyn std::error::Error>> {
-//! let _ = CoralQuery::list_tables(sources, provider, None).await?;
+//! let _ = CoralQuery::list_tables(sources, QueryRuntimeConfig::default(), None).await?;
 //! # Ok(())
 //! # }
 //! # Ok(())
@@ -75,7 +65,7 @@ pub use composition::{
     SourceDecoratorError, SourceFailurePolicy, SourceTables,
 };
 pub use contracts::{
-    ColumnInfo, CoreError, QueryExecution, QueryRuntimeContext, QueryRuntimeProvider, QuerySource,
+    ColumnInfo, CoreError, QueryExecution, QueryRuntimeConfig, QueryRuntimeContext, QuerySource,
     QueryTestFailure, QueryTestResult, QueryTestSuccess, SourceValidationReport, StatusCode,
     StructuredQueryError, TableInfo,
 };
@@ -96,7 +86,7 @@ impl CoralQuery {
     /// cannot be built.
     pub async fn list_tables(
         sources: &[QuerySource],
-        runtime: &dyn QueryRuntimeProvider,
+        runtime: QueryRuntimeConfig,
         schema_filter: Option<&str>,
     ) -> Result<Vec<TableInfo>, CoreError> {
         Ok(runtime::query::build_runtime(sources, runtime)
@@ -112,7 +102,7 @@ impl CoralQuery {
     /// or if the runtime cannot execute the statement.
     pub async fn execute_sql(
         sources: &[QuerySource],
-        runtime: &dyn QueryRuntimeProvider,
+        runtime: QueryRuntimeConfig,
         sql: &str,
     ) -> Result<QueryExecution, CoreError> {
         if sql.trim().is_empty() {
@@ -133,7 +123,7 @@ impl CoralQuery {
     /// cannot be registered or enumerated successfully.
     pub async fn test_source(
         source: &QuerySource,
-        runtime: &dyn QueryRuntimeProvider,
+        runtime: QueryRuntimeConfig,
     ) -> Result<Vec<TableInfo>, CoreError> {
         Ok(Self::validate_source(source, runtime, &[]).await?.tables)
     }
@@ -147,7 +137,7 @@ impl CoralQuery {
     /// failing the whole call.
     pub async fn validate_source(
         source: &QuerySource,
-        runtime: &dyn QueryRuntimeProvider,
+        runtime: QueryRuntimeConfig,
         test_queries: &[String],
     ) -> Result<SourceValidationReport, CoreError> {
         let query_runtime =

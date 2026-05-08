@@ -67,10 +67,18 @@ update the relevant docs in the same pull request.
 If you prefer to run steps individually, the equivalent commands are:
 
 ```bash
-cargo fmt --all
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+cargo test --workspace --all-targets --all-features --locked
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps --locked
 ```
+
+If a Cargo command fails because the lockfile needs to be updated but
+`--locked` was passed, refresh `Cargo.lock` with the narrowest practical
+command, such as `cargo update -p <crate>`, then commit the lockfile with the
+matching `Cargo.toml` change. For broader dependency changes, run one normal
+Cargo build without `--locked` to regenerate the lockfile before rerunning the
+locked checks.
 
 ### Source manifest linting
 
@@ -78,7 +86,7 @@ Source manifests under `sources/*/manifest.yaml` are checked with
 [`ryl`](https://github.com/owenlamont/ryl), a Rust-native yamllint port.
 Config lives in `.yamllint.yaml` at the repo root.
 
-Install `ryl` once with `cargo install ryl`, then:
+Install `ryl` once with `cargo install ryl --locked`, then:
 
 ```bash
 make lint-sources   # check — run this before pushing changes to sources/
@@ -203,3 +211,10 @@ This project follows the rules in [`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md).
 
 By contributing to Coral, you agree that your contributions will be licensed
 under the project licence.
+
+If you are contributing to Coral for the first time, please email
+[legal@withcoral.com](mailto:legal@withcoral.com), including your Github
+username and confirming that you agree to our
+[Individual Contributor Licensing Agreement](https://withcoral.com/docs/legal/cla-individual). To agree to
+the CLA on behalf of a corporation, please see the
+[Corporate CLA](https://withcoral.com/docs/legal/cla-corporate).

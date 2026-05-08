@@ -230,9 +230,9 @@ tables:
   - name: events
     description: Datadog events within a time range.
     guide: >
-      Use this table for event timelines in a bounded window. Keep start and end tight in Unix epoch seconds, then narrow the
-      returned rows by source or priority in SQL; date_happened is Unix epoch seconds and priority only exposes normal or
-      low.
+      Use this table for event timelines in a bounded window. The required start and end filters must be Unix epoch
+      seconds such as 1777593600, not RFC3339 or relative strings; keep the window tight, then narrow the returned rows by
+      source or priority in SQL. date_happened is also Unix epoch seconds and priority only exposes normal or low.
 
     request:
       method: GET
@@ -258,9 +258,9 @@ tables:
         query_param: page_size
     columns:
       - name: id
-        type: Int64
+        type: Utf8
         nullable: true
-        description: Event ID
+        description: Event ID as text to preserve large 64-bit identifiers in JSON output.
         expr:
           kind: path
           path:
@@ -324,14 +324,14 @@ tables:
       - name: start
         type: Utf8
         nullable: true
-        description: Start time virtual filter
+        description: "Required start time virtual filter as Unix epoch seconds, for example 1777593600."
         expr:
           kind: "null"
         virtual: true
       - name: end
         type: Utf8
         nullable: true
-        description: End time virtual filter
+        description: "Required end time virtual filter as Unix epoch seconds, for example 1777597200."
         expr:
           kind: "null"
         virtual: true
@@ -1321,8 +1321,10 @@ tables:
   - name: logs
     description: Datadog logs within a time range.
     guide: >
-      Use this table for log troubleshooting in a bounded window. Keep the required start and end range tight and let query
-      do the main cut, then narrow the returned rows by service, host, or status in SQL; timestamps are ISO 8601.
+      Use this table for log troubleshooting in a bounded window. The required start and end filters are Datadog log search
+      times such as RFC3339 timestamps (2026-05-01T12:00:00Z) or relative strings (now-1h, now-24h); keep the range tight,
+      let query do the main cut, then narrow the returned rows by service, host, or status in SQL. Returned timestamps are
+      ISO 8601.
 
     fetch_limit_default: 1000
     request:
@@ -1464,14 +1466,14 @@ tables:
       - name: start
         type: Utf8
         nullable: true
-        description: Start time virtual filter
+        description: "Required Datadog log search start time, for example 2026-05-01T12:00:00Z or now-1h."
         expr:
           kind: "null"
         virtual: true
       - name: end
         type: Utf8
         nullable: true
-        description: End time virtual filter
+        description: "Required Datadog log search end time, for example 2026-05-01T13:00:00Z or now."
         expr:
           kind: "null"
         virtual: true

@@ -18,6 +18,8 @@ If the source you need is not available, you can extend Coral by [writing a cust
 | Source | Backend | Description |
 | --- | --- | --- |
 | [clickup](#clickup) | `http` | Query tasks, spaces, folders, lists, goals, time entries, comments, views, tags, custom fields, teams, and users from ClickUp. |
+| [cloudwatch_logs](#cloudwatch_logs) | `http` | Query Amazon CloudWatch Logs groups, streams, and events. |
+| [cloudwatch_metrics](#cloudwatch_metrics) | `http` | Query Amazon CloudWatch metrics and monitoring metadata. |
 | [confluence](#confluence) | `http` | Query spaces, pages, blog posts, comments, attachments, labels, and related metadata from Confluence Cloud. |
 | [datadog](#datadog) | `http` | Query monitors, events, incidents, dashboards, hosts, services, APM dependencies, downtimes, SLOs, synthetic tests, users, logs, spans, and metrics from Datadog. |
 | [github](#github) | `http` | Query repositories, issues, pull requests, workflows, organizations, users, teams, and API metadata from GitHub (Cloud or Enterprise). |
@@ -28,11 +30,12 @@ If the source you need is not available, you can extend Coral by [writing a cust
 | [jira](#jira) | `http` | Query projects, issues, comments, worklogs, versions, components, issue types, priorities, and related metadata from Jira Cloud. |
 | [launchdarkly](#launchdarkly) | `http` | Query projects, feature flags, environments, segments, members, roles, and audit logs from LaunchDarkly. |
 | [linear](#linear) | `http` | Query issues, projects, cycles, initiatives, teams, users, comments, project milestones, labels, and attachments from Linear. |
+| [notion](#notion) | `http` | Query pages, data sources, databases, blocks, users, templates, and properties from Notion. |
 | [openobserve](#openobserve) | `http` | Query streams, logs, metrics, and traces from OpenObserve (Cloud or self-hosted). |
 | [pagerduty](#pagerduty) | `http` | Query incidents, services, teams, users, schedules, oncalls, escalation policies, log entries, change events, status pages, and workflows from PagerDuty. |
 | [posthog](#posthog) | `http` | Query events, persons, sessions, feature flags, experiments, insights, dashboards, cohorts, projects, organizations, and related PostHog resources. |
 | [sentry](#sentry) | `http` | Query issues, events, projects, releases, deployments, teams, and members from Sentry. |
-| [slack](#slack) | `http` | Query channels, messages, and users from your Slack workspace. |
+| [slack](#slack) | `http` | Query channels, messages, thread replies, and users from your Slack workspace. |
 | [statusgator](#statusgator) | `http` | Query status boards, monitors, incidents, history, service components, subscribers, users, and monitoring regions from StatusGator. |
 | [stripe](#stripe) | `http` | Query customers, charges, subscriptions, invoices, payments, products, prices, refunds, disputes, payouts, balance transactions, and events from Stripe. |
 
@@ -65,6 +68,52 @@ If you're logged in to ClickUp, you can go to
 For more details, see the
 [ClickUp authentication guide](https://developer.clickup.com/docs/authentication).
 
+### `cloudwatch_logs`
+
+`AWS_REGION` (optional)<br />
+default `us-east-1`
+
+AWS region for CloudWatch Logs API requests, for example `us-east-1`.
+
+`AWS_ENDPOINT_SUFFIX` (optional)<br />
+default `amazonaws.com`
+
+AWS endpoint DNS suffix. Keep `amazonaws.com` for standard AWS
+regions. Use the appropriate suffix for other partitions.
+
+`AWS_ACCESS_KEY_ID` (required)
+
+AWS access key ID with CloudWatch Logs read permissions.
+
+`AWS_SECRET_ACCESS_KEY` (required)
+
+AWS secret access key.
+Coral does not read your AWS CLI profile, AWS SSO cache, or
+`AWS_PROFILE` at query time for this bundled source.
+
+### `cloudwatch_metrics`
+
+`AWS_REGION` (optional)<br />
+default `us-east-1`
+
+AWS region for CloudWatch API requests, for example `us-east-1`.
+
+`AWS_ENDPOINT_SUFFIX` (optional)<br />
+default `amazonaws.com`
+
+AWS endpoint DNS suffix. Keep `amazonaws.com` for standard AWS
+regions. Use the appropriate suffix for other partitions.
+
+`AWS_ACCESS_KEY_ID` (required)
+
+AWS access key ID with the CloudWatch read permissions.
+
+`AWS_SECRET_ACCESS_KEY` (required)
+
+AWS secret access key.
+Coral does not read your AWS CLI profile, AWS SSO cache, or
+`AWS_PROFILE` at query time for this bundled source.
+
 ### `confluence`
 
 `CONFLUENCE_BASE_URL` (required)
@@ -72,14 +121,14 @@ For more details, see the
 Base URL of your Atlassian Cloud site, without the `/wiki` suffix
 (for example `https://acme.atlassian.net`).
 
-`CONFLUENCE_BASIC_AUTH` (required)
+`CONFLUENCE_EMAIL` (required)
 
-Use Base64-encoded `email:api_token` credentials for Confluence
-Cloud Basic auth.
+Email address for your Atlassian account.
+
+`CONFLUENCE_API_TOKEN` (required)
+
 Create an API token at
-[Atlassian API token settings](https://id.atlassian.com/manage-profile/security/api-tokens),
-then encode `email:api_token`.
-Example: `printf '%s' 'you@example.com:YOUR_CONFLUENCE_API_TOKEN' | base64`.
+[Atlassian API token settings](https://id.atlassian.com/manage-profile/security/api-tokens).
 
 ### `datadog`
 
@@ -177,14 +226,14 @@ See [Intercom authentication docs](https://developers.intercom.com/docs/build-an
 Base URL of your Jira Cloud site (for example
 `https://acme.atlassian.net`).
 
-`JIRA_BASIC_AUTH` (required)
+`JIRA_EMAIL` (required)
 
-Use Base64-encoded `email:api_token` credentials for Jira Cloud
-Basic auth.
+Email address for your Atlassian account.
+
+`JIRA_API_TOKEN` (required)
+
 Create an API token at
-[Atlassian API token settings](https://id.atlassian.com/manage-profile/security/api-tokens),
-then encode `email:api_token`.
-Example: `printf '%s' 'you@example.com:YOUR_JIRA_API_TOKEN' | base64`.
+[Atlassian API token settings](https://id.atlassian.com/manage-profile/security/api-tokens).
 
 ### `launchdarkly`
 
@@ -208,6 +257,17 @@ read-only access to all tables. You can optionally scope the key
 to specific teams.
 See [Linear API key docs](https://linear.app/docs/api-and-webhooks#api-keys).
 
+### `notion`
+
+`NOTION_API_KEY` (required)
+
+Create an internal Notion integration and copy its internal integration
+token. Share the pages and databases you want to query with the
+integration from Notion's "Add connections" menu.
+
+The token needs read content capabilities for most tables. See the
+[Notion authorization docs](https://developers.notion.com/reference/authorization).
+
 ### `openobserve`
 
 `OPENOBSERVE_URL` (required)
@@ -221,10 +281,13 @@ default `default`
 Organization slug in OpenObserve. Keep the default `default` for
 single-tenant setups.
 
-`OPENOBSERVE_BASIC_AUTH` (required)
+`OPENOBSERVE_USERNAME` (required)
 
-Base64-encoded `email:password` credentials for HTTP Basic auth.
-Example: `echo -n 'user@example.com:password' | base64`.
+OpenObserve username or email for HTTP Basic auth.
+
+`OPENOBSERVE_PASSWORD` (required)
+
+OpenObserve password for HTTP Basic auth.
 
 ### `pagerduty`
 

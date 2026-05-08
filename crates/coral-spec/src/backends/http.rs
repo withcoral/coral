@@ -18,8 +18,9 @@ use serde_json::{Map, Value};
 use crate::{
     ColumnSpec, FilterSpec, HeaderSpec, ManifestError, ManifestInputKind, ManifestInputSpec,
     PaginationSpec, ParsedTemplate, RequestRouteSpec, RequestSpec, ResponseSpec, Result,
-    SourceBackend, SourceManifestCommon, TableCommon, inputs::collect_source_inputs_value,
-    validate::validate_template, validate_http_table, validate_test_queries,
+    SourceBackend, SourceManifestCommon, SourceTableFunctionSpec, TableCommon,
+    inputs::collect_source_inputs_value, validate::validate_template, validate_http_function,
+    validate_http_function_names, validate_http_table, validate_table_names, validate_test_queries,
 };
 
 /// Source-level authentication requirements for HTTP-backed source specs.
@@ -90,6 +91,7 @@ pub struct HttpSourceManifest {
     pub request_headers: Vec<HeaderSpec>,
     pub rate_limit: RateLimitSpec,
     pub tables: Vec<HttpTableSpec>,
+    pub functions: Vec<SourceTableFunctionSpec>,
     pub declared_inputs: Vec<ManifestInputSpec>,
 }
 
@@ -115,6 +117,8 @@ struct RawHttpSourceManifest {
     #[serde(default)]
     inputs: Option<Value>,
     tables: Vec<RawHttpTableSpec>,
+    #[serde(default)]
+    functions: Vec<SourceTableFunctionSpec>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -261,13 +265,27 @@ impl HttpSourceManifest {
             rate_limit,
             inputs: _inputs,
             tables,
+            functions,
         } = raw;
         validate_test_queries(&name, &test_queries)?;
+        validate_table_names(&name, tables.iter().map(|table| table.name.as_str()))?;
         let common =
             SourceManifestCommon::new(dsl_version, name, version, description, test_queries);
         let tables = tables
             .into_iter()
             .map(|table| table.into_validated(&common.name))
+            .collect::<Result<Vec<_>>>()?;
+        validate_http_function_names(
+            &common.name,
+            tables.iter().map(HttpTableSpec::name),
+            &functions,
+        )?;
+        let functions = functions
+            .into_iter()
+            .map(|function| {
+                validate_http_function(&common.name, &function)?;
+                Ok(function)
+            })
             .collect::<Result<Vec<_>>>()?;
         if base_url.raw().trim().is_empty() {
             return Err(ManifestError::validation(format!(
@@ -288,6 +306,7 @@ impl HttpSourceManifest {
             request_headers,
             rate_limit,
             tables,
+            functions,
             declared_inputs,
         })
     }

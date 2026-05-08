@@ -34,6 +34,35 @@ pub(crate) enum ProviderQueryError {
         status: Option<u16>,
         method: Option<String>,
         url: Option<String>,
+        filters: HashMap<String, String>,
+        detail: String,
+    },
+
+    #[error("{source_schema}.{table} request failed: {detail}")]
+    Request {
+        source_schema: String,
+        table: String,
+        method: Option<String>,
+        url: Option<String>,
+        detail: String,
+        timed_out: bool,
+    },
+
+    #[error("{source_schema}.{table} response decode failed: {detail}")]
+    Decode {
+        source_schema: String,
+        table: String,
+        method: Option<String>,
+        url: Option<String>,
+        detail: String,
+    },
+
+    #[error("{source_schema}.{table} pagination failed: {detail}")]
+    Pagination {
+        source_schema: String,
+        table: String,
+        method: Option<String>,
+        url: Option<String>,
         detail: String,
     },
 
@@ -83,6 +112,7 @@ impl ProviderQueryError {
                 status,
                 method,
                 url,
+                filters,
                 detail,
             } => http_request_to_structured(
                 source_schema,
@@ -90,8 +120,50 @@ impl ProviderQueryError {
                 *status,
                 method.as_deref(),
                 url.as_deref(),
+                filters,
                 detail,
             ),
+            Self::Request {
+                source_schema,
+                table,
+                method,
+                url,
+                detail,
+                timed_out,
+            } => provider_stage_failure_to_structured(provider_request_failure(
+                source_schema,
+                table,
+                method.as_deref(),
+                url.as_deref(),
+                detail,
+                *timed_out,
+            )),
+            Self::Decode {
+                source_schema,
+                table,
+                method,
+                url,
+                detail,
+            } => provider_stage_failure_to_structured(provider_decode_failure(
+                source_schema,
+                table,
+                method.as_deref(),
+                url.as_deref(),
+                detail,
+            )),
+            Self::Pagination {
+                source_schema,
+                table,
+                method,
+                url,
+                detail,
+            } => provider_stage_failure_to_structured(provider_pagination_failure(
+                source_schema,
+                table,
+                method.as_deref(),
+                url.as_deref(),
+                detail,
+            )),
             Self::RateLimited {
                 source_schema,
                 table,
@@ -104,6 +176,7 @@ impl ProviderQueryError {
                 Some(TOO_MANY_REQUESTS),
                 method.as_deref(),
                 url.as_deref(),
+                &HashMap::new(),
                 detail,
             ),
         }
@@ -120,6 +193,7 @@ fn http_request_to_structured(
     http_status: Option<u16>,
     method: Option<&str>,
     url: Option<&str>,
+    filters: &HashMap<String, String>,
     raw_detail: &str,
 ) -> StructuredQueryError {
     let source_shell = shell_arg(source);
@@ -129,10 +203,7 @@ fn http_request_to_structured(
         Some(BAD_REQUEST) => (
             "INVALID_QUERY_SHAPE",
             "Source rejected the request".to_string(),
-            Some(
-                "Adjust the query filters or shape to match the target table's supported inputs."
-                    .to_string(),
-            ),
+            Some(bad_request_hint(source, table, filters)),
             StatusCode::InvalidArgument,
         ),
         Some(UNAUTHORIZED) => (
@@ -208,6 +279,9 @@ fn http_request_to_structured(
     if let Some(u) = &sanitized_url {
         metadata.insert("url".to_string(), u.clone());
     }
+    if !filters.is_empty() {
+        metadata.insert("filters".to_string(), render_filter_values(filters));
+    }
 
     StructuredQueryError::new(
         reason,
@@ -216,6 +290,158 @@ fn http_request_to_structured(
         hint,
         is_retryable,
         status,
+        metadata,
+    )
+}
+
+fn bad_request_hint(source: &str, table: &str, filters: &HashMap<String, String>) -> String {
+    let generic = "Adjust the query filters or shape to match the target table's supported inputs.";
+    match (source, table) {
+        ("datadog", "events") => format!(
+            "{generic} Sent filters: {}. `datadog.events` requires `start` and `end` as Unix epoch seconds, for example 1777593600.",
+            render_filter_values(filters)
+        ),
+        ("datadog", "logs") => format!(
+            "{generic} Sent filters: {}. `datadog.logs` accepts Datadog log search times such as RFC3339 timestamps (`2026-05-01T12:00:00Z`) or relative strings (`now-1h`, `now`).",
+            render_filter_values(filters)
+        ),
+        _ => generic.to_string(),
+    }
+}
+
+fn render_filter_values(filters: &HashMap<String, String>) -> String {
+    if filters.is_empty() {
+        return "<none>".to_string();
+    }
+    let mut pairs = filters
+        .iter()
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect::<Vec<_>>();
+    pairs.sort();
+    pairs.join(", ")
+}
+
+struct ProviderStageFailure<'a> {
+    source: &'a str,
+    table: &'a str,
+    stage: &'a str,
+    summary: &'a str,
+    detail: &'a str,
+    method: Option<&'a str>,
+    url: Option<&'a str>,
+    hint: Option<String>,
+    retryable: bool,
+    status: StatusCode,
+    timed_out: bool,
+}
+
+fn provider_request_failure<'a>(
+    source: &'a str,
+    table: &'a str,
+    method: Option<&'a str>,
+    url: Option<&'a str>,
+    detail: &'a str,
+    timed_out: bool,
+) -> ProviderStageFailure<'a> {
+    ProviderStageFailure {
+        source,
+        table,
+        stage: "request",
+        summary: if timed_out {
+            "Source request timed out"
+        } else {
+            "Source request failed"
+        },
+        detail,
+        method,
+        url,
+        hint: Some(
+            "The upstream API could not be reached. Check connectivity and retry.".to_string(),
+        ),
+        retryable: true,
+        status: StatusCode::Unavailable,
+        timed_out,
+    }
+}
+
+fn provider_decode_failure<'a>(
+    source: &'a str,
+    table: &'a str,
+    method: Option<&'a str>,
+    url: Option<&'a str>,
+    detail: &'a str,
+) -> ProviderStageFailure<'a> {
+    ProviderStageFailure {
+        source,
+        table,
+        stage: "decode",
+        summary: "Source response decode failed",
+        detail,
+        method,
+        url,
+        hint: Some(
+            "The upstream API returned a response that does not match the source manifest."
+                .to_string(),
+        ),
+        retryable: false,
+        status: StatusCode::FailedPrecondition,
+        timed_out: false,
+    }
+}
+
+fn provider_pagination_failure<'a>(
+    source: &'a str,
+    table: &'a str,
+    method: Option<&'a str>,
+    url: Option<&'a str>,
+    detail: &'a str,
+) -> ProviderStageFailure<'a> {
+    ProviderStageFailure {
+        source,
+        table,
+        stage: "pagination",
+        summary: "Source pagination failed",
+        detail,
+        method,
+        url,
+        hint: Some(
+            "The source pagination configuration or upstream pagination link is invalid."
+                .to_string(),
+        ),
+        retryable: false,
+        status: StatusCode::FailedPrecondition,
+        timed_out: false,
+    }
+}
+
+fn provider_stage_failure_to_structured(failure: ProviderStageFailure<'_>) -> StructuredQueryError {
+    let sanitized_url = failure.url.and_then(sanitize_request_url);
+    let detail = enrich_provider_detail(failure.detail, failure.method, sanitized_url.as_deref());
+
+    let mut metadata = HashMap::new();
+    metadata.insert("source".to_string(), failure.source.to_string());
+    metadata.insert("table".to_string(), failure.table.to_string());
+    metadata.insert(
+        "provider_failure_stage".to_string(),
+        failure.stage.to_string(),
+    );
+    if failure.timed_out {
+        metadata.insert("timeout".to_string(), "true".to_string());
+    }
+    if let Some(method) = failure.method {
+        metadata.insert("http_method".to_string(), method.to_string());
+    }
+    if let Some(url) = &sanitized_url {
+        metadata.insert("url".to_string(), url.clone());
+    }
+
+    StructuredQueryError::new(
+        "PROVIDER_REQUEST_FAILED",
+        failure.summary,
+        detail,
+        failure.hint,
+        failure.retryable,
+        failure.status,
         metadata,
     )
 }
@@ -276,6 +502,8 @@ fn enrich_provider_detail(detail: &str, method: Option<&str>, url: Option<&str>)
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use crate::contracts::StatusCode;
 
     use super::ProviderQueryError;
@@ -305,6 +533,7 @@ mod tests {
             status: Some(401),
             method: Some("GET".to_string()),
             url: Some("https://api.github.com/repos/coral/coral/issues".to_string()),
+            filters: HashMap::new(),
             detail: "Bad credentials".to_string(),
         }
         .to_structured();
@@ -324,11 +553,100 @@ mod tests {
             status: Some(400),
             method: None,
             url: None,
+            filters: HashMap::new(),
             detail: "bad request".to_string(),
         }
         .to_structured();
         assert_eq!(error.reason(), "INVALID_QUERY_SHAPE");
         assert_eq!(error.status(), StatusCode::InvalidArgument);
+    }
+
+    #[test]
+    fn datadog_events_400_hint_includes_filter_values_and_time_format() {
+        let error = ProviderQueryError::ApiRequest {
+            source_schema: "datadog".to_string(),
+            table: "events".to_string(),
+            status: Some(400),
+            method: Some("GET".to_string()),
+            url: Some("https://api.datadoghq.eu/api/v1/events?start=bad".to_string()),
+            filters: HashMap::from([
+                ("start".to_string(), "2026-04-30T00:00:00Z".to_string()),
+                ("end".to_string(), "now-7d".to_string()),
+            ]),
+            detail: "bad request".to_string(),
+        }
+        .to_structured();
+
+        let hint = error.hint().expect("400 should include a hint");
+        assert!(hint.contains("start=2026-04-30T00:00:00Z"));
+        assert!(hint.contains("end=now-7d"));
+        assert!(hint.contains("Unix epoch seconds"));
+        assert_eq!(
+            error.metadata().get("filters").map(String::as_str),
+            Some("end=now-7d, start=2026-04-30T00:00:00Z")
+        );
+    }
+
+    #[test]
+    fn request_timeout_maps_to_unavailable_provider_failure() {
+        let error = ProviderQueryError::Request {
+            source_schema: "github".to_string(),
+            table: "issues".to_string(),
+            method: Some("GET".to_string()),
+            url: Some("https://api.github.com/issues?token=secret".to_string()),
+            detail: "source API request timed out after 30s".to_string(),
+            timed_out: true,
+        }
+        .to_structured();
+        assert_eq!(error.reason(), "PROVIDER_REQUEST_FAILED");
+        assert_eq!(error.summary(), "Source request timed out");
+        assert_eq!(error.status(), StatusCode::Unavailable);
+        assert!(error.retryable());
+        assert_eq!(
+            error.metadata().get("provider_failure_stage").unwrap(),
+            "request"
+        );
+        assert_eq!(error.metadata().get("timeout").unwrap(), "true");
+        assert!(!error.detail().contains("token=secret"));
+    }
+
+    #[test]
+    fn decode_failure_maps_to_failed_precondition_provider_failure() {
+        let error = ProviderQueryError::Decode {
+            source_schema: "github".to_string(),
+            table: "issues".to_string(),
+            method: Some("GET".to_string()),
+            url: Some("https://api.github.com/issues".to_string()),
+            detail: "expected value at line 1 column 1".to_string(),
+        }
+        .to_structured();
+        assert_eq!(error.reason(), "PROVIDER_REQUEST_FAILED");
+        assert_eq!(error.summary(), "Source response decode failed");
+        assert_eq!(error.status(), StatusCode::FailedPrecondition);
+        assert!(!error.retryable());
+        assert_eq!(
+            error.metadata().get("provider_failure_stage").unwrap(),
+            "decode"
+        );
+    }
+
+    #[test]
+    fn pagination_failure_maps_to_failed_precondition_provider_failure() {
+        let error = ProviderQueryError::Pagination {
+            source_schema: "github".to_string(),
+            table: "issues".to_string(),
+            method: Some("GET".to_string()),
+            url: Some("https://api.github.com/issues".to_string()),
+            detail: "invalid pagination Link header item".to_string(),
+        }
+        .to_structured();
+        assert_eq!(error.reason(), "PROVIDER_REQUEST_FAILED");
+        assert_eq!(error.summary(), "Source pagination failed");
+        assert_eq!(error.status(), StatusCode::FailedPrecondition);
+        assert_eq!(
+            error.metadata().get("provider_failure_stage").unwrap(),
+            "pagination"
+        );
     }
 
     #[test]
@@ -339,6 +657,7 @@ mod tests {
             status: Some(500),
             method: None,
             url: None,
+            filters: HashMap::new(),
             detail: "boom".to_string(),
         }
         .to_structured();
@@ -354,6 +673,7 @@ mod tests {
             status: Some(500),
             method: Some("GET".to_string()),
             url: Some("https://api.datadoghq.eu/api/v1/events?api_key=SECRET".to_string()),
+            filters: HashMap::new(),
             detail: "boom".to_string(),
         }
         .to_structured();
@@ -373,6 +693,7 @@ mod tests {
             status: Some(500),
             method: Some("GET".to_string()),
             url: Some("https://api.github.com/issues?page=3".to_string()),
+            filters: HashMap::new(),
             detail: "upstream boom".to_string(),
         }
         .to_structured();

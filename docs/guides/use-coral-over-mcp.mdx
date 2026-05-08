@@ -15,18 +15,34 @@ Before setting up a client, make sure you have [connected at least one source](/
 | Type     | Name             | Description                                             |
 | -------- | ---------------- | ------------------------------------------------------- |
 | Tool     | `sql`            | Run a SQL query                                         |
-| Tool     | `list_tables`    | List queryable fully qualified tables                   |
+| Tool     | `list_tables`    | List queryable fully qualified tables with pagination   |
+| Tool     | `feedback`       | Store a local blocked-agent feedback report when enabled |
 | Resource | `coral://guide`  | Usage guide for agents                                  |
 | Resource | `coral://tables` | JSON summaries of queryable tables and required filters |
 
 Clients see the same installed sources and query results as `coral sql`. You set up sources with the CLI, then agents query them over MCP.
+`list_tables` returns table summaries in pages and accepts optional `schema`, `limit`, and `offset` arguments. Use each table's `sql_reference` value in `FROM` and `JOIN` clauses. Do not quote the whole `schema.table` string: write `github.pulls` or `"github"."pulls"`, not `"github.pulls"`.
 For richer metadata, have the agent query `coral.tables`, `coral.columns`, and `coral.inputs` over the `sql` tool instead of relying only on `list_tables` or `coral://tables`.
+Start Coral as `coral mcp-stdio --enable-feedback` to expose the optional `feedback` tool. Agents can call `feedback` when they get blocked or repeat a pattern that is not working. Coral stores the report locally with what the agent was trying to do, what it tried, and where it got stuck.
 
 ## Client setup
 
-Coral uses stdio transport. If a client supports a command-based install flow, point it at `coral mcp-stdio`. If a client needs a full path, run `which coral` and use that path in the config instead of `coral`.
+Coral uses stdio transport. If a client supports a command-based install flow, point it at `coral mcp-stdio`. If a client needs a full path, run `which coral` and use that path in the config instead of `coral`. To include the optional feedback tool, use `coral mcp-stdio --enable-feedback`.
 
 <Tabs>
+<Tab title="npx add-mcp">
+
+  Use [add-mcp](https://github.com/neondatabase/add-mcp) to add the Coral MCP server to all your favorite coding agents with a single command.
+
+
+  ```shellscript
+  npx add-mcp -n coral -g "$(which coral) mcp-stdio"
+  ```
+
+  (To install only in the current project, omit the `-g` flag.)
+
+</Tab>
+
   <Tab title="Claude Code">
   ```shellscript
   claude mcp add --scope user coral -- coral mcp-stdio
@@ -175,7 +191,7 @@ Once your client is connected, ask the agent to list available tables or run a s
 
 > "Run a small Coral query against `coral.tables`."
 
-The agent should call `list_tables` or query `coral.tables` and return the schemas from your installed sources.
+The agent should call `list_tables` or query `coral.tables` and return the schemas from your installed sources. Large catalogs should be paged with `limit` and `offset`.
 
 ## Troubleshooting
 

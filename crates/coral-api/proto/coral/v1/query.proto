@@ -21,16 +21,48 @@ message ExecuteSqlResponse {
   int64 row_count = 2;
 }
 
+// Page request parameters for list-style APIs.
+message PaginationRequest {
+  // Maximum number of items to return. Zero means unbounded for compatibility.
+  uint32 limit = 1;
+  // Number of matching items to skip before returning results.
+  uint32 offset = 2;
+}
+
+// Page metadata returned by list-style APIs.
+message PaginationResponse {
+  // Matching item count before pagination.
+  uint32 total_count = 1;
+  // Applied result limit. Zero means unbounded.
+  uint32 limit = 2;
+  // Applied result offset.
+  uint32 offset = 3;
+  // Whether another page is available.
+  bool has_more = 4;
+  // Offset to request for the next page when `has_more` is true.
+  uint32 next_offset = 5;
+}
+
 // Lists all query-visible tables in one workspace.
 message ListTablesRequest {
   // Workspace whose current query-visible tables should be listed.
   Workspace workspace = 1;
+  // Optional exact schema/source name.
+  string schema_name = 2;
+  // Optional page request. Missing or zero limit keeps the legacy unbounded behavior.
+  PaginationRequest pagination = 3;
+  // Whether table columns should be omitted from the response.
+  bool omit_columns = 4;
 }
 
 // Returns the query-visible tables in one workspace.
 message ListTablesResponse {
-  // Query-visible tables for the workspace.
+  // Full query-visible tables for legacy callers.
   repeated Table tables = 1;
+  // Page metadata for the table list.
+  PaginationResponse pagination = 2;
+  // Query-visible table summaries for callers that do not need columns.
+  repeated TableSummary table_summaries = 3;
 }
 
 // SQL query execution APIs.

@@ -1,6 +1,7 @@
 use std::fmt;
 
 use crate::bootstrap::AppError;
+use crate::identity::parse_path_segment;
 
 /// Canonical default workspace name used across local Coral surfaces.
 pub const DEFAULT_WORKSPACE_ID: &str = "default";
@@ -17,21 +18,7 @@ pub(crate) struct WorkspaceName(String);
 impl WorkspaceName {
     /// Parse and validate a workspace name for app-internal use.
     pub(crate) fn parse(name: &str) -> Result<Self, AppError> {
-        let trimmed = name.trim();
-        if trimmed.is_empty() {
-            return Err(AppError::InvalidInput("missing workspace name".to_string()));
-        }
-        if trimmed.contains('/') || trimmed.contains('\\') {
-            return Err(AppError::InvalidInput(
-                "workspace name must not contain '/' or '\\\\'".to_string(),
-            ));
-        }
-        if trimmed == "." || trimmed == ".." {
-            return Err(AppError::InvalidInput(
-                "workspace name must not be '.' or '..'".to_string(),
-            ));
-        }
-        Ok(Self(trimmed.to_string()))
+        parse_path_segment("workspace", name).map(Self)
     }
 
     /// Borrow the normalized workspace name for filesystem and persistence
@@ -61,23 +48,5 @@ mod tests {
     #[test]
     fn parses_default_workspace_name() {
         assert_eq!(WorkspaceName::default().as_str(), DEFAULT_WORKSPACE_ID);
-    }
-
-    #[test]
-    fn rejects_forward_and_backward_slashes() {
-        let error = WorkspaceName::parse(r"bad\workspace").expect_err("workspace should fail");
-        assert!(error.to_string().contains("'/' or '\\\\'"));
-
-        let error = WorkspaceName::parse("bad/workspace").expect_err("workspace should fail");
-        assert!(error.to_string().contains("'/' or '\\\\'"));
-    }
-
-    #[test]
-    fn rejects_path_traversal() {
-        let error = WorkspaceName::parse("..").expect_err("'..' should be rejected");
-        assert!(error.to_string().contains("'.' or '..'"));
-
-        let error = WorkspaceName::parse(" . ").expect_err("'.' should be rejected");
-        assert!(error.to_string().contains("'.' or '..'"));
     }
 }

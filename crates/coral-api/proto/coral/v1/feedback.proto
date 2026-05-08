@@ -1,0 +1,45 @@
+syntax = "proto3";
+
+package coral.v1;
+
+import "coral/v1/resources.proto";
+
+// One agent-submitted feedback report.
+message FeedbackReport {
+  // Server-assigned report identifier.
+  string id = 1;
+  // Owning workspace resource.
+  Workspace workspace = 2;
+  // Server-assigned creation timestamp in RFC3339 format.
+  string created_at = 3;
+  // What the agent was attempting to do.
+  string trying_to_do = 4;
+  // What the agent already tried.
+  string tried = 5;
+  // Where the agent got blocked.
+  string stuck = 6;
+}
+
+// Submits one blocked-agent feedback report.
+message SubmitFeedbackRequest {
+  // Owning workspace resource.
+  Workspace workspace = 1;
+  // What the agent was attempting to do.
+  string trying_to_do = 2;
+  // What the agent already tried.
+  string tried = 3;
+  // Where the agent got blocked.
+  string stuck = 4;
+}
+
+// Returns the persisted feedback report.
+message SubmitFeedbackResponse {
+  // Persisted report.
+  FeedbackReport report = 1;
+}
+
+// Feedback submission APIs.
+service FeedbackService {
+  // Persists one blocked-agent feedback report locally.
+  rpc SubmitFeedback(SubmitFeedbackRequest) returns (SubmitFeedbackResponse);
+}

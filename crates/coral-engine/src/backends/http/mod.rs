@@ -13,7 +13,7 @@ use crate::RequestAuthenticator;
 use crate::backends::{
     BackendCompileRequest, BackendRegistration, CompiledBackendSource, RegisteredSource,
     RegisteredTable, build_registered_inputs, build_registered_table,
-    registered_columns_from_specs, required_filter_names,
+    build_registered_table_function, registered_columns_from_specs, required_filter_names,
 };
 use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec};
 pub(crate) mod auth;
@@ -90,6 +90,12 @@ impl CompiledBackendSource for HttpCompiledSource {
             tables.insert(table.name().to_string(), provider);
             table_infos.push(registered_table(table));
         }
+        let table_function_infos = self
+            .manifest
+            .functions
+            .iter()
+            .map(|function| build_registered_table_function(&self.manifest.common.name, function))
+            .collect();
 
         let secret_keys = self.source_secrets.keys().cloned().collect();
         let inputs = build_registered_inputs(
@@ -103,6 +109,7 @@ impl CompiledBackendSource for HttpCompiledSource {
             source: RegisteredSource {
                 schema_name: self.manifest.common.name.clone(),
                 tables: table_infos,
+                table_functions: table_function_infos,
                 inputs,
             },
         })

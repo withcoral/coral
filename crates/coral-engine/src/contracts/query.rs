@@ -182,16 +182,23 @@ pub struct QueryRuntimeContext {
     pub home_dir: Option<PathBuf>,
 }
 
-/// Resolves app-owned runtime inputs at query time.
-pub trait QueryRuntimeProvider: Send + Sync {
-    /// Returns non-secret runtime inputs owned by the application layer.
-    fn runtime_context(&self) -> QueryRuntimeContext;
+/// Owned runtime-build inputs needed while compiling and registering sources.
+#[derive(Default)]
+pub struct QueryRuntimeConfig {
+    /// Non-secret runtime inputs owned by the application layer.
+    pub context: QueryRuntimeContext,
+    /// Optional engine extensions for this runtime build.
+    pub extensions: EngineExtensions,
+}
 
-    /// Returns optional engine extensions for this runtime build.
-    ///
-    /// The default implementation returns no extensions.
-    fn engine_extensions(&self) -> EngineExtensions {
-        EngineExtensions::default()
+impl QueryRuntimeConfig {
+    /// Builds one runtime config from app-owned context and extension state.
+    #[must_use]
+    pub fn new(context: QueryRuntimeContext, extensions: EngineExtensions) -> Self {
+        Self {
+            context,
+            extensions,
+        }
     }
 }
 

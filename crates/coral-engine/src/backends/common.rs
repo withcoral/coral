@@ -7,7 +7,8 @@ use crate::{QueryRuntimeContext, RequestAuthenticator};
 use async_trait::async_trait;
 use coral_spec::backends::file::PartitionColumnSpec;
 use coral_spec::{
-    ColumnSpec, FilterSpec, ManifestDataType, ManifestInputKind, ManifestInputSpec, TableCommon,
+    ColumnSpec, FilterSpec, ManifestDataType, ManifestInputKind, ManifestInputSpec,
+    SourceTableFunctionSpec, TableCommon,
 };
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use datafusion::datasource::TableProvider;
@@ -34,6 +35,15 @@ pub(crate) struct RegisteredTable {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct RegisteredTableFunction {
+    pub(crate) schema_name: String,
+    pub(crate) function_name: String,
+    pub(crate) description: String,
+    pub(crate) arguments_json: String,
+    pub(crate) result_columns_json: String,
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct RegisteredInput {
     pub(crate) key: String,
     pub(crate) kind: ManifestInputKind,
@@ -51,6 +61,7 @@ pub(crate) struct RegisteredInput {
 pub(crate) struct RegisteredSource {
     pub(crate) schema_name: String,
     pub(crate) tables: Vec<RegisteredTable>,
+    pub(crate) table_functions: Vec<RegisteredTableFunction>,
     pub(crate) inputs: Vec<RegisteredInput>,
 }
 
@@ -180,6 +191,42 @@ pub(crate) fn build_registered_table(
         guide: common.guide.clone(),
         columns,
         required_filters,
+    }
+}
+
+pub(crate) fn build_registered_table_function(
+    schema_name: &str,
+    function: &SourceTableFunctionSpec,
+) -> RegisteredTableFunction {
+    let arguments = function
+        .args
+        .iter()
+        .map(|arg| {
+            serde_json::json!({
+                "name": arg.name,
+                "required": arg.required,
+                "values": arg.values,
+            })
+        })
+        .collect::<Vec<_>>();
+    let result_columns = registered_columns_from_specs(&function.columns, &[])
+        .into_iter()
+        .map(|column| {
+            serde_json::json!({
+                "name": column.name,
+                "type": column.data_type,
+                "nullable": column.nullable,
+                "description": column.description,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    RegisteredTableFunction {
+        schema_name: schema_name.to_string(),
+        function_name: function.name.clone(),
+        description: function.description.clone(),
+        arguments_json: serde_json::to_string(&arguments).expect("arguments json"),
+        result_columns_json: serde_json::to_string(&result_columns).expect("result columns json"),
     }
 }
 

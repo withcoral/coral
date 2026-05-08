@@ -4,6 +4,7 @@ use std::str::FromStr;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::bootstrap::AppError;
+use crate::identity::parse_path_segment;
 
 /// App-owned identity for one installed or installable source name.
 ///
@@ -18,21 +19,7 @@ pub(crate) struct SourceName(String);
 impl SourceName {
     /// Parse and validate a source name for app-internal use.
     pub(crate) fn parse(name: &str) -> Result<Self, AppError> {
-        let trimmed = name.trim();
-        if trimmed.is_empty() {
-            return Err(AppError::InvalidInput("missing source name".to_string()));
-        }
-        if trimmed.contains('/') || trimmed.contains('\\') {
-            return Err(AppError::InvalidInput(
-                "source name must not contain '/' or '\\\\'".to_string(),
-            ));
-        }
-        if trimmed == "." || trimmed == ".." {
-            return Err(AppError::InvalidInput(
-                "source name must not be '.' or '..'".to_string(),
-            ));
-        }
-        Ok(Self(trimmed.to_string()))
+        parse_path_segment("source", name).map(Self)
     }
 
     /// Borrow the normalized source name at string boundaries such as paths,
@@ -73,28 +60,5 @@ impl FromStr for SourceName {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Self::parse(s)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::SourceName;
-
-    #[test]
-    fn rejects_forward_and_backward_slashes() {
-        let error = SourceName::parse(r"bad\source").expect_err("source should fail");
-        assert!(error.to_string().contains("'/' or '\\\\'"));
-
-        let error = SourceName::parse("bad/source").expect_err("source should fail");
-        assert!(error.to_string().contains("'/' or '\\\\'"));
-    }
-
-    #[test]
-    fn rejects_path_traversal() {
-        let error = SourceName::parse("..").expect_err("'..' should be rejected");
-        assert!(error.to_string().contains("'.' or '..'"));
-
-        let error = SourceName::parse(" . ").expect_err("'.' should be rejected");
-        assert!(error.to_string().contains("'.' or '..'"));
     }
 }

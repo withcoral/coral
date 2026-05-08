@@ -18,3 +18,15 @@ pub fn bootstrap_endpoint() -> Option<String> {
         .and_then(|value| value.into_string().ok())
         .filter(|value| !value.is_empty())
 }
+
+const CORAL_TRACE_PARENT_ENV: &str = "CORAL_TRACE_PARENT";
+
+/// Reads the optional W3C `traceparent` used to link CLI spans to a parent trace.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "CORAL_TRACE_PARENT is a CLI-owned per-invocation distributed tracing seed."
+)]
+#[must_use]
+pub fn trace_parent() -> Option<String> {
+    std::env::var(CORAL_TRACE_PARENT_ENV).ok()
+}

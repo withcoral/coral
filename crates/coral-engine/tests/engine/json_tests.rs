@@ -10,7 +10,7 @@ use coral_engine::{CoralQuery, CoreError};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
-use crate::harness::{TestRuntime, build_source, dir_url, execution_to_rows, write_jsonl_file};
+use crate::harness::{build_source, dir_url, execution_to_rows, test_runtime, write_jsonl_file};
 
 fn events_manifest(name: &str, dir: &Path, column_type: &str) -> Value {
     json!({
@@ -65,7 +65,7 @@ async fn query(name: &str, sql: &str) -> Vec<Value> {
     write_jsonl_file(temp.path(), "events.jsonl", &events_fixture());
     let source = build_source(events_manifest(name, temp.path(), "Json"));
     execution_to_rows(
-        &CoralQuery::execute_sql(&[source], &TestRuntime, sql)
+        &CoralQuery::execute_sql(&[source], test_runtime(), sql)
             .await
             .expect("query should succeed"),
     )
@@ -98,7 +98,7 @@ async fn json_functions_also_work_on_utf8_columns() {
     let rows = execution_to_rows(
         &CoralQuery::execute_sql(
             &[source],
-            &TestRuntime,
+            test_runtime(),
             "SELECT id, json_get_str(properties, '$browser') AS browser \
              FROM json_utf8.events ORDER BY id",
         )
@@ -128,7 +128,7 @@ async fn json_string_scalars_round_trip_as_json_text() {
     let rows = execution_to_rows(
         &CoralQuery::execute_sql(
             &[source],
-            &TestRuntime,
+            test_runtime(),
             "SELECT id, json_as_text(properties) AS value FROM json_scalar.events",
         )
         .await
@@ -279,7 +279,7 @@ async fn json_operators_are_rejected() {
         "SELECT id FROM json_ops.events WHERE (properties->'count')::bigint > 5",
         "SELECT id FROM json_ops.events WHERE properties ? '$browser'",
     ] {
-        let error = CoralQuery::execute_sql(std::slice::from_ref(&source), &TestRuntime, sql)
+        let error = CoralQuery::execute_sql(std::slice::from_ref(&source), test_runtime(), sql)
             .await
             .expect_err("query should reject JSON operators");
 

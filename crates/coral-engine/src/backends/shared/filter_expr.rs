@@ -37,6 +37,19 @@ fn collect_filter_values(
             collect_filter_values(binary.left.as_ref(), allowed, filter_modes, filters);
             collect_filter_values(binary.right.as_ref(), allowed, filter_modes, filters);
         }
+        Expr::Column(col) => {
+            insert_bool_filter(col.name(), true, allowed, filters);
+        }
+        Expr::Not(inner) | Expr::IsFalse(inner) => {
+            if let Expr::Column(col) = inner.as_ref() {
+                insert_bool_filter(col.name(), false, allowed, filters);
+            }
+        }
+        Expr::IsTrue(inner) => {
+            if let Expr::Column(col) = inner.as_ref() {
+                insert_bool_filter(col.name(), true, allowed, filters);
+            }
+        }
         Expr::BinaryExpr(binary) if binary.op == Operator::Eq => {
             if let Some((col, val)) =
                 extract_column_equality(binary.left.as_ref(), binary.right.as_ref(), allowed)
@@ -74,6 +87,17 @@ fn collect_filter_values(
             }
         }
         _ => {}
+    }
+}
+
+fn insert_bool_filter(
+    col_name: &str,
+    value: bool,
+    allowed: &HashSet<&str>,
+    filters: &mut HashMap<String, String>,
+) {
+    if allowed.contains(col_name) {
+        filters.insert(col_name.to_string(), value.to_string());
     }
 }
 
@@ -140,6 +164,7 @@ mod tests {
     use super::extract_filter_values;
     use coral_spec::{FilterMode, FilterSpec};
     use datafusion::logical_expr::{Expr, col, lit};
+    use std::ops::Not;
 
     fn equality_expr(filter: &str, value: &str) -> Expr {
         col(filter).eq(lit(value))
@@ -250,5 +275,67 @@ mod tests {
         let values = extract_filter_values(&[expr], &filters);
 
         assert_eq!(values.get("q").map(String::as_str), Some("deploy"));
+    }
+
+    #[test]
+    fn extracts_boolean_true_from_bare_column_filter() {
+        let filters = vec![FilterSpec {
+            name: "descending".into(),
+            required: false,
+            mode: FilterMode::default(),
+        }];
+
+        let values = extract_filter_values(&[col("descending")], &filters);
+
+        assert_eq!(values.get("descending").map(String::as_str), Some("true"));
+    }
+
+    #[test]
+    fn extracts_boolean_false_from_not_column_filter() {
+        let filters = vec![FilterSpec {
+            name: "descending".into(),
+            required: false,
+            mode: FilterMode::default(),
+        }];
+
+        let values = extract_filter_values(&[col("descending").not()], &filters);
+
+        assert_eq!(values.get("descending").map(String::as_str), Some("false"));
+    }
+
+    #[test]
+    fn extracts_boolean_values_from_is_true_and_is_false_predicates() {
+        let filters = vec![FilterSpec {
+            name: "descending".into(),
+            required: false,
+            mode: FilterMode::default(),
+        }];
+
+        let cases = [
+            (Expr::IsTrue(Box::new(col("descending"))), "true"),
+            (Expr::IsFalse(Box::new(col("descending"))), "false"),
+        ];
+
+        for (expr, expected) in cases {
+            let values = extract_filter_values(&[expr], &filters);
+            assert_eq!(values.get("descending").map(String::as_str), Some(expected));
+        }
+    }
+
+    #[test]
+    fn ignores_null_inclusive_boolean_is_predicates() {
+        let filters = vec![FilterSpec {
+            name: "descending".into(),
+            required: false,
+            mode: FilterMode::default(),
+        }];
+
+        for expr in [
+            Expr::IsNotTrue(Box::new(col("descending"))),
+            Expr::IsNotFalse(Box::new(col("descending"))),
+        ] {
+            let values = extract_filter_values(&[expr], &filters);
+            assert!(values.is_empty());
+        }
     }
 }

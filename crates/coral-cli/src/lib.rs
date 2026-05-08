@@ -15,7 +15,8 @@ mod source_ops;
 
 use std::path::PathBuf;
 
-use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
+use clap::{ArgGroup, Args, CommandFactory, Parser, Subcommand, ValueEnum};
+use clap_complete::{Shell, generate};
 use coral_api::v1::ExecuteSqlRequest;
 use coral_client::{
     AppClient, decode_execute_sql_response, default_workspace, format_batches_json,
@@ -44,7 +45,16 @@ enum Command {
     /// Interactive wizard to set up Coral and explore use cases
     Onboard,
     /// Start the MCP server over stdio
-    McpStdio,
+    McpStdio(McpStdioArgs),
+    /// Generate shell completion scripts
+    Completion(CompletionArgs),
+}
+
+#[derive(Debug, Args)]
+/// Generate shell completion scripts
+struct CompletionArgs {
+    /// Shell to generate completions for
+    shell: Shell,
 }
 
 #[derive(Debug, Args)]
@@ -55,6 +65,14 @@ struct SqlArgs {
     format: OutputFormat,
     /// SQL query to execute
     sql: String,
+}
+
+#[derive(Debug, Args)]
+/// Start the MCP server over stdio
+struct McpStdioArgs {
+    /// Expose the feedback submission tool.
+    #[arg(long)]
+    enable_feedback: bool,
 }
 
 #[derive(Debug, Args)]
@@ -91,6 +109,14 @@ enum SourceCommand {
     Discover,
     /// List configured sources
     List,
+    /// Show metadata for a source
+    Info {
+        /// Name of the source to show info for
+        name: String,
+        /// Show additional details such as input hints
+        #[arg(short, long)]
+        verbose: bool,
+    },
     /// Add a new source
     Add(SourceAddArgs),
     /// Lint manifest file
@@ -115,23 +141,66 @@ enum OutputFormat {
 
 /// Typed CLI error whose stderr rendering and exit code are owned by the binary.
 #[derive(Debug, thiserror::Error)]
-#[error("cli command failed")]
-pub struct CliExitError {
-    rendered_stderr: String,
+pub enum CliError {
+    /// Query execution failed with a structured, user-facing diagnostic.
+    #[error("query failed")]
+    Query {
+        /// Complete stderr diagnostic rendered from the query status.
+        rendered_stderr: String,
+    },
+    /// A source was available as a bundled source but has not been installed.
+    #[error("source '{source_name}' is not installed")]
+    SourceNotInstalled {
+        /// Normalized source name requested by the user.
+        source_name: String,
+    },
+    /// A requested source was not found in installed or bundled sources.
+    #[error("source '{source_name}' was not found")]
+    SourceNotFound {
+        /// Normalized source name requested by the user.
+        source_name: String,
+    },
+    /// Any non-renderable internal command failure.
+    #[error(transparent)]
+    Internal(#[from] anyhow::Error),
 }
 
-impl CliExitError {
+impl CliError {
     #[must_use]
-    /// Builds a CLI error with pre-rendered stderr output.
-    pub fn new(rendered_stderr: String) -> Self {
-        Self { rendered_stderr }
+    /// Returns stderr content for user-facing CLI failures.
+    pub fn rendered_stderr(&self) -> Option<String> {
+        match self {
+            Self::Query { rendered_stderr } => Some(rendered_stderr.clone()),
+            Self::SourceNotInstalled { source_name } => Some(format!(
+                "source '{source_name}' is not installed. Run `coral source add {source_name}` to install it, then retry `coral source test {source_name}`.\n"
+            )),
+            Self::SourceNotFound { source_name } => Some(format!(
+                "source '{source_name}' was not found. Run `coral source list` to see installed sources or `coral source discover` to see bundled sources available to install.\n"
+            )),
+            Self::Internal(_) => None,
+        }
     }
+}
 
-    #[must_use]
-    /// Returns the stderr block the binary should render before exiting.
-    pub fn rendered_stderr(&self) -> &str {
-        &self.rendered_stderr
-    }
+/// Returns whether this CLI invocation should render telemetry logs to stderr.
+///
+/// `MCP` stdio reserves stdout for protocol messages, so stderr is the only
+/// local diagnostics stream that can be safely exposed while the server is
+/// running.
+#[must_use]
+pub fn enables_stderr_logs() -> bool {
+    command_enables_stderr_logs(std::env::args_os())
+}
+
+fn command_enables_stderr_logs<I, T>(args: I) -> bool
+where
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString> + Clone,
+{
+    matches!(
+        Cli::try_parse_from(args).map(|cli| cli.command),
+        Ok(Command::McpStdio(_))
+    )
 }
 
 /// Parses CLI arguments and runs the shared Coral CLI.
@@ -140,12 +209,11 @@ impl CliExitError {
 ///
 /// Returns an error if argument parsing, command execution, or output
 /// formatting fails.
-pub async fn run(app: AppClient) -> Result<(), anyhow::Error> {
-    let cli = Cli::parse();
-    run_parsed(app, cli).await
+pub async fn run(app: AppClient, ctx: coral_app::RunContext) -> Result<(), CliError> {
+    coral_app::run_with_context(&ctx, Box::pin(run_parsed(app, Cli::parse()))).await
 }
 
-async fn run_parsed(app: AppClient, cli: Cli) -> Result<(), anyhow::Error> {
+async fn run_parsed(app: AppClient, cli: Cli) -> Result<(), CliError> {
     match cli.command {
         Command::Sql(args) => {
             let response = match app
@@ -158,10 +226,12 @@ async fn run_parsed(app: AppClient, cli: Cli) -> Result<(), anyhow::Error> {
             {
                 Ok(response) => response.into_inner(),
                 Err(status) => {
-                    return Err(CliExitError::new(query_error::render_query_error(&status)).into());
+                    return Err(CliError::Query {
+                        rendered_stderr: query_error::render_query_error(&status),
+                    });
                 }
             };
-            let result = decode_execute_sql_response(&response)?;
+            let result = decode_execute_sql_response(&response).map_err(anyhow::Error::from)?;
             print_batches(result.batches(), args.format)?;
         }
         Command::Source(args) => match args.command {
@@ -196,13 +266,16 @@ async fn run_parsed(app: AppClient, cli: Cli) -> Result<(), anyhow::Error> {
                     print_text_table(["Source", "Version", "Origin"], rows);
                 }
             }
+            SourceCommand::Info { name, verbose } => {
+                source_ops::print_source_info(&app, &name, verbose).await?;
+            }
             SourceCommand::Add(args) => run_source_add(&app, args).await?,
             SourceCommand::Lint { file } => {
                 source_ops::load_validated_manifest_file(&file)?;
                 println!("Manifest is valid");
             }
             SourceCommand::Test { name } => {
-                source_ops::validate_and_print(
+                source_ops::test_and_print(
                     &app,
                     &name,
                     source_ops::TableDisplayLimit::All,
@@ -218,8 +291,20 @@ async fn run_parsed(app: AppClient, cli: Cli) -> Result<(), anyhow::Error> {
         Command::Onboard => {
             onboard::run(&app).await?;
         }
-        Command::McpStdio => {
-            coral_mcp::run_stdio_with_client(app).await?;
+        Command::McpStdio(args) => {
+            coral_mcp::run_stdio_with_client(
+                app,
+                coral_mcp::McpOptions {
+                    feedback_enabled: args.enable_feedback,
+                },
+            )
+            .await
+            .map_err(anyhow::Error::from)?;
+        }
+        Command::Completion(args) => {
+            let mut cmd = Cli::command();
+            let bin_name = cmd.get_name().to_string();
+            generate(args.shell, &mut cmd, bin_name, &mut std::io::stdout());
         }
     }
 
@@ -299,7 +384,7 @@ fn pad_cell(value: &str, width: usize, pad: bool) -> String {
     format!("{value}{}", " ".repeat(padding))
 }
 
-async fn run_source_add(app: &AppClient, args: SourceAddArgs) -> Result<(), anyhow::Error> {
+async fn run_source_add(app: &AppClient, args: SourceAddArgs) -> Result<(), CliError> {
     let SourceAddArgs {
         name,
         file,
@@ -339,5 +424,31 @@ async fn run_source_add(app: &AppClient, args: SourceAddArgs) -> Result<(), anyh
         _ => unreachable!("clap enforces exactly one of name or file"),
     };
     println!("Added source {}", response.name);
-    source_ops::validate_and_warn(app, &response.name, source_ops::TableDisplayLimit::DEFAULT).await
+    source_ops::validate_and_warn(app, &response.name, source_ops::TableDisplayLimit::DEFAULT)
+        .await
+        .map_err(Into::into)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::command_enables_stderr_logs;
+
+    #[test]
+    fn mcp_stdio_invocation_enables_stderr_logs() {
+        assert!(command_enables_stderr_logs(["coral", "mcp-stdio"]));
+    }
+
+    #[test]
+    fn mcp_stdio_with_feedback_invocation_enables_stderr_logs() {
+        assert!(command_enables_stderr_logs([
+            "coral",
+            "mcp-stdio",
+            "--enable-feedback"
+        ]));
+    }
+
+    #[test]
+    fn non_mcp_invocation_disables_stderr_logs() {
+        assert!(!command_enables_stderr_logs(["coral", "sql", "SELECT 1"]));
+    }
 }

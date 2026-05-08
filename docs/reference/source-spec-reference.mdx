@@ -116,24 +116,50 @@ The `expr` field on a column defines how to extract or compute its value from ea
 | Kind                 | Description                                                        |
 | -------------------- | ------------------------------------------------------------------ |
 | `path`               | Extract a value by JSON path segments                              |
+| `join_array_path`    | Join one nested scalar field from each object in an array          |
 | `format_timestamp`   | Convert an epoch timestamp to a `Timestamp` column                 |
+| `base64_decode`      | Decode a base64 string expression into UTF-8 text                  |
 | `replace`            | Replace all occurrences of one substring in the rendered value     |
 | `template`           | Build a string from a template with placeholder substitutions      |
 
+### `join_array_path`
+
+Extracts one nested value from each object in an array and joins the values into one string.
+Use this when an API returns object arrays such as labels, tags, or owners and the table should expose a compact human-readable column.
+
+```yaml
+- name: label_names
+  type: Utf8
+  expr:
+    kind: join_array_path
+    path:
+      - labels
+      - nodes
+    item_path:
+      - name
+    separator: ","
+```
+
+| Field       | Type   | Default | Description                                     |
+| ----------- | ------ | ------- | ----------------------------------------------- |
+| `path`      | array  | —       | JSON path to the array                          |
+| `item_path` | array  | —       | JSON path to extract from each array item       |
+| `separator` | string | `,`     | Separator used between non-null extracted items |
+
 ### `format_timestamp`
 
-Converts a numeric or string epoch value into a `Timestamp` column.
+Converts a numeric/string epoch value or an ISO 8601 string into a `Timestamp` column.
 
 Coral stores `Timestamp` columns as epoch microseconds internally, so the rendered output has microsecond precision even when the source value is provided in seconds or milliseconds.
 
-`format_timestamp` currently accepts raw epoch inputs in `seconds` or `milliseconds`. APIs that vend only `microseconds` or `nanoseconds` are not supported by this helper yet.
+`format_timestamp` currently accepts raw epoch inputs in `seconds` or `milliseconds`, plus ISO 8601 / RFC 3339 strings via `iso8601`. APIs that vend only `microseconds` or `nanoseconds` are not supported by this helper yet.
 
 ```yaml
 - name: created_at
   type: Timestamp
   expr:
     kind: format_timestamp
-    input: seconds        # or "milliseconds"
+    input: seconds        # or "milliseconds" / "iso8601"
     expr:
       kind: path
       path:
@@ -142,8 +168,27 @@ Coral stores `Timestamp` columns as epoch microseconds internally, so the render
 
 | Field   | Type   | Default   | Description                                         |
 | ------- | ------ | --------- | --------------------------------------------------- |
-| `input` | string | `seconds` | Unit of the raw value: `seconds` or `milliseconds` |
-| `expr`  | expr   | —         | Inner expression that produces the epoch value     |
+| `input` | string | `seconds` | Unit/format of the raw value: `seconds`, `milliseconds`, or `iso8601` |
+| `expr`  | expr   | —         | Inner expression that produces the timestamp value |
+
+### `base64_decode`
+
+Decodes an inner expression as base64 and returns UTF-8 text. Whitespace in the encoded value is ignored, which is useful for APIs that wrap base64 file contents across lines. Invalid base64 or non-UTF-8 bytes produce `NULL`.
+
+```yaml
+- name: content_text
+  type: Utf8
+  expr:
+    kind: base64_decode
+    expr:
+      kind: path
+      path:
+        - content
+```
+
+| Field  | Type | Default | Description                            |
+| ------ | ---- | ------- | -------------------------------------- |
+| `expr` | expr | —       | Inner expression that produces base64 |
 
 ### `replace`
 
@@ -272,6 +317,64 @@ In this minimal example:
 - with the default response rules, Coral treats the selected response value directly as rows unless you configure a different `row_strategy`
 - `inputs` declares the install-time variables and secrets for this source in stable authored order. At install time, `coral source add` reads each key from an environment variable of the same name (or prompts for them when run with `--interactive`). At runtime, installed inputs are surfaced through `coral.inputs`.
 - `{{input.API_TOKEN}}` is resolved from the store implied by the declared input kind
+
+### HTTP table functions
+
+HTTP sources can declare source-scoped table functions for provider-native
+operations that return rows, such as search endpoints. A function adds
+invocation arguments, but it still owns the same execution shape as an HTTP
+table: request, response mapping, pagination, and result columns. It does not
+need a backing table.
+
+```yaml
+functions:
+  - name: search_issues
+    args:
+      - name: q
+        required: true
+        bind:
+          arg: q
+      - name: mode
+        values: [lexical, semantic, hybrid]
+        bind:
+          arg: search_type
+    request:
+      method: GET
+      path: /search/issues
+      query:
+        - name: q
+          from: arg
+          key: q
+        - name: search_type
+          from: arg
+          key: search_type
+    response:
+      rows_path: [items]
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_size:
+        default: 30
+        max: 100
+        query_param: per_page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      offset_start: 0
+      link_header_require_results: false
+    columns:
+      - name: title
+        type: Utf8
+      - name: html_url
+        type: Utf8
+      - name: score
+        type: Float64
+```
+
+Use `bind.arg` when a SQL argument should populate a differently named request
+argument. Function request values can then reference those bound arguments with
+`from: arg`.
 
 ### HTTP authentication
 
@@ -414,11 +517,47 @@ Request query params, body fields, and headers support these `from` values:
 | ------------ | ----------- |
 | `literal` | Use the manifest-authored JSON value directly |
 | `template` | Render a string template with `input`, `filter`, or `state` tokens |
-| `filter` | Read a SQL filter as a string |
-| `filter_int` | Read a SQL filter and serialize it as a JSON integer |
+| `filter` | Read a table filter captured from the query `WHERE` clause and serialize it as a string |
+| `filter_int` | Read a table filter captured from the query `WHERE` clause and serialize it as a JSON integer |
+| `filter_bool` | Read a table filter captured from the query `WHERE` clause and serialize it as a JSON boolean |
+| `filter_split` | Split a table filter string and serialize one part as a string |
+| `filter_split_int` | Split a table filter string and serialize one part as a JSON integer |
+| `arg` | Read a source function argument captured from the function call and serialize it as a string |
+| `arg_int` | Read a source function argument captured from the function call and serialize it as a JSON integer |
+| `arg_bool` | Read a source function argument captured from the function call and serialize it as a JSON boolean |
 | `input` | Read a manifest-declared source input (variable/secret) by key |
 | `state` | Read pagination/runtime state |
 | `now_epoch_minus_seconds` | Emit the current Unix epoch seconds minus the configured offset |
+
+`filter*`, `filter_split`, and `filter_split_int` differ from `arg*` by where
+the value comes from. Table requests use filter value sources because their
+request values come from SQL predicates such as `WHERE id = 123`. Source
+function requests use arg value sources because their request values come from
+named function arguments such as `github.search_issues(q => 'flaky')`.
+
+The suffix controls the value type sent to the provider. Use the bare form for a
+string request value, `_int` for a JSON integer, and `_bool` for a JSON boolean.
+
+Boolean filters used with `filter_bool` can be written as normal SQL boolean
+predicates, for example `WHERE include_archived IS FALSE` or
+`WHERE include_archived = false`.
+
+Use `filter_split` and `filter_split_int` when a provider requires structured
+request fields but users naturally have one compound identifier. For example,
+`SOURCE-496` can become a string team key and integer issue number:
+
+```yaml
+- path: [variables, teamKey]
+  from: filter_split
+  key: issue_identifier
+  separator: "-"
+  part: 0
+- path: [variables, issueNumber]
+  from: filter_split_int
+  key: issue_identifier
+  separator: "-"
+  part: 1
+```
 
 ### HTTP response fields
 
