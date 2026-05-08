@@ -1,0 +1,20 @@
+{
+  "name": "Coral",
+  "interface": {
+    "displayName": "Coral"
+  },
+  "plugins": [
+    {
+      "name": "coral",
+      "source": {
+        "source": "local",
+        "path": "./plugins/coral"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Engineering"
+    }
+  ]
+}

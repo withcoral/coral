@@ -53,6 +53,7 @@ jobs:
         with:
           name: cargo-timings-${{ github.sha }}
           path: target/cargo-timings/cargo-timing.html
+          archive: false
           retention-days: 30
 
       - name: Upload build output
@@ -61,6 +62,7 @@ jobs:
         with:
           name: build-output-${{ github.sha }}
           path: build-output.txt
+          archive: false
           retention-days: 30
 
       - name: Check cache quota usage

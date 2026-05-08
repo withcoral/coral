@@ -248,6 +248,42 @@ tables:
     }
 
     #[test]
+    fn parse_source_manifest_accepts_http_functions_without_tables() {
+        let manifest = parse_source_manifest_yaml(
+            r"
+name: searchy
+version: 1.0.0
+dsl_version: 3
+backend: http
+base_url: https://example.com
+functions:
+  - name: search_issues
+    args:
+      - name: q
+        required: true
+        bind:
+          arg: q
+    request:
+      method: GET
+      path: /search/issues
+      query:
+        - name: q
+          from: arg
+          key: q
+    columns:
+      - name: title
+        type: Utf8
+",
+        )
+        .expect("function-only HTTP manifest should parse");
+
+        let http = manifest.as_http().expect("HTTP manifest");
+        assert!(http.tables.is_empty());
+        assert_eq!(http.functions.len(), 1);
+        assert_eq!(http.functions[0].name, "search_issues");
+    }
+
+    #[test]
     fn parse_source_manifest_rejects_whitespace_only_test_query() {
         let error = parse_source_manifest_yaml(
             r#"

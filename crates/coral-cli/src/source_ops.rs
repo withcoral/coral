@@ -80,7 +80,7 @@ pub(crate) async fn add_bundled_source(
     variables: Vec<SourceVariable>,
     secrets: Vec<SourceSecret>,
 ) -> Result<Source, anyhow::Error> {
-    Ok(app
+    let response = app
         .source_client()
         .create_bundled_source(Request::new(CreateBundledSourceRequest {
             workspace: Some(default_workspace()),
@@ -89,7 +89,10 @@ pub(crate) async fn add_bundled_source(
             secrets,
         }))
         .await?
-        .into_inner())
+        .into_inner();
+    response
+        .source
+        .ok_or_else(|| anyhow::anyhow!("create bundled source response missing source"))
 }
 
 pub(crate) async fn import_source(
@@ -98,7 +101,7 @@ pub(crate) async fn import_source(
     variables: Vec<SourceVariable>,
     secrets: Vec<SourceSecret>,
 ) -> Result<Source, anyhow::Error> {
-    Ok(app
+    let response = app
         .source_client()
         .import_source(Request::new(ImportSourceRequest {
             workspace: Some(default_workspace()),
@@ -107,7 +110,10 @@ pub(crate) async fn import_source(
             secrets,
         }))
         .await?
-        .into_inner())
+        .into_inner();
+    response
+        .source
+        .ok_or_else(|| anyhow::anyhow!("import source response missing source"))
 }
 
 pub(crate) async fn validate_source(
@@ -144,7 +150,7 @@ pub(crate) async fn print_source_info(
     name: &str,
     verbose: bool,
 ) -> Result<(), anyhow::Error> {
-    let source = app
+    let response = app
         .source_client()
         .get_source_info(Request::new(GetSourceInfoRequest {
             workspace: Some(default_workspace()),
@@ -152,6 +158,9 @@ pub(crate) async fn print_source_info(
         }))
         .await?
         .into_inner();
+    let source = response
+        .source_info
+        .ok_or_else(|| anyhow::anyhow!("get source info response missing source_info"))?;
     print_source_info_response(&source, verbose);
     Ok(())
 }

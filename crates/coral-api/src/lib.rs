@@ -60,6 +60,9 @@ pub const HTTP2_MAX_HEADER_LIST_SIZE: u32 = 128 * 1024;
 /// Coral error domain used in `google.rpc.ErrorInfo`.
 pub const CORAL_ERROR_DOMAIN: &str = "coral.withcoral.com";
 
+/// Canonical default workspace name used across local Coral surfaces.
+pub const DEFAULT_WORKSPACE_ID: &str = "default";
+
 /// Reserved `ErrorInfo.metadata` key for a one-line error summary.
 pub const CORAL_ERROR_METADATA_SUMMARY: &str = "summary";
 

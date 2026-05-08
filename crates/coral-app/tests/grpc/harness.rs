@@ -87,6 +87,8 @@ impl GrpcHarness {
             .await
             .expect("import source")
             .into_inner()
+            .source
+            .expect("import source response")
     }
 
     pub(crate) async fn list_sources(&self) -> Vec<Source> {

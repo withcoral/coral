@@ -1,3 +1,6 @@
+install:
+	cargo install --path crates/coral-cli --locked
+
 rust-checks:
 	cargo fmt --all -- --check
 	cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
@@ -15,6 +18,16 @@ rust-checks:
 license-check:
 	cargo deny --version >/dev/null 2>&1 || cargo install --locked cargo-deny
 	cargo deny check licenses
+
+# ----------------------------------------------------------------------------
+# Protobuf API linting
+# ----------------------------------------------------------------------------
+# Lints crates/coral-api/proto with Buf.
+#
+#   make lint-proto   # check protobuf style and API-shape rules
+
+lint-proto:
+	cd crates/coral-api && buf lint
 
 # ----------------------------------------------------------------------------
 # Source manifest linting

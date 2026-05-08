@@ -82,7 +82,9 @@ async fn import_source_with_secrets_and_variables_get_source_returns_details() {
         }))
         .await
         .expect("get source")
-        .into_inner();
+        .into_inner()
+        .source
+        .expect("get source response");
     assert_eq!(fetched.name, "secured_messages");
     assert_eq!(fetched.version, "0.1.0");
     assert_eq!(fetched.origin, SourceOrigin::Imported as i32);
@@ -108,7 +110,9 @@ async fn import_duplicate_source_overwrites_existing_source() {
         }))
         .await
         .expect("duplicate import should overwrite")
-        .into_inner();
+        .into_inner()
+        .source
+        .expect("import source response");
     assert_eq!(reimported.version, "0.2.0");
 
     let fetched = harness
@@ -119,7 +123,9 @@ async fn import_duplicate_source_overwrites_existing_source() {
         }))
         .await
         .expect("get overwritten source")
-        .into_inner();
+        .into_inner()
+        .source
+        .expect("get source response");
     assert_eq!(fetched.version, "0.2.0");
 }
 
@@ -731,7 +737,9 @@ async fn get_source_info_returns_available_bundled_metadata() {
         }))
         .await
         .expect("get source info")
-        .into_inner();
+        .into_inner()
+        .source_info
+        .expect("get source info response");
 
     assert_eq!(info.name, "github");
     assert_eq!(info.origin, SourceOrigin::Bundled as i32);
@@ -770,7 +778,9 @@ async fn get_source_info_uses_effective_installed_imported_manifest() {
         }))
         .await
         .expect("get source info")
-        .into_inner();
+        .into_inner()
+        .source_info
+        .expect("get source info response");
 
     assert_eq!(info.name, "secured_messages");
     assert_eq!(info.version, "0.1.0");
@@ -944,7 +954,9 @@ async fn create_bundled_source_does_not_persist_manifest_to_config_dir() {
         }))
         .await
         .expect("create bundled github source")
-        .into_inner();
+        .into_inner()
+        .source
+        .expect("create bundled source response");
 
     assert_eq!(created.name, "github");
     assert_eq!(created.origin, SourceOrigin::Bundled as i32);

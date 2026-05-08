@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "Coral": {
+      "command": "coral",
+      "args": ["mcp-stdio", "--enable-feedback"]
+    }
+  }
+}
