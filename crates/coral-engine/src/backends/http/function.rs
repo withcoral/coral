@@ -29,21 +29,28 @@ struct FunctionCallContext<'a> {
     function_name: &'a str,
 }
 
+/// Immutable execution state shared by every invocation of one registered HTTP
+/// table function.
+struct HttpSourceFunctionState {
+    backend: HttpSourceClient,
+    source_schema: String,
+    function_name: String,
+    target: Arc<HttpFetchTarget>,
+    schema: SchemaRef,
+}
+
 /// Table-valued function that turns manifest-declared function args into an
 /// HTTP-backed result provider.
 pub(crate) struct HttpSourceTableFunction {
-    backend: HttpSourceClient,
-    source_schema: String,
     spec: Arc<SourceTableFunctionSpec>,
-    target: Arc<HttpFetchTarget>,
-    schema: SchemaRef,
+    state: Arc<HttpSourceFunctionState>,
 }
 
 impl fmt::Debug for HttpSourceTableFunction {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("HttpSourceTableFunction")
-            .field("source_schema", &self.source_schema)
-            .field("function", &self.spec.name)
+            .field("source_schema", &self.state.source_schema)
+            .field("function", &self.state.function_name)
             .finish_non_exhaustive()
     }
 }
@@ -56,57 +63,55 @@ impl HttpSourceTableFunction {
     ) -> Result<Self> {
         let schema = schema_from_columns(&function.columns, &source_schema, &function.name)?;
         let target = HttpFetchTarget::from_function(&function);
+        let function_name = function.name.clone();
         Ok(Self {
-            backend,
-            source_schema,
             spec: Arc::new(function),
-            target: Arc::new(target),
-            schema,
+            state: Arc::new(HttpSourceFunctionState {
+                backend,
+                source_schema,
+                function_name,
+                target: Arc::new(target),
+                schema,
+            }),
         })
     }
 }
 
 impl TableFunctionImpl for HttpSourceTableFunction {
     fn call(&self, args: &[Expr]) -> Result<Arc<dyn TableProvider>> {
-        let request_values = bind_function_args(&self.source_schema, &self.spec, args)?;
-        Ok(Arc::new(HttpSourceFunctionCallProvider {
-            backend: self.backend.clone(),
-            source_schema: self.source_schema.clone(),
-            function_name: self.spec.name.clone(),
-            target: Arc::clone(&self.target),
-            schema: self.schema.clone(),
+        let request_values = bind_function_args(&self.state.source_schema, &self.spec, args)?;
+        Ok(Arc::new(HttpSourceFunctionCallTableProvider {
+            state: Arc::clone(&self.state),
             request_values,
         }))
     }
 }
 
-struct HttpSourceFunctionCallProvider {
-    backend: HttpSourceClient,
-    source_schema: String,
-    function_name: String,
-    target: Arc<HttpFetchTarget>,
-    schema: SchemaRef,
+/// Concrete table provider returned for one function call, with SQL arguments
+/// already bound into HTTP request values.
+struct HttpSourceFunctionCallTableProvider {
+    state: Arc<HttpSourceFunctionState>,
     request_values: HashMap<String, String>,
 }
 
-impl fmt::Debug for HttpSourceFunctionCallProvider {
+impl fmt::Debug for HttpSourceFunctionCallTableProvider {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("HttpSourceFunctionCallProvider")
-            .field("source_schema", &self.source_schema)
-            .field("function", &self.function_name)
+        f.debug_struct("HttpSourceFunctionCallTableProvider")
+            .field("source_schema", &self.state.source_schema)
+            .field("function", &self.state.function_name)
             .field("request_values", &self.request_values.keys())
             .finish_non_exhaustive()
     }
 }
 
 #[async_trait::async_trait]
-impl TableProvider for HttpSourceFunctionCallProvider {
+impl TableProvider for HttpSourceFunctionCallTableProvider {
     fn as_any(&self) -> &dyn Any {
         self
     }
 
     fn schema(&self) -> SchemaRef {
-        self.schema.clone()
+        self.state.schema.clone()
     }
 
     fn table_type(&self) -> TableType {
@@ -133,10 +138,10 @@ impl TableProvider for HttpSourceFunctionCallProvider {
         limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         http_json_exec(
-            self.backend.clone(),
-            &self.source_schema,
-            (*self.target).clone(),
-            self.schema.clone(),
+            self.state.backend.clone(),
+            &self.state.source_schema,
+            (*self.state.target).clone(),
+            self.state.schema.clone(),
             self.request_values.clone(),
             projection,
             limit,
