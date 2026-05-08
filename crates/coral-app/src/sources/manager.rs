@@ -3,12 +3,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::bootstrap::AppError;
+use crate::credentials::{CredentialManager, CredentialSetId};
 use crate::sources::SourceName;
 use crate::sources::catalog::{
     describe_manifest, list_bundled_sources, load_bundled_source, resolve_installed_manifest,
 };
 use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
-use crate::state::{AppStateLayout, ConfigStore, SecretStore};
+use crate::state::{AppStateLayout, ConfigStore};
 use crate::storage::fs;
 use crate::workspaces::WorkspaceName;
 use coral_spec::ManifestInputKind;
@@ -17,7 +18,7 @@ use tracing::warn;
 #[derive(Clone)]
 pub(crate) struct SourceManager {
     config_store: ConfigStore,
-    secret_store: SecretStore,
+    credential_manager: CredentialManager,
     layout: AppStateLayout,
 }
 
@@ -57,18 +58,18 @@ struct PersistSourceRequest<'a> {
 struct SourceRollbackState {
     source: InstalledSource,
     manifest_yaml: Option<String>,
-    secrets: BTreeMap<String, String>,
+    credential_material: BTreeMap<String, String>,
 }
 
 impl SourceManager {
     pub(crate) fn new(
         config_store: ConfigStore,
-        secret_store: SecretStore,
+        credential_manager: CredentialManager,
         layout: AppStateLayout,
     ) -> Self {
         Self {
             config_store,
-            secret_store,
+            credential_manager,
             layout,
         }
     }
@@ -180,6 +181,7 @@ impl SourceManager {
         let stored = self.config_store.get_source(workspace_name, source_name)?;
         let removed = self.populate_source_version_or_keep(workspace_name, stored.clone());
         let source_dir = self.layout.source_dir(workspace_name, source_name);
+        let credential_set_id = CredentialSetId::for_source(source_name);
         let previous = SourceRollbackState {
             source: stored,
             manifest_yaml: match removed.origin {
@@ -188,15 +190,22 @@ impl SourceManager {
                     self.layout.manifest_file(workspace_name, source_name),
                 )?),
             },
-            secrets: self
-                .secret_store
-                .read_source_secrets_for(workspace_name, source_name)?,
+            credential_material: self
+                .credential_manager
+                .read_material(workspace_name, &credential_set_id)?,
         };
         if source_dir.exists()
             && let Err(error) = std::fs::remove_dir_all(&source_dir)
         {
             self.restore_source_rollback_state(workspace_name, source_name, Some(previous));
             return Err(error.into());
+        }
+        if let Err(error) = self
+            .credential_manager
+            .remove_material(workspace_name, &credential_set_id)
+        {
+            self.restore_source_rollback_state(workspace_name, source_name, Some(previous));
+            return Err(error);
         }
         if let Err(error) = self.config_store.remove_source(workspace_name, source_name) {
             self.restore_source_rollback_state(workspace_name, source_name, Some(previous));
@@ -234,9 +243,10 @@ impl SourceManager {
             return Err(error);
         }
 
-        let persisted_secrets = match self.secret_store.replace_source_secrets_for(
+        let credential_set_id = CredentialSetId::for_source(&source_name);
+        let persisted_secret_keys = match self.credential_manager.write_material(
             workspace_name,
-            &source_name,
+            &credential_set_id,
             &request.bindings.secrets,
         ) {
             Ok(secrets) => secrets,
@@ -254,7 +264,7 @@ impl SourceManager {
             name: source_name.clone(),
             version: persisted_version,
             variables: request.bindings.variables,
-            secrets: persisted_secrets,
+            secrets: persisted_secret_keys,
             origin: request.origin,
         };
         if let Err(error) = self
@@ -290,9 +300,10 @@ impl SourceManager {
             Err(AppError::SourceNotFound(_)) => return Ok(None),
             Err(error) => return Err(error),
         };
-        let secrets = self
-            .secret_store
-            .read_source_secrets_for(workspace_name, source_name)?;
+        let credential_set_id = CredentialSetId::for_source(source_name);
+        let credential_material = self
+            .credential_manager
+            .read_material(workspace_name, &credential_set_id)?;
         Ok(Some(SourceRollbackState {
             manifest_yaml: match source.origin {
                 SourceOrigin::Bundled => None,
@@ -301,7 +312,7 @@ impl SourceManager {
                 )?),
             },
             source,
-            secrets,
+            credential_material,
         }))
     }
 
@@ -331,12 +342,13 @@ impl SourceManager {
                 }
                 None => {}
             }
-            if let Err(e) = self.secret_store.replace_source_secrets_for(
+            let credential_set_id = CredentialSetId::for_source(source_name);
+            if let Err(e) = self.credential_manager.write_material(
                 workspace_name,
-                source_name,
-                &previous.secrets,
+                &credential_set_id,
+                &previous.credential_material,
             ) {
-                warn!("rollback: failed to restore source secrets: {e}");
+                warn!("rollback: failed to restore source credential material: {e}");
             }
             if let Err(e) = self
                 .config_store
@@ -351,6 +363,10 @@ impl SourceManager {
             {
                 warn!("rollback: failed to remove source directory: {e}");
             }
+            let credential_set_id = CredentialSetId::for_source(source_name);
+            let _ = self
+                .credential_manager
+                .remove_material(workspace_name, &credential_set_id);
         }
     }
 
@@ -548,8 +564,9 @@ mod tests {
     use super::{
         ImportSourceCommand, SourceBinding, SourceBindings, SourceManager, normalize_binding_key,
     };
+    use crate::credentials::{CredentialManager, CredentialStore};
     use crate::sources::SourceName;
-    use crate::state::{AppStateLayout, ConfigStore, SecretStore};
+    use crate::state::{AppStateLayout, ConfigStore};
     use crate::workspaces::WorkspaceName;
 
     fn default_workspace() -> WorkspaceName {
@@ -595,11 +612,10 @@ tables:
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
         layout.ensure().expect("ensure layout");
-        let manager = SourceManager::new(
-            ConfigStore::new(layout.clone()),
-            SecretStore::new(layout.clone()),
-            layout.clone(),
-        );
+        let config_store = ConfigStore::new(layout.clone());
+        let credential_store = CredentialStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(credential_store);
+        let manager = SourceManager::new(config_store, credential_manager, layout.clone());
 
         let source_name = SourceName::parse("secured_messages").expect("source");
         let source_dir = layout.source_dir(&default_workspace(), &source_name);
@@ -629,7 +645,9 @@ tables:
         assert!(
             matches!(
                 error,
-                crate::bootstrap::AppError::Credentials(crate::state::CredentialsError::Io(_))
+                crate::bootstrap::AppError::Credentials(crate::credentials::CredentialsError::Io(
+                    _
+                ))
             ),
             "unexpected error: {error:#}"
         );
@@ -685,11 +703,10 @@ tables:
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
         layout.ensure().expect("ensure layout");
-        let manager = SourceManager::new(
-            ConfigStore::new(layout.clone()),
-            SecretStore::new(layout.clone()),
-            layout,
-        );
+        let config_store = ConfigStore::new(layout.clone());
+        let credential_store = CredentialStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(credential_store);
+        let manager = SourceManager::new(config_store, credential_manager, layout);
 
         let source = manager
             .import_source(

@@ -42,6 +42,9 @@ async fn import_source_persists_and_lists() {
     let config_raw =
         fs::read_to_string(harness.config_dir().join("config.toml")).expect("read config");
     assert!(config_raw.contains("[workspaces.default.sources.local_messages]"));
+    assert!(config_raw.contains("secrets = []"));
+    assert!(!config_raw.contains("credential_set_id"));
+    assert!(!config_raw.contains("[workspaces.default.credentials"));
     assert!(!config_raw.contains("manifest_yaml = "));
     assert!(!config_raw.contains("manifest_file = "));
 
@@ -1055,7 +1058,7 @@ origin = "bundled"
     )
     .expect("write config");
 
-    // Write the secret file so the secret store can find it.
+    // Write the source secret file so validation can reach variable checks.
     let secret_dir = config_dir
         .join("workspaces")
         .join("default")

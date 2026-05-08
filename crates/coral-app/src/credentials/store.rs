@@ -1,17 +1,18 @@
-//! Plaintext source-secret persistence under the app state directory.
+//! Plaintext credential material persistence under the app state directory.
 
 use std::collections::BTreeMap;
 use std::io;
 use std::path::Path;
 
 use crate::bootstrap::AppError;
-use crate::sources::SourceName;
 use crate::state::AppStateLayout;
 use crate::storage::fs as storage_fs;
 use crate::storage::fs::FileLock;
 use crate::workspaces::WorkspaceName;
 
-/// Errors returned by the plaintext env-file secret helpers.
+use super::CredentialSetId;
+
+/// Errors returned by the plaintext credential env-file helpers.
 #[derive(Debug, thiserror::Error)]
 pub enum CredentialsError {
     #[error(transparent)]
@@ -21,39 +22,66 @@ pub enum CredentialsError {
 }
 
 #[derive(Clone)]
-pub(crate) struct SecretStore {
+pub(crate) struct CredentialStore {
     layout: AppStateLayout,
 }
 
-impl SecretStore {
+impl CredentialStore {
     pub(crate) fn new(layout: AppStateLayout) -> Self {
         Self { layout }
     }
 
-    pub(crate) fn replace_source_secrets_for(
+    pub(crate) fn update_material<T>(
         &self,
         workspace_name: &WorkspaceName,
-        source_name: &SourceName,
-        secrets: &BTreeMap<String, String>,
-    ) -> Result<Vec<String>, AppError> {
-        let path = self.layout.secret_file(workspace_name, source_name);
-        if secrets.is_empty() {
+        credential_set_id: &CredentialSetId,
+        update: impl FnOnce(&mut BTreeMap<String, String>) -> Result<T, AppError>,
+    ) -> Result<T, AppError> {
+        let path = self.material_file(workspace_name, credential_set_id)?;
+        tracing::trace!(%credential_set_id, "updating credential material");
+        let _lock = FileLock::exclusive(self.layout.state_lock())?;
+        let mut values = load_file(&path)?;
+        let result = update(&mut values)?;
+        if values.is_empty() {
             if path.exists() {
-                std::fs::remove_file(path)?;
+                std::fs::remove_file(&path)?;
             }
-            return Ok(Vec::new());
+        } else {
+            save_file_unlocked(&path, &values)?;
         }
-        save_file(&path, self.layout.state_lock(), secrets)?;
-        Ok(secrets.keys().cloned().collect())
+        Ok(result)
     }
 
-    pub(crate) fn read_source_secrets_for(
+    pub(crate) fn read_material(
         &self,
         workspace_name: &WorkspaceName,
-        source_name: &SourceName,
+        credential_set_id: &CredentialSetId,
     ) -> Result<BTreeMap<String, String>, AppError> {
-        let path = self.layout.secret_file(workspace_name, source_name);
+        let path = self.material_file(workspace_name, credential_set_id)?;
+        tracing::trace!(%credential_set_id, "reading credential material");
         load_file(&path).map_err(Into::into)
+    }
+
+    pub(crate) fn remove_material(
+        &self,
+        workspace_name: &WorkspaceName,
+        credential_set_id: &CredentialSetId,
+    ) -> Result<(), AppError> {
+        let path = self.material_file(workspace_name, credential_set_id)?;
+        tracing::trace!(%credential_set_id, "removing credential material");
+        if path.exists() {
+            std::fs::remove_file(&path)?;
+        }
+        Ok(())
+    }
+
+    fn material_file(
+        &self,
+        workspace_name: &WorkspaceName,
+        credential_set_id: &CredentialSetId,
+    ) -> Result<std::path::PathBuf, AppError> {
+        let source_name = credential_set_id.source_name()?;
+        Ok(self.layout.secret_file(workspace_name, &source_name))
     }
 }
 
@@ -65,9 +93,18 @@ fn load_file(path: &Path) -> Result<BTreeMap<String, String>, CredentialsError> 
     parse_env_file(&std::fs::read_to_string(path)?)
 }
 
+#[cfg(test)]
 fn save_file(
     path: &Path,
     lock_path: &Path,
+    values: &BTreeMap<String, String>,
+) -> Result<(), CredentialsError> {
+    let _lock = FileLock::exclusive(lock_path)?;
+    save_file_unlocked(path, values)
+}
+
+fn save_file_unlocked(
+    path: &Path,
     values: &BTreeMap<String, String>,
 ) -> Result<(), CredentialsError> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
@@ -81,7 +118,6 @@ fn save_file(
         output.push('\n');
     }
 
-    let _lock = FileLock::exclusive(lock_path)?;
     storage_fs::write_atomic(path, output.as_bytes())?;
     Ok(())
 }
