@@ -17,6 +17,7 @@ mod onboard;
 mod query_error;
 mod source_ops;
 
+use std::borrow::Cow;
 use std::path::PathBuf;
 #[cfg(feature = "embedded-ui")]
 use std::sync::Arc;
@@ -182,6 +183,10 @@ pub enum CliError {
     Query {
         /// Complete stderr diagnostic rendered from the query status.
         rendered_stderr: String,
+        /// Low-cardinality query failure class for telemetry.
+        error_type: String,
+        /// Human-readable query failure summary for telemetry.
+        error_message: String,
     },
     /// A source was available as a bundled source but has not been installed.
     #[error("source '{source_name}' is not installed")]
@@ -205,7 +210,9 @@ impl CliError {
     /// Returns stderr content for user-facing CLI failures.
     pub fn rendered_stderr(&self) -> Option<String> {
         match self {
-            Self::Query { rendered_stderr } => Some(rendered_stderr.clone()),
+            Self::Query {
+                rendered_stderr, ..
+            } => Some(rendered_stderr.clone()),
             Self::SourceNotInstalled { source_name } => Some(format!(
                 "source '{source_name}' is not installed. Run `coral source add {source_name}` to install it, then retry `coral source test {source_name}`.\n"
             )),
@@ -231,6 +238,30 @@ impl Command {
 
     fn enables_stderr_logs(&self) -> bool {
         matches!(self, Command::McpStdio(_))
+    }
+}
+
+impl coral_app::RunErrorTelemetry for CliError {
+    fn telemetry_error_type(&self) -> Cow<'_, str> {
+        match self {
+            Self::Query { error_type, .. } => Cow::Borrowed(error_type.as_str()),
+            Self::SourceNotInstalled { .. } => Cow::Borrowed("SOURCE_NOT_INSTALLED"),
+            Self::SourceNotFound { .. } => Cow::Borrowed("SOURCE_NOT_FOUND"),
+            Self::Internal(_) => Cow::Borrowed("INTERNAL"),
+        }
+    }
+
+    fn telemetry_error_message(&self) -> Cow<'_, str> {
+        match self {
+            Self::Query { error_message, .. } => Cow::Borrowed(error_message.as_str()),
+            Self::SourceNotInstalled { source_name } => {
+                Cow::Owned(format!("source '{source_name}' is not installed"))
+            }
+            Self::SourceNotFound { source_name } => {
+                Cow::Owned(format!("source '{source_name}' was not found"))
+            }
+            Self::Internal(error) => Cow::Owned(error.to_string()),
+        }
     }
 }
 
@@ -271,12 +302,17 @@ pub async fn run_from_env() -> Result<(), CliError> {
     match command.required_runtime() {
         RequiredRuntime::AppClient => {
             let enable_stderr_logs = command.enables_stderr_logs();
+            let is_mcp_stdio = matches!(&command, Command::McpStdio(_));
             let bootstrap = bootstrap::bootstrap(enable_stderr_logs)
                 .await
                 .map_err(anyhow::Error::from)?;
             let app = bootstrap.app.clone();
-            let result =
-                coral_app::run_with_context(&ctx, Box::pin(run_app_command(app, command))).await;
+            let result = if is_mcp_stdio {
+                run_app_command(app, command, Some(&ctx)).await
+            } else {
+                coral_app::run_with_context(&ctx, Box::pin(run_app_command(app, command, None)))
+                    .await
+            };
             bootstrap.shutdown().await;
             result
         }
@@ -337,16 +373,19 @@ async fn run_ui(args: UiArgs) -> Result<(), anyhow::Error> {
 /// formatting fails.
 pub async fn run(app: AppClient, ctx: coral_app::RunContext) -> Result<(), CliError> {
     let Cli { command } = Cli::parse();
-    coral_app::run_with_context(
-        &ctx,
-        Box::pin(async move {
-            match command.required_runtime() {
-                RequiredRuntime::AppClient => run_app_command(app, command).await,
-                RequiredRuntime::None => run_no_runtime_command(command).await,
-            }
-        }),
-    )
-    .await
+    let is_mcp_stdio = matches!(&command, Command::McpStdio(_));
+
+    match command.required_runtime() {
+        RequiredRuntime::AppClient if is_mcp_stdio => {
+            run_app_command(app, command, Some(&ctx)).await
+        }
+        RequiredRuntime::AppClient => {
+            coral_app::run_with_context(&ctx, Box::pin(run_app_command(app, command, None))).await
+        }
+        RequiredRuntime::None => {
+            coral_app::run_with_context(&ctx, Box::pin(run_no_runtime_command(command))).await
+        }
+    }
 }
 
 async fn run_no_runtime_command(command: Command) -> Result<(), CliError> {
@@ -365,7 +404,11 @@ async fn run_no_runtime_command(command: Command) -> Result<(), CliError> {
     }
 }
 
-async fn run_app_command(app: AppClient, command: Command) -> Result<(), CliError> {
+async fn run_app_command(
+    app: AppClient,
+    command: Command,
+    ctx: Option<&coral_app::RunContext>,
+) -> Result<(), CliError> {
     match command {
         Command::Sql(args) => {
             let response = match app
@@ -379,6 +422,8 @@ async fn run_app_command(app: AppClient, command: Command) -> Result<(), CliErro
                 Ok(response) => response.into_inner(),
                 Err(status) => {
                     return Err(CliError::Query {
+                        error_message: query_error::telemetry_error_message(&status),
+                        error_type: query_error::telemetry_error_type(&status),
                         rendered_stderr: query_error::render_query_error(&status),
                     });
                 }
@@ -391,12 +436,13 @@ async fn run_app_command(app: AppClient, command: Command) -> Result<(), CliErro
             onboard::run(&app).await?;
         }
         Command::McpStdio(args) => {
-            coral_mcp::run_stdio_with_client(
+            Box::pin(coral_mcp::run_stdio_with_client(
                 app,
                 coral_mcp::McpOptions {
                     feedback_enabled: args.enable_feedback,
+                    trace_parent: ctx.and_then(|ctx| ctx.trace_parent.clone()),
                 },
-            )
+            ))
             .await
             .map_err(anyhow::Error::from)?;
         }

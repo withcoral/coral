@@ -25,6 +25,7 @@
 mod error;
 mod server;
 mod surface;
+mod telemetry;
 
 #[cfg(test)]
 mod tests;
@@ -36,10 +37,12 @@ pub use error::McpError;
 pub(crate) use server::CoralMcpServer;
 
 /// Optional MCP surface features.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct McpOptions {
     /// Expose the feedback submission tool.
     pub feedback_enabled: bool,
+    /// Optional W3C traceparent used to parent each MCP request span.
+    pub trace_parent: Option<String>,
 }
 
 /// Runs the `MCP` stdio server using an existing Coral client.
@@ -49,9 +52,10 @@ pub struct McpOptions {
 /// Returns [`McpError`] if the stdio server cannot complete its `MCP`
 /// lifecycle.
 pub async fn run_stdio_with_client(app: AppClient, options: McpOptions) -> Result<(), McpError> {
-    let server = CoralMcpServer::new(&app, options)
-        .serve((tokio::io::stdin(), tokio::io::stdout()))
-        .await?;
+    let server = Box::pin(
+        CoralMcpServer::new(&app, options).serve((tokio::io::stdin(), tokio::io::stdout())),
+    )
+    .await?;
     let _ = server.waiting().await?;
     Ok(())
 }

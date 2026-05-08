@@ -1114,6 +1114,7 @@ dependencies = [
  "coral-app",
  "coral-client",
  "jsonschema",
+ "opentelemetry",
  "regex",
  "rmcp",
  "serde_json",
@@ -1122,6 +1123,8 @@ dependencies = [
  "tokio",
  "tonic",
  "tonic-types",
+ "tracing",
+ "tracing-opentelemetry",
 ]
 
 [[package]]

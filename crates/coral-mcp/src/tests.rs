@@ -146,9 +146,7 @@ async fn start_session_with_options(temp: &TempDir, options: McpOptions) -> Test
 
     let (server_transport, client_transport) = tokio::io::duplex(4096);
     let mcp_server_task = tokio::spawn(async move {
-        let server = CoralMcpServer::new(&app, options)
-            .serve(server_transport)
-            .await?;
+        let server = Box::pin(CoralMcpServer::new(&app, options).serve(server_transport)).await?;
         server.waiting().await?;
         Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
     });
@@ -530,6 +528,7 @@ async fn mcp_feedback_tool_persists_blocked_agent_report() {
         &temp,
         McpOptions {
             feedback_enabled: true,
+            ..McpOptions::default()
         },
     )
     .await;

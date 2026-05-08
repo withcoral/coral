@@ -49,5 +49,5 @@ pub use coral_engine::{EngineExtensions, QuerySource};
 pub use query::extensions::{
     AwsEngineExtensionsProvider, EngineExtensionsProvider, NoopEngineExtensionsProvider,
 };
-pub use telemetry::{RunContext, run_with_context, shutdown_tracing};
+pub use telemetry::{RunContext, RunErrorTelemetry, run_with_context, shutdown_tracing};
 pub use workspaces::DEFAULT_WORKSPACE_ID;
