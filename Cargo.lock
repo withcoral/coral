@@ -1090,6 +1090,7 @@ dependencies = [
  "glob",
  "httpdate",
  "object_store",
+ "opentelemetry",
  "parquet",
  "reqwest",
  "serde_json",
@@ -1098,6 +1099,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+ "tracing-opentelemetry",
  "urlencoding",
  "wiremock",
 ]

@@ -22,6 +22,7 @@ futures.workspace = true
 glob.workspace = true
 httpdate.workspace = true
 object_store.workspace = true
+opentelemetry.workspace = true
 parquet.workspace = true
 reqwest.workspace = true
 serde_json.workspace = true
@@ -29,6 +30,7 @@ strsim.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+tracing-opentelemetry.workspace = true
 urlencoding.workspace = true
 
 coral-spec.workspace = true

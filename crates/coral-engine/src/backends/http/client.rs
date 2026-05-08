@@ -6,10 +6,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use datafusion::error::{DataFusionError, Result};
+use opentelemetry::propagation::Injector;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde_json::{Map, Value, json};
 use tracing::Instrument as _;
 use tracing::field;
+use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
 use crate::RequestAuthenticator;
 use crate::backends::http::ProviderQueryError;
@@ -628,6 +630,52 @@ async fn execute_request(
                 HeaderValue::from_static("text/plain"),
             );
         }
+        let logged_url = build_logged_url(url, query_pairs);
+
+        let request_id = NEXT_HTTP_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
+        let attempt = server_error_retries + throttle_retries + 1;
+        let traced_url = sanitize_trace_url(&logged_url);
+        let trace_endpoint = trace_http_endpoint(&traced_url);
+        let request_span = tracing::info_span!(
+            target: "coral_engine::http",
+            "http.request",
+            coral.http.attempt = attempt,
+            coral.http.error.connect = field::Empty,
+            coral.http.error.request = field::Empty,
+            coral.http.error.timeout = field::Empty,
+            coral.http.request_id = request_id,
+            coral.source = source_schema,
+            coral.table = table_name,
+            error = field::Empty,
+            error.type = field::Empty,
+            exception.message = field::Empty,
+            http.host = field::Empty,
+            http.request.body.present = body.is_some(),
+            http.request.body.size = request_body_size(body).unwrap_or_default(),
+            http.request.method = method_label,
+            http.request.query_count = query_pairs.len(),
+            http.request.resend_count = field::Empty,
+            http.response.body.size = field::Empty,
+            http.response.status_code = field::Empty,
+            net.peer.name = field::Empty,
+            otel.kind = "client",
+            otel.name = method_label,
+            otel.status_code = field::Empty,
+            otel.status_description = field::Empty,
+            peer.service = field::Empty,
+            server.address = field::Empty,
+            server.port = field::Empty,
+            url.full = %traced_url,
+        );
+        record_trace_http_endpoint(&request_span, &trace_endpoint);
+        if attempt > 1 {
+            request_span.record(
+                "http.request.resend_count",
+                i64::try_from(attempt - 1).unwrap_or(i64::MAX),
+            );
+        }
+
+        inject_trace_context(&request_span, &mut header_map);
         if !header_map.is_empty() {
             request = request.headers(header_map);
         }
@@ -646,103 +694,67 @@ async fn execute_request(
             None => {}
         }
 
-        let logged_url = build_logged_url(url, query_pairs);
-        let _logged_body = body.and_then(|b| match b {
-            RequestBody::Json(value) => serde_json::to_string_pretty(value).ok(),
-            RequestBody::Text(text) => Some(text.clone()),
-        });
-
-        let built = resolve_auth_headers(auth, request, request_authenticators, resolved_inputs)?;
-        let request_id = NEXT_HTTP_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
-        let attempt = server_error_retries + throttle_retries + 1;
-        let traced_url = sanitize_trace_url(&logged_url);
-        let response = {
-            let request_span = tracing::info_span!(
-                target: "coral_engine::http",
-                "http.request",
-                otel.name = "http.request",
-                coral.source = source_schema,
-                coral.table = table_name,
-                coral.http.request_id = request_id,
-                coral.http.attempt = attempt,
-                http.request.method = method_label,
-                http.request.body.present = body.is_some(),
-                http.request.body.size = request_body_size(body).unwrap_or_default(),
-                http.request.query_count = query_pairs.len(),
-                url.full = %traced_url,
-                error = field::Empty,
-                exception.message = field::Empty,
-                coral.http.error.timeout = field::Empty,
-                coral.http.error.connect = field::Empty,
-                coral.http.error.request = field::Empty,
-            );
-            match http.execute(built).instrument(request_span.clone()).await {
-                Ok(response) => response,
+        let built =
+            match resolve_auth_headers(auth, request, request_authenticators, resolved_inputs) {
+                Ok(request) => request,
                 Err(error) => {
-                    request_span.record("error", true);
-                    request_span.record("exception.message", trace_reqwest_error(&error));
-                    request_span.record("coral.http.error.timeout", error.is_timeout());
-                    request_span.record("coral.http.error.connect", error.is_connect());
-                    request_span.record("coral.http.error.request", error.is_request());
-                    return Err(request_error(
-                        source_schema,
-                        table_name,
-                        method_label,
-                        &logged_url,
-                        request_timeout,
-                        &error,
-                    ));
+                    record_http_processing_error(&request_span, "REQUEST_SETUP", &error);
+                    return Err(error);
                 }
+            };
+        let response = match http.execute(built).instrument(request_span.clone()).await {
+            Ok(response) => response,
+            Err(error) => {
+                record_http_processing_error(
+                    &request_span,
+                    trace_reqwest_error_type(&error),
+                    trace_reqwest_error(&error),
+                );
+                request_span.record("coral.http.error.timeout", error.is_timeout());
+                request_span.record("coral.http.error.connect", error.is_connect());
+                request_span.record("coral.http.error.request", error.is_request());
+                return Err(request_error(
+                    source_schema,
+                    table_name,
+                    method_label,
+                    &logged_url,
+                    request_timeout,
+                    &error,
+                ));
             }
         };
 
         let status = response.status();
+        request_span.record("http.response.status_code", status.as_u16());
         let outcome = 'response: {
-            let response_span = tracing::info_span!(
-                target: "coral_engine::http",
-                "http.response",
-                otel.name = "http.response",
-                coral.source = source_schema,
-                coral.table = table_name,
-                coral.http.request_id = request_id,
-                coral.http.attempt = attempt,
-                http.request.method = method_label,
-                http.response.status_code = status.as_u16(),
-                http.response.body.size = field::Empty,
-                url.full = %traced_url,
-                error = field::Empty,
-                exception.message = field::Empty,
-            );
             if let Some(length) = response.content_length() {
-                response_span.record("http.response.body.size", length);
+                request_span.record("http.response.body.size", length);
             }
 
             match check_rate_limit(status, response.headers(), rate_limit, throttle_retries) {
                 RateLimitDecision::Continue => {}
                 RateLimitDecision::Retry(wait) => {
-                    response_span.record("error", true);
-                    response_span.record("exception.message", "rate limited; retrying");
+                    record_http_status_error(&request_span, status, "rate limited; retrying");
                     throttle_retries += 1;
                     break 'response ResponseOutcome::Retry(wait);
                 }
                 RateLimitDecision::Fail(error) => {
-                    response_span.record("error", true);
-                    response_span.record("exception.message", field::display(&error));
+                    let error_message = error.to_string();
+                    record_http_status_error(&request_span, status, error_message.as_str());
                     break 'response ResponseOutcome::Done(Err(DataFusionError::External(
                         Box::new(ProviderQueryError::RateLimited {
                             source_schema: source_schema.to_string(),
                             table: table_name.to_string(),
                             method: Some(method_label.to_string()),
                             url: Some(logged_url.clone()),
-                            detail: error.to_string(),
+                            detail: error_message,
                         }),
                     )));
                 }
             }
 
             if status.is_server_error() && server_error_retries < 2 {
-                response_span.record("error", true);
-                response_span.record("exception.message", "server error; retrying");
+                record_http_status_error(&request_span, status, "server error; retrying");
                 server_error_retries += 1;
                 break 'response ResponseOutcome::Retry(Duration::from_secs(2));
             }
@@ -752,17 +764,17 @@ async fn execute_request(
             }
 
             if !status.is_success() {
-                response_span.record("error", true);
                 let body = response
                     .text()
-                    .instrument(response_span.clone())
+                    .instrument(request_span.clone())
                     .await
                     .unwrap_or_default();
-                response_span.record("http.response.body.size", body.len());
-                response_span.record(
-                    "exception.message",
-                    field::display(response_error_summary(status, &body)),
+                record_http_status_error(
+                    &request_span,
+                    status,
+                    response_error_summary(status, &body),
                 );
+                request_span.record("http.response.body.size", body.len());
                 break 'response ResponseOutcome::Done(Err(DataFusionError::External(Box::new(
                     ProviderQueryError::ApiRequest {
                         source_schema: source_schema.to_string(),
@@ -779,8 +791,7 @@ async fn execute_request(
             let next_url =
                 extract_next_link_url(response.headers(), base_url, link_header_require_results)
                     .map_err(|error| {
-                        response_span.record("error", true);
-                        response_span.record("exception.message", field::display(&error));
+                        record_http_processing_error(&request_span, "PAGINATION", &error);
                         pagination_error(
                             source_schema,
                             table_name,
@@ -802,16 +813,16 @@ async fn execute_request(
                 method_label,
                 &logged_url,
             )
-            .instrument(response_span.clone())
+            .instrument(request_span.clone())
             .await
             .inspect_err(|error| {
-                response_span.record("error", true);
-                response_span.record("exception.message", field::display(&error));
+                record_http_processing_error(&request_span, "DECODE", error);
             })
             .map(|payload| Some((payload, next_url)));
             ResponseOutcome::Done(payload)
         };
 
+        drop(request_span);
         match outcome {
             ResponseOutcome::Done(result) => return result,
             ResponseOutcome::Retry(wait) => {
@@ -901,12 +912,48 @@ fn trace_reqwest_error(error: &reqwest::Error) -> &'static str {
     }
 }
 
+fn trace_reqwest_error_type(error: &reqwest::Error) -> &'static str {
+    if error.is_timeout() {
+        "TIMEOUT"
+    } else if error.is_connect() {
+        "CONNECT"
+    } else if error.is_request() {
+        "REQUEST"
+    } else {
+        "OTHER"
+    }
+}
+
 fn response_error_summary(status: reqwest::StatusCode, body: &str) -> String {
     format!(
         "upstream returned HTTP {}; body_bytes={}",
         status.as_u16(),
         body.len()
     )
+}
+
+fn record_http_status_error(
+    span: &tracing::Span,
+    status: reqwest::StatusCode,
+    message: impl std::fmt::Display,
+) {
+    span.record("error", true);
+    span.record("otel.status_code", "error");
+    span.record("error.type", field::display(status.as_u16()));
+    span.record("otel.status_description", field::display(&message));
+    span.record("exception.message", field::display(&message));
+}
+
+fn record_http_processing_error(
+    span: &tracing::Span,
+    error_type: &'static str,
+    message: impl std::fmt::Display,
+) {
+    span.record("error", true);
+    span.record("otel.status_code", "error");
+    span.record("error.type", error_type);
+    span.record("otel.status_description", field::display(&message));
+    span.record("exception.message", field::display(&message));
 }
 
 fn decode_error(
@@ -1172,6 +1219,53 @@ fn sanitize_trace_url(raw: &str) -> String {
     url.to_string()
 }
 
+#[derive(Debug, Default, PartialEq, Eq)]
+struct TraceHttpEndpoint {
+    server_address: Option<String>,
+    server_port: Option<u16>,
+}
+
+fn trace_http_endpoint(raw: &str) -> TraceHttpEndpoint {
+    let Ok(url) = reqwest::Url::parse(raw) else {
+        return TraceHttpEndpoint::default();
+    };
+    TraceHttpEndpoint {
+        server_address: url.host_str().map(str::to_string),
+        server_port: url.port_or_known_default(),
+    }
+}
+
+fn record_trace_http_endpoint(span: &tracing::Span, endpoint: &TraceHttpEndpoint) {
+    if let Some(address) = &endpoint.server_address {
+        span.record("server.address", address.as_str());
+        span.record("peer.service", address.as_str());
+        span.record("http.host", address.as_str());
+        span.record("net.peer.name", address.as_str());
+    }
+    if let Some(port) = endpoint.server_port {
+        span.record("server.port", i64::from(port));
+    }
+}
+
+struct HeaderMapInjector<'a>(&'a mut HeaderMap);
+
+impl Injector for HeaderMapInjector<'_> {
+    fn set(&mut self, key: &str, value: String) {
+        if let Ok(name) = HeaderName::try_from(key)
+            && let Ok(value) = HeaderValue::try_from(value)
+        {
+            self.0.insert(name, value);
+        }
+    }
+}
+
+fn inject_trace_context(span: &tracing::Span, headers: &mut HeaderMap) {
+    let cx = span.context();
+    opentelemetry::global::get_text_map_propagator(|propagator| {
+        propagator.inject_context(&cx, &mut HeaderMapInjector(headers));
+    });
+}
+
 fn request_body_size(body: Option<&RequestBody>) -> Option<usize> {
     match body {
         Some(RequestBody::Json(value)) => serde_json::to_vec(value).ok().map(|body| body.len()),
@@ -1404,7 +1498,7 @@ mod tests {
         HttpSourceClient, OutgoingHttpRequest as TestOutgoingHttpRequest, PageState,
         apply_pagination_body_fields, apply_pagination_query_pairs, execute_request,
         extract_next_link_url, extract_rows, join_url, normalize_base_url, page_is_exhausted,
-        resolve_value_source, set_path_value,
+        resolve_value_source, set_path_value, trace_http_endpoint,
     };
     use crate::backends::http::ProviderQueryError;
     use crate::backends::http::target::HttpFetchTarget;
@@ -1630,6 +1724,24 @@ mod tests {
             normalize_base_url("http://localhost:8080"),
             "http://localhost:8080"
         );
+    }
+
+    #[test]
+    fn trace_http_endpoint_extracts_host_and_port() {
+        let endpoint = trace_http_endpoint("https://api.example.com/v1/items");
+        assert_eq!(endpoint.server_address.as_deref(), Some("api.example.com"));
+        assert_eq!(endpoint.server_port, Some(443));
+
+        let endpoint = trace_http_endpoint("http://localhost:8080/v1/items");
+        assert_eq!(endpoint.server_address.as_deref(), Some("localhost"));
+        assert_eq!(endpoint.server_port, Some(8080));
+    }
+
+    #[test]
+    fn trace_http_endpoint_ignores_unparseable_urls() {
+        let endpoint = trace_http_endpoint("/v1/items");
+        assert!(endpoint.server_address.is_none());
+        assert!(endpoint.server_port.is_none());
     }
 
     #[test]
