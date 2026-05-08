@@ -4,7 +4,28 @@
   "title": "Coral Source Manifest",
   "type": "object",
   "additionalProperties": false,
-  "required": ["dsl_version", "name", "version", "backend", "tables"],
+  "required": ["dsl_version", "name", "version", "backend"],
+  "allOf": [
+    {
+      "if": {
+        "properties": { "backend": { "const": "http" } },
+        "required": ["backend"]
+      },
+      "then": {
+        "anyOf": [
+          { "required": ["tables"] },
+          { "required": ["functions"] }
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": { "backend": { "enum": ["jsonl", "parquet"] } },
+        "required": ["backend"]
+      },
+      "then": { "required": ["tables"] }
+    }
+  ],
   "properties": {
     "dsl_version": { "type": "integer", "const": 3 },
     "name": { "type": "string", "minLength": 1 },
@@ -30,6 +51,7 @@
     },
     "functions": {
       "type": "array",
+      "minItems": 1,
       "items": { "$ref": "#/$defs/table_function" }
     },
     "onboarding": {

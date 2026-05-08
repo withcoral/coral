@@ -116,6 +116,7 @@ struct RawHttpSourceManifest {
     rate_limit: RateLimitSpec,
     #[serde(default)]
     inputs: Option<Value>,
+    #[serde(default)]
     tables: Vec<RawHttpTableSpec>,
     #[serde(default)]
     functions: Vec<SourceTableFunctionSpec>,
@@ -267,6 +268,11 @@ impl HttpSourceManifest {
             tables,
             functions,
         } = raw;
+        if tables.is_empty() && functions.is_empty() {
+            return Err(ManifestError::validation(format!(
+                "source '{name}' must define at least one table or function"
+            )));
+        }
         validate_test_queries(&name, &test_queries)?;
         validate_table_names(&name, tables.iter().map(|table| table.name.as_str()))?;
         let common =
