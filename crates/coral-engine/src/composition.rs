@@ -143,10 +143,17 @@ pub trait RequestAuthenticator: Send + Sync + std::fmt::Debug {
 
 /// Post-query hook for observing fully materialized successful query results.
 ///
-/// Observers run after `DataFusion` successfully collects result batches and
-/// before [`crate::QueryExecution`] is returned. They receive read-only
-/// references to the final SQL text, Arrow schema, and result batches; observer
-/// implementations must not rely on mutating the returned query result.
+/// Observers run synchronously on the query execution path after `DataFusion`
+/// successfully collects result batches and before [`crate::QueryExecution`] is
+/// returned. Observer work therefore contributes directly to `execute_sql`
+/// latency, and observer failures fail the query after SQL execution has
+/// succeeded. Implementations should keep in-band work lightweight; expensive
+/// persistence, network calls, or telemetry fanout should be handed off to
+/// background workers when they should not delay the query response.
+///
+/// Observers receive read-only references to the final SQL text, Arrow schema,
+/// and result batches; implementations must not rely on mutating the returned
+/// query result.
 pub trait QueryResultObserver: Send + Sync {
     /// Stable observer name used in diagnostics.
     fn name(&self) -> &'static str;
