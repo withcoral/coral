@@ -1,3 +1,9 @@
+#![allow(
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    reason = "test code: assertion-style indexing is idiomatic in tests"
+)]
+
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
