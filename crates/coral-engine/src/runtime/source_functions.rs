@@ -1,11 +1,10 @@
 //! Source-scoped table function relation planning.
 //!
-//! `DataFusion` registers UDTFs in a flat namespace, while Coral exposes them
-//! as source-scoped SQL relations like `github.find_issues(...)`. Backends
-//! register hidden internal UDTF names, and this relation planner rewrites the
-//! source-scoped relation into the internal function call. Argument names are
-//! lowered into manifest order here; backend-specific validation and execution
-//! stay with the table function implementation.
+//! DataFusion registers UDTFs in one flat namespace. Coral exposes source
+//! functions as scoped SQL relations like `github.find_issues(...)`. Backends
+//! therefore register hidden internal UDTF names, and this planner rewrites the
+//! scoped relation into the hidden function call before handing planning back
+//! to DataFusion.
 
 use std::collections::{HashMap, HashSet};
 
@@ -19,122 +18,73 @@ use datafusion::logical_expr::sqlparser::ast::{
 
 use crate::backends::RegisteredTableFunction;
 
-enum SourceFunctionRewrite {
-    PassThrough(TableFactor),
-    Rewritten(TableFactor),
-}
-
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct SourceFunctionRegistry {
-    functions: HashMap<(String, String), SourceFunctionEntry>,
-    schemas: HashSet<String>,
+    functions: HashMap<FunctionLookupKey, SourceFunction>,
+    source_schemas: HashSet<String>,
 }
 
-#[derive(Debug, Clone)]
-struct SourceFunctionEntry {
+#[derive(Debug)]
+struct SourceFunction {
     internal_name: String,
     display_name: String,
-    arg_lookup_names: Vec<String>,
-    arg_lookup: HashSet<String>,
+    arg_names: Vec<String>,
+    known_args: HashSet<String>,
 }
 
-struct SourceFunctionName {
-    lookup_schema: String,
-    lookup_function: String,
-    display_schema: String,
-    display_function: String,
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct FunctionLookupKey {
+    schema: String,
+    function: String,
+}
+
+#[derive(Debug)]
+struct SourceFunctionCall {
+    lookup_key: FunctionLookupKey,
+    display_name: String,
 }
 
 impl SourceFunctionRegistry {
-    pub(crate) fn new(functions: Vec<RegisteredTableFunction>) -> Result<Self> {
-        let mut schemas = HashSet::new();
-        let mut registered = HashMap::new();
+    pub(crate) fn new<'a>(
+        functions: impl IntoIterator<Item = &'a RegisteredTableFunction>,
+    ) -> Self {
+        let mut source_schemas = HashSet::new();
+        let mut functions_by_name = HashMap::new();
+
         for function in functions {
-            let schema_name = function.schema_name.clone();
-            let function_name = function.function_name.clone();
-            let arg_lookup_names = function.arg_names.clone();
-            let display_name = source_function_display_name(&function);
-            schemas.insert(schema_name.clone());
-            registered.insert(
-                (schema_name, function_name),
-                SourceFunctionEntry {
-                    internal_name: function.internal_name,
-                    display_name,
-                    arg_lookup: arg_lookup_names.iter().cloned().collect(),
-                    arg_lookup_names,
-                },
-            );
+            let lookup_key = FunctionLookupKey::from_manifest(function);
+            source_schemas.insert(lookup_key.schema.clone());
+            functions_by_name.insert(lookup_key, SourceFunction::from_registered(function));
         }
-        Ok(Self {
-            functions: registered,
-            schemas,
-        })
+
+        Self {
+            functions: functions_by_name,
+            source_schemas,
+        }
     }
 
     pub(crate) fn is_empty(&self) -> bool {
         self.functions.is_empty()
     }
 
-    fn rewrite_relation(
-        &self,
-        mut relation: TableFactor,
-        context: &dyn RelationPlannerContext,
-    ) -> Result<SourceFunctionRewrite> {
-        let Some(source_function) = source_function_name(&relation, context) else {
-            return Ok(SourceFunctionRewrite::PassThrough(relation));
-        };
-        let Some(function) = self.functions.get(&(
-            source_function.lookup_schema.clone(),
-            source_function.lookup_function.clone(),
-        )) else {
-            if self.schemas.contains(&source_function.lookup_schema) {
-                return Err(DataFusionError::Plan(format!(
-                    "unknown source table function {}.{}{}",
-                    source_function.display_schema,
-                    source_function.display_function,
-                    self.available_functions_hint(&source_function.lookup_schema)
-                )));
-            }
-            return Ok(SourceFunctionRewrite::PassThrough(relation));
-        };
+    fn find(&self, call: &SourceFunctionCall) -> Option<&SourceFunction> {
+        self.functions.get(&call.lookup_key)
+    }
 
-        let TableFactor::Table {
-            name,
-            args: table_args,
-            ..
-        } = &mut relation
-        else {
-            unreachable!("source_function_name only matches table relations");
-        };
-        let args = table_args
-            .as_ref()
-            .expect("source_function_name only matches table relations with args");
-        if args.settings.is_some() {
-            return Err(DataFusionError::Plan(format!(
-                "source table function {}.{} does not support SETTINGS",
-                source_function.display_schema, source_function.display_function
-            )));
-        }
-        let lowered_args = named_args_to_positional(function, args, context)?;
-
-        *name = ObjectName::from(vec![Ident::new(function.internal_name.clone())]);
-        *table_args = Some(TableFunctionArgs {
-            args: lowered_args,
-            settings: None,
-        });
-
-        Ok(SourceFunctionRewrite::Rewritten(relation))
+    fn owns_schema(&self, call: &SourceFunctionCall) -> bool {
+        self.source_schemas.contains(&call.lookup_key.schema)
     }
 
     fn available_functions_hint(&self, schema: &str) -> String {
         let mut names: Vec<&str> = self
             .functions
             .iter()
-            .filter_map(|((entry_schema, _), function)| {
-                (entry_schema == schema).then_some(function.display_name.as_str())
+            .filter_map(|(key, function)| {
+                (key.schema == schema).then_some(function.display_name.as_str())
             })
             .collect();
         names.sort_unstable();
+
         if names.is_empty() {
             String::new()
         } else {
@@ -149,109 +99,237 @@ impl RelationPlanner for SourceFunctionRegistry {
         relation: TableFactor,
         context: &mut dyn RelationPlannerContext,
     ) -> Result<RelationPlanning> {
-        match self.rewrite_relation(relation, context)? {
-            SourceFunctionRewrite::PassThrough(relation) => {
-                Ok(RelationPlanning::Original(Box::new(relation)))
+        let Some(call) = SourceFunctionCall::parse(&relation, context) else {
+            return Ok(original_relation(relation));
+        };
+
+        let Some(function) = self.find(&call) else {
+            if self.owns_schema(&call) {
+                return Err(call.unknown_function_error(
+                    self.available_functions_hint(&call.lookup_key.schema),
+                ));
             }
-            SourceFunctionRewrite::Rewritten(relation) => {
-                let plan = context.plan(relation)?;
-                Ok(RelationPlanning::Planned(Box::new(PlannedRelation::new(
-                    plan, None,
-                ))))
-            }
+            return Ok(original_relation(relation));
+        };
+
+        let rewritten = rewrite_to_internal_udtf(relation, &call, function, context)?;
+        let plan = context.plan(rewritten)?;
+        Ok(RelationPlanning::Planned(Box::new(PlannedRelation::new(
+            plan, None,
+        ))))
+    }
+}
+
+impl SourceFunction {
+    fn from_registered(function: &RegisteredTableFunction) -> Self {
+        let arg_names = function.arg_names.clone();
+        Self {
+            internal_name: function.internal_name.clone(),
+            display_name: qualified_name(&function.schema_name, &function.function_name),
+            known_args: arg_names.iter().cloned().collect(),
+            arg_names,
+        }
+    }
+
+    fn contains(&self, name: &str) -> bool {
+        self.known_args.contains(name)
+    }
+}
+
+impl FunctionLookupKey {
+    fn from_manifest(function: &RegisteredTableFunction) -> Self {
+        Self {
+            schema: function.schema_name.clone(),
+            function: function.function_name.clone(),
+        }
+    }
+
+    fn from_sql(schema: Ident, function: Ident, context: &dyn RelationPlannerContext) -> Self {
+        Self {
+            schema: context.normalize_ident(schema),
+            function: context.normalize_ident(function),
         }
     }
 }
 
-fn source_function_name(
-    relation: &TableFactor,
-    context: &dyn RelationPlannerContext,
-) -> Option<SourceFunctionName> {
-    let TableFactor::Table {
-        name,
-        args: Some(_),
-        ..
-    } = relation
-    else {
-        return None;
-    };
-    if name.0.len() != 2 {
-        return None;
+impl SourceFunctionCall {
+    fn parse(relation: &TableFactor, context: &dyn RelationPlannerContext) -> Option<Self> {
+        let TableFactor::Table {
+            name,
+            args: Some(_),
+            ..
+        } = relation
+        else {
+            return None;
+        };
+
+        // Coral source functions are exactly `source.function(...)`. Longer
+        // names belong to DataFusion's normal relation/function planner.
+        if name.0.len() != 2 {
+            return None;
+        }
+
+        let schema = name.0[0].as_ident()?.clone();
+        let function = name.0[1].as_ident()?.clone();
+        let display_name = qualified_name(&schema.value, &function.value);
+        let lookup_key = FunctionLookupKey::from_sql(schema, function, context);
+
+        Some(Self {
+            lookup_key,
+            display_name,
+        })
     }
-    let schema = name.0[0].as_ident()?.clone();
-    let function = name.0[1].as_ident()?.clone();
-    Some(SourceFunctionName {
-        lookup_schema: context.normalize_ident(schema.clone()),
-        lookup_function: context.normalize_ident(function.clone()),
-        display_schema: schema.value,
-        display_function: function.value,
-    })
+
+    fn unknown_function_error(&self, hint: String) -> DataFusionError {
+        DataFusionError::Plan(format!(
+            "unknown source table function {}{}",
+            self.display_name, hint
+        ))
+    }
 }
 
-fn named_args_to_positional(
-    function: &SourceFunctionEntry,
+fn qualified_name(schema: &str, function: &str) -> String {
+    format!("{schema}.{function}")
+}
+
+fn original_relation(relation: TableFactor) -> RelationPlanning {
+    RelationPlanning::Original(Box::new(relation))
+}
+
+fn rewrite_to_internal_udtf(
+    mut relation: TableFactor,
+    call: &SourceFunctionCall,
+    function: &SourceFunction,
+    context: &dyn RelationPlannerContext,
+) -> Result<TableFactor> {
+    let TableFactor::Table {
+        name,
+        args: table_args,
+        ..
+    } = &mut relation
+    else {
+        unreachable!("SourceFunctionCall::parse only matches table relations");
+    };
+
+    let call_args = table_args
+        .as_ref()
+        .expect("SourceFunctionCall::parse only matches function calls");
+    reject_settings(call, call_args)?;
+
+    *name = ObjectName::from(vec![Ident::new(function.internal_name.clone())]);
+    *table_args = Some(TableFunctionArgs {
+        args: lower_named_args_to_internal_positions(function, call_args, context)?,
+        settings: None,
+    });
+
+    Ok(relation)
+}
+
+fn reject_settings(call: &SourceFunctionCall, args: &TableFunctionArgs) -> Result<()> {
+    if args.settings.is_some() {
+        return Err(DataFusionError::Plan(format!(
+            "source table function {} does not support SETTINGS",
+            call.display_name
+        )));
+    }
+    Ok(())
+}
+
+fn lower_named_args_to_internal_positions(
+    function: &SourceFunction,
     args: &TableFunctionArgs,
     context: &dyn RelationPlannerContext,
 ) -> Result<Vec<FunctionArg>> {
-    let display_name = &function.display_name;
-    let mut named = HashMap::new();
-    let mut seen = HashSet::new();
-    for arg in &args.args {
-        match arg {
-            FunctionArg::Named { name, arg, .. } => {
-                let key = context.normalize_ident(name.clone());
-                if !seen.insert(key.clone()) {
-                    return Err(DataFusionError::Plan(format!(
-                        "{display_name} duplicate argument '{}'",
-                        name.value
-                    )));
-                }
-                if !function.arg_lookup.contains(&key) {
-                    return Err(DataFusionError::Plan(format!(
-                        "{display_name} unknown argument '{}'",
-                        name.value
-                    )));
-                }
-                if matches!(
-                    arg,
-                    FunctionArgExpr::Wildcard | FunctionArgExpr::QualifiedWildcard(_)
-                ) {
-                    return Err(DataFusionError::Plan(format!(
-                        "{display_name} argument '{}' does not support wildcard values",
-                        name.value
-                    )));
-                }
-                named.insert(key, arg.clone());
-            }
-            FunctionArg::Unnamed(_) => {
-                return Err(DataFusionError::Plan(format!(
-                    "{display_name} requires named arguments"
-                )));
-            }
-            FunctionArg::ExprNamed { .. } => {
-                return Err(DataFusionError::Plan(format!(
-                    "{display_name} requires identifier argument names"
-                )));
-            }
-        }
-    }
+    let mut supplied = collect_named_args(function, args, context)?;
 
-    // CONTRACT with `HttpSourceTableFunction::call`: the internal UDTF is
-    // positional, so this planner emits exactly one slot per manifest argument.
-    // Missing named args are padded with NULL; the backend binder interprets
-    // those NULLs as absent and performs required-argument validation there.
+    // The internal UDTF is positional. Missing optional args are represented as
+    // NULL placeholders; the backend binder treats NULL as absent and performs
+    // required-argument validation after that interpretation.
     Ok(function
-        .arg_lookup_names
+        .arg_names
         .iter()
-        .map(|arg| {
-            let expr = named
-                .remove(arg)
-                .unwrap_or_else(|| FunctionArgExpr::Expr(Expr::value(Value::Null)));
+        .map(|name| {
+            let expr = supplied.remove(name).unwrap_or_else(null_arg);
             FunctionArg::Unnamed(expr)
         })
         .collect())
 }
 
-fn source_function_display_name(function: &RegisteredTableFunction) -> String {
-    format!("{}.{}", function.schema_name, function.function_name)
+fn collect_named_args(
+    function: &SourceFunction,
+    args: &TableFunctionArgs,
+    context: &dyn RelationPlannerContext,
+) -> Result<HashMap<String, FunctionArgExpr>> {
+    let mut supplied = HashMap::new();
+    let mut seen = HashSet::new();
+
+    for arg in &args.args {
+        let FunctionArg::Named { name, arg, .. } = arg else {
+            return Err(non_named_arg_error(function, arg));
+        };
+        insert_named_arg(function, &mut supplied, &mut seen, name, arg, context)?;
+    }
+
+    Ok(supplied)
+}
+
+fn insert_named_arg(
+    function: &SourceFunction,
+    supplied: &mut HashMap<String, FunctionArgExpr>,
+    seen: &mut HashSet<String>,
+    name: &Ident,
+    arg: &FunctionArgExpr,
+    context: &dyn RelationPlannerContext,
+) -> Result<()> {
+    let lookup_name = context.normalize_ident(name.clone());
+    if !seen.insert(lookup_name.clone()) {
+        return Err(DataFusionError::Plan(format!(
+            "{} duplicate argument '{}'",
+            function.display_name, name.value
+        )));
+    }
+    if !function.contains(&lookup_name) {
+        return Err(DataFusionError::Plan(format!(
+            "{} unknown argument '{}'",
+            function.display_name, name.value
+        )));
+    }
+    reject_wildcard_arg(function, name, arg)?;
+    supplied.insert(lookup_name, arg.clone());
+    Ok(())
+}
+
+fn reject_wildcard_arg(
+    function: &SourceFunction,
+    name: &Ident,
+    arg: &FunctionArgExpr,
+) -> Result<()> {
+    if matches!(
+        arg,
+        FunctionArgExpr::Wildcard | FunctionArgExpr::QualifiedWildcard(_)
+    ) {
+        return Err(DataFusionError::Plan(format!(
+            "{} argument '{}' does not support wildcard values",
+            function.display_name, name.value
+        )));
+    }
+    Ok(())
+}
+
+fn non_named_arg_error(function: &SourceFunction, arg: &FunctionArg) -> DataFusionError {
+    match arg {
+        FunctionArg::Unnamed(_) => DataFusionError::Plan(format!(
+            "{} requires named arguments",
+            function.display_name
+        )),
+        FunctionArg::ExprNamed { .. } => DataFusionError::Plan(format!(
+            "{} requires identifier argument names",
+            function.display_name
+        )),
+        FunctionArg::Named { .. } => unreachable!("named arguments are handled by the caller"),
+    }
+}
+
+fn null_arg() -> FunctionArgExpr {
+    FunctionArgExpr::Expr(Expr::value(Value::Null))
 }
