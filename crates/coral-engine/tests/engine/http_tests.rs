@@ -341,6 +341,47 @@ async fn source_scoped_table_function_normalizes_unquoted_sql_identifiers() {
     .await;
 }
 
+#[tokio::test]
+async fn source_scoped_table_function_preserves_quoted_manifest_identifiers() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/search/issues"))
+        .and(query_param("q", "flaky cleanup repo:withcoral/coral"))
+        .and(query_param("search_type", "hybrid"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [{
+                "title": "Flaky workspace cleanup",
+                "score": 9.5
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut manifest = search_function_manifest("Search", &server.uri());
+    manifest["functions"][0]["name"] = json!("Search_Issues");
+    manifest["functions"][0]["args"][0]["name"] = json!("Q");
+    let source = build_source(manifest);
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT title, score \
+             FROM \"Search\".\"Search_Issues\"(\"Q\" => 'flaky cleanup repo:withcoral/coral', mode => 'hybrid')",
+        )
+        .await
+        .expect("quoted exact manifest identifiers should resolve"),
+    );
+
+    assert_eq!(
+        rows,
+        vec![json!({
+            "title": "Flaky workspace cleanup",
+            "score": 9.5
+        })]
+    );
+}
+
 async fn assert_search_function_query(sql: &str) {
     let server = MockServer::start().await;
     Mock::given(method("GET"))

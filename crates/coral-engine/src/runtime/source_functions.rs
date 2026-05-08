@@ -34,34 +34,17 @@ impl SourceFunctionRegistry {
         let mut schemas = HashSet::new();
         let mut registered = HashMap::new();
         for function in functions {
-            let schema_name = manifest_lookup_key(&function.schema_name);
-            let function_name = manifest_lookup_key(&function.function_name);
-            let mut seen_args = HashSet::new();
-            let mut arg_lookup_names = Vec::with_capacity(function.arg_names.len());
-            for arg in &function.arg_names {
-                let lookup_name = manifest_lookup_key(arg);
-                if !seen_args.insert(lookup_name.clone()) {
-                    return Err(DataFusionError::Plan(format!(
-                        "{} has duplicate argument after SQL identifier normalization",
-                        source_function_display_name(&function)
-                    )));
-                }
-                arg_lookup_names.push(lookup_name);
-            }
+            let schema_name = function.schema_name.clone();
+            let function_name = function.function_name.clone();
+            let arg_lookup_names = function.arg_names.clone();
             schemas.insert(schema_name.clone());
-            let replaced = registered.insert(
+            registered.insert(
                 (schema_name, function_name),
                 SourceFunctionEntry {
                     registered: function,
                     arg_lookup_names,
                 },
             );
-            if replaced.is_some() {
-                return Err(DataFusionError::Plan(
-                    "duplicate source table function after SQL identifier normalization"
-                        .to_string(),
-                ));
-            }
         }
         Ok(Self {
             functions: registered,
@@ -75,38 +58,11 @@ impl SourceFunctionRegistry {
 
     fn rewrite_relation(
         &self,
-        relation: TableFactor,
+        mut relation: TableFactor,
         context: &dyn RelationPlannerContext,
     ) -> Result<SourceFunctionRewrite> {
-        let TableFactor::Table {
-            name,
-            alias,
-            args: Some(args),
-            with_hints,
-            version,
-            with_ordinality,
-            partitions,
-            json_path,
-            sample,
-            index_hints,
-        } = relation
-        else {
+        let Some((schema, function_name)) = source_function_name(&relation, context) else {
             return Ok(SourceFunctionRewrite::PassThrough(relation));
-        };
-
-        let Some((schema, function_name)) = source_function_name(&name, context) else {
-            return Ok(SourceFunctionRewrite::PassThrough(TableFactor::Table {
-                name,
-                alias,
-                args: Some(args),
-                with_hints,
-                version,
-                with_ordinality,
-                partitions,
-                json_path,
-                sample,
-                index_hints,
-            }));
         };
         let Some(function) = self.functions.get(&(schema.clone(), function_name.clone())) else {
             if self.schemas.contains(&schema) {
@@ -114,35 +70,26 @@ impl SourceFunctionRegistry {
                     "unknown source table function {schema}.{function_name}"
                 )));
             }
-            return Ok(SourceFunctionRewrite::PassThrough(TableFactor::Table {
-                name,
-                alias,
-                args: Some(args),
-                with_hints,
-                version,
-                with_ordinality,
-                partitions,
-                json_path,
-                sample,
-                index_hints,
-            }));
+            return Ok(SourceFunctionRewrite::PassThrough(relation));
         };
 
-        Ok(SourceFunctionRewrite::Rewritten(TableFactor::Table {
-            name: ObjectName::from(vec![Ident::new(function.registered.internal_name.clone())]),
-            alias,
-            args: Some(TableFunctionArgs {
-                args: named_args_to_positional(function, &args, context)?,
-                settings: None,
-            }),
-            with_hints,
-            version,
-            with_ordinality,
-            partitions,
-            json_path,
-            sample,
-            index_hints,
-        }))
+        let TableFactor::Table { name, args, .. } = &mut relation else {
+            unreachable!("source_function_name only matches table relations");
+        };
+        let lowered_args = named_args_to_positional(
+            function,
+            args.as_ref()
+                .expect("source_function_name only matches table relations with args"),
+            context,
+        )?;
+
+        *name = ObjectName::from(vec![Ident::new(function.registered.internal_name.clone())]);
+        *args = Some(TableFunctionArgs {
+            args: lowered_args,
+            settings: None,
+        });
+
+        Ok(SourceFunctionRewrite::Rewritten(relation))
     }
 }
 
@@ -167,19 +114,23 @@ impl RelationPlanner for SourceFunctionRegistry {
 }
 
 fn source_function_name(
-    name: &ObjectName,
+    relation: &TableFactor,
     context: &dyn RelationPlannerContext,
 ) -> Option<(String, String)> {
+    let TableFactor::Table {
+        name,
+        args: Some(_),
+        ..
+    } = relation
+    else {
+        return None;
+    };
     if name.0.len() != 2 {
         return None;
     }
     let schema = context.normalize_ident(name.0[0].as_ident()?.clone());
     let function = context.normalize_ident(name.0[1].as_ident()?.clone());
     Some((schema, function))
-}
-
-fn manifest_lookup_key(name: &str) -> String {
-    name.to_ascii_lowercase()
 }
 
 fn named_args_to_positional(
