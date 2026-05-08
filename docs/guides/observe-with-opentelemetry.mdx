@@ -36,12 +36,11 @@ To disable local trace inspection:
 enable_internal_tracing = false
 ```
 
-To include HTTP request and response bodies in local traces, opt in explicitly:
+HTTP request and response bodies are recorded in local traces by default, up to `internal_http_body_max_bytes` bytes per body. To disable local body recording:
 
 ```toml
 [otel]
-enable_internal_tracing = true
-record_internal_http_bodies = true
+record_internal_http_bodies = false
 ```
 
 HTTP bodies are kept out of OTLP export even when local body recording is enabled.
@@ -59,7 +58,7 @@ All telemetry settings live under `[otel]` in `config.toml`. There are no enviro
 | `service_name`                 | string  | `coral`                                                                | Value of the `service.name` resource attribute on every signal.                   |
 | `enable_internal_tracing`      | boolean | `true`                                                                 | Enables local trace inspection without requiring an OTLP collector.               |
 | `internal_trace_retention_days` | integer | `7`                                                                    | Number of days of local trace spans to retain.                                    |
-| `record_internal_http_bodies`  | boolean | `false`                                                                | Records HTTP request and response bodies in local traces when internal tracing is enabled. |
+| `record_internal_http_bodies`  | boolean | `true`                                                                 | Records HTTP request and response bodies in local traces when internal tracing is enabled. |
 | `internal_http_body_max_bytes` | integer | `65536`                                                                | Maximum request or response body bytes recorded in a local trace.                 |
 
 Example with auth headers and a hosted endpoint:

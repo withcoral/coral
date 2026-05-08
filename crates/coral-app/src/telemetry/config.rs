@@ -46,7 +46,7 @@ impl Default for TelemetryConfig {
             service_name: DEFAULT_SERVICE_NAME.to_string(),
             enable_internal_tracing: true,
             internal_trace_retention_days: DEFAULT_INTERNAL_TRACE_RETENTION_DAYS,
-            record_internal_http_bodies: false,
+            record_internal_http_bodies: true,
             internal_http_body_max_bytes: DEFAULT_INTERNAL_HTTP_BODY_MAX_BYTES,
         }
     }
@@ -102,6 +102,12 @@ mod tests {
         let config = TelemetryConfig::load(&layout).expect("default telemetry config");
 
         assert_eq!(config, TelemetryConfig::default());
+        assert!(config.enable_internal_tracing);
+        assert!(config.record_internal_http_bodies);
+        assert_eq!(
+            config.internal_http_body_recording_max_bytes(),
+            Some(64 * 1024)
+        );
     }
 
     #[test]
