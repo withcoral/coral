@@ -1,0 +1,389 @@
+name: supabase
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Supabase projects, organizations, branches, edge functions,
+  and storage buckets from the Supabase Management API.
+inputs:
+  API_TOKEN:
+    kind: secret
+    hint: Supabase personal access token for the Management API.
+base_url: https://api.supabase.com
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.API_TOKEN}}
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+test_queries:
+  - SELECT * FROM supabase.projects LIMIT 1
+  - SELECT * FROM supabase.organizations LIMIT 1
+tables:
+  - name: projects
+    description: Supabase projects
+    request:
+      method: GET
+      path: /v1/projects
+    response:
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      page_size:
+        default: 20
+        max: 100
+        query_param: per_page
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Project ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Project name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: region
+        type: Utf8
+        nullable: true
+        description: Project region
+        expr:
+          kind: path
+          path:
+            - region
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Project status
+        expr:
+          kind: path
+          path:
+            - status
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Project creation timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: organization_id
+        type: Utf8
+        nullable: true
+        description: Organization ID owning the project
+        expr:
+          kind: path
+          path:
+            - organization_id
+      - name: db_host
+        type: Utf8
+        nullable: true
+        description: Project database host
+        expr:
+          kind: path
+          path:
+            - database
+            - host
+      - name: db_port
+        type: Int64
+        nullable: true
+        description: Project database port
+        expr:
+          kind: path
+          path:
+            - database
+            - port
+  - name: organizations
+    description: Supabase organizations
+    request:
+      method: GET
+      path: /v1/organizations
+    response:
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      page_size:
+        default: 20
+        max: 100
+        query_param: per_page
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Organization ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Organization name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: billing_email
+        type: Utf8
+        nullable: true
+        description: Billing email
+        expr:
+          kind: path
+          path:
+            - billing_email
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Organization creation timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+  - name: branches
+    description: Branches for a Supabase project
+    guide: Requires `project_ref`.
+    filters:
+      - name: project_ref
+        required: true
+    request:
+      method: GET
+      path: /v1/projects/{{filter.project_ref}}/branches
+    response:
+      row_strategy: direct
+      allow_404_empty: true
+    pagination:
+      mode: auto
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Branch ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: project_ref
+        type: Utf8
+        nullable: false
+        description: Project reference filter
+        expr:
+          kind: from_filter
+          key: project_ref
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Branch name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Branch status
+        expr:
+          kind: path
+          path:
+            - status
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Branch creation timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: git_branch
+        type: Utf8
+        nullable: true
+        description: Linked git branch name
+        expr:
+          kind: path
+          path:
+            - git_branch
+  - name: functions
+    description: Edge functions for a Supabase project
+    guide: Requires `project_ref`.
+    filters:
+      - name: project_ref
+        required: true
+    request:
+      method: GET
+      path: /v1/projects/{{filter.project_ref}}/functions
+    response:
+      row_strategy: direct
+      allow_404_empty: true
+    pagination:
+      mode: auto
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Function ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: project_ref
+        type: Utf8
+        nullable: false
+        description: Project reference filter
+        expr:
+          kind: from_filter
+          key: project_ref
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Function name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: slug
+        type: Utf8
+        nullable: true
+        description: Function slug
+        expr:
+          kind: path
+          path:
+            - slug
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Function status
+        expr:
+          kind: path
+          path:
+            - status
+      - name: version
+        type: Int64
+        nullable: true
+        description: Function version
+        expr:
+          kind: path
+          path:
+            - version
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Function creation timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Function update timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at
+  - name: storage_buckets
+    description: Storage buckets for a Supabase project
+    guide: Requires `project_ref`.
+    filters:
+      - name: project_ref
+        required: true
+    request:
+      method: GET
+      path: /v1/projects/{{filter.project_ref}}/storage/buckets
+    response:
+      row_strategy: direct
+      allow_404_empty: true
+    pagination:
+      mode: auto
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Bucket ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: project_ref
+        type: Utf8
+        nullable: false
+        description: Project reference filter
+        expr:
+          kind: from_filter
+          key: project_ref
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Bucket name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: public
+        type: Boolean
+        nullable: true
+        description: Whether bucket is public
+        expr:
+          kind: path
+          path:
+            - public
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Bucket creation timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Bucket update timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at
+      - name: file_size_limit
+        type: Int64
+        nullable: true
+        description: Max file size limit in bytes
+        expr:
+          kind: path
+          path:
+            - file_size_limit
