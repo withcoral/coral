@@ -446,12 +446,3 @@ tables:
             kind: path
             path:
               - createdAt
-      - name: member_count
-        type: Int64
-        nullable: true
-        description: Team member count
-        expr:
-          kind: path
-          path:
-            - membership
-            - count

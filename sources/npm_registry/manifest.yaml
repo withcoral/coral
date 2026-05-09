@@ -67,13 +67,13 @@ tables:
       - name: author
         type: Utf8
         nullable: true
-        description: Package author metadata
+        description: Latest package publisher username
         expr:
           kind: path
           path:
             - package
-            - author
-            - name
+            - publisher
+            - username
       - name: license
         type: Utf8
         nullable: true
@@ -152,8 +152,7 @@ tables:
           expr:
             kind: path
             path:
-              - package
-              - date
+              - updated
       - name: query
         type: Utf8
         nullable: true
@@ -196,18 +195,6 @@ tables:
           kind: path
           path:
             - _key
-      - name: published_at
-        type: Timestamp
-        nullable: true
-        description: Published timestamp for the version when available
-        expr:
-          kind: format_timestamp
-          input: iso8601
-          expr:
-            kind: path
-            path:
-              - time
-              - _key
       - name: publisher
         type: Utf8
         nullable: true
