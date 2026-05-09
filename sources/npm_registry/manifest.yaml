@@ -64,7 +64,7 @@ tables:
           path:
             - package
             - description
-      - name: author
+      - name: publisher_username
         type: Utf8
         nullable: true
         description: Latest package publisher username
