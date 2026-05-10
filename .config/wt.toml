@@ -1,0 +1,2 @@
+[post-start]
+copy = "wt step copy-ignored"
