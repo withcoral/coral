@@ -364,9 +364,12 @@ impl SourceManager {
                 warn!("rollback: failed to remove source directory: {e}");
             }
             let credential_set_id = CredentialSetId::for_source(source_name);
-            let _ = self
+            if let Err(e) = self
                 .credential_manager
-                .remove_material(workspace_name, &credential_set_id);
+                .remove_material(workspace_name, &credential_set_id)
+            {
+                warn!("rollback: failed to remove source credential material: {e}");
+            }
         }
     }
 
