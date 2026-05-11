@@ -591,6 +591,30 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
             .any(|field| field == "column_name")
     );
 
+    let empty_column_filter = client
+        .call_tool(
+            CallToolRequestParams::new("list_columns").with_arguments(json_object(&json!({
+                "schema": "local_messages",
+                "table": "messages",
+                "pattern": "does-not-match"
+            }))),
+        )
+        .await
+        .expect("list filtered columns with no matches");
+    let empty_column_filter = empty_column_filter
+        .structured_content
+        .expect("structured content");
+    assert!(empty_column_filter["found"].is_null());
+    assert_eq!(empty_column_filter["schema_name"], "local_messages");
+    assert_eq!(empty_column_filter["table_name"], "messages");
+    assert_eq!(empty_column_filter["total"], 0);
+    assert!(
+        empty_column_filter["columns"]
+            .as_array()
+            .expect("columns")
+            .is_empty()
+    );
+
     let missing_columns = client
         .call_tool(
             CallToolRequestParams::new("list_columns").with_arguments(json_object(&json!({
@@ -603,12 +627,16 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
     let missing_columns = missing_columns
         .structured_content
         .expect("structured content");
-    assert_eq!(missing_columns["total"], 0);
-    assert!(
-        missing_columns["columns"]
-            .as_array()
-            .expect("columns")
-            .is_empty()
+    assert_eq!(missing_columns["found"], false);
+    assert_eq!(missing_columns["requested"]["schema"], "local_messages");
+    assert_eq!(missing_columns["requested"]["table"], "missing");
+    assert_eq!(
+        missing_columns["same_schema_tables"][0]["name"],
+        "local_messages.events"
+    );
+    assert_eq!(
+        missing_columns["suggested_calls"][0]["arguments"]["schema"],
+        "local_messages"
     );
 
     client

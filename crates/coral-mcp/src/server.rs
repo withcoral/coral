@@ -362,7 +362,23 @@ impl CoralMcpServer {
                 .iter()
                 .map(|column| ColumnSummary::from_proto(&table, column))
                 .collect(),
-            Ok(None) => Vec::new(),
+            Ok(None) => {
+                let all_tables = match self.load_all_table_summaries().await {
+                    Ok(tables) => tables,
+                    Err(status) => {
+                        return Ok(tool_error_result(tool_error_from_status(
+                            "Column listing",
+                            &status,
+                        )));
+                    }
+                };
+                let all_summaries = table_summaries_from_proto(&all_tables);
+                return build_tool_result(describe_missing_table_value(
+                    &arguments.schema,
+                    &arguments.table,
+                    &all_summaries,
+                ));
+            }
             Err(status) => {
                 return Ok(ToolCallOutcome::ToolError {
                     operation: "Column listing",
