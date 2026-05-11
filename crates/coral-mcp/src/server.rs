@@ -492,19 +492,19 @@ fn list_columns_value(
         values.push(column.value(matched_fields));
     }
     let page = page_items(values, pagination);
-    let mut value = serde_json::json!({
-        "schema_name": schema,
-        "table_name": table,
-        "columns": page.items,
-        "total": page.total,
-        "limit": page.limit,
-        "offset": page.offset,
-        "has_more": page.has_more,
-    });
+    let mut value = Map::from_iter([
+        ("schema_name".to_string(), serde_json::json!(schema)),
+        ("table_name".to_string(), serde_json::json!(table)),
+        ("columns".to_string(), serde_json::json!(page.items)),
+        ("total".to_string(), serde_json::json!(page.total)),
+        ("limit".to_string(), serde_json::json!(page.limit)),
+        ("offset".to_string(), serde_json::json!(page.offset)),
+        ("has_more".to_string(), serde_json::json!(page.has_more)),
+    ]);
     if let Some(next_offset) = page.next_offset {
-        value["next_offset"] = serde_json::json!(next_offset);
+        value.insert("next_offset".to_string(), serde_json::json!(next_offset));
     }
-    Ok(value)
+    Ok(Value::Object(value))
 }
 
 impl ServerHandler for CoralMcpServer {

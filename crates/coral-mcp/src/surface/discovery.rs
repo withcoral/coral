@@ -78,19 +78,22 @@ impl ColumnSummary {
     }
 
     pub(crate) fn value(&self, matched_fields: Option<Vec<&'static str>>) -> Value {
-        let mut value = json!({
-            "column_name": self.column_name,
-            "data_type": self.data_type,
-            "is_nullable": self.nullable,
-            "is_virtual": self.is_virtual,
-            "is_required_filter": self.is_required_filter,
-            "description": self.description,
-            "ordinal_position": self.ordinal_position,
-        });
+        let mut value = serde_json::Map::from_iter([
+            ("column_name".to_string(), json!(self.column_name)),
+            ("data_type".to_string(), json!(self.data_type)),
+            ("is_nullable".to_string(), json!(self.nullable)),
+            ("is_virtual".to_string(), json!(self.is_virtual)),
+            (
+                "is_required_filter".to_string(),
+                json!(self.is_required_filter),
+            ),
+            ("description".to_string(), json!(self.description)),
+            ("ordinal_position".to_string(), json!(self.ordinal_position)),
+        ]);
         if let Some(matched_fields) = matched_fields {
-            value["matched_fields"] = json!(matched_fields);
+            value.insert("matched_fields".to_string(), json!(matched_fields));
         }
-        value
+        Value::Object(value)
     }
 }
 
