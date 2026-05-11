@@ -1383,7 +1383,10 @@ fn trace_body_content(body: &str, max_bytes: usize) -> TraceBodyContent {
         end = end.saturating_sub(1);
     }
     TraceBodyContent {
-        body: body[..end].to_string(),
+        body: body
+            .get(..end)
+            .expect("trace body truncation end is a UTF-8 boundary")
+            .to_string(),
         truncated: true,
     }
 }
