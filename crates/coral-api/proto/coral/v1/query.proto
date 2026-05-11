@@ -53,7 +53,7 @@ message ListTablesRequest {
   PaginationRequest pagination = 3;
   // Whether table columns should be omitted from the response.
   bool omit_columns = 4;
-  // Optional exact table name within `schema_name`.
+  // Optional exact table name. If set without `schema_name`, matches across all schemas.
   string table_name = 5;
 }
 
