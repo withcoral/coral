@@ -17,4 +17,4 @@ pub use query::{
 pub(crate) use query_error::{ColumnParts, TableRefParts};
 
 #[cfg(test)]
-pub(crate) use query_error::UNKNOWN_COLUMN_REASON;
+pub(crate) use query_error::{SQL_PARSE_ERROR_REASON, UNKNOWN_COLUMN_REASON};

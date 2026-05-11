@@ -236,21 +236,17 @@ fn http_request_to_structured(
         ),
         Some(UNAUTHORIZED) => (
             "PROVIDER_REQUEST_FAILED",
-            "Source authentication failed".to_string(),
-            Some(format!(
-                "Credentials for this source are invalid or expired. Re-install it to refresh: \
-                 `coral source add {source_shell}` for bundled sources, or \
-                 `coral source add --file <manifest-path>` for imported sources."
-            )),
+            "Source credentials were rejected".to_string(),
+            Some(auth_refresh_hint(&source_shell)),
             StatusCode::FailedPrecondition,
         ),
         Some(FORBIDDEN) => (
             "PROVIDER_REQUEST_FAILED",
-            "Source request was rejected".to_string(),
-            Some(
-                "Check the configured credentials and whether they have access to this resource."
-                    .to_string(),
-            ),
+            "Source access was denied".to_string(),
+            Some(format!(
+                "{} If the refreshed credential still fails, check that it has access to this resource.",
+                auth_refresh_hint(&source_shell)
+            )),
             StatusCode::FailedPrecondition,
         ),
         Some(NOT_FOUND) => (
@@ -288,10 +284,17 @@ fn http_request_to_structured(
     };
 
     let summary = match http_status {
+        Some(UNAUTHORIZED | FORBIDDEN) | None => summary,
         Some(s) => format!("{summary} ({s})"),
-        None => summary,
     };
     let detail = enrich_provider_detail(raw_detail, method, sanitized_url.as_deref());
+    let detail = if matches!(http_status, Some(UNAUTHORIZED | FORBIDDEN)) {
+        format!(
+            "The upstream API rejected the saved credentials for `{source}`. Provider detail: {detail}"
+        )
+    } else {
+        detail
+    };
     let is_retryable =
         matches!(http_status, Some(s) if s == TOO_MANY_REQUESTS || is_server_error(s));
 
@@ -319,6 +322,12 @@ fn http_request_to_structured(
         is_retryable,
         status,
         metadata,
+    )
+}
+
+fn auth_refresh_hint(source_shell: &str) -> String {
+    format!(
+        "Refresh the saved credentials with `coral source add {source_shell} --interactive` for bundled sources, or `coral source add --file <manifest-path> --interactive` for imported sources."
     )
 }
 
@@ -554,7 +563,7 @@ mod tests {
     }
 
     #[test]
-    fn http_401_includes_both_install_paths() {
+    fn http_401_has_actionable_credential_refresh_hint() {
         let error = ProviderQueryError::ApiRequest {
             source_schema: "github".to_string(),
             table: "issues".to_string(),
@@ -566,11 +575,35 @@ mod tests {
         }
         .to_structured();
         assert_eq!(error.reason(), "PROVIDER_REQUEST_FAILED");
+        assert_eq!(error.summary(), "Source credentials were rejected");
+        assert!(error.detail().contains("saved credentials for `github`"));
+        assert!(error.detail().contains("Provider detail: Bad credentials"));
         assert_eq!(error.metadata().get("http_status").unwrap(), "401");
         assert!(!error.retryable());
         let hint = error.hint().expect("401 should have a hint");
-        assert!(hint.contains("coral source add github"));
-        assert!(hint.contains("coral source add --file"));
+        assert!(hint.contains("coral source add github --interactive"));
+        assert!(hint.contains("coral source add --file <manifest-path> --interactive"));
+    }
+
+    #[test]
+    fn http_403_uses_access_denied_summary_and_scope_hint() {
+        let error = ProviderQueryError::ApiRequest {
+            source_schema: "github".to_string(),
+            table: "issues".to_string(),
+            status: Some(403),
+            method: Some("GET".to_string()),
+            url: Some("https://api.github.com/repos/coral/coral/issues".to_string()),
+            filters: HashMap::new(),
+            detail: "Resource not accessible by integration".to_string(),
+        }
+        .to_structured();
+        assert_eq!(error.reason(), "PROVIDER_REQUEST_FAILED");
+        assert_eq!(error.summary(), "Source access was denied");
+        assert!(error.detail().contains("saved credentials for `github`"));
+        assert_eq!(error.metadata().get("http_status").unwrap(), "403");
+        let hint = error.hint().expect("403 should have a hint");
+        assert!(hint.contains("coral source add github --interactive"));
+        assert!(hint.contains("has access to this resource"));
     }
 
     #[test]

@@ -27,7 +27,10 @@ pub(crate) fn datafusion_to_core_with_sql(
     // SchemaError in `Context`/`Execution`, hiding the structured variant
     // from the match arms below.
     match error.find_root() {
-        DataFusionError::SQL(detail, _) => CoreError::InvalidInput(detail.to_string()),
+        DataFusionError::SQL(detail, _) => {
+            let detail = detail.to_string();
+            CoreError::QueryFailure(Box::new(StructuredQueryError::sql_parse_error(&detail)))
+        }
         DataFusionError::Plan(detail) => plan_error_to_core(detail, error, tables, sql),
         DataFusionError::SchemaError(schema_error, _) => schema_error_to_core(schema_error),
         DataFusionError::NotImplemented(detail) => CoreError::Unimplemented(detail.clone()),
@@ -240,6 +243,8 @@ fn mcp_provider_error_to_core(error: &McpProviderQueryError) -> CoreError {
 
 #[cfg(test)]
 mod tests {
+    use datafusion::sql::sqlparser::parser::ParserError;
+
     use super::*;
     use crate::contracts::UNKNOWN_COLUMN_REASON;
 
@@ -286,6 +291,27 @@ mod tests {
         match core {
             CoreError::InvalidInput(detail) => assert!(detail.contains("syntax error")),
             other => panic!("expected CoreError::InvalidInput, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sql_error_maps_to_structured_parse_error() {
+        let error = DataFusionError::SQL(
+            Box::new(ParserError::ParserError(
+                "Expected end of statement".to_string(),
+            )),
+            None,
+        );
+
+        let core = datafusion_to_core(&error, &[]);
+
+        match core {
+            CoreError::QueryFailure(sqe) => {
+                assert_eq!(sqe.reason(), crate::contracts::SQL_PARSE_ERROR_REASON);
+                assert_eq!(sqe.summary(), "SQL query could not be parsed");
+                assert!(sqe.hint().is_some_and(|hint| hint.contains("coral.tables")));
+            }
+            other => panic!("expected CoreError::QueryFailure, got {other:?}"),
         }
     }
 }

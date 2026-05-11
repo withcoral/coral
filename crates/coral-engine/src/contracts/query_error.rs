@@ -13,6 +13,12 @@ pub(crate) const UNKNOWN_COLUMN_REASON: &str = "UNKNOWN_COLUMN";
 /// Wire-stable `reason` code for table-not-found errors.
 pub(crate) const TABLE_NOT_FOUND_REASON: &str = "TABLE_NOT_FOUND";
 
+/// Wire-stable `reason` code for empty SQL errors.
+pub(crate) const EMPTY_SQL_REASON: &str = "EMPTY_SQL";
+
+/// Wire-stable `reason` code for SQL parse errors.
+pub(crate) const SQL_PARSE_ERROR_REASON: &str = "SQL_PARSE_ERROR";
+
 /// Minimum `strsim::normalized_levenshtein` score for a "did you mean?"
 /// suggestion to surface.
 ///
@@ -128,6 +134,35 @@ impl StructuredQueryError {
             status,
             metadata,
         }
+    }
+
+    /// Builds a structured `EMPTY_SQL` error.
+    pub(crate) fn empty_sql() -> Self {
+        Self::new(
+            EMPTY_SQL_REASON,
+            "SQL query is empty",
+            "Coral cannot run an empty SQL string.",
+            Some("Try `coral sql \"SELECT * FROM coral.tables LIMIT 10\"`.".to_string()),
+            false,
+            StatusCode::InvalidArgument,
+            HashMap::new(),
+        )
+    }
+
+    /// Builds a structured `SQL_PARSE_ERROR` error.
+    pub(crate) fn sql_parse_error(detail: &str) -> Self {
+        Self::new(
+            SQL_PARSE_ERROR_REASON,
+            "SQL query could not be parsed",
+            detail,
+            Some(
+                "Check the SQL syntax and retry. Use `SELECT * FROM coral.tables LIMIT 10` to inspect available tables."
+                    .to_string(),
+            ),
+            false,
+            StatusCode::InvalidArgument,
+            HashMap::new(),
+        )
     }
 
     /// Builds a structured `UNKNOWN_COLUMN` error from a missing column and
@@ -345,6 +380,12 @@ fn table_not_found_hint(
     table: &str,
     known_tables: &[TableInfo],
 ) -> Option<String> {
+    if known_tables.is_empty() {
+        return Some(
+            "No source tables are currently queryable. Run `coral source discover`, then `coral source add <source>` to connect a source.".to_string(),
+        );
+    }
+
     let Some(schema) = schema else {
         // Unqualified `FROM X` could not be resolved. Before falling back to
         // the generic catalog pointer, scan every known table across every
@@ -643,6 +684,31 @@ mod tests {
         // that pattern-matches on reason codes.
         assert_eq!(UNKNOWN_COLUMN_REASON, "UNKNOWN_COLUMN");
         assert_eq!(TABLE_NOT_FOUND_REASON, "TABLE_NOT_FOUND");
+        assert_eq!(EMPTY_SQL_REASON, "EMPTY_SQL");
+        assert_eq!(SQL_PARSE_ERROR_REASON, "SQL_PARSE_ERROR");
+    }
+
+    #[test]
+    fn empty_sql_has_actionable_hint() {
+        let err = StructuredQueryError::empty_sql();
+
+        assert_eq!(err.reason(), EMPTY_SQL_REASON);
+        assert_eq!(err.summary(), "SQL query is empty");
+        assert_eq!(err.status(), StatusCode::InvalidArgument);
+        let hint = err.hint().expect("hint should be present");
+        assert!(hint.contains("coral.tables"), "got: {hint}");
+    }
+
+    #[test]
+    fn sql_parse_error_points_to_discovery_query() {
+        let err = StructuredQueryError::sql_parse_error("Expected end of statement");
+
+        assert_eq!(err.reason(), SQL_PARSE_ERROR_REASON);
+        assert_eq!(err.summary(), "SQL query could not be parsed");
+        assert_eq!(err.status(), StatusCode::InvalidArgument);
+        assert!(err.detail().contains("Expected end of statement"));
+        let hint = err.hint().expect("hint should be present");
+        assert!(hint.contains("coral.tables"), "got: {hint}");
     }
 
     #[test]
@@ -733,6 +799,17 @@ mod tests {
             !hint.contains("coral source"),
             "hint must stay transport-neutral (no CLI-specific commands), got: {hint}"
         );
+    }
+
+    #[test]
+    fn table_not_found_with_no_tables_points_to_source_setup() {
+        let err =
+            StructuredQueryError::table_not_found(&tr(&["datafusion", "github", "issues"]), &[]);
+
+        assert_eq!(err.reason(), TABLE_NOT_FOUND_REASON);
+        let hint = err.hint().expect("hint should be present");
+        assert!(hint.contains("coral source discover"), "got: {hint}");
+        assert!(hint.contains("coral source add <source>"), "got: {hint}");
     }
 
     #[test]

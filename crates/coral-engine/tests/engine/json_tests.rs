@@ -286,12 +286,13 @@ async fn json_operators_are_rejected() {
             .await
             .expect_err("query should reject JSON operators");
 
-        assert!(
-            matches!(
-                error,
-                CoreError::InvalidInput(_) | CoreError::Unimplemented(_) | CoreError::Internal(_)
-            ),
-            "expected a planning failure for `{sql}`, got {error:?}"
-        );
+        match error {
+            CoreError::QueryFailure(sqe) => {
+                assert_eq!(sqe.reason(), "SQL_PARSE_ERROR");
+                assert!(sqe.hint().is_some());
+            }
+            CoreError::InvalidInput(_) | CoreError::Unimplemented(_) | CoreError::Internal(_) => {}
+            other => panic!("expected a planning failure for `{sql}`, got {other:?}"),
+        }
     }
 }

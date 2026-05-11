@@ -131,7 +131,9 @@ impl CoralQuery {
         sql: &str,
     ) -> Result<QueryExecution, CoreError> {
         if sql.trim().is_empty() {
-            return Err(CoreError::InvalidInput("SQL must not be empty".to_string()));
+            return Err(CoreError::QueryFailure(Box::new(
+                StructuredQueryError::empty_sql(),
+            )));
         }
 
         runtime::query::build_runtime(sources, runtime)
