@@ -407,6 +407,10 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
         "local_messages.messages"
     );
     assert!(
+        search["tables"][0]["guide"].is_string(),
+        "search results should always expose guide text, even when empty"
+    );
+    assert!(
         search["tables"][0]["matched_fields"]
             .as_array()
             .expect("matched fields")
