@@ -104,7 +104,7 @@ impl SpanExporter for JsonlSpanExporter {
             .collect::<Vec<_>>();
         self.writer
             .lock()
-            .map_err(|_| {
+            .map_err(|_poisoned| {
                 OTelSdkError::InternalFailure(LocalTraceStoreError::WriterPoisoned.to_string())
             })?
             .write_records(&records)
@@ -115,7 +115,7 @@ impl SpanExporter for JsonlSpanExporter {
         self.shutdown_called.store(true, Ordering::Relaxed);
         self.writer
             .lock()
-            .map_err(|_| {
+            .map_err(|_poisoned| {
                 OTelSdkError::InternalFailure(LocalTraceStoreError::WriterPoisoned.to_string())
             })?
             .close_current()
@@ -959,21 +959,16 @@ mod tests {
             .expect("trace summary")
             .trace_id;
         let detail = store.get_trace(&trace_id).expect("trace detail");
+        let span = detail.spans.first().expect("trace span");
 
-        assert_eq!(detail.spans[0].name, "coral.query");
+        assert_eq!(span.name, "coral.query");
+        assert!(span.attributes_json.contains(r#""test.attribute":"value""#));
         assert!(
-            detail.spans[0]
-                .attributes_json
-                .contains(r#""test.attribute":"value""#)
-        );
-        assert!(
-            detail.spans[0]
-                .attributes_json
+            span.attributes_json
                 .contains(r#""coral.http.request.body":"{\"query\":\"Ada\"}""#)
         );
         assert!(
-            detail.spans[0]
-                .resource_json
+            span.resource_json
                 .contains(r#""service.name":"coral-test""#)
         );
     }
@@ -1023,7 +1018,7 @@ mod tests {
         let summaries = store.list_traces(10, 0).expect("list traces");
 
         assert_eq!(summaries.len(), 1);
-        let summary = &summaries[0];
+        let summary = summaries.first().expect("trace summary");
         assert_eq!(summary.name, "coral.query");
         assert_eq!(summary.query, "SELECT 1");
         assert_eq!(summary.status, StoredTraceStatus::Ok);
@@ -1033,7 +1028,10 @@ mod tests {
         let detail = store.get_trace(&summary.trace_id).expect("trace detail");
         assert_eq!(detail.summary, *summary);
         assert_eq!(detail.spans.len(), 1);
-        assert_eq!(detail.spans[0].span_id, summary.root_span_id);
+        assert_eq!(
+            detail.spans.first().expect("trace span").span_id,
+            summary.root_span_id
+        );
     }
 
     #[test]
@@ -1060,7 +1058,7 @@ mod tests {
                 .expect("missing store list")
                 .is_empty()
         );
-        assert!(store.get_trace("missing").is_err());
+        store.get_trace("missing").unwrap_err();
     }
 
     #[test]
@@ -1100,7 +1098,7 @@ mod tests {
         assert!(!old_path.exists());
         assert!(fresh_path.exists());
         assert_eq!(traces.len(), 1);
-        assert_eq!(traces[0].trace_id, "fresh-trace");
+        assert_eq!(traces.first().expect("fresh trace").trace_id, "fresh-trace");
     }
 
     #[test]

@@ -98,7 +98,7 @@ fn parse_page_token(page_token: &str) -> Result<usize, Status> {
     if page_token.is_empty() {
         return Ok(0);
     }
-    page_token.parse().map_err(|_| {
+    page_token.parse().map_err(|_parse_error| {
         Status::new(
             Code::InvalidArgument,
             "invalid input: page_token must be returned by ListTraces",
@@ -193,6 +193,6 @@ mod tests {
     fn page_token_is_offset() {
         assert_eq!(parse_page_token("").expect("empty token"), 0);
         assert_eq!(parse_page_token("25").expect("offset token"), 25);
-        assert!(parse_page_token("not-an-offset").is_err());
+        parse_page_token("not-an-offset").unwrap_err();
     }
 }

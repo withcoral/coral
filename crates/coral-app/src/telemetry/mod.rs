@@ -704,7 +704,7 @@ mod tests {
         provider.force_flush().expect("flush spans");
 
         let spans = memory.get_finished_spans().expect("finished spans");
-        let attributes = &spans[0].attributes;
+        let attributes = &spans.first().expect("finished span").attributes;
 
         assert!(!attributes.iter().any(|attribute| {
             attribute
