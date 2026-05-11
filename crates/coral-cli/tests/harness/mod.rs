@@ -72,6 +72,11 @@ fn mock_visible_table() -> Table {
                 nullable: false,
             },
             Column {
+                name: "sessionId".to_string(),
+                data_type: "Utf8".to_string(),
+                nullable: false,
+            },
+            Column {
                 name: "text".to_string(),
                 data_type: "Utf8".to_string(),
                 nullable: false,
@@ -439,6 +444,7 @@ impl QueryService for MockQueryService {
             .filter(|table| {
                 request.schema_name.is_empty() || table.schema_name == request.schema_name
             })
+            .filter(|table| request.table_name.is_empty() || table.name == request.table_name)
             .collect::<Vec<_>>();
         let total = u32::try_from(tables.len()).unwrap_or(u32::MAX);
         let pagination = request.pagination.unwrap_or_default();
