@@ -21,6 +21,10 @@ engineering team understand a code change quickly and accurately.
 2. Choose the smallest useful presentation format.
    - Default to a single standalone `.html` file with semantic HTML,
      responsive CSS, and inline SVG.
+   - Use the Seline Analytics "Crisp Data Canvas" style in
+     `references/seline-style.md` as the default visual system unless the user
+     supplies another design system or the target repo has stronger local
+     styling conventions.
    - Use Mermaid only when diagrams-as-code materially improves maintainability
      for flowcharts, sequence diagrams, state diagrams, ER diagrams, git graphs,
      or dependency maps.
@@ -92,6 +96,9 @@ Use progressive disclosure: orient first, then go deeper.
 
 ## Design Requirements
 
+- For the default visual treatment, read
+  `references/seline-style.md` and apply its light analytics-dashboard palette,
+  compact spacing, subtle elevation, and functional component patterns.
 - Use accessible text sizes, high contrast, and responsive layout.
 - Use headings, cards, callouts, tables, and diagrams to reduce memory load.
 - Do not rely on color alone; pair color with labels or shape.
