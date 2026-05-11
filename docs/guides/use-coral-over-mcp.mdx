@@ -197,7 +197,7 @@ Once your client is connected, ask the agent to list available tables or run a s
 
 > "Run a small Coral query against `coral.tables`."
 
-The agent should call `list_tables`, `search_tables`, `describe_table`, `list_columns`, or query `coral.tables` and return the schemas from your installed sources. Large catalogs should be paged with `limit` and `offset`.
+The agent should call `list_tables`, `search_tables`, or query `coral.tables` to return schemas from your installed sources, and use `describe_table` or `list_columns` for table-specific metadata. Large catalogs should be paged with `limit` and `offset`.
 
 ## Troubleshooting
 
