@@ -46,7 +46,11 @@ impl QueryResultObserver for RecordingObserver {
     ) -> Result<(), QueryResultObserverError> {
         self.calls
             .lock()
-            .expect("observer calls lock should not be poisoned")
+            .map_err(|_err| {
+                QueryResultObserverError::failed_precondition(
+                    "observer calls lock should not be poisoned",
+                )
+            })?
             .push(ObservedQuery {
                 sql: sql.to_string(),
                 column_names: schema
@@ -97,9 +101,10 @@ async fn observer_called_after_successful_query_and_sees_final_batches() {
     assert_eq!(execution.row_count(), 2);
     let calls = observer.calls();
     assert_eq!(calls.len(), 1);
+    let call = calls.first().expect("observer call");
     assert_eq!(
-        calls[0],
-        ObservedQuery {
+        call,
+        &ObservedQuery {
             sql: sql.to_string(),
             column_names: vec!["id".to_string(), "name".to_string()],
             row_count: 2,
@@ -181,9 +186,10 @@ async fn observer_sees_filtered_projected_result_not_raw_source_rows() {
     );
     let calls = observer.calls();
     assert_eq!(calls.len(), 1);
+    let call = calls.first().expect("observer call");
     assert_eq!(
-        calls[0],
-        ObservedQuery {
+        call,
+        &ObservedQuery {
             sql: sql.to_string(),
             column_names: vec!["name".to_string()],
             row_count: 1,

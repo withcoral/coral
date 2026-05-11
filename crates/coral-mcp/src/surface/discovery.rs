@@ -35,7 +35,7 @@ pub(crate) struct TableSummary {
     pub(crate) required_filters: Vec<String>,
 }
 
-#[allow(
+#[expect(
     dead_code,
     reason = "Column summaries are shared discovery scaffolding for the follow-up column tool."
 )]
@@ -173,7 +173,10 @@ pub(crate) fn paged_value(key: &str, page: Page<Value>) -> Value {
         "has_more": has_more,
     });
     if let Some(next_offset) = next_offset {
-        value["next_offset"] = json!(next_offset);
+        value
+            .as_object_mut()
+            .expect("paged value is initialized as a JSON object")
+            .insert("next_offset".to_string(), json!(next_offset));
     }
     value
 }
@@ -197,7 +200,7 @@ fn optional_u32_argument(
             None,
         ));
     }
-    u32::try_from(value).map_err(|_| {
+    u32::try_from(value).map_err(|_err| {
         ErrorData::invalid_params(
             format!("argument '{key}' must be between {min} and {max}"),
             None,
@@ -207,6 +210,11 @@ fn optional_u32_argument(
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::indexing_slicing,
+        reason = "JSON shape assertions intentionally fail loudly in tests"
+    )]
+
     use regex::Regex;
 
     use super::TableSummary;
