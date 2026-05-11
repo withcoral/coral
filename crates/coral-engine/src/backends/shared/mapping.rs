@@ -236,7 +236,7 @@ fn parse_epoch_micros(s: &str, input: &TimestampInput) -> Option<i64> {
         TimestampInput::Iso8601 => return None,
     };
     let padded = format!("{frac_str:0<frac_width$}");
-    let frac: i64 = padded[..frac_width].parse().ok()?;
+    let frac: i64 = padded.get(..frac_width)?.parse().ok()?;
     let multiplier: i64 = match input {
         TimestampInput::Seconds => 1_000_000,
         TimestampInput::Milliseconds => 1_000,
@@ -421,7 +421,7 @@ mod tests {
     use std::collections::HashMap;
 
     fn table_with_expr(name: &str, data_type: &str, expr: &ExprSpec) -> HttpTableSpec {
-        parse_source_manifest_value(serde_json::json!({
+        let source_manifest = parse_source_manifest_value(serde_json::json!({
             "dsl_version": 3,
             "name": "test",
             "version": "0.1.0",
@@ -438,11 +438,9 @@ mod tests {
                 }]
             }]
         }))
-        .expect("manifest should parse")
-        .as_http()
-        .expect("http manifest")
-        .tables[0]
-            .clone()
+        .expect("manifest should parse");
+        let manifest = source_manifest.as_http().expect("http manifest");
+        manifest.tables.first().expect("HTTP table").clone()
     }
 
     fn request_json(request: &RequestSpec) -> Value {

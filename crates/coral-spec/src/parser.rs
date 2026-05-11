@@ -280,7 +280,8 @@ functions:
         let http = manifest.as_http().expect("HTTP manifest");
         assert!(http.tables.is_empty());
         assert_eq!(http.functions.len(), 1);
-        assert_eq!(http.functions[0].name, "search_issues");
+        let function = http.functions.first().expect("HTTP function");
+        assert_eq!(function.name, "search_issues");
     }
 
     #[test]

@@ -31,11 +31,12 @@ pub(crate) fn index_page(manifests: &[ValidatedSourceManifest]) -> String {
             // block-scalar descriptions render cleanly in one cell.
             escape_mdx(&flatten_for_table_cell(description))
         };
-        let _ = writeln!(
+        writeln!(
             out,
             "| [{name}](#{name}) | `{}` | {description} |",
             backend_label(manifest),
-        );
+        )
+        .expect("writing to String is infallible");
     }
 
     out.push_str(INDEX_TYPES);
@@ -61,7 +62,7 @@ pub(crate) fn index_page(manifests: &[ValidatedSourceManifest]) -> String {
 
 fn render_source_section(out: &mut String, manifest: &ValidatedSourceManifest) {
     let name = manifest.schema_name();
-    let _ = writeln!(out, "\n### `{name}`");
+    writeln!(out, "\n### `{name}`").expect("writing to String is infallible");
     out.push('\n');
 
     let inputs = manifest.declared_inputs();
@@ -85,15 +86,16 @@ fn render_input_block(out: &mut String, input: &ManifestInputSpec) {
         "optional"
     };
 
-    let _ = write!(out, "`{}` ({requirement})", input.key);
+    write!(out, "`{}` ({requirement})", input.key).expect("writing to String is infallible");
     if input.default_value.is_empty() {
         out.push('\n');
     } else {
         // `<br />` gives a soft line break so the default sits visually
         // right under the key without starting a new paragraph. Trailing-
         // whitespace line breaks are fragile because editors strip them.
-        let _ = writeln!(out, "<br />");
-        let _ = writeln!(out, "default `{}`", input.default_value);
+        writeln!(out, "<br />").expect("writing to String is infallible");
+        writeln!(out, "default `{}`", input.default_value)
+            .expect("writing to String is infallible");
     }
 
     if let Some(hint) = input.hint.as_deref() {
@@ -206,7 +208,12 @@ pub(crate) fn escape_mdx(input: &str) -> String {
             _ => {}
         }
     }
-    escape_prose_into(&input[cursor..], &mut out);
+    escape_prose_into(
+        input
+            .get(cursor..)
+            .expect("pulldown-cmark cursor is a valid UTF-8 boundary"),
+        &mut out,
+    );
     out
 }
 
@@ -219,9 +226,18 @@ fn emit_passthrough(
     out: &mut String,
 ) {
     if *cursor < range.start {
-        escape_prose_into(&input[*cursor..range.start], out);
+        escape_prose_into(
+            input
+                .get(*cursor..range.start)
+                .expect("pulldown-cmark range starts on a valid UTF-8 boundary"),
+            out,
+        );
     }
-    out.push_str(&input[range.start..range.end]);
+    out.push_str(
+        input
+            .get(range.start..range.end)
+            .expect("pulldown-cmark range is a valid UTF-8 span"),
+    );
     *cursor = range.end;
 }
 
@@ -229,7 +245,7 @@ fn emit_passthrough(
 /// tail, inclusive of the brackets. Returns `None` for reference-style
 /// links (`[text][ref]` etc.) where no `](` appears in the link span.
 fn inline_link_dest(input: &str, link: std::ops::Range<usize>) -> Option<std::ops::Range<usize>> {
-    let slice = &input[link.start..link.end];
+    let slice = input.get(link.clone())?;
     let bracket_paren = slice.find("](")?;
     Some((link.start + bracket_paren)..link.end)
 }

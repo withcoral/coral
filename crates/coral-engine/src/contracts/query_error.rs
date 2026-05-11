@@ -507,25 +507,24 @@ fn parse_table_ref(reference: &TableRefParts, known_tables: &[TableInfo]) -> Par
             table: String::new(),
         };
     }
-    if parts.len() == 1 {
+    if let [table] = parts {
         return ParsedTableRef::Unqualified {
-            table: parts[0].clone(),
+            table: table.clone(),
         };
     }
 
     // Strip the default catalog prefix if present.
-    let body = if parts[0] == "datafusion" {
-        &parts[1..]
-    } else {
-        parts
+    let body = match parts {
+        [catalog, rest @ ..] if catalog == "datafusion" => rest,
+        _ => parts,
     };
 
-    match body.len() {
-        0 => ParsedTableRef::Unqualified {
+    match body {
+        [] => ParsedTableRef::Unqualified {
             table: String::new(),
         },
-        1 => ParsedTableRef::Unqualified {
-            table: body[0].clone(),
+        [table] => ParsedTableRef::Unqualified {
+            table: table.clone(),
         },
         _ => {
             // Synthetic `public` schema: `datafusion.public.X` comes from a
@@ -536,12 +535,12 @@ fn parse_table_ref(reference: &TableRefParts, known_tables: &[TableInfo]) -> Par
             // than two — `datafusion.public.player.stats` for a table named
             // `player.stats` — and we collapse everything after `public`
             // back into the unqualified bare name.
-            if body.len() >= 2
-                && body[0] == "public"
+            if let [schema, rest @ ..] = body
+                && schema == "public"
                 && !schema_is_registered("public", known_tables)
             {
                 return ParsedTableRef::Unqualified {
-                    table: join_ref_parts(&body[1..]),
+                    table: join_ref_parts(rest),
                 };
             }
 
@@ -549,11 +548,17 @@ fn parse_table_ref(reference: &TableRefParts, known_tables: &[TableInfo]) -> Par
             // registered schema (case-insensitive). This recovers dotted
             // source names like `"foo.bar"` from their exploded form.
             for schema_len in (1..body.len()).rev() {
-                let candidate_schema = join_ref_parts(&body[..schema_len]);
+                let candidate_schema = join_ref_parts(
+                    body.get(..schema_len)
+                        .expect("schema range is bounded by loop"),
+                );
                 if schema_is_registered(&candidate_schema, known_tables) {
                     return ParsedTableRef::Qualified {
                         schema: candidate_schema,
-                        table: join_ref_parts(&body[schema_len..]),
+                        table: join_ref_parts(
+                            body.get(schema_len..)
+                                .expect("table range is bounded by loop"),
+                        ),
                     };
                 }
             }
@@ -563,10 +568,12 @@ fn parse_table_ref(reference: &TableRefParts, known_tables: &[TableInfo]) -> Par
             // intact even when the source itself is missing from the
             // catalog (so the remediation hint still names the right
             // install target).
-            let last = body.len() - 1;
+            let (table, schema) = body
+                .split_last()
+                .expect("multi-part body is guaranteed by match arm");
             ParsedTableRef::Qualified {
-                schema: join_ref_parts(&body[..last]),
-                table: body[last].clone(),
+                schema: join_ref_parts(schema),
+                table: table.clone(),
             }
         }
     }

@@ -209,10 +209,11 @@ fn validate_template(template: &str, declared: &BTreeSet<String>) -> Result<()> 
 #[cfg(test)]
 mod tests {
     use super::{ManifestInputKind, ManifestInputSpec, collect_source_inputs_value};
-    use crate::Result;
+    use crate::{ManifestError, Result};
 
     fn collect(raw: &str) -> Result<Vec<ManifestInputSpec>> {
-        let root: serde_json::Value = serde_yaml::from_str(raw).expect("parse yaml");
+        let root: serde_json::Value =
+            serde_yaml::from_str(raw).map_err(ManifestError::parse_yaml)?;
         collect_source_inputs_value(&root)
     }
 
@@ -242,21 +243,23 @@ tables: []
 "#;
 
         let inputs = collect(manifest).expect("inputs");
-        assert_eq!(inputs.len(), 2);
-        assert_eq!(inputs[0].key, "GITHUB_API_BASE");
-        assert_eq!(inputs[0].kind, ManifestInputKind::Variable);
-        assert!(!inputs[0].required);
-        assert_eq!(inputs[0].default_value, "https://api.github.com");
+        let [api_base, token] = inputs.as_slice() else {
+            panic!("expected two inputs, got {inputs:?}");
+        };
+        assert_eq!(api_base.key, "GITHUB_API_BASE");
+        assert_eq!(api_base.kind, ManifestInputKind::Variable);
+        assert!(!api_base.required);
+        assert_eq!(api_base.default_value, "https://api.github.com");
         assert_eq!(
-            inputs[0].hint.as_deref(),
+            api_base.hint.as_deref(),
             Some("For GitHub Enterprise, use https://<host>/api/v3")
         );
-        assert_eq!(inputs[1].key, "GITHUB_TOKEN");
-        assert_eq!(inputs[1].kind, ManifestInputKind::Secret);
-        assert!(inputs[1].required);
-        assert_eq!(inputs[1].default_value, "");
+        assert_eq!(token.key, "GITHUB_TOKEN");
+        assert_eq!(token.kind, ManifestInputKind::Secret);
+        assert!(token.required);
+        assert_eq!(token.default_value, "");
         assert_eq!(
-            inputs[1].hint.as_deref(),
+            token.hint.as_deref(),
             Some("Run `gh auth token` or create a PAT")
         );
     }
@@ -280,8 +283,10 @@ auth:
 tables: []
 ";
         let inputs = collect(manifest).expect("inputs");
-        assert_eq!(inputs.len(), 1);
-        assert_eq!(inputs[0].kind, ManifestInputKind::Secret);
+        let [input] = inputs.as_slice() else {
+            panic!("expected one input, got {inputs:?}");
+        };
+        assert_eq!(input.kind, ManifestInputKind::Secret);
     }
 
     #[test]

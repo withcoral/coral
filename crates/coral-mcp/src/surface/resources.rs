@@ -45,7 +45,7 @@ pub(crate) fn guide_resource_content(sources: &[Source], tables: &[TableSummary]
     } else {
         sources_section.push_str("\nVisible source schemas:\n");
         for schema in schemas {
-            let _ = writeln!(sources_section, "- {schema}");
+            writeln!(sources_section, "- {schema}").expect("writing to String is infallible");
         }
     }
 
@@ -85,7 +85,10 @@ pub(crate) fn list_tables_value(response: &ListTablesResponse) -> Value {
         "has_more": pagination.has_more,
     });
     if pagination.has_more {
-        value["next_offset"] = json!(pagination.next_offset);
+        value
+            .as_object_mut()
+            .expect("list tables value is initialized as a JSON object")
+            .insert("next_offset".to_string(), json!(pagination.next_offset));
     }
     value
 }
@@ -182,6 +185,11 @@ fn identifier_needs_quotes(identifier: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::indexing_slicing,
+        reason = "JSON shape assertions intentionally fail loudly in tests"
+    )]
+
     use coral_api::v1::{ListTablesResponse, PaginationResponse, Source, TableSummary, Workspace};
     use serde_json::json;
 

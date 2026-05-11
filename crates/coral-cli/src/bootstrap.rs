@@ -14,7 +14,7 @@ pub(crate) struct Bootstrap {
 impl Bootstrap {
     pub(crate) async fn shutdown(self) {
         if let Some(server) = self.server {
-            let _ = server.shutdown().await;
+            drop(server.shutdown().await);
         }
     }
 }

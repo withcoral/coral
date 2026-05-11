@@ -238,6 +238,10 @@ impl ConfigStore {
     }
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "toml_edit indexing creates or accesses document paths while rebuilding the config table"
+)]
 fn render_config(config: &PersistedAppConfig, existing_raw: Option<&str>) -> String {
     let mut doc = existing_raw
         .and_then(|raw| raw.parse::<DocumentMut>().ok())
@@ -340,6 +344,11 @@ fn render_string_array(values: &[String]) -> Value {
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::indexing_slicing,
+        reason = "loaded source order assertions intentionally fail loudly in tests"
+    )]
+
     use std::collections::BTreeMap;
 
     use super::{AppConfig, PersistedAppConfig, SourceCatalog, render_config};

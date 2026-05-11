@@ -22,19 +22,17 @@ impl ParsedTemplate {
         let mut parts = Vec::new();
         let mut rest = raw.as_str();
 
-        while let Some(start) = rest.find("{{") {
-            if start > 0 {
-                parts.push(TemplatePart::Literal(rest[..start].to_string()));
+        while let Some((literal, after_start)) = rest.split_once("{{") {
+            if !literal.is_empty() {
+                parts.push(TemplatePart::Literal(literal.to_string()));
             }
 
-            let token_start = start + 2;
-            let Some(end_rel) = rest[token_start..].find("}}") else {
+            let Some((raw_token, after_token)) = after_start.split_once("}}") else {
                 return Err(ManifestError::validation(format!(
                     "unclosed template token in '{raw}'"
                 )));
             };
-            let end = token_start + end_rel;
-            let token = rest[token_start..end].trim();
+            let token = raw_token.trim();
             let (raw_key, default_value) = match token.split_once('|') {
                 Some((key, default)) => (key.trim(), Some(default.to_string())),
                 None => (token, None),
@@ -50,7 +48,7 @@ impl ParsedTemplate {
                 key,
                 default_value,
             }));
-            rest = &rest[end + 2..];
+            rest = after_token;
         }
 
         if !rest.is_empty() {
@@ -210,22 +208,23 @@ mod tests {
             "Bearer {{input.API_TOKEN}} for {{filter.org|openai}}"
         );
         assert_eq!(template.parts().len(), 4);
+        let parts = template.parts();
         assert!(matches!(
-            &template.parts()[0],
-            TemplatePart::Literal(part) if part == "Bearer "
+            parts.first(),
+            Some(TemplatePart::Literal(part)) if part == "Bearer "
         ));
         assert!(matches!(
-            &template.parts()[1],
-            TemplatePart::Token(token)
+            parts.get(1),
+            Some(TemplatePart::Token(token))
                 if token.namespace() == &TemplateNamespace::Input && token.key() == "API_TOKEN"
         ));
         assert!(matches!(
-            &template.parts()[2],
-            TemplatePart::Literal(part) if part == " for "
+            parts.get(2),
+            Some(TemplatePart::Literal(part)) if part == " for "
         ));
         assert!(matches!(
-            &template.parts()[3],
-            TemplatePart::Token(token)
+            parts.get(3),
+            Some(TemplatePart::Token(token))
                 if token.namespace() == &TemplateNamespace::Filter
                     && token.key() == "org"
                     && token.default_value() == Some("openai")

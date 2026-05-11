@@ -193,7 +193,12 @@ impl QueryManager {
             )));
         }
         for secret_name in source_spec.required_secret_names() {
-            let value = stored_secrets[&secret_name].clone();
+            let value = stored_secrets.get(&secret_name).cloned().ok_or_else(|| {
+                AppError::FailedPrecondition(format!(
+                    "source '{}' is missing secret '{secret_name}'",
+                    source.name
+                ))
+            })?;
             resolved_secrets.insert(secret_name, value);
         }
         Ok((

@@ -42,10 +42,13 @@ pub(crate) fn print_welcome_header() {
         let padded_logo = format!("{logo_line:<logo_width$}");
         if row >= wordmark_offset && row < wordmark_offset + CORAL_WORDMARK_ASCII.len() {
             let mark_idx = row - wordmark_offset;
+            let wordmark_line = CORAL_WORDMARK_ASCII
+                .get(mark_idx)
+                .expect("wordmark index is bounded by display range");
             println!(
                 "{}  {}",
                 style(&padded_logo).color256(209),
-                style(CORAL_WORDMARK_ASCII[mark_idx]).bold(),
+                style(wordmark_line).bold(),
             );
         } else {
             println!("{}", style(&padded_logo).color256(209));

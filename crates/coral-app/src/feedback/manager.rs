@@ -86,6 +86,11 @@ fn required_text(field: &str, value: &str) -> Result<String, AppError> {
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::indexing_slicing,
+        reason = "JSONL shape assertions intentionally fail loudly in tests"
+    )]
+
     use std::fs;
 
     use serde_json::Value;

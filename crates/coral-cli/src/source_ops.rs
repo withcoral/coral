@@ -650,6 +650,11 @@ pub(crate) fn finalize_input_value(
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::indexing_slicing,
+        reason = "collected input order assertions intentionally fail loudly in tests"
+    )]
+
     use coral_api::v1::ValidateSourceResponse;
     use coral_spec::{ManifestInputKind, ManifestInputSpec};
 

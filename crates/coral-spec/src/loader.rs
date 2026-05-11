@@ -117,7 +117,7 @@ mod tests {
             load_manifests(&root).expect("empty source dir should not fail manifest loading");
         assert!(manifests.is_empty());
 
-        let _ = fs::remove_dir_all(&root);
+        drop(fs::remove_dir_all(&root));
     }
 
     #[test]
@@ -148,9 +148,10 @@ tables:
 
         let manifests = load_manifests(&root).expect("parquet manifest should load");
         assert_eq!(manifests.len(), 1);
-        assert_eq!(manifests[0].schema_name(), "otel_metrics");
+        let manifest = manifests.first().expect("parquet manifest");
+        assert_eq!(manifest.schema_name(), "otel_metrics");
 
-        let _ = fs::remove_dir_all(&root);
+        drop(fs::remove_dir_all(&root));
     }
 
     #[test]
@@ -182,10 +183,11 @@ tables:
 
         let manifests = load_manifests(&root).expect("jsonl manifest should load");
         assert_eq!(manifests.len(), 1);
-        assert_eq!(manifests[0].schema_name(), "claude");
-        assert_eq!(manifests[0].backend(), crate::SourceBackend::Jsonl);
+        let manifest = manifests.first().expect("jsonl manifest");
+        assert_eq!(manifest.schema_name(), "claude");
+        assert_eq!(manifest.backend(), crate::SourceBackend::Jsonl);
 
-        let _ = fs::remove_dir_all(&root);
+        drop(fs::remove_dir_all(&root));
     }
 
     #[test]
@@ -231,9 +233,10 @@ tables:
 
         let manifests = load_manifests(&root).expect("should not error on malformed source");
         assert_eq!(manifests.len(), 1, "only the valid source should be loaded");
-        assert_eq!(manifests[0].schema_name(), "good_plugin");
+        let manifest = manifests.first().expect("valid manifest");
+        assert_eq!(manifest.schema_name(), "good_plugin");
 
-        let _ = fs::remove_dir_all(&root);
+        drop(fs::remove_dir_all(&root));
     }
 
     #[test]
@@ -261,9 +264,10 @@ tables:
 
         let manifests = load_manifests(&root).expect(".yaml manifest should load");
         assert_eq!(manifests.len(), 1);
-        assert_eq!(manifests[0].schema_name(), "my_plugin");
+        let manifest = manifests.first().expect("yaml manifest");
+        assert_eq!(manifest.schema_name(), "my_plugin");
 
-        let _ = fs::remove_dir_all(&root);
+        drop(fs::remove_dir_all(&root));
     }
 
     #[test]
@@ -296,7 +300,7 @@ tables:
         let manifests = load_manifests(&root).expect("should load exactly one manifest");
         assert_eq!(manifests.len(), 1, "should not load both .yml and .yaml");
 
-        let _ = fs::remove_dir_all(&root);
+        drop(fs::remove_dir_all(&root));
     }
 
     #[test]
@@ -311,6 +315,6 @@ tables:
         let manifests = load_manifests(&root).expect("should not error when all sources are bad");
         assert!(manifests.is_empty());
 
-        let _ = fs::remove_dir_all(&root);
+        drop(fs::remove_dir_all(&root));
     }
 }

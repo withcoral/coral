@@ -12,6 +12,7 @@ use crate::state::{AppStateLayout, ConfigStore, SecretStore};
 use crate::storage::fs;
 use crate::workspaces::WorkspaceName;
 use coral_spec::ManifestInputKind;
+use tracing::warn;
 
 #[derive(Clone)]
 pub(crate) struct SourceManager {
@@ -314,28 +315,41 @@ impl SourceManager {
             let manifest_path = self.layout.manifest_file(workspace_name, source_name);
             match previous.manifest_yaml {
                 Some(manifest_yaml) => {
-                    if let Some(parent) = manifest_path.parent() {
-                        let _ = fs::ensure_dir(parent);
+                    if let Some(parent) = manifest_path.parent()
+                        && let Err(e) = fs::ensure_dir(parent)
+                    {
+                        warn!("rollback: failed to create manifest parent dir: {e}");
                     }
-                    let _ = fs::write_atomic(&manifest_path, manifest_yaml.as_bytes());
+                    if let Err(e) = fs::write_atomic(&manifest_path, manifest_yaml.as_bytes()) {
+                        warn!("rollback: failed to restore manifest file: {e}");
+                    }
                 }
                 None if manifest_path.exists() => {
-                    let _ = std::fs::remove_file(&manifest_path);
+                    if let Err(e) = std::fs::remove_file(&manifest_path) {
+                        warn!("rollback: failed to remove manifest file: {e}");
+                    }
                 }
                 None => {}
             }
-            let _ = self.secret_store.replace_source_secrets_for(
+            if let Err(e) = self.secret_store.replace_source_secrets_for(
                 workspace_name,
                 source_name,
                 &previous.secrets,
-            );
-            let _ = self
+            ) {
+                warn!("rollback: failed to restore source secrets: {e}");
+            }
+            if let Err(e) = self
                 .config_store
-                .upsert_source(workspace_name, previous.source);
+                .upsert_source(workspace_name, previous.source)
+            {
+                warn!("rollback: failed to restore source config: {e}");
+            }
         } else {
             let source_dir = self.layout.source_dir(workspace_name, source_name);
-            if source_dir.exists() {
-                let _ = std::fs::remove_dir_all(&source_dir);
+            if source_dir.exists()
+                && let Err(e) = std::fs::remove_dir_all(&source_dir)
+            {
+                warn!("rollback: failed to remove source directory: {e}");
             }
         }
     }

@@ -126,7 +126,9 @@ pub(crate) fn status_to_error_data(status: &tonic::Status) -> ErrorData {
                 "metadata": error.metadata,
             });
             if let Some(hint) = error.hint {
-                data["hint"] = Value::String(hint);
+                data.as_object_mut()
+                    .expect("error data is initialized as a JSON object")
+                    .insert("hint".to_string(), Value::String(hint));
             }
             match status.code() {
                 tonic::Code::NotFound => ErrorData::resource_not_found(error.summary, Some(data)),
@@ -150,6 +152,12 @@ pub(crate) fn internal_status(error: &serde_json::Error) -> tonic::Status {
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::get_unwrap,
+        clippy::indexing_slicing,
+        reason = "JSON shape assertions intentionally fail loudly in tests"
+    )]
+
     use std::collections::HashMap;
 
     use rmcp::model::ErrorCode;

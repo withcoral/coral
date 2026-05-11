@@ -191,9 +191,9 @@ mod tests {
                     err.hint.as_deref(),
                     Some("Add a constant equality filter on `repo`.")
                 );
-                assert_eq!(err.metadata.get("schema").unwrap(), "github");
-                assert_eq!(err.metadata.get("table").unwrap(), "issues");
-                assert_eq!(err.metadata.get("column").unwrap(), "repo");
+                assert_eq!(err.metadata.get("schema").expect("schema"), "github");
+                assert_eq!(err.metadata.get("table").expect("table"), "issues");
+                assert_eq!(err.metadata.get("column").expect("column"), "repo");
                 assert!(
                     !err.metadata.contains_key("summary"),
                     "summary promoted out of metadata"
@@ -246,9 +246,9 @@ mod tests {
                 assert_eq!(err.summary, "Source authentication failed (401)");
                 assert_eq!(err.detail, "bad credentials");
                 assert!(err.hint.as_deref().unwrap().contains("Re-install"));
-                assert_eq!(err.metadata.get("source").unwrap(), "github");
-                assert_eq!(err.metadata.get("http_status").unwrap(), "401");
-                assert_eq!(err.metadata.get("http_method").unwrap(), "GET");
+                assert_eq!(err.metadata.get("source").expect("source"), "github");
+                assert_eq!(err.metadata.get("http_status").expect("http status"), "401");
+                assert_eq!(err.metadata.get("http_method").expect("http method"), "GET");
                 assert!(!err.metadata.contains_key("summary"));
                 assert!(!err.metadata.contains_key("detail"));
                 assert!(!err.metadata.contains_key("hint"));

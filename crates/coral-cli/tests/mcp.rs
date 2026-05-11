@@ -1,5 +1,6 @@
 #![allow(
     clippy::indexing_slicing,
+    clippy::panic_in_result_fn,
     clippy::string_slice,
     missing_docs,
     unused_crate_dependencies,

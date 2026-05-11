@@ -147,7 +147,10 @@ pub(crate) fn extract_descriptions(content: &str) -> Vec<(usize, String)> {
     let mut results: Vec<(usize, String)> = Vec::new();
     let mut i = 0;
     while i < lines.len() {
-        let Some((key_indent, value)) = parse_description_header(lines[i]) else {
+        let line = lines
+            .get(i)
+            .expect("line index is bounded by loop condition");
+        let Some((key_indent, value)) = parse_description_header(line) else {
             i += 1;
             continue;
         };
@@ -165,7 +168,10 @@ pub(crate) fn extract_descriptions(content: &str) -> Vec<(usize, String)> {
             continue;
         }
 
-        let first = value.chars().next().unwrap();
+        let first = value
+            .chars()
+            .next()
+            .expect("empty values are handled before scalar dispatch");
         if first == '|' || first == '>' {
             let chomp = value.chars().nth(1).filter(|c| *c == '-' || *c == '+');
             let fold = first == '>';
@@ -225,7 +231,9 @@ fn consume_plain_scalar(
     let mut pieces: Vec<String> = vec![first_value.trim().to_string()];
     let mut i = start + 1;
     while i < lines.len() {
-        let cont = lines[i];
+        let cont = lines
+            .get(i)
+            .expect("line index is bounded by loop condition");
         let stripped = cont.trim();
         if stripped.is_empty() {
             break;
@@ -244,11 +252,17 @@ fn consume_plain_scalar(
 /// `''` escapes a literal single quote; everything else is literal.
 fn consume_single_quoted(lines: &[&str], start: usize, first_value: &str) -> (String, usize) {
     // Strip the opening quote. `first_value` is guaranteed to start with `'`.
-    let mut buf = first_value[1..].to_string();
+    let mut buf = first_value
+        .strip_prefix('\'')
+        .expect("single-quoted scalar starts with quote")
+        .to_string();
     let mut i = start;
     loop {
         if let Some(pos) = find_unescaped_single_quote(&buf) {
-            let text = buf[..pos].replace("''", "'");
+            let text = buf
+                .get(..pos)
+                .expect("single-quote scanner returns a char boundary")
+                .replace("''", "'");
             return (text, i + 1);
         }
         i += 1;
@@ -256,7 +270,12 @@ fn consume_single_quoted(lines: &[&str], start: usize, first_value: &str) -> (St
             return (buf.replace("''", "'"), i);
         }
         buf.push(' ');
-        buf.push_str(lines[i].trim());
+        buf.push_str(
+            lines
+                .get(i)
+                .expect("line index is bounded by prior length check")
+                .trim(),
+        );
     }
 }
 
@@ -264,7 +283,7 @@ fn find_unescaped_single_quote(buf: &str) -> Option<usize> {
     let bytes = buf.as_bytes();
     let mut j = 0;
     while j < bytes.len() {
-        if bytes[j] == b'\'' {
+        if bytes.get(j).copied() == Some(b'\'') {
             if bytes.get(j + 1).copied() == Some(b'\'') {
                 j += 2;
                 continue;
@@ -278,11 +297,17 @@ fn find_unescaped_single_quote(buf: &str) -> Option<usize> {
 
 /// Consume a possibly multi-line double-quoted scalar. Supports `\"` escape.
 fn consume_double_quoted(lines: &[&str], start: usize, first_value: &str) -> (String, usize) {
-    let mut buf = first_value[1..].to_string();
+    let mut buf = first_value
+        .strip_prefix('"')
+        .expect("double-quoted scalar starts with quote")
+        .to_string();
     let mut i = start;
     loop {
         if let Some(pos) = find_unescaped_double_quote(&buf) {
-            let text = unescape_double_quoted(&buf[..pos]);
+            let text = unescape_double_quoted(
+                buf.get(..pos)
+                    .expect("double-quote scanner returns a char boundary"),
+            );
             return (text, i + 1);
         }
         i += 1;
@@ -290,7 +315,12 @@ fn consume_double_quoted(lines: &[&str], start: usize, first_value: &str) -> (St
             return (unescape_double_quoted(&buf), i);
         }
         buf.push(' ');
-        buf.push_str(lines[i].trim());
+        buf.push_str(
+            lines
+                .get(i)
+                .expect("line index is bounded by prior length check")
+                .trim(),
+        );
     }
 }
 
@@ -298,9 +328,9 @@ fn find_unescaped_double_quote(buf: &str) -> Option<usize> {
     let bytes = buf.as_bytes();
     let mut j = 0;
     while j < bytes.len() {
-        match bytes[j] {
-            b'\\' if j + 1 < bytes.len() => j += 2,
-            b'"' => return Some(j),
+        match bytes.get(j).copied() {
+            Some(b'\\') if j + 1 < bytes.len() => j += 2,
+            Some(b'"') => return Some(j),
             _ => j += 1,
         }
     }
@@ -343,7 +373,9 @@ fn consume_block_scalar(
     let mut content_lines: Vec<String> = Vec::new();
     let mut block_indent: Option<usize> = None;
     while i < lines.len() {
-        let raw = lines[i];
+        let raw = lines
+            .get(i)
+            .expect("line index is bounded by loop condition");
         if raw.trim().is_empty() {
             content_lines.push(String::new());
             i += 1;
@@ -391,7 +423,9 @@ fn fold_block(content_lines: &[String]) -> String {
             out.push_str(line);
             continue;
         }
-        let prev = &content_lines[i - 1];
+        let prev = content_lines
+            .get(i - 1)
+            .expect("previous content line exists after first iteration");
         if prev.is_empty() || line.is_empty() {
             out.push('\n');
         } else {
@@ -462,7 +496,10 @@ pub(crate) fn classify(description: &str) -> Vec<String> {
 fn last_clause(text: &str) -> &str {
     for (i, c) in text.char_indices().rev() {
         if matches!(c, '.' | '!' | '?') {
-            return text[i + c.len_utf8()..].trim();
+            return text
+                .get(i + c.len_utf8()..)
+                .expect("char_indices yields valid UTF-8 boundaries")
+                .trim();
         }
     }
     text
@@ -482,18 +519,22 @@ fn trailing_word(text: &str) -> Option<&str> {
     }
     let is_word_byte = |b: u8| b.is_ascii_alphabetic() || matches!(b, b'\'' | b'_' | b'-');
     let mut start = bytes.len();
-    while start > 0 && is_word_byte(bytes[start - 1]) {
+    while start > 0 && bytes.get(start - 1).is_some_and(|b| is_word_byte(*b)) {
         start -= 1;
     }
     // Regex requires the first char to be [A-Za-z]. Advance past any leading
     // non-alpha word chars (e.g. leading apostrophe).
-    while start < bytes.len() && !bytes[start].is_ascii_alphabetic() {
+    while start < bytes.len()
+        && bytes
+            .get(start)
+            .is_some_and(|byte| !byte.is_ascii_alphabetic())
+    {
         start += 1;
     }
     if start >= bytes.len() {
         None
     } else {
-        Some(&trimmed[start..])
+        trimmed.get(start..)
     }
 }
 

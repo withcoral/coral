@@ -647,7 +647,7 @@ impl MockServer {
                     captured: source_captured,
                 }))
                 .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
-                    let _ = shutdown_rx.await;
+                    drop(shutdown_rx.await);
                 })
                 .await
         });
@@ -736,6 +736,10 @@ impl MockServer {
 
     pub(crate) async fn shutdown(mut self) {
         if let Some(tx) = self.shutdown_tx.take() {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "send error means the receiver is already dropped, which is fine during shutdown"
+            )]
             let _ = tx.send(());
         }
         self.task.await.expect("join").expect("server");

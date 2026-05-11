@@ -42,7 +42,7 @@ pub(crate) fn replace_atomic(from: &Path, to: &Path) -> io::Result<()> {
     if let Some(parent) = to.parent()
         && let Ok(dir) = fs::File::open(parent)
     {
-        let _ = dir.sync_all();
+        drop(dir.sync_all());
     }
 
     Ok(())

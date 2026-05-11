@@ -501,10 +501,19 @@ fn compute_column_widths<const COLUMNS: usize>(
     rows: &[[String; COLUMNS]],
 ) -> [usize; COLUMNS] {
     std::array::from_fn(|idx| {
-        let header_width = measure_text_width(headers[idx]);
+        let header_width = measure_text_width(
+            headers
+                .get(idx)
+                .expect("column index is bounded by array length"),
+        );
         let row_width = rows
             .iter()
-            .map(|row| measure_text_width(&row[idx]))
+            .map(|row| {
+                measure_text_width(
+                    row.get(idx)
+                        .expect("column index is bounded by array length"),
+                )
+            })
             .max()
             .unwrap_or(0);
         header_width.max(row_width)
@@ -521,7 +530,12 @@ where
     cells
         .into_iter()
         .enumerate()
-        .map(|(idx, cell)| pad_cell(cell.as_ref(), widths[idx], idx + 1 < COLUMNS))
+        .map(|(idx, cell)| {
+            let width = widths
+                .get(idx)
+                .expect("column index is bounded by array length");
+            pad_cell(cell.as_ref(), *width, idx + 1 < COLUMNS)
+        })
         .collect::<Vec<_>>()
         .join("  ")
 }

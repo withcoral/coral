@@ -1214,7 +1214,15 @@ fn sanitize_trace_url(raw: &str) -> String {
     };
     url.set_query(None);
     url.set_fragment(None);
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "set_username/set_password only fail for cannot-be-a-base URLs; HTTP URLs always have a host"
+    )]
     let _ = url.set_username("");
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "set_username/set_password only fail for cannot-be-a-base URLs; HTTP URLs always have a host"
+    )]
     let _ = url.set_password(None);
     url.to_string()
 }
@@ -1334,7 +1342,10 @@ fn set_path_value_at(cursor: &mut Value, path: &[String], value: Value) -> Resul
             }
             array.resize_with(index + 1, || Value::Null);
         }
-        return set_path_value_at(&mut array[index], tail, value);
+        let next = array.get_mut(index).ok_or_else(|| {
+            DataFusionError::Execution("failed to access JSON array path".to_string())
+        })?;
+        return set_path_value_at(next, tail, value);
     }
 
     if !cursor.is_object() {
@@ -1468,7 +1479,9 @@ fn extract_next_link_url(
         let end = item.find('>').ok_or_else(|| {
             DataFusionError::Execution(format!("invalid pagination Link header item '{item}'"))
         })?;
-        let next_raw = &item[start + 1..end];
+        let next_raw = item
+            .get(start + 1..end)
+            .expect("Link header delimiter indices are valid UTF-8 boundaries");
         let next_url = base.join(next_raw).map_err(|e| {
             DataFusionError::Execution(format!("invalid pagination next link '{next_raw}': {e}"))
         })?;
@@ -2494,8 +2507,9 @@ mod tests {
                 }]
             }]
         }));
+        let table = manifest.tables.first().expect("HTTP table");
         assert!(matches!(
-            manifest.tables[0].response.row_strategy,
+            table.response.row_strategy,
             RowStrategy::DictEntries
         ));
     }

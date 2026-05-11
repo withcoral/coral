@@ -77,7 +77,10 @@ fn truncate_status_detail(detail: String) -> String {
     while cut > 0 && !detail.is_char_boundary(cut) {
         cut -= 1;
     }
-    format!("{}{MARKER}", &detail[..cut])
+    let truncated = detail
+        .get(..cut)
+        .expect("cut is adjusted to a UTF-8 character boundary");
+    format!("{truncated}{MARKER}")
 }
 
 #[expect(

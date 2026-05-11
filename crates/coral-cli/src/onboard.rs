@@ -60,7 +60,9 @@ pub(crate) async fn run(app: &AppClient) -> Result<(), anyhow::Error> {
 
         match select_top_level(&theme, &bundled_sources)? {
             TopLevelChoice::BundledSource(idx) => {
-                let source = &bundled_sources[idx];
+                let source = bundled_sources
+                    .get(idx)
+                    .expect("selected source index comes from menu items");
                 if source.installed {
                     run_installed_source_menu(app, &theme, source).await?;
                 } else {
@@ -152,7 +154,11 @@ async fn run_installed_source_menu(
         .default(0)
         .interact_opt()?;
 
-    match selection.map(|i| actions[i]) {
+    match selection.map(|i| {
+        *actions
+            .get(i)
+            .expect("selected action index comes from menu items")
+    }) {
         Some(InstalledSourceAction::Validate) => {
             source_ops::validate_and_warn(
                 app,
@@ -279,7 +285,12 @@ async fn show_next_steps_screen(
             .default(0)
             .interact_opt()?;
 
-        let action = selection.map(|i| items[i].1);
+        let action = selection.map(|i| {
+            items
+                .get(i)
+                .expect("selected next-step index comes from menu items")
+                .1
+        });
         match action {
             Some(NextStepAction::RunExampleQuery) => {
                 let sql = "SELECT schema_name, COUNT(*) AS table_count FROM coral.tables GROUP BY schema_name ORDER BY 1";

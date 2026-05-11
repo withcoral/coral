@@ -100,8 +100,9 @@ pub fn decode_execute_sql_response(
     response: &ExecuteSqlResponse,
 ) -> Result<CollectedQueryResult, QueryResultError> {
     let (schema, batches) = decode_arrow_ipc_stream(&response.arrow_ipc_stream)?;
-    let row_count = usize::try_from(response.row_count)
-        .map_err(|_| QueryResultError::InvalidResponse("row_count must not be negative".into()))?;
+    let row_count = usize::try_from(response.row_count).map_err(|_err| {
+        QueryResultError::InvalidResponse("row_count must not be negative".into())
+    })?;
     CollectedQueryResult::new(schema, batches, row_count)
 }
 
@@ -210,7 +211,8 @@ mod tests {
         assert_eq!(decoded.row_count(), 2);
         assert_eq!(decoded.schema().fields().len(), 2);
         assert_eq!(decoded.batches().len(), 1);
-        assert_eq!(decoded.batches()[0].num_rows(), 2);
+        let batch = decoded.batches().first().expect("decoded batch");
+        assert_eq!(batch.num_rows(), 2);
     }
 
     #[test]
@@ -236,7 +238,8 @@ mod tests {
         assert!(json.contains("\"name\":null"));
         let rows = batches_to_json_rows(decoded.batches()).expect("rows");
         assert_eq!(rows.len(), 2);
-        assert!(rows[1].get("name").is_some_and(Value::is_null));
+        let row = rows.get(1).expect("second row");
+        assert!(row.get("name").is_some_and(Value::is_null));
     }
 
     #[test]

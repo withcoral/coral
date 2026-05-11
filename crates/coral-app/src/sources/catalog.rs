@@ -113,6 +113,11 @@ fn candidate_from_manifest(
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::indexing_slicing,
+        reason = "manifest input order assertions intentionally fail loudly in tests"
+    )]
+
     use std::collections::BTreeSet;
 
     use coral_spec::ManifestInputKind;

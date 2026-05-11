@@ -55,7 +55,7 @@ pub(crate) fn grpc_span(
         grpc.code = tracing::field::Empty,
         status = tracing::field::Empty,
     );
-    let _ = span.set_parent(parent_cx);
+    drop(span.set_parent(parent_cx));
     span
 }
 
@@ -210,6 +210,11 @@ pub(crate) fn validate_source_response_to_proto(
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::indexing_slicing,
+        reason = "proto shape assertions intentionally fail loudly in tests"
+    )]
+
     use coral_api::v1::{QueryTestFailure, Workspace, query_test_result};
     use tonic::Code;
 

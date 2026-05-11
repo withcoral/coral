@@ -292,6 +292,10 @@ impl RunningServer {
             .expect("shutdown mutex poisoned")
             .take()
         {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "send error means the receiver is already dropped, which is fine during shutdown"
+            )]
             let _ = shutdown_tx.send(());
         }
 
@@ -311,6 +315,10 @@ impl Drop for RunningServer {
             .expect("shutdown mutex poisoned")
             .take()
         {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "send error means the receiver is already dropped, which is fine during shutdown"
+            )]
             let _ = shutdown_tx.send(());
         }
     }
@@ -393,7 +401,7 @@ where
             .add_service(feedback_service)
             .add_service(query_service)
             .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
-                let _ = shutdown_rx.await;
+                drop(shutdown_rx.await);
             })
             .await
     })
@@ -450,7 +458,7 @@ where
             .http2_max_header_list_size(HTTP2_MAX_HEADER_LIST_SIZE)
             .add_routes(combined)
             .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
-                let _ = shutdown_rx.await;
+                drop(shutdown_rx.await);
             })
             .await
     })
@@ -599,6 +607,11 @@ fn static_fallback_error_response(status: StatusCode, body: &'static str) -> Axu
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::indexing_slicing,
+        reason = "JSON row assertions intentionally fail loudly in tests"
+    )]
+
     use std::borrow::Cow;
     use std::net::{Ipv4Addr, TcpListener};
     use std::sync::Arc;
@@ -665,7 +678,7 @@ mod tests {
 
     #[test]
     fn server_builder_accepts_engine_extensions_providers() {
-        let _ = ServerBuilder::new()
+        let _builder = ServerBuilder::new()
             .add_engine_extensions_provider(Arc::new(AwsEngineExtensionsProvider))
             .add_engine_extensions_provider(Arc::new(NoopEngineExtensionsProvider));
     }

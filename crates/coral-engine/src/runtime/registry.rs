@@ -298,8 +298,8 @@ mod tests {
 
     #[test]
     fn non_reserved_schema_is_accepted() {
-        assert!(check_reserved_schema("github").is_ok());
-        assert!(check_reserved_schema("pagerduty").is_ok());
-        assert!(check_reserved_schema("slack").is_ok());
+        check_reserved_schema("github").expect("github is not reserved");
+        check_reserved_schema("pagerduty").expect("pagerduty is not reserved");
+        check_reserved_schema("slack").expect("slack is not reserved");
     }
 }

@@ -46,7 +46,7 @@ fn main() {
             manifest_name, name,
             "bundled source directory '{name}' must match manifest name '{manifest_name}'"
         );
-        let _ = writeln!(generated, "    ({name:?}, {raw:?}),");
+        writeln!(generated, "    ({name:?}, {raw:?}),").expect("writing to String is infallible");
     }
     generated.push_str("];\n");
 

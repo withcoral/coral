@@ -4,6 +4,9 @@
     reason = "Integration test crates only use a small subset of the package dependencies."
 )]
 
+#[cfg(feature = "cli-test-server")]
+mod harness;
+
 use tempfile::tempdir;
 
 use std::process::Command;
@@ -13,8 +16,6 @@ use coral_api::v1::{
     QueryTestFailure, QueryTestResult, QueryTestSuccess, Source, SourceOrigin,
     ValidateSourceResponse, Workspace, query_test_result,
 };
-#[cfg(feature = "cli-test-server")]
-mod harness;
 #[cfg(feature = "cli-test-server")]
 use harness::MockServer;
 

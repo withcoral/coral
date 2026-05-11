@@ -29,7 +29,7 @@ impl AppStateLayout {
                 author: "withcoral".to_string(),
                 app_name: "coral".to_string(),
             })
-            .map_err(|_| AppError::MissingConfigDir)?;
+            .map_err(|_err| AppError::MissingConfigDir)?;
             #[cfg(target_os = "macos")]
             let dir = strategy.data_dir();
             #[cfg(not(target_os = "macos"))]
