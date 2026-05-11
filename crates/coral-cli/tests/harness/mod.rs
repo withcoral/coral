@@ -111,10 +111,6 @@ fn table_summary(table: &Table) -> TableSummary {
 }
 
 fn mock_sql_response(sql: &str) -> ExecuteSqlResponse {
-    if sql.contains("COUNT(*) AS column_count") && sql.contains("FROM coral.columns") {
-        return mock_column_count_response(3);
-    }
-
     if sql.contains("FROM coral.tables") {
         return mock_coral_tables_response();
     }
@@ -140,20 +136,6 @@ fn mock_sql_response(sql: &str) -> ExecuteSqlResponse {
     ExecuteSqlResponse {
         arrow_ipc_stream: encode_arrow_ipc_stream(&schema, &[batch]).expect("encode arrow ipc"),
         row_count,
-    }
-}
-
-fn mock_column_count_response(count: i64) -> ExecuteSqlResponse {
-    let schema = Schema::new(vec![Field::new("column_count", DataType::Int64, false)]);
-    let batch = RecordBatch::try_new(
-        Arc::new(schema.clone()),
-        vec![Arc::new(Int64Array::from(vec![count]))],
-    )
-    .expect("build column count batch");
-
-    ExecuteSqlResponse {
-        arrow_ipc_stream: encode_arrow_ipc_stream(&schema, &[batch]).expect("encode arrow ipc"),
-        row_count: 1,
     }
 }
 
