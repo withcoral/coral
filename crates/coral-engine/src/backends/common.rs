@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write;
 use std::sync::Arc;
 
-use crate::{QueryRuntimeContext, RequestAuthenticator, SourceTableFunctions};
+use crate::{QueryRuntimeContext, RequestAuthenticator};
 use async_trait::async_trait;
 use coral_spec::backends::file::PartitionColumnSpec;
 use coral_spec::{
@@ -12,9 +12,12 @@ use coral_spec::{
     SourceTableFunctionSpec, TableCommon,
 };
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
+use datafusion::catalog::TableFunctionImpl;
 use datafusion::datasource::TableProvider;
 use datafusion::error::DataFusionError;
 use datafusion::prelude::SessionContext;
+
+pub(crate) type SourceTableFunctions = HashMap<String, Arc<dyn TableFunctionImpl>>;
 
 #[derive(Debug, Clone)]
 pub(crate) struct RegisteredColumn {

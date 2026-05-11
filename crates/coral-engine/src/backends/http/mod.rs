@@ -12,7 +12,7 @@ use datafusion::prelude::SessionContext;
 use crate::RequestAuthenticator;
 use crate::backends::{
     BackendCompileRequest, BackendRegistration, CompiledBackendSource, RegisteredSource,
-    RegisteredTable, build_registered_inputs, build_registered_table,
+    RegisteredTable, SourceTableFunctions, build_registered_inputs, build_registered_table,
     build_registered_table_function, internal_table_function_name, registered_columns_from_specs,
     required_filter_names,
 };
@@ -94,7 +94,7 @@ impl CompiledBackendSource for HttpCompiledSource {
             table_infos.push(registered_table(table));
         }
         let mut table_functions =
-            crate::SourceTableFunctions::with_capacity(self.manifest.functions.len());
+            SourceTableFunctions::with_capacity(self.manifest.functions.len());
         let mut table_function_infos = Vec::with_capacity(self.manifest.functions.len());
         for function in &self.manifest.functions {
             let internal_name =

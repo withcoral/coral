@@ -5,10 +5,12 @@ use std::sync::Arc;
 use datafusion::error::{DataFusionError, Result as DataFusionResult};
 use datafusion::prelude::SessionContext;
 
-use crate::backends::{BackendRegistration, CompiledBackendSource, RegisteredSource};
+use crate::backends::{
+    BackendRegistration, CompiledBackendSource, RegisteredSource, SourceTableFunctions,
+};
 use crate::runtime::error::{datafusion_to_core, source_decorator_error_to_core};
 use crate::runtime::schema_provider::StaticSchemaProvider;
-use crate::{CoreError, QuerySource, SourceDecorator, SourceFailurePolicy, SourceTableFunctions};
+use crate::{CoreError, QuerySource, SourceDecorator, SourceFailurePolicy};
 
 const RESERVED_SCHEMA_NAMES: &[&str] = &["coral", "coral_admin"];
 
