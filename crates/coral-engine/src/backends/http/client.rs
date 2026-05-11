@@ -1479,9 +1479,9 @@ fn extract_next_link_url(
         let end = item.find('>').ok_or_else(|| {
             DataFusionError::Execution(format!("invalid pagination Link header item '{item}'"))
         })?;
-        let next_raw = item
-            .get(start + 1..end)
-            .expect("Link header delimiter indices are valid UTF-8 boundaries");
+        let next_raw = item.get(start + 1..end).ok_or_else(|| {
+            DataFusionError::Execution(format!("invalid pagination Link header item '{item}'"))
+        })?;
         let next_url = base.join(next_raw).map_err(|e| {
             DataFusionError::Execution(format!("invalid pagination next link '{next_raw}': {e}"))
         })?;
@@ -1807,6 +1807,22 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("pagination next link must stay on origin https://api.example.com")
+        );
+    }
+
+    #[test]
+    fn extract_next_link_url_rejects_misordered_link_delimiters() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "link",
+            HeaderValue::from_static(">/v1/resources?page=2<; rel=\"next\""),
+        );
+
+        let err = extract_next_link_url(&headers, "https://api.example.com", false).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("invalid pagination Link header item")
         );
     }
 
