@@ -94,7 +94,7 @@ fn mock_visible_table() -> Table {
                 ordinal_position: 2,
             },
         ],
-        required_filters: Vec::new(),
+        required_filters: vec!["owner".to_string(), "repo".to_string()],
     }
 }
 

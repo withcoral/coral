@@ -9,7 +9,7 @@ pub struct ColumnInfo {
     pub data_type: String,
     /// Whether the column can contain null values.
     pub nullable: bool,
-    /// Whether the column is exposed for discovery but not directly queryable.
+    /// Whether the column is provider-derived metadata, such as a filter or computed column.
     pub is_virtual: bool,
     /// Whether the column must be constrained before querying the table.
     pub is_required_filter: bool,

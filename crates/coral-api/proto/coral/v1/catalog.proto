@@ -12,7 +12,7 @@ message Column {
   string data_type = 2;
   // Whether the column can contain null values.
   bool nullable = 3;
-  // Whether the column is exposed for discovery but not directly queryable.
+  // Whether the column is provider-derived metadata, such as a filter or computed column.
   bool is_virtual = 4;
   // Whether the column must be constrained before querying the table.
   bool is_required_filter = 5;

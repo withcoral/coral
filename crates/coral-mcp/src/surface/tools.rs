@@ -218,6 +218,7 @@ pub(crate) fn list_columns_tool() -> Tool {
             }
         })),
     )
+    .with_raw_output_schema(list_columns_output_schema())
     .with_annotations(
         ToolAnnotations::with_title("List Columns")
             .read_only(true)
@@ -420,6 +421,141 @@ fn search_tables_output_schema() -> Arc<Map<String, Value>> {
             }
         }
     }))
+}
+
+fn list_columns_output_schema() -> Arc<Map<String, Value>> {
+    json_object_schema(&json!({
+        "oneOf": [
+            list_columns_page_output_schema(),
+            missing_table_output_schema()
+        ]
+    }))
+}
+
+fn list_columns_page_output_schema() -> Value {
+    json!({
+        "type": "object",
+        "required": ["schema_name", "table_name", "columns", "total", "limit", "offset", "has_more"],
+        "additionalProperties": false,
+        "properties": {
+            "schema_name": { "type": "string" },
+            "table_name": { "type": "string" },
+            "columns": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": [
+                        "column_name",
+                        "data_type",
+                        "is_nullable",
+                        "is_virtual",
+                        "is_required_filter",
+                        "description",
+                        "ordinal_position"
+                    ],
+                    "additionalProperties": false,
+                    "properties": {
+                        "column_name": { "type": "string" },
+                        "data_type": { "type": "string" },
+                        "is_nullable": { "type": "boolean" },
+                        "is_virtual": { "type": "boolean" },
+                        "is_required_filter": { "type": "boolean" },
+                        "description": { "type": "string" },
+                        "ordinal_position": {
+                            "type": "integer",
+                            "minimum": 0
+                        },
+                        "matched_fields": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                                "type": "string",
+                                "enum": ["column_name", "description", "data_type"]
+                            }
+                        }
+                    }
+                }
+            },
+            "total": {
+                "type": "integer",
+                "minimum": 0
+            },
+            "limit": {
+                "type": "integer",
+                "minimum": 1
+            },
+            "offset": {
+                "type": "integer",
+                "minimum": 0
+            },
+            "has_more": { "type": "boolean" },
+            "next_offset": {
+                "type": "integer",
+                "minimum": 0
+            }
+        }
+    })
+}
+
+fn missing_table_output_schema() -> Value {
+    json!({
+        "type": "object",
+        "required": ["found", "requested", "available_schemas", "same_schema_tables", "suggested_calls"],
+        "additionalProperties": false,
+        "properties": {
+            "found": { "enum": [false] },
+            "requested": {
+                "type": "object",
+                "required": ["schema", "table"],
+                "additionalProperties": false,
+                "properties": {
+                    "schema": { "type": "string" },
+                    "table": { "type": "string" }
+                }
+            },
+            "available_schemas": {
+                "type": "array",
+                "items": { "type": "string" }
+            },
+            "same_schema_tables": {
+                "type": "array",
+                "items": missing_table_summary_output_schema()
+            },
+            "suggested_calls": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["tool", "arguments"],
+                    "additionalProperties": false,
+                    "properties": {
+                        "tool": {
+                            "type": "string",
+                            "enum": ["search_tables", "list_tables"]
+                        },
+                        "arguments": { "type": "object" }
+                    }
+                }
+            }
+        }
+    })
+}
+
+fn missing_table_summary_output_schema() -> Value {
+    json!({
+        "type": "object",
+        "required": ["schema_name", "table_name", "name", "description", "required_filters"],
+        "additionalProperties": false,
+        "properties": {
+            "schema_name": { "type": "string" },
+            "table_name": { "type": "string" },
+            "name": { "type": "string" },
+            "description": { "type": "string" },
+            "required_filters": {
+                "type": "array",
+                "items": { "type": "string" }
+            }
+        }
+    })
 }
 
 fn paginated_table_output_schema(table_item_schema: &Value) -> Arc<Map<String, Value>> {

@@ -266,6 +266,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
     let updated_tools = client.list_all_tools().await.expect("updated tools");
     let list_tables_tool = tool_by_name(&updated_tools, "list_tables");
     let search_tables_tool = tool_by_name(&updated_tools, "search_tables");
+    let list_columns_tool = tool_by_name(&updated_tools, "list_columns");
     assert!(
         updated_tools[0]
             .description
@@ -550,6 +551,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
     assert_eq!(columns["next_offset"], 2);
     assert_eq!(columns["columns"][0]["column_name"], "type");
     assert_eq!(columns["columns"][0]["data_type"], "Utf8");
+    assert_matches_output_schema(list_columns_tool, &columns);
 
     let required_columns = client
         .call_tool(
@@ -567,6 +569,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
     assert_eq!(required_columns["total"], 1);
     assert_eq!(required_columns["columns"][0]["column_name"], "sessionId");
     assert_eq!(required_columns["columns"][0]["is_required_filter"], true);
+    assert_matches_output_schema(list_columns_tool, &required_columns);
 
     let filtered_columns = client
         .call_tool(
@@ -590,6 +593,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
             .iter()
             .any(|field| field == "column_name")
     );
+    assert_matches_output_schema(list_columns_tool, &filtered_columns);
 
     let empty_column_filter = client
         .call_tool(
@@ -614,6 +618,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
             .expect("columns")
             .is_empty()
     );
+    assert_matches_output_schema(list_columns_tool, &empty_column_filter);
 
     let missing_columns = client
         .call_tool(
@@ -638,6 +643,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
         missing_columns["suggested_calls"][0]["arguments"]["schema"],
         "local_messages"
     );
+    assert_matches_output_schema(list_columns_tool, &missing_columns);
 
     client
         .call_tool(
