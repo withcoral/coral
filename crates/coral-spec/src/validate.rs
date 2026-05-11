@@ -3,7 +3,8 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::common::{
-    BodySpec, ColumnSpec, DetailHintSpec, ExprSpec, FilterSpec, FunctionArgBinding, PaginationSpec,
+    BodySpec, ColumnSpec, DetailHintSpec, ExprSpec, FilterSpec, FunctionArgBinding,
+    MAX_SEARCH_CALLS_PER_QUERY, MAX_SEARCH_CANDIDATES_PER_QUERY, MAX_SEARCH_TOP_K, PaginationSpec,
     RequestRouteSpec, RequestSpec, SearchLimitsSpec, SourceTableFunctionKind,
     SourceTableFunctionSpec, ValueSourceSpec,
 };
@@ -326,6 +327,11 @@ fn validate_search_limits(limits: &SearchLimitsSpec, context: &str) -> Result<()
             "{context}.max_top_k must be > 0"
         )));
     }
+    if limits.max_top_k > MAX_SEARCH_TOP_K {
+        return Err(ManifestError::validation(format!(
+            "{context}.max_top_k must be <= {MAX_SEARCH_TOP_K}"
+        )));
+    }
     if limits.default_top_k > limits.max_top_k {
         return Err(ManifestError::validation(format!(
             "{context}.default_top_k must be <= max_top_k"
@@ -334,6 +340,21 @@ fn validate_search_limits(limits: &SearchLimitsSpec, context: &str) -> Result<()
     if limits.max_calls_per_query == 0 {
         return Err(ManifestError::validation(format!(
             "{context}.max_calls_per_query must be > 0"
+        )));
+    }
+    if limits.max_calls_per_query > MAX_SEARCH_CALLS_PER_QUERY {
+        return Err(ManifestError::validation(format!(
+            "{context}.max_calls_per_query must be <= {MAX_SEARCH_CALLS_PER_QUERY}"
+        )));
+    }
+    let Some(candidate_budget) = limits.max_top_k.checked_mul(limits.max_calls_per_query) else {
+        return Err(ManifestError::validation(format!(
+            "{context}.max_top_k * max_calls_per_query exceeds supported range"
+        )));
+    };
+    if candidate_budget > MAX_SEARCH_CANDIDATES_PER_QUERY {
+        return Err(ManifestError::validation(format!(
+            "{context}.max_top_k * max_calls_per_query must be <= {MAX_SEARCH_CANDIDATES_PER_QUERY}"
         )));
     }
     Ok(())
@@ -793,8 +814,9 @@ mod tests {
         validate_http_table, validate_table_names,
     };
     use crate::common::{
-        ColumnSpec, ExprSpec, FilterMode, FilterSpec, FunctionArgBinding, PaginationSpec,
-        QueryParamSpec, RequestRouteSpec, RequestSpec, SearchLimitsSpec, SourceTableFunctionKind,
+        ColumnSpec, ExprSpec, FilterMode, FilterSpec, FunctionArgBinding,
+        MAX_SEARCH_CANDIDATES_PER_QUERY, MAX_SEARCH_TOP_K, PaginationSpec, QueryParamSpec,
+        RequestRouteSpec, RequestSpec, SearchLimitsSpec, SourceTableFunctionKind,
         SourceTableFunctionSpec, TableFunctionArgSpec, ValueSourceSpec,
     };
     use crate::parse_source_manifest_value;
@@ -1337,6 +1359,56 @@ mod tests {
     }
 
     #[test]
+    fn validate_search_limits_rejects_max_top_k_above_cap() {
+        let mut function = function_with_request_value(ValueSourceSpec::Arg {
+            key: "q".to_string(),
+            default: None,
+        });
+        function.kind = SourceTableFunctionKind::Search;
+        function.search_limits = Some(SearchLimitsSpec {
+            default_top_k: 10,
+            max_top_k: MAX_SEARCH_TOP_K + 1,
+            max_calls_per_query: 1,
+        });
+        function.columns = vec![test_column()];
+
+        let error = validate_http_function("demo", &function)
+            .expect_err("overlarge search top-k cap should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("max_top_k must be <= {MAX_SEARCH_TOP_K}")),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn validate_search_limits_rejects_aggregate_candidate_budget_above_cap() {
+        let mut function = function_with_request_value(ValueSourceSpec::Arg {
+            key: "q".to_string(),
+            default: None,
+        });
+        function.kind = SourceTableFunctionKind::Search;
+        function.search_limits = Some(SearchLimitsSpec {
+            default_top_k: 10,
+            max_top_k: 1_000,
+            max_calls_per_query: (MAX_SEARCH_CANDIDATES_PER_QUERY / 1_000) + 1,
+        });
+        function.columns = vec![test_column()];
+
+        let error = validate_http_function("demo", &function)
+            .expect_err("overlarge aggregate search budget should fail");
+
+        assert!(
+            error.to_string().contains(&format!(
+                "max_top_k * max_calls_per_query must be <= {MAX_SEARCH_CANDIDATES_PER_QUERY}"
+            )),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
     fn validate_detail_hints_rejects_unknown_result_column() {
         let detail_hints = [crate::DetailHintSpec {
             table: "demo.items".to_string(),
@@ -1364,6 +1436,68 @@ mod tests {
                 .contains("references unknown search_result_column 'missing'"),
             "unexpected error: {error}"
         );
+    }
+
+    #[test]
+    fn validate_detail_hints_reject_empty_fields() {
+        let cases = [
+            (
+                "table",
+                crate::DetailHintSpec {
+                    table: String::new(),
+                    search_result_column: "id".to_string(),
+                    detail_filter: "item_id".to_string(),
+                    purpose: "Fetch full item details.".to_string(),
+                },
+            ),
+            (
+                "search_result_column",
+                crate::DetailHintSpec {
+                    table: "demo.items".to_string(),
+                    search_result_column: String::new(),
+                    detail_filter: "item_id".to_string(),
+                    purpose: "Fetch full item details.".to_string(),
+                },
+            ),
+            (
+                "detail_filter",
+                crate::DetailHintSpec {
+                    table: "demo.items".to_string(),
+                    search_result_column: "id".to_string(),
+                    detail_filter: String::new(),
+                    purpose: "Fetch full item details.".to_string(),
+                },
+            ),
+            (
+                "purpose",
+                crate::DetailHintSpec {
+                    table: "demo.items".to_string(),
+                    search_result_column: "id".to_string(),
+                    detail_filter: "item_id".to_string(),
+                    purpose: String::new(),
+                },
+            ),
+        ];
+
+        for (field_name, detail_hint) in cases {
+            let error = validate_http_table(
+                "demo",
+                "messages",
+                &test_filters(),
+                &[test_column()],
+                &base_request(),
+                &[],
+                &PaginationSpec::default(),
+                None,
+                &[detail_hint],
+            )
+            .expect_err("empty detail hint fields should fail");
+
+            assert!(
+                error.to_string().contains(&format!("empty {field_name}")),
+                "unexpected error for {field_name}: {error}"
+            );
+        }
     }
 
     #[test]

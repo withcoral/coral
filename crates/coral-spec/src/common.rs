@@ -209,6 +209,13 @@ impl FilterMode {
     }
 }
 
+/// Highest per-call result count a source-spec search surface may request.
+pub(crate) const MAX_SEARCH_TOP_K: usize = 1_000;
+/// Highest number of provider search calls a single query may make.
+pub(crate) const MAX_SEARCH_CALLS_PER_QUERY: usize = 100;
+/// Highest aggregate candidate budget for one query across repeated search calls.
+pub(crate) const MAX_SEARCH_CANDIDATES_PER_QUERY: usize = 10_000;
+
 /// Bounded retrieval settings for search-like provider surfaces.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]

@@ -190,6 +190,68 @@ tables:
     }
 
     #[test]
+    fn validate_manifest_schema_rejects_http_table_source() {
+        let manifest = manifest_json(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+base_url: https://example.com
+tables:
+  - name: messages
+    description: Demo messages
+    source:
+      location: file:///tmp/messages.jsonl
+    request:
+      method: GET
+      path: /messages
+",
+        );
+        let error = validate_manifest_schema(&manifest).expect_err("schema validation should fail");
+        let message = error.to_string();
+        assert!(
+            message.starts_with("source manifest failed schema validation:"),
+            "{message}"
+        );
+        assert!(message.contains("/tables/0"), "{message}");
+        assert!(message.contains("source"), "{message}");
+    }
+
+    #[test]
+    fn validate_manifest_schema_rejects_search_limits_above_cap() {
+        let manifest = manifest_json(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+base_url: https://example.com
+tables:
+  - name: messages
+    description: Demo messages
+    search_limits:
+      default_top_k: 5
+      max_top_k: 1001
+      max_calls_per_query: 1
+    request:
+      method: GET
+      path: /messages
+",
+        );
+        let error = validate_manifest_schema(&manifest).expect_err("schema validation should fail");
+        let message = error.to_string();
+        assert!(
+            message.starts_with("source manifest failed schema validation:"),
+            "{message}"
+        );
+        assert!(
+            message.contains("/tables/0/search_limits/max_top_k"),
+            "{message}"
+        );
+    }
+
+    #[test]
     fn validate_manifest_schema_rejects_unknown_top_level_field() {
         let manifest = manifest_json(&format!("schema: legacy\n{}", valid_http_manifest()));
         let error = validate_manifest_schema(&manifest).expect_err("schema validation should fail");

@@ -231,6 +231,7 @@ impl RawFileTableSpec {
     fn into_validated_parquet(self, schema: &str) -> Result<FileTableSpec> {
         self.source.validate_for_parquet(schema, &self.name)?;
         validate_columns(&self.columns, schema, &self.name)?;
+        validate_filters_and_column_exprs(&self.filters, &self.columns, schema, &self.name)?;
 
         let partition_names = self
             .source
@@ -435,5 +436,28 @@ mod tests {
 
         assert!(manifest.required_secret_names().is_empty());
         assert!(manifest.declared_inputs.is_empty());
+    }
+
+    #[test]
+    fn parquet_manifest_rejects_invalid_filter_type() {
+        let error = ParquetSourceManifest::parse_manifest_value(json!({
+            "dsl_version": 3,
+            "name": "local",
+            "version": "0.1.0",
+            "backend": "parquet",
+            "tables": [{
+                "name": "events",
+                "description": "Local events",
+                "source": { "location": "file:///tmp/local/" },
+                "filters": [{ "name": "event_type", "type": "Banana" }],
+                "columns": [],
+            }],
+        }))
+        .expect_err("parquet filter types should be validated");
+
+        assert!(
+            error.to_string().contains("unsupported data type 'Banana'"),
+            "unexpected error: {error}"
+        );
     }
 }
