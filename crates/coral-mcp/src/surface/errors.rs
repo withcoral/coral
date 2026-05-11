@@ -63,7 +63,9 @@ pub(crate) fn tool_error_from_status(operation: &str, status: &tonic::Status) ->
         DecodedStatusError::Structured(error) => ToolError {
             summary: error.summary.clone(),
             detail: error.detail.clone(),
-            hint: error.hint.clone(),
+            hint: mcp_hint_for_app_reason(&error.reason)
+                .map(str::to_string)
+                .or_else(|| error.hint.clone()),
             grpc_code,
             reason: Some(error.reason.clone()),
             retryable: error.retryable,
@@ -116,13 +118,16 @@ fn plain_fallback(operation: &str, code: tonic::Code) -> (String, Option<String>
 pub(crate) fn status_to_error_data(status: &tonic::Status) -> ErrorData {
     match decode_status_error(status) {
         DecodedStatusError::Structured(error) => {
+            let hint = mcp_hint_for_app_reason(&error.reason)
+                .map(str::to_string)
+                .or(error.hint);
             let data = serde_json::to_value(StatusErrorDataValue {
                 detail: &error.detail,
                 grpc_code: status.code().to_string(),
                 reason: &error.reason,
                 retryable: error.retryable,
                 metadata: &error.metadata,
-                hint: error.hint.as_deref(),
+                hint: hint.as_deref(),
             })
             .expect("status error data value serializes");
             match status.code() {
@@ -138,6 +143,30 @@ pub(crate) fn status_to_error_data(status: &tonic::Status) -> ErrorData {
             tonic::Code::InvalidArgument => ErrorData::invalid_params(message, None),
             _ => ErrorData::internal_error(message, None),
         },
+    }
+}
+
+fn mcp_hint_for_app_reason(reason: &str) -> Option<&'static str> {
+    match reason {
+        "SOURCE_NOT_FOUND" => Some(
+            "Use `list_tables` or `search_tables` to inspect visible tables and sources before retrying.",
+        ),
+        "INVALID_INPUT" => {
+            Some("Check the tool arguments and retry with values that match the tool schema.")
+        }
+        "SETUP_REQUIRED" => Some(
+            "Use `list_tables` to inspect configured sources, then retry once the source is ready.",
+        ),
+        "INVALID_SECRETS_FILE" => Some(
+            "Ask the user to refresh saved credentials for the affected source before retrying.",
+        ),
+        "CONFIG_DIR_NOT_FOUND"
+        | "LOCAL_FILE_ERROR"
+        | "CONFIG_WRITE_FAILED"
+        | "SECRETS_FILE_ERROR" => Some(
+            "Ask the host process owner to check Coral's config directory and file permissions.",
+        ),
+        _ => None,
     }
 }
 
@@ -253,6 +282,36 @@ mod tests {
         assert_eq!(error.reason.as_deref(), Some("MISSING_REQUIRED_FILTER"));
         assert!(!error.retryable);
         assert_eq!(error.metadata.get("schema").unwrap(), "github");
+    }
+
+    #[test]
+    fn structured_app_reason_uses_mcp_specific_hint() {
+        let status = build_coral_status(
+            "SOURCE_NOT_FOUND",
+            vec![
+                ("summary", "Source `github` was not found"),
+                ("detail", "No source named `github` is installed."),
+                (
+                    "hint",
+                    "List installed sources or discover available sources, then retry.",
+                ),
+            ],
+            false,
+        );
+
+        let error = tool_error_from_status("Query", &status);
+        assert_eq!(
+            error.hint.as_deref(),
+            Some(
+                "Use `list_tables` or `search_tables` to inspect visible tables and sources before retrying."
+            )
+        );
+
+        let data = status_to_error_data(&status).data.expect("error data");
+        assert_eq!(
+            data["hint"],
+            "Use `list_tables` or `search_tables` to inspect visible tables and sources before retrying."
+        );
     }
 
     #[test]

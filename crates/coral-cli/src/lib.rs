@@ -418,24 +418,60 @@ fn render_diagnostic(
 
 fn render_status_diagnostic(status: &tonic::Status) -> String {
     match decode_status_error(status) {
-        DecodedStatusError::Structured(error) => render_diagnostic(
-            error.summary,
-            if error.detail.is_empty() {
+        DecodedStatusError::Structured(error) => {
+            let coral_client::CoralQueryError {
+                reason,
+                summary,
+                detail,
+                hint: server_hint,
+                ..
+            } = *error;
+            let hint = cli_hint_for_app_reason(&reason).map_or_else(
+                || server_hint.unwrap_or_else(|| default_server_status_hint().to_string()),
+                str::to_string,
+            );
+            let detail = if detail.is_empty() {
                 status.message().to_string()
             } else {
-                error.detail
-            },
-            error.hint.unwrap_or_else(|| {
-                "Retry the command. If it keeps failing, check source setup and local Coral state."
-                    .to_string()
-            }),
-        ),
+                detail
+            };
+            render_diagnostic(summary, detail, hint)
+        }
         DecodedStatusError::Plain(message) => render_diagnostic(
             "Coral server request failed",
             message,
-            "Retry the command. If it keeps failing, check source setup and local Coral state.",
+            default_server_status_hint(),
         ),
     }
+}
+
+pub(crate) fn cli_hint_for_app_reason(reason: &str) -> Option<&'static str> {
+    match reason {
+        "SOURCE_NOT_FOUND" => Some(
+            "Run `coral source list` to see installed sources or `coral source discover` to see bundled sources available to install.",
+        ),
+        "INVALID_INPUT" => Some(
+            "Check the command input and retry. Run `coral --help` or the subcommand help for valid values.",
+        ),
+        "SETUP_REQUIRED" => Some(
+            "Run `coral source list` to inspect configured sources, then `coral source test <source>` for the source you are trying to use.",
+        ),
+        "INVALID_SECRETS_FILE" => Some(
+            "Re-run `coral source add <source> --interactive` for the affected source to refresh its saved credentials.",
+        ),
+        "CONFIG_DIR_NOT_FOUND" => Some("Set `CORAL_CONFIG_DIR` to a writable directory and retry."),
+        "LOCAL_FILE_ERROR" => Some(
+            "Check that the path exists and that Coral can read and write its config directory. You can set `CORAL_CONFIG_DIR` to a writable directory.",
+        ),
+        "CONFIG_WRITE_FAILED" | "SECRETS_FILE_ERROR" => Some(
+            "Check permissions on the Coral config directory, or set `CORAL_CONFIG_DIR` to a writable directory.",
+        ),
+        _ => None,
+    }
+}
+
+fn default_server_status_hint() -> &'static str {
+    "Retry the command. If it keeps failing, check source setup and local Coral state."
 }
 
 impl Command {

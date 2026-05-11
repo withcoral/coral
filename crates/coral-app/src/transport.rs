@@ -505,7 +505,9 @@ mod tests {
                     error.detail,
                     "No source named `users` is installed in this workspace."
                 );
-                assert!(error.hint.as_deref().unwrap().contains("coral source list"));
+                let hint = error.hint.as_deref().expect("hint");
+                assert!(hint.contains("List installed sources"));
+                assert!(!hint.contains("coral "));
             }
             DecodedStatusError::Plain(message) => {
                 panic!("expected structured app status, got plain message: {message}")
@@ -572,7 +574,9 @@ mod tests {
                 assert_eq!(error.reason, "INVALID_INPUT");
                 assert_eq!(error.summary, "Input is invalid");
                 assert_eq!(error.detail, "missing workspace");
-                assert!(error.hint.as_deref().unwrap().contains("coral --help"));
+                let hint = error.hint.as_deref().expect("hint");
+                assert!(hint.contains("Check the request input"));
+                assert!(!hint.contains("coral "));
             }
             DecodedStatusError::Plain(message) => {
                 panic!("expected structured app status, got plain message: {message}")

@@ -68,31 +68,31 @@ impl AppError {
                 reason: CORAL_ERROR_REASON_SOURCE_NOT_FOUND,
                 summary: format!("Source `{source}` was not found"),
                 detail: format!("No source named `{source}` is installed in this workspace."),
-                hint: Some("Run `coral source list` to see installed sources or `coral source discover` to see sources you can add.".to_string()),
+                hint: Some("List installed sources or discover available sources, then retry with a source that exists.".to_string()),
             },
             AppError::InvalidInput(detail) => ErrorDiagnostic {
                 reason: "INVALID_INPUT",
                 summary: "Input is invalid".to_string(),
                 detail: detail.clone(),
-                hint: Some("Check the command input and retry. Run `coral --help` or the subcommand help for valid values.".to_string()),
+                hint: Some("Check the request input and retry with valid values.".to_string()),
             },
             AppError::FailedPrecondition(detail) => ErrorDiagnostic {
                 reason: "SETUP_REQUIRED",
                 summary: "Setup is incomplete".to_string(),
                 detail: detail.clone(),
-                hint: Some("Run `coral source list` to inspect configured sources, then `coral source test <source>` for the source you are trying to use.".to_string()),
+                hint: Some("Inspect configured sources, then test the source you are trying to use.".to_string()),
             },
             AppError::MissingConfigDir => ErrorDiagnostic {
                 reason: "CONFIG_DIR_NOT_FOUND",
                 summary: "Coral could not find a config directory".to_string(),
                 detail: "The operating system did not provide a usable app config directory.".to_string(),
-                hint: Some("Set `CORAL_CONFIG_DIR` to a writable directory and retry.".to_string()),
+                hint: Some("Configure Coral with a writable config directory, then retry.".to_string()),
             },
             AppError::Io(error) => ErrorDiagnostic {
                 reason: "LOCAL_FILE_ERROR",
                 summary: "Coral could not read or write a local file".to_string(),
                 detail: error.to_string(),
-                hint: Some("Check that the path exists and that Coral can read and write its config directory. You can set `CORAL_CONFIG_DIR` to a writable directory.".to_string()),
+                hint: Some("Check that the path exists and that Coral can read and write its config directory.".to_string()),
             },
             AppError::Yaml(error) => ErrorDiagnostic {
                 reason: "INVALID_YAML",
@@ -116,7 +116,7 @@ impl AppError {
                 reason: "CONFIG_WRITE_FAILED",
                 summary: "Coral could not write its config file".to_string(),
                 detail: error.to_string(),
-                hint: Some("Check permissions on the Coral config directory, or set `CORAL_CONFIG_DIR` to a writable directory.".to_string()),
+                hint: Some("Check permissions on the Coral config directory, or use a writable config directory.".to_string()),
             },
             AppError::Json(error) => ErrorDiagnostic {
                 reason: "INVALID_JSON",
@@ -141,13 +141,13 @@ impl AppError {
                     reason: "INVALID_SECRETS_FILE",
                     summary: "Coral could not read saved source credentials".to_string(),
                     detail: detail.clone(),
-                    hint: Some("Re-run `coral source add <source> --interactive` for the affected source to refresh its saved credentials.".to_string()),
+                    hint: Some("Refresh the saved credentials for the affected source.".to_string()),
                 },
                 CredentialsError::Io(error) => ErrorDiagnostic {
                     reason: "SECRETS_FILE_ERROR",
                     summary: "Coral could not read or write saved source credentials".to_string(),
                     detail: error.to_string(),
-                    hint: Some("Check permissions on the Coral config directory, or set `CORAL_CONFIG_DIR` to a writable directory.".to_string()),
+                    hint: Some("Check permissions on the Coral config directory, or use a writable config directory.".to_string()),
                 },
                 CredentialsError::Unavailable(detail) => ErrorDiagnostic {
                     reason: "SECRETS_STORE_UNAVAILABLE",
@@ -422,11 +422,8 @@ mod tests {
         assert_eq!(error.reason, "SOURCE_NOT_FOUND");
         assert_eq!(error.summary, "Source `github` was not found");
         assert!(error.detail.contains("No source named `github`"));
-        assert!(
-            error
-                .hint
-                .as_deref()
-                .is_some_and(|hint| hint.contains("coral source list"))
-        );
+        let hint = error.hint.as_deref().expect("hint");
+        assert!(hint.contains("List installed sources"));
+        assert!(!hint.contains("coral "));
     }
 }

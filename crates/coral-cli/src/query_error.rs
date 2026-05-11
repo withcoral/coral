@@ -80,7 +80,8 @@ fn render_structured(error: &CoralQueryError) -> String {
     if !error.detail.is_empty() {
         write!(text, "\nDetail: {}", error.detail).expect("writing to String cannot fail");
     }
-    if let Some(hint) = &error.hint {
+    let hint = crate::cli_hint_for_app_reason(&error.reason).or(error.hint.as_deref());
+    if let Some(hint) = hint {
         write!(text, "\nHint: {hint}").expect("writing to String cannot fail");
     }
     text.push('\n');
@@ -215,6 +216,27 @@ mod tests {
             rendered.contains("Error: plain fallback"),
             "should fall back to Status::message(): {rendered}"
         );
+    }
+
+    #[test]
+    fn structured_app_reason_uses_cli_specific_hint() {
+        let status = build_coral_status(
+            "SOURCE_NOT_FOUND",
+            vec![
+                ("summary", "Source `github` was not found"),
+                ("detail", "No source named `github` is installed."),
+                ("hint", "List installed sources, then retry."),
+            ],
+            false,
+        );
+        let error = match decode_status_error(&status) {
+            DecodedStatusError::Structured(e) => e,
+            DecodedStatusError::Plain(_) => panic!("expected Structured"),
+        };
+        let rendered = render_structured(&error);
+
+        assert!(rendered.contains("Hint: Run `coral source list`"));
+        assert!(!rendered.contains("List installed sources, then retry."));
     }
 
     #[test]
