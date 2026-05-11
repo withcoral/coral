@@ -79,6 +79,9 @@ tables:
         type: Utf8
       - name: text
         type: Utf8
+    filters:
+      - name: sessionId
+        required: true
 "#,
         data_dir.display(),
         data_dir.display(),
@@ -547,6 +550,23 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
     assert_eq!(columns["next_offset"], 2);
     assert_eq!(columns["columns"][0]["column_name"], "type");
     assert_eq!(columns["columns"][0]["data_type"], "Utf8");
+
+    let required_columns = client
+        .call_tool(
+            CallToolRequestParams::new("list_columns").with_arguments(json_object(&json!({
+                "schema": "local_messages",
+                "table": "sessions",
+                "required_only": true
+            }))),
+        )
+        .await
+        .expect("list required columns");
+    let required_columns = required_columns
+        .structured_content
+        .expect("structured content");
+    assert_eq!(required_columns["total"], 1);
+    assert_eq!(required_columns["columns"][0]["column_name"], "sessionId");
+    assert_eq!(required_columns["columns"][0]["is_required_filter"], true);
 
     let filtered_columns = client
         .call_tool(
