@@ -164,12 +164,12 @@ impl SourceFunctionCall {
 
         // Coral source functions are exactly `source.function(...)`. Longer
         // names belong to DataFusion's normal relation/function planner.
-        if name.0.len() != 2 {
+        let [schema, function] = name.0.as_slice() else {
             return None;
-        }
+        };
 
-        let schema = name.0[0].as_ident()?.clone();
-        let function = name.0[1].as_ident()?.clone();
+        let schema = schema.as_ident()?.clone();
+        let function = function.as_ident()?.clone();
         let display_name = qualified_name(&schema.value, &function.value);
         let lookup_key = FunctionLookupKey::from_sql(schema, function, context);
 
