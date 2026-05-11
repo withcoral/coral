@@ -1,0 +1,4 @@
+interface:
+  display_name: "Explain Code Changes HTML"
+  short_description: "Create clear HTML explainers for code changes"
+  default_prompt: "Use $explain-code-changes-html to turn these code changes into a clear standalone HTML explainer."
