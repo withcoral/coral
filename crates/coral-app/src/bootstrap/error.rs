@@ -10,6 +10,13 @@ use tonic_types::{ErrorDetail, StatusExt as _};
 
 use crate::credentials::CredentialsError;
 
+struct ErrorDiagnostic {
+    reason: &'static str,
+    summary: String,
+    detail: String,
+    hint: Option<String>,
+}
+
 /// Errors surfaced by the local application layer.
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
@@ -54,7 +61,115 @@ pub enum AppError {
     MissingConfigDir,
 }
 
-/// Upper bound on the byte length of a `tonic::Status` message (detail).
+impl AppError {
+    fn diagnostic(&self) -> ErrorDiagnostic {
+        match self {
+            AppError::SourceNotFound(source) => ErrorDiagnostic {
+                reason: CORAL_ERROR_REASON_SOURCE_NOT_FOUND,
+                summary: format!("Source `{source}` was not found"),
+                detail: format!("No source named `{source}` is installed in this workspace."),
+                hint: Some("Run `coral source list` to see installed sources or `coral source discover` to see sources you can add.".to_string()),
+            },
+            AppError::InvalidInput(detail) => ErrorDiagnostic {
+                reason: "INVALID_INPUT",
+                summary: "Input is invalid".to_string(),
+                detail: detail.clone(),
+                hint: Some("Check the command input and retry. Run `coral --help` or the subcommand help for valid values.".to_string()),
+            },
+            AppError::FailedPrecondition(detail) => ErrorDiagnostic {
+                reason: "SETUP_REQUIRED",
+                summary: "Setup is incomplete".to_string(),
+                detail: detail.clone(),
+                hint: Some("Run `coral source list` to inspect configured sources, then `coral source test <source>` for the source you are trying to use.".to_string()),
+            },
+            AppError::MissingConfigDir => ErrorDiagnostic {
+                reason: "CONFIG_DIR_NOT_FOUND",
+                summary: "Coral could not find a config directory".to_string(),
+                detail: "The operating system did not provide a usable app config directory.".to_string(),
+                hint: Some("Set `CORAL_CONFIG_DIR` to a writable directory and retry.".to_string()),
+            },
+            AppError::Io(error) => ErrorDiagnostic {
+                reason: "LOCAL_FILE_ERROR",
+                summary: "Coral could not read or write a local file".to_string(),
+                detail: error.to_string(),
+                hint: Some("Check that the path exists and that Coral can read and write its config directory. You can set `CORAL_CONFIG_DIR` to a writable directory.".to_string()),
+            },
+            AppError::Yaml(error) => ErrorDiagnostic {
+                reason: "INVALID_YAML",
+                summary: "Source manifest YAML is invalid".to_string(),
+                detail: error.to_string(),
+                hint: Some("Fix the YAML file, then rerun the command.".to_string()),
+            },
+            AppError::TomlDecode(error) => ErrorDiagnostic {
+                reason: "INVALID_CONFIG",
+                summary: "Coral config file is invalid".to_string(),
+                detail: error.to_string(),
+                hint: Some("Fix the Coral config file or move it aside, then retry.".to_string()),
+            },
+            AppError::TomlEncode(error) => ErrorDiagnostic {
+                reason: "CONFIG_WRITE_FAILED",
+                summary: "Coral could not write its config file".to_string(),
+                detail: error.to_string(),
+                hint: Some("Check permissions on the Coral config directory, or set `CORAL_CONFIG_DIR` to a writable directory.".to_string()),
+            },
+            AppError::Json(error) => ErrorDiagnostic {
+                reason: "INVALID_JSON",
+                summary: "Coral could not read or write JSON data".to_string(),
+                detail: error.to_string(),
+                hint: Some("Retry the command. If it keeps failing, check local Coral state files for invalid JSON.".to_string()),
+            },
+            AppError::Transport(error) => ErrorDiagnostic {
+                reason: "LOCAL_SERVER_ERROR",
+                summary: "Coral could not start or use the local server".to_string(),
+                detail: error.to_string(),
+                hint: Some("Retry the command. If you are starting the UI, check whether the selected port is already in use.".to_string()),
+            },
+            AppError::TaskJoin(error) => ErrorDiagnostic {
+                reason: "LOCAL_SERVER_TASK_FAILED",
+                summary: "The local Coral server stopped unexpectedly".to_string(),
+                detail: error.to_string(),
+                hint: Some("Retry the command. If it keeps failing, restart the terminal session and try again.".to_string()),
+            },
+            AppError::Credentials(error) => match error {
+                CredentialsError::Parse(detail) => ErrorDiagnostic {
+                    reason: "INVALID_SECRETS_FILE",
+                    summary: "Coral could not read saved source credentials".to_string(),
+                    detail: detail.clone(),
+                    hint: Some("Re-run `coral source add <source> --interactive` for the affected source to refresh its saved credentials.".to_string()),
+                },
+                CredentialsError::Io(error) => ErrorDiagnostic {
+                    reason: "SECRETS_FILE_ERROR",
+                    summary: "Coral could not read or write saved source credentials".to_string(),
+                    detail: error.to_string(),
+                    hint: Some("Check permissions on the Coral config directory, or set `CORAL_CONFIG_DIR` to a writable directory.".to_string()),
+                },
+                CredentialsError::Unavailable(detail) => ErrorDiagnostic {
+                    reason: "SECRETS_STORE_UNAVAILABLE",
+                    summary: "Coral could not access saved source credentials".to_string(),
+                    detail: detail.clone(),
+                    hint: Some("Unlock or configure the system credential store, then retry.".to_string()),
+                },
+                CredentialsError::SnapshotStorageMismatch {
+                    snapshot,
+                    requested,
+                } => ErrorDiagnostic {
+                    reason: "SECRETS_STORAGE_MISMATCH",
+                    summary: "Saved source credentials use a different storage backend".to_string(),
+                    detail: format!(
+                        "The credential snapshot is stored in `{snapshot}`, but `{requested}` was requested."
+                    ),
+                    hint: Some(
+                        "Use the same credential storage backend or re-add the source credentials."
+                            .to_string(),
+                    ),
+                },
+            },
+        }
+    }
+}
+
+/// Upper bound on the byte length of a `tonic::Status` message or one
+/// structured presentation metadata value.
 ///
 /// gRPC `Status` details travel in HTTP/2 trailers; peers bound the total
 /// trailer set via `MAX_HEADER_LIST_SIZE` (default ~16 KiB on hyper/h2).
@@ -62,25 +177,25 @@ pub enum AppError {
 /// client's h2 stack reports `PROTOCOL_ERROR` instead of surfacing the
 /// status. 4 KiB leaves ample room for other trailer entries
 /// (`grpc-status`, `grpc-status-details-bin`, `content-type`, …).
-pub(crate) const MAX_STATUS_DETAIL_BYTES: usize = 4 * 1024;
+pub(crate) const MAX_STATUS_VALUE_BYTES: usize = 4 * 1024;
 
-/// Generic safety-net truncation for `tonic::Status` details.
+/// Generic safety-net truncation for `tonic::Status` values.
 ///
 /// Intentionally format-agnostic: no string heuristics on `DataFusion`
 /// error shapes, no "did you mean?" hints (those live in the structured
 /// error-conversion path where we have typed `Column` data — see
 /// `coral_engine::runtime::query`). This function's only job is to keep
 /// whatever string it's given under the trailer budget.
-fn truncate_status_detail(detail: String) -> String {
+fn truncate_status_value(value: String) -> String {
     const MARKER: &str = "… (truncated)";
-    if detail.len() <= MAX_STATUS_DETAIL_BYTES {
-        return detail;
+    if value.len() <= MAX_STATUS_VALUE_BYTES {
+        return value;
     }
-    let mut cut = MAX_STATUS_DETAIL_BYTES.saturating_sub(MARKER.len());
-    while cut > 0 && !detail.is_char_boundary(cut) {
+    let mut cut = MAX_STATUS_VALUE_BYTES.saturating_sub(MARKER.len());
+    while cut > 0 && !value.is_char_boundary(cut) {
         cut -= 1;
     }
-    let truncated = detail
+    let truncated = value
         .get(..cut)
         .expect("cut is adjusted to a UTF-8 character boundary");
     format!("{truncated}{MARKER}")
@@ -91,26 +206,43 @@ fn truncate_status_detail(detail: String) -> String {
     reason = "used directly as a map_err adapter across tonic service handlers"
 )]
 pub(crate) fn app_status(error: AppError) -> Status {
-    if matches!(error, AppError::SourceNotFound(_)) {
-        // The `reason` alone discriminates `SOURCE_NOT_FOUND` from other
-        // `Code::NotFound` causes (e.g. `io::ErrorKind::NotFound` raised
-        // when a manifest file is missing). The qualified name already
-        // appears in the truncated status message; we deliberately do
-        // not duplicate it into structured metadata so unbounded
-        // identifiers cannot push the `grpc-status-details-bin` trailer
-        // past the h2 `MAX_HEADER_LIST_SIZE` budget.
-        let details = vec![ErrorDetail::ErrorInfo(tonic_types::ErrorInfo::new(
-            CORAL_ERROR_REASON_SOURCE_NOT_FOUND,
-            CORAL_ERROR_DOMAIN,
-            std::collections::HashMap::new(),
-        ))];
-        return Status::with_error_details_vec(
-            Code::NotFound,
-            truncate_status_detail(error.to_string()),
-            details,
+    let code = app_code(&error);
+    let diagnostic = error.diagnostic();
+    let mut metadata = std::collections::HashMap::new();
+    metadata.insert(
+        CORAL_ERROR_METADATA_SUMMARY.to_string(),
+        truncate_status_value(diagnostic.summary.clone()),
+    );
+
+    if !diagnostic.detail.is_empty() {
+        metadata.insert(
+            CORAL_ERROR_METADATA_DETAIL.to_string(),
+            truncate_status_value(diagnostic.detail.clone()),
         );
     }
-    Status::new(app_code(&error), truncate_status_detail(error.to_string()))
+
+    if let Some(hint) = &diagnostic.hint {
+        metadata.insert(
+            CORAL_ERROR_METADATA_HINT.to_string(),
+            truncate_status_value(hint.clone()),
+        );
+    }
+
+    let details = vec![ErrorDetail::ErrorInfo(tonic_types::ErrorInfo::new(
+        diagnostic.reason,
+        CORAL_ERROR_DOMAIN,
+        metadata,
+    ))];
+
+    Status::with_error_details_vec(
+        code,
+        truncate_status_value(render_plain_message(
+            &diagnostic.summary,
+            &diagnostic.detail,
+            diagnostic.hint.as_deref(),
+        )),
+        details,
+    )
 }
 
 pub(crate) fn core_status(error: CoreError) -> Status {
@@ -119,16 +251,19 @@ pub(crate) fn core_status(error: CoreError) -> Status {
             let mut metadata = sqe.metadata().clone();
             metadata.insert(
                 CORAL_ERROR_METADATA_SUMMARY.to_string(),
-                sqe.summary().to_string(),
+                truncate_status_value(sqe.summary().to_string()),
             );
             if !sqe.detail().is_empty() {
                 metadata.insert(
                     CORAL_ERROR_METADATA_DETAIL.to_string(),
-                    truncate_status_detail(sqe.detail().to_string()),
+                    truncate_status_value(sqe.detail().to_string()),
                 );
             }
             if let Some(hint) = sqe.hint() {
-                metadata.insert(CORAL_ERROR_METADATA_HINT.to_string(), hint.to_string());
+                metadata.insert(
+                    CORAL_ERROR_METADATA_HINT.to_string(),
+                    truncate_status_value(hint.to_string()),
+                );
             }
 
             let mut details: Vec<ErrorDetail> = vec![ErrorDetail::ErrorInfo(
@@ -141,13 +276,13 @@ pub(crate) fn core_status(error: CoreError) -> Status {
             let plain = render_plain_message(sqe.summary(), sqe.detail(), sqe.hint());
             Status::with_error_details_vec(
                 grpc_code(sqe.status()),
-                truncate_status_detail(plain),
+                truncate_status_value(plain),
                 details,
             )
         }
         other => Status::new(
             grpc_code(other.status_code()),
-            truncate_status_detail(other.to_string()),
+            truncate_status_value(other.to_string()),
         ),
     }
 }
@@ -203,16 +338,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn truncate_status_detail_leaves_short_detail_unchanged() {
-        let detail = "short message".to_string();
-        assert_eq!(truncate_status_detail(detail.clone()), detail);
+    fn truncate_status_value_leaves_short_value_unchanged() {
+        let value = "short message".to_string();
+        assert_eq!(truncate_status_value(value.clone()), value);
     }
 
     #[test]
-    fn truncate_status_detail_caps_long_ascii_and_marks_it() {
-        let detail = "x".repeat(20 * 1024);
-        let out = truncate_status_detail(detail);
-        assert!(out.len() <= MAX_STATUS_DETAIL_BYTES);
+    fn truncate_status_value_caps_long_ascii_and_marks_it() {
+        let value = "x".repeat(20 * 1024);
+        let out = truncate_status_value(value);
+        assert!(out.len() <= MAX_STATUS_VALUE_BYTES);
         assert!(out.ends_with("… (truncated)"), "missing marker: {out:?}");
     }
 
@@ -231,38 +366,61 @@ mod tests {
             .expect("source-not-found status must carry an ErrorInfo detail");
         assert_eq!(info.reason, CORAL_ERROR_REASON_SOURCE_NOT_FOUND);
         assert_eq!(info.domain, CORAL_ERROR_DOMAIN);
-        // The reason alone is the discriminator; we intentionally do
-        // not echo unbounded identifiers into structured metadata.
         assert!(
-            info.metadata.is_empty(),
-            "SOURCE_NOT_FOUND must not carry unbounded identifier metadata: {:?}",
+            info.metadata
+                .get(CORAL_ERROR_METADATA_SUMMARY)
+                .is_some_and(|summary| summary.contains("default:hn")),
+            "SOURCE_NOT_FOUND should carry bounded presentation metadata: {:?}",
             info.metadata
         );
     }
 
     #[test]
-    fn app_status_does_not_attach_structured_reason_for_io_not_found() {
+    fn app_status_does_not_attach_source_not_found_reason_for_io_not_found() {
         let io_error = std::io::Error::new(std::io::ErrorKind::NotFound, "manifest missing");
         let status = app_status(AppError::Io(io_error));
-        // Same gRPC code as SourceNotFound — but no Coral ErrorInfo, so
-        // clients can't confuse a broken local manifest for a missing
-        // catalog entry.
         assert_eq!(status.code(), Code::NotFound);
-        assert!(
-            status.get_error_details_vec().is_empty(),
-            "io::NotFound must not carry SOURCE_NOT_FOUND details"
-        );
+
+        let details = status.get_error_details_vec();
+        let info = details
+            .iter()
+            .find_map(|detail| match detail {
+                ErrorDetail::ErrorInfo(info) => Some(info),
+                _ => None,
+            })
+            .expect("io::NotFound status should carry diagnostic details");
+        assert_ne!(info.reason, CORAL_ERROR_REASON_SOURCE_NOT_FOUND);
     }
 
     #[test]
-    fn truncate_status_detail_preserves_utf8_boundaries() {
+    fn truncate_status_value_preserves_utf8_boundaries() {
         // Fill with a 4-byte codepoint so the raw-byte cut point is
         // guaranteed to land mid-codepoint and must be walked backwards.
-        let detail = "𝕏".repeat(2 * 1024); // 4 bytes per char → 8 KiB total
-        let out = truncate_status_detail(detail);
-        assert!(out.len() <= MAX_STATUS_DETAIL_BYTES);
+        let value = "𝕏".repeat(2 * 1024); // 4 bytes per char → 8 KiB total
+        let out = truncate_status_value(value);
+        assert!(out.len() <= MAX_STATUS_VALUE_BYTES);
         // Result must still be valid UTF-8 (guaranteed by String type) and
         // end with the truncation marker.
         assert!(out.ends_with("… (truncated)"));
+    }
+
+    #[test]
+    fn app_status_source_not_found_is_structured() {
+        let status = app_status(AppError::SourceNotFound("github".to_string()));
+        let decoded = coral_client::decode_status_error(&status);
+
+        let coral_client::DecodedStatusError::Structured(error) = decoded else {
+            panic!("expected structured error");
+        };
+
+        assert_eq!(error.reason, "SOURCE_NOT_FOUND");
+        assert_eq!(error.summary, "Source `github` was not found");
+        assert!(error.detail.contains("No source named `github`"));
+        assert!(
+            error
+                .hint
+                .as_deref()
+                .is_some_and(|hint| hint.contains("coral source list"))
+        );
     }
 }

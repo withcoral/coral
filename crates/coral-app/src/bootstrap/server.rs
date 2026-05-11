@@ -1250,7 +1250,7 @@ tables:
     async fn invalid_column_on_wide_manifest_returns_clean_status() {
         use std::fmt::Write as _;
 
-        use crate::bootstrap::MAX_STATUS_DETAIL_BYTES;
+        use crate::bootstrap::MAX_STATUS_VALUE_BYTES;
 
         let temp = TempDir::new().expect("temp dir");
         let config_dir = temp.path().join("coral-config");
@@ -1350,8 +1350,8 @@ tables:
             status.message()
         );
         assert!(
-            status.message().len() <= MAX_STATUS_DETAIL_BYTES,
-            "status message was {} bytes; truncator should have clipped it to <= {MAX_STATUS_DETAIL_BYTES}",
+            status.message().len() <= MAX_STATUS_VALUE_BYTES,
+            "status message was {} bytes; truncator should have clipped it to <= {MAX_STATUS_VALUE_BYTES}",
             status.message().len(),
         );
         assert!(

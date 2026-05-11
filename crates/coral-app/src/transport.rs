@@ -485,6 +485,7 @@ mod tests {
     use crate::bootstrap::AppError;
     use crate::query::manager::QueryManagerError;
     use crate::workspaces::WorkspaceName;
+    use coral_client::{DecodedStatusError, decode_status_error};
     use coral_engine::{
         ColumnInfo, CoreError, QueryTestResult as EngineQueryTestResult, TableInfo,
     };
@@ -496,7 +497,20 @@ mod tests {
         )));
 
         assert_eq!(status.code(), Code::NotFound);
-        assert_eq!(status.message(), "source 'users' not found");
+        match decode_status_error(&status) {
+            DecodedStatusError::Structured(error) => {
+                assert_eq!(error.reason, "SOURCE_NOT_FOUND");
+                assert_eq!(error.summary, "Source `users` was not found");
+                assert_eq!(
+                    error.detail,
+                    "No source named `users` is installed in this workspace."
+                );
+                assert!(error.hint.as_deref().unwrap().contains("coral source list"));
+            }
+            DecodedStatusError::Plain(message) => {
+                panic!("expected structured app status, got plain message: {message}")
+            }
+        }
     }
 
     #[test]
@@ -553,7 +567,17 @@ mod tests {
         let status = workspace_name_from_proto(None).expect_err("workspace should be required");
 
         assert_eq!(status.code(), Code::InvalidArgument);
-        assert_eq!(status.message(), "invalid input: missing workspace");
+        match decode_status_error(&status) {
+            DecodedStatusError::Structured(error) => {
+                assert_eq!(error.reason, "INVALID_INPUT");
+                assert_eq!(error.summary, "Input is invalid");
+                assert_eq!(error.detail, "missing workspace");
+                assert!(error.hint.as_deref().unwrap().contains("coral --help"));
+            }
+            DecodedStatusError::Plain(message) => {
+                panic!("expected structured app status, got plain message: {message}")
+            }
+        }
     }
 
     #[test]
