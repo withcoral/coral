@@ -276,7 +276,7 @@ fn search_tables_description(visible_table_count: usize) -> String {
 }
 
 fn list_tables_output_schema() -> Arc<Map<String, Value>> {
-    paginated_table_output_schema(json!({
+    paginated_table_output_schema(&json!({
         "type": "object",
         "required": [
             "schema_name",
@@ -304,7 +304,7 @@ fn list_tables_output_schema() -> Arc<Map<String, Value>> {
 }
 
 fn search_tables_output_schema() -> Arc<Map<String, Value>> {
-    paginated_table_output_schema(json!({
+    paginated_table_output_schema(&json!({
         "type": "object",
         "required": [
             "schema_name",
@@ -344,7 +344,7 @@ fn search_tables_output_schema() -> Arc<Map<String, Value>> {
     }))
 }
 
-fn paginated_table_output_schema(table_item_schema: Value) -> Arc<Map<String, Value>> {
+fn paginated_table_output_schema(table_item_schema: &Value) -> Arc<Map<String, Value>> {
     json_object_schema(&json!({
         "type": "object",
         "required": ["tables", "total", "limit", "offset", "has_more"],
