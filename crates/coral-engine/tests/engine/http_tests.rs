@@ -55,20 +55,15 @@ fn search_function_manifest(name: &str, base_url: &str) -> Value {
         "dsl_version": 3,
         "backend": "http",
         "base_url": base_url,
-        "tables": [{
-            "name": "placeholder",
-            "description": "Placeholder table",
-            "request": {
-                "method": "GET",
-                "path": "/api/placeholder"
-            },
-            "columns": [
-                { "name": "id", "type": "Utf8" }
-            ]
-        }],
         "functions": [{
             "name": "search_issues",
+            "kind": "search",
             "description": "Search issues",
+            "search_limits": {
+                "default_top_k": 10,
+                "max_top_k": 100,
+                "max_calls_per_query": 1
+            },
             "args": [
                 {
                     "name": "q",
@@ -588,6 +583,59 @@ async fn source_scoped_table_function_preserves_table_alias() {
             "score": 9.5
         })]
     );
+}
+
+#[tokio::test]
+async fn source_scoped_search_function_enforces_search_limits() {
+    let server = MockServer::start().await;
+    let items: Vec<Value> = (0..100)
+        .map(|index| {
+            json!({
+                "title": format!("Issue {index}"),
+                "score": f64::from(index)
+            })
+        })
+        .collect();
+
+    Mock::given(method("GET"))
+        .and(path("/api/search/issues"))
+        .and(query_param("q", "flaky cleanup repo:withcoral/coral"))
+        .and(query_param("search_type", "hybrid"))
+        .and(query_param("per_page", "100"))
+        .and(query_param("page", "1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": items
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut manifest = search_function_manifest("search", &server.uri());
+    manifest["functions"][0]["pagination"] = json!({
+        "mode": "page",
+        "page_size": {
+            "default": 10,
+            "max": 500,
+            "query_param": "per_page"
+        },
+        "page_param": "page",
+        "page_start": 1,
+        "page_step": 1
+    });
+    let source = build_source(manifest);
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT title, score \
+             FROM search.search_issues(q => 'flaky cleanup repo:withcoral/coral', mode => 'hybrid') \
+             LIMIT 250",
+        )
+        .await
+        .expect("search limits should cap page size and total rows"),
+    );
+
+    assert_eq!(rows.len(), 100);
 }
 
 #[tokio::test]

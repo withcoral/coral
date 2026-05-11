@@ -76,6 +76,13 @@ enum RequestBody {
     Text(String),
 }
 
+#[derive(Debug, Clone, Copy)]
+struct FetchLimits {
+    effective_limit: Option<usize>,
+    page_size_limit: Option<usize>,
+    max_search_calls: Option<usize>,
+}
+
 struct OutgoingHttpRequest<'a> {
     auth: &'a AuthSpec,
     request_headers: &'a [HeaderSpec],
@@ -169,7 +176,7 @@ impl HttpSourceClient {
         sql_limit: Option<usize>,
     ) -> Result<Vec<Value>> {
         let mut all_rows = Vec::new();
-        let effective_limit = sql_limit.or(target.fetch_limit_default());
+        let limits = resolve_fetch_limits(target, sql_limit);
         let pagination = target
             .pagination()
             .validated(&self.source_schema, target.name())
@@ -182,7 +189,7 @@ impl HttpSourceClient {
                     detail: error.to_string(),
                 })
             })?;
-        let page_size = resolve_page_size(pagination.page_size.as_ref(), sql_limit);
+        let page_size = resolve_page_size(pagination.page_size.as_ref(), limits.page_size_limit);
 
         let active_request = target.resolved_request();
 
@@ -324,10 +331,17 @@ impl HttpSourceClient {
             let rows_on_page = rows.len();
             all_rows.append(&mut rows);
 
-            if let Some(limit) = effective_limit
+            if let Some(limit) = limits.effective_limit
                 && all_rows.len() >= limit
             {
                 all_rows.truncate(limit);
+                break;
+            }
+
+            if limits
+                .max_search_calls
+                .is_some_and(|max_calls| page_count >= max_calls)
+            {
                 break;
             }
 
@@ -1168,9 +1182,30 @@ fn apply_pagination_body_fields(
     Ok(())
 }
 
-fn resolve_page_size(spec: Option<&PageSizeSpec>, sql_limit: Option<usize>) -> Option<usize> {
+fn resolve_fetch_limits(target: &HttpFetchTarget, sql_limit: Option<usize>) -> FetchLimits {
+    let Some(search_limits) = target.search_limits() else {
+        return FetchLimits {
+            effective_limit: sql_limit.or(target.fetch_limit_default()),
+            page_size_limit: sql_limit,
+            max_search_calls: None,
+        };
+    };
+
+    let requested_top_k = sql_limit.unwrap_or(search_limits.default_top_k);
+    let max_candidates = search_limits
+        .max_top_k
+        .saturating_mul(search_limits.max_calls_per_query);
+
+    FetchLimits {
+        effective_limit: Some(requested_top_k.min(max_candidates)),
+        page_size_limit: Some(requested_top_k.min(search_limits.max_top_k)),
+        max_search_calls: Some(search_limits.max_calls_per_query),
+    }
+}
+
+fn resolve_page_size(spec: Option<&PageSizeSpec>, requested_limit: Option<usize>) -> Option<usize> {
     let spec = spec?;
-    let base = sql_limit.unwrap_or(spec.default);
+    let base = requested_limit.unwrap_or(spec.default);
     Some(base.min(spec.max).max(1))
 }
 
