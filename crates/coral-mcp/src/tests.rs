@@ -6,9 +6,10 @@ use coral_client::{
     AppClient, SourceClient, default_workspace,
     local::{RunningServer, ServerBuilder},
 };
+use jsonschema::JSONSchema;
 use rmcp::{
     RoleClient, ServiceExt,
-    model::{CallToolRequestParams, ReadResourceRequestParams},
+    model::{CallToolRequestParams, ReadResourceRequestParams, Tool},
     service::RunningService,
 };
 use serde_json::{Map, Value, json};
@@ -163,6 +164,34 @@ fn text_content(result: &rmcp::model::ReadResourceResult) -> &str {
     }
 }
 
+fn tool_by_name<'a>(tools: &'a [Tool], name: &str) -> &'a Tool {
+    tools
+        .iter()
+        .find(|tool| tool.name == name)
+        .expect("tool should be listed")
+}
+
+fn assert_matches_output_schema(tool: &Tool, value: &Value) {
+    let schema = Value::Object(
+        tool.output_schema
+            .as_ref()
+            .unwrap_or_else(|| panic!("tool '{}' should advertise output schema", tool.name))
+            .as_ref()
+            .clone(),
+    );
+    let compiled = JSONSchema::compile(&schema).expect("tool output schema should compile");
+    if let Err(errors) = compiled.validate(value) {
+        let details = errors
+            .map(|error| error.to_string())
+            .collect::<Vec<_>>()
+            .join("; ");
+        panic!(
+            "tool '{}' structured content did not match output schema: {details}",
+            tool.name
+        );
+    }
+}
+
 #[tokio::test]
 #[allow(
     clippy::too_many_lines,
@@ -222,6 +251,8 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
     add_demo_source(&mut session.source_client, manifest_yaml).await;
 
     let updated_tools = client.list_all_tools().await.expect("updated tools");
+    let list_tables_tool = tool_by_name(&updated_tools, "list_tables");
+    let search_tables_tool = tool_by_name(&updated_tools, "search_tables");
     assert!(
         updated_tools[0]
             .description
@@ -301,6 +332,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
     );
     assert!(structured_tables["tables"][0]["columns"].is_null());
     assert_eq!(tables.is_error, Some(false));
+    assert_matches_output_schema(list_tables_tool, &structured_tables);
 
     let page = client
         .call_tool(
@@ -318,6 +350,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
     assert_eq!(page["has_more"], true);
     assert_eq!(page["next_offset"], 2);
     assert_eq!(page["tables"].as_array().expect("tables").len(), 2);
+    assert_matches_output_schema(list_tables_tool, &page);
 
     let unknown_schema = client
         .call_tool(
@@ -339,6 +372,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
             .expect("tables")
             .is_empty()
     );
+    assert_matches_output_schema(list_tables_tool, &unknown_schema);
 
     client
         .call_tool(
@@ -373,6 +407,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
             .iter()
             .any(|field| field == "table_name")
     );
+    assert_matches_output_schema(search_tables_tool, &search);
 
     let search_page = client
         .call_tool(
@@ -389,6 +424,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
     assert_eq!(search_page["limit"], 2);
     assert_eq!(search_page["has_more"], true);
     assert_eq!(search_page["next_offset"], 2);
+    assert_matches_output_schema(search_tables_tool, &search_page);
 
     client
         .call_tool(

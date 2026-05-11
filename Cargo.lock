@@ -1111,6 +1111,7 @@ dependencies = [
  "coral-api",
  "coral-app",
  "coral-client",
+ "jsonschema",
  "regex",
  "rmcp",
  "serde_json",

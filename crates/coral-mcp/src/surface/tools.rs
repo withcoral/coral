@@ -79,6 +79,7 @@ pub(crate) fn list_tables_tool(visible_table_count: usize) -> Tool {
             }
         })),
     )
+    .with_raw_output_schema(list_tables_output_schema())
     .with_annotations(
         ToolAnnotations::with_title("List Tables")
             .read_only(true)
@@ -125,6 +126,7 @@ pub(crate) fn search_tables_tool(visible_table_count: usize) -> Tool {
             }
         })),
     )
+    .with_raw_output_schema(search_tables_output_schema())
     .with_annotations(
         ToolAnnotations::with_title("Search Tables")
             .read_only(true)
@@ -271,6 +273,106 @@ fn search_tables_description(visible_table_count: usize) -> String {
     format!(
         "Search queryable table metadata with a Rust regex. {visible_table_count} table(s) are currently visible."
     )
+}
+
+fn list_tables_output_schema() -> Arc<Map<String, Value>> {
+    paginated_table_output_schema(json!({
+        "type": "object",
+        "required": [
+            "schema_name",
+            "table_name",
+            "name",
+            "sql_reference",
+            "description",
+            "guide",
+            "required_filters"
+        ],
+        "additionalProperties": false,
+        "properties": {
+            "schema_name": { "type": "string" },
+            "table_name": { "type": "string" },
+            "name": { "type": "string" },
+            "sql_reference": { "type": "string" },
+            "description": { "type": "string" },
+            "guide": { "type": "string" },
+            "required_filters": {
+                "type": "array",
+                "items": { "type": "string" }
+            }
+        }
+    }))
+}
+
+fn search_tables_output_schema() -> Arc<Map<String, Value>> {
+    paginated_table_output_schema(json!({
+        "type": "object",
+        "required": [
+            "schema_name",
+            "table_name",
+            "name",
+            "sql_reference",
+            "description",
+            "required_filters",
+            "matched_fields"
+        ],
+        "additionalProperties": false,
+        "properties": {
+            "schema_name": { "type": "string" },
+            "table_name": { "type": "string" },
+            "name": { "type": "string" },
+            "sql_reference": { "type": "string" },
+            "description": { "type": "string" },
+            "required_filters": {
+                "type": "array",
+                "items": { "type": "string" }
+            },
+            "matched_fields": {
+                "type": "array",
+                "items": {
+                    "type": "string",
+                    "enum": [
+                        "schema_name",
+                        "table_name",
+                        "name",
+                        "description",
+                        "guide",
+                        "required_filters"
+                    ]
+                }
+            }
+        }
+    }))
+}
+
+fn paginated_table_output_schema(table_item_schema: Value) -> Arc<Map<String, Value>> {
+    json_object_schema(&json!({
+        "type": "object",
+        "required": ["tables", "total", "limit", "offset", "has_more"],
+        "additionalProperties": false,
+        "properties": {
+            "tables": {
+                "type": "array",
+                "items": table_item_schema
+            },
+            "total": {
+                "type": "integer",
+                "minimum": 0
+            },
+            "limit": {
+                "type": "integer",
+                "minimum": 1
+            },
+            "offset": {
+                "type": "integer",
+                "minimum": 0
+            },
+            "has_more": { "type": "boolean" },
+            "next_offset": {
+                "type": "integer",
+                "minimum": 0
+            }
+        }
+    }))
 }
 
 pub(crate) fn optional_string_argument(
