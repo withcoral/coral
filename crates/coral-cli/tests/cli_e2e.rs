@@ -48,6 +48,34 @@ fn ui_help_does_not_require_app_bootstrap() {
     );
 }
 
+#[test]
+fn malformed_coral_endpoint_renders_bootstrap_diagnostic() {
+    let assert = Command::cargo_bin("coral")
+        .expect("cargo bin")
+        .args(["source", "list"])
+        .env("CORAL_ENDPOINT", "not a uri")
+        .assert()
+        .failure();
+
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    assert!(
+        stderr.contains("Error: Coral could not connect to the local server"),
+        "expected bootstrap connect error: {stderr}"
+    );
+    assert!(
+        stderr.contains("Detail: Failed to connect to `not a uri`:"),
+        "expected endpoint detail: {stderr}"
+    );
+    assert!(
+        stderr.contains("Hint: Retry the command"),
+        "expected retry hint: {stderr}"
+    );
+    assert!(
+        stderr.contains("CORAL_ENDPOINT"),
+        "expected endpoint env hint: {stderr}"
+    );
+}
+
 fn nonempty_lines(output: &str) -> Vec<&str> {
     output
         .lines()
@@ -310,8 +338,12 @@ async fn source_info_errors_for_unknown_source() {
 
     let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
     assert!(
-        stderr.contains("unknown source 'nope'"),
-        "expected unknown source error: {stderr}"
+        stderr.contains("Error: Source `nope` was not found"),
+        "expected source-not-found diagnostic: {stderr}"
+    );
+    assert!(
+        stderr.contains("Hint: Run `coral source list`"),
+        "expected source-not-found hint: {stderr}"
     );
 
     server.shutdown().await;
@@ -415,8 +447,16 @@ async fn sql_command_surfaces_server_errors() {
 
     let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
     assert!(
+        stderr.contains("Error: Query failed"),
+        "expected query diagnostic summary in stderr: {stderr}"
+    );
+    assert!(
         stderr.contains("mock SQL failure"),
         "expected server error in stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("Hint: Retry the query."),
+        "expected query diagnostic hint in stderr: {stderr}"
     );
 
     let requests = server.execute_sql_requests();
@@ -682,6 +722,29 @@ async fn source_add_rejects_name_and_file_together() {
     server.shutdown().await;
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn source_add_unknown_bundled_source_renders_diagnostic() {
+    let server = MockServer::start().await;
+
+    let assert = server
+        .cmd()
+        .args(["source", "add", "totally_unknown"])
+        .assert()
+        .failure();
+
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    assert!(
+        stderr.contains("Error: Source `totally_unknown` was not found"),
+        "expected source-not-found diagnostic: {stderr}"
+    );
+    assert!(
+        stderr.contains("Hint: Run `coral source list`"),
+        "expected discovery hint: {stderr}"
+    );
+
+    server.shutdown().await;
+}
+
 // ---------------------------------------------------------------------------
 // Name validation
 // ---------------------------------------------------------------------------
@@ -698,8 +761,16 @@ async fn source_test_rejects_invalid_name() {
 
     let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
     assert!(
-        stderr.contains("must not contain"),
+        stderr.contains("Error: Source name is invalid"),
         "expected name validation error: {stderr}"
+    );
+    assert!(
+        stderr.contains("Detail: source name must not contain"),
+        "expected name validation detail: {stderr}"
+    );
+    assert!(
+        stderr.contains("Hint: Use a source name without path separators"),
+        "expected name validation hint: {stderr}"
     );
 
     server.shutdown().await;
@@ -717,8 +788,42 @@ async fn source_remove_rejects_invalid_name() {
 
     let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
     assert!(
-        stderr.contains("must not contain"),
+        stderr.contains("Error: Source name is invalid"),
         "expected name validation error: {stderr}"
+    );
+    assert!(
+        stderr.contains("Detail: source name must not contain"),
+        "expected name validation detail: {stderr}"
+    );
+    assert!(
+        stderr.contains("Hint: Use a source name without path separators"),
+        "expected name validation hint: {stderr}"
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn source_remove_unknown_source_renders_diagnostic() {
+    let server = MockServer::start_with_config(
+        MockServerConfig::default().with_delete_source_error(Code::NotFound, "unknown source"),
+    )
+    .await;
+
+    let assert = server
+        .cmd()
+        .args(["source", "remove", "nope"])
+        .assert()
+        .failure();
+
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    assert!(
+        stderr.contains("Error: Source `nope` was not found"),
+        "expected source-not-found diagnostic: {stderr}"
+    );
+    assert!(
+        stderr.contains("Hint: Run `coral source list`"),
+        "expected source-not-found hint: {stderr}"
     );
 
     server.shutdown().await;
@@ -741,16 +846,17 @@ async fn source_add_reports_missing_env_vars_without_interactive() {
 
     let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
     assert!(
-        stderr.contains("missing required environment variable"),
+        stderr.contains("Error: Required source input is missing"),
         "expected missing env var error: {stderr}"
     );
     assert!(
-        stderr.contains("GITHUB_TOKEN"),
+        stderr.contains("Detail: Missing required environment variable(s): GITHUB_TOKEN."),
         "expected missing env var to name GITHUB_TOKEN: {stderr}"
     );
     assert!(
-        stderr.contains("coral source add --interactive github"),
-        "expected exact interactive recovery command: {stderr}"
+        stderr
+            .contains("Hint: Set the variable(s), or run `coral source add github --interactive`."),
+        "expected interactive hint in stderr: {stderr}"
     );
 
     server.shutdown().await;
@@ -768,8 +874,16 @@ async fn source_add_interactive_requires_tty() {
 
     let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
     assert!(
-        stderr.contains("requires a TTY"),
+        stderr.contains("Error: Interactive input is not available"),
         "expected TTY requirement error: {stderr}"
+    );
+    assert!(
+        stderr.contains("Detail: `--interactive` needs a terminal"),
+        "expected TTY detail in stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("Hint: Re-run the command in a terminal"),
+        "expected TTY hint in stderr: {stderr}"
     );
 
     server.shutdown().await;
@@ -802,7 +916,7 @@ async fn source_test_suggests_add_for_uninstalled_bundled_source() {
 
     let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
     assert!(
-        stderr.contains("source 'demo_bundled' is not installed"),
+        stderr.contains("Error: Source `demo_bundled` is not installed"),
         "expected not-installed error in stderr: {stderr}"
     );
     assert!(
@@ -836,7 +950,7 @@ async fn source_test_normalizes_error_for_unknown_source() {
 
     let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
     assert!(
-        stderr.contains("source 'totally_unknown' was not found"),
+        stderr.contains("Error: Source `totally_unknown` was not found"),
         "expected normalized not-found error in stderr: {stderr}"
     );
     assert!(

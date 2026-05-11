@@ -13,9 +13,9 @@ use coral_client::{CoralQueryError, DecodedStatusError, decode_status_error};
 /// Renders a `tonic::Status` as a user-facing stderr block.
 ///
 /// Structured errors produce labelled `Error:` / `Detail:` / `Hint:` lines.
-/// Plain fallback errors include the gRPC status code so distinct failure
-/// modes (transport, auth, not-found) remain distinguishable. The returned
-/// string always terminates with a newline.
+/// Plain fallback errors use the same labelled block with a generic hint so
+/// legacy server statuses stay consistent with structured diagnostics. The
+/// returned string always terminates with a newline.
 ///
 /// The caller is responsible for writing the result to stderr and exiting
 /// with a non-zero code — keeping this function side-effect-free so the
@@ -42,19 +42,36 @@ pub(crate) fn telemetry_error_message(status: &tonic::Status) -> String {
 }
 
 fn render_plain(code: tonic::Code, message: &str) -> String {
-    let label = grpc_code_label(code);
-    format!("Error ({label}): {message}\n")
+    let (summary, hint) = plain_diagnostic(code);
+    format!("Error: {summary}\nDetail: {message}\nHint: {hint}\n")
 }
 
-fn grpc_code_label(code: tonic::Code) -> &'static str {
+fn plain_diagnostic(code: tonic::Code) -> (&'static str, &'static str) {
     match code {
-        tonic::Code::InvalidArgument => "invalid argument",
-        tonic::Code::NotFound => "not found",
-        tonic::Code::FailedPrecondition => "failed precondition",
-        tonic::Code::Unavailable => "unavailable",
-        tonic::Code::Unimplemented => "unimplemented",
-        tonic::Code::Internal => "internal error",
-        _ => "error",
+        tonic::Code::InvalidArgument => (
+            "Query request is invalid",
+            "Check the SQL syntax and retry. Use `SELECT * FROM coral.tables LIMIT 10` to inspect available tables.",
+        ),
+        tonic::Code::NotFound => (
+            "Query target was not found",
+            "Use `SELECT * FROM coral.tables LIMIT 10` to confirm the available source, schema, and table names.",
+        ),
+        tonic::Code::FailedPrecondition => (
+            "Query prerequisites are not satisfied",
+            "Check source setup and required filters, then retry the query.",
+        ),
+        tonic::Code::Unavailable => (
+            "Query runtime is unavailable",
+            "Retry once the local Coral server is running.",
+        ),
+        tonic::Code::Unimplemented => (
+            "Query feature is not supported",
+            "Adjust the SQL to use supported read-only query features, then retry.",
+        ),
+        _ => (
+            "Query failed",
+            "Retry the query. If it keeps failing, run `coral source test <source>` for the source you are querying.",
+        ),
     }
 }
 
@@ -201,9 +218,11 @@ mod tests {
     }
 
     #[test]
-    fn plain_status_includes_grpc_code() {
+    fn plain_status_renders_diagnostic_block() {
         let rendered = render_plain(Code::Internal, "legacy opaque failure");
-        assert_eq!(rendered, "Error (internal error): legacy opaque failure\n");
+        assert!(rendered.contains("Error: Query failed"));
+        assert!(rendered.contains("Detail: legacy opaque failure"));
+        assert!(rendered.contains("Hint: Retry the query."));
     }
 
     #[test]
@@ -215,23 +234,26 @@ mod tests {
     }
 
     #[test]
-    fn plain_not_found_shows_code() {
+    fn plain_not_found_has_discovery_hint() {
         let rendered = render_plain(Code::NotFound, "resource not found: github.issues");
-        assert!(rendered.starts_with("Error (not found):"));
+        assert!(rendered.starts_with("Error: Query target was not found"));
         assert!(rendered.contains("github.issues"));
+        assert!(rendered.contains("Hint: Use `SELECT * FROM coral.tables LIMIT 10`"));
     }
 
     #[test]
-    fn plain_unavailable_shows_code() {
+    fn plain_unavailable_has_runtime_hint() {
         let rendered = render_plain(Code::Unavailable, "transport error");
-        assert_eq!(rendered, "Error (unavailable): transport error\n");
+        assert!(rendered.contains("Error: Query runtime is unavailable"));
+        assert!(rendered.contains("Detail: transport error"));
+        assert!(rendered.contains("Hint: Retry once the local Coral server is running."));
     }
 
     #[test]
     fn plain_fallback_preserves_multi_line_server_message() {
         let multi_line = "Source authentication failed (401)\nbad credentials [GET] https://api.github.com/issues\nHint: Re-install the source.";
         let rendered = render_plain(Code::FailedPrecondition, multi_line);
-        assert!(rendered.starts_with("Error (failed precondition):"));
+        assert!(rendered.starts_with("Error: Query prerequisites are not satisfied"));
         assert!(rendered.contains("Source authentication failed (401)"));
         assert!(rendered.contains("Hint: Re-install the source."));
     }

@@ -321,9 +321,22 @@ async fn validate_source_request(
 
 pub(crate) fn load_validated_manifest_file(
     file: &Path,
-) -> Result<(String, ValidatedSourceManifest), anyhow::Error> {
-    let manifest_yaml = std::fs::read_to_string(file)?;
-    let manifest = parse_source_manifest_yaml(manifest_yaml.as_str())?;
+) -> Result<(String, ValidatedSourceManifest), crate::CliError> {
+    let path = file.display().to_string();
+    let manifest_yaml = std::fs::read_to_string(file).map_err(|error| {
+        crate::CliError::diagnostic(
+            "Source manifest could not be read",
+            format!("Coral could not read `{path}`: {error}"),
+            "Check that the file exists and is readable, then rerun the command.",
+        )
+    })?;
+    let manifest = parse_source_manifest_yaml(manifest_yaml.as_str()).map_err(|error| {
+        crate::CliError::diagnostic(
+            "Source manifest is invalid",
+            format!("`{path}` is not a valid source spec: {error}"),
+            "Fix the YAML or source-spec error shown above, then rerun the command.",
+        )
+    })?;
     Ok((manifest_yaml, manifest))
 }
 
@@ -331,15 +344,27 @@ pub(crate) async fn print_source_info(
     app: &AppClient,
     name: &str,
     verbose: bool,
-) -> Result<(), anyhow::Error> {
-    let response = app
+) -> Result<(), crate::CliError> {
+    let normalized = source_name_arg(Some(name))?;
+    let response = match app
         .source_client()
         .get_source_info(Request::new(GetSourceInfoRequest {
             workspace: Some(default_workspace()),
-            name: source_name_arg(Some(name))?,
+            name: normalized.clone(),
         }))
-        .await?
-        .into_inner();
+        .await
+    {
+        Ok(response) => response.into_inner(),
+        Err(status) if status.code() == tonic::Code::NotFound => {
+            // Normalize server NotFound details so CLI users see the source
+            // name they typed, not workspace-qualified or transport-specific
+            // context from the app layer.
+            return Err(crate::CliError::SourceNotFound {
+                source_name: normalized,
+            });
+        }
+        Err(status) => return Err(crate::CliError::server_status(&status)),
+    };
     let source = response
         .source_info
         .ok_or_else(|| anyhow::anyhow!("get source info response missing source_info"))?;
@@ -401,40 +426,66 @@ fn print_source_info_response(source: &SourceInfo, verbose: bool) {
     }
 }
 
-pub(crate) async fn delete_source(app: &AppClient, name: &str) -> Result<(), anyhow::Error> {
-    app.source_client()
+pub(crate) async fn delete_source(app: &AppClient, name: &str) -> Result<(), crate::CliError> {
+    let normalized = source_name_arg(Some(name))?;
+    match app
+        .source_client()
         .delete_source(Request::new(DeleteSourceRequest {
             workspace: Some(default_workspace()),
-            name: source_name_arg(Some(name))?,
+            name: normalized.clone(),
         }))
-        .await?;
+        .await
+    {
+        Ok(_) => Ok(()),
+        Err(status) if is_source_missing_status(&status) => {
+            // Normalize server NotFound details so CLI users see the source
+            // name they typed, not workspace-qualified or transport-specific
+            // context from the app layer.
+            Err(crate::CliError::SourceNotFound {
+                source_name: normalized,
+            })
+        }
+        Err(status) => Err(crate::CliError::server_status(&status)),
+    }?;
     Ok(())
 }
 
-pub(crate) fn require_interactive() -> Result<(), anyhow::Error> {
+pub(crate) fn require_interactive() -> Result<(), crate::CliError> {
     if !stdin().is_terminal() || !stdout().is_terminal() {
-        return Err(anyhow::anyhow!("interactive source install requires a TTY"));
+        return Err(crate::CliError::diagnostic(
+            "Interactive input is not available",
+            "`--interactive` needs a terminal so Coral can prompt for source inputs.",
+            "Re-run the command in a terminal, or set the required environment variables and omit `--interactive`.",
+        ));
     }
     Ok(())
 }
 
-pub(crate) fn source_name_arg(name: Option<&str>) -> Result<String, anyhow::Error> {
+pub(crate) fn source_name_arg(name: Option<&str>) -> Result<String, crate::CliError> {
     let Some(name) = name else {
-        return Err(anyhow::anyhow!("missing source name"));
+        return Err(invalid_source_name("missing source name"));
     };
     let name = name.trim();
     if name.is_empty() {
-        return Err(anyhow::anyhow!("missing source name"));
+        return Err(invalid_source_name("missing source name"));
     }
     if name.contains('/') || name.contains('\\') {
-        return Err(anyhow::anyhow!(
-            "source name must not contain '/' or '\\\\'"
+        return Err(invalid_source_name(
+            "source name must not contain '/' or '\\\\'",
         ));
     }
     if name == "." || name == ".." {
-        return Err(anyhow::anyhow!("source name must not be '.' or '..'"));
+        return Err(invalid_source_name("source name must not be '.' or '..'"));
     }
     Ok(name.to_string())
+}
+
+fn invalid_source_name(detail: impl AsRef<str>) -> crate::CliError {
+    crate::CliError::diagnostic(
+        "Source name is invalid",
+        detail,
+        "Use a source name without path separators, such as `github` or `my_source`.",
+    )
 }
 
 pub(crate) fn prompt_for_inputs(
@@ -507,12 +558,13 @@ pub(crate) fn prompt_for_inputs_with_credential_methods(
 
 pub(crate) fn collect_inputs_from_env(
     inputs: &[ManifestInputSpec],
-    interactive_command: String,
-) -> Result<(Vec<SourceVariable>, Vec<SourceSecret>), anyhow::Error> {
+    interactive_command: impl Into<String>,
+) -> Result<(Vec<SourceVariable>, Vec<SourceSecret>), crate::CliError> {
+    let interactive_command = interactive_command.into();
     collect_inputs_with_hint(
         inputs,
         |key| read_source_input_env(key).unwrap_or_default(),
-        Some(interactive_command),
+        &interactive_command,
     )
 }
 
@@ -537,8 +589,8 @@ fn read_source_input_env(key: &str) -> Option<String> {
 fn collect_inputs_with_hint(
     inputs: &[ManifestInputSpec],
     mut lookup: impl FnMut(&str) -> String,
-    interactive_command: Option<String>,
-) -> Result<(Vec<SourceVariable>, Vec<SourceSecret>), anyhow::Error> {
+    interactive_command: &str,
+) -> Result<(Vec<SourceVariable>, Vec<SourceSecret>), crate::CliError> {
     let mut variables = Vec::new();
     let mut secrets = Vec::new();
     let mut missing = Vec::new();
@@ -569,15 +621,13 @@ fn collect_inputs_with_hint(
     }
 
     if !missing.is_empty() {
-        let interactive_hint = interactive_command.map_or_else(
-            || "--interactive".to_string(),
-            |command| format!("`{command}`"),
-        );
-        return Err(anyhow::anyhow!(
-            "missing required environment variable{}: {}. Set the variable{} or run {interactive_hint}.",
-            if missing.len() == 1 { "" } else { "s" },
-            missing.join(", "),
-            if missing.len() == 1 { "" } else { "s" },
+        return Err(crate::CliError::diagnostic(
+            "Required source input is missing",
+            format!(
+                "Missing required environment variable(s): {}.",
+                missing.join(", ")
+            ),
+            format!("Set the variable(s), or run `{interactive_command}`."),
         ));
     }
 
@@ -644,7 +694,7 @@ pub(crate) async fn test_and_print(
         Err(status) if is_source_missing_status(&status) => {
             return source_test_not_found_error(app, &normalized, status).await;
         }
-        Err(status) => return Err(anyhow::Error::from(status).into()),
+        Err(status) => return Err(crate::CliError::server_status(&status)),
     };
 
     print_validation_pretty(&response, limit)?;
@@ -665,7 +715,7 @@ async fn source_test_not_found_error(
 ) -> Result<(), crate::CliError> {
     // Discovery failure must not mask the original validation error.
     let Ok(available) = discover_sources(app).await else {
-        return Err(anyhow::Error::from(original_status).into());
+        return Err(crate::CliError::server_status(&original_status));
     };
     if available
         .iter()
@@ -691,18 +741,10 @@ pub(crate) async fn remove_and_print(
             println!("Removed source {normalized}");
             Ok(())
         }
-        Err(err) => {
-            if err
-                .downcast_ref::<tonic::Status>()
-                .is_some_and(is_source_missing_status)
-            {
-                Err(crate::CliError::SourceRemoveNotFound {
-                    source_name: normalized,
-                })
-            } else {
-                Err(err.into())
-            }
-        }
+        Err(crate::CliError::SourceNotFound { .. }) => Err(crate::CliError::SourceRemoveNotFound {
+            source_name: normalized,
+        }),
+        Err(err) => Err(err),
     }
 }
 
@@ -1118,7 +1160,7 @@ mod tests {
         let (variables, secrets) = collect_inputs_with_hint(
             &inputs,
             |key| env.get(key).map(|v| (*v).to_string()).unwrap_or_default(),
-            None,
+            "coral source add linear --interactive",
         )
         .expect("should succeed");
         assert_eq!(variables.len(), 1);
@@ -1139,9 +1181,12 @@ mod tests {
             hint: None,
             credential: None,
         }];
-        let (variables, _) =
-            collect_inputs_with_hint(&inputs, |_| "https://override.test".to_string(), None)
-                .expect("env should override default");
+        let (variables, _) = collect_inputs_with_hint(
+            &inputs,
+            |_| "https://override.test".to_string(),
+            "coral source add demo --interactive",
+        )
+        .expect("env should override default");
         assert_eq!(variables.len(), 1);
         assert_eq!(variables[0].value, "https://override.test");
     }
@@ -1156,8 +1201,12 @@ mod tests {
             hint: None,
             credential: None,
         }];
-        let (variables, secrets) = collect_inputs_with_hint(&inputs, |_| String::new(), None)
-            .expect("default should satisfy required");
+        let (variables, secrets) = collect_inputs_with_hint(
+            &inputs,
+            |_| String::new(),
+            "coral source add demo --interactive",
+        )
+        .expect("default should satisfy required");
         assert_eq!(secrets.len(), 0);
         assert_eq!(variables.len(), 1);
         assert_eq!(variables[0].value, "https://example.com");
@@ -1183,21 +1232,27 @@ mod tests {
                 credential: None,
             },
         ];
-        let error = collect_inputs_with_hint(&inputs, |_| String::new(), None)
-            .expect_err("missing required inputs should fail");
-        let message = error.to_string();
+        let error = collect_inputs_with_hint(
+            &inputs,
+            |_| String::new(),
+            "coral source add linear --interactive",
+        )
+        .expect_err("missing required inputs should fail");
+        let message = error.rendered_stderr().expect("rendered stderr");
+        assert!(message.contains("Required source input is missing"));
         assert!(message.contains("LINEAR_API_KEY"));
         assert!(message.contains("OTHER_KEY"));
-        assert!(message.contains("--interactive"));
     }
 
     #[test]
     fn source_name_arg_rejects_dot_segments() {
         let error = source_name_arg(Some("..")).expect_err("dot segment should fail");
-        assert!(error.to_string().contains("must not be '.' or '..'"));
+        let message = error.rendered_stderr().expect("rendered stderr");
+        assert!(message.contains("must not be '.' or '..'"));
 
         let error = source_name_arg(Some(" . ")).expect_err("dot segment should fail");
-        assert!(error.to_string().contains("must not be '.' or '..'"));
+        let message = error.rendered_stderr().expect("rendered stderr");
+        assert!(message.contains("must not be '.' or '..'"));
     }
 
     #[test]
@@ -1210,8 +1265,12 @@ mod tests {
             hint: None,
             credential: None,
         }];
-        let (variables, secrets) = collect_inputs_with_hint(&inputs, |_| String::new(), None)
-            .expect("optional should be omitted");
+        let (variables, secrets) = collect_inputs_with_hint(
+            &inputs,
+            |_| String::new(),
+            "coral source add demo --interactive",
+        )
+        .expect("optional should be omitted");
         assert!(variables.is_empty());
         assert!(secrets.is_empty());
     }

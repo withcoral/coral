@@ -37,7 +37,7 @@ enum InstalledSourceAction {
     Back,
 }
 
-pub(crate) async fn run(app: &AppClient) -> Result<(), anyhow::Error> {
+pub(crate) async fn run(app: &AppClient) -> Result<(), crate::CliError> {
     source_ops::require_interactive()?;
     let theme = ColorfulTheme::default();
 

@@ -21,7 +21,15 @@ fn onboard_rejects_non_interactive_terminals() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!output.status.success(), "expected non-zero exit status");
     assert!(
-        stderr.contains("interactive source install requires a TTY"),
+        stderr.contains("Error: Interactive input is not available"),
         "expected TTY error in stderr, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("Detail: `--interactive` needs a terminal"),
+        "expected TTY detail in stderr, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("Hint: Re-run the command in a terminal"),
+        "expected TTY hint in stderr, got: {stderr}"
     );
 }

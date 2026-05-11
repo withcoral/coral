@@ -81,8 +81,20 @@ tables:
     assert!(!output.status.success(), "expected non-zero exit status");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
+        stderr.contains("Error: Source manifest is invalid"),
+        "expected manifest diagnostic summary, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("Detail:"),
+        "expected manifest diagnostic detail, got: {stderr}"
+    );
+    assert!(
         stderr.contains("\"backend\" is a required property"),
         "expected missing-backend schema error, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("Hint: Fix the YAML or source-spec error"),
+        "expected manifest diagnostic hint, got: {stderr}"
     );
 }
 
@@ -112,7 +124,37 @@ tables:
     assert!(!output.status.success(), "expected non-zero exit status");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
+        stderr.contains("Error: Source manifest is invalid"),
+        "expected manifest diagnostic summary, got: {stderr}"
+    );
+    assert!(
         stderr.contains("duplicate column 'id'"),
         "expected duplicate-column error, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("Hint: Fix the YAML or source-spec error"),
+        "expected manifest diagnostic hint, got: {stderr}"
+    );
+}
+
+#[test]
+fn lint_reports_missing_manifest_file_with_hint() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("missing.yaml");
+    let output = coral_lint(&path);
+
+    assert!(!output.status.success(), "expected non-zero exit status");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Error: Source manifest could not be read"),
+        "expected read diagnostic summary, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("Detail: Coral could not read"),
+        "expected read diagnostic detail, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("Hint: Check that the file exists and is readable"),
+        "expected read diagnostic hint, got: {stderr}"
     );
 }

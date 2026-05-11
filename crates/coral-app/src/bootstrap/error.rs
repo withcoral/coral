@@ -106,6 +106,12 @@ impl AppError {
                 detail: error.to_string(),
                 hint: Some("Fix the Coral config file or move it aside, then retry.".to_string()),
             },
+            AppError::TomlEditDecode(error) => ErrorDiagnostic {
+                reason: "INVALID_CONFIG",
+                summary: "Coral config file is invalid".to_string(),
+                detail: error.to_string(),
+                hint: Some("Fix the Coral config file or move it aside, then retry.".to_string()),
+            },
             AppError::TomlEncode(error) => ErrorDiagnostic {
                 reason: "CONFIG_WRITE_FAILED",
                 summary: "Coral could not write its config file".to_string(),

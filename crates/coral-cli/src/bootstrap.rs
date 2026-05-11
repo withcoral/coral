@@ -28,22 +28,33 @@ impl Bootstrap {
 pub(crate) enum BootstrapError {
     #[error(transparent)]
     Startup(#[from] LocalServerError),
-    #[error(transparent)]
-    Connect(#[from] ClientError),
+    #[error("failed to connect to Coral endpoint '{endpoint}': {source}")]
+    Connect {
+        endpoint: String,
+        #[source]
+        source: ClientError,
+    },
 }
 
 pub(crate) async fn bootstrap(options: BootstrapOptions) -> Result<Bootstrap, BootstrapError> {
     if let Some(endpoint) = bootstrap_endpoint() {
-        return Ok(Bootstrap {
-            app: AppClient::connect(&endpoint).await?,
-            server: None,
-        });
+        let app =
+            AppClient::connect(&endpoint)
+                .await
+                .map_err(|source| BootstrapError::Connect {
+                    endpoint: endpoint.clone(),
+                    source,
+                })?;
+        return Ok(Bootstrap { app, server: None });
     }
 
     let server = configure_server_builder(ServerBuilder::new(), options)
         .start()
         .await?;
-    let app = AppClient::connect(server.endpoint_uri()).await?;
+    let endpoint = server.endpoint_uri().to_string();
+    let app = AppClient::connect(&endpoint)
+        .await
+        .map_err(|source| BootstrapError::Connect { endpoint, source })?;
     Ok(Bootstrap {
         app,
         server: Some(server),
