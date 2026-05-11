@@ -277,7 +277,6 @@ fn table_summaries_from_proto(tables: &[ProtoTableSummary]) -> Vec<TableSummary>
 }
 
 fn describe_found_table_value(table: &ProtoTable) -> Value {
-    let column_count = u32::try_from(table.columns.len()).unwrap_or(u32::MAX);
     serde_json::json!({
         "found": true,
         "schema_name": table.schema_name,
@@ -286,7 +285,7 @@ fn describe_found_table_value(table: &ProtoTable) -> Value {
         "description": table.description,
         "guide": table.guide,
         "required_filters": table.required_filters,
-        "column_count": column_count,
+        "column_count": table.columns.len(),
         "columns_hint": "Query coral.columns for this schema/table ordered by ordinal_position to inspect columns.",
     })
 }
