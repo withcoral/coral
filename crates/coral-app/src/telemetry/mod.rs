@@ -627,6 +627,8 @@ mod tests {
             build_trace_targets(DEFAULT_INTERNAL_TRACE_FILTER, DEFAULT_INTERNAL_TRACE_FILTER);
 
         assert!(error.is_none());
+        assert!(targets.would_enable("coral_client::grpc", &tracing::Level::TRACE));
+        assert!(targets.would_enable("coral_mcp::server", &tracing::Level::TRACE));
         assert!(targets.would_enable("coral_engine::http", &tracing::Level::TRACE));
         assert!(targets.would_enable("coral_engine::datafusion", &tracing::Level::TRACE));
     }
