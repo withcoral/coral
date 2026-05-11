@@ -4,7 +4,7 @@
 
 ## Discovery Workflow
 
-Always inspect queryable tables and table metadata before writing queries:
+Always inspect queryable tables, source-scoped table functions, and table metadata before writing queries. Call table functions from `FROM` with named arguments, for example `github.search_issues(q => 'repo:withcoral/coral deploy failure')`.
 
 ```sql
 -- List visible tables, descriptions, and required filters
@@ -59,7 +59,6 @@ WHERE json_get_str(rules, 0, 'clauses', 0, 'values', 0) = 'phoebe-org';
 
 - Use each table's `sql_reference` from `list_tables` or `coral://tables` in `FROM` and `JOIN` clauses, for example `slack.messages`.
 - Do not quote the whole `schema.table` string. Write `github.pulls` or `"github"."pulls"`, not `"github.pulls"`.
-- Prefer source-scoped table functions for provider-native search when available, for example `github.search_issues(q => 'deploy failure repo:withcoral/coral')`.
 - Check `coral.tables.required_filters` and `coral.columns.is_required_filter` before querying tables that depend on filter-only inputs.
 - Cross-source joins work with standard SQL after source scans complete.
 - Use `LIKE` or `ILIKE` for SQL wildcard matching with `%` and `_`. `SIMILAR TO` uses regex-shaped patterns, so write `.*` instead of `%`, `.` instead of `_`, or escape literal percent/underscore characters as `\%` and `\_`.
