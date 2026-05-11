@@ -303,12 +303,17 @@ fn describe_missing_table_value(schema: &str, table: &str, summaries: &[TableSum
         .take(10)
         .map(TableSummary::summary_value)
         .collect::<Vec<_>>();
-    let mut search_arguments = serde_json::json!({
-        "pattern": regex::escape(table),
-    });
-    if !same_schema_tables.is_empty() {
-        search_arguments["schema"] = serde_json::json!(schema);
-    }
+    let escaped_table = regex::escape(table);
+    let search_arguments = if same_schema_tables.is_empty() {
+        serde_json::json!({
+            "pattern": escaped_table,
+        })
+    } else {
+        serde_json::json!({
+            "pattern": escaped_table,
+            "schema": schema,
+        })
+    };
     let mut suggested_calls = vec![serde_json::json!({
         "tool": "search_tables",
         "arguments": search_arguments,
