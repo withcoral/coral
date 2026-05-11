@@ -35,6 +35,9 @@ use super::env::AppEnvironment;
 use super::error::AppError;
 use crate::EngineExtensionsProvider;
 use crate::feedback::manager::FeedbackManager;
+use crate::feedback::publisher::{
+    FeedbackPublisher, HostedFeedbackPublisher, NoopFeedbackPublisher,
+};
 use crate::feedback::service::FeedbackService;
 use crate::query::manager::QueryManager;
 use crate::query::service::QueryService;
@@ -69,6 +72,7 @@ pub(crate) struct ServerConfig {
     config_dir: Option<PathBuf>,
     mode: ServerMode,
     engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+    feedback_publisher: Arc<dyn FeedbackPublisher>,
     enable_stderr_logs: bool,
 }
 
@@ -84,6 +88,7 @@ impl ServerConfig {
             config_dir: None,
             mode: ServerMode::NativeGrpc,
             engine_extensions_providers: Vec::new(),
+            feedback_publisher: Arc::new(HostedFeedbackPublisher::new()),
             enable_stderr_logs: false,
         }
     }
@@ -213,6 +218,14 @@ impl ServerBuilder {
         self
     }
 
+    /// Disables hosted feedback upload for tests and controlled local harnesses.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_noop_feedback_uploads(mut self) -> Self {
+        self.config.feedback_publisher = Arc::new(NoopFeedbackPublisher);
+        self
+    }
+
     /// Starts the Coral gRPC server on TCP.
     ///
     /// By default, Coral keeps a real local gRPC boundary here so the public
@@ -237,7 +250,8 @@ impl ServerBuilder {
         let secret_store = SecretStore::new(layout.clone());
         let source_manager =
             SourceManager::new(config_store.clone(), secret_store.clone(), layout.clone());
-        let feedback_manager = FeedbackManager::new(layout.clone());
+        let feedback_manager =
+            FeedbackManager::with_publisher(layout.clone(), self.config.feedback_publisher);
         let query_manager = QueryManager::new(
             config_store,
             secret_store,

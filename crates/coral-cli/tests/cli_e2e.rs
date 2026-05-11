@@ -14,6 +14,7 @@ use std::sync::Arc;
 use arrow::array::{Int64Array, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
+#[cfg(feature = "embedded-ui")]
 use assert_cmd::Command;
 use coral_api::v1::{
     DiscoverSourcesResponse, ExecuteSqlResponse, ListSourcesResponse, SourceInfo, SourceOrigin,

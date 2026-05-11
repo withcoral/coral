@@ -19,6 +19,7 @@ opentelemetry.workspace = true
 opentelemetry-appender-tracing.workspace = true
 opentelemetry-otlp.workspace = true
 opentelemetry_sdk.workspace = true
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
@@ -45,7 +46,6 @@ coral-spec.workspace = true
 coral-client.workspace = true
 prost.workspace = true
 opentelemetry_sdk = { workspace = true, features = ["testing"] }
-reqwest.workspace = true
 tempfile.workspace = true
 tokio.workspace = true
 

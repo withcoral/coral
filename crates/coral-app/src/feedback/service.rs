@@ -30,7 +30,7 @@ impl FeedbackServiceApi for FeedbackService {
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            let report = feedback
+            let submission = feedback
                 .submit_feedback(
                     &workspace_name,
                     &request.trying_to_do,
@@ -39,7 +39,7 @@ impl FeedbackServiceApi for FeedbackService {
                 )
                 .map_err(app_status)?;
             Ok(Response::new(SubmitFeedbackResponse {
-                report: Some(feedback_report_to_proto(report)),
+                report: Some(feedback_report_to_proto(submission.report)),
             }))
         })
         .await
