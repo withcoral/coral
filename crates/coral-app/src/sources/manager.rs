@@ -36,6 +36,12 @@ pub(crate) struct CreateBundledSourceCommand {
     pub(crate) bindings: SourceBindings,
 }
 
+pub(crate) struct CreateBundledSourceWithCredentialsCommand {
+    pub(crate) name: SourceName,
+    pub(crate) bindings: SourceBindings,
+    pub(crate) oauth_credential_retrievals: Vec<SourceOAuthCredentialRetrieval>,
+}
+
 pub(crate) struct ImportSourceCommand {
     pub(crate) manifest_yaml: String,
     pub(crate) bindings: SourceBindings,
@@ -233,6 +239,45 @@ impl SourceManager {
         )
     }
 
+    pub(crate) async fn create_bundled_source_with_credentials(
+        &self,
+        workspace_name: &WorkspaceName,
+        command: CreateBundledSourceWithCredentialsCommand,
+        events: ImportSourceEventSender,
+    ) -> Result<InstalledSource, AppError> {
+        let bundled = load_bundled_source(&command.name)?;
+        let candidate = self.describe_bundled_source(workspace_name, &bundled.manifest_yaml)?;
+        let oauth_input_keys = command
+            .oauth_credential_retrievals
+            .iter()
+            .map(|credential| credential.input_key.clone())
+            .collect::<BTreeSet<_>>();
+        let stored_material = self.source_material_for_validation(
+            workspace_name,
+            &candidate,
+            &command.bindings,
+            &oauth_input_keys,
+        )?;
+        let bindings = self
+            .bindings_with_oauth_material(
+                &candidate,
+                &command.bindings,
+                stored_material,
+                command.oauth_credential_retrievals,
+                events,
+            )
+            .await?;
+        self.persist_source(
+            workspace_name,
+            PersistSourceRequest {
+                candidate: &candidate,
+                manifest_yaml: None,
+                bindings,
+                origin: SourceOrigin::Bundled,
+            },
+        )
+    }
+
     pub(crate) fn import_source(
         &self,
         workspace_name: &WorkspaceName,
@@ -279,21 +324,15 @@ impl SourceManager {
             &command.bindings,
             &oauth_input_keys,
         )?;
-        Self::validate_oauth_import_preflight(
-            &candidate,
-            &command.bindings,
-            &stored_material,
-            &command.oauth_credential_retrievals,
-        )?;
-        let oauth_material = self
-            .retrieve_oauth_material(&candidate, command.oauth_credential_retrievals, events)
+        let bindings = self
+            .bindings_with_oauth_material(
+                &candidate,
+                &command.bindings,
+                stored_material,
+                command.oauth_credential_retrievals,
+                events,
+            )
             .await?;
-        let mut validation_material = stored_material;
-        for material in &oauth_material {
-            validation_material.insert(material.input_key.clone(), material.access_token.clone());
-        }
-        let mut bindings = validate_bindings(&candidate, &command.bindings, &validation_material)?;
-        merge_oauth_material_into_bindings(&mut bindings, oauth_material)?;
         self.persist_source(
             workspace_name,
             PersistSourceRequest {
@@ -580,6 +619,32 @@ impl SourceManager {
             materials.push(material);
         }
         Ok(materials)
+    }
+
+    async fn bindings_with_oauth_material(
+        &self,
+        candidate: &CandidateSource,
+        bindings: &SourceBindings,
+        stored_material: BTreeMap<String, String>,
+        oauth_credential_retrievals: Vec<SourceOAuthCredentialRetrieval>,
+        events: ImportSourceEventSender,
+    ) -> Result<ValidatedBindings, AppError> {
+        Self::validate_oauth_import_preflight(
+            candidate,
+            bindings,
+            &stored_material,
+            &oauth_credential_retrievals,
+        )?;
+        let oauth_material = self
+            .retrieve_oauth_material(candidate, oauth_credential_retrievals, events)
+            .await?;
+        let mut validation_material = stored_material;
+        for material in &oauth_material {
+            validation_material.insert(material.input_key.clone(), material.access_token.clone());
+        }
+        let mut bindings = validate_bindings(candidate, bindings, &validation_material)?;
+        merge_oauth_material_into_bindings(&mut bindings, oauth_material)?;
+        Ok(bindings)
     }
 
     fn load_source_rollback_state(

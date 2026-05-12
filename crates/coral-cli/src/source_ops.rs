@@ -4,18 +4,22 @@ use std::path::Path;
 
 use coral_api::CORAL_ERROR_REASON_SOURCE_NOT_FOUND;
 use coral_api::v1::{
-    CreateBundledSourceRequest, DeleteSourceRequest, DiscoverSourcesRequest, GetSourceInfoRequest,
-    ImportSourceRequest, ListSourcesRequest, QueryTestFailure, QueryTestSuccess, Source,
-    SourceInfo, SourceOrigin, SourceSecret, SourceVariable, ValidateSourceRequest,
+    CreateBundledSourceRequest, CreateBundledSourceWithCredentialsRequest, DeleteSourceRequest,
+    DiscoverSourcesRequest, GetSourceInfoRequest, ImportSourceRequest, ImportSourceResponse,
+    ListSourcesRequest, OAuthCredentialInput, OAuthCredentialRetrieval, QueryTestFailure,
+    QueryTestSuccess, Source, SourceInfo, SourceOrigin, SourceSecret, SourceVariable,
+    ValidateSourceRequest,
     ValidateSourceResponse, import_source_response, query_test_result,
     source_input_spec::Input as ProtoSourceInput,
 };
 use coral_client::{AppClient, DecodedStatusError, decode_status_error, default_workspace};
 use coral_spec::{
-    ManifestInputKind, ManifestInputSpec, ValidatedSourceManifest, parse_source_manifest_yaml,
+    ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestCredentialSpec,
+    ManifestInputKind, ManifestInputSpec, ManifestOAuthCredentialSpec, ValidatedSourceManifest,
+    parse_source_manifest_yaml,
 };
 use dialoguer::console::style;
-use dialoguer::{Input, Password, theme::ColorfulTheme};
+use dialoguer::{Input, Password, Select, theme::ColorfulTheme};
 use tonic::Request;
 
 const MAX_TABLES_PER_SCHEMA: usize = 9;
@@ -120,6 +124,97 @@ pub(crate) async fn import_source(
         }
     }
     Err(anyhow::anyhow!("import source stream ended without source"))
+}
+
+pub(crate) struct CollectedSourceInputs {
+    pub(crate) variables: Vec<SourceVariable>,
+    pub(crate) secrets: Vec<SourceSecret>,
+    oauth_credential_retrievals: Vec<OAuthCredentialRetrieval>,
+    oauth_labels: BTreeMap<String, String>,
+}
+
+impl CollectedSourceInputs {
+    fn new() -> Self {
+        Self {
+            variables: Vec::new(),
+            secrets: Vec::new(),
+            oauth_credential_retrievals: Vec::new(),
+            oauth_labels: BTreeMap::new(),
+        }
+    }
+}
+
+pub(crate) async fn add_bundled_source_with_credentials(
+    app: &AppClient,
+    name: &str,
+    inputs: CollectedSourceInputs,
+) -> Result<Source, anyhow::Error> {
+    if inputs.oauth_credential_retrievals.is_empty() {
+        return add_bundled_source(app, name, inputs.variables, inputs.secrets).await;
+    }
+    let response = app
+        .source_client()
+        .create_bundled_source_with_credentials(Request::new(
+            CreateBundledSourceWithCredentialsRequest {
+                workspace: Some(default_workspace()),
+                name: name.to_string(),
+                variables: inputs.variables,
+                secrets: inputs.secrets,
+                oauth_credential_retrievals: inputs.oauth_credential_retrievals,
+            },
+        ))
+        .await?;
+    source_from_credential_stream(response.into_inner(), &inputs.oauth_labels).await
+}
+
+pub(crate) async fn import_source_with_credentials(
+    app: &AppClient,
+    manifest_yaml: String,
+    inputs: CollectedSourceInputs,
+) -> Result<Source, anyhow::Error> {
+    if inputs.oauth_credential_retrievals.is_empty() {
+        return import_source(app, manifest_yaml, inputs.variables, inputs.secrets).await;
+    }
+    let response = app
+        .source_client()
+        .import_source(Request::new(ImportSourceRequest {
+            workspace: Some(default_workspace()),
+            manifest_yaml,
+            variables: inputs.variables,
+            secrets: inputs.secrets,
+            oauth_credential_retrievals: inputs.oauth_credential_retrievals,
+        }))
+        .await?;
+    source_from_credential_stream(response.into_inner(), &inputs.oauth_labels).await
+}
+
+async fn source_from_credential_stream(
+    mut stream: tonic::Streaming<ImportSourceResponse>,
+    oauth_labels: &BTreeMap<String, String>,
+) -> Result<Source, anyhow::Error> {
+    while let Some(response) = stream
+        .message()
+        .await
+        .map_err(|error| oauth_error("retrieve", &error))?
+    {
+        match response.event {
+            Some(import_source_response::Event::OauthAuthorization(authorization)) => {
+                let label = oauth_labels
+                    .get(&authorization.input_key)
+                    .map_or(authorization.input_key.as_str(), String::as_str);
+                println!("Open this URL to connect {label}:");
+                println!("{}", authorization.authorization_url);
+                open_url(&authorization.authorization_url);
+            }
+            Some(import_source_response::Event::Source(source)) => {
+                return Ok(source);
+            }
+            Some(import_source_response::Event::OauthCompleted(_)) | None => {}
+        }
+    }
+    Err(anyhow::anyhow!(
+        "source credential retrieval stream ended before source import completed"
+    ))
 }
 
 pub(crate) async fn validate_source(
@@ -277,6 +372,50 @@ pub(crate) fn prompt_for_inputs(
     }
 
     Ok((variables, secrets))
+}
+
+pub(crate) fn prompt_for_inputs_with_credential_methods(
+    inputs: &[ManifestInputSpec],
+) -> Result<CollectedSourceInputs, anyhow::Error> {
+    let mut collected = CollectedSourceInputs::new();
+
+    for input in inputs {
+        let env_value = read_source_input_env(&input.key).unwrap_or_default();
+        if !env_value.is_empty() {
+            match input.kind {
+                ManifestInputKind::Variable => collected.variables.push(SourceVariable {
+                    key: input.key.clone(),
+                    value: env_value,
+                }),
+                ManifestInputKind::Secret => collected.secrets.push(SourceSecret {
+                    key: input.key.clone(),
+                    value: env_value,
+                }),
+            }
+            continue;
+        }
+
+        match input.kind {
+            ManifestInputKind::Variable => {
+                if let Some(variable) = prompt_variable(input)? {
+                    collected.variables.push(variable);
+                }
+            }
+            ManifestInputKind::Secret => match prompt_secret_with_methods(input)? {
+                SecretInputOutcome::SourceConfig(secret) => {
+                    if let Some(secret) = secret {
+                        collected.secrets.push(secret);
+                    }
+                }
+                SecretInputOutcome::OAuth { credential, label } => {
+                    collected.oauth_labels.insert(input.key.clone(), label);
+                    collected.oauth_credential_retrievals.push(credential);
+                }
+            },
+        }
+    }
+
+    Ok(collected)
 }
 
 pub(crate) fn collect_inputs_from_env(
@@ -650,6 +789,166 @@ fn prompt_secret(input: &ManifestInputSpec) -> Result<Option<SourceSecret>, anyh
         key: input.key.clone(),
         value,
     }))
+}
+
+enum SecretInputOutcome {
+    SourceConfig(Option<SourceSecret>),
+    OAuth {
+        credential: OAuthCredentialRetrieval,
+        label: String,
+    },
+}
+
+fn prompt_secret_with_methods(
+    input: &ManifestInputSpec,
+) -> Result<SecretInputOutcome, anyhow::Error> {
+    let Some(credential) = input.credential.as_ref() else {
+        return Ok(SecretInputOutcome::SourceConfig(prompt_secret(input)?));
+    };
+    let selected = select_credential_method(input, credential)?;
+    let method = credential
+        .methods
+        .get(selected)
+        .ok_or_else(|| anyhow::anyhow!("credential method index {selected} is out of range"))?;
+    match method.kind {
+        ManifestCredentialMethodKind::SourceConfig => {
+            Ok(SecretInputOutcome::SourceConfig(prompt_secret(input)?))
+        }
+        ManifestCredentialMethodKind::OAuth => Ok(SecretInputOutcome::OAuth {
+            credential: collect_oauth_credential_method(input, selected, method)?,
+            label: credential_method_label(method),
+        }),
+    }
+}
+
+fn select_credential_method(
+    input: &ManifestInputSpec,
+    credential: &ManifestCredentialSpec,
+) -> Result<usize, anyhow::Error> {
+    if credential.methods.len() == 1 {
+        return Ok(0);
+    }
+    let theme = ColorfulTheme::default();
+    let items = credential
+        .methods
+        .iter()
+        .map(credential_method_label)
+        .collect::<Vec<_>>();
+    let selected = Select::with_theme(&theme)
+        .with_prompt(format!("{} credential", input.key))
+        .items(&items)
+        .default(0)
+        .interact()?;
+    Ok(selected)
+}
+
+fn credential_method_label(method: &ManifestCredentialMethod) -> String {
+    method.label.clone().unwrap_or_else(|| match method.kind {
+        ManifestCredentialMethodKind::SourceConfig => "Paste token".to_string(),
+        ManifestCredentialMethodKind::OAuth => "Connect with OAuth".to_string(),
+    })
+}
+
+fn collect_oauth_credential_method(
+    input: &ManifestInputSpec,
+    method_index: usize,
+    method: &ManifestCredentialMethod,
+) -> Result<OAuthCredentialRetrieval, anyhow::Error> {
+    let oauth = method
+        .oauth
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("oauth credential method is missing OAuth config"))?;
+    Ok(OAuthCredentialRetrieval {
+        input_key: input.key.clone(),
+        method_index: Some(u32::try_from(method_index)?),
+        credential_inputs: prompt_oauth_credential_inputs(oauth)?,
+    })
+}
+
+fn oauth_error(action: &str, error: &tonic::Status) -> anyhow::Error {
+    anyhow::anyhow!(
+        "OAuth credential retrieval failed during {action}: {error}. Rerun `coral source add` to try again."
+    )
+}
+
+fn prompt_oauth_credential_inputs(
+    oauth: &ManifestOAuthCredentialSpec,
+) -> Result<Vec<OAuthCredentialInput>, anyhow::Error> {
+    let mut values = Vec::new();
+    if let Some(input_key) = oauth.client.id.input.as_deref()
+        && let Some(value) = prompt_oauth_client_id(input_key, oauth.client.id.default.as_deref())?
+    {
+        values.push(OAuthCredentialInput {
+            key: input_key.to_string(),
+            value,
+        });
+    }
+    if let Some(secret) = oauth.client.secret.as_ref() {
+        let value = prompt_oauth_client_secret(&secret.input)?;
+        values.push(OAuthCredentialInput {
+            key: secret.input.clone(),
+            value,
+        });
+    }
+    Ok(values)
+}
+
+fn prompt_oauth_client_id(
+    input_key: &str,
+    default: Option<&str>,
+) -> Result<Option<String>, anyhow::Error> {
+    let theme = ColorfulTheme::default();
+    let prompt = if default.is_some_and(|value| !value.is_empty()) {
+        format!("{input_key} [source default]")
+    } else {
+        input_key.to_string()
+    };
+    let value = Input::<String>::with_theme(&theme)
+        .with_prompt(prompt)
+        .allow_empty(true)
+        .interact_text()?;
+    if !value.is_empty() {
+        return Ok(Some(value));
+    }
+    if default.is_some_and(|value| !value.is_empty()) {
+        return Ok(None);
+    }
+    Err(anyhow::anyhow!(
+        "missing required OAuth client ID '{input_key}'"
+    ))
+}
+
+fn prompt_oauth_client_secret(input_key: &str) -> Result<String, anyhow::Error> {
+    let theme = ColorfulTheme::default();
+    let value = Password::with_theme(&theme)
+        .with_prompt(input_key)
+        .allow_empty_password(false)
+        .interact()?;
+    if value.is_empty() {
+        return Err(anyhow::anyhow!(
+            "missing required OAuth client secret '{input_key}'"
+        ));
+    }
+    Ok(value)
+}
+
+fn open_url(url: &str) {
+    let result = if cfg!(target_os = "macos") {
+        std::process::Command::new("open").arg(url).status()
+    } else if cfg!(target_os = "linux") {
+        std::process::Command::new("xdg-open").arg(url).status()
+    } else if cfg!(target_os = "windows") {
+        std::process::Command::new("cmd")
+            .args(["/c", "start", url])
+            .status()
+    } else {
+        return;
+    };
+    match result {
+        Ok(status) if status.success() => {}
+        Ok(status) => println!("{}", style(format!("Browser exited with {status}")).dim()),
+        Err(err) => println!("{}", style(format!("Could not open browser: {err}")).dim()),
+    }
 }
 
 fn print_input_hint(input: &ManifestInputSpec) {

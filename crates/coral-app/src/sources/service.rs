@@ -6,10 +6,11 @@ use std::task::{Context, Poll};
 
 use coral_api::v1::source_service_server::SourceService as SourceServiceApi;
 use coral_api::v1::{
-    CreateBundledSourceRequest, CreateBundledSourceResponse, CredentialMetadata,
-    DeleteSourceRequest, DeleteSourceResponse, DiscoverSourcesRequest, DiscoverSourcesResponse,
-    GetSourceInfoRequest, GetSourceInfoResponse, GetSourceRequest, GetSourceResponse,
-    ImportSourceRequest, ImportSourceResponse, ListSourcesRequest, ListSourcesResponse,
+    CreateBundledSourceRequest, CreateBundledSourceResponse,
+    CreateBundledSourceWithCredentialsRequest, CredentialMetadata, DeleteSourceRequest,
+    DeleteSourceResponse, DiscoverSourcesRequest, DiscoverSourcesResponse, GetSourceInfoRequest,
+    GetSourceInfoResponse, GetSourceRequest, GetSourceResponse, ImportSourceRequest,
+    ImportSourceResponse, ListSourcesRequest, ListSourcesResponse,
     OAuthAuthorizationCodeCredentialMethod, OAuthCredentialAuthorization, OAuthCredentialClient,
     OAuthCredentialClientId, OAuthCredentialClientSecret, OAuthCredentialCompleted,
     OAuthCredentialEndpoints, OAuthCredentialInput, OAuthCredentialRetrieval, OAuthCredentialScope,
@@ -32,8 +33,8 @@ use crate::bootstrap::{AppError, app_status};
 use crate::query::manager::QueryManager;
 use crate::sources::SourceName;
 use crate::sources::manager::{
-    CreateBundledSourceCommand, ImportSourceCommand, ImportSourceEventSender,
-    ImportSourceWithCredentialsCommand, ImportSourceWithCredentialsEvent,
+    CreateBundledSourceCommand, CreateBundledSourceWithCredentialsCommand, ImportSourceCommand,
+    ImportSourceEventSender, ImportSourceWithCredentialsCommand, ImportSourceWithCredentialsEvent,
     PendingImportSourceWithCredentialsEvent, SourceBinding, SourceBindings, SourceManager,
     SourceOAuthCredentialRetrieval,
 };
@@ -63,6 +64,8 @@ impl SourceService {
 
 #[tonic::async_trait]
 impl SourceServiceApi for SourceService {
+    type CreateBundledSourceWithCredentialsStream =
+        Pin<Box<dyn Stream<Item = Result<ImportSourceResponse, Status>> + Send>>;
     type ImportSourceStream =
         Pin<Box<dyn Stream<Item = Result<ImportSourceResponse, Status>> + Send>>;
 
@@ -166,6 +169,47 @@ impl SourceServiceApi for SourceService {
             Ok(Response::new(CreateBundledSourceResponse {
                 source: Some(installed_source_to_proto(&workspace_name, installed)),
             }))
+        })
+        .await
+    }
+
+    async fn create_bundled_source_with_credentials(
+        &self,
+        request: Request<CreateBundledSourceWithCredentialsRequest>,
+    ) -> Result<Response<Self::CreateBundledSourceWithCredentialsStream>, Status> {
+        let span = grpc_span(&request);
+        let sources = self.sources.clone();
+        instrument_grpc(span.clone(), async move {
+            let request = request.into_inner();
+            let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            let response_workspace_name = workspace_name.clone();
+            let command = CreateBundledSourceWithCredentialsCommand {
+                name: SourceName::parse(&request.name).map_err(app_status)?,
+                bindings: source_bindings_from_proto(request.variables, request.secrets),
+                oauth_credential_retrievals: request
+                    .oauth_credential_retrievals
+                    .into_iter()
+                    .map(oauth_credential_retrieval_from_proto)
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(app_status)?,
+            };
+            let (event_tx, event_rx) = mpsc::channel(8);
+            let import = Box::pin(instrument_grpc(span, async move {
+                sources
+                    .create_bundled_source_with_credentials(
+                        &workspace_name,
+                        command,
+                        ImportSourceEventSender::new(event_tx),
+                    )
+                    .await
+                    .map_err(app_status)
+            }));
+            Ok(Response::new(Box::pin(ImportSourceResponseStream::new(
+                event_rx,
+                import,
+                response_workspace_name,
+            ))
+                as Self::CreateBundledSourceWithCredentialsStream))
         })
         .await
     }

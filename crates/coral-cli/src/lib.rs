@@ -627,13 +627,6 @@ async fn run_source_add(app: &AppClient, args: SourceAddArgs) -> Result<(), CliE
     if interactive {
         source_ops::require_interactive()?;
     }
-    let collect = |inputs: &[coral_spec::ManifestInputSpec]| {
-        if interactive {
-            source_ops::prompt_for_inputs(inputs)
-        } else {
-            source_ops::collect_inputs_from_env(inputs)
-        }
-    };
     let response = match (name, file) {
         (Some(name), None) => {
             let bundled_name = source_ops::source_name_arg(Some(&name))?;
@@ -648,13 +641,27 @@ async fn run_source_add(app: &AppClient, args: SourceAddArgs) -> Result<(), CliE
                 .map(manifest_input_from_proto)
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(anyhow::Error::from)?;
-            let (variables, secrets) = collect(&inputs)?;
-            source_ops::add_bundled_source(app, &available.name, variables, secrets).await?
+            if interactive {
+                let inputs = source_ops::prompt_for_inputs_with_credential_methods(&inputs)?;
+                source_ops::add_bundled_source_with_credentials(app, &available.name, inputs)
+                    .await?
+            } else {
+                let (variables, secrets) = source_ops::collect_inputs_from_env(&inputs)?;
+                source_ops::add_bundled_source(app, &available.name, variables, secrets).await?
+            }
         }
         (None, Some(file)) => {
             let (manifest_yaml, manifest) = source_ops::load_validated_manifest_file(&file)?;
-            let (variables, secrets) = collect(manifest.declared_inputs())?;
-            source_ops::import_source(app, manifest_yaml, variables, secrets).await?
+            if interactive {
+                let inputs = source_ops::prompt_for_inputs_with_credential_methods(
+                    manifest.declared_inputs(),
+                )?;
+                source_ops::import_source_with_credentials(app, manifest_yaml, inputs).await?
+            } else {
+                let (variables, secrets) =
+                    source_ops::collect_inputs_from_env(manifest.declared_inputs())?;
+                source_ops::import_source(app, manifest_yaml, variables, secrets).await?
+            }
         }
         _ => unreachable!("clap enforces exactly one of name or file"),
     };
