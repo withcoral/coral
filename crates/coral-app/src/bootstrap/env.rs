@@ -27,7 +27,6 @@ impl AppEnvironment {
     pub(crate) fn query_runtime_context(&self) -> QueryRuntimeContext {
         QueryRuntimeContext {
             home_dir: self.user_home_dir.clone(),
-            ..QueryRuntimeContext::default()
         }
     }
 }

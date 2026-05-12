@@ -35,7 +35,6 @@ struct HttpCompiledSource {
     source_secrets: std::collections::BTreeMap<String, String>,
     source_variables: std::collections::BTreeMap<String, String>,
     request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>>,
-    trace_body_max_bytes: Option<usize>,
 }
 
 pub(crate) fn compile_source(
@@ -43,14 +42,12 @@ pub(crate) fn compile_source(
     source_secrets: std::collections::BTreeMap<String, String>,
     source_variables: std::collections::BTreeMap<String, String>,
     request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>>,
-    trace_body_max_bytes: Option<usize>,
 ) -> Box<dyn CompiledBackendSource> {
     Box::new(HttpCompiledSource {
         manifest,
         source_secrets,
         source_variables,
         request_authenticators,
-        trace_body_max_bytes,
     })
 }
 
@@ -63,7 +60,6 @@ pub(crate) fn compile_manifest(
         request.source_secrets.clone(),
         request.source_variables.clone(),
         request.request_authenticators.clone(),
-        request.runtime_context.http_trace_body_max_bytes,
     )
 }
 
@@ -83,7 +79,6 @@ impl CompiledBackendSource for HttpCompiledSource {
             &self.source_secrets,
             &self.source_variables,
             &self.request_authenticators,
-            self.trace_body_max_bytes,
         )?;
         let mut tables: HashMap<String, Arc<dyn TableProvider>> = HashMap::new();
         let mut table_infos = Vec::with_capacity(self.manifest.tables.len());

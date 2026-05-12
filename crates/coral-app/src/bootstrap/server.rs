@@ -248,15 +248,10 @@ impl ServerBuilder {
         let source_manager =
             SourceManager::new(config_store.clone(), secret_store.clone(), layout.clone());
         let feedback_manager = FeedbackManager::new(layout.clone());
-        let mut query_runtime_context = env.query_runtime_context();
-        query_runtime_context.http_trace_body_max_bytes = telemetry_config
-            .local_traces
-            .http_body_recording_max_bytes();
-
         let query_manager = QueryManager::new(
             config_store,
             secret_store,
-            query_runtime_context,
+            env.query_runtime_context(),
             layout,
             self.config.engine_extensions_providers,
         );
@@ -949,7 +944,6 @@ enabled = false
             SecretStore::new(layout.clone()),
             QueryRuntimeContext {
                 home_dir: Some(fake_home.clone()),
-                ..QueryRuntimeContext::default()
             },
             layout,
             vec![Arc::new(NoopEngineExtensionsProvider)],

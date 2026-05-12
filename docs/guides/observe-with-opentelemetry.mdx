@@ -36,15 +36,6 @@ To disable local trace inspection:
 enabled = false
 ```
 
-HTTP request and response bodies are recorded in local traces by default, up to `http_body_max_bytes` bytes per body (`65536` by default). To disable local body recording:
-
-```toml
-[local_traces]
-record_http_bodies = false
-```
-
-HTTP bodies are kept out of OTLP export even when local body recording is enabled.
-
 ## Configuration reference
 
 External OpenTelemetry export settings live under `[otel]` in `config.toml`. Coral-owned local trace inspection settings live under `[local_traces]`. There are no environment variable overrides except for [`CORAL_TRACE_PARENT`](#distributed-tracing).
@@ -65,8 +56,6 @@ External OpenTelemetry export settings live under `[otel]` in `config.toml`. Cor
 | --------------------- | ------- | ------- | --------------------------------------------------------------------------------- |
 | `enabled`             | boolean | `true`  | Enables local trace inspection without requiring an OTLP collector.               |
 | `retention_days`      | integer | `7`     | Number of days of local trace spans to retain.                                    |
-| `record_http_bodies`  | boolean | `true`  | Records HTTP request and response bodies in local traces when local tracing is enabled. |
-| `http_body_max_bytes` | integer | `65536` | Maximum request or response body bytes recorded in a local trace.                 |
 
 Example with auth headers and a hosted endpoint:
 

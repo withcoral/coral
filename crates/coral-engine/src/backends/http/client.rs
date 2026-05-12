@@ -47,7 +47,6 @@ pub(crate) struct HttpSourceClient {
     request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>>,
     rate_limit: RateLimitSpec,
     resolved_inputs: Arc<BTreeMap<String, String>>,
-    trace_body_max_bytes: Option<usize>,
 }
 
 impl std::fmt::Debug for HttpSourceClient {
@@ -58,7 +57,6 @@ impl std::fmt::Debug for HttpSourceClient {
             .field("auth", &self.auth)
             .field("request_headers", &self.request_headers)
             .field("rate_limit", &self.rate_limit)
-            .field("trace_body_max_bytes", &self.trace_body_max_bytes)
             .finish_non_exhaustive()
     }
 }
@@ -78,12 +76,6 @@ enum RequestBody {
     Text(String),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct TraceBodyContent {
-    body: String,
-    truncated: bool,
-}
-
 struct OutgoingHttpRequest<'a> {
     auth: &'a AuthSpec,
     request_headers: &'a [HeaderSpec],
@@ -98,7 +90,6 @@ struct OutgoingHttpRequest<'a> {
     response_format: ResponseBodyFormat,
     source_schema: &'a str,
     rate_limit: &'a RateLimitSpec,
-    trace_body_max_bytes: Option<usize>,
     render_context: RenderContext<'a>,
     allow_404_empty: bool,
     link_header_require_results: bool,
@@ -114,7 +105,6 @@ struct ResponseDecodeContext<'a> {
     table_name: &'a str,
     method_label: &'a str,
     logged_url: &'a str,
-    trace_body_max_bytes: Option<usize>,
     response_span: &'a tracing::Span,
 }
 
@@ -130,7 +120,6 @@ impl HttpSourceClient {
         source_secrets: &BTreeMap<String, String>,
         source_variables: &BTreeMap<String, String>,
         request_authenticators: &HashMap<String, Arc<dyn RequestAuthenticator>>,
-        trace_body_max_bytes: Option<usize>,
     ) -> Result<Self> {
         let resolved_inputs =
             coral_spec::resolve_inputs(&manifest.declared_inputs, source_secrets, source_variables);
@@ -158,7 +147,6 @@ impl HttpSourceClient {
             request_authenticators: request_authenticators.clone(),
             rate_limit: manifest.rate_limit.clone(),
             resolved_inputs: Arc::new(resolved_inputs),
-            trace_body_max_bytes,
         })
     }
 
@@ -294,7 +282,6 @@ impl HttpSourceClient {
                     response_format: target.response().format,
                     source_schema: &self.source_schema,
                     rate_limit: &self.rate_limit,
-                    trace_body_max_bytes: self.trace_body_max_bytes,
                     render_context,
                     allow_404_empty: target.response().allow_404_empty,
                     link_header_require_results: pagination.link_header_require_results,
@@ -586,7 +573,6 @@ async fn execute_request(
         response_format,
         source_schema,
         rate_limit,
-        trace_body_max_bytes,
         render_context,
         allow_404_empty,
         link_header_require_results,
@@ -644,15 +630,11 @@ async fn execute_request(
             error.type = field::Empty,
             exception.message = field::Empty,
             http.host = field::Empty,
-            coral.http.request.body = field::Empty,
-            coral.http.request.body.truncated = field::Empty,
             http.request.body.present = body.is_some(),
             http.request.body.size = request_body_size(body).unwrap_or_default(),
             http.request.method = method_label,
             http.request.query_count = query_pairs.len(),
             http.request.resend_count = field::Empty,
-            coral.http.response.body = field::Empty,
-            coral.http.response.body.truncated = field::Empty,
             http.response.body.size = field::Empty,
             http.response.status_code = field::Empty,
             net.peer.name = field::Empty,
@@ -692,7 +674,6 @@ async fn execute_request(
             None => {}
         }
 
-        record_trace_request_body(&request_span, body, trace_body_max_bytes);
         let built = match resolve_auth_headers(
             auth,
             request,
@@ -738,16 +719,12 @@ async fn execute_request(
                 RateLimitDecision::Continue => {}
                 RateLimitDecision::Retry(wait) => {
                     record_http_status_error(&request_span, status, "rate limited; retrying");
-                    record_unconsumed_response_body(&request_span, response, trace_body_max_bytes)
-                        .await;
                     throttle_retries += 1;
                     break 'response ResponseOutcome::Retry(wait);
                 }
                 RateLimitDecision::Fail(error) => {
                     let error_message = error.to_string();
                     record_http_status_error(&request_span, status, error_message.as_str());
-                    record_unconsumed_response_body(&request_span, response, trace_body_max_bytes)
-                        .await;
                     break 'response ResponseOutcome::Done(Err(DataFusionError::External(
                         Box::new(ProviderQueryError::RateLimited {
                             source_schema: source_schema.to_string(),
@@ -762,15 +739,11 @@ async fn execute_request(
 
             if status.is_server_error() && server_error_retries < 2 {
                 record_http_status_error(&request_span, status, "server error; retrying");
-                record_unconsumed_response_body(&request_span, response, trace_body_max_bytes)
-                    .await;
                 server_error_retries += 1;
                 break 'response ResponseOutcome::Retry(Duration::from_secs(2));
             }
 
             if status == reqwest::StatusCode::NOT_FOUND && allow_404_empty {
-                record_unconsumed_response_body(&request_span, response, trace_body_max_bytes)
-                    .await;
                 break 'response ResponseOutcome::Done(Ok(None));
             }
 
@@ -786,7 +759,6 @@ async fn execute_request(
                     response_error_summary(status, &body),
                 );
                 request_span.record("http.response.body.size", body.len());
-                record_trace_response_body(&request_span, &body, trace_body_max_bytes);
                 break 'response ResponseOutcome::Done(Err(DataFusionError::External(Box::new(
                     ProviderQueryError::ApiRequest {
                         source_schema: source_schema.to_string(),
@@ -825,7 +797,6 @@ async fn execute_request(
                     table_name,
                     method_label,
                     logged_url: &logged_url,
-                    trace_body_max_bytes,
                     response_span: &request_span,
                 },
             )
@@ -858,7 +829,6 @@ async fn decode_response_body(
         table_name,
         method_label,
         logged_url,
-        trace_body_max_bytes,
         response_span,
     } = context;
     match format {
@@ -867,14 +837,6 @@ async fn decode_response_body(
                 decode_error(source_schema, table_name, method_label, logged_url, &error)
             })?;
             response_span.record("http.response.body.size", bytes.len());
-            if trace_body_max_bytes.is_some() {
-                let trace_body = String::from_utf8_lossy(&bytes);
-                record_trace_response_body(
-                    response_span,
-                    trace_body.as_ref(),
-                    trace_body_max_bytes,
-                );
-            }
             serde_json::from_slice(&bytes).map_err(|error| {
                 json_decode_error(source_schema, table_name, method_label, logged_url, &error)
             })
@@ -884,7 +846,6 @@ async fn decode_response_body(
                 decode_error(source_schema, table_name, method_label, logged_url, &error)
             })?;
             response_span.record("http.response.body.size", text.len());
-            record_trace_response_body(response_span, &text, trace_body_max_bytes);
             let mut rows = Vec::new();
             for (index, line) in text.lines().enumerate() {
                 let trimmed = line.trim();
@@ -907,20 +868,6 @@ async fn decode_response_body(
             }
             Ok(Value::Array(rows))
         }
-    }
-}
-
-async fn record_unconsumed_response_body(
-    response_span: &tracing::Span,
-    response: reqwest::Response,
-    trace_body_max_bytes: Option<usize>,
-) {
-    if trace_body_max_bytes.is_none() {
-        return;
-    }
-    if let Ok(body) = response.text().instrument(response_span.clone()).await {
-        response_span.record("http.response.body.size", body.len());
-        record_trace_response_body(response_span, &body, trace_body_max_bytes);
     }
 }
 
@@ -1335,62 +1282,6 @@ fn request_body_size(body: Option<&RequestBody>) -> Option<usize> {
     }
 }
 
-fn record_trace_request_body(
-    span: &tracing::Span,
-    body: Option<&RequestBody>,
-    max_bytes: Option<usize>,
-) {
-    let Some(max_bytes) = max_bytes else {
-        return;
-    };
-    let Some(content) = trace_request_body_content(body, max_bytes) else {
-        return;
-    };
-    span.record("coral.http.request.body", content.body.as_str());
-    span.record("coral.http.request.body.truncated", content.truncated);
-}
-
-fn record_trace_response_body(span: &tracing::Span, body: &str, max_bytes: Option<usize>) {
-    let Some(max_bytes) = max_bytes else {
-        return;
-    };
-    let content = trace_body_content(body, max_bytes);
-    span.record("coral.http.response.body", content.body.as_str());
-    span.record("coral.http.response.body.truncated", content.truncated);
-}
-
-fn trace_request_body_content(
-    body: Option<&RequestBody>,
-    max_bytes: usize,
-) -> Option<TraceBodyContent> {
-    let body = match body? {
-        RequestBody::Json(value) => serde_json::to_string(value).ok()?,
-        RequestBody::Text(text) => text.clone(),
-    };
-    Some(trace_body_content(&body, max_bytes))
-}
-
-fn trace_body_content(body: &str, max_bytes: usize) -> TraceBodyContent {
-    if body.len() <= max_bytes {
-        return TraceBodyContent {
-            body: body.to_string(),
-            truncated: false,
-        };
-    }
-
-    let mut end = max_bytes;
-    while !body.is_char_boundary(end) {
-        end = end.saturating_sub(1);
-    }
-    TraceBodyContent {
-        body: body
-            .get(..end)
-            .expect("trace body truncation end is a UTF-8 boundary")
-            .to_string(),
-        truncated: true,
-    }
-}
-
 fn join_url(base: &str, path: &str) -> Result<String> {
     let trimmed = path.trim();
     if reqwest::Url::parse(trimmed).is_ok() || trimmed.starts_with("//") {
@@ -1620,8 +1511,7 @@ mod tests {
         HttpSourceClient, OutgoingHttpRequest as TestOutgoingHttpRequest, PageState,
         apply_pagination_body_fields, apply_pagination_query_pairs, execute_request,
         extract_next_link_url, extract_rows, join_url, normalize_base_url, page_is_exhausted,
-        resolve_value_source, set_path_value, trace_body_content, trace_http_endpoint,
-        trace_request_body_content,
+        resolve_value_source, set_path_value, trace_http_endpoint,
     };
     use crate::backends::http::ProviderQueryError;
     use crate::backends::http::target::HttpFetchTarget;
@@ -1729,27 +1619,6 @@ mod tests {
                 "Statistics": ["Average"]
             })
         );
-    }
-
-    #[test]
-    fn trace_body_content_truncates_on_utf8_boundary() {
-        let content = trace_body_content("aébc", 2);
-
-        assert_eq!(content.body, "a");
-        assert!(content.truncated);
-    }
-
-    #[test]
-    fn trace_request_body_content_records_compact_json() {
-        let body = super::RequestBody::Json(json!({
-            "id": 1,
-            "name": "Ada"
-        }));
-
-        let content = trace_request_body_content(Some(&body), 1024).expect("body content");
-
-        assert_eq!(content.body, r#"{"id":1,"name":"Ada"}"#);
-        assert!(!content.truncated);
     }
 
     fn request_json(request: &RequestSpec) -> serde_json::Value {
@@ -2153,7 +2022,6 @@ mod tests {
             &source_secrets,
             &BTreeMap::new(),
             &HashMap::new(),
-            None,
         )
         .expect_err("missing source-scoped credentials must fail");
 
@@ -2194,7 +2062,6 @@ mod tests {
             &BTreeMap::new(),
             &BTreeMap::new(),
             &HashMap::new(),
-            None,
         )
         .expect_err("missing table request path inputs must fail");
 
@@ -2239,7 +2106,6 @@ mod tests {
             &BTreeMap::new(),
             &BTreeMap::new(),
             &HashMap::new(),
-            None,
         )
         .expect_err("missing table request header inputs must fail");
 
@@ -2284,7 +2150,6 @@ mod tests {
             &BTreeMap::new(),
             &BTreeMap::new(),
             &HashMap::new(),
-            None,
         )
         .expect_err("missing table request query inputs must fail");
 
@@ -2330,7 +2195,6 @@ mod tests {
             &BTreeMap::new(),
             &BTreeMap::new(),
             &HashMap::new(),
-            None,
         )
         .expect_err("missing table request body inputs must fail");
 
@@ -2376,7 +2240,6 @@ mod tests {
             &BTreeMap::new(),
             &BTreeMap::new(),
             &HashMap::new(),
-            None,
         )
         .expect_err("missing request route inputs must fail");
 
@@ -2469,7 +2332,6 @@ mod tests {
                 &BTreeMap::new(),
                 &BTreeMap::new(),
                 &HashMap::new(),
-                None,
             )
             .expect_err(&format!(
                 "missing function request {name} input should fail"
@@ -2788,7 +2650,6 @@ mod tests {
                 response_format: ResponseBodyFormat::default(),
                 source_schema: "demo",
                 rate_limit: &RateLimitSpec::default(),
-                trace_body_max_bytes: None,
                 render_context,
                 allow_404_empty: false,
                 link_header_require_results: false,

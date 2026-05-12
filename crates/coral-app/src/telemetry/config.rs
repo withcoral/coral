@@ -11,7 +11,6 @@ pub(super) const DEFAULT_TRACE_FILTER: &str = "coral_app=trace,coral_client=trac
 pub(super) const DEFAULT_LOCAL_TRACE_FILTER: &str = "coral_app=trace,coral_client=trace,coral_mcp=trace,coral_engine=trace,coral_engine::datafusion=trace";
 pub(super) const DEFAULT_LOG_FILTER: &str = "coral_app=info,coral_engine=info";
 const DEFAULT_SERVICE_NAME: &str = "coral";
-const DEFAULT_LOCAL_HTTP_BODY_MAX_BYTES: usize = 64 * 1024;
 const DEFAULT_LOCAL_TRACE_RETENTION_DAYS: u64 = 7;
 const HOURS_PER_DAY: u64 = 24;
 const SECONDS_PER_HOUR: u64 = 60 * 60;
@@ -61,8 +60,6 @@ impl Default for OtlpConfig {
 pub(crate) struct LocalTraceConfig {
     pub(crate) enabled: bool,
     pub(crate) retention_days: u64,
-    pub(crate) record_http_bodies: bool,
-    pub(crate) http_body_max_bytes: usize,
 }
 
 impl Default for LocalTraceConfig {
@@ -70,8 +67,6 @@ impl Default for LocalTraceConfig {
         Self {
             enabled: true,
             retention_days: DEFAULT_LOCAL_TRACE_RETENTION_DAYS,
-            record_http_bodies: true,
-            http_body_max_bytes: DEFAULT_LOCAL_HTTP_BODY_MAX_BYTES,
         }
     }
 }
@@ -99,11 +94,6 @@ impl TelemetryConfig {
 }
 
 impl LocalTraceConfig {
-    #[must_use]
-    pub(crate) fn http_body_recording_max_bytes(&self) -> Option<usize> {
-        (self.enabled && self.record_http_bodies).then_some(self.http_body_max_bytes)
-    }
-
     #[must_use]
     pub(crate) fn retention(&self) -> Duration {
         Duration::from_secs(
@@ -133,11 +123,6 @@ mod tests {
 
         assert_eq!(config, TelemetryConfig::default());
         assert!(config.local_traces.enabled);
-        assert!(config.local_traces.record_http_bodies);
-        assert_eq!(
-            config.local_traces.http_body_recording_max_bytes(),
-            Some(64 * 1024)
-        );
     }
 
     #[test]
@@ -160,8 +145,6 @@ service_name = "from-config"
 [local_traces]
 enabled = true
 retention_days = 14
-record_http_bodies = true
-http_body_max_bytes = 42
 "#,
         )
         .expect("write config");
@@ -182,24 +165,6 @@ http_body_max_bytes = 42
             config.local_traces.retention(),
             Duration::from_hours(14 * 24)
         );
-        assert!(config.local_traces.record_http_bodies);
-        assert_eq!(config.local_traces.http_body_max_bytes, 42);
-        assert_eq!(
-            config.local_traces.http_body_recording_max_bytes(),
-            Some(42)
-        );
-    }
-
-    #[test]
-    fn http_body_recording_requires_local_tracing() {
-        let config = LocalTraceConfig {
-            enabled: false,
-            record_http_bodies: true,
-            http_body_max_bytes: 8,
-            ..LocalTraceConfig::default()
-        };
-
-        assert_eq!(config.http_body_recording_max_bytes(), None);
     }
 
     #[test]
