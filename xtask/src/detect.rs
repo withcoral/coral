@@ -3,7 +3,7 @@
 //! A manifest's descriptions feed documentation, MCP surfaces, and the
 //! `coral.columns` catalog. When an upstream generation step (e.g. `OpenAPI`
 //! → YAML) applies a character cap, sentences get cut mid-phrase. This module
-//! walks each `sources/*/manifest.y{a,}ml` and flags descriptions that exhibit
+//! walks each `sources/**/manifest.y{a,}ml` and flags descriptions that exhibit
 //! deterministic truncation signals.
 //!
 //! Signals (ordered from least to most likely false-positive):
@@ -104,7 +104,7 @@ pub(crate) fn iter_manifests(paths: &[PathBuf]) -> Vec<PathBuf> {
                 out.push(nested);
                 continue;
             }
-            // No direct manifest — recurse for sources/*/manifest.y{a,}ml.
+            // No direct manifest — recurse for sources/**/manifest.y{a,}ml.
             if let Ok(entries) = fs::read_dir(p) {
                 let mut children: Vec<PathBuf> = entries
                     .filter_map(std::result::Result::ok)

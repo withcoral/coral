@@ -35,8 +35,8 @@
 - When proposing or updating a PR title, use Conventional Commits:
   `type(scope): summary`.
 - When using a scope, prefer one that matches the primary area changed,
-  usually the crate name minus the `coral-` prefix, `docs`, or
-  `sources/<name>`.
+  usually the crate name minus the `coral-` prefix, `docs`,
+  `sources/core/<name>`, or `sources/community/<name>`.
 - Keep the PR title up to date as the branch evolves. If the change shifts in
   scope or intent, update the title to match the current final shape of the
   branch.

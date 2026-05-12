@@ -122,7 +122,7 @@ mod tests {
 
     use coral_spec::ManifestInputKind;
 
-    use super::{describe_manifest, list_bundled_sources};
+    use super::{describe_manifest, list_bundled_sources, load_bundled_source};
     use crate::sources::SourceName;
     use crate::sources::model::SourceOrigin;
 
@@ -141,6 +141,13 @@ mod tests {
                 .any(|source| source.name == SourceName::parse("stripe").expect("source"))
         );
         assert!(sources.iter().all(|source| !source.version.is_empty()));
+    }
+
+    #[test]
+    fn community_sources_are_not_bundled() {
+        let hn = SourceName::parse("hn").expect("source");
+        let error = load_bundled_source(&hn).expect_err("community source should not be bundled");
+        assert!(error.to_string().contains("unknown bundled source 'hn'"));
     }
 
     #[test]

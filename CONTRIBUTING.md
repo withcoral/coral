@@ -13,6 +13,7 @@ review changes.
 - ergonomics improvements to core workflows
 - narrowly scoped source improvements
 - examples that help new users reach first success quickly
+- community sources (in sources/community)
 
 ## Please discuss first
 
@@ -21,7 +22,7 @@ Open an issue or discussion before starting work on:
 - new public CLI commands or flags
 - new public config formats
 - large architectural changes
-- new maintained sources shipped with the repo
+- new core sources shipped with the binary (in sources/core)
 - major source-spec or source-authoring changes
 - major scope expansions beyond the current product surface
 
@@ -82,7 +83,7 @@ locked checks.
 
 ### Source manifest linting
 
-Source manifests under `sources/*/manifest.yaml` are checked with
+Source manifests under `sources/**/manifest.yaml` are checked with
 [`ryl`](https://github.com/owenlamont/ryl), a Rust-native yamllint port.
 Config lives in `.yamllint.yaml` at the repo root.
 
@@ -106,7 +107,8 @@ The internal crate layout may change over time as the project evolves.
 - `crates/coral-spec`: source-spec parsing, validation, and input discovery
 - `crates/coral-mcp`: MCP adapter
 - `crates/coral-api`: protobuf and gRPC contract
-- `sources/`: bundled source specs shipped with the repo
+- `sources/core/`: bundled source specs shipped with the repo
+- `sources/community/`: community source specs kept out of the binary bundle
 
 ## Testing expectations
 
