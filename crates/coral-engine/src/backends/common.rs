@@ -1,6 +1,7 @@
 //! Shared internal backend contracts and registry-visible metadata.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::fmt::Write;
 use std::sync::Arc;
 
 use crate::{QueryRuntimeContext, RequestAuthenticator};
@@ -11,9 +12,12 @@ use coral_spec::{
     SourceTableFunctionSpec, TableCommon,
 };
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
+use datafusion::catalog::TableFunctionImpl;
 use datafusion::datasource::TableProvider;
 use datafusion::error::DataFusionError;
 use datafusion::prelude::SessionContext;
+
+pub(crate) type SourceTableFunctions = HashMap<String, Arc<dyn TableFunctionImpl>>;
 
 #[derive(Debug, Clone)]
 pub(crate) struct RegisteredColumn {
@@ -38,9 +42,11 @@ pub(crate) struct RegisteredTable {
 pub(crate) struct RegisteredTableFunction {
     pub(crate) schema_name: String,
     pub(crate) function_name: String,
+    pub(crate) internal_name: String,
     pub(crate) description: String,
     pub(crate) arguments_json: String,
     pub(crate) result_columns_json: String,
+    pub(crate) arg_names: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -67,7 +73,29 @@ pub(crate) struct RegisteredSource {
 
 pub(crate) struct BackendRegistration {
     pub(crate) tables: HashMap<String, Arc<dyn TableProvider>>,
+    pub(crate) table_functions: SourceTableFunctions,
     pub(crate) source: RegisteredSource,
+}
+
+/// Build a collision-free `DataFusion` UDTF name for a source-scoped function.
+///
+/// `DataFusion`'s UDTF registry is flat, so both source schema and public
+/// function name are hex-encoded to preserve arbitrary valid identifiers
+/// without delimiter collisions.
+pub(crate) fn internal_table_function_name(schema: &str, function: &str) -> String {
+    format!(
+        "__coral_udtf_{}_{}",
+        hex_encode(schema),
+        hex_encode(function)
+    )
+}
+
+fn hex_encode(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len() * 2);
+    for byte in value.as_bytes() {
+        write!(&mut encoded, "{byte:02x}").expect("writing to a String never fails");
+    }
+    encoded
 }
 
 pub(crate) struct BackendCompileRequest<'a> {
@@ -197,6 +225,7 @@ pub(crate) fn build_registered_table(
 pub(crate) fn build_registered_table_function(
     schema_name: &str,
     function: &SourceTableFunctionSpec,
+    internal_name: String,
 ) -> RegisteredTableFunction {
     let arguments = function
         .args
@@ -224,9 +253,11 @@ pub(crate) fn build_registered_table_function(
     RegisteredTableFunction {
         schema_name: schema_name.to_string(),
         function_name: function.name.clone(),
+        internal_name,
         description: function.description.clone(),
         arguments_json: serde_json::to_string(&arguments).expect("arguments json"),
         result_columns_json: serde_json::to_string(&result_columns).expect("result columns json"),
+        arg_names: function.args.iter().map(|arg| arg.name.clone()).collect(),
     }
 }
 

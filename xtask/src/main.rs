@@ -3,7 +3,7 @@
 //! This binary exposes two subcommands that share workspace conventions but
 //! serve different workflows:
 //!   - `generate-docs` regenerates the bundled-sources Mintlify page and nav
-//!     from `sources/*/manifest.y{a,}ml`.
+//!     from `sources/core/*/manifest.y{a,}ml`.
 //!   - `detect-truncations` scans manifests for likely-truncated descriptions
 //!     (the regression gate for the SOURCE-465 manifest cleanup).
 
@@ -44,7 +44,7 @@ enum Command {
 struct GenerateDocsArgs {
     /// Directory containing one subdirectory per source, each holding a
     /// `manifest.yaml` or `manifest.yml` file.
-    #[arg(long, default_value = "sources")]
+    #[arg(long, default_value = "sources/core")]
     sources_dir: PathBuf,
 
     /// Path to the index page to regenerate.
@@ -153,7 +153,7 @@ fn write_if_changed(path: &Path, body: &str) -> Result<()> {
     fs::write(path, body).with_context(|| format!("writing {}", path.display()))
 }
 
-/// Discover every `manifest.y{a,}ml` beneath `sources_dir`, parse it, and
+/// Discover every immediate `manifest.y{a,}ml` beneath `sources_dir`, parse it, and
 /// return the validated manifests sorted by schema name.
 fn load_manifests(sources_dir: &Path) -> Result<Vec<ValidatedSourceManifest>> {
     let entries =

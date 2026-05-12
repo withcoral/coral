@@ -266,7 +266,7 @@ const INDEX_FRONTMATTER: &str =
     "---\ntitle: \"Bundled sources\"\ndescription: \"Data sources that ship with Coral.\"\n---\n\n";
 
 const INDEX_INTRO: &str = concat!(
-    "Coral supports connecting to some data sources out of the box.<br />\n",
+    "Coral supports connecting to some data sources out of the box. These bundled specs live in [sources/core](https://github.com/withcoral/coral/tree/main/sources/core).<br />\n",
     "If the source you need is not available, you can extend Coral by [writing a custom source spec](/guides/write-a-custom-source).\n",
     "\n",
     "<Tip>\n",

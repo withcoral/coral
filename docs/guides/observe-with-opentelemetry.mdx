@@ -27,7 +27,7 @@ All telemetry settings live under `[otel]` in `config.toml`. There are no enviro
 | `endpoint`     | string | unset                                                                  | OTLP/HTTP base URL. When unset, no traces, logs, or metrics are exported.         |
 | `headers`      | string | unset                                                                  | Comma-separated `key=value` pairs sent on every OTLP request (e.g. auth headers). |
 | `log_filter`   | string | `coral_app=info,coral_engine=info`                                     | `tracing-subscriber` filter applied to logs (OTLP and stderr).                    |
-| `trace_filter` | string | `coral_app=trace,coral_engine=trace,coral_engine::datafusion=off`      | `tracing-subscriber` filter applied to OTLP spans.                                |
+| `trace_filter` | string | `coral_app=trace,coral_client=trace,coral_mcp=trace,coral_engine=trace,coral_engine::datafusion=off` | `tracing-subscriber` filter applied to OTLP spans.                                |
 | `service_name` | string | `coral`                                                                | Value of the `service.name` resource attribute on every signal.                   |
 
 Example with auth headers and a hosted endpoint:
@@ -37,21 +37,25 @@ Example with auth headers and a hosted endpoint:
 endpoint = "https://otlp.example.com"
 headers = "x-api-key=secret, x-tenant=acme"
 service_name = "coral-laptop"
-trace_filter = "coral_app=trace,coral_engine=trace"
+trace_filter = "coral_app=trace,coral_client=trace,coral_mcp=trace,coral_engine=trace"
 ```
 
 ## What gets emitted
 
 ### Traces
 
-Each query produces a `coral.cli` root span with child spans for query orchestration, source loading, HTTP backend calls, and (optionally) DataFusion execution. Spans are exported with the W3C Trace Context propagator.
+Each CLI query produces a `coral.cli` root span exported as an OpenTelemetry `client` span, with child spans for query orchestration, source loading, HTTP backend calls, and (optionally) DataFusion execution. The root span includes CLI process attributes such as `process.executable.name`, `process.pid`, and `process.exit.code`; Coral does not collect raw `process.command_args` by default. Spans are exported with the W3C Trace Context propagator.
+
+When Coral runs over MCP, each MCP tool or resource request produces a `coral.mcp.*` server span before the request calls into the local Coral app. The MCP adapter then emits `grpc.client.*` client spans for its local gRPC calls, which parent the app's gRPC server handler spans. This keeps MCP discovery such as `list_sources` and `list_tables` attached to Coral-owned request spans without turning the long-running `mcp-stdio` process into one giant CLI trace.
+
+Inbound Coral gRPC handler spans are exported as OpenTelemetry `server` spans with `rpc.system.name`, `rpc.method`, and `rpc.response.status_code`. HTTP source calls are exported as OpenTelemetry `client` spans with upstream dependency attributes including `peer.service`, `server.address`, `server.port`, `http.host`, `net.peer.name`, `http.request.method`, `http.request.resend_count` on retries, `http.response.status_code`, low-cardinality `error.type` on failures, and sanitized `url.full`. Coral also injects W3C Trace Context headers into outbound source requests, so an instrumented upstream API can emit a related `server` span in the same trace. Service-map tools that support virtual peer nodes can draw edges directly from Coral's HTTP client spans; tools that require related client/server span pairs, such as HyperDX, need the upstream service to emit the matching server span. Tools that group strictly by resource `service.name` may still display a single `coral` service for local CLI runs, because the CLI client span and local server span are emitted by the same Coral process.
 
 By default, the `coral_engine::datafusion` target is disabled to keep span volume low. Enable it when you want to see DataFusion physical-plan execution and optimizer-rule spans alongside the rest of the query trace:
 
 ```toml
 [otel]
 endpoint = "http://localhost:4318"
-trace_filter = "coral_app=trace,coral_engine=trace,coral_engine::datafusion=trace"
+trace_filter = "coral_app=trace,coral_client=trace,coral_mcp=trace,coral_engine=trace,coral_engine::datafusion=trace"
 ```
 
 Conversely, you can silence noisy targets. The HTTP backend instrumentation lives under `coral_engine::http` and can be disabled while keeping the rest of the engine spans:
@@ -59,7 +63,7 @@ Conversely, you can silence noisy targets. The HTTP backend instrumentation live
 ```toml
 [otel]
 endpoint = "http://localhost:4318"
-trace_filter = "coral_app=trace,coral_engine=trace,coral_engine::http=off"
+trace_filter = "coral_app=trace,coral_client=trace,coral_mcp=trace,coral_engine=trace,coral_engine::http=off"
 ```
 
 The filter syntax is the same one accepted by [`tracing-subscriber`'s `Targets`](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.Targets.html). If the filter fails to parse, Coral logs a warning and falls back to the default.

@@ -11,6 +11,7 @@ workspace = true
 
 [dependencies]
 arrow = { workspace = true, features = ["prettyprint"] }
+http-body.workspace = true
 opentelemetry.workspace = true
 opentelemetry_sdk.workspace = true
 serde_json.workspace = true
@@ -22,3 +23,7 @@ tracing-opentelemetry.workspace = true
 
 coral-api.workspace = true
 coral-app.workspace = true
+
+[dev-dependencies]
+opentelemetry_sdk = { workspace = true, features = ["testing"] }
+tracing-subscriber.workspace = true

@@ -251,6 +251,7 @@ impl CompiledBackendSource for ParquetCompiledSource {
 
         Ok(BackendRegistration {
             tables,
+            table_functions: HashMap::default(),
             source: RegisteredSource {
                 schema_name: self.manifest.common.name.clone(),
                 tables: table_infos,

@@ -11,78 +11,85 @@ use coral_spec::{ParsedTemplate, TemplateNamespace, TemplatePart, TemplateToken,
 /// Shared empty filter/state map for source-scoped rendering.
 pub(crate) static EMPTY_MAP: LazyLock<HashMap<String, String>> = LazyLock::new(HashMap::new);
 
+/// Runtime values available while rendering one backend request.
+#[derive(Clone, Copy)]
+pub(crate) struct RenderContext<'a> {
+    pub(crate) filters: &'a HashMap<String, String>,
+    pub(crate) args: &'a HashMap<String, String>,
+    pub(crate) state: &'a HashMap<String, String>,
+    pub(crate) resolved_inputs: &'a BTreeMap<String, String>,
+}
+
+impl<'a> RenderContext<'a> {
+    pub(crate) fn new(
+        filters: &'a HashMap<String, String>,
+        args: &'a HashMap<String, String>,
+        state: &'a HashMap<String, String>,
+        resolved_inputs: &'a BTreeMap<String, String>,
+    ) -> Self {
+        Self {
+            filters,
+            args,
+            state,
+            resolved_inputs,
+        }
+    }
+
+    pub(crate) fn source_scoped(resolved_inputs: &'a BTreeMap<String, String>) -> Self {
+        Self::new(&EMPTY_MAP, &EMPTY_MAP, &EMPTY_MAP, resolved_inputs)
+    }
+}
+
 /// Resolve one declarative value source into an optional JSON value.
 pub(crate) fn resolve_value_source(
     value: &ValueSourceSpec,
-    filters: &HashMap<String, String>,
-    state: &HashMap<String, String>,
-    resolved_inputs: &BTreeMap<String, String>,
+    context: &RenderContext<'_>,
 ) -> Result<Option<Value>> {
     match value {
         ValueSourceSpec::Template { template } => {
-            let rendered = render_template(template, filters, state, resolved_inputs)?;
+            let rendered = render_template(template, context)?;
             Ok(Some(Value::String(rendered)))
         }
         ValueSourceSpec::Literal { value } => Ok(Some(value.clone())),
-        ValueSourceSpec::Filter { key, default } => Ok(filters
+        ValueSourceSpec::Filter { key, default } => Ok(context
+            .filters
+            .get(key)
+            .map(|v| Value::String(v.clone()))
+            .or_else(|| default.clone())),
+        ValueSourceSpec::Arg { key, default } => Ok(context
+            .args
             .get(key)
             .map(|v| Value::String(v.clone()))
             .or_else(|| default.clone())),
         ValueSourceSpec::FilterInt { key, default } => {
-            let value = if let Some(filter) = filters.get(key) {
-                let parsed = filter.parse::<i64>().map_err(|error| {
-                    DataFusionError::Execution(format!(
-                        "filter '{key}' value '{filter}' is not a valid i64: {error}"
-                    ))
-                })?;
-                Some(json!(parsed))
-            } else {
-                default.map(|value| json!(value))
-            };
-            Ok(value)
+            parse_i64_value(context.filters, key, *default, "filter")
+        }
+        ValueSourceSpec::ArgInt { key, default } => {
+            parse_i64_value(context.args, key, *default, "function argument")
         }
         ValueSourceSpec::FilterBool { key, default } => {
-            let value = if let Some(filter) = filters.get(key) {
-                let parsed = filter.parse::<bool>().map_err(|error| {
-                    DataFusionError::Execution(format!(
-                        "filter '{key}' value '{filter}' is not a valid bool: {error}"
-                    ))
-                })?;
-                Some(json!(parsed))
-            } else {
-                default.map(|value| json!(value))
-            };
-            Ok(value)
+            parse_bool_value(context.filters, key, *default, "filter")
         }
         ValueSourceSpec::FilterSplit {
             key,
             separator,
             part,
-        } => {
-            split_filter_part(filters, key, separator, *part).map(|value| value.map(Value::String))
-        }
+        } => split_filter_part(context.filters, key, separator, *part)
+            .map(|value| value.map(Value::String)),
         ValueSourceSpec::FilterSplitInt {
             key,
             separator,
             part,
-        } => {
-            let Some(raw) = split_filter_part(filters, key, separator, *part)? else {
-                return Ok(None);
-            };
-            let parsed = raw.parse::<i64>().map_err(|error| {
-                DataFusionError::Execution(format!(
-                    "filter '{key}' split part {part} value '{raw}' is not a valid i64: {error}"
-                ))
-            })?;
-            Ok(Some(json!(parsed)))
+        } => parse_split_i64_value(context.filters, key, separator, *part),
+        ValueSourceSpec::ArgBool { key, default } => {
+            parse_bool_value(context.args, key, *default, "function argument")
         }
-        ValueSourceSpec::Arg { key, .. }
-        | ValueSourceSpec::ArgInt { key, .. }
-        | ValueSourceSpec::ArgBool { key, .. } => Err(DataFusionError::Execution(format!(
-            "function argument '{key}' cannot be resolved outside a function request"
-        ))),
-        ValueSourceSpec::Input { key } => Ok(resolved_inputs.get(key).cloned().map(Value::String)),
-        ValueSourceSpec::State { key } => Ok(state.get(key).map(|v| Value::String(v.clone()))),
+        ValueSourceSpec::Input { key } => {
+            Ok(context.resolved_inputs.get(key).cloned().map(Value::String))
+        }
+        ValueSourceSpec::State { key } => {
+            Ok(context.state.get(key).map(|v| Value::String(v.clone())))
+        }
         ValueSourceSpec::NowEpochMinusSeconds { seconds } => {
             #[expect(
                 clippy::cast_possible_wrap,
@@ -96,6 +103,57 @@ pub(crate) fn resolve_value_source(
             Ok(Some(json!(value)))
         }
     }
+}
+
+fn parse_i64_value(
+    values: &HashMap<String, String>,
+    key: &str,
+    default: Option<i64>,
+    label: &str,
+) -> Result<Option<Value>> {
+    let Some(raw) = values.get(key) else {
+        return Ok(default.map(|value| json!(value)));
+    };
+    let parsed = raw.parse::<i64>().map_err(|error| {
+        DataFusionError::Execution(format!(
+            "{label} '{key}' value '{raw}' is not a valid i64: {error}"
+        ))
+    })?;
+    Ok(Some(json!(parsed)))
+}
+
+fn parse_bool_value(
+    values: &HashMap<String, String>,
+    key: &str,
+    default: Option<bool>,
+    label: &str,
+) -> Result<Option<Value>> {
+    let Some(raw) = values.get(key) else {
+        return Ok(default.map(|value| json!(value)));
+    };
+    let parsed = raw.parse::<bool>().map_err(|error| {
+        DataFusionError::Execution(format!(
+            "{label} '{key}' value '{raw}' is not a valid bool: {error}"
+        ))
+    })?;
+    Ok(Some(json!(parsed)))
+}
+
+fn parse_split_i64_value(
+    filters: &HashMap<String, String>,
+    key: &str,
+    separator: &str,
+    part: usize,
+) -> Result<Option<Value>> {
+    let Some(raw) = split_filter_part(filters, key, separator, part)? else {
+        return Ok(None);
+    };
+    let parsed = raw.parse::<i64>().map_err(|error| {
+        DataFusionError::Execution(format!(
+            "filter '{key}' split part {part} value '{raw}' is not a valid i64: {error}"
+        ))
+    })?;
+    Ok(Some(json!(parsed)))
 }
 
 fn split_filter_part(
@@ -120,37 +178,26 @@ fn split_filter_part(
 /// Render a parsed template into a concrete string.
 pub(crate) fn render_template(
     template: &ParsedTemplate,
-    filters: &HashMap<String, String>,
-    state: &HashMap<String, String>,
-    resolved_inputs: &BTreeMap<String, String>,
+    context: &RenderContext<'_>,
 ) -> Result<String> {
     let mut out = String::with_capacity(template.raw().len());
     for part in template.parts() {
         match part {
             TemplatePart::Literal(part) => out.push_str(part),
             TemplatePart::Token(token) => {
-                out.push_str(&resolve_template_token(
-                    token,
-                    filters,
-                    state,
-                    resolved_inputs,
-                )?);
+                out.push_str(&resolve_template_token(token, context)?);
             }
         }
     }
     Ok(out)
 }
 
-fn resolve_template_token(
-    token: &TemplateToken,
-    filters: &HashMap<String, String>,
-    state: &HashMap<String, String>,
-    resolved_inputs: &BTreeMap<String, String>,
-) -> Result<String> {
+fn resolve_template_token(token: &TemplateToken, context: &RenderContext<'_>) -> Result<String> {
     let default = token.default_value().map(ToString::to_string);
 
     if token.namespace() == &TemplateNamespace::Input {
-        return resolved_inputs
+        return context
+            .resolved_inputs
             .get(token.key())
             .cloned()
             .or(default)
@@ -163,7 +210,8 @@ fn resolve_template_token(
     }
 
     if token.namespace() == &TemplateNamespace::Filter {
-        return filters
+        return context
+            .filters
             .get(token.key())
             .cloned()
             .or(default)
@@ -172,10 +220,26 @@ fn resolve_template_token(
             });
     }
 
+    if token.namespace() == &TemplateNamespace::Arg {
+        return context
+            .args
+            .get(token.key())
+            .cloned()
+            .or(default)
+            .ok_or_else(|| {
+                DataFusionError::Execution(format!("missing request argument '{}'", token.key()))
+            });
+    }
+
     if token.namespace() == &TemplateNamespace::State {
-        return state.get(token.key()).cloned().or(default).ok_or_else(|| {
-            DataFusionError::Execution(format!("missing state value '{}'", token.key()))
-        });
+        return context
+            .state
+            .get(token.key())
+            .cloned()
+            .or(default)
+            .ok_or_else(|| {
+                DataFusionError::Execution(format!("missing state value '{}'", token.key()))
+            });
     }
 
     Err(DataFusionError::Execution(format!(

@@ -20,7 +20,7 @@ use crate::backends::http::rate_limit::{RateLimitDecision, check_rate_limit};
 use crate::backends::http::target::HttpFetchTarget;
 use crate::backends::shared::json_path::get_path_value;
 use crate::backends::shared::template::{
-    render_template, resolve_value_source, validate_input_dependencies,
+    RenderContext, render_template, resolve_value_source, validate_input_dependencies,
     validate_value_source_inputs, value_to_string,
 };
 use coral_spec::backends::http::{HttpSourceManifest, RateLimitSpec};
@@ -90,11 +90,14 @@ struct OutgoingHttpRequest<'a> {
     response_format: ResponseBodyFormat,
     source_schema: &'a str,
     rate_limit: &'a RateLimitSpec,
-    request_values: &'a HashMap<String, String>,
-    state: &'a HashMap<String, String>,
-    resolved_inputs: &'a BTreeMap<String, String>,
+    render_context: RenderContext<'a>,
     allow_404_empty: bool,
     link_header_require_results: bool,
+}
+
+struct HttpRequestSite<'a> {
+    label: String,
+    request: &'a ManifestRequestSpec,
 }
 
 impl HttpSourceClient {
@@ -153,7 +156,8 @@ impl HttpSourceClient {
     pub(crate) async fn fetch(
         &self,
         target: &HttpFetchTarget,
-        request_values: &HashMap<String, String>,
+        filter_values: &HashMap<String, String>,
+        arg_values: &HashMap<String, String>,
         sql_limit: Option<usize>,
     ) -> Result<Vec<Value>> {
         let mut all_rows = Vec::new();
@@ -198,12 +202,14 @@ impl HttpSourceClient {
                 }));
             }
 
-            let base_url = render_template(
-                &self.base_url,
-                request_values,
-                &pagination_state_values(&state),
+            let state_values = pagination_state_values(&state);
+            let render_context = RenderContext::new(
+                filter_values,
+                arg_values,
+                &state_values,
                 self.resolved_inputs.as_ref(),
-            )?;
+            );
+            let base_url = render_template(&self.base_url, &render_context)?;
             let base_url = normalize_base_url(&base_url);
             let following_link_header = matches!(
                 pagination.mode,
@@ -217,24 +223,14 @@ impl HttpSourceClient {
             {
                 next
             } else {
-                let rendered_path = render_template(
-                    &active_request.path,
-                    request_values,
-                    &pagination_state_values(&state),
-                    self.resolved_inputs.as_ref(),
-                )?;
+                let rendered_path = render_template(&active_request.path, &render_context)?;
                 join_url(&base_url, &rendered_path)?
             };
 
             let (query_pairs, body) = if following_link_header {
                 (Vec::new(), None)
             } else {
-                let mut query_pairs = build_query_pairs(
-                    active_request,
-                    request_values,
-                    &state,
-                    self.resolved_inputs.as_ref(),
-                )?;
+                let mut query_pairs = build_query_pairs(active_request, &render_context)?;
                 apply_pagination_query_pairs(
                     &mut query_pairs,
                     target,
@@ -246,12 +242,7 @@ impl HttpSourceClient {
                     pagination_error(&self.source_schema, target.name(), None, Some(&url), &error)
                 })?;
 
-                let mut body = build_request_body(
-                    active_request,
-                    request_values,
-                    &state,
-                    self.resolved_inputs.as_ref(),
-                )?;
+                let mut body = build_request_body(active_request, &render_context)?;
                 apply_pagination_body_fields(
                     &mut body,
                     &active_request.body,
@@ -266,7 +257,6 @@ impl HttpSourceClient {
                 (query_pairs, body)
             };
 
-            let pagination_values = pagination_state_values(&state);
             let request = execute_request(
                 &self.http,
                 self.request_timeout,
@@ -284,9 +274,7 @@ impl HttpSourceClient {
                     response_format: target.response().format,
                     source_schema: &self.source_schema,
                     rate_limit: &self.rate_limit,
-                    request_values,
-                    state: &pagination_values,
-                    resolved_inputs: self.resolved_inputs.as_ref(),
+                    render_context,
                     allow_404_empty: target.response().allow_404_empty,
                     link_header_require_results: pagination.link_header_require_results,
                 },
@@ -317,7 +305,7 @@ impl HttpSourceClient {
                             status: None,
                             method: None,
                             url: None,
-                            filters: request_values.clone(),
+                            filters: filter_values.clone(),
                             detail: err,
                         },
                     )));
@@ -392,7 +380,7 @@ fn validate_source_scoped_http_config(
 ) -> Result<()> {
     check_base_url_inputs(manifest, resolved_inputs)?;
     check_request_header_inputs(manifest, resolved_inputs)?;
-    check_table_request_inputs(manifest, resolved_inputs)?;
+    check_request_site_inputs(manifest, resolved_inputs)?;
     check_auth_inputs(manifest, request_authenticators, resolved_inputs)?;
     Ok(())
 }
@@ -421,28 +409,51 @@ fn check_request_header_inputs(
     Ok(())
 }
 
-fn check_table_request_inputs(
+fn check_request_site_inputs(
     manifest: &HttpSourceManifest,
     resolved_inputs: &BTreeMap<String, String>,
 ) -> Result<()> {
-    for table in &manifest.tables {
+    for site in http_request_sites(manifest) {
         validate_request_template_inputs(
             &manifest.common.name,
-            table.name(),
-            "request",
-            &table.request,
+            &site.label,
+            site.request,
             resolved_inputs,
         )?;
-        for route in &table.requests {
-            validate_request_route_inputs(
-                &manifest.common.name,
-                table.name(),
-                route,
-                resolved_inputs,
-            )?;
-        }
     }
     Ok(())
+}
+
+fn http_request_sites(manifest: &HttpSourceManifest) -> Vec<HttpRequestSite<'_>> {
+    let table_sites = manifest.tables.iter().flat_map(|table| {
+        let default = std::iter::once(HttpRequestSite {
+            label: format!("table '{}' request", table.name()),
+            request: &table.request,
+        });
+        let routes = table.requests.iter().map(move |route| HttpRequestSite {
+            label: table_request_route_label(table.name(), route),
+            request: &route.request,
+        });
+        default.chain(routes)
+    });
+
+    let function_sites = manifest.functions.iter().map(|function| HttpRequestSite {
+        label: format!("function '{}' request", function.name),
+        request: &function.request,
+    });
+
+    table_sites.chain(function_sites).collect()
+}
+
+fn table_request_route_label(table_name: &str, route: &RequestRouteSpec) -> String {
+    if route.when_filters.is_empty() {
+        format!("table '{table_name}' request route")
+    } else {
+        format!(
+            "table '{table_name}' request route for filters [{}]",
+            route.when_filters.join(", ")
+        )
+    }
 }
 
 /// Auth is source-scoped: all template dependencies must resolve from inputs
@@ -462,46 +473,18 @@ fn registration_error(source: &str, field: &str, error: &DataFusionError) -> Dat
     ))
 }
 
-fn validate_request_route_inputs(
-    source_name: &str,
-    table_name: &str,
-    route: &RequestRouteSpec,
-    resolved_inputs: &BTreeMap<String, String>,
-) -> Result<()> {
-    let route_label = if route.when_filters.is_empty() {
-        "request route".to_string()
-    } else {
-        format!(
-            "request route for filters [{}]",
-            route.when_filters.join(", ")
-        )
-    };
-    validate_request_template_inputs(
-        source_name,
-        table_name,
-        &route_label,
-        &route.request,
-        resolved_inputs,
-    )
-}
-
 fn validate_request_template_inputs(
     source_name: &str,
-    table_name: &str,
     request_label: &str,
     request: &ManifestRequestSpec,
     resolved_inputs: &BTreeMap<String, String>,
 ) -> Result<()> {
     validate_input_dependencies(&request.path, resolved_inputs).map_err(|error| {
-        registration_error(
-            source_name,
-            &format!("table '{table_name}' {request_label} path"),
-            &error,
-        )
+        registration_error(source_name, &format!("{request_label} path"), &error)
     })?;
     validate_header_inputs(
         source_name,
-        &format!("table '{table_name}' {request_label} header"),
+        &format!("{request_label} header"),
         &request.headers,
         resolved_inputs,
     )?;
@@ -509,10 +492,7 @@ fn validate_request_template_inputs(
         validate_value_source_inputs(&param.value, resolved_inputs).map_err(|error| {
             registration_error(
                 source_name,
-                &format!(
-                    "table '{table_name}' {request_label} query param '{}'",
-                    param.name
-                ),
+                &format!("{request_label} query param '{}'", param.name),
                 &error,
             )
         })?;
@@ -528,7 +508,7 @@ fn validate_request_template_inputs(
                 validate_value_source_inputs(&field.value, resolved_inputs).map_err(|error| {
                     registration_error(
                         source_name,
-                        &format!("table '{table_name}' {request_label} body field '{field_path}'"),
+                        &format!("{request_label} body field '{field_path}'"),
                         &error,
                     )
                 })?;
@@ -536,11 +516,7 @@ fn validate_request_template_inputs(
         }
         BodySpec::Text { content } => {
             validate_value_source_inputs(content, resolved_inputs).map_err(|error| {
-                registration_error(
-                    source_name,
-                    &format!("table '{table_name}' {request_label} body text"),
-                    &error,
-                )
+                registration_error(source_name, &format!("{request_label} body text"), &error)
             })?;
         }
     }
@@ -589,9 +565,7 @@ async fn execute_request(
         response_format,
         source_schema,
         rate_limit,
-        request_values,
-        state,
-        resolved_inputs,
+        render_context,
         allow_404_empty,
         link_header_require_results,
     } = request;
@@ -603,9 +577,7 @@ async fn execute_request(
 
         let mut header_map = HeaderMap::new();
         for header in request_headers.iter().chain(table_headers.iter()) {
-            if let Some(value) =
-                resolve_value_source(&header.value, request_values, state, resolved_inputs)?
-            {
+            if let Some(value) = resolve_value_source(&header.value, &render_context)? {
                 let name = HeaderName::try_from(header.name.as_str()).map_err(|error| {
                     DataFusionError::Execution(format!(
                         "invalid request header name '{}': {error}",
@@ -694,14 +666,18 @@ async fn execute_request(
             None => {}
         }
 
-        let built =
-            match resolve_auth_headers(auth, request, request_authenticators, resolved_inputs) {
-                Ok(request) => request,
-                Err(error) => {
-                    record_http_processing_error(&request_span, "REQUEST_SETUP", &error);
-                    return Err(error);
-                }
-            };
+        let built = match resolve_auth_headers(
+            auth,
+            request,
+            request_authenticators,
+            render_context.resolved_inputs,
+        ) {
+            Ok(request) => request,
+            Err(error) => {
+                record_http_processing_error(&request_span, "REQUEST_SETUP", &error);
+                return Err(error);
+            }
+        };
         let response = match http.execute(built).instrument(request_span.clone()).await {
             Ok(response) => response,
             Err(error) => {
@@ -782,7 +758,7 @@ async fn execute_request(
                         status: Some(status.as_u16()),
                         method: Some(method_label.to_string()),
                         url: Some(logged_url.clone()),
-                        filters: request_values.clone(),
+                        filters: render_context.filters.clone(),
                         detail: body,
                     },
                 ))));
@@ -1019,16 +995,12 @@ fn build_http_request(
 
 fn build_query_pairs(
     request: &coral_spec::RequestSpec,
-    request_values: &HashMap<String, String>,
-    state: &PageState,
-    resolved_inputs: &BTreeMap<String, String>,
+    render_context: &RenderContext<'_>,
 ) -> Result<Vec<(String, String)>> {
-    let state_values = pagination_state_values(state);
     let mut params = Vec::new();
 
     for param in &request.query {
-        let value =
-            resolve_value_source(&param.value, request_values, &state_values, resolved_inputs)?;
+        let value = resolve_value_source(&param.value, render_context)?;
         if let Some(value) = value {
             params.push((param.name.clone(), value_to_string(&value)));
         }
@@ -1081,11 +1053,8 @@ fn apply_pagination_query_pairs(
 
 fn build_request_body(
     request: &coral_spec::RequestSpec,
-    request_values: &HashMap<String, String>,
-    state: &PageState,
-    resolved_inputs: &BTreeMap<String, String>,
+    render_context: &RenderContext<'_>,
 ) -> Result<Option<RequestBody>> {
-    let state_values = pagination_state_values(state);
     match &request.body {
         BodySpec::Json { fields } => {
             if fields.is_empty() {
@@ -1093,21 +1062,14 @@ fn build_request_body(
             }
             let mut root = Value::Object(Map::new());
             for field in fields {
-                if let Some(value) = resolve_value_source(
-                    &field.value,
-                    request_values,
-                    &state_values,
-                    resolved_inputs,
-                )? {
+                if let Some(value) = resolve_value_source(&field.value, render_context)? {
                     set_path_value(&mut root, &field.path, value)?;
                 }
             }
             Ok(Some(RequestBody::Json(root)))
         }
         BodySpec::Text { content } => {
-            let Some(value) =
-                resolve_value_source(content, request_values, &state_values, resolved_inputs)?
-            else {
+            let Some(value) = resolve_value_source(content, render_context)? else {
                 return Ok(None);
             };
             Ok(Some(RequestBody::Text(value_to_string(&value))))
@@ -1515,6 +1477,7 @@ mod tests {
     };
     use crate::backends::http::ProviderQueryError;
     use crate::backends::http::target::HttpFetchTarget;
+    use crate::backends::shared::template::{EMPTY_MAP, RenderContext};
     use coral_spec::PaginationMode;
     use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec, RateLimitSpec};
     use coral_spec::{
@@ -1567,6 +1530,14 @@ mod tests {
 
     fn test_http_request_target(table: &HttpTableSpec) -> HttpFetchTarget {
         HttpFetchTarget::from_resolved_table_request(table, table.request.clone())
+    }
+
+    fn test_render_context<'a>(
+        filters: &'a HashMap<String, String>,
+        args: &'a HashMap<String, String>,
+        resolved_inputs: &'a BTreeMap<String, String>,
+    ) -> RenderContext<'a> {
+        RenderContext::new(filters, args, &EMPTY_MAP, resolved_inputs)
     }
 
     #[test]
@@ -1834,9 +1805,7 @@ mod tests {
             &ValueSourceSpec::Input {
                 key: "API_KEY".to_string(),
             },
-            &HashMap::new(),
-            &HashMap::new(),
-            &resolved_inputs,
+            &test_render_context(&HashMap::new(), &HashMap::new(), &resolved_inputs),
         )
         .expect("input lookup should succeed");
 
@@ -1851,9 +1820,7 @@ mod tests {
             &ValueSourceSpec::Input {
                 key: "API_KEY".to_string(),
             },
-            &HashMap::new(),
-            &HashMap::new(),
-            &resolved_inputs,
+            &test_render_context(&HashMap::new(), &HashMap::new(), &resolved_inputs),
         )
         .expect("input lookup should succeed");
 
@@ -1869,9 +1836,7 @@ mod tests {
                 key: "start_time".to_string(),
                 default: None,
             },
-            &filters,
-            &HashMap::new(),
-            &BTreeMap::new(),
+            &test_render_context(&filters, &HashMap::new(), &BTreeMap::new()),
         )
         .expect("integer filter should resolve");
 
@@ -1887,9 +1852,7 @@ mod tests {
                 key: "start_time".to_string(),
                 default: None,
             },
-            &filters,
-            &HashMap::new(),
-            &BTreeMap::new(),
+            &test_render_context(&filters, &HashMap::new(), &BTreeMap::new()),
         )
         .expect_err("invalid integer filter should fail");
 
@@ -1910,9 +1873,7 @@ mod tests {
                 separator: "-".to_string(),
                 part: 0,
             },
-            &filters,
-            &HashMap::new(),
-            &BTreeMap::new(),
+            &test_render_context(&filters, &HashMap::new(), &BTreeMap::new()),
         )
         .expect("split filter should resolve");
         let number = resolve_value_source(
@@ -1921,9 +1882,7 @@ mod tests {
                 separator: "-".to_string(),
                 part: 1,
             },
-            &filters,
-            &HashMap::new(),
-            &BTreeMap::new(),
+            &test_render_context(&filters, &HashMap::new(), &BTreeMap::new()),
         )
         .expect("split integer filter should resolve");
 
@@ -1941,9 +1900,7 @@ mod tests {
                 separator: "-".to_string(),
                 part: 1,
             },
-            &filters,
-            &HashMap::new(),
-            &BTreeMap::new(),
+            &test_render_context(&filters, &HashMap::new(), &BTreeMap::new()),
         )
         .expect_err("missing split part should fail");
 
@@ -1964,9 +1921,7 @@ mod tests {
                 separator: "-".to_string(),
                 part: 1,
             },
-            &filters,
-            &HashMap::new(),
-            &BTreeMap::new(),
+            &test_render_context(&filters, &HashMap::new(), &BTreeMap::new()),
         )
         .expect_err("missing split integer part should fail");
 
@@ -1986,9 +1941,7 @@ mod tests {
                 key: "descending".to_string(),
                 default: None,
             },
-            &filters,
-            &HashMap::new(),
-            &BTreeMap::new(),
+            &test_render_context(&filters, &HashMap::new(), &BTreeMap::new()),
         )
         .expect("bool filter should resolve");
 
@@ -2255,6 +2208,102 @@ mod tests {
         assert!(error.to_string().contains(
             "table 'items' request route for filters [account_id] path could not be resolved"
         ));
+    }
+
+    #[test]
+    fn backend_client_rejects_unresolved_function_request_inputs() {
+        let cases = [
+            (
+                "path",
+                json!({
+                    "path": "/{{input.ACCOUNT_ID}}/items"
+                }),
+                "function 'search_items' request path could not be resolved",
+            ),
+            (
+                "header",
+                json!({
+                    "path": "/items",
+                    "headers": [{
+                        "name": "X-Account",
+                        "from": "input",
+                        "key": "ACCOUNT_ID"
+                    }]
+                }),
+                "function 'search_items' request header 'X-Account' could not be resolved",
+            ),
+            (
+                "query",
+                json!({
+                    "path": "/items",
+                    "query": [{
+                        "name": "account_id",
+                        "from": "input",
+                        "key": "ACCOUNT_ID"
+                    }]
+                }),
+                "function 'search_items' request query param 'account_id' could not be resolved",
+            ),
+            (
+                "body",
+                json!({
+                    "method": "POST",
+                    "path": "/items",
+                    "body": [{
+                        "path": ["account", "id"],
+                        "from": "input",
+                        "key": "ACCOUNT_ID"
+                    }]
+                }),
+                "function 'search_items' request body field 'account.id' could not be resolved",
+            ),
+        ];
+
+        for (name, request, expected) in cases {
+            let manifest = parse_http_manifest(json!({
+                "dsl_version": 3,
+                "name": "alpha",
+                "version": "0.1.0",
+                "backend": "http",
+                "base_url": "https://api.example.com",
+                "inputs": {
+                    "ACCOUNT_ID": { "kind": "variable" }
+                },
+                "tables": [{
+                    "name": "items",
+                    "description": "items",
+                    "request": { "path": "/items" },
+                    "columns": [{
+                        "name": "id",
+                        "type": "Utf8"
+                    }]
+                }],
+                "functions": [{
+                    "name": "search_items",
+                    "description": "Search items",
+                    "request": request,
+                    "columns": [{
+                        "name": "id",
+                        "type": "Utf8"
+                    }]
+                }]
+            }));
+
+            let error = HttpSourceClient::from_manifest(
+                &manifest,
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                &HashMap::new(),
+            )
+            .expect_err(&format!(
+                "missing function request {name} input should fail"
+            ));
+
+            assert!(
+                error.to_string().contains(expected),
+                "unexpected error for {name}: {error}"
+            );
+        }
     }
 
     #[test]
@@ -2540,9 +2589,11 @@ mod tests {
             .expect("build test client");
         let url = format!("{base_url}/items");
         let query_pairs = vec![("api_key".to_string(), "secret-token".to_string())];
-        let request_values = HashMap::new();
+        let filters = HashMap::new();
+        let args = HashMap::new();
         let state = HashMap::new();
         let resolved_inputs = BTreeMap::new();
+        let render_context = RenderContext::new(&filters, &args, &state, &resolved_inputs);
 
         let error = execute_request(
             &http,
@@ -2561,9 +2612,7 @@ mod tests {
                 response_format: ResponseBodyFormat::default(),
                 source_schema: "demo",
                 rate_limit: &RateLimitSpec::default(),
-                request_values: &request_values,
-                state: &state,
-                resolved_inputs: &resolved_inputs,
+                render_context,
                 allow_404_empty: false,
                 link_header_require_results: false,
             },

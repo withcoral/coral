@@ -1,5 +1,6 @@
 //! Tracing and OpenTelemetry initialization for the local Coral process.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
@@ -96,6 +97,15 @@ pub struct RunContext {
     pub trace_parent: Option<String>,
 }
 
+/// Error metadata recorded on the root Coral invocation span.
+pub trait RunErrorTelemetry {
+    /// Low-cardinality error class for `error.type`.
+    fn telemetry_error_type(&self) -> Cow<'_, str>;
+
+    /// Human-readable failure summary for span status and exception message.
+    fn telemetry_error_message(&self) -> Cow<'_, str>;
+}
+
 /// Runs `fut` under a root CLI span configured from `ctx`.
 ///
 /// The returned `Result` is also recorded on the root span as low-cardinality
@@ -107,11 +117,15 @@ pub struct RunContext {
 pub async fn run_with_context<T, E, F>(ctx: &RunContext, fut: F) -> Result<T, E>
 where
     F: std::future::Future<Output = Result<T, E>>,
+    E: RunErrorTelemetry,
 {
     use tracing::Instrument as _;
     let span = build_root_span(ctx.trace_parent.as_deref());
     let result = fut.instrument(span.clone()).await;
-    record_run_status(&span, result.is_ok());
+    match &result {
+        Ok(_) => record_run_success(&span),
+        Err(error) => record_run_error(&span, error),
+    }
     result
 }
 
@@ -121,7 +135,16 @@ where
 /// `None` for an unparented span. Use `.instrument(span).await` to run the
 /// CLI future under this span.
 pub fn build_root_span(traceparent: Option<&str>) -> tracing::Span {
-    let span = tracing::info_span!("coral.cli", status = tracing::field::Empty);
+    let span = tracing::info_span!(
+        "coral.cli",
+        error.type = tracing::field::Empty,
+        exception.message = tracing::field::Empty,
+        otel.kind = "client",
+        process.executable.name = process_executable_name(),
+        process.exit.code = tracing::field::Empty,
+        process.pid = i64::from(std::process::id()),
+        status = tracing::field::Empty
+    );
     if let Some(tp) = traceparent {
         struct StringMapExtractor<'a>(&'a HashMap<String, String>);
         impl Extractor for StringMapExtractor<'_> {
@@ -141,14 +164,38 @@ pub fn build_root_span(traceparent: Option<&str>) -> tracing::Span {
     span
 }
 
-fn record_run_status(span: &tracing::Span, ok: bool) {
-    if ok {
-        span.record("status", "ok");
-        span.set_status(OtelStatus::Ok);
-    } else {
-        span.record("status", "error");
-        span.set_status(OtelStatus::error("error"));
-    }
+fn record_run_success(span: &tracing::Span) {
+    span.record("process.exit.code", 0_i64);
+    span.record("status", "ok");
+    span.set_status(OtelStatus::Ok);
+}
+
+fn record_run_error(span: &tracing::Span, error: &impl RunErrorTelemetry) {
+    let error_type = error.telemetry_error_type();
+    let message = error.telemetry_error_message();
+    span.record("process.exit.code", 1_i64);
+    span.record("error.type", error_type.as_ref());
+    span.record("exception.message", message.as_ref());
+    span.record("status", "error");
+    span.set_status(OtelStatus::error(message.into_owned()));
+}
+
+fn process_executable_name() -> String {
+    std::env::current_exe()
+        .ok()
+        .and_then(|path| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        })
+        .or_else(|| {
+            std::env::args_os().next().and_then(|arg| {
+                std::path::Path::new(&arg)
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+            })
+        })
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "coral".to_string())
 }
 
 pub(crate) fn init_tracing(
@@ -381,6 +428,8 @@ mod tests {
         let (targets, error) = build_trace_targets(DEFAULT_TRACE_FILTER);
 
         assert!(error.is_none());
+        assert!(targets.would_enable("coral_client::grpc", &tracing::Level::TRACE));
+        assert!(targets.would_enable("coral_mcp::server", &tracing::Level::TRACE));
         assert!(targets.would_enable("coral_engine::http", &tracing::Level::TRACE));
         assert!(!targets.would_enable("coral_engine::datafusion", &tracing::Level::TRACE));
     }

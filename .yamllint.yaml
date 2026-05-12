@@ -27,7 +27,7 @@ rules:
     # is no yamllint disable-line escape inside a `|` block scalar, so we
     # exempt the file rather than drop the onboarding URL.
     ignore: |
-      sources/slack/manifest.yaml
+      sources/core/slack/manifest.yaml
 
   # Every manifest is a single-document YAML file, so the `---` document-
   # start marker is pure convention. Skip it to keep files one line shorter.

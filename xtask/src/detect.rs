@@ -3,7 +3,7 @@
 //! A manifest's descriptions feed documentation, MCP surfaces, and the
 //! `coral.columns` catalog. When an upstream generation step (e.g. `OpenAPI`
 //! → YAML) applies a character cap, sentences get cut mid-phrase. This module
-//! walks each `sources/*/manifest.y{a,}ml` and flags descriptions that exhibit
+//! walks each `sources/**/manifest.y{a,}ml` and flags descriptions that exhibit
 //! deterministic truncation signals.
 //!
 //! Signals (ordered from least to most likely false-positive):
@@ -22,6 +22,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use walkdir::WalkDir;
 
 /// Tokens that rarely, if ever, terminate a complete English description.
 /// If a description ends on one of these, it almost certainly got chopped.
@@ -96,34 +97,10 @@ pub(crate) fn iter_manifests(paths: &[PathBuf]) -> Vec<PathBuf> {
             continue;
         }
         if p.is_dir() {
-            let direct = ["manifest.yaml", "manifest.yml"]
-                .iter()
-                .map(|name| p.join(name))
-                .find(|path| path.is_file());
-            if let Some(nested) = direct {
-                out.push(nested);
-                continue;
-            }
-            // No direct manifest — recurse for sources/*/manifest.y{a,}ml.
-            if let Ok(entries) = fs::read_dir(p) {
-                let mut children: Vec<PathBuf> = entries
-                    .filter_map(std::result::Result::ok)
-                    .map(|e| e.path())
-                    .filter(|c| c.is_dir())
-                    .collect();
-                children.sort();
-                for child in children {
-                    for name in ["manifest.yaml", "manifest.yml"] {
-                        let candidate = child.join(name);
-                        if candidate.is_file() {
-                            out.push(candidate);
-                            break;
-                        }
-                    }
-                }
-            }
+            out.extend(manifest_files_under(p));
         }
     }
+    out.sort();
     let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
     let mut unique: Vec<PathBuf> = Vec::new();
     for p in out {
@@ -133,6 +110,19 @@ pub(crate) fn iter_manifests(paths: &[PathBuf]) -> Vec<PathBuf> {
         }
     }
     unique
+}
+
+fn manifest_files_under(dir: &Path) -> Vec<PathBuf> {
+    WalkDir::new(dir)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(std::result::Result::ok)
+        .filter(|entry| entry.file_type().is_file())
+        .filter_map(|entry| {
+            let file_name = entry.file_name().to_str()?;
+            matches!(file_name, "manifest.yaml" | "manifest.yml").then(|| entry.into_path())
+        })
+        .collect()
 }
 
 /// Walk a manifest file and yield (1-based line number, resolved description).
@@ -695,6 +685,44 @@ tables:
     }
 
     #[test]
+    fn iter_manifests_recurses_nested_source_groups() {
+        let root = unique_temp_dir("iter-manifests");
+        let core_manifest = root.join("sources/core/github/manifest.yaml");
+        let community_manifest = root.join("sources/community/hn/manifest.yaml");
+        fs::create_dir_all(core_manifest.parent().expect("core parent")).expect("create core");
+        fs::create_dir_all(community_manifest.parent().expect("community parent"))
+            .expect("create community");
+        fs::write(&core_manifest, "name: github\n").expect("write core manifest");
+        fs::write(&community_manifest, "name: hn\n").expect("write community manifest");
+
+        let manifests = iter_manifests(&[root.join("sources")]);
+
+        fs::remove_dir_all(&root).expect("remove temp dir");
+        assert_eq!(manifests, vec![community_manifest, core_manifest]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn iter_manifests_does_not_follow_symlinked_directories() {
+        let root = unique_temp_dir("iter-manifests-symlink");
+        let real_manifest = root.join("real/manifest.yaml");
+        let linked_manifest = root.join("sources/linked/manifest.yaml");
+        fs::create_dir_all(real_manifest.parent().expect("real parent")).expect("create real");
+        fs::create_dir_all(root.join("sources")).expect("create sources");
+        fs::write(&real_manifest, "name: real\n").expect("write manifest");
+        std::os::unix::fs::symlink(root.join("real"), root.join("sources/linked"))
+            .expect("create symlink");
+
+        let manifests = iter_manifests(&[root.join("sources")]);
+
+        fs::remove_dir_all(&root).expect("remove temp dir");
+        assert!(
+            manifests.is_empty(),
+            "symlinked manifest should not be traversed: {linked_manifest:?}"
+        );
+    }
+
+    #[test]
     fn extract_multi_line_plain_scalar() {
         let yaml = "
 tables:
@@ -772,5 +800,13 @@ tables:
         let text = "A short-form, server-generated string that provides succinct, important information about an object suitable for primary";
         let reasons = classify(text);
         assert!(reasons.iter().any(|r| r.starts_with("suspicious-length")));
+    }
+
+    fn unique_temp_dir(name: &str) -> PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("time after epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("coral-xtask-{name}-{}-{nonce}", std::process::id()))
     }
 }

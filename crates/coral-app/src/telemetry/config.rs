@@ -5,8 +5,7 @@ use serde::Deserialize;
 use crate::bootstrap::AppError;
 use crate::state::AppStateLayout;
 
-pub(super) const DEFAULT_TRACE_FILTER: &str =
-    "coral_app=trace,coral_engine=trace,coral_engine::datafusion=off";
+pub(super) const DEFAULT_TRACE_FILTER: &str = "coral_app=trace,coral_client=trace,coral_mcp=trace,coral_engine=trace,coral_engine::datafusion=off";
 pub(super) const DEFAULT_LOG_FILTER: &str = "coral_app=info,coral_engine=info";
 const DEFAULT_SERVICE_NAME: &str = "coral";
 

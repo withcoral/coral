@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use coral_engine::{
     CoralQuery, CoreError, QueryExecution, QueryRuntimeConfig, QueryRuntimeContext, QuerySource,
-    SourceValidationReport, TableInfo,
+    SourceValidationReport, StatusCode, TableInfo,
 };
 use coral_spec::{ManifestInputKind, ManifestInputSpec};
 use opentelemetry::trace::Status as OtelStatus;
@@ -110,9 +110,13 @@ impl QueryManager {
                 .record(row_count, std::slice::from_ref(&status));
         } else if let Err(error) = &result {
             let error_kind = query_error_kind(error);
+            let error_type = query_error_type(error);
+            let error_message = query_error_message(error);
             query_span.record("status", "error");
             query_span.record("error.kind", error_kind);
-            query_span.set_status(OtelStatus::error(error_kind));
+            query_span.record("error.type", error_type.as_str());
+            query_span.record("exception.message", error_message.as_str());
+            query_span.set_status(OtelStatus::error(error_message));
         }
 
         result
@@ -226,6 +230,8 @@ fn create_query_span(workspace_name: &WorkspaceName, sql: &str) -> tracing::Span
         row_count = tracing::field::Empty,
         status = tracing::field::Empty,
         error.kind = tracing::field::Empty,
+        error.type = tracing::field::Empty,
+        exception.message = tracing::field::Empty,
     )
 }
 
@@ -233,6 +239,56 @@ fn query_error_kind(error: &QueryManagerError) -> &'static str {
     match error {
         QueryManagerError::App(_) => "app",
         QueryManagerError::Core(_) => "core",
+    }
+}
+
+fn query_error_type(error: &QueryManagerError) -> String {
+    match error {
+        QueryManagerError::App(error) => app_error_type(error).to_string(),
+        QueryManagerError::Core(error) => core_error_type(error),
+    }
+}
+
+fn query_error_message(error: &QueryManagerError) -> String {
+    match error {
+        QueryManagerError::App(error) => error.to_string(),
+        QueryManagerError::Core(CoreError::QueryFailure(error)) => error.summary().to_string(),
+        QueryManagerError::Core(error) => error.to_string(),
+    }
+}
+
+fn app_error_type(error: &AppError) -> &'static str {
+    match error {
+        AppError::SourceNotFound(_) => "SOURCE_NOT_FOUND",
+        AppError::InvalidInput(_) => "INVALID_INPUT",
+        AppError::FailedPrecondition(_) => "FAILED_PRECONDITION",
+        AppError::Io(_) => "IO",
+        AppError::Yaml(_) => "YAML",
+        AppError::TomlDecode(_) => "TOML_DECODE",
+        AppError::TomlEncode(_) => "TOML_ENCODE",
+        AppError::Json(_) => "JSON",
+        AppError::Transport(_) => "TRANSPORT",
+        AppError::TaskJoin(_) => "TASK_JOIN",
+        AppError::Credentials(_) => "CREDENTIALS",
+        AppError::MissingConfigDir => "MISSING_CONFIG_DIR",
+    }
+}
+
+fn core_error_type(error: &CoreError) -> String {
+    match error {
+        CoreError::QueryFailure(error) => error.reason().to_string(),
+        error => status_code_error_type(error.status_code()).to_string(),
+    }
+}
+
+fn status_code_error_type(status: StatusCode) -> &'static str {
+    match status {
+        StatusCode::InvalidArgument => "INVALID_ARGUMENT",
+        StatusCode::NotFound => "NOT_FOUND",
+        StatusCode::FailedPrecondition => "FAILED_PRECONDITION",
+        StatusCode::Unavailable => "UNAVAILABLE",
+        StatusCode::Unimplemented => "UNIMPLEMENTED",
+        StatusCode::Internal => "INTERNAL",
     }
 }
 

@@ -42,6 +42,7 @@ use crate::sources::manager::SourceManager;
 use crate::sources::service::SourceService;
 use crate::state::{AppStateLayout, ConfigStore, SecretStore};
 use crate::telemetry::TelemetryConfig;
+use crate::transport::GrpcMethodAnnotatedService;
 
 /// A static asset (e.g., a built SPA file) served on the same port as
 /// gRPC-Web.
@@ -337,22 +338,28 @@ async fn start_server(
     let endpoint_uri = format!("http://{}", listener.local_addr()?);
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
+    let source_service = GrpcMethodAnnotatedService::new(SourceServiceServer::new(source_service));
+    let feedback_service =
+        GrpcMethodAnnotatedService::new(FeedbackServiceServer::new(feedback_service));
+    let query_service = GrpcMethodAnnotatedService::new(
+        QueryServiceServer::new(query_service)
+            .max_encoding_message_size(QUERY_RESPONSE_MAX_MESSAGE_SIZE),
+    );
+
     let task = match mode {
         ServerMode::NativeGrpc => start_grpc_server(
             listener,
             shutdown_rx,
-            SourceServiceServer::new(source_service),
-            FeedbackServiceServer::new(feedback_service),
-            QueryServiceServer::new(query_service)
-                .max_encoding_message_size(QUERY_RESPONSE_MAX_MESSAGE_SIZE),
+            source_service,
+            feedback_service,
+            query_service,
         ),
         ServerMode::EmbeddedUi { assets, .. } => start_grpc_web_server(
             listener,
             shutdown_rx,
-            SourceServiceServer::new(source_service),
-            FeedbackServiceServer::new(feedback_service),
-            QueryServiceServer::new(query_service)
-                .max_encoding_message_size(QUERY_RESPONSE_MAX_MESSAGE_SIZE),
+            source_service,
+            feedback_service,
+            query_service,
             assets,
         ),
     };

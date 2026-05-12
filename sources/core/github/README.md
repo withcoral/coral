@@ -39,13 +39,14 @@ which avoids retrying ordinary permission failures.
 
 | Filter pattern | Tables | Example |
 |---|---|---|
-| No filter | 57 | `SELECT * FROM github.user_repos` |
-| `owner` + `repo` | 147 | `WHERE owner = 'org' AND repo = 'name'` |
-| `org` | 108 | `WHERE org = 'myorg'` |
-| `username` | 19 | `WHERE username = 'user'` |
-| `enterprise` | 12 | `WHERE enterprise = 'slug'` |
-| Search (`q`) | 7 | `WHERE q = 'search terms'` |
-| Compound (IDs) | 21 | `WHERE owner = '...' AND repo = '...' AND run_id = 123` |
+| No filter | 55 | `SELECT * FROM github.user_repos` |
+| `owner` + `repo` | 79 | `WHERE owner = 'org' AND repo = 'name'` |
+| `org` | 80 | `WHERE org = 'myorg'` |
+| `username` | 14 | `WHERE username = 'user'` |
+| `enterprise` | 8 | `WHERE enterprise = 'slug'` |
+| Compound (IDs) | 126 | `WHERE owner = '...' AND repo = '...' AND run_id = 123` |
+
+Search is exposed through source-scoped table functions rather than tables.
 
 ### By access level
 
@@ -237,19 +238,20 @@ Remaining ~104 org tables require the PAT to be scoped to the organization with 
 | `users_list_ssh_signing_keys_for_user` | - |
 | `orgs_list_for_user` | - |
 
-#### Search tables (6 tables confirmed)
+#### Search functions
 
-| Table | Example query |
+| Function | Example call |
 |---|---|
-| `search_repositories` | `WHERE q = 'language:rust stars:>100'` |
-| `search_users` | `WHERE q = 'username'` |
-| `search_topics` | `WHERE q = 'machine-learning'` |
-| `search_labels` | `WHERE q = 'bug' AND repository_id = 12345` |
-| `code` | `WHERE q = 'className repo:owner/repo'` |
-| `apps` | `WHERE app_slug = 'github-actions'` |
+| `search_repositories` | `github.search_repositories(q => 'language:rust stars:>100')` |
+| `search_users` | `github.search_users(q => 'username')` |
+| `search_topics` | `github.search_topics(q => 'machine-learning')` |
+| `search_labels` | `github.search_labels(repository_id => 12345, q => 'bug')` |
+| `search_code` | `github.search_code(q => 'className repo:owner/repo')` |
+| `search_commits` | `github.search_commits(q => 'fix repo:owner/repo')` |
+| `search_issues` | `github.search_issues(q => 'repo:owner/repo is:issue bug')` |
 
 Note: `search_commits` requires actual search text.
-Qualifier-only queries such as `q = 'repo:owner/repo'` return 422.
+Qualifier-only queries such as `q => 'repo:owner/repo'` return 422.
 `search_issues` requires `is:issue` or `is:pull-request` in the query.
 
 #### Requires GitHub App JWT (19 tables)
@@ -279,8 +281,8 @@ queries. Use `LIMIT` or filters to get practical results:
 | Table | Default cap | Tip |
 |---|---|---|
 | `gist_public` | 10 pages (~1000 gists) | Filter by `since` if supported |
-| `organizations` | 10 pages (~1000 orgs) | Use `search_repositories` with `q = 'org:name'` instead |
-| `users` | 10 pages (~1000 users) | Use `search_users` with `q = 'keyword'` instead |
+| `organizations` | 10 pages (~1000 orgs) | Use `github.search_repositories(q => 'org:name')` instead |
+| `users` | 10 pages (~1000 users) | Use `github.search_users(q => 'keyword')` instead |
 
 Tables that return single JSON objects (not arrays) use `max_pages: 1` to prevent infinite pagination loops:
 
@@ -294,7 +296,7 @@ Tables that return single JSON objects (not arrays) use `max_pages: 1` to preven
 Many tables require IDs from parent tables. Use this discovery order:
 
 ```text
-user_repos / org_repos / search_repositories
+user_repos / org_repos / search_repositories(...)
   → owner, repo
     → commits → commit_sha → repo_git_commits, branches_where_head
     → commits → commit__tree__sha → trees
@@ -334,6 +336,6 @@ coral sql \
   "SELECT title, state, user__login FROM github.pulls \
    WHERE owner = 'myorg' AND repo = 'myrepo'"
 coral sql \
-  "SELECT full_name, stargazers_count FROM github.search_repositories \
-   WHERE q = 'language:rust stars:>1000' LIMIT 10"
+  "SELECT full_name, stargazers_count FROM github.search_repositories(q => 'language:rust stars:>1000') \
+   LIMIT 10"
 ```

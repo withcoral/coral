@@ -312,6 +312,7 @@ fn search_tables_output_schema() -> Arc<Map<String, Value>> {
             "name",
             "sql_reference",
             "description",
+            "guide",
             "required_filters",
             "matched_fields"
         ],
@@ -322,6 +323,7 @@ fn search_tables_output_schema() -> Arc<Map<String, Value>> {
             "name": { "type": "string" },
             "sql_reference": { "type": "string" },
             "description": { "type": "string" },
+            "guide": { "type": "string" },
             "required_filters": {
                 "type": "array",
                 "items": { "type": "string" }

@@ -71,3 +71,29 @@ pub const CORAL_ERROR_METADATA_DETAIL: &str = "detail";
 
 /// Reserved `ErrorInfo.metadata` key for actionable recovery guidance.
 pub const CORAL_ERROR_METADATA_HINT: &str = "hint";
+
+/// Returns the canonical OpenTelemetry `rpc.response.status_code` value.
+#[must_use]
+pub fn grpc_response_status_code(code: tonic::Code) -> &'static str {
+    use tonic::Code;
+
+    match code {
+        Code::Ok => "OK",
+        Code::Cancelled => "CANCELLED",
+        Code::Unknown => "UNKNOWN",
+        Code::InvalidArgument => "INVALID_ARGUMENT",
+        Code::DeadlineExceeded => "DEADLINE_EXCEEDED",
+        Code::NotFound => "NOT_FOUND",
+        Code::AlreadyExists => "ALREADY_EXISTS",
+        Code::PermissionDenied => "PERMISSION_DENIED",
+        Code::ResourceExhausted => "RESOURCE_EXHAUSTED",
+        Code::FailedPrecondition => "FAILED_PRECONDITION",
+        Code::Aborted => "ABORTED",
+        Code::OutOfRange => "OUT_OF_RANGE",
+        Code::Unimplemented => "UNIMPLEMENTED",
+        Code::Internal => "INTERNAL",
+        Code::Unavailable => "UNAVAILABLE",
+        Code::DataLoss => "DATA_LOSS",
+        Code::Unauthenticated => "UNAUTHENTICATED",
+    }
+}

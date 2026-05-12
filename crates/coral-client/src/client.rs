@@ -9,6 +9,7 @@ use tonic::service::interceptor::InterceptedService;
 use tonic::transport::{Channel, Endpoint};
 
 use crate::error::ClientError;
+use crate::grpc::{GrpcClientEndpoint, InstrumentedGrpcService};
 use crate::propagation::TraceContextInterceptor;
 
 /// Default workspace used by local Coral clients.
@@ -22,19 +23,17 @@ pub fn default_workspace() -> Workspace {
     }
 }
 
+type RawGrpcService = InterceptedService<Channel, TraceContextInterceptor>;
+type GrpcService = InstrumentedGrpcService<RawGrpcService>;
+
 /// Public source-management gRPC client.
-pub type SourceClient = SourceServiceClient<InterceptedService<Channel, TraceContextInterceptor>>;
+pub type SourceClient = SourceServiceClient<GrpcService>;
 
 /// Public SQL query gRPC client.
-pub type QueryClient = QueryServiceClient<InterceptedService<Channel, TraceContextInterceptor>>;
+pub type QueryClient = QueryServiceClient<GrpcService>;
 
 /// Public feedback-submission gRPC client.
-///
-/// This stays intentionally thin for now: `coral-client` is a local transport
-/// bootstrap, so it exposes the generated typed client directly rather than
-/// wrapping it in a higher-level SDK surface.
-pub type FeedbackClient =
-    FeedbackServiceClient<InterceptedService<Channel, TraceContextInterceptor>>;
+pub type FeedbackClient = FeedbackServiceClient<GrpcService>;
 
 /// Public Coral client handle.
 ///
@@ -59,14 +58,12 @@ impl AppClient {
         crate::propagation::ensure_global_propagator();
         let endpoint = Endpoint::from_shared(endpoint_uri.to_string())?
             .http2_max_header_list_size(HTTP2_MAX_HEADER_LIST_SIZE);
+        let grpc_endpoint = GrpcClientEndpoint::from_endpoint_uri(endpoint_uri);
         let channel = endpoint.connect().await?;
-        let source_client =
-            SourceServiceClient::with_interceptor(channel.clone(), TraceContextInterceptor);
-        let query_client =
-            QueryServiceClient::with_interceptor(channel.clone(), TraceContextInterceptor)
-                .max_decoding_message_size(QUERY_RESPONSE_MAX_MESSAGE_SIZE);
-        let feedback_client =
-            FeedbackServiceClient::with_interceptor(channel, TraceContextInterceptor);
+        let source_client = SourceClient::new(grpc_service(channel.clone(), &grpc_endpoint));
+        let query_client = QueryClient::new(grpc_service(channel.clone(), &grpc_endpoint))
+            .max_decoding_message_size(QUERY_RESPONSE_MAX_MESSAGE_SIZE);
+        let feedback_client = FeedbackClient::new(grpc_service(channel, &grpc_endpoint));
         Ok(Self {
             source: source_client,
             query: query_client,
@@ -91,4 +88,11 @@ impl AppClient {
     pub fn feedback_client(&self) -> FeedbackClient {
         self.feedback.clone()
     }
+}
+
+fn grpc_service(channel: Channel, endpoint: &GrpcClientEndpoint) -> GrpcService {
+    InstrumentedGrpcService::new(
+        InterceptedService::new(channel, TraceContextInterceptor),
+        endpoint.clone(),
+    )
 }

@@ -91,6 +91,7 @@ impl TableSummary {
             "name": format!("{}.{}", self.schema_name, self.table_name),
             "sql_reference": format_schema_table_equivalent(&self.schema_name, &self.table_name),
             "description": self.description,
+            "guide": self.guide,
             "required_filters": self.required_filters,
             "matched_fields": matched_fields,
         })
@@ -245,6 +246,7 @@ mod tests {
 
         assert_eq!(value["name"], "github.Pull.Requests");
         assert_eq!(value["sql_reference"], "github.\"Pull.Requests\"");
+        assert_eq!(value["guide"], "Query pull requests.");
     }
 
     #[test]

@@ -48,6 +48,78 @@ fn base_http_manifest(name: &str, base_url: &str) -> Value {
     })
 }
 
+fn search_function_manifest(name: &str, base_url: &str) -> Value {
+    json!({
+        "name": name,
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": base_url,
+        "tables": [{
+            "name": "placeholder",
+            "description": "Placeholder table",
+            "request": {
+                "method": "GET",
+                "path": "/api/placeholder"
+            },
+            "columns": [
+                { "name": "id", "type": "Utf8" }
+            ]
+        }],
+        "functions": [{
+            "name": "search_issues",
+            "description": "Search issues",
+            "args": [
+                {
+                    "name": "q",
+                    "required": true,
+                    "bind": { "arg": "q" }
+                },
+                {
+                    "name": "mode",
+                    "values": ["lexical", "semantic", "hybrid"],
+                    "bind": { "arg": "search_type" }
+                }
+            ],
+            "request": {
+                "method": "GET",
+                "path": "/api/search/issues",
+                "query": [
+                    { "name": "q", "from": "arg", "key": "q" },
+                    { "name": "search_type", "from": "arg", "key": "search_type" }
+                ]
+            },
+            "response": {
+                "rows_path": ["items"]
+            },
+            "columns": [
+                { "name": "title", "type": "Utf8" },
+                { "name": "score", "type": "Float64" }
+            ]
+        }]
+    })
+}
+
+fn internal_table_function_name(schema: &str, function: &str) -> String {
+    // PR #306 only registers DataFusion's flat internal UDTF. The public
+    // source-scoped planner in the next stack PR owns this mapping for users.
+    format!(
+        "__coral_udtf_{}_{}",
+        hex_encode(schema),
+        hex_encode(function)
+    )
+}
+
+fn hex_encode(value: &str) -> String {
+    use std::fmt::Write as _;
+
+    let mut encoded = String::with_capacity(value.len() * 2);
+    for byte in value.as_bytes() {
+        write!(&mut encoded, "{byte:02x}").expect("writing to a String never fails");
+    }
+    encoded
+}
+
 #[derive(Debug)]
 struct TestRequestAuthenticator;
 
@@ -239,6 +311,362 @@ async fn select_with_where_filter_pushdown() {
     );
 
     assert_eq!(rows, vec![json!({"id": 2, "name": "Grace"})]);
+}
+
+#[tokio::test]
+async fn internal_table_function_builds_http_search_request() {
+    let function_name = internal_table_function_name("search", "search_issues");
+    assert_search_function_query(&format!(
+        "SELECT title, score \
+         FROM {function_name}('flaky cleanup repo:withcoral/coral', 'hybrid')"
+    ))
+    .await;
+}
+
+#[tokio::test]
+async fn source_scoped_table_function_builds_http_search_request() {
+    assert_search_function_query(
+        "SELECT title, score \
+         FROM search.search_issues(mode => 'hybrid', q => 'flaky cleanup repo:withcoral/coral')",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn source_scoped_table_function_normalizes_unquoted_sql_identifiers() {
+    assert_search_function_query(
+        "SELECT title, score \
+         FROM SEARCH.SEARCH_ISSUES(MODE => 'hybrid', Q => 'flaky cleanup repo:withcoral/coral')",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn source_scoped_table_function_preserves_quoted_manifest_identifiers() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/search/issues"))
+        .and(query_param("q", "flaky cleanup repo:withcoral/coral"))
+        .and(query_param("search_type", "hybrid"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [{
+                "title": "Flaky workspace cleanup",
+                "score": 9.5
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut manifest = search_function_manifest("Search", &server.uri());
+    manifest["functions"][0]["name"] = json!("Search_Issues");
+    manifest["functions"][0]["args"][0]["name"] = json!("Q");
+    let source = build_source(manifest);
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT title, score \
+             FROM \"Search\".\"Search_Issues\"(\"Q\" => 'flaky cleanup repo:withcoral/coral', mode => 'hybrid')",
+        )
+        .await
+        .expect("quoted exact manifest identifiers should resolve"),
+    );
+
+    assert_eq!(
+        rows,
+        vec![json!({
+            "title": "Flaky workspace cleanup",
+            "score": 9.5
+        })]
+    );
+}
+
+#[tokio::test]
+async fn source_scoped_table_function_omits_optional_named_arg() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/search/issues"))
+        .and(query_param("q", "flaky cleanup repo:withcoral/coral"))
+        .and(query_param_is_missing("search_type"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [{
+                "title": "Flaky workspace cleanup",
+                "score": 9.5
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let source = build_source(search_function_manifest("search", &server.uri()));
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT title, score \
+             FROM search.search_issues(q => 'flaky cleanup repo:withcoral/coral')",
+        )
+        .await
+        .expect("omitted optional named argument should be absent from the request"),
+    );
+
+    assert_eq!(
+        rows,
+        vec![json!({
+            "title": "Flaky workspace cleanup",
+            "score": 9.5
+        })]
+    );
+}
+
+#[tokio::test]
+async fn source_scoped_table_function_preserves_table_alias() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/search/issues"))
+        .and(query_param("q", "flaky cleanup repo:withcoral/coral"))
+        .and(query_param("search_type", "hybrid"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [{
+                "title": "Flaky workspace cleanup",
+                "score": 9.5
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let source = build_source(search_function_manifest("search", &server.uri()));
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT issue.title, issue.score \
+             FROM search.search_issues(q => 'flaky cleanup repo:withcoral/coral', mode => 'hybrid') AS issue",
+        )
+        .await
+        .expect("source-scoped table function aliases should resolve"),
+    );
+
+    assert_eq!(
+        rows,
+        vec![json!({
+            "title": "Flaky workspace cleanup",
+            "score": 9.5
+        })]
+    );
+}
+
+#[tokio::test]
+async fn source_scoped_table_function_rejects_duplicate_args() {
+    let server = MockServer::start().await;
+    let source = build_source(search_function_manifest("search", &server.uri()));
+
+    let error = CoralQuery::execute_sql(
+        &[source],
+        test_runtime(),
+        "SELECT title FROM search.search_issues(q => 'flaky', q => 'cleanup')",
+    )
+    .await
+    .expect_err("duplicate function arguments should fail planning");
+
+    assert!(
+        error
+            .to_string()
+            .contains("search.search_issues duplicate argument 'q'"),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
+async fn source_scoped_table_function_rejects_unknown_function_in_known_schema() {
+    let server = MockServer::start().await;
+    let source = build_source(search_function_manifest("search", &server.uri()));
+
+    let error = CoralQuery::execute_sql(
+        &[source],
+        test_runtime(),
+        "SELECT title FROM search.find_issues(q => 'flaky')",
+    )
+    .await
+    .expect_err("unknown source-scoped function should fail planning");
+
+    assert!(
+        error.to_string().contains(
+            "unknown source table function search.find_issues; available functions: search.search_issues",
+        ),
+        "unexpected error: {error}"
+    );
+}
+
+async fn assert_search_function_query(sql: &str) {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/search/issues"))
+        .and(query_param("q", "flaky cleanup repo:withcoral/coral"))
+        .and(query_param("search_type", "hybrid"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [{
+                "title": "Flaky workspace cleanup",
+                "score": 9.5
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let source = build_source(search_function_manifest("search", &server.uri()));
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(&[source], test_runtime(), sql)
+            .await
+            .expect("query should succeed"),
+    );
+
+    assert_eq!(
+        rows,
+        vec![json!({
+            "title": "Flaky workspace cleanup",
+            "score": 9.5
+        })]
+    );
+}
+
+#[tokio::test]
+async fn table_function_treats_typed_null_as_omitted_optional_argument() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/search/issues"))
+        .and(query_param("q", "flaky cleanup repo:withcoral/coral"))
+        .and(query_param_is_missing("search_type"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [{
+                "title": "Flaky workspace cleanup",
+                "score": 9.5
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let source = build_source(search_function_manifest("null_arg_search", &server.uri()));
+    let function_name = internal_table_function_name("null_arg_search", "search_issues");
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            &format!(
+                "SELECT title, score FROM {function_name}(\
+                 'flaky cleanup repo:withcoral/coral', CAST(NULL AS VARCHAR))"
+            ),
+        )
+        .await
+        .expect("typed null optional argument should be omitted"),
+    );
+
+    assert_eq!(
+        rows,
+        vec![json!({
+            "title": "Flaky workspace cleanup",
+            "score": 9.5
+        })]
+    );
+}
+
+#[tokio::test]
+async fn table_function_rejects_invalid_argument_values() {
+    let server = MockServer::start().await;
+    let source = build_source(search_function_manifest("bad_mode_search", &server.uri()));
+
+    let error = CoralQuery::execute_sql(
+        &[source],
+        test_runtime(),
+        "SELECT title FROM bad_mode_search.search_issues(q => 'flaky', mode => 'banana')",
+    )
+    .await
+    .expect_err("invalid function argument should fail planning");
+
+    assert!(
+        error
+            .to_string()
+            .contains("bad_mode_search.search_issues argument 'mode' has invalid value 'banana'"),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
+async fn table_function_does_not_expose_request_args_as_columns() {
+    let server = MockServer::start().await;
+    let source = build_source(search_function_manifest("conflict_search", &server.uri()));
+
+    let error = CoralQuery::execute_sql(
+        &[source],
+        test_runtime(),
+        "SELECT title FROM conflict_search.search_issues(q => 'flaky') WHERE q = 'raw'",
+    )
+    .await
+    .expect_err("request args should not be queryable as result columns");
+
+    assert!(
+        error.to_string().contains("No column named `q`"),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
+async fn table_request_headers_do_not_resolve_args_from_filters() {
+    let server = MockServer::start().await;
+    let mut manifest = base_http_manifest("http_arg_header", &server.uri());
+    manifest["request_headers"] = json!([{
+        "name": "X-Request-Arg",
+        "from": "template",
+        "template": "{{arg.id}}"
+    }]);
+    manifest["tables"][0]["filters"] = json!([{ "name": "id" }]);
+    manifest["tables"][0]["request"]["query"] = json!([
+        { "name": "id", "from": "filter", "key": "id" }
+    ]);
+
+    let source = build_source(manifest);
+    let error = CoralQuery::execute_sql(
+        &[source],
+        test_runtime(),
+        "SELECT id FROM http_arg_header.users WHERE id = 2",
+    )
+    .await
+    .expect_err("table filters must not populate function arguments");
+
+    assert!(
+        error.to_string().contains("missing request argument 'id'"),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
+async fn table_function_request_headers_do_not_resolve_filters_from_args() {
+    let server = MockServer::start().await;
+    let mut manifest = search_function_manifest("function_filter_header", &server.uri());
+    manifest["request_headers"] = json!([{
+        "name": "X-Filter",
+        "from": "template",
+        "template": "{{filter.q}}"
+    }]);
+    let source = build_source(manifest);
+    let function_name = internal_table_function_name("function_filter_header", "search_issues");
+
+    let error = CoralQuery::execute_sql(
+        &[source],
+        test_runtime(),
+        &format!("SELECT title FROM {function_name}('flaky')"),
+    )
+    .await
+    .expect_err("function args must not populate table filters");
+
+    assert!(
+        error.to_string().contains("missing filter 'q'"),
+        "unexpected error: {error}"
+    );
 }
 
 #[tokio::test]

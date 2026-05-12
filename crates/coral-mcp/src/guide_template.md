@@ -4,11 +4,14 @@
 
 ## Discovery Workflow
 
-Always inspect queryable tables and table metadata before writing queries:
+Always inspect queryable tables, source-scoped table functions, and table metadata before writing queries. Call table functions from `FROM` with named arguments, for example `github.search_issues(q => 'repo:withcoral/coral deploy failure')`.
 
 ```sql
 -- List visible tables, descriptions, and required filters
 SELECT schema_name, table_name, description, required_filters FROM coral.tables ORDER BY schema_name, table_name;
+
+-- List source-scoped table functions, such as provider-native search
+SELECT schema_name, function_name, description, arguments_json, result_columns_json FROM coral.table_functions ORDER BY schema_name, function_name;
 
 -- Inspect columns for one visible table, including nullability and filter-only virtual columns
 {{COLUMNS_EXAMPLE}}
