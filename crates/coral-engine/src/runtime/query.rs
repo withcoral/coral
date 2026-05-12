@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use datafusion::dataframe::DataFrame;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::physical_plan::displayable;
@@ -145,11 +146,7 @@ impl QueryRuntimeAdapter {
     }
 
     pub(crate) async fn execute_sql(&self, sql: &str) -> Result<QueryExecution, CoreError> {
-        let df = self
-            .ctx
-            .sql_with_options(sql, read_only_sql_options())
-            .await
-            .map_err(|err| datafusion_to_core_with_sql(&err, &self.tables, Some(sql)))?;
+        let df = self.sql_dataframe(sql).await?;
         let arrow_schema = Arc::new(df.schema().as_arrow().clone());
         let batches = df
             .collect()
@@ -174,11 +171,7 @@ impl QueryRuntimeAdapter {
     }
 
     pub(crate) async fn plan_sql(&self, sql: &str) -> Result<QueryPlan, CoreError> {
-        let df = self
-            .ctx
-            .sql_with_options(sql, read_only_sql_options())
-            .await
-            .map_err(|err| datafusion_to_core(&err, &self.tables))?;
+        let df = self.sql_dataframe(sql).await?;
         let unoptimized_logical_plan = df.logical_plan().display_indent_schema().to_string();
         let (session_state, logical_plan) = df.into_parts();
         let optimized_logical_plan = session_state
@@ -201,6 +194,13 @@ impl QueryRuntimeAdapter {
             optimized_logical_plan_display,
             physical_plan,
         ))
+    }
+
+    async fn sql_dataframe(&self, sql: &str) -> Result<DataFrame, CoreError> {
+        self.ctx
+            .sql_with_options(sql, read_only_sql_options())
+            .await
+            .map_err(|err| datafusion_to_core_with_sql(&err, &self.tables, Some(sql)))
     }
 }
 

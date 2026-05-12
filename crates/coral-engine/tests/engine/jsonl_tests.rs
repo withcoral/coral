@@ -58,35 +58,29 @@ async fn select_all_from_jsonl_source() {
 #[tokio::test]
 async fn quoted_fully_qualified_table_reference_reports_sql_reference_hint() {
     let temp = TempDir::new().expect("temp dir");
-    write_jsonl_file(
-        temp.path(),
-        "pulls.jsonl",
-        &[json!({"id": 1, "title": "Fix table hint"})],
-    );
-    let source = build_source(json!({
-        "name": "github",
-        "version": "0.1.0",
-        "dsl_version": 3,
-        "backend": "jsonl",
-        "tables": [{
-            "name": "pulls",
-            "description": "Pull requests fixture",
-            "source": {
-                "location": dir_url(temp.path()),
-                "glob": "**/*.jsonl"
-            },
-            "columns": [
-                { "name": "id", "type": "Int64" },
-                { "name": "title", "type": "Utf8" }
-            ]
-        }]
-    }));
+    let source = github_pulls_source(temp.path());
 
     let error =
         CoralQuery::execute_sql(&[source], test_runtime(), "SELECT * FROM \"github.pulls\"")
             .await
             .expect_err("whole-reference quoted table should fail");
 
+    assert_quoted_fully_qualified_table_reference_hint(error);
+}
+
+#[tokio::test]
+async fn plan_sql_quoted_fully_qualified_table_reference_reports_sql_reference_hint() {
+    let temp = TempDir::new().expect("temp dir");
+    let source = github_pulls_source(temp.path());
+
+    let error = CoralQuery::plan_sql(&[source], test_runtime(), "SELECT * FROM \"github.pulls\"")
+        .await
+        .expect_err("whole-reference quoted table should fail during planning");
+
+    assert_quoted_fully_qualified_table_reference_hint(error);
+}
+
+fn assert_quoted_fully_qualified_table_reference_hint(error: CoreError) {
     assert_eq!(error.status_code(), StatusCode::NotFound);
     match error {
         CoreError::QueryFailure(sqe) => {
@@ -131,6 +125,32 @@ async fn plan_sql_returns_logical_and_physical_plans() {
     assert!(plan.unoptimized_logical_plan().contains("jsonl_plan.users"));
     assert!(plan.optimized_logical_plan().contains("jsonl_plan.users"));
     assert!(plan.physical_plan().contains("Exec"));
+}
+
+fn github_pulls_source(dir: &Path) -> coral_engine::QuerySource {
+    write_jsonl_file(
+        dir,
+        "pulls.jsonl",
+        &[json!({"id": 1, "title": "Fix table hint"})],
+    );
+    build_source(json!({
+        "name": "github",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "jsonl",
+        "tables": [{
+            "name": "pulls",
+            "description": "Pull requests fixture",
+            "source": {
+                "location": dir_url(dir),
+                "glob": "**/*.jsonl"
+            },
+            "columns": [
+                { "name": "id", "type": "Int64" },
+                { "name": "title", "type": "Utf8" }
+            ]
+        }]
+    }))
 }
 
 #[tokio::test]
