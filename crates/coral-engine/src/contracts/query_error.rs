@@ -155,10 +155,7 @@ impl StructuredQueryError {
             SQL_PARSE_ERROR_REASON,
             "SQL query could not be parsed",
             detail,
-            Some(
-                "Check the SQL syntax and retry. Use `SELECT * FROM coral.tables LIMIT 10` to inspect available tables."
-                    .to_string(),
-            ),
+            None,
             false,
             StatusCode::InvalidArgument,
             HashMap::new(),
@@ -700,15 +697,14 @@ mod tests {
     }
 
     #[test]
-    fn sql_parse_error_points_to_discovery_query() {
+    fn sql_parse_error_has_no_hint() {
         let err = StructuredQueryError::sql_parse_error("Expected end of statement");
 
         assert_eq!(err.reason(), SQL_PARSE_ERROR_REASON);
         assert_eq!(err.summary(), "SQL query could not be parsed");
         assert_eq!(err.status(), StatusCode::InvalidArgument);
         assert!(err.detail().contains("Expected end of statement"));
-        let hint = err.hint().expect("hint should be present");
-        assert!(hint.contains("coral.tables"), "got: {hint}");
+        assert!(err.hint().is_none());
     }
 
     #[test]
