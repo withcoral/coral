@@ -2469,6 +2469,7 @@ mod tests {
                 &BTreeMap::new(),
                 &BTreeMap::new(),
                 &HashMap::new(),
+                None,
             )
             .expect_err(&format!(
                 "missing function request {name} input should fail"
