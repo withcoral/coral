@@ -525,15 +525,17 @@ Request query params, body fields, and headers support these `from` values:
 | `arg` | Read a source function argument captured from the function call and serialize it as a string |
 | `arg_int` | Read a source function argument captured from the function call and serialize it as a JSON integer |
 | `arg_bool` | Read a source function argument captured from the function call and serialize it as a JSON boolean |
+| `arg_split` | Split a source function argument string and serialize one part as a string |
+| `arg_split_int` | Split a source function argument string and serialize one part as a JSON integer |
 | `input` | Read a manifest-declared source input (variable/secret) by key |
 | `state` | Read pagination/runtime state |
 | `now_epoch_minus_seconds` | Emit the current Unix epoch seconds minus the configured offset |
 
-`filter*`, `filter_split`, and `filter_split_int` differ from `arg*` by where
-the value comes from. Table requests use filter value sources because their
-request values come from SQL predicates such as `WHERE id = 123`. Source
-function requests use arg value sources because their request values come from
-named function arguments such as `github.search_issues(q => 'flaky')`.
+`filter*` value sources differ from `arg*` value sources by where the value
+comes from. Table requests use filter value sources because their request values
+come from SQL predicates such as `WHERE id = 123`. Source function requests use
+arg value sources because their request values come from named function
+arguments such as `github.search_issues(q => 'flaky')`.
 
 The suffix controls the value type sent to the provider. Use the bare form for a
 string request value, `_int` for a JSON integer, and `_bool` for a JSON boolean.
@@ -557,6 +559,29 @@ request fields but users naturally have one compound identifier. For example,
   key: issue_identifier
   separator: "-"
   part: 1
+```
+
+Use `arg_split` and `arg_split_int` the same way for source-scoped table
+functions:
+
+```yaml
+args:
+  - name: issue
+    required: true
+    bind:
+      arg: issue
+request:
+  body:
+    - path: [variables, teamKey]
+      from: arg_split
+      key: issue
+      separator: "-"
+      part: 0
+    - path: [variables, issueNumber]
+      from: arg_split_int
+      key: issue
+      separator: "-"
+      part: 1
 ```
 
 ### HTTP response fields

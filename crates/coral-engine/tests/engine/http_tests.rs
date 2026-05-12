@@ -109,6 +109,51 @@ fn function_only_search_manifest(name: &str, base_url: &str) -> Value {
     manifest
 }
 
+fn split_function_manifest(name: &str, base_url: &str) -> Value {
+    json!({
+        "name": name,
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": base_url,
+        "functions": [{
+            "name": "issue_comments",
+            "description": "Issue comments",
+            "args": [{
+                "name": "issue",
+                "required": true,
+                "bind": { "arg": "issue" }
+            }],
+            "request": {
+                "method": "POST",
+                "path": "/graphql",
+                "body": [
+                    {
+                        "path": ["variables", "teamKey"],
+                        "from": "arg_split",
+                        "key": "issue",
+                        "separator": "-",
+                        "part": 0
+                    },
+                    {
+                        "path": ["variables", "issueNumber"],
+                        "from": "arg_split_int",
+                        "key": "issue",
+                        "separator": "-",
+                        "part": 1
+                    }
+                ]
+            },
+            "response": {
+                "rows_path": ["data", "comments"]
+            },
+            "columns": [
+                { "name": "body", "type": "Utf8" }
+            ]
+        }]
+    })
+}
+
 fn internal_table_function_name(schema: &str, function: &str) -> String {
     // PR #306 only registers DataFusion's flat internal UDTF. The public
     // source-scoped planner in the next stack PR owns this mapping for users.
@@ -376,6 +421,47 @@ async fn validate_source_accepts_function_only_http_source_and_runs_queries() {
     assert_eq!(report.query_tests.len(), 1);
     assert!(report.query_tests[0].passed());
     assert_eq!(report.query_tests[0].row_count(), Some(1));
+}
+
+#[tokio::test]
+async fn source_scoped_table_function_splits_argument_values() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(body_json(json!({
+            "variables": {
+                "teamKey": "SOURCE",
+                "issueNumber": 496
+            }
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": {
+                "comments": [{
+                    "body": "Looks good"
+                }]
+            }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let source = build_source(split_function_manifest("linearish", &server.uri()));
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT body FROM linearish.issue_comments(issue => 'SOURCE-496')",
+        )
+        .await
+        .expect("function arg split query should succeed"),
+    );
+
+    assert_eq!(
+        rows,
+        vec![json!({
+            "body": "Looks good"
+        })]
+    );
 }
 
 #[tokio::test]

@@ -1705,6 +1705,26 @@ mod tests {
                 "key": key,
                 "default": default,
             }),
+            ValueSourceSpec::ArgSplit {
+                key,
+                separator,
+                part,
+            } => json!({
+                "from": "arg_split",
+                "key": key,
+                "separator": separator,
+                "part": part,
+            }),
+            ValueSourceSpec::ArgSplitInt {
+                key,
+                separator,
+                part,
+            } => json!({
+                "from": "arg_split_int",
+                "key": key,
+                "separator": separator,
+                "part": part,
+            }),
             ValueSourceSpec::Input { key } => json!({
                 "from": "input",
                 "key": key,
@@ -1929,6 +1949,33 @@ mod tests {
     }
 
     #[test]
+    fn resolve_value_source_splits_function_argument_parts() {
+        let args = HashMap::from([("issue".to_string(), "SOURCE-496".to_string())]);
+
+        let team = resolve_value_source(
+            &ValueSourceSpec::ArgSplit {
+                key: "issue".to_string(),
+                separator: "-".to_string(),
+                part: 0,
+            },
+            &test_render_context(&HashMap::new(), &args, &BTreeMap::new()),
+        )
+        .expect("split function argument should resolve");
+        let number = resolve_value_source(
+            &ValueSourceSpec::ArgSplitInt {
+                key: "issue".to_string(),
+                separator: "-".to_string(),
+                part: 1,
+            },
+            &test_render_context(&HashMap::new(), &args, &BTreeMap::new()),
+        )
+        .expect("split integer function argument should resolve");
+
+        assert_eq!(team, Some(json!("SOURCE")));
+        assert_eq!(number, Some(json!(496)));
+    }
+
+    #[test]
     fn resolve_value_source_rejects_missing_filter_split_part() {
         let filters = HashMap::from([("issue_identifier".to_string(), "SOURCE496".to_string())]);
 
@@ -1945,6 +1992,27 @@ mod tests {
         assert!(
             error.to_string().contains(
                 "filter 'issue_identifier' value 'SOURCE496' does not contain split part 1"
+            )
+        );
+    }
+
+    #[test]
+    fn resolve_value_source_rejects_missing_function_argument_split_part() {
+        let args = HashMap::from([("issue".to_string(), "SOURCE496".to_string())]);
+
+        let error = resolve_value_source(
+            &ValueSourceSpec::ArgSplit {
+                key: "issue".to_string(),
+                separator: "-".to_string(),
+                part: 1,
+            },
+            &test_render_context(&HashMap::new(), &args, &BTreeMap::new()),
+        )
+        .expect_err("missing split function argument part should fail");
+
+        assert!(
+            error.to_string().contains(
+                "function argument 'issue' value 'SOURCE496' does not contain split part 1"
             )
         );
     }
@@ -1967,6 +2035,27 @@ mod tests {
             error.to_string().contains(
                 "filter 'issue_identifier' value 'SOURCE496' does not contain split part 1"
             )
+        );
+    }
+
+    #[test]
+    fn resolve_value_source_rejects_invalid_function_argument_split_int_part() {
+        let args = HashMap::from([("issue".to_string(), "SOURCE-abc".to_string())]);
+
+        let error = resolve_value_source(
+            &ValueSourceSpec::ArgSplitInt {
+                key: "issue".to_string(),
+                separator: "-".to_string(),
+                part: 1,
+            },
+            &test_render_context(&HashMap::new(), &args, &BTreeMap::new()),
+        )
+        .expect_err("invalid split function argument int should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("function argument 'issue' split part 1 value 'abc' is not a valid i64")
         );
     }
 

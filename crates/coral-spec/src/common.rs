@@ -467,6 +467,16 @@ pub enum ValueSourceSpec {
         #[serde(default)]
         default: Option<bool>,
     },
+    ArgSplit {
+        key: String,
+        separator: String,
+        part: usize,
+    },
+    ArgSplitInt {
+        key: String,
+        separator: String,
+        part: usize,
+    },
     Input {
         key: String,
     },

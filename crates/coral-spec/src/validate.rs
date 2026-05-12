@@ -508,7 +508,9 @@ fn validate_value_source(
         }
         ValueSourceSpec::Arg { key, .. }
         | ValueSourceSpec::ArgInt { key, .. }
-        | ValueSourceSpec::ArgBool { key, .. } => {
+        | ValueSourceSpec::ArgBool { key, .. }
+        | ValueSourceSpec::ArgSplit { key, .. }
+        | ValueSourceSpec::ArgSplitInt { key, .. } => {
             return Err(ManifestError::validation(format!(
                 "{context} uses function argument '{key}' outside a function request"
             )));
@@ -612,6 +614,8 @@ fn validate_arg_value_source(
         ValueSourceSpec::Arg { key, .. }
         | ValueSourceSpec::ArgInt { key, .. }
         | ValueSourceSpec::ArgBool { key, .. }
+        | ValueSourceSpec::ArgSplit { key, .. }
+        | ValueSourceSpec::ArgSplitInt { key, .. }
             if !request_arg_names.contains(key.as_str()) =>
         {
             return Err(ManifestError::validation(format!(
@@ -1133,6 +1137,16 @@ mod tests {
                 key: "archived".to_string(),
                 default: None,
             },
+            ValueSourceSpec::ArgSplit {
+                key: "issue_key".to_string(),
+                separator: "-".to_string(),
+                part: 0,
+            },
+            ValueSourceSpec::ArgSplitInt {
+                key: "issue_key".to_string(),
+                separator: "-".to_string(),
+                part: 1,
+            },
         ];
 
         for value in cases {
@@ -1225,6 +1239,33 @@ mod tests {
 
             assert!(
                 error.to_string().contains("uses table filter"),
+                "unexpected error: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_http_function_rejects_unknown_arg_split_bindings() {
+        for value in [
+            ValueSourceSpec::ArgSplit {
+                key: "missing".to_string(),
+                separator: "-".to_string(),
+                part: 0,
+            },
+            ValueSourceSpec::ArgSplitInt {
+                key: "missing".to_string(),
+                separator: "-".to_string(),
+                part: 1,
+            },
+        ] {
+            let function = function_with_request_value(value);
+            let error = validate_http_function("demo", &function)
+                .expect_err("function requests should reject unknown split args");
+
+            assert!(
+                error
+                    .to_string()
+                    .contains("references unknown request arg 'missing'"),
                 "unexpected error: {error}"
             );
         }

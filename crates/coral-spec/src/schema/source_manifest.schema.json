@@ -595,6 +595,24 @@
         },
         {
           "properties": {
+            "from": { "const": "arg_split" },
+            "key": { "type": "string", "minLength": 1 },
+            "separator": { "type": "string", "minLength": 1 },
+            "part": { "type": "integer", "minimum": 0 }
+          },
+          "required": ["key", "separator", "part"]
+        },
+        {
+          "properties": {
+            "from": { "const": "arg_split_int" },
+            "key": { "type": "string", "minLength": 1 },
+            "separator": { "type": "string", "minLength": 1 },
+            "part": { "type": "integer", "minimum": 0 }
+          },
+          "required": ["key", "separator", "part"]
+        },
+        {
+          "properties": {
             "from": { "const": "input" },
             "key": { "type": "string", "minLength": 1 }
           },
