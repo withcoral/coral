@@ -27,6 +27,15 @@ pub(crate) struct DescribeTableArguments {
     pub(crate) table: String,
 }
 
+pub(crate) struct ListColumnsArguments {
+    pub(crate) schema: String,
+    pub(crate) table: String,
+    pub(crate) pattern: Option<String>,
+    pub(crate) ignore_case: bool,
+    pub(crate) required_only: bool,
+    pub(crate) pagination: Pagination,
+}
+
 pub(crate) fn sql_tool(sources: &[Source], visible_table_count: usize) -> Tool {
     Tool::new(
         "sql",
@@ -164,6 +173,61 @@ pub(crate) fn describe_table_tool() -> Tool {
     )
 }
 
+pub(crate) fn list_columns_tool() -> Tool {
+    Tool::new(
+        "list_columns",
+        "List columns for one table with optional regex and required-filter narrowing.",
+        json_object_schema(&json!({
+            "type": "object",
+            "required": ["schema", "table"],
+            "properties": {
+                "schema": {
+                    "type": "string",
+                    "description": "Exact schema/source name."
+                },
+                "table": {
+                    "type": "string",
+                    "description": "Exact table name within the schema."
+                },
+                "pattern": {
+                    "type": "string",
+                    "description": "Optional Rust regex matched against column names, descriptions, and data types."
+                },
+                "ignore_case": {
+                    "type": "boolean",
+                    "description": "Whether regex matching is case-insensitive. Defaults to true."
+                },
+                "required_only": {
+                    "type": "boolean",
+                    "description": "Only return columns that are required filters. Defaults to false."
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum columns to return, from 1 to 200. Defaults to 50.",
+                    "minimum": 1,
+                    "maximum": 200,
+                    "default": 50
+                },
+                "offset": {
+                    "type": "integer",
+                    "description": "Number of matching columns to skip. Defaults to 0.",
+                    "minimum": 0,
+                    "maximum": u32::MAX,
+                    "default": 0
+                }
+            }
+        })),
+    )
+    .with_raw_output_schema(list_columns_output_schema())
+    .with_annotations(
+        ToolAnnotations::with_title("List Columns")
+            .read_only(true)
+            .destructive(false)
+            .idempotent(true)
+            .open_world(false),
+    )
+}
+
 pub(crate) fn feedback_tool() -> Tool {
     Tool::new(
         "feedback",
@@ -239,6 +303,19 @@ pub(crate) fn describe_table_arguments(
     Ok(DescribeTableArguments {
         schema: required_string_argument(arguments, "schema")?,
         table: required_string_argument(arguments, "table")?,
+    })
+}
+
+pub(crate) fn list_columns_arguments(
+    arguments: Option<&Map<String, Value>>,
+) -> Result<ListColumnsArguments, ErrorData> {
+    Ok(ListColumnsArguments {
+        schema: required_string_argument(arguments, "schema")?,
+        table: required_string_argument(arguments, "table")?,
+        pattern: optional_non_empty_string_argument(arguments, "pattern")?,
+        ignore_case: optional_bool_argument(arguments, "ignore_case", true)?,
+        required_only: optional_bool_argument(arguments, "required_only", false)?,
+        pagination: parse_pagination(arguments)?,
     })
 }
 
@@ -346,6 +423,141 @@ fn search_tables_output_schema() -> Arc<Map<String, Value>> {
     }))
 }
 
+fn list_columns_output_schema() -> Arc<Map<String, Value>> {
+    json_object_schema(&json!({
+        "oneOf": [
+            list_columns_page_output_schema(),
+            missing_table_output_schema()
+        ]
+    }))
+}
+
+fn list_columns_page_output_schema() -> Value {
+    json!({
+        "type": "object",
+        "required": ["schema_name", "table_name", "columns", "total", "limit", "offset", "has_more"],
+        "additionalProperties": false,
+        "properties": {
+            "schema_name": { "type": "string" },
+            "table_name": { "type": "string" },
+            "columns": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": [
+                        "column_name",
+                        "data_type",
+                        "is_nullable",
+                        "is_virtual",
+                        "is_required_filter",
+                        "description",
+                        "ordinal_position"
+                    ],
+                    "additionalProperties": false,
+                    "properties": {
+                        "column_name": { "type": "string" },
+                        "data_type": { "type": "string" },
+                        "is_nullable": { "type": "boolean" },
+                        "is_virtual": { "type": "boolean" },
+                        "is_required_filter": { "type": "boolean" },
+                        "description": { "type": "string" },
+                        "ordinal_position": {
+                            "type": "integer",
+                            "minimum": 0
+                        },
+                        "matched_fields": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                                "type": "string",
+                                "enum": ["column_name", "description", "data_type"]
+                            }
+                        }
+                    }
+                }
+            },
+            "total": {
+                "type": "integer",
+                "minimum": 0
+            },
+            "limit": {
+                "type": "integer",
+                "minimum": 1
+            },
+            "offset": {
+                "type": "integer",
+                "minimum": 0
+            },
+            "has_more": { "type": "boolean" },
+            "next_offset": {
+                "type": "integer",
+                "minimum": 0
+            }
+        }
+    })
+}
+
+fn missing_table_output_schema() -> Value {
+    json!({
+        "type": "object",
+        "required": ["found", "requested", "available_schemas", "same_schema_tables", "suggested_calls"],
+        "additionalProperties": false,
+        "properties": {
+            "found": { "enum": [false] },
+            "requested": {
+                "type": "object",
+                "required": ["schema", "table"],
+                "additionalProperties": false,
+                "properties": {
+                    "schema": { "type": "string" },
+                    "table": { "type": "string" }
+                }
+            },
+            "available_schemas": {
+                "type": "array",
+                "items": { "type": "string" }
+            },
+            "same_schema_tables": {
+                "type": "array",
+                "items": missing_table_summary_output_schema()
+            },
+            "suggested_calls": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["tool", "arguments"],
+                    "additionalProperties": false,
+                    "properties": {
+                        "tool": {
+                            "type": "string",
+                            "enum": ["search_tables", "list_tables"]
+                        },
+                        "arguments": { "type": "object" }
+                    }
+                }
+            }
+        }
+    })
+}
+
+fn missing_table_summary_output_schema() -> Value {
+    json!({
+        "type": "object",
+        "required": ["schema_name", "table_name", "name", "description", "required_filters"],
+        "additionalProperties": false,
+        "properties": {
+            "schema_name": { "type": "string" },
+            "table_name": { "type": "string" },
+            "name": { "type": "string" },
+            "description": { "type": "string" },
+            "required_filters": {
+                "type": "array",
+                "items": { "type": "string" }
+            }
+        }
+    })
+}
+
 fn paginated_table_output_schema(table_item_schema: &Value) -> Arc<Map<String, Value>> {
     json_object_schema(&json!({
         "type": "object",
@@ -390,6 +602,27 @@ pub(crate) fn optional_string_argument(
     let value = value.trim();
     if value.is_empty() {
         Ok(None)
+    } else {
+        Ok(Some(value.to_string()))
+    }
+}
+
+fn optional_non_empty_string_argument(
+    arguments: Option<&Map<String, Value>>,
+    key: &str,
+) -> Result<Option<String>, ErrorData> {
+    let Some(value) = arguments.and_then(|arguments| arguments.get(key)) else {
+        return Ok(None);
+    };
+    let value = value.as_str().ok_or_else(|| {
+        ErrorData::invalid_params(format!("argument '{key}' must be a string"), None)
+    })?;
+    let value = value.trim();
+    if value.is_empty() {
+        Err(ErrorData::invalid_params(
+            format!("argument '{key}' must not be empty"),
+            None,
+        ))
     } else {
         Ok(Some(value.to_string()))
     }

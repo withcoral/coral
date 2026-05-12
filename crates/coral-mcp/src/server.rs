@@ -26,12 +26,13 @@ use tonic::Request;
 use crate::{
     McpOptions,
     surface::{
-        TableSummary, build_tool_result, compile_metadata_regex, describe_table_arguments,
-        describe_table_tool, feedback_tool, guide_resource, guide_resource_content,
-        initial_instructions, internal_status, list_tables_arguments, list_tables_tool,
-        list_tables_value, page_items, paged_value, required_string_argument,
-        search_tables_arguments, search_tables_tool, sql_tool, status_to_error_data,
-        tables_resource, tables_resource_content, tool_error_from_status, tool_error_result,
+        ColumnSummary, TableSummary, build_tool_result, compile_metadata_regex,
+        describe_table_arguments, describe_table_tool, feedback_tool, guide_resource,
+        guide_resource_content, initial_instructions, internal_status, list_columns_arguments,
+        list_columns_tool, list_tables_arguments, list_tables_tool, list_tables_value, page_items,
+        paged_value, required_string_argument, search_tables_arguments, search_tables_tool,
+        sql_tool, status_to_error_data, tables_resource, tables_resource_content,
+        tool_error_from_status, tool_error_result,
     },
     telemetry,
 };
@@ -325,6 +326,10 @@ impl CoralMcpServer {
                 self.describe_table_tool_result(request.arguments.as_ref())
                     .await
             }
+            "list_columns" => {
+                self.list_columns_tool_result(request.arguments.as_ref())
+                    .await
+            }
             "feedback" if self.options.feedback_enabled => {
                 let trying_to_do =
                     required_string_argument(request.arguments.as_ref(), "trying_to_do")?;
@@ -342,6 +347,55 @@ impl CoralMcpServer {
             )),
         }
     }
+
+    async fn list_columns_tool_result(
+        &self,
+        request_arguments: Option<&Map<String, Value>>,
+    ) -> Result<ToolCallOutcome, ErrorData> {
+        let arguments = list_columns_arguments(request_arguments)?;
+        let columns = match self
+            .load_exact_table(&arguments.schema, &arguments.table)
+            .await
+        {
+            Ok(Some(table)) => table
+                .columns
+                .iter()
+                .map(|column| ColumnSummary::from_proto(&table, column))
+                .collect(),
+            Ok(None) => {
+                let all_tables = match self.load_all_table_summaries().await {
+                    Ok(tables) => tables,
+                    Err(status) => {
+                        return Ok(ToolCallOutcome::ToolError {
+                            operation: "Column listing",
+                            status,
+                        });
+                    }
+                };
+                let all_summaries = table_summaries_from_proto(&all_tables);
+                return Ok(ToolCallOutcome::Success(describe_missing_table_value(
+                    &arguments.schema,
+                    &arguments.table,
+                    &all_summaries,
+                )));
+            }
+            Err(status) => {
+                return Ok(ToolCallOutcome::ToolError {
+                    operation: "Column listing",
+                    status,
+                });
+            }
+        };
+        Ok(ToolCallOutcome::Success(list_columns_value(
+            &arguments.schema,
+            &arguments.table,
+            columns,
+            arguments.pattern.as_deref(),
+            arguments.ignore_case,
+            arguments.required_only,
+            arguments.pagination,
+        )?))
+    }
 }
 
 fn table_summaries_from_proto(tables: &[ProtoTableSummary]) -> Vec<TableSummary> {
@@ -358,7 +412,7 @@ fn describe_found_table_value(table: &ProtoTable) -> Value {
         "guide": table.guide,
         "required_filters": table.required_filters,
         "column_count": table.columns.len(),
-        "columns_hint": "Query coral.columns for this schema/table ordered by ordinal_position to inspect columns.",
+        "columns_hint": "Use list_columns with this schema/table to inspect columns.",
     })
 }
 
@@ -411,6 +465,48 @@ fn describe_missing_table_value(schema: &str, table: &str, summaries: &[TableSum
     })
 }
 
+fn list_columns_value(
+    schema: &str,
+    table: &str,
+    columns: Vec<ColumnSummary>,
+    pattern: Option<&str>,
+    ignore_case: bool,
+    required_only: bool,
+    pagination: crate::surface::Pagination,
+) -> Result<Value, ErrorData> {
+    let regex = pattern
+        .map(|pattern| compile_metadata_regex(pattern, ignore_case))
+        .transpose()?;
+    let mut values = Vec::new();
+    for column in columns {
+        if column.schema_name != schema || column.table_name != table {
+            continue;
+        }
+        if required_only && !column.is_required_filter {
+            continue;
+        }
+        let matched_fields = regex.as_ref().map(|regex| column.matched_fields(regex));
+        if matched_fields.as_ref().is_some_and(std::vec::Vec::is_empty) {
+            continue;
+        }
+        values.push(column.value(matched_fields));
+    }
+    let page = page_items(values, pagination);
+    let mut value = Map::from_iter([
+        ("schema_name".to_string(), serde_json::json!(schema)),
+        ("table_name".to_string(), serde_json::json!(table)),
+        ("columns".to_string(), serde_json::json!(page.items)),
+        ("total".to_string(), serde_json::json!(page.total)),
+        ("limit".to_string(), serde_json::json!(page.limit)),
+        ("offset".to_string(), serde_json::json!(page.offset)),
+        ("has_more".to_string(), serde_json::json!(page.has_more)),
+    ]);
+    if let Some(next_offset) = page.next_offset {
+        value.insert("next_offset".to_string(), serde_json::json!(next_offset));
+    }
+    Ok(Value::Object(value))
+}
+
 impl ServerHandler for CoralMcpServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(
@@ -439,6 +535,7 @@ impl ServerHandler for CoralMcpServer {
                 list_tables_tool(visible_table_count),
                 search_tables_tool(visible_table_count),
                 describe_table_tool(),
+                list_columns_tool(),
             ];
             if self.options.feedback_enabled {
                 tools.push(feedback_tool());

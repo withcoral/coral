@@ -218,10 +218,15 @@ impl QueryExecution {
         let schema = arrow_schema
             .fields()
             .iter()
-            .map(|field| ColumnInfo {
+            .enumerate()
+            .map(|(position, field)| ColumnInfo {
                 name: field.name().clone(),
                 data_type: field.data_type().to_string(),
                 nullable: field.is_nullable(),
+                is_virtual: false,
+                is_required_filter: false,
+                description: String::new(),
+                ordinal_position: u32::try_from(position).unwrap_or(u32::MAX),
             })
             .collect();
         let row_count = batches.iter().map(RecordBatch::num_rows).sum();

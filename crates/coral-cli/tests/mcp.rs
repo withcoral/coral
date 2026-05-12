@@ -73,7 +73,13 @@ async fn mcp_stdio_lists_tools_and_resources() -> Result<(), Box<dyn std::error:
             .iter()
             .map(|tool| tool.name.as_ref())
             .collect::<Vec<_>>(),
-        vec!["sql", "list_tables", "search_tables", "describe_table"]
+        vec![
+            "sql",
+            "list_tables",
+            "search_tables",
+            "describe_table",
+            "list_columns"
+        ]
     );
     assert!(
         tools[0]
@@ -143,6 +149,7 @@ async fn mcp_stdio_enable_feedback_lists_feedback_tool() -> Result<(), Box<dyn s
             "list_tables",
             "search_tables",
             "describe_table",
+            "list_columns",
             "feedback"
         ]
     );
@@ -161,6 +168,7 @@ async fn mcp_stdio_sql_and_list_tables_return_structured_content()
     assert_list_tables_tool(&client, &server).await?;
     assert_search_tables_tool(&client, &server).await?;
     assert_describe_table_tool(&client, &server).await?;
+    assert_list_columns_tool(&client).await?;
     assert_sql_tool(&client).await?;
 
     client.cancel().await?;
@@ -293,6 +301,36 @@ async fn assert_describe_table_tool(
     assert_eq!(pagination.offset, 0);
     assert!(!describe_request.omit_columns);
     assert_eq!(server.execute_sql_requests().len(), execute_sql_before);
+    Ok(())
+}
+
+async fn assert_list_columns_tool(
+    client: &RunningService<RoleClient, ()>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let columns = structured_tool_content(
+        client,
+        CallToolRequestParams::new("list_columns").with_arguments(json_object(&json!({
+            "schema": "local_messages",
+            "table": "messages",
+            "required_only": true
+        }))),
+    )
+    .await?;
+    assert_eq!(columns["total"], 2);
+    assert_eq!(columns["columns"][0]["column_name"], "owner");
+    assert_eq!(columns["columns"][1]["column_name"], "repo");
+
+    let filtered_columns = structured_tool_content(
+        client,
+        CallToolRequestParams::new("list_columns").with_arguments(json_object(&json!({
+            "schema": "local_messages",
+            "table": "messages",
+            "pattern": "text"
+        }))),
+    )
+    .await?;
+    assert_eq!(filtered_columns["total"], 1);
+    assert_eq!(filtered_columns["columns"][0]["column_name"], "text");
     Ok(())
 }
 

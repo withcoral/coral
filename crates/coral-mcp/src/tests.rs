@@ -79,6 +79,9 @@ tables:
         type: Utf8
       - name: text
         type: Utf8
+    filters:
+      - name: sessionId
+        required: true
 "#,
         data_dir.display(),
         data_dir.display(),
@@ -214,7 +217,13 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
             .iter()
             .map(|tool| tool.name.as_ref())
             .collect::<Vec<_>>(),
-        vec!["sql", "list_tables", "search_tables", "describe_table"]
+        vec![
+            "sql",
+            "list_tables",
+            "search_tables",
+            "describe_table",
+            "list_columns"
+        ]
     );
     assert!(
         initial_tools[0]
@@ -257,6 +266,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
     let updated_tools = client.list_all_tools().await.expect("updated tools");
     let list_tables_tool = tool_by_name(&updated_tools, "list_tables");
     let search_tables_tool = tool_by_name(&updated_tools, "search_tables");
+    let list_columns_tool = tool_by_name(&updated_tools, "list_columns");
     assert!(
         updated_tools[0]
             .description
@@ -522,6 +532,130 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
         .await
         .expect_err("blank table should fail");
 
+    let columns = client
+        .call_tool(
+            CallToolRequestParams::new("list_columns").with_arguments(json_object(&json!({
+                "schema": "local_messages",
+                "table": "messages",
+                "limit": 2
+            }))),
+        )
+        .await
+        .expect("list columns");
+    let columns = columns.structured_content.expect("structured content");
+    assert_eq!(columns["schema_name"], "local_messages");
+    assert_eq!(columns["table_name"], "messages");
+    assert_eq!(columns["total"], 3);
+    assert_eq!(columns["limit"], 2);
+    assert_eq!(columns["has_more"], true);
+    assert_eq!(columns["next_offset"], 2);
+    assert_eq!(columns["columns"][0]["column_name"], "type");
+    assert_eq!(columns["columns"][0]["data_type"], "Utf8");
+    assert_matches_output_schema(list_columns_tool, &columns);
+
+    let required_columns = client
+        .call_tool(
+            CallToolRequestParams::new("list_columns").with_arguments(json_object(&json!({
+                "schema": "local_messages",
+                "table": "sessions",
+                "required_only": true
+            }))),
+        )
+        .await
+        .expect("list required columns");
+    let required_columns = required_columns
+        .structured_content
+        .expect("structured content");
+    assert_eq!(required_columns["total"], 1);
+    assert_eq!(required_columns["columns"][0]["column_name"], "sessionId");
+    assert_eq!(required_columns["columns"][0]["is_required_filter"], true);
+    assert_matches_output_schema(list_columns_tool, &required_columns);
+
+    let filtered_columns = client
+        .call_tool(
+            CallToolRequestParams::new("list_columns").with_arguments(json_object(&json!({
+                "schema": "local_messages",
+                "table": "messages",
+                "pattern": "SESSION"
+            }))),
+        )
+        .await
+        .expect("list filtered columns");
+    let filtered_columns = filtered_columns
+        .structured_content
+        .expect("structured content");
+    assert_eq!(filtered_columns["total"], 1);
+    assert_eq!(filtered_columns["columns"][0]["column_name"], "sessionId");
+    assert!(
+        filtered_columns["columns"][0]["matched_fields"]
+            .as_array()
+            .expect("matched fields")
+            .iter()
+            .any(|field| field == "column_name")
+    );
+    assert_matches_output_schema(list_columns_tool, &filtered_columns);
+
+    let empty_column_filter = client
+        .call_tool(
+            CallToolRequestParams::new("list_columns").with_arguments(json_object(&json!({
+                "schema": "local_messages",
+                "table": "messages",
+                "pattern": "does-not-match"
+            }))),
+        )
+        .await
+        .expect("list filtered columns with no matches");
+    let empty_column_filter = empty_column_filter
+        .structured_content
+        .expect("structured content");
+    assert!(empty_column_filter["found"].is_null());
+    assert_eq!(empty_column_filter["schema_name"], "local_messages");
+    assert_eq!(empty_column_filter["table_name"], "messages");
+    assert_eq!(empty_column_filter["total"], 0);
+    assert!(
+        empty_column_filter["columns"]
+            .as_array()
+            .expect("columns")
+            .is_empty()
+    );
+    assert_matches_output_schema(list_columns_tool, &empty_column_filter);
+
+    let missing_columns = client
+        .call_tool(
+            CallToolRequestParams::new("list_columns").with_arguments(json_object(&json!({
+                "schema": "local_messages",
+                "table": "missing"
+            }))),
+        )
+        .await
+        .expect("list columns for missing table");
+    let missing_columns = missing_columns
+        .structured_content
+        .expect("structured content");
+    assert_eq!(missing_columns["found"], false);
+    assert_eq!(missing_columns["requested"]["schema"], "local_messages");
+    assert_eq!(missing_columns["requested"]["table"], "missing");
+    assert_eq!(
+        missing_columns["same_schema_tables"][0]["name"],
+        "local_messages.events"
+    );
+    assert_eq!(
+        missing_columns["suggested_calls"][0]["arguments"]["schema"],
+        "local_messages"
+    );
+    assert_matches_output_schema(list_columns_tool, &missing_columns);
+
+    client
+        .call_tool(
+            CallToolRequestParams::new("list_columns").with_arguments(json_object(&json!({
+                "schema": "local_messages",
+                "table": "messages",
+                "pattern": ""
+            }))),
+        )
+        .await
+        .expect_err("empty column regex should fail");
+
     session.shutdown().await;
 }
 
@@ -549,10 +683,11 @@ async fn mcp_feedback_tool_persists_blocked_agent_report() {
             "list_tables",
             "search_tables",
             "describe_table",
+            "list_columns",
             "feedback"
         ]
     );
-    let feedback_annotations = tools[4].annotations.as_ref().expect("feedback annotations");
+    let feedback_annotations = tools[5].annotations.as_ref().expect("feedback annotations");
     assert_eq!(feedback_annotations.read_only_hint, Some(false));
     assert_eq!(feedback_annotations.destructive_hint, Some(false));
     assert_eq!(feedback_annotations.idempotent_hint, Some(false));

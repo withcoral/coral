@@ -12,6 +12,14 @@ message Column {
   string data_type = 2;
   // Whether the column can contain null values.
   bool nullable = 3;
+  // Whether the column is provider-derived metadata, such as a filter or computed column.
+  bool is_virtual = 4;
+  // Whether the column must be constrained before querying the table.
+  bool is_required_filter = 5;
+  // Human-readable column description.
+  string description = 6;
+  // Zero-based position of the column within the table.
+  uint32 ordinal_position = 7;
 }
 
 // A query-visible table in one workspace.
