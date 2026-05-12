@@ -367,14 +367,7 @@ tables:
       allow_404_empty: false
       row_strategy: direct
     pagination:
-      mode: cursor_query
-      page_size:
-        default: 50
-        max: 50
-        query_param: maxResults
-      cursor_param: pageToken
-      response_cursor_path:
-        - nextPageToken
+      mode: none
     columns:
       - name: video_id
         type: Utf8
