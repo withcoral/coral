@@ -21,11 +21,48 @@ inputs:
   GITHUB_TOKEN:
     kind: secret
     hint: |
-      If you're already authenticated in GitHub CLI, run
+      For GitHub Cloud, choose "Connect with GitHub OAuth app" during
+      interactive install to authorize through GitHub device flow.
+      Coral uses its bundled GitHub OAuth app client ID by default;
+      enter GITHUB_OAUTH_CLIENT_ID only if you need to override it.
+      No callback URL or client secret is required.
+
+      The OAuth method requests `repo`, `read:org`, `read:user`, and
+      `user:email` scopes. Use the token method instead if you need a
+      narrower or more elevated scope set, or if you are connecting
+      to GitHub Enterprise Server.
+
+      For token auth, if you're already authenticated in GitHub CLI, run
       `gh auth token`, or create a new personal access token (PAT).
       Grant read access to the repositories and organizations you plan
       to query; some admin tables require elevated scopes.
       See [GitHub PAT docs](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens).
+    credential:
+      methods:
+        - type: oauth
+          label: Connect with GitHub OAuth app
+          description: Authorize GitHub through device flow using a GitHub OAuth app.
+          oauth:
+            flow:
+              type: device_code
+            endpoints:
+              device_authorization_url: https://github.com/login/device/code
+              token_url: https://github.com/login/oauth/access_token
+            client:
+              id:
+                default: Ov23li16CvrZJuSjQ5F7
+                input: GITHUB_OAUTH_CLIENT_ID
+            scopes:
+              scope:
+                delimiter: space
+                values:
+                  - repo
+                  - read:org
+                  - read:user
+                  - user:email
+        - type: source_config
+          label: Paste token
+          description: Paste a GitHub token or provide GITHUB_TOKEN.
 auth:
   type: HeaderAuth
   headers:

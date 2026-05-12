@@ -180,7 +180,18 @@ Cloud; for GitHub Enterprise Server, use
 
 `GITHUB_TOKEN` (required)
 
-If you're already authenticated in GitHub CLI, run
+For GitHub Cloud, choose "Connect with GitHub OAuth app" during
+interactive install to authorize through GitHub device flow.
+Coral uses its bundled GitHub OAuth app client ID by default;
+enter GITHUB_OAUTH_CLIENT_ID only if you need to override it.
+No callback URL or client secret is required.
+
+The OAuth method requests `repo`, `read:org`, `read:user`, and
+`user:email` scopes. Use the token method instead if you need a
+narrower or more elevated scope set, or if you are connecting
+to GitHub Enterprise Server.
+
+For token auth, if you're already authenticated in GitHub CLI, run
 `gh auth token`, or create a new personal access token (PAT).
 Grant read access to the repositories and organizations you plan
 to query; some admin tables require elevated scopes.
