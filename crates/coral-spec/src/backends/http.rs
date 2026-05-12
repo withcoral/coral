@@ -214,12 +214,12 @@ impl HttpTableSpec {
 impl HttpSourceManifest {
     /// Returns the source secrets required by this manifest.
     ///
-    /// In the new input model, every declared input with `kind: secret` is
-    /// required because secrets cannot carry defaults.
+    /// In the new input model, required declared inputs with `kind: secret`
+    /// must be available before a source can compile or authenticate.
     pub fn required_secret_names(&self) -> BTreeSet<String> {
         self.declared_inputs
             .iter()
-            .filter(|input| input.kind == ManifestInputKind::Secret)
+            .filter(|input| input.kind == ManifestInputKind::Secret && input.required)
             .map(|input| input.key.clone())
             .collect()
     }

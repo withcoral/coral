@@ -278,6 +278,15 @@ pub(crate) fn render_template(
 }
 
 fn resolve_template_token(token: &TemplateToken, context: &RenderContext<'_>) -> Result<String> {
+    if is_expression_token(token.raw()) {
+        return resolve_template_expr(token.raw(), context)?.ok_or_else(|| {
+            DataFusionError::Execution(format!(
+                "missing source input for template expression '{}'",
+                token.raw()
+            ))
+        });
+    }
+
     let default = token.default_value().map(ToString::to_string);
 
     if token.namespace() == &TemplateNamespace::Input {
@@ -333,6 +342,158 @@ fn resolve_template_token(token: &TemplateToken, context: &RenderContext<'_>) ->
     )))
 }
 
+fn resolve_template_expr(raw: &str, context: &RenderContext<'_>) -> Result<Option<String>> {
+    for branch in split_top_level(raw, "||")? {
+        if let Some(value) = resolve_expr(branch.trim(), context)? {
+            return Ok(Some(value));
+        }
+    }
+    Ok(None)
+}
+
+fn resolve_expr(raw: &str, context: &RenderContext<'_>) -> Result<Option<String>> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Err(DataFusionError::Execution(
+            "empty template expression".to_string(),
+        ));
+    }
+    if let Some(inner) = raw
+        .strip_prefix("concat(")
+        .and_then(|value| value.strip_suffix(')'))
+    {
+        let mut out = String::new();
+        for arg in split_top_level(inner, ",")? {
+            let Some(value) = resolve_expr(arg.trim(), context)? else {
+                return Ok(None);
+            };
+            out.push_str(&value);
+        }
+        return Ok(Some(out));
+    }
+    if let Some(literal) = parse_string_literal(raw)? {
+        return Ok(Some(literal));
+    }
+    if let Some(key) = raw.strip_prefix("input.") {
+        return Ok(context.resolved_inputs.get(key).cloned());
+    }
+    if let Some(key) = raw.strip_prefix("filter.") {
+        return Ok(context.filters.get(key).cloned());
+    }
+    if let Some(key) = raw.strip_prefix("arg.") {
+        return Ok(context.args.get(key).cloned());
+    }
+    if let Some(key) = raw.strip_prefix("state.") {
+        return Ok(context.state.get(key).cloned());
+    }
+    Err(DataFusionError::Execution(format!(
+        "unsupported template expression '{raw}'"
+    )))
+}
+
+fn parse_string_literal(raw: &str) -> Result<Option<String>> {
+    let Some(quote) = raw.as_bytes().first().copied() else {
+        return Ok(None);
+    };
+    if quote != b'"' && quote != b'\'' {
+        return Ok(None);
+    }
+    if raw.as_bytes().last().copied() != Some(quote) {
+        return Err(DataFusionError::Execution(format!(
+            "unterminated template string literal '{raw}'"
+        )));
+    }
+    let inner = raw
+        .get(1..raw.len().saturating_sub(1))
+        .ok_or_else(|| DataFusionError::Execution("invalid string literal".to_string()))?;
+    let mut out = String::with_capacity(inner.len());
+    let mut chars = inner.chars();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            let Some(escaped) = chars.next() else {
+                return Err(DataFusionError::Execution(format!(
+                    "unterminated escape in template string literal '{raw}'"
+                )));
+            };
+            out.push(escaped);
+        } else {
+            out.push(ch);
+        }
+    }
+    Ok(Some(out))
+}
+
+fn is_expression_token(raw: &str) -> bool {
+    let trimmed = raw.trim();
+    trimmed.contains("||") || trimmed.starts_with("concat(")
+}
+
+fn split_top_level<'a>(raw: &'a str, delimiter: &str) -> Result<Vec<&'a str>> {
+    let mut parts = Vec::new();
+    let mut start = 0;
+    let mut depth = 0usize;
+    let mut in_quote: Option<char> = None;
+    let mut escaped = false;
+    for (index, ch) in raw.char_indices() {
+        if let Some(quote) = in_quote {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == quote {
+                in_quote = None;
+            }
+            continue;
+        }
+        match ch {
+            '"' | '\'' => in_quote = Some(ch),
+            '(' => depth = depth.saturating_add(1),
+            ')' => {
+                depth = depth.checked_sub(1).ok_or_else(|| {
+                    DataFusionError::Execution(format!(
+                        "unbalanced ')' in template expression '{raw}'"
+                    ))
+                })?;
+            }
+            _ if depth == 0
+                && raw
+                    .get(index..)
+                    .is_some_and(|rest| rest.starts_with(delimiter)) =>
+            {
+                parts.push(
+                    raw.get(start..index)
+                        .ok_or_else(|| {
+                            DataFusionError::Execution(
+                                "invalid template expression boundary".to_string(),
+                            )
+                        })?
+                        .trim(),
+                );
+                start = index + delimiter.len();
+            }
+            _ => {}
+        }
+    }
+    if in_quote.is_some() {
+        return Err(DataFusionError::Execution(format!(
+            "unterminated quote in template expression '{raw}'"
+        )));
+    }
+    if depth != 0 {
+        return Err(DataFusionError::Execution(format!(
+            "unbalanced '(' in template expression '{raw}'"
+        )));
+    }
+    parts.push(
+        raw.get(start..)
+            .ok_or_else(|| {
+                DataFusionError::Execution("invalid template expression boundary".to_string())
+            })?
+            .trim(),
+    );
+    Ok(parts)
+}
+
 /// Flatten a JSON value into a plain string suitable for header/query use.
 pub(crate) fn value_to_string(value: &Value) -> String {
     match value {
@@ -350,18 +511,84 @@ pub(crate) fn validate_input_dependencies(
     resolved_inputs: &BTreeMap<String, String>,
 ) -> Result<()> {
     for part in template.parts() {
-        if let TemplatePart::Token(token) = part
-            && token.namespace() == &TemplateNamespace::Input
-            && token.default_value().is_none()
-            && !resolved_inputs.contains_key(token.key())
-        {
-            return Err(DataFusionError::Execution(format!(
-                "missing source input '{}' for template token",
-                token.key()
-            )));
+        if let TemplatePart::Token(token) = part {
+            if is_expression_token(token.raw()) {
+                if !expression_input_dependencies_satisfied(token.raw(), resolved_inputs)? {
+                    return Err(DataFusionError::Execution(format!(
+                        "missing source input for template expression '{}'",
+                        token.raw()
+                    )));
+                }
+            } else if token.namespace() == &TemplateNamespace::Input
+                && token.default_value().is_none()
+                && !resolved_inputs.contains_key(token.key())
+            {
+                return Err(DataFusionError::Execution(format!(
+                    "missing source input '{}' for template token",
+                    token.key()
+                )));
+            }
         }
     }
     Ok(())
+}
+
+fn expression_input_dependencies_satisfied(
+    raw: &str,
+    resolved_inputs: &BTreeMap<String, String>,
+) -> Result<bool> {
+    for branch in split_top_level(raw, "||")? {
+        if expression_input_keys(branch)
+            .iter()
+            .all(|key| resolved_inputs.contains_key(*key))
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn expression_input_keys(raw: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut cursor = 0;
+    let bytes = raw.as_bytes();
+    let mut in_quote: Option<u8> = None;
+    while cursor < bytes.len() {
+        let Some(&byte) = bytes.get(cursor) else {
+            break;
+        };
+        if let Some(quote) = in_quote {
+            if byte == b'\\' {
+                cursor = cursor.saturating_add(2);
+                continue;
+            }
+            if byte == quote {
+                in_quote = None;
+            }
+            cursor += 1;
+            continue;
+        }
+        if byte == b'\'' || byte == b'"' {
+            in_quote = Some(byte);
+            cursor += 1;
+            continue;
+        }
+        let rest = raw.get(cursor..).unwrap_or_default();
+        if let Some(after_prefix) = rest.strip_prefix("input.") {
+            let key_len = after_prefix
+                .find(|ch: char| !(ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.')))
+                .unwrap_or(after_prefix.len());
+            if key_len > 0
+                && let Some(key) = after_prefix.get(..key_len)
+            {
+                out.push(key);
+            }
+            cursor += "input.".len() + key_len;
+            continue;
+        }
+        cursor += 1;
+    }
+    out
 }
 
 /// Validate only the input-token dependencies for a value source.
@@ -402,10 +629,21 @@ pub(crate) fn validate_value_source_inputs(
 mod tests {
     use std::collections::{BTreeMap, HashMap};
 
+    use coral_spec::{ParsedTemplate, ValueSourceSpec};
+    use datafusion::error::Result;
     use serde_json::json;
 
-    use super::{EMPTY_MAP, RenderContext, resolve_value_source};
-    use coral_spec::ValueSourceSpec;
+    use super::{
+        EMPTY_MAP, RenderContext, render_template, resolve_value_source,
+        validate_input_dependencies,
+    };
+
+    fn inputs(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
+            .collect()
+    }
 
     fn test_render_context<'a>(
         filters: &'a HashMap<String, String>,
@@ -413,6 +651,11 @@ mod tests {
         resolved_inputs: &'a BTreeMap<String, String>,
     ) -> RenderContext<'a> {
         RenderContext::new(filters, args, &EMPTY_MAP, resolved_inputs)
+    }
+
+    fn render_with_inputs(template: &ParsedTemplate, pairs: &[(&str, &str)]) -> Result<String> {
+        let resolved_inputs = inputs(pairs);
+        render_template(template, &RenderContext::source_scoped(&resolved_inputs))
     }
 
     #[test]
@@ -633,5 +876,87 @@ mod tests {
         .expect("bool filter should resolve");
 
         assert_eq!(value, Some(json!(false)));
+    }
+
+    #[test]
+    fn expression_templates_prefer_first_available_branch() {
+        let template =
+            ParsedTemplate::parse(r#"{{input.API_KEY || concat("Bearer ", input.OAUTH_TOKEN)}}"#)
+                .expect("template");
+
+        let rendered = render_with_inputs(
+            &template,
+            &[("API_KEY", "lin_api_key"), ("OAUTH_TOKEN", "oauth_access")],
+        )
+        .expect("render");
+
+        assert_eq!(rendered, "lin_api_key");
+    }
+
+    #[test]
+    fn expression_templates_concat_fallback_branch() {
+        let template =
+            ParsedTemplate::parse(r#"{{input.API_KEY || concat("Bearer ", input.OAUTH_TOKEN)}}"#)
+                .expect("template");
+
+        let rendered =
+            render_with_inputs(&template, &[("OAUTH_TOKEN", "oauth_access")]).expect("render");
+
+        assert_eq!(rendered, "Bearer oauth_access");
+    }
+
+    #[test]
+    fn expression_templates_error_when_no_branch_resolves() {
+        let template =
+            ParsedTemplate::parse(r#"{{input.API_KEY || concat("Bearer ", input.OAUTH_TOKEN)}}"#)
+                .expect("template");
+
+        let error = render_with_inputs(&template, &[]).expect_err("missing inputs should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("missing source input for template expression")
+        );
+    }
+
+    #[test]
+    fn expression_input_dependency_validation_accepts_any_resolved_branch() {
+        let template =
+            ParsedTemplate::parse(r#"{{input.API_KEY || concat("Bearer ", input.OAUTH_TOKEN)}}"#)
+                .expect("template");
+
+        validate_input_dependencies(&template, &inputs(&[("API_KEY", "lin_api_key")]))
+            .expect("api key should satisfy expression");
+        validate_input_dependencies(&template, &inputs(&[("OAUTH_TOKEN", "oauth_access")]))
+            .expect("oauth token should satisfy expression");
+        assert!(
+            validate_input_dependencies(&template, &inputs(&[]))
+                .expect_err("missing both should fail")
+                .to_string()
+                .contains("missing source input for template expression")
+        );
+    }
+
+    #[test]
+    fn expression_input_dependency_validation_tolerates_runtime_values() {
+        let filter_only = ParsedTemplate::parse(r#"{{concat(filter.team, "-", state.cursor)}}"#)
+            .expect("template");
+        validate_input_dependencies(&filter_only, &inputs(&[]))
+            .expect("filter and state values resolve per request");
+
+        let filter_fallback =
+            ParsedTemplate::parse(r"{{input.API_KEY || filter.team}}").expect("template");
+        validate_input_dependencies(&filter_fallback, &inputs(&[]))
+            .expect("runtime fallback can satisfy expression");
+
+        let missing_input =
+            ParsedTemplate::parse(r"{{concat(filter.team, input.API_KEY)}}").expect("template");
+        assert!(
+            validate_input_dependencies(&missing_input, &inputs(&[]))
+                .expect_err("concat input dependency is still required")
+                .to_string()
+                .contains("missing source input for template expression")
+        );
     }
 }

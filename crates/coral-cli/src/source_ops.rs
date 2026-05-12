@@ -437,30 +437,6 @@ pub(crate) fn source_name_arg(name: Option<&str>) -> Result<String, anyhow::Erro
     Ok(name.to_string())
 }
 
-pub(crate) fn prompt_for_inputs(
-    inputs: &[ManifestInputSpec],
-) -> Result<(Vec<SourceVariable>, Vec<SourceSecret>), anyhow::Error> {
-    let mut variables = Vec::new();
-    let mut secrets = Vec::new();
-
-    for input in inputs {
-        match input.kind {
-            ManifestInputKind::Variable => {
-                if let Some(variable) = prompt_variable(input)? {
-                    variables.push(variable);
-                }
-            }
-            ManifestInputKind::Secret => {
-                if let Some(secret) = prompt_secret(input)? {
-                    secrets.push(secret);
-                }
-            }
-        }
-    }
-
-    Ok((variables, secrets))
-}
-
 pub(crate) fn prompt_for_inputs_with_credential_methods(
     inputs: &[ManifestInputSpec],
 ) -> Result<CollectedSourceInputs, anyhow::Error> {
@@ -488,7 +464,10 @@ pub(crate) fn prompt_for_inputs_with_credential_methods(
                     collected.variables.push(variable);
                 }
             }
-            ManifestInputKind::Secret => match prompt_secret_with_methods(input)? {
+            ManifestInputKind::Secret => match prompt_secret_with_methods(
+                input,
+                !collected.secrets.is_empty() || !collected.oauth_credentials.is_empty(),
+            )? {
                 SecretInputOutcome::SourceConfig(secret) => {
                     if let Some(secret) = secret {
                         collected.secrets.push(secret);
@@ -921,11 +900,14 @@ enum SecretInputOutcome {
 
 fn prompt_secret_with_methods(
     input: &ManifestInputSpec,
+    prefer_skip: bool,
 ) -> Result<SecretInputOutcome, anyhow::Error> {
     let Some(credential) = input.credential.as_ref() else {
         return Ok(SecretInputOutcome::SourceConfig(prompt_secret(input)?));
     };
-    let selected = select_credential_method(input, credential)?;
+    let Some(selected) = select_credential_method(input, credential, prefer_skip)? else {
+        return Ok(SecretInputOutcome::SourceConfig(None));
+    };
     let method = credential
         .methods
         .get(selected)
@@ -944,22 +926,34 @@ fn prompt_secret_with_methods(
 fn select_credential_method(
     input: &ManifestInputSpec,
     credential: &ManifestCredentialSpec,
-) -> Result<usize, anyhow::Error> {
-    if credential.methods.len() == 1 {
-        return Ok(0);
+    prefer_skip: bool,
+) -> Result<Option<usize>, anyhow::Error> {
+    if credential.methods.len() == 1 && input.required {
+        return Ok(Some(0));
     }
     let theme = ColorfulTheme::default();
-    let items = credential
+    let mut items = credential
         .methods
         .iter()
         .map(credential_method_label)
         .collect::<Vec<_>>();
+    if !input.required {
+        items.push("Skip".to_string());
+    }
+    let skip_index = items.len().saturating_sub(1);
     let selected = Select::with_theme(&theme)
         .with_prompt(format!("{} credential", input.key))
         .items(&items)
-        .default(0)
+        .default(if !input.required && prefer_skip {
+            skip_index
+        } else {
+            0
+        })
         .interact()?;
-    Ok(selected)
+    if !input.required && selected == skip_index {
+        return Ok(None);
+    }
+    Ok(Some(selected))
 }
 
 fn credential_method_label(method: &ManifestCredentialMethod) -> String {

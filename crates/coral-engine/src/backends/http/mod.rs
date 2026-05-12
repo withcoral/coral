@@ -195,7 +195,7 @@ mod tests {
     }
 
     #[test]
-    fn required_secret_names_exclude_variable_inputs() {
+    fn required_secret_names_exclude_optional_and_variable_inputs() {
         let manifest = parse_source_manifest_value(json!({
             "dsl_version": 3,
             "name": "alpha",
@@ -203,7 +203,8 @@ mod tests {
             "backend": "http",
             "base_url": "https://api.example.com",
             "inputs": {
-                "API_BASE": { "kind": "variable", "default": "https://api.example.com" }
+                "API_BASE": { "kind": "variable", "default": "https://api.example.com" },
+                "OPTIONAL_TOKEN": { "kind": "secret", "required": false }
             },
             "tables": [{
                 "name": "items",

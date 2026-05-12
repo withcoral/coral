@@ -830,6 +830,17 @@ pub(crate) fn validate_template(
     context: &str,
 ) -> Result<()> {
     for token in template.tokens() {
+        if token.is_expression() {
+            for key in token.filter_keys() {
+                if !known_filters.contains(key) {
+                    return Err(ManifestError::validation(format!(
+                        "{context} references unknown filter '{key}' in template '{}'",
+                        template.raw()
+                    )));
+                }
+            }
+            continue;
+        }
         match token.namespace() {
             TemplateNamespace::Filter => {
                 if !known_filters.contains(token.key()) {

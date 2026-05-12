@@ -562,6 +562,9 @@ auth:
 ```
 
 `headers` entries share the same shape as request/table headers, but only `from: literal`, `from: template`, and `from: input` are meaningful here — filter and state tokens have no value at auth time.
+Auth and request templates can use `||` to choose the first available value
+and `concat(...)` to join string literals and template values, for example
+`{{input.API_KEY || concat("Bearer ", input.OAUTH_TOKEN)}}`.
 
 #### `BasicAuth`
 
@@ -967,6 +970,10 @@ callback, Coral exchanges the code, stores the access token as the source
 secret, and stores any refresh token as internal credential metadata.
 
 ### Inspecting configured inputs
+
+OAuth stores the token response `access_token` as the source secret value. If a
+runtime auth template needs a bearer header value, compose it in the template,
+for example `{{concat("Bearer ", input.OAUTH_TOKEN)}}`.
 
 At runtime, installed source inputs are also surfaced through `coral.inputs`.
 This is useful when agents or scripts need to inspect non-secret source config

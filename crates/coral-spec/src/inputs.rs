@@ -308,6 +308,17 @@ fn collect_declared_inputs(root: &Value) -> Result<Vec<ManifestInputSpec>> {
             .get("credential")
             .map(|value| parse_credential(key, value))
             .transpose()?;
+        let required = input
+            .get("required")
+            .map(|value| {
+                value.as_bool().ok_or_else(|| {
+                    ManifestError::validation(format!(
+                        "manifest input '{key}' required must be a boolean"
+                    ))
+                })
+            })
+            .transpose()?
+            .unwrap_or(default_value.is_none());
         if kind != ManifestInputKind::Secret && credential.is_some() {
             return Err(ManifestError::validation(format!(
                 "manifest input '{key}' declares credential methods but is not a secret"
@@ -316,7 +327,7 @@ fn collect_declared_inputs(root: &Value) -> Result<Vec<ManifestInputSpec>> {
         ordered.push(ManifestInputSpec {
             key: key.clone(),
             kind,
-            required: default_value.is_none(),
+            required,
             default_value: default_value.unwrap_or_default(),
             hint,
             credential,
@@ -1000,16 +1011,15 @@ fn validate_mapping(map: &Map<String, Value>, declared: &BTreeSet<String>) -> Re
 fn validate_template(template: &str, declared: &BTreeSet<String>) -> Result<()> {
     let template = ParsedTemplate::parse(template)?;
     for token in template.tokens() {
-        if !matches!(token.namespace(), TemplateNamespace::Input) {
-            continue;
+        for key in token.input_keys() {
+            if !declared.contains(key) {
+                return Err(ManifestError::validation(format!(
+                    "manifest input '{key}' is referenced but not declared under top-level inputs"
+                )));
+            }
         }
-        if !declared.contains(token.key()) {
-            return Err(ManifestError::validation(format!(
-                "manifest input '{}' is referenced but not declared under top-level inputs",
-                token.key()
-            )));
-        }
-        if token.default_value().is_some() {
+        if matches!(token.namespace(), TemplateNamespace::Input) && token.default_value().is_some()
+        {
             return Err(ManifestError::validation(format!(
                 "manifest input '{}' must declare defaults under top-level inputs",
                 token.key()
@@ -1172,6 +1182,21 @@ tables: []
         );
         assert_eq!(credential.methods[0].label.as_deref(), Some("Paste token"));
         assert!(credential.methods[0].oauth.is_none());
+    }
+
+    #[test]
+    fn parses_optional_secret_input() {
+        let inputs = collect(&manifest_with_input(
+            r"
+  API_TOKEN:
+    kind: secret
+    required: false
+",
+        ))
+        .expect("inputs");
+        assert_eq!(inputs[0].key, "API_TOKEN");
+        assert_eq!(inputs[0].kind, ManifestInputKind::Secret);
+        assert!(!inputs[0].required);
     }
 
     #[test]
@@ -1671,6 +1696,58 @@ inputs:
   GITHUB_TOKEN:
     kind: secret
 base_url: "{{input.GITHUB_API_BASE}}"
+tables: []
+"#;
+        let error = collect(manifest).expect_err("undeclared input");
+        assert!(
+            error
+                .to_string()
+                .contains("referenced but not declared under top-level inputs")
+        );
+    }
+
+    #[test]
+    fn expression_template_input_references_resolve_against_declarations() {
+        let manifest = r#"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+inputs:
+  API_KEY:
+    kind: secret
+    required: false
+  OAUTH_TOKEN:
+    kind: secret
+    required: false
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: '{{input.API_KEY || concat("Bearer ", input.OAUTH_TOKEN)}}'
+tables: []
+"#;
+        let inputs = collect(manifest).expect("inputs");
+        assert_eq!(inputs.len(), 2);
+    }
+
+    #[test]
+    fn expression_template_undeclared_input_references_are_rejected() {
+        let manifest = r#"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+inputs:
+  API_KEY:
+    kind: secret
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: '{{input.API_KEY || concat("Bearer ", input.OAUTH_TOKEN)}}'
 tables: []
 "#;
         let error = collect(manifest).expect_err("undeclared input");

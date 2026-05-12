@@ -33,11 +33,18 @@ impl ParsedTemplate {
                 )));
             };
             let token = raw_token.trim();
-            let (raw_key, default_value) = match token.split_once('|') {
-                Some((key, default)) => (key.trim(), Some(default.to_string())),
-                None => (token, None),
+            let (raw_key, default_value) = if is_expression_token(token) {
+                (token, None)
+            } else {
+                match token.split_once('|') {
+                    Some((key, default)) => (key.trim(), Some(default.to_string())),
+                    None => (token, None),
+                }
             };
             let (namespace, key) = match raw_key.split_once('.') {
+                _ if is_expression_token(raw_key) => {
+                    (TemplateNamespace::Other(raw_key.to_string()), String::new())
+                }
                 Some((namespace, key)) => (TemplateNamespace::parse(namespace), key.to_string()),
                 None => (TemplateNamespace::Other(raw_key.to_string()), String::new()),
             };
@@ -159,6 +166,49 @@ impl TemplateToken {
     pub fn default_value(&self) -> Option<&str> {
         self.default_value.as_deref()
     }
+
+    #[must_use]
+    /// Returns whether this token uses expression syntax.
+    pub fn is_expression(&self) -> bool {
+        is_expression_token(self.raw.as_str())
+    }
+
+    /// Returns the input keys referenced by this token.
+    ///
+    /// For simple tokens this is either the single `input.KEY` reference or
+    /// empty. Expression tokens support the small auth-template expression
+    /// syntax used by the renderer: fallbacks with `||` and `concat(...)`.
+    pub fn input_keys(&self) -> Vec<&str> {
+        if self.is_expression() {
+            return expression_keys(self.raw.as_str(), "input.");
+        }
+        if self.namespace == TemplateNamespace::Input {
+            return vec![self.key.as_str()];
+        }
+        Vec::new()
+    }
+
+    /// Returns the filter keys referenced by this token.
+    pub fn filter_keys(&self) -> Vec<&str> {
+        if self.is_expression() {
+            expression_keys(self.raw.as_str(), "filter.")
+        } else if self.namespace == TemplateNamespace::Filter {
+            vec![self.key.as_str()]
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Returns the state keys referenced by this token.
+    pub fn state_keys(&self) -> Vec<&str> {
+        if self.is_expression() {
+            expression_keys(self.raw.as_str(), "state.")
+        } else if self.namespace == TemplateNamespace::State {
+            vec![self.key.as_str()]
+        } else {
+            Vec::new()
+        }
+    }
 }
 
 /// The namespace component of one template token.
@@ -191,6 +241,54 @@ impl TemplateNamespace {
             other => Self::Other(other.to_string()),
         }
     }
+}
+
+fn is_expression_token(raw: &str) -> bool {
+    let trimmed = raw.trim();
+    trimmed.contains("||") || trimmed.starts_with("concat(")
+}
+
+fn expression_keys<'a>(raw: &'a str, prefix: &str) -> Vec<&'a str> {
+    let mut out = Vec::new();
+    let mut cursor = 0;
+    let bytes = raw.as_bytes();
+    let mut in_quote: Option<u8> = None;
+    while cursor < bytes.len() {
+        let Some(&byte) = bytes.get(cursor) else {
+            break;
+        };
+        if let Some(quote) = in_quote {
+            if byte == b'\\' {
+                cursor = cursor.saturating_add(2);
+                continue;
+            }
+            if byte == quote {
+                in_quote = None;
+            }
+            cursor += 1;
+            continue;
+        }
+        if byte == b'\'' || byte == b'"' {
+            in_quote = Some(byte);
+            cursor += 1;
+            continue;
+        }
+        let rest = raw.get(cursor..).unwrap_or_default();
+        if let Some(after_prefix) = rest.strip_prefix(prefix) {
+            let key_len = after_prefix
+                .find(|ch: char| !(ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.')))
+                .unwrap_or(after_prefix.len());
+            if key_len > 0
+                && let Some(key) = after_prefix.get(..key_len)
+            {
+                out.push(key);
+            }
+            cursor += prefix.len() + key_len;
+            continue;
+        }
+        cursor += 1;
+    }
+    out
 }
 
 #[cfg(test)]
@@ -255,5 +353,25 @@ mod tests {
     fn rejects_unclosed_tokens() {
         let error = ParsedTemplate::parse("{{input.API_TOKEN").expect_err("unclosed token");
         assert!(error.to_string().contains("unclosed template token"));
+    }
+
+    #[test]
+    fn token_reports_expression_input_keys() {
+        let template =
+            ParsedTemplate::parse(r#"{{input.API_KEY || concat("Bearer ", input.OAUTH_TOKEN)}}"#)
+                .expect("template");
+        let token = template.tokens().next().expect("token");
+        assert!(token.is_expression());
+        assert_eq!(token.input_keys(), vec!["API_KEY", "OAUTH_TOKEN"]);
+    }
+
+    #[test]
+    fn token_reports_expression_filter_and_state_keys() {
+        let template = ParsedTemplate::parse(r#"{{concat(filter.team, "-", state.cursor)}}"#)
+            .expect("template");
+        let token = template.tokens().next().expect("token");
+        assert!(token.is_expression());
+        assert_eq!(token.filter_keys(), vec!["team"]);
+        assert_eq!(token.state_keys(), vec!["cursor"]);
     }
 }
