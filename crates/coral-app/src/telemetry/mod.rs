@@ -3,9 +3,10 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
+use coral_engine::HttpBodyPreviewRecorder;
 use opentelemetry::Value as OtelValue;
 use opentelemetry::metrics::MeterProvider as _;
 use opentelemetry::propagation::Extractor;
@@ -348,6 +349,15 @@ pub(crate) fn init_tracing(
         .as_ref()
         .map_err(|e| AppError::InvalidInput(e.clone()))?;
     Ok(state.local_trace_store.clone())
+}
+
+pub(crate) fn http_body_preview_recorder(
+    local_trace_store_dir: PathBuf,
+    retention: Duration,
+) -> Result<Arc<dyn HttpBodyPreviewRecorder>, AppError> {
+    local_store::LocalHttpBodyPreviewRecorder::new(local_trace_store_dir, retention)
+        .map(|recorder| Arc::new(recorder) as Arc<dyn HttpBodyPreviewRecorder>)
+        .map_err(|error| AppError::InvalidInput(error.to_string()))
 }
 
 #[expect(

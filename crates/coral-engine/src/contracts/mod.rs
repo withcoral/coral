@@ -11,8 +11,9 @@ pub use catalog::{
 };
 pub use error::{CoreError, StatusCode, StructuredQueryError};
 pub use query::{
-    QueryExecution, QueryPlan, QueryRuntimeConfig, QueryRuntimeContext, QuerySource,
-    QueryTestFailure, QueryTestResult, QueryTestSuccess, SourceValidationReport,
+    HttpBodyPreview, HttpBodyPreviewDirection, HttpBodyPreviewRecorder, QueryExecution, QueryPlan,
+    QueryRuntimeConfig, QueryRuntimeContext, QuerySource, QueryTestFailure, QueryTestResult,
+    QueryTestSuccess, SourceValidationReport,
 };
 pub(crate) use query_error::{ColumnParts, TableRefParts};
 

@@ -16,6 +16,7 @@ use crate::backends::{
     build_registered_table_function, internal_table_function_name, registered_columns_from_specs,
     required_filter_names,
 };
+use crate::contracts::HttpBodyPreviewRecorder;
 use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec};
 pub(crate) mod auth;
 pub(crate) mod client;
@@ -35,6 +36,8 @@ struct HttpCompiledSource {
     source_secrets: std::collections::BTreeMap<String, String>,
     source_variables: std::collections::BTreeMap<String, String>,
     request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>>,
+    body_preview_max_bytes: Option<usize>,
+    body_preview_recorder: Option<Arc<dyn HttpBodyPreviewRecorder>>,
 }
 
 pub(crate) fn compile_source(
@@ -42,12 +45,16 @@ pub(crate) fn compile_source(
     source_secrets: std::collections::BTreeMap<String, String>,
     source_variables: std::collections::BTreeMap<String, String>,
     request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>>,
+    body_preview_max_bytes: Option<usize>,
+    body_preview_recorder: Option<Arc<dyn HttpBodyPreviewRecorder>>,
 ) -> Box<dyn CompiledBackendSource> {
     Box::new(HttpCompiledSource {
         manifest,
         source_secrets,
         source_variables,
         request_authenticators,
+        body_preview_max_bytes,
+        body_preview_recorder,
     })
 }
 
@@ -60,6 +67,8 @@ pub(crate) fn compile_manifest(
         request.source_secrets.clone(),
         request.source_variables.clone(),
         request.request_authenticators.clone(),
+        request.runtime_context.http_body_preview_max_bytes,
+        request.runtime_context.http_body_preview_recorder.clone(),
     )
 }
 
@@ -79,6 +88,8 @@ impl CompiledBackendSource for HttpCompiledSource {
             &self.source_secrets,
             &self.source_variables,
             &self.request_authenticators,
+            self.body_preview_max_bytes,
+            self.body_preview_recorder.clone(),
         )?;
         let mut tables: HashMap<String, Arc<dyn TableProvider>> = HashMap::new();
         let mut table_infos = Vec::with_capacity(self.manifest.tables.len());

@@ -255,6 +255,7 @@ impl ServerBuilder {
             .trace_history
             .enabled
             .then(|| layout.local_trace_store_dir());
+        let trace_history_retention = telemetry_config.trace_history.retention();
         let installed_trace_store = crate::telemetry::init_tracing(
             &telemetry_config,
             self.config.enable_stderr_logs,
@@ -270,10 +271,20 @@ impl ServerBuilder {
         );
         let feedback_manager =
             FeedbackManager::with_publisher(layout.clone(), self.config.feedback_publisher);
+        let mut query_runtime_context = env.query_runtime_context();
+        query_runtime_context.http_body_preview_max_bytes = telemetry_config
+            .trace_history
+            .http_body_recording_max_bytes();
+        query_runtime_context.http_body_preview_recorder = internal_trace_store_dir
+            .clone()
+            .filter(|_| query_runtime_context.http_body_preview_max_bytes.is_some())
+            .map(|dir| crate::telemetry::http_body_preview_recorder(dir, trace_history_retention))
+            .transpose()?;
+
         let query_manager = QueryManager::new(
             config_store,
             credential_manager,
-            env.query_runtime_context(),
+            query_runtime_context,
             layout,
             self.config.engine_extensions_providers,
         );
@@ -1085,6 +1096,7 @@ tables:
             credential_manager,
             QueryRuntimeContext {
                 home_dir: Some(fake_home.clone()),
+                ..QueryRuntimeContext::default()
             },
             layout,
             vec![Arc::new(NoopEngineExtensionsProvider)],

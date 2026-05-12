@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use datafusion::error::{DataFusionError, Result};
 use opentelemetry::propagation::Injector;
+use opentelemetry::trace::TraceContextExt as _;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde_json::{Map, Value, json};
 use tracing::Instrument as _;
@@ -23,6 +24,7 @@ use crate::backends::shared::template::{
     RenderContext, render_template, resolve_value_source, validate_input_dependencies,
     validate_value_source_inputs, value_to_string,
 };
+use crate::contracts::{HttpBodyPreview, HttpBodyPreviewDirection, HttpBodyPreviewRecorder};
 use coral_spec::backends::http::{HttpSourceManifest, RateLimitSpec};
 use coral_spec::{
     AuthSpec, BodySpec, HeaderSpec, HttpMethod, PageSizeSpec, ParsedTemplate, RequestRouteSpec,
@@ -47,6 +49,8 @@ pub(crate) struct HttpSourceClient {
     request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>>,
     rate_limit: RateLimitSpec,
     resolved_inputs: Arc<BTreeMap<String, String>>,
+    body_preview_max_bytes: Option<usize>,
+    body_preview_recorder: Option<Arc<dyn HttpBodyPreviewRecorder>>,
 }
 
 impl std::fmt::Debug for HttpSourceClient {
@@ -57,6 +61,7 @@ impl std::fmt::Debug for HttpSourceClient {
             .field("auth", &self.auth)
             .field("request_headers", &self.request_headers)
             .field("rate_limit", &self.rate_limit)
+            .field("body_preview_max_bytes", &self.body_preview_max_bytes)
             .finish_non_exhaustive()
     }
 }
@@ -83,6 +88,12 @@ struct FetchLimits {
     max_search_calls: Option<usize>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TraceBodyContent {
+    body: String,
+    truncated: bool,
+}
+
 struct OutgoingHttpRequest<'a> {
     auth: &'a AuthSpec,
     request_headers: &'a [HeaderSpec],
@@ -97,6 +108,8 @@ struct OutgoingHttpRequest<'a> {
     response_format: ResponseBodyFormat,
     source_schema: &'a str,
     rate_limit: &'a RateLimitSpec,
+    body_preview_max_bytes: Option<usize>,
+    body_preview_recorder: Option<Arc<dyn HttpBodyPreviewRecorder>>,
     render_context: RenderContext<'a>,
     allow_404_empty: bool,
     link_header_require_results: bool,
@@ -112,7 +125,10 @@ struct ResponseDecodeContext<'a> {
     table_name: &'a str,
     method_label: &'a str,
     logged_url: &'a str,
+    body_preview_max_bytes: Option<usize>,
+    body_preview_recorder: Option<Arc<dyn HttpBodyPreviewRecorder>>,
     response_span: &'a tracing::Span,
+    request_id: u64,
 }
 
 impl HttpSourceClient {
@@ -127,6 +143,8 @@ impl HttpSourceClient {
         source_secrets: &BTreeMap<String, String>,
         source_variables: &BTreeMap<String, String>,
         request_authenticators: &HashMap<String, Arc<dyn RequestAuthenticator>>,
+        body_preview_max_bytes: Option<usize>,
+        body_preview_recorder: Option<Arc<dyn HttpBodyPreviewRecorder>>,
     ) -> Result<Self> {
         let resolved_inputs =
             coral_spec::resolve_inputs(&manifest.declared_inputs, source_secrets, source_variables);
@@ -154,6 +172,8 @@ impl HttpSourceClient {
             request_authenticators: request_authenticators.clone(),
             rate_limit: manifest.rate_limit.clone(),
             resolved_inputs: Arc::new(resolved_inputs),
+            body_preview_max_bytes,
+            body_preview_recorder,
         })
     }
 
@@ -289,6 +309,8 @@ impl HttpSourceClient {
                     response_format: target.response().format,
                     source_schema: &self.source_schema,
                     rate_limit: &self.rate_limit,
+                    body_preview_max_bytes: self.body_preview_max_bytes,
+                    body_preview_recorder: self.body_preview_recorder.clone(),
                     render_context,
                     allow_404_empty: target.response().allow_404_empty,
                     link_header_require_results: pagination.link_header_require_results,
@@ -587,6 +609,8 @@ async fn execute_request(
         response_format,
         source_schema,
         rate_limit,
+        body_preview_max_bytes,
+        body_preview_recorder,
         render_context,
         allow_404_empty,
         link_header_require_results,
@@ -688,6 +712,13 @@ async fn execute_request(
             None => {}
         }
 
+        record_local_request_body_preview(
+            &request_span,
+            request_id,
+            body,
+            body_preview_max_bytes,
+            body_preview_recorder.as_deref(),
+        );
         let built = match resolve_auth_headers(
             auth,
             request,
@@ -733,12 +764,28 @@ async fn execute_request(
                 RateLimitDecision::Continue => {}
                 RateLimitDecision::Retry(wait) => {
                     record_http_status_error(&request_span, status, "rate limited; retrying");
+                    record_unconsumed_response_body(
+                        &request_span,
+                        request_id,
+                        response,
+                        body_preview_max_bytes,
+                        body_preview_recorder.as_deref(),
+                    )
+                    .await;
                     throttle_retries += 1;
                     break 'response ResponseOutcome::Retry(wait);
                 }
                 RateLimitDecision::Fail(error) => {
                     let error_message = error.to_string();
                     record_http_status_error(&request_span, status, error_message.as_str());
+                    record_unconsumed_response_body(
+                        &request_span,
+                        request_id,
+                        response,
+                        body_preview_max_bytes,
+                        body_preview_recorder.as_deref(),
+                    )
+                    .await;
                     break 'response ResponseOutcome::Done(Err(DataFusionError::External(
                         Box::new(ProviderQueryError::RateLimited {
                             source_schema: source_schema.to_string(),
@@ -753,11 +800,27 @@ async fn execute_request(
 
             if status.is_server_error() && server_error_retries < 2 {
                 record_http_status_error(&request_span, status, "server error; retrying");
+                record_unconsumed_response_body(
+                    &request_span,
+                    request_id,
+                    response,
+                    body_preview_max_bytes,
+                    body_preview_recorder.as_deref(),
+                )
+                .await;
                 server_error_retries += 1;
                 break 'response ResponseOutcome::Retry(Duration::from_secs(2));
             }
 
             if status == reqwest::StatusCode::NOT_FOUND && allow_404_empty {
+                record_unconsumed_response_body(
+                    &request_span,
+                    request_id,
+                    response,
+                    body_preview_max_bytes,
+                    body_preview_recorder.as_deref(),
+                )
+                .await;
                 break 'response ResponseOutcome::Done(Ok(None));
             }
 
@@ -773,6 +836,13 @@ async fn execute_request(
                     response_error_summary(status, &body),
                 );
                 request_span.record("http.response.body.size", body.len());
+                record_local_response_body_preview(
+                    &request_span,
+                    request_id,
+                    &body,
+                    body_preview_max_bytes,
+                    body_preview_recorder.as_deref(),
+                );
                 break 'response ResponseOutcome::Done(Err(DataFusionError::External(Box::new(
                     ProviderQueryError::ApiRequest {
                         source_schema: source_schema.to_string(),
@@ -811,7 +881,10 @@ async fn execute_request(
                     table_name,
                     method_label,
                     logged_url: &logged_url,
+                    body_preview_max_bytes,
+                    body_preview_recorder: body_preview_recorder.clone(),
                     response_span: &request_span,
+                    request_id,
                 },
             )
             .instrument(request_span.clone())
@@ -843,7 +916,10 @@ async fn decode_response_body(
         table_name,
         method_label,
         logged_url,
+        body_preview_max_bytes,
+        body_preview_recorder,
         response_span,
+        request_id,
     } = context;
     match format {
         ResponseBodyFormat::Json => {
@@ -851,6 +927,16 @@ async fn decode_response_body(
                 decode_error(source_schema, table_name, method_label, logged_url, &error)
             })?;
             response_span.record("http.response.body.size", bytes.len());
+            if body_preview_max_bytes.is_some() && body_preview_recorder.is_some() {
+                let trace_body = String::from_utf8_lossy(&bytes);
+                record_local_response_body_preview(
+                    response_span,
+                    request_id,
+                    trace_body.as_ref(),
+                    body_preview_max_bytes,
+                    body_preview_recorder.as_deref(),
+                );
+            }
             serde_json::from_slice(&bytes).map_err(|error| {
                 json_decode_error(source_schema, table_name, method_label, logged_url, &error)
             })
@@ -860,6 +946,13 @@ async fn decode_response_body(
                 decode_error(source_schema, table_name, method_label, logged_url, &error)
             })?;
             response_span.record("http.response.body.size", text.len());
+            record_local_response_body_preview(
+                response_span,
+                request_id,
+                &text,
+                body_preview_max_bytes,
+                body_preview_recorder.as_deref(),
+            );
             let mut rows = Vec::new();
             for (index, line) in text.lines().enumerate() {
                 let trimmed = line.trim();
@@ -882,6 +975,28 @@ async fn decode_response_body(
             }
             Ok(Value::Array(rows))
         }
+    }
+}
+
+async fn record_unconsumed_response_body(
+    response_span: &tracing::Span,
+    request_id: u64,
+    response: reqwest::Response,
+    body_preview_max_bytes: Option<usize>,
+    body_preview_recorder: Option<&dyn HttpBodyPreviewRecorder>,
+) {
+    if body_preview_max_bytes.is_none() || body_preview_recorder.is_none() {
+        return;
+    }
+    if let Ok(body) = response.text().instrument(response_span.clone()).await {
+        response_span.record("http.response.body.size", body.len());
+        record_local_response_body_preview(
+            response_span,
+            request_id,
+            &body,
+            body_preview_max_bytes,
+            body_preview_recorder,
+        );
     }
 }
 
@@ -1324,6 +1439,118 @@ fn request_body_size(body: Option<&RequestBody>) -> Option<usize> {
     }
 }
 
+fn record_local_request_body_preview(
+    span: &tracing::Span,
+    request_id: u64,
+    body: Option<&RequestBody>,
+    max_bytes: Option<usize>,
+    recorder: Option<&dyn HttpBodyPreviewRecorder>,
+) {
+    let Some(max_bytes) = max_bytes else {
+        return;
+    };
+    let Some(recorder) = recorder else {
+        return;
+    };
+    let Some(content) = trace_request_body_content(body, max_bytes) else {
+        return;
+    };
+    record_local_body_preview(
+        span,
+        recorder,
+        request_id,
+        HttpBodyPreviewDirection::Request,
+        content,
+    );
+}
+
+fn record_local_response_body_preview(
+    span: &tracing::Span,
+    request_id: u64,
+    body: &str,
+    max_bytes: Option<usize>,
+    recorder: Option<&dyn HttpBodyPreviewRecorder>,
+) {
+    let Some(max_bytes) = max_bytes else {
+        return;
+    };
+    let Some(recorder) = recorder else {
+        return;
+    };
+    let content = trace_body_content(body, max_bytes);
+    record_local_body_preview(
+        span,
+        recorder,
+        request_id,
+        HttpBodyPreviewDirection::Response,
+        content,
+    );
+}
+
+fn record_local_body_preview(
+    span: &tracing::Span,
+    recorder: &dyn HttpBodyPreviewRecorder,
+    request_id: u64,
+    direction: HttpBodyPreviewDirection,
+    content: TraceBodyContent,
+) {
+    let Some((trace_id, span_id)) = span_trace_context(span) else {
+        return;
+    };
+    recorder.record_http_body_preview(HttpBodyPreview {
+        trace_id,
+        span_id,
+        request_id,
+        direction,
+        body: content.body,
+        truncated: content.truncated,
+    });
+}
+
+fn span_trace_context(span: &tracing::Span) -> Option<(String, String)> {
+    let context = span.context();
+    let span = context.span();
+    let span_context = span.span_context();
+    span_context.is_valid().then(|| {
+        (
+            span_context.trace_id().to_string(),
+            span_context.span_id().to_string(),
+        )
+    })
+}
+
+fn trace_request_body_content(
+    body: Option<&RequestBody>,
+    max_bytes: usize,
+) -> Option<TraceBodyContent> {
+    let body = match body? {
+        RequestBody::Json(value) => serde_json::to_string(value).ok()?,
+        RequestBody::Text(text) => text.clone(),
+    };
+    Some(trace_body_content(&body, max_bytes))
+}
+
+fn trace_body_content(body: &str, max_bytes: usize) -> TraceBodyContent {
+    if body.len() <= max_bytes {
+        return TraceBodyContent {
+            body: body.to_string(),
+            truncated: false,
+        };
+    }
+
+    let mut end = max_bytes;
+    while !body.is_char_boundary(end) {
+        end = end.saturating_sub(1);
+    }
+    TraceBodyContent {
+        body: body
+            .get(..end)
+            .expect("trace body truncation end is a UTF-8 boundary")
+            .to_string(),
+        truncated: true,
+    }
+}
+
 fn join_url(base: &str, path: &str) -> Result<String> {
     let trimmed = path.trim();
     if reqwest::Url::parse(trimmed).is_ok() || trimmed.starts_with("//") {
@@ -1553,7 +1780,8 @@ mod tests {
         HttpSourceClient, OutgoingHttpRequest as TestOutgoingHttpRequest, PageState,
         apply_pagination_body_fields, apply_pagination_query_pairs, execute_request,
         extract_next_link_url, extract_rows, join_url, normalize_base_url, page_is_exhausted,
-        resolve_value_source, set_path_value, trace_http_endpoint,
+        resolve_value_source, set_path_value, trace_body_content, trace_http_endpoint,
+        trace_request_body_content,
     };
     use crate::backends::http::ProviderQueryError;
     use crate::backends::http::target::HttpFetchTarget;
@@ -1661,6 +1889,27 @@ mod tests {
                 "Statistics": ["Average"]
             })
         );
+    }
+
+    #[test]
+    fn trace_body_content_truncates_on_utf8_boundary() {
+        let content = trace_body_content("aébc", 2);
+
+        assert_eq!(content.body, "a");
+        assert!(content.truncated);
+    }
+
+    #[test]
+    fn trace_request_body_content_records_compact_json() {
+        let body = super::RequestBody::Json(json!({
+            "id": 1,
+            "name": "Ada"
+        }));
+
+        let content = trace_request_body_content(Some(&body), 1024).expect("body content");
+
+        assert_eq!(content.body, r#"{"id":1,"name":"Ada"}"#);
+        assert!(!content.truncated);
     }
 
     fn request_json(request: &RequestSpec) -> serde_json::Value {
@@ -2153,6 +2402,8 @@ mod tests {
             &source_secrets,
             &BTreeMap::new(),
             &HashMap::new(),
+            None,
+            None,
         )
         .expect_err("missing source-scoped credentials must fail");
 
@@ -2193,6 +2444,8 @@ mod tests {
             &BTreeMap::new(),
             &BTreeMap::new(),
             &HashMap::new(),
+            None,
+            None,
         )
         .expect_err("missing table request path inputs must fail");
 
@@ -2237,6 +2490,8 @@ mod tests {
             &BTreeMap::new(),
             &BTreeMap::new(),
             &HashMap::new(),
+            None,
+            None,
         )
         .expect_err("missing table request header inputs must fail");
 
@@ -2281,6 +2536,8 @@ mod tests {
             &BTreeMap::new(),
             &BTreeMap::new(),
             &HashMap::new(),
+            None,
+            None,
         )
         .expect_err("missing table request query inputs must fail");
 
@@ -2326,6 +2583,8 @@ mod tests {
             &BTreeMap::new(),
             &BTreeMap::new(),
             &HashMap::new(),
+            None,
+            None,
         )
         .expect_err("missing table request body inputs must fail");
 
@@ -2371,6 +2630,8 @@ mod tests {
             &BTreeMap::new(),
             &BTreeMap::new(),
             &HashMap::new(),
+            None,
+            None,
         )
         .expect_err("missing request route inputs must fail");
 
@@ -2463,6 +2724,8 @@ mod tests {
                 &BTreeMap::new(),
                 &BTreeMap::new(),
                 &HashMap::new(),
+                None,
+                None,
             )
             .expect_err(&format!(
                 "missing function request {name} input should fail"
@@ -2781,6 +3044,8 @@ mod tests {
                 response_format: ResponseBodyFormat::default(),
                 source_schema: "demo",
                 rate_limit: &RateLimitSpec::default(),
+                body_preview_max_bytes: None,
+                body_preview_recorder: None,
                 render_context,
                 allow_404_empty: false,
                 link_header_require_results: false,
