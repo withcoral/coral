@@ -5,11 +5,20 @@ use coral_api::v1::{
     CreateBundledSourceRequest, CreateBundledSourceResponse, DeleteSourceRequest,
     DeleteSourceResponse, DiscoverSourcesRequest, DiscoverSourcesResponse, GetSourceInfoRequest,
     GetSourceInfoResponse, GetSourceRequest, GetSourceResponse, ImportSourceRequest,
-    ImportSourceResponse, ListSourcesRequest, ListSourcesResponse, Source, SourceInfo,
-    SourceInputKind, SourceInputSpec, SourceOrigin as ProtoSourceOrigin, SourceSecret,
-    SourceVariable, ValidateSourceRequest, ValidateSourceResponse,
+    ImportSourceResponse, ListSourcesRequest, ListSourcesResponse, OAuthCredentialClient,
+    OAuthCredentialClientId, OAuthCredentialClientSecret, OAuthCredentialClientSecretTransport,
+    OAuthCredentialEndpoints, OAuthCredentialFlow, OAuthCredentialFlowType, OAuthCredentialMethod,
+    OAuthCredentialPkceMode, OAuthCredentialScope, OAuthCredentialScopeDelimiter,
+    OAuthCredentialScopes, Source, SourceCredential, SourceCredentialMethod,
+    SourceCredentialMethodType, SourceInfo, SourceInputKind, SourceInputSpec,
+    SourceOrigin as ProtoSourceOrigin, SourceSecret, SourceVariable, ValidateSourceRequest,
+    ValidateSourceResponse,
 };
-use coral_spec::{ManifestInputKind, ManifestInputSpec};
+use coral_spec::{
+    ManifestCredentialMethodKind, ManifestCredentialSpec, ManifestInputKind, ManifestInputSpec,
+    ManifestOAuthClientSecretTransport, ManifestOAuthCredentialSpec, ManifestOAuthFlowKind,
+    ManifestOAuthPkceMode, ManifestOAuthScopeDelimiter,
+};
 use tonic::{Request, Response, Status};
 
 use crate::bootstrap::app_status;
@@ -291,6 +300,7 @@ fn candidate_source_input_to_proto(input: ManifestInputSpec) -> SourceInputSpec 
         required: input.required,
         default_value: input.default_value,
         hint: input.hint.unwrap_or_default(),
+        credential: input.credential.map(credential_to_proto),
     }
 }
 
@@ -298,5 +308,189 @@ fn proto_candidate_input_kind(kind: ManifestInputKind) -> SourceInputKind {
     match kind {
         ManifestInputKind::Variable => SourceInputKind::Variable,
         ManifestInputKind::Secret => SourceInputKind::Secret,
+    }
+}
+
+fn credential_to_proto(credential: ManifestCredentialSpec) -> SourceCredential {
+    SourceCredential {
+        methods: credential
+            .methods
+            .into_iter()
+            .map(|method| SourceCredentialMethod {
+                r#type: proto_credential_method_kind(method.kind) as i32,
+                label: method.label.unwrap_or_default(),
+                description: method.description.unwrap_or_default(),
+                oauth: method.oauth.map(oauth_to_proto),
+            })
+            .collect(),
+    }
+}
+
+fn proto_credential_method_kind(kind: ManifestCredentialMethodKind) -> SourceCredentialMethodType {
+    match kind {
+        ManifestCredentialMethodKind::SourceConfig => SourceCredentialMethodType::SourceConfig,
+        ManifestCredentialMethodKind::OAuth => SourceCredentialMethodType::Oauth,
+    }
+}
+
+fn oauth_to_proto(oauth: ManifestOAuthCredentialSpec) -> OAuthCredentialMethod {
+    OAuthCredentialMethod {
+        flow: Some(OAuthCredentialFlow {
+            r#type: proto_oauth_flow_kind(oauth.flow.kind) as i32,
+            pkce: proto_oauth_pkce_mode(oauth.flow.pkce) as i32,
+        }),
+        redirect_uri: oauth.redirect_uri,
+        endpoints: Some(OAuthCredentialEndpoints {
+            authorization_url: oauth.authorization_url,
+            token_url: oauth.token_url,
+        }),
+        client: Some(OAuthCredentialClient {
+            id: Some(OAuthCredentialClientId {
+                r#default: oauth.client.id.default.unwrap_or_default(),
+                input: oauth.client.id.input.unwrap_or_default(),
+            }),
+            secret: oauth
+                .client
+                .secret
+                .map(|secret| OAuthCredentialClientSecret {
+                    input: secret.input,
+                    transport: proto_oauth_client_secret_transport(secret.transport) as i32,
+                }),
+        }),
+        scopes: oauth.scopes.map(|scopes| OAuthCredentialScopes {
+            scope: Some(OAuthCredentialScope {
+                delimiter: proto_oauth_scope_delimiter(scopes.scope.delimiter) as i32,
+                values: scopes.scope.values,
+            }),
+        }),
+    }
+}
+
+fn proto_oauth_flow_kind(kind: ManifestOAuthFlowKind) -> OAuthCredentialFlowType {
+    match kind {
+        ManifestOAuthFlowKind::AuthorizationCode => OAuthCredentialFlowType::AuthorizationCode,
+    }
+}
+
+fn proto_oauth_pkce_mode(mode: ManifestOAuthPkceMode) -> OAuthCredentialPkceMode {
+    match mode {
+        ManifestOAuthPkceMode::Required => OAuthCredentialPkceMode::Required,
+        ManifestOAuthPkceMode::Disabled => OAuthCredentialPkceMode::Disabled,
+    }
+}
+
+fn proto_oauth_client_secret_transport(
+    transport: ManifestOAuthClientSecretTransport,
+) -> OAuthCredentialClientSecretTransport {
+    match transport {
+        ManifestOAuthClientSecretTransport::BasicAuth => {
+            OAuthCredentialClientSecretTransport::BasicAuth
+        }
+        ManifestOAuthClientSecretTransport::RequestBody => {
+            OAuthCredentialClientSecretTransport::RequestBody
+        }
+    }
+}
+
+fn proto_oauth_scope_delimiter(
+    delimiter: ManifestOAuthScopeDelimiter,
+) -> OAuthCredentialScopeDelimiter {
+    match delimiter {
+        ManifestOAuthScopeDelimiter::Space => OAuthCredentialScopeDelimiter::Space,
+        ManifestOAuthScopeDelimiter::Comma => OAuthCredentialScopeDelimiter::Comma,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![expect(
+        clippy::indexing_slicing,
+        reason = "credential method order assertions intentionally fail loudly in tests"
+    )]
+
+    use super::*;
+    use coral_spec::{
+        ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestCredentialSpec,
+        ManifestOAuthClientIdSpec, ManifestOAuthClientSpec, ManifestOAuthCredentialSpec,
+        ManifestOAuthFlowKind, ManifestOAuthFlowSpec, ManifestOAuthPkceMode,
+    };
+
+    #[test]
+    fn converts_credential_methods_to_source_input_spec() {
+        let input = ManifestInputSpec {
+            key: "API_TOKEN".to_string(),
+            kind: ManifestInputKind::Secret,
+            required: true,
+            default_value: String::new(),
+            hint: None,
+            credential: Some(ManifestCredentialSpec {
+                methods: vec![
+                    ManifestCredentialMethod {
+                        kind: ManifestCredentialMethodKind::OAuth,
+                        label: Some("Connect".to_string()),
+                        description: None,
+                        oauth: Some(ManifestOAuthCredentialSpec {
+                            flow: ManifestOAuthFlowSpec {
+                                kind: ManifestOAuthFlowKind::AuthorizationCode,
+                                pkce: ManifestOAuthPkceMode::Required,
+                            },
+                            redirect_uri: "http://127.0.0.1:53682/oauth/callback".to_string(),
+                            authorization_url: "https://provider.example.com/oauth/authorize"
+                                .to_string(),
+                            token_url: "https://provider.example.com/oauth/token".to_string(),
+                            client: ManifestOAuthClientSpec {
+                                id: ManifestOAuthClientIdSpec {
+                                    default: Some("default-client".to_string()),
+                                    input: None,
+                                },
+                                secret: None,
+                            },
+                            scopes: None,
+                        }),
+                    },
+                    ManifestCredentialMethod {
+                        kind: ManifestCredentialMethodKind::SourceConfig,
+                        label: Some("Paste token".to_string()),
+                        description: None,
+                        oauth: None,
+                    },
+                ],
+            }),
+        };
+
+        let proto = candidate_source_input_to_proto(input);
+
+        let credential = proto.credential.expect("credential");
+        assert_eq!(credential.methods.len(), 2);
+        assert_eq!(
+            SourceCredentialMethodType::try_from(credential.methods[0].r#type).expect("type"),
+            SourceCredentialMethodType::Oauth
+        );
+        assert_eq!(
+            credential.methods[0]
+                .oauth
+                .as_ref()
+                .expect("oauth")
+                .redirect_uri,
+            "http://127.0.0.1:53682/oauth/callback"
+        );
+        assert_eq!(
+            SourceCredentialMethodType::try_from(credential.methods[1].r#type).expect("type"),
+            SourceCredentialMethodType::SourceConfig
+        );
+    }
+
+    #[test]
+    fn missing_credential_metadata_remains_absent() {
+        let input = ManifestInputSpec {
+            key: "API_TOKEN".to_string(),
+            kind: ManifestInputKind::Secret,
+            required: true,
+            default_value: String::new(),
+            hint: None,
+            credential: None,
+        };
+
+        assert!(candidate_source_input_to_proto(input).credential.is_none());
     }
 }

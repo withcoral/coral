@@ -11,6 +11,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Map, Value};
+use url::Url;
 
 use crate::{ManifestError, ParsedTemplate, Result, TemplateNamespace};
 
@@ -39,6 +40,140 @@ pub struct ManifestInputSpec {
     pub default_value: String,
     /// Optional authored hint shown to the user when collecting the input.
     pub hint: Option<String>,
+    /// Optional credential retrieval choices for a secret input.
+    pub credential: Option<ManifestCredentialSpec>,
+}
+
+/// Credential retrieval choices declared for one secret input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManifestCredentialSpec {
+    /// Authored retrieval methods in display order.
+    pub methods: Vec<ManifestCredentialMethod>,
+}
+
+/// Supported credential retrieval method kinds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManifestCredentialMethodKind {
+    /// Collect the secret value through the source configuration path.
+    SourceConfig,
+    /// Run an OAuth authorization-code flow to retrieve the secret value.
+    OAuth,
+}
+
+/// One credential retrieval method declared on a secret input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManifestCredentialMethod {
+    /// Method kind.
+    pub kind: ManifestCredentialMethodKind,
+    /// Optional display label.
+    pub label: Option<String>,
+    /// Optional display description.
+    pub description: Option<String>,
+    /// OAuth configuration when `kind` is [`ManifestCredentialMethodKind::OAuth`].
+    pub oauth: Option<ManifestOAuthCredentialSpec>,
+}
+
+/// OAuth authorization-code credential retrieval configuration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManifestOAuthCredentialSpec {
+    /// OAuth flow settings.
+    pub flow: ManifestOAuthFlowSpec,
+    /// Loopback callback URI Coral binds during the OAuth session.
+    pub redirect_uri: String,
+    /// Provider authorization endpoint URL.
+    pub authorization_url: String,
+    /// Provider token endpoint URL.
+    pub token_url: String,
+    /// OAuth client configuration.
+    pub client: ManifestOAuthClientSpec,
+    /// Optional OAuth scope parameter configuration.
+    pub scopes: Option<ManifestOAuthScopesSpec>,
+}
+
+/// Supported OAuth credential retrieval flow settings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManifestOAuthFlowSpec {
+    /// OAuth flow kind.
+    pub kind: ManifestOAuthFlowKind,
+    /// PKCE requirement for the flow.
+    pub pkce: ManifestOAuthPkceMode,
+}
+
+/// Supported OAuth flow kinds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManifestOAuthFlowKind {
+    /// OAuth 2.0 authorization-code grant.
+    AuthorizationCode,
+}
+
+/// Supported PKCE modes for OAuth credential retrieval.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManifestOAuthPkceMode {
+    /// Require a generated code verifier and S256 challenge.
+    Required,
+    /// Do not include PKCE parameters.
+    Disabled,
+}
+
+/// OAuth client configuration for credential retrieval.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManifestOAuthClientSpec {
+    /// Client ID resolution configuration.
+    pub id: ManifestOAuthClientIdSpec,
+    /// Optional confidential-client secret configuration.
+    pub secret: Option<ManifestOAuthClientSecretSpec>,
+}
+
+/// OAuth client ID resolution configuration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManifestOAuthClientIdSpec {
+    /// Optional manifest-authored default client ID.
+    pub default: Option<String>,
+    /// Optional credential-retrieval input key for a client ID override.
+    pub input: Option<String>,
+}
+
+/// OAuth client secret retrieval configuration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManifestOAuthClientSecretSpec {
+    /// Credential-retrieval input key for the client secret.
+    pub input: String,
+    /// How Coral sends the client secret to the token endpoint.
+    pub transport: ManifestOAuthClientSecretTransport,
+}
+
+/// Supported confidential-client secret transport modes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManifestOAuthClientSecretTransport {
+    /// Send `Authorization: Basic base64(client_id:client_secret)`.
+    BasicAuth,
+    /// Send `client_secret` in the token request body.
+    RequestBody,
+}
+
+/// OAuth scope parameter configuration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManifestOAuthScopesSpec {
+    /// The `scope` parameter value definition.
+    pub scope: ManifestOAuthScopeSpec,
+}
+
+/// OAuth scope parameter values and delimiter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManifestOAuthScopeSpec {
+    /// Delimiter used to join scope values.
+    pub delimiter: ManifestOAuthScopeDelimiter,
+    /// Authored scope values.
+    pub values: Vec<String>,
+}
+
+/// Supported OAuth scope delimiters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManifestOAuthScopeDelimiter {
+    /// Join scope values with a single space.
+    Space,
+    /// Join scope values with a comma.
+    Comma,
 }
 
 /// Merge user-provided secrets and variables with manifest defaults into one
@@ -91,6 +226,7 @@ fn collect_declared_inputs(root: &Value) -> Result<Vec<ManifestInputSpec>> {
 
     let mut ordered = Vec::new();
     for (key, value) in inputs {
+        validate_input_key("manifest input key", key)?;
         let input = value.as_object().ok_or_else(|| {
             ManifestError::validation(format!(
                 "manifest input '{key}' must be declared as a mapping"
@@ -128,12 +264,22 @@ fn collect_declared_inputs(root: &Value) -> Result<Vec<ManifestInputSpec>> {
             .get("hint")
             .and_then(Value::as_str)
             .map(ToString::to_string);
+        let credential = input
+            .get("credential")
+            .map(|value| parse_credential(key, value))
+            .transpose()?;
+        if kind != ManifestInputKind::Secret && credential.is_some() {
+            return Err(ManifestError::validation(format!(
+                "manifest input '{key}' declares credential methods but is not a secret"
+            )));
+        }
         ordered.push(ManifestInputSpec {
             key: key.clone(),
             kind,
             required: default_value.is_none(),
             default_value: default_value.unwrap_or_default(),
             hint,
+            credential,
         });
     }
 
@@ -165,6 +311,407 @@ fn credential_like_input_key(key: &str) -> bool {
             || key.ends_with(&format!("_{marker}"))
             || key.starts_with(&format!("{marker}_"))
     })
+}
+
+fn parse_credential(input_key: &str, value: &Value) -> Result<ManifestCredentialSpec> {
+    let credential = value.as_object().ok_or_else(|| {
+        ManifestError::validation(format!(
+            "manifest input '{input_key}' credential must be a mapping"
+        ))
+    })?;
+    let methods = credential
+        .get("methods")
+        .ok_or_else(|| {
+            ManifestError::validation(format!(
+                "manifest input '{input_key}' credential is missing methods"
+            ))
+        })?
+        .as_array()
+        .ok_or_else(|| {
+            ManifestError::validation(format!(
+                "manifest input '{input_key}' credential.methods must be a list"
+            ))
+        })?;
+    if methods.is_empty() {
+        return Err(ManifestError::validation(format!(
+            "manifest input '{input_key}' credential.methods must not be empty"
+        )));
+    }
+
+    let methods = methods
+        .iter()
+        .enumerate()
+        .map(|(index, method)| parse_credential_method(input_key, index, method))
+        .collect::<Result<Vec<_>>>()?;
+    Ok(ManifestCredentialSpec { methods })
+}
+
+fn parse_credential_method(
+    input_key: &str,
+    index: usize,
+    value: &Value,
+) -> Result<ManifestCredentialMethod> {
+    let method = value.as_object().ok_or_else(|| {
+        ManifestError::validation(format!(
+            "manifest input '{input_key}' credential.methods[{index}] must be a mapping"
+        ))
+    })?;
+    let label = method
+        .get("label")
+        .and_then(Value::as_str)
+        .map(ToString::to_string);
+    let description = method
+        .get("description")
+        .and_then(Value::as_str)
+        .map(ToString::to_string);
+    match method.get("type").and_then(Value::as_str) {
+        Some("source_config") => {
+            if method.contains_key("oauth") {
+                return Err(ManifestError::validation(format!(
+                    "manifest input '{input_key}' source_config credential method must not contain oauth"
+                )));
+            }
+            Ok(ManifestCredentialMethod {
+                kind: ManifestCredentialMethodKind::SourceConfig,
+                label,
+                description,
+                oauth: None,
+            })
+        }
+        Some("oauth") => {
+            let oauth = method
+                .get("oauth")
+                .ok_or_else(|| {
+                    ManifestError::validation(format!(
+                        "manifest input '{input_key}' oauth credential method is missing oauth"
+                    ))
+                })
+                .and_then(|oauth| parse_oauth(input_key, index, oauth))?;
+            Ok(ManifestCredentialMethod {
+                kind: ManifestCredentialMethodKind::OAuth,
+                label,
+                description,
+                oauth: Some(oauth),
+            })
+        }
+        Some(other) => Err(ManifestError::validation(format!(
+            "manifest input '{input_key}' credential method has unsupported type '{other}'"
+        ))),
+        None => Err(ManifestError::validation(format!(
+            "manifest input '{input_key}' credential method is missing type"
+        ))),
+    }
+}
+
+fn parse_oauth(
+    input_key: &str,
+    method_index: usize,
+    value: &Value,
+) -> Result<ManifestOAuthCredentialSpec> {
+    let oauth = value.as_object().ok_or_else(|| {
+        ManifestError::validation(format!(
+            "manifest input '{input_key}' credential.methods[{method_index}].oauth must be a mapping"
+        ))
+    })?;
+    let flow = oauth
+        .get("flow")
+        .ok_or_else(|| {
+            ManifestError::validation(format!(
+                "manifest input '{input_key}' oauth credential method is missing flow"
+            ))
+        })
+        .and_then(|flow| parse_oauth_flow(input_key, flow))?;
+    let redirect_uri = required_string(oauth, "redirect_uri", input_key, "oauth")?;
+    validate_loopback_redirect_uri(input_key, &redirect_uri)?;
+    let endpoints = oauth
+        .get("endpoints")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            ManifestError::validation(format!(
+                "manifest input '{input_key}' oauth credential method is missing endpoints"
+            ))
+        })?;
+    let authorization_url =
+        required_string(endpoints, "authorization_url", input_key, "oauth.endpoints")?;
+    validate_url(input_key, "authorization_url", &authorization_url)?;
+    let token_url = required_string(endpoints, "token_url", input_key, "oauth.endpoints")?;
+    validate_url(input_key, "token_url", &token_url)?;
+    let client = oauth
+        .get("client")
+        .ok_or_else(|| {
+            ManifestError::validation(format!(
+                "manifest input '{input_key}' oauth credential method is missing client"
+            ))
+        })
+        .and_then(|client| parse_oauth_client(input_key, client))?;
+    let scopes = oauth
+        .get("scopes")
+        .map(|scopes| parse_oauth_scopes(input_key, scopes))
+        .transpose()?;
+    Ok(ManifestOAuthCredentialSpec {
+        flow,
+        redirect_uri,
+        authorization_url,
+        token_url,
+        client,
+        scopes,
+    })
+}
+
+fn parse_oauth_flow(input_key: &str, value: &Value) -> Result<ManifestOAuthFlowSpec> {
+    let flow = value.as_object().ok_or_else(|| {
+        ManifestError::validation(format!(
+            "manifest input '{input_key}' oauth.flow must be a mapping"
+        ))
+    })?;
+    let kind = match flow.get("type").and_then(Value::as_str) {
+        Some("authorization_code") => ManifestOAuthFlowKind::AuthorizationCode,
+        Some(other) => {
+            return Err(ManifestError::validation(format!(
+                "manifest input '{input_key}' oauth.flow.type has unsupported value '{other}'"
+            )));
+        }
+        None => {
+            return Err(ManifestError::validation(format!(
+                "manifest input '{input_key}' oauth.flow is missing type"
+            )));
+        }
+    };
+    let pkce = match flow.get("pkce").and_then(Value::as_str) {
+        Some("required") => ManifestOAuthPkceMode::Required,
+        Some("disabled") => ManifestOAuthPkceMode::Disabled,
+        Some(other) => {
+            return Err(ManifestError::validation(format!(
+                "manifest input '{input_key}' oauth.flow.pkce has unsupported value '{other}'"
+            )));
+        }
+        None => {
+            return Err(ManifestError::validation(format!(
+                "manifest input '{input_key}' oauth.flow is missing pkce"
+            )));
+        }
+    };
+    Ok(ManifestOAuthFlowSpec { kind, pkce })
+}
+
+fn parse_oauth_client(input_key: &str, value: &Value) -> Result<ManifestOAuthClientSpec> {
+    let client = value.as_object().ok_or_else(|| {
+        ManifestError::validation(format!(
+            "manifest input '{input_key}' oauth.client must be a mapping"
+        ))
+    })?;
+    let id = client
+        .get("id")
+        .ok_or_else(|| {
+            ManifestError::validation(format!(
+                "manifest input '{input_key}' oauth.client is missing id"
+            ))
+        })
+        .and_then(|id| parse_oauth_client_id(input_key, id))?;
+    let secret = client
+        .get("secret")
+        .map(|secret| parse_oauth_client_secret(input_key, secret))
+        .transpose()?;
+    if secret.is_some() && id.input.is_none() {
+        return Err(ManifestError::validation(format!(
+            "manifest input '{input_key}' confidential oauth client must declare client.id.input"
+        )));
+    }
+    Ok(ManifestOAuthClientSpec { id, secret })
+}
+
+fn parse_oauth_client_id(input_key: &str, value: &Value) -> Result<ManifestOAuthClientIdSpec> {
+    let id = value.as_object().ok_or_else(|| {
+        ManifestError::validation(format!(
+            "manifest input '{input_key}' oauth.client.id must be a mapping"
+        ))
+    })?;
+    let default = id
+        .get("default")
+        .and_then(Value::as_str)
+        .map(ToString::to_string);
+    let input = id
+        .get("input")
+        .and_then(Value::as_str)
+        .map(ToString::to_string);
+    if default.is_none() && input.is_none() {
+        return Err(ManifestError::validation(format!(
+            "manifest input '{input_key}' oauth.client.id must declare default or input"
+        )));
+    }
+    if let Some(input) = input.as_deref() {
+        validate_input_key("oauth client id input key", input)?;
+    }
+    Ok(ManifestOAuthClientIdSpec { default, input })
+}
+
+fn parse_oauth_client_secret(
+    input_key: &str,
+    value: &Value,
+) -> Result<ManifestOAuthClientSecretSpec> {
+    let secret = value.as_object().ok_or_else(|| {
+        ManifestError::validation(format!(
+            "manifest input '{input_key}' oauth.client.secret must be a mapping"
+        ))
+    })?;
+    let input = required_string(secret, "input", input_key, "oauth.client.secret")?;
+    validate_input_key("oauth client secret input key", &input)?;
+    let transport = match secret.get("transport").and_then(Value::as_str) {
+        Some("basic_auth") => ManifestOAuthClientSecretTransport::BasicAuth,
+        Some("request_body") => ManifestOAuthClientSecretTransport::RequestBody,
+        Some(other) => {
+            return Err(ManifestError::validation(format!(
+                "manifest input '{input_key}' oauth.client.secret.transport has unsupported value '{other}'"
+            )));
+        }
+        None => {
+            return Err(ManifestError::validation(format!(
+                "manifest input '{input_key}' oauth.client.secret is missing transport"
+            )));
+        }
+    };
+    Ok(ManifestOAuthClientSecretSpec { input, transport })
+}
+
+fn parse_oauth_scopes(input_key: &str, value: &Value) -> Result<ManifestOAuthScopesSpec> {
+    let scopes = value.as_object().ok_or_else(|| {
+        ManifestError::validation(format!(
+            "manifest input '{input_key}' oauth.scopes must be a mapping"
+        ))
+    })?;
+    let scope = scopes
+        .get("scope")
+        .ok_or_else(|| {
+            ManifestError::validation(format!(
+                "manifest input '{input_key}' oauth.scopes is missing scope"
+            ))
+        })
+        .and_then(|scope| parse_oauth_scope(input_key, scope))?;
+    Ok(ManifestOAuthScopesSpec { scope })
+}
+
+fn parse_oauth_scope(input_key: &str, value: &Value) -> Result<ManifestOAuthScopeSpec> {
+    let scope = value.as_object().ok_or_else(|| {
+        ManifestError::validation(format!(
+            "manifest input '{input_key}' oauth.scopes.scope must be a mapping"
+        ))
+    })?;
+    let delimiter = match scope.get("delimiter").and_then(Value::as_str) {
+        Some("space") => ManifestOAuthScopeDelimiter::Space,
+        Some("comma") => ManifestOAuthScopeDelimiter::Comma,
+        Some(other) => {
+            return Err(ManifestError::validation(format!(
+                "manifest input '{input_key}' oauth.scopes.scope.delimiter has unsupported value '{other}'"
+            )));
+        }
+        None => {
+            return Err(ManifestError::validation(format!(
+                "manifest input '{input_key}' oauth.scopes.scope is missing delimiter"
+            )));
+        }
+    };
+    let values = scope
+        .get("values")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            ManifestError::validation(format!(
+                "manifest input '{input_key}' oauth.scopes.scope.values must be a list"
+            ))
+        })?
+        .iter()
+        .map(|value| {
+            value.as_str().map(ToString::to_string).ok_or_else(|| {
+                ManifestError::validation(format!(
+                    "manifest input '{input_key}' oauth.scopes.scope.values must contain strings"
+                ))
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    if values.is_empty() {
+        return Err(ManifestError::validation(format!(
+            "manifest input '{input_key}' oauth.scopes.scope.values must not be empty"
+        )));
+    }
+    Ok(ManifestOAuthScopeSpec { delimiter, values })
+}
+
+fn required_string(
+    object: &Map<String, Value>,
+    key: &str,
+    input_key: &str,
+    context: &str,
+) -> Result<String> {
+    object
+        .get(key)
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+        .ok_or_else(|| {
+            ManifestError::validation(format!(
+                "manifest input '{input_key}' {context} is missing {key}"
+            ))
+        })
+}
+
+fn validate_loopback_redirect_uri(input_key: &str, raw: &str) -> Result<()> {
+    let url = Url::parse(raw).map_err(|error| {
+        ManifestError::validation(format!(
+            "manifest input '{input_key}' oauth.redirect_uri is invalid: {error}"
+        ))
+    })?;
+    if url.scheme() != "http" {
+        return Err(ManifestError::validation(format!(
+            "manifest input '{input_key}' oauth.redirect_uri must use http"
+        )));
+    }
+    let host = url.host_str().unwrap_or_default();
+    if host != "127.0.0.1" && host != "localhost" {
+        return Err(ManifestError::validation(format!(
+            "manifest input '{input_key}' oauth.redirect_uri must use a loopback host"
+        )));
+    }
+    if url.port().is_none() {
+        return Err(ManifestError::validation(format!(
+            "manifest input '{input_key}' oauth.redirect_uri must include an explicit port"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_url(input_key: &str, field: &str, raw: &str) -> Result<()> {
+    Url::parse(raw).map_err(|error| {
+        ManifestError::validation(format!(
+            "manifest input '{input_key}' oauth.endpoints.{field} is invalid: {error}"
+        ))
+    })?;
+    Ok(())
+}
+
+fn validate_input_key(label: &str, value: &str) -> Result<()> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(ManifestError::validation(format!("missing {label}")));
+    }
+    if trimmed != value {
+        return Err(ManifestError::validation(format!(
+            "{label} must not contain leading or trailing whitespace"
+        )));
+    }
+    if trimmed.contains('/') || trimmed.contains('\\') {
+        return Err(ManifestError::validation(format!(
+            "{label} must not contain '/' or '\\\\'"
+        )));
+    }
+    if trimmed.contains('=') || trimmed.contains('\n') || trimmed.contains('\r') {
+        return Err(ManifestError::validation(format!(
+            "{label} must not contain '=', '\\n', or '\\r'"
+        )));
+    }
+    if trimmed.starts_with('#') {
+        return Err(ManifestError::validation(format!(
+            "{label} must not start with '#'"
+        )));
+    }
+    Ok(())
 }
 
 fn validate_input_references(root: &Value, inputs: &[ManifestInputSpec]) -> Result<()> {
@@ -240,7 +787,16 @@ fn validate_template(template: &str, declared: &BTreeSet<String>) -> Result<()> 
 
 #[cfg(test)]
 mod tests {
-    use super::{ManifestInputKind, ManifestInputSpec, collect_source_inputs_value};
+    #![expect(
+        clippy::indexing_slicing,
+        reason = "parsed input order assertions intentionally fail loudly in tests"
+    )]
+
+    use super::{
+        ManifestCredentialMethodKind, ManifestInputKind, ManifestInputSpec,
+        ManifestOAuthClientSecretTransport, ManifestOAuthPkceMode, ManifestOAuthScopeDelimiter,
+        collect_source_inputs_value,
+    };
     use crate::{ManifestError, Result};
 
     fn collect(raw: &str) -> Result<Vec<ManifestInputSpec>> {
@@ -294,6 +850,303 @@ tables: []
             token.hint.as_deref(),
             Some("Run `gh auth token` or create a PAT")
         );
+        assert!(inputs[1].credential.is_none());
+    }
+
+    fn manifest_with_input(raw_input: &str) -> String {
+        format!(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+inputs:
+{raw_input}
+base_url: https://api.example.com
+tables: []
+"
+        )
+    }
+
+    fn oauth_input(client: &str) -> String {
+        manifest_with_input(&format!(
+            r"
+  API_TOKEN:
+    kind: secret
+    credential:
+      methods:
+        - type: oauth
+          label: Connect
+          description: Use OAuth.
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: required
+            redirect_uri: http://127.0.0.1:53682/oauth/callback
+            endpoints:
+              authorization_url: https://provider.example.com/oauth/authorize
+              token_url: https://provider.example.com/oauth/token
+            client:
+{client}
+            scopes:
+              scope:
+                delimiter: space
+                values:
+                  - repo
+                  - read:org
+"
+        ))
+    }
+
+    #[test]
+    fn parses_source_config_credential_method() {
+        let inputs = collect(&manifest_with_input(
+            r"
+  API_TOKEN:
+    kind: secret
+    credential:
+      methods:
+        - type: source_config
+          label: Paste token
+          description: Paste a PAT.
+",
+        ))
+        .expect("inputs");
+        let credential = inputs[0].credential.as_ref().expect("credential");
+        assert_eq!(credential.methods.len(), 1);
+        assert_eq!(
+            credential.methods[0].kind,
+            ManifestCredentialMethodKind::SourceConfig
+        );
+        assert_eq!(credential.methods[0].label.as_deref(), Some("Paste token"));
+        assert!(credential.methods[0].oauth.is_none());
+    }
+
+    #[test]
+    fn parses_oauth_public_client_with_default_client_id() {
+        let inputs = collect(&oauth_input(
+            r"
+              id:
+                default: default-client
+",
+        ))
+        .expect("inputs");
+        let method = &inputs[0].credential.as_ref().expect("credential").methods[0];
+        assert_eq!(method.kind, ManifestCredentialMethodKind::OAuth);
+        let oauth = method.oauth.as_ref().expect("oauth");
+        assert_eq!(oauth.flow.pkce, ManifestOAuthPkceMode::Required);
+        assert_eq!(oauth.client.id.default.as_deref(), Some("default-client"));
+        assert_eq!(
+            oauth.scopes.as_ref().expect("scopes").scope.delimiter,
+            ManifestOAuthScopeDelimiter::Space
+        );
+    }
+
+    #[test]
+    fn parses_oauth_public_client_with_input_client_id() {
+        let inputs = collect(&oauth_input(
+            r"
+              id:
+                input: OAUTH_CLIENT_ID
+",
+        ))
+        .expect("inputs");
+        let oauth = inputs[0].credential.as_ref().expect("credential").methods[0]
+            .oauth
+            .as_ref()
+            .expect("oauth");
+        assert_eq!(oauth.client.id.input.as_deref(), Some("OAUTH_CLIENT_ID"));
+        assert!(oauth.client.id.default.is_none());
+    }
+
+    #[test]
+    fn parses_oauth_public_client_with_default_and_input_override() {
+        let inputs = collect(&oauth_input(
+            r"
+              id:
+                default: default-client
+                input: OAUTH_CLIENT_ID
+",
+        ))
+        .expect("inputs");
+        let oauth = inputs[0].credential.as_ref().expect("credential").methods[0]
+            .oauth
+            .as_ref()
+            .expect("oauth");
+        assert_eq!(oauth.client.id.default.as_deref(), Some("default-client"));
+        assert_eq!(oauth.client.id.input.as_deref(), Some("OAUTH_CLIENT_ID"));
+    }
+
+    #[test]
+    fn parses_confidential_oauth_client_with_basic_auth() {
+        let inputs = collect(&oauth_input(
+            r"
+              id:
+                input: OAUTH_CLIENT_ID
+              secret:
+                input: OAUTH_CLIENT_SECRET
+                transport: basic_auth
+",
+        ))
+        .expect("inputs");
+        let oauth = inputs[0].credential.as_ref().expect("credential").methods[0]
+            .oauth
+            .as_ref()
+            .expect("oauth");
+        assert_eq!(
+            oauth.client.secret.as_ref().expect("secret").transport,
+            ManifestOAuthClientSecretTransport::BasicAuth
+        );
+    }
+
+    #[test]
+    fn parses_confidential_oauth_client_with_request_body() {
+        let inputs = collect(&oauth_input(
+            r"
+              id:
+                input: OAUTH_CLIENT_ID
+              secret:
+                input: OAUTH_CLIENT_SECRET
+                transport: request_body
+",
+        ))
+        .expect("inputs");
+        let oauth = inputs[0].credential.as_ref().expect("credential").methods[0]
+            .oauth
+            .as_ref()
+            .expect("oauth");
+        assert_eq!(
+            oauth.client.secret.as_ref().expect("secret").transport,
+            ManifestOAuthClientSecretTransport::RequestBody
+        );
+    }
+
+    #[test]
+    fn rejects_credential_methods_on_variable_inputs() {
+        let error = collect(&manifest_with_input(
+            r"
+  API_BASE:
+    kind: variable
+    credential:
+      methods:
+        - type: source_config
+",
+        ))
+        .expect_err("variable credential should fail");
+        assert!(error.to_string().contains("is not a secret"));
+    }
+
+    #[test]
+    fn rejects_unknown_credential_method_type() {
+        let error = collect(&manifest_with_input(
+            r"
+  API_TOKEN:
+    kind: secret
+    credential:
+      methods:
+        - type: magic
+",
+        ))
+        .expect_err("unknown method should fail");
+        assert!(error.to_string().contains("unsupported type 'magic'"));
+    }
+
+    #[test]
+    fn rejects_unsupported_pkce_mode() {
+        let error = collect(
+            &oauth_input(
+                r"
+              id:
+                default: default-client
+",
+            )
+            .replace("pkce: required", "pkce: optional"),
+        )
+        .expect_err("optional pkce should fail");
+        assert!(error.to_string().contains("unsupported value 'optional'"));
+    }
+
+    #[test]
+    fn rejects_missing_redirect_uri() {
+        let error = collect(
+            &oauth_input(
+                r"
+              id:
+                default: default-client
+",
+            )
+            .replace(
+                "            redirect_uri: http://127.0.0.1:53682/oauth/callback\n",
+                "",
+            ),
+        )
+        .expect_err("missing redirect uri should fail");
+        assert!(error.to_string().contains("missing redirect_uri"));
+    }
+
+    #[test]
+    fn rejects_redirect_uri_without_explicit_port() {
+        let error = collect(
+            &oauth_input(
+                r"
+              id:
+                default: default-client
+",
+            )
+            .replace(
+                "http://127.0.0.1:53682/oauth/callback",
+                "http://127.0.0.1/oauth/callback",
+            ),
+        )
+        .expect_err("missing port should fail");
+        assert!(error.to_string().contains("explicit port"));
+    }
+
+    #[test]
+    fn rejects_non_loopback_redirect_uri() {
+        let error = collect(
+            &oauth_input(
+                r"
+              id:
+                default: default-client
+",
+            )
+            .replace(
+                "http://127.0.0.1:53682/oauth/callback",
+                "http://example.com:53682/oauth/callback",
+            ),
+        )
+        .expect_err("non-loopback redirect should fail");
+        assert!(error.to_string().contains("loopback host"));
+    }
+
+    #[test]
+    fn rejects_malformed_oauth_endpoint_urls() {
+        let error = collect(
+            &oauth_input(
+                r"
+              id:
+                default: default-client
+",
+            )
+            .replace("https://provider.example.com/oauth/authorize", "not a url"),
+        )
+        .expect_err("bad endpoint should fail");
+        assert!(error.to_string().contains("authorization_url is invalid"));
+    }
+
+    #[test]
+    fn rejects_client_secret_without_transport() {
+        let error = collect(&oauth_input(
+            r"
+              id:
+                input: OAUTH_CLIENT_ID
+              secret:
+                input: OAUTH_CLIENT_SECRET
+",
+        ))
+        .expect_err("missing transport should fail");
+        assert!(error.to_string().contains("missing transport"));
     }
 
     #[test]

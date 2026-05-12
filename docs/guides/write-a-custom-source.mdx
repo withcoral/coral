@@ -147,7 +147,7 @@ Use read-only SQL in `test_queries`. Prefer bounded checks such as `SELECT * FRO
 
 To connect an HTTP API, the source spec declares the base URL, auth, endpoints, and response shape.
 
-For authentication, Coral supports three top-level `auth.type` modes. Use `HeaderAuth` for declarative headers such as bearer tokens or API keys, `BasicAuth` for username/password HTTP Basic authentication, and `CustomAuth` for named request authenticators that need runtime logic such as AWS SigV4 signing. The example below uses `HeaderAuth`; for the full auth field reference and additional examples, see [HTTP-backed tables](/reference/source-spec-reference#http-backed-tables).
+Authentication has two separate parts. The `inputs` block defines the values Coral collects and stores when you add the source. The `auth` block defines how those stored values are used on outgoing HTTP requests. The example below collects `API_TOKEN` as a secret, then uses it to build the `Authorization` header with `HeaderAuth`. For the full auth field reference and additional examples, see [HTTP-backed tables](/reference/source-spec-reference#http-backed-tables).
 
 ```yaml
 name: demo_api
@@ -193,7 +193,7 @@ tables:
         type: Utf8
 ```
 
-When you run `coral source add --file`, Coral reads each declared `input` from an environment variable of the same name, or prompts for them when you pass `--interactive`. `kind: variable` values go to source variables; `kind: secret` values go to the secret store. API keys, bearer tokens, passwords, private keys, and authorization values must be secrets, even when the API key is read-only.
+When you run `coral source add --file`, Coral reads each declared `input` from an environment variable of the same name, or prompts for it when you pass `--interactive`. `kind: variable` values go to source variables; `kind: secret` values go to the secret store. API keys, bearer tokens, passwords, private keys, and authorization values must be secrets, even when the API key is read-only. Declaring an input only configures storage; it does not send the value to the API. Runtime request fields such as `auth.headers`, `BasicAuth`, `CustomAuth`, and request headers decide where stored inputs are used. For secret inputs, `credential.methods` controls how the secret is collected: `type: source_config` means environment-variable lookup by default or an interactive prompt with `--interactive`; other methods, such as OAuth authorization-code flow, describe alternative install-time retrieval choices.
 
 For the full set of HTTP response, pagination, auth, and column fields, see [HTTP-backed tables](/reference/source-spec-reference#http-backed-tables).
 

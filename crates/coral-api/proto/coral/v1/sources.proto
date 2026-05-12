@@ -74,6 +74,142 @@ message SourceInputSpec {
   string default_value = 4;
   // Optional authored hint shown to the user while collecting this input.
   string hint = 5;
+  // Optional credential retrieval choices for secret inputs.
+  SourceCredential credential = 6;
+}
+
+// Supported source credential retrieval method kinds.
+enum SourceCredentialMethodType {
+  // Method kind is unspecified.
+  SOURCE_CREDENTIAL_METHOD_TYPE_UNSPECIFIED = 0;
+  // Secret value is supplied through the source configuration path.
+  SOURCE_CREDENTIAL_METHOD_TYPE_SOURCE_CONFIG = 1;
+  // Coral retrieves the secret through an OAuth authorization-code flow.
+  SOURCE_CREDENTIAL_METHOD_TYPE_OAUTH = 2;
+}
+
+// Credential retrieval choices for one source secret input.
+message SourceCredential {
+  // Authored retrieval methods in display order.
+  repeated SourceCredentialMethod methods = 1;
+}
+
+// One credential retrieval method.
+message SourceCredentialMethod {
+  // Method kind.
+  SourceCredentialMethodType type = 1;
+  // Optional display label.
+  string label = 2;
+  // Optional display description.
+  string description = 3;
+  // OAuth configuration when `type` is OAuth.
+  OAuthCredentialMethod oauth = 4;
+}
+
+// OAuth authorization-code credential retrieval configuration.
+message OAuthCredentialMethod {
+  // OAuth flow settings.
+  OAuthCredentialFlow flow = 1;
+  // Loopback callback URI Coral binds during the OAuth session.
+  string redirect_uri = 2;
+  // Provider OAuth endpoints.
+  OAuthCredentialEndpoints endpoints = 3;
+  // OAuth client configuration.
+  OAuthCredentialClient client = 4;
+  // Optional scope parameter configuration.
+  OAuthCredentialScopes scopes = 5;
+}
+
+// Supported OAuth credential flow kinds.
+enum OAuthCredentialFlowType {
+  // Flow kind is unspecified.
+  O_AUTH_CREDENTIAL_FLOW_TYPE_UNSPECIFIED = 0;
+  // OAuth authorization-code flow.
+  O_AUTH_CREDENTIAL_FLOW_TYPE_AUTHORIZATION_CODE = 1;
+}
+
+// Supported OAuth PKCE modes.
+enum OAuthCredentialPkceMode {
+  // PKCE mode is unspecified.
+  O_AUTH_CREDENTIAL_PKCE_MODE_UNSPECIFIED = 0;
+  // PKCE must be used for the OAuth flow.
+  O_AUTH_CREDENTIAL_PKCE_MODE_REQUIRED = 1;
+  // PKCE is not used for the OAuth flow.
+  O_AUTH_CREDENTIAL_PKCE_MODE_DISABLED = 2;
+}
+
+// OAuth flow settings.
+message OAuthCredentialFlow {
+  // Flow kind.
+  OAuthCredentialFlowType type = 1;
+  // PKCE mode.
+  OAuthCredentialPkceMode pkce = 2;
+}
+
+// OAuth provider endpoints.
+message OAuthCredentialEndpoints {
+  // Provider authorization endpoint URL.
+  string authorization_url = 1;
+  // Provider token endpoint URL.
+  string token_url = 2;
+}
+
+// OAuth client configuration.
+message OAuthCredentialClient {
+  // Client ID resolution configuration.
+  OAuthCredentialClientId id = 1;
+  // Optional confidential-client secret configuration.
+  OAuthCredentialClientSecret secret = 2;
+}
+
+// OAuth client ID resolution configuration.
+message OAuthCredentialClientId {
+  // Optional manifest-authored default client ID.
+  string default = 1;
+  // Optional credential-retrieval input key for a client ID override.
+  string input = 2;
+}
+
+// Supported client secret transport modes.
+enum OAuthCredentialClientSecretTransport {
+  // Client secret transport is unspecified.
+  O_AUTH_CREDENTIAL_CLIENT_SECRET_TRANSPORT_UNSPECIFIED = 0;
+  // Client secret is sent using HTTP Basic authentication.
+  O_AUTH_CREDENTIAL_CLIENT_SECRET_TRANSPORT_BASIC_AUTH = 1;
+  // Client secret is sent in the token request body.
+  O_AUTH_CREDENTIAL_CLIENT_SECRET_TRANSPORT_REQUEST_BODY = 2;
+}
+
+// OAuth client secret retrieval configuration.
+message OAuthCredentialClientSecret {
+  // Credential-retrieval input key for the client secret.
+  string input = 1;
+  // How Coral sends the secret to the token endpoint.
+  OAuthCredentialClientSecretTransport transport = 2;
+}
+
+// Supported OAuth scope delimiters.
+enum OAuthCredentialScopeDelimiter {
+  // Scope delimiter is unspecified.
+  O_AUTH_CREDENTIAL_SCOPE_DELIMITER_UNSPECIFIED = 0;
+  // Scope values are joined with spaces.
+  O_AUTH_CREDENTIAL_SCOPE_DELIMITER_SPACE = 1;
+  // Scope values are joined with commas.
+  O_AUTH_CREDENTIAL_SCOPE_DELIMITER_COMMA = 2;
+}
+
+// OAuth scope parameter configuration.
+message OAuthCredentialScopes {
+  // The `scope` parameter value definition.
+  OAuthCredentialScope scope = 1;
+}
+
+// OAuth scope values and delimiter.
+message OAuthCredentialScope {
+  // Delimiter used to join scope values.
+  OAuthCredentialScopeDelimiter delimiter = 1;
+  // Authored scope values.
+  repeated string values = 2;
 }
 
 // One bundled or imported source metadata record.

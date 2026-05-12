@@ -119,10 +119,129 @@
           "properties": {
             "kind": { "const": "secret" },
             "required": { "type": "boolean" },
-            "hint": { "type": "string" }
+            "hint": { "type": "string" },
+            "credential": { "$ref": "#/$defs/credential" }
           }
         }
       ]
+    },
+    "credential": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["methods"],
+      "properties": {
+        "methods": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/credential_method" }
+        }
+      }
+    },
+    "credential_method": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type"],
+          "properties": {
+            "type": { "const": "source_config" },
+            "label": { "type": "string" },
+            "description": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "oauth"],
+          "properties": {
+            "type": { "const": "oauth" },
+            "label": { "type": "string" },
+            "description": { "type": "string" },
+            "oauth": { "$ref": "#/$defs/oauth_credential_method" }
+          }
+        }
+      ]
+    },
+    "oauth_credential_method": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["flow", "redirect_uri", "endpoints", "client"],
+      "properties": {
+        "flow": { "$ref": "#/$defs/oauth_flow" },
+        "redirect_uri": { "type": "string", "minLength": 1 },
+        "endpoints": { "$ref": "#/$defs/oauth_endpoints" },
+        "client": { "$ref": "#/$defs/oauth_client" },
+        "scopes": { "$ref": "#/$defs/oauth_scopes" }
+      }
+    },
+    "oauth_flow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "pkce"],
+      "properties": {
+        "type": { "const": "authorization_code" },
+        "pkce": { "type": "string", "enum": ["required", "disabled"] }
+      }
+    },
+    "oauth_endpoints": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["authorization_url", "token_url"],
+      "properties": {
+        "authorization_url": { "type": "string", "minLength": 1 },
+        "token_url": { "type": "string", "minLength": 1 }
+      }
+    },
+    "oauth_client": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id"],
+      "properties": {
+        "id": { "$ref": "#/$defs/oauth_client_id" },
+        "secret": { "$ref": "#/$defs/oauth_client_secret" }
+      }
+    },
+    "oauth_client_id": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "default": { "type": "string", "minLength": 1 },
+        "input": { "type": "string", "minLength": 1 }
+      },
+      "anyOf": [
+        { "required": ["default"] },
+        { "required": ["input"] }
+      ]
+    },
+    "oauth_client_secret": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["input", "transport"],
+      "properties": {
+        "input": { "type": "string", "minLength": 1 },
+        "transport": { "type": "string", "enum": ["basic_auth", "request_body"] }
+      }
+    },
+    "oauth_scopes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scope"],
+      "properties": {
+        "scope": { "$ref": "#/$defs/oauth_scope" }
+      }
+    },
+    "oauth_scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["delimiter", "values"],
+      "properties": {
+        "delimiter": { "type": "string", "enum": ["space", "comma"] },
+        "values": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
     },
     "auth": {
       "oneOf": [

@@ -5,13 +5,20 @@ use std::path::Path;
 use coral_api::CORAL_ERROR_REASON_SOURCE_NOT_FOUND;
 use coral_api::v1::{
     CreateBundledSourceRequest, DeleteSourceRequest, DiscoverSourcesRequest, GetSourceInfoRequest,
-    ImportSourceRequest, ListSourcesRequest, QueryTestFailure, QueryTestSuccess, Source,
-    SourceInfo, SourceInputKind, SourceInputSpec, SourceOrigin, SourceSecret, SourceVariable,
+    ImportSourceRequest, ListSourcesRequest, OAuthCredentialClientSecretTransport,
+    OAuthCredentialFlowType, OAuthCredentialPkceMode, OAuthCredentialScopeDelimiter,
+    QueryTestFailure, QueryTestSuccess, Source, SourceCredentialMethodType, SourceInfo,
+    SourceInputKind, SourceInputSpec, SourceOrigin, SourceSecret, SourceVariable,
     ValidateSourceRequest, ValidateSourceResponse, query_test_result,
 };
 use coral_client::{AppClient, DecodedStatusError, decode_status_error, default_workspace};
 use coral_spec::{
-    ManifestInputKind, ManifestInputSpec, ValidatedSourceManifest, parse_source_manifest_yaml,
+    ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestCredentialSpec,
+    ManifestInputKind, ManifestInputSpec, ManifestOAuthClientIdSpec, ManifestOAuthClientSecretSpec,
+    ManifestOAuthClientSecretTransport, ManifestOAuthClientSpec, ManifestOAuthCredentialSpec,
+    ManifestOAuthFlowKind, ManifestOAuthFlowSpec, ManifestOAuthPkceMode,
+    ManifestOAuthScopeDelimiter, ManifestOAuthScopeSpec, ManifestOAuthScopesSpec,
+    ValidatedSourceManifest, parse_source_manifest_yaml,
 };
 use dialoguer::console::style;
 use dialoguer::{Input, Password, theme::ColorfulTheme};
@@ -347,6 +354,154 @@ pub(crate) fn manifest_input_from_proto(
         required: input.required,
         default_value: input.default_value.clone(),
         hint: (!input.hint.is_empty()).then(|| input.hint.clone()),
+        credential: input
+            .credential
+            .as_ref()
+            .map(credential_from_proto)
+            .transpose()?,
+    })
+}
+
+fn credential_from_proto(
+    credential: &coral_api::v1::SourceCredential,
+) -> Result<ManifestCredentialSpec, anyhow::Error> {
+    Ok(ManifestCredentialSpec {
+        methods: credential
+            .methods
+            .iter()
+            .map(credential_method_from_proto)
+            .collect::<Result<Vec<_>, _>>()?,
+    })
+}
+
+fn credential_method_from_proto(
+    method: &coral_api::v1::SourceCredentialMethod,
+) -> Result<ManifestCredentialMethod, anyhow::Error> {
+    let kind = match SourceCredentialMethodType::try_from(method.r#type) {
+        Ok(SourceCredentialMethodType::SourceConfig) => ManifestCredentialMethodKind::SourceConfig,
+        Ok(SourceCredentialMethodType::Oauth) => ManifestCredentialMethodKind::OAuth,
+        Ok(SourceCredentialMethodType::Unspecified) | Err(_) => {
+            return Err(anyhow::anyhow!("unknown credential method type"));
+        }
+    };
+    Ok(ManifestCredentialMethod {
+        kind,
+        label: (!method.label.is_empty()).then(|| method.label.clone()),
+        description: (!method.description.is_empty()).then(|| method.description.clone()),
+        oauth: method.oauth.as_ref().map(oauth_from_proto).transpose()?,
+    })
+}
+
+fn oauth_from_proto(
+    oauth: &coral_api::v1::OAuthCredentialMethod,
+) -> Result<ManifestOAuthCredentialSpec, anyhow::Error> {
+    let flow = oauth
+        .flow
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("oauth credential method is missing flow"))
+        .copied()
+        .and_then(oauth_flow_from_proto)?;
+    let endpoints = oauth
+        .endpoints
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("oauth credential method is missing endpoints"))?;
+    let client = oauth
+        .client
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("oauth credential method is missing client"))
+        .and_then(oauth_client_from_proto)?;
+    Ok(ManifestOAuthCredentialSpec {
+        flow,
+        redirect_uri: oauth.redirect_uri.clone(),
+        authorization_url: endpoints.authorization_url.clone(),
+        token_url: endpoints.token_url.clone(),
+        client,
+        scopes: oauth
+            .scopes
+            .as_ref()
+            .map(oauth_scopes_from_proto)
+            .transpose()?,
+    })
+}
+
+fn oauth_flow_from_proto(
+    flow: coral_api::v1::OAuthCredentialFlow,
+) -> Result<ManifestOAuthFlowSpec, anyhow::Error> {
+    let kind = match OAuthCredentialFlowType::try_from(flow.r#type) {
+        Ok(OAuthCredentialFlowType::AuthorizationCode) => ManifestOAuthFlowKind::AuthorizationCode,
+        Ok(OAuthCredentialFlowType::Unspecified) | Err(_) => {
+            return Err(anyhow::anyhow!("unknown oauth flow type"));
+        }
+    };
+    let pkce = match OAuthCredentialPkceMode::try_from(flow.pkce) {
+        Ok(OAuthCredentialPkceMode::Required) => ManifestOAuthPkceMode::Required,
+        Ok(OAuthCredentialPkceMode::Disabled) => ManifestOAuthPkceMode::Disabled,
+        Ok(OAuthCredentialPkceMode::Unspecified) | Err(_) => {
+            return Err(anyhow::anyhow!("unknown oauth pkce mode"));
+        }
+    };
+    Ok(ManifestOAuthFlowSpec { kind, pkce })
+}
+
+fn oauth_client_from_proto(
+    client: &coral_api::v1::OAuthCredentialClient,
+) -> Result<ManifestOAuthClientSpec, anyhow::Error> {
+    let id = client
+        .id
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("oauth client is missing id"))?;
+    Ok(ManifestOAuthClientSpec {
+        id: ManifestOAuthClientIdSpec {
+            default: (!id.default.is_empty()).then(|| id.default.clone()),
+            input: (!id.input.is_empty()).then(|| id.input.clone()),
+        },
+        secret: client
+            .secret
+            .as_ref()
+            .map(oauth_client_secret_from_proto)
+            .transpose()?,
+    })
+}
+
+fn oauth_client_secret_from_proto(
+    secret: &coral_api::v1::OAuthCredentialClientSecret,
+) -> Result<ManifestOAuthClientSecretSpec, anyhow::Error> {
+    let transport = match OAuthCredentialClientSecretTransport::try_from(secret.transport) {
+        Ok(OAuthCredentialClientSecretTransport::BasicAuth) => {
+            ManifestOAuthClientSecretTransport::BasicAuth
+        }
+        Ok(OAuthCredentialClientSecretTransport::RequestBody) => {
+            ManifestOAuthClientSecretTransport::RequestBody
+        }
+        Ok(OAuthCredentialClientSecretTransport::Unspecified) | Err(_) => {
+            return Err(anyhow::anyhow!("unknown oauth client secret transport"));
+        }
+    };
+    Ok(ManifestOAuthClientSecretSpec {
+        input: secret.input.clone(),
+        transport,
+    })
+}
+
+fn oauth_scopes_from_proto(
+    scopes: &coral_api::v1::OAuthCredentialScopes,
+) -> Result<ManifestOAuthScopesSpec, anyhow::Error> {
+    let scope = scopes
+        .scope
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("oauth scopes is missing scope"))?;
+    let delimiter = match OAuthCredentialScopeDelimiter::try_from(scope.delimiter) {
+        Ok(OAuthCredentialScopeDelimiter::Space) => ManifestOAuthScopeDelimiter::Space,
+        Ok(OAuthCredentialScopeDelimiter::Comma) => ManifestOAuthScopeDelimiter::Comma,
+        Ok(OAuthCredentialScopeDelimiter::Unspecified) | Err(_) => {
+            return Err(anyhow::anyhow!("unknown oauth scope delimiter"));
+        }
+    };
+    Ok(ManifestOAuthScopesSpec {
+        scope: ManifestOAuthScopeSpec {
+            delimiter,
+            values: scope.values.clone(),
+        },
     })
 }
 
@@ -696,14 +851,19 @@ mod tests {
         reason = "collected input order assertions intentionally fail loudly in tests"
     )]
 
-    use coral_api::v1::ValidateSourceResponse;
+    use coral_api::v1::{
+        OAuthCredentialClient, OAuthCredentialClientId, OAuthCredentialEndpoints,
+        OAuthCredentialFlow, OAuthCredentialFlowType, OAuthCredentialMethod,
+        OAuthCredentialPkceMode, SourceCredential, SourceCredentialMethod,
+        SourceCredentialMethodType, SourceInputKind, SourceInputSpec, ValidateSourceResponse,
+    };
     use coral_spec::{ManifestInputKind, ManifestInputSpec};
 
     use std::collections::HashMap;
 
     use super::{
         ValidationFollowUp, ValidationSeverityMode, collect_inputs_with, finalize_input_value,
-        source_name_arg, validation_follow_up,
+        manifest_input_from_proto, source_name_arg, validation_follow_up,
     };
 
     #[test]
@@ -715,6 +875,7 @@ mod tests {
                 required: false,
                 default_value: "https://api.linear.app".to_string(),
                 hint: None,
+                credential: None,
             },
             ManifestInputSpec {
                 key: "LINEAR_API_KEY".to_string(),
@@ -722,6 +883,7 @@ mod tests {
                 required: true,
                 default_value: String::new(),
                 hint: None,
+                credential: None,
             },
         ];
         let env: HashMap<&str, &str> = [("LINEAR_API_KEY", "lin_token")].into_iter().collect();
@@ -745,6 +907,7 @@ mod tests {
             required: false,
             default_value: "https://example.com".to_string(),
             hint: None,
+            credential: None,
         }];
         let (variables, _) = collect_inputs_with(&inputs, |_| "https://override.test".to_string())
             .expect("env should override default");
@@ -760,6 +923,7 @@ mod tests {
             required: true,
             default_value: "https://example.com".to_string(),
             hint: None,
+            credential: None,
         }];
         let (variables, secrets) = collect_inputs_with(&inputs, |_| String::new())
             .expect("default should satisfy required");
@@ -777,6 +941,7 @@ mod tests {
                 required: true,
                 default_value: String::new(),
                 hint: None,
+                credential: None,
             },
             ManifestInputSpec {
                 key: "OTHER_KEY".to_string(),
@@ -784,6 +949,7 @@ mod tests {
                 required: true,
                 default_value: String::new(),
                 hint: None,
+                credential: None,
             },
         ];
         let error = collect_inputs_with(&inputs, |_| String::new())
@@ -811,6 +977,7 @@ mod tests {
             required: false,
             default_value: String::new(),
             hint: None,
+            credential: None,
         }];
         let (variables, secrets) =
             collect_inputs_with(&inputs, |_| String::new()).expect("optional should be omitted");
@@ -826,6 +993,7 @@ mod tests {
             required: false,
             default_value: "https://example.com".to_string(),
             hint: None,
+            credential: None,
         };
         assert_eq!(
             finalize_input_value(&input, String::new(), "source variable")
@@ -842,10 +1010,81 @@ mod tests {
             required: true,
             default_value: String::new(),
             hint: None,
+            credential: None,
         };
         let error = finalize_input_value(&input, String::new(), "source secret")
             .expect_err("required empty input should fail");
         assert!(error.to_string().contains("missing required source secret"));
+    }
+
+    #[test]
+    fn manifest_input_from_proto_preserves_credential_methods() {
+        let input = SourceInputSpec {
+            key: "API_TOKEN".to_string(),
+            kind: SourceInputKind::Secret as i32,
+            required: true,
+            default_value: String::new(),
+            hint: String::new(),
+            credential: Some(SourceCredential {
+                methods: vec![
+                    SourceCredentialMethod {
+                        r#type: SourceCredentialMethodType::Oauth as i32,
+                        label: "Connect".to_string(),
+                        description: String::new(),
+                        oauth: Some(OAuthCredentialMethod {
+                            flow: Some(OAuthCredentialFlow {
+                                r#type: OAuthCredentialFlowType::AuthorizationCode as i32,
+                                pkce: OAuthCredentialPkceMode::Required as i32,
+                            }),
+                            redirect_uri: "http://127.0.0.1:53682/oauth/callback".to_string(),
+                            endpoints: Some(OAuthCredentialEndpoints {
+                                authorization_url: "https://provider.example.com/oauth/authorize"
+                                    .to_string(),
+                                token_url: "https://provider.example.com/oauth/token".to_string(),
+                            }),
+                            client: Some(OAuthCredentialClient {
+                                id: Some(OAuthCredentialClientId {
+                                    default: "default-client".to_string(),
+                                    input: String::new(),
+                                }),
+                                secret: None,
+                            }),
+                            scopes: None,
+                        }),
+                    },
+                    SourceCredentialMethod {
+                        r#type: SourceCredentialMethodType::SourceConfig as i32,
+                        label: "Paste token".to_string(),
+                        description: String::new(),
+                        oauth: None,
+                    },
+                ],
+            }),
+        };
+
+        let input = manifest_input_from_proto(&input).expect("manifest input");
+        let credential = input.credential.expect("credential");
+        assert_eq!(credential.methods.len(), 2);
+        assert_eq!(
+            credential.methods[0].kind,
+            coral_spec::ManifestCredentialMethodKind::OAuth
+        );
+        assert_eq!(credential.methods[0].label.as_deref(), Some("Connect"));
+        assert_eq!(
+            credential.methods[0]
+                .oauth
+                .as_ref()
+                .expect("oauth")
+                .client
+                .id
+                .default
+                .as_deref(),
+            Some("default-client")
+        );
+        assert_eq!(
+            credential.methods[1].kind,
+            coral_spec::ManifestCredentialMethodKind::SourceConfig
+        );
     }
 
     #[test]
