@@ -10,7 +10,7 @@ description: "Data sources that ship with Coral."
 
 {/* AUTO-GENERATED — DO NOT EDIT. Run `make docs-generate` to update. */}
 
-Coral supports connecting to some data sources out of the box.<br />
+Coral supports connecting to some data sources out of the box. These bundled specs live in [sources/core](https://github.com/withcoral/coral/tree/main/sources/core).<br />
 If the source you need is not available, you can extend Coral by [writing a custom source spec](/guides/write-a-custom-source).
 
 <Tip>
