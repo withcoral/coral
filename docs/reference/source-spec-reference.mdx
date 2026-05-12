@@ -704,10 +704,12 @@ Rules:
 - references elsewhere in the manifest use `{{input.KEY}}` templates or `from: input`
 - credential-like inputs such as API keys, tokens, passwords, secrets, private keys, and bearer or authorization values must be `kind: secret`; Coral rejects those names as variables because variable values are visible through source APIs and `coral.inputs`
 
-Secret inputs can also declare `credential.methods` to describe how Coral can
-retrieve the secret during interactive install. This does not replace the
-top-level `auth` block: `credential.methods` is install-time credential
-retrieval, while `auth` is runtime request authentication.
+Secret inputs can also declare `credential.methods` metadata for install-time
+credential retrieval choices. Coral surfaces this metadata through source
+discovery and source-info responses, but the CLI still collects secret values
+through the normal environment variable or prompt path. This does not replace
+the top-level `auth` block: `credential.methods` describes install-time
+credential retrieval options, while `auth` is runtime request authentication.
 
 ```yaml
 inputs:
@@ -743,13 +745,13 @@ inputs:
 Supported credential method types are `source_config` and `oauth`.
 `source_config` uses the normal source input path: an environment variable by
 default, or an interactive prompt when `coral source add --interactive` is
-used. OAuth currently supports authorization-code flow with a fixed loopback
-HTTP callback URI:
+used. OAuth method metadata currently supports authorization-code flow with a
+fixed loopback HTTP callback URI:
 `http://127.0.0.1:<port>/<path>` or
-`http://localhost:<port>/<path>`. Coral binds the exact host, port, and path
-from `redirect_uri`; if that port is busy, install fails instead of choosing a
-random port. When users provide their own OAuth client ID, they must configure
-that exact redirect URI in the OAuth app.
+`http://localhost:<port>/<path>`. Coral validates and exposes the declared
+`redirect_uri`, but does not run the OAuth flow yet. When users provide their
+own OAuth client ID for a future OAuth retrieval flow, they must configure that
+exact redirect URI in the OAuth app.
 
 `pkce` is either `required` or `disabled`. Public clients can declare
 `client.id.default`, `client.id.input`, or both; an interactive `input` value
@@ -757,10 +759,10 @@ overrides `default`. Confidential clients add `client.secret.input` and a
 required `transport` of `basic_auth` or `request_body`. Client secrets are sent
 only to the token endpoint and are never included in the authorization URL.
 
-Scopes are declared under `scopes.scope`; `delimiter: space` produces
-`scope=a b`, and `delimiter: comma` produces `scope=a,b`. Coral may store
-refresh tokens and OAuth metadata alongside the source secret, but automatic
-token refresh is not implemented yet.
+Scopes are declared under `scopes.scope`; `delimiter: space` represents
+`scope=a b`, and `delimiter: comma` represents `scope=a,b`. OAuth token
+exchange, refresh-token storage, and automatic token refresh are not
+implemented yet.
 
 At runtime, installed source inputs are also surfaced through `coral.inputs`.
 This is useful when agents or scripts need to inspect non-secret source config
