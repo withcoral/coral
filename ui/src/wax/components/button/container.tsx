@@ -1,5 +1,5 @@
 import classNames from 'classnames'
-import React, { ComponentProps, ElementType } from 'react'
+import React, { ComponentProps, ElementType, MouseEvent } from 'react'
 
 import type { ButtonSize, ButtonVariant } from '@/wax/components/button/button.css'
 
@@ -11,6 +11,11 @@ export type ButtonProps<T extends ElementType = 'button'> = ButtonBaseProps &
   Omit<React.ComponentPropsWithoutRef<T>, 'as' | keyof ButtonBaseProps> & {
     as?: T
   }
+
+function handleDisabledClick(event: MouseEvent<HTMLElement>) {
+  event.preventDefault()
+  event.stopPropagation()
+}
 
 interface ButtonBaseProps {
   ariaLabel?: string
@@ -43,6 +48,7 @@ export function Container<T extends ElementType = 'button'>(props: ButtonProps<T
   } = props
 
   const Component = (as ?? 'button') as ElementType
+  const isNativeButton = Component === 'button'
   const type = 'type' in props ? props.type! : 'button'
   let hasPrefix = hasPrefixProp
   let hasSuffix = hasSuffixProp
@@ -106,8 +112,9 @@ export function Container<T extends ElementType = 'button'>(props: ButtonProps<T
     ),
     ref,
     ...rest,
-    ...(Component === 'button' && { disabled, type }),
-    ...(Component !== 'button' && disabled && { 'aria-disabled': true, href: undefined, tabIndex: -1 }),
+    onClick: !isNativeButton && disabled ? handleDisabledClick : rest.onClick,
+    ...(isNativeButton && { disabled, type }),
+    ...(!isNativeButton && disabled && { 'aria-disabled': true, href: undefined, tabIndex: -1 }),
   }
 
   return <Component {...componentProps}>{newChildren}</Component>

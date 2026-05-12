@@ -1,10 +1,15 @@
 import classNames from 'classnames'
-import React, { ElementType } from 'react'
+import React, { ElementType, MouseEvent } from 'react'
 
 import { Icon } from '@/wax/components/icon'
 import type { IconName } from '@/wax/components/icon'
 
 import { activeClass, disabledClass, iconStyles, sidebarButton, textStyles } from './sidebar-button.css'
+
+function handleDisabledClick(event: MouseEvent<HTMLElement>) {
+  event.preventDefault()
+  event.stopPropagation()
+}
 
 export interface SidebarButtonProps<T extends ElementType = 'button'> {
   as?: T
@@ -36,6 +41,7 @@ export function SidebarButton<T extends ElementType = 'button'>(props: Polymorph
   } = props
 
   const Component = (as ?? 'button') as ElementType
+  const isNativeButton = Component === 'button'
   const type = 'type' in props ? props.type! : 'button'
 
   const componentProps = {
@@ -46,8 +52,9 @@ export function SidebarButton<T extends ElementType = 'button'>(props: Polymorph
     ),
     ref,
     ...rest,
-    ...(Component === 'button' && { disabled, type }),
-    ...(Component !== 'button' && disabled && { 'aria-disabled': true, href: undefined, tabIndex: -1 }),
+    onClick: !isNativeButton && disabled ? handleDisabledClick : rest.onClick,
+    ...(isNativeButton && { disabled, type }),
+    ...(!isNativeButton && disabled && { 'aria-disabled': true, href: undefined, tabIndex: -1 }),
   }
 
   return (
