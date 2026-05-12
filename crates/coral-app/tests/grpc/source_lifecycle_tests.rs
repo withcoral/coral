@@ -12,6 +12,7 @@ use coral_api::v1::{
     ListCatalogRequest, PaginationRequest, QueryTestFailure, QueryTestSuccess,
     SourceCredentialStorage, SourceOrigin, SourceSecret, SourceVariable, ValidateSourceRequest,
     Workspace, catalog_item, import_source_response, query_test_result,
+    source_credential_method::Method as ProtoCredentialMethod,
     source_input_spec::Input as ProtoSourceInput,
 };
 use coral_client::default_workspace;
@@ -831,6 +832,72 @@ async fn get_source_info_returns_available_bundled_metadata() {
     assert!(
         info.inputs.iter().any(|input| input.key == "GITHUB_TOKEN"),
         "expected bundled manifest inputs"
+    );
+
+    let linear = harness
+        .source_client()
+        .get_source_info(Request::new(GetSourceInfoRequest {
+            workspace: Some(default_workspace()),
+            name: "linear".to_string(),
+        }))
+        .await
+        .expect("get linear source info")
+        .into_inner()
+        .source_info
+        .expect("linear source info response");
+    let linear_api_key = linear
+        .inputs
+        .iter()
+        .find(|input| input.key == "LINEAR_API_KEY")
+        .expect("linear api key input");
+    assert!(!linear_api_key.required);
+    let ProtoSourceInput::Secret(linear_api_key) =
+        linear_api_key.input.as_ref().expect("linear api key input")
+    else {
+        panic!("linear api key should be a secret input");
+    };
+    assert!(linear_api_key.credential.is_none());
+    let linear_oauth_token = linear
+        .inputs
+        .iter()
+        .find(|input| input.key == "LINEAR_OAUTH_ACCESS_TOKEN")
+        .expect("linear oauth token input");
+    assert!(!linear_oauth_token.required);
+    let ProtoSourceInput::Secret(linear_oauth_token) = linear_oauth_token
+        .input
+        .as_ref()
+        .expect("linear oauth token input")
+    else {
+        panic!("linear oauth token should be a secret input");
+    };
+    let credential = linear_oauth_token.credential.as_ref().expect("credential");
+    assert_eq!(credential.methods.len(), 1);
+    let ProtoCredentialMethod::OauthAuthorizationCode(oauth) =
+        credential.methods[0].method.as_ref().expect("method")
+    else {
+        panic!("expected oauth method");
+    };
+    assert_eq!(
+        oauth
+            .client
+            .as_ref()
+            .expect("client")
+            .id
+            .as_ref()
+            .expect("client id")
+            .default_value,
+        "9d480c78cc389c7f7584afd60555aec1"
+    );
+    assert_eq!(
+        oauth
+            .scopes
+            .as_ref()
+            .expect("scopes")
+            .scope
+            .as_ref()
+            .expect("scope")
+            .delimiter(),
+        coral_api::v1::OauthCredentialScopeDelimiter::Comma
     );
 }
 
