@@ -79,6 +79,7 @@ rust-embed = { version = "8", features = ["mime-guess"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 serde_yaml = "0.9"
+sha2 = "0.10"
 sqlparser = "0.59.0"
 strsim = "0.11"
 thiserror = "2"

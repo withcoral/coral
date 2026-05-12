@@ -2,6 +2,7 @@
 
 use coral_api::v1::source_service_server::SourceService as SourceServiceApi;
 use coral_api::v1::{
+    CompleteSourceCredentialOAuthRequest, CompleteSourceCredentialOAuthResponse,
     CreateBundledSourceRequest, CreateBundledSourceResponse, DeleteSourceRequest,
     DeleteSourceResponse, DiscoverSourcesRequest, DiscoverSourcesResponse, GetSourceInfoRequest,
     GetSourceInfoResponse, GetSourceRequest, GetSourceResponse, ImportSourceRequest,
@@ -10,9 +11,11 @@ use coral_api::v1::{
     OAuthCredentialClientSecret, OAuthCredentialEndpoints, OAuthCredentialScope,
     OAuthCredentialScopes, OauthCredentialClientSecretTransport, OauthCredentialPkceMode,
     OauthCredentialScopeDelimiter, Source, SourceConfigCredentialMethod, SourceCredential,
-    SourceCredentialMethod, SourceInfo, SourceInputSpec, SourceOrigin as ProtoSourceOrigin,
-    SourceSecret, SourceSecretInput, SourceVariable, SourceVariableInput, ValidateSourceRequest,
-    ValidateSourceResponse, source_credential_method::Method as ProtoCredentialMethod,
+    SourceCredentialMetadata, SourceCredentialMethod, SourceInfo, SourceInputSpec,
+    SourceOrigin as ProtoSourceOrigin, SourceSecret, SourceSecretInput, SourceVariable,
+    SourceVariableInput, StartSourceCredentialOAuthRequest, StartSourceCredentialOAuthResponse,
+    ValidateSourceRequest, ValidateSourceResponse,
+    source_credential_method::Method as ProtoCredentialMethod,
     source_input_spec::Input as ProtoSourceInput,
 };
 use coral_spec::{
@@ -23,6 +26,7 @@ use coral_spec::{
 use tonic::{Request, Response, Status};
 
 use crate::bootstrap::app_status;
+use crate::credentials::oauth::{OAuthCredentialManager, StartOAuthCredentialRequest};
 use crate::query::manager::QueryManager;
 use crate::sources::SourceName;
 use crate::sources::manager::{
@@ -39,13 +43,19 @@ use crate::workspaces::WorkspaceName;
 pub(crate) struct SourceService {
     sources: SourceManager,
     queries: QueryManager,
+    oauth: OAuthCredentialManager,
 }
 
 impl SourceService {
-    pub(crate) fn new(source_manager: SourceManager, query_manager: QueryManager) -> Self {
+    pub(crate) fn new(
+        source_manager: SourceManager,
+        query_manager: QueryManager,
+        oauth_manager: OAuthCredentialManager,
+    ) -> Self {
         Self {
             sources: source_manager,
             queries: query_manager,
+            oauth: oauth_manager,
         }
     }
 }
@@ -174,6 +184,77 @@ impl SourceServiceApi for SourceService {
                 .map_err(app_status)?;
             Ok(Response::new(ImportSourceResponse {
                 source: Some(installed_source_to_proto(&workspace_name, installed)),
+            }))
+        })
+        .await
+    }
+
+    async fn start_source_credential_o_auth(
+        &self,
+        request: Request<StartSourceCredentialOAuthRequest>,
+    ) -> Result<Response<StartSourceCredentialOAuthResponse>, Status> {
+        let span = grpc_span(&request);
+        let sources = self.sources.clone();
+        let oauth = self.oauth.clone();
+        instrument_grpc(span, async move {
+            let request = request.into_inner();
+            let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            let source_name = (!request.source_name.trim().is_empty())
+                .then(|| SourceName::parse(&request.source_name))
+                .transpose()
+                .map_err(app_status)?;
+            let candidate = sources
+                .credential_candidate(
+                    &workspace_name,
+                    source_name.as_ref(),
+                    (!request.manifest_yaml.trim().is_empty())
+                        .then_some(request.manifest_yaml.as_str()),
+                )
+                .map_err(app_status)?;
+            let credential_inputs = request
+                .credential_inputs
+                .into_iter()
+                .map(|input| (input.key, input.value))
+                .collect();
+            let started = oauth
+                .start(StartOAuthCredentialRequest {
+                    workspace_name: &workspace_name,
+                    candidate: &candidate,
+                    input_key: &request.input_key,
+                    method_index: usize::try_from(request.method_index).unwrap_or(usize::MAX),
+                    credential_inputs,
+                })
+                .await
+                .map_err(app_status)?;
+            Ok(Response::new(StartSourceCredentialOAuthResponse {
+                session_id: started.session_id,
+                authorization_url: started.authorization_url,
+                expires_in_seconds: started.expires_in_seconds,
+            }))
+        })
+        .await
+    }
+
+    async fn complete_source_credential_o_auth(
+        &self,
+        request: Request<CompleteSourceCredentialOAuthRequest>,
+    ) -> Result<Response<CompleteSourceCredentialOAuthResponse>, Status> {
+        let span = grpc_span(&request);
+        let oauth = self.oauth.clone();
+        instrument_grpc(span, async move {
+            let request = request.into_inner();
+            let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            let completed = oauth
+                .complete(&workspace_name, &request.session_id)
+                .await
+                .map_err(app_status)?;
+            Ok(Response::new(CompleteSourceCredentialOAuthResponse {
+                input_key: completed.input_key,
+                metadata: completed
+                    .metadata
+                    .into_iter()
+                    .map(|(key, value)| SourceCredentialMetadata { key, value })
+                    .collect(),
             }))
         })
         .await

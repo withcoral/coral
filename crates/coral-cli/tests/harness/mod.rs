@@ -16,6 +16,7 @@ use coral_api::v1::query_service_server::{QueryService, QueryServiceServer};
 use coral_api::v1::source_service_server::{SourceService, SourceServiceServer};
 use coral_api::v1::{
     CatalogItem, CatalogSearchResult, Column, ColumnSearchResult, CreateBundledSourceRequest,
+    CompleteSourceCredentialOAuthRequest, CompleteSourceCredentialOAuthResponse,
     CreateBundledSourceResponse, DeleteSourceRequest, DeleteSourceResponse, DescribeTableRequest,
     DescribeTableResponse, DiscoverSourcesRequest, DiscoverSourcesResponse, ExecuteSqlRequest,
     ExecuteSqlResponse, ExplainSqlRequest, ExplainSqlResponse, GetSourceInfoRequest,
@@ -23,7 +24,8 @@ use coral_api::v1::{
     ImportSourceResponse, ListCatalogRequest, ListCatalogResponse, ListColumnsRequest,
     ListColumnsResponse, ListSourcesRequest, ListSourcesResponse, PaginationRequest,
     PaginationResponse, QueryPlan, SearchCatalogRequest, SearchCatalogResponse, Source, SourceInfo,
-    SourceInputSpec, SourceOrigin, SourceSecretInput, Table, TableSummary, ValidateSourceRequest,
+    SourceInputSpec, SourceOrigin, SourceSecretInput, StartSourceCredentialOAuthRequest,
+    StartSourceCredentialOAuthResponse, Table, TableSummary, ValidateSourceRequest,
     ValidateSourceResponse, Workspace, catalog_item, source_input_spec::Input as ProtoSourceInput,
 };
 use coral_api::{CORAL_ERROR_DOMAIN, CORAL_ERROR_REASON_SOURCE_NOT_FOUND};
@@ -553,6 +555,8 @@ struct Captured {
     get_source_info: Mutex<Vec<GetSourceInfoRequest>>,
     create_bundled_source: Mutex<Vec<CreateBundledSourceRequest>>,
     import_source: Mutex<Vec<ImportSourceRequest>>,
+    start_source_credential_oauth: Mutex<Vec<StartSourceCredentialOAuthRequest>>,
+    complete_source_credential_oauth: Mutex<Vec<CompleteSourceCredentialOAuthRequest>>,
     delete_source: Mutex<Vec<DeleteSourceRequest>>,
     validate_source: Mutex<Vec<ValidateSourceRequest>>,
 }
@@ -867,6 +871,37 @@ impl SourceService for MockSourceService {
             .push(request.into_inner());
         Ok(Response::new(ImportSourceResponse {
             source: Some(mock_source()),
+        }))
+    }
+
+    async fn start_source_credential_o_auth(
+        &self,
+        request: Request<StartSourceCredentialOAuthRequest>,
+    ) -> Result<Response<StartSourceCredentialOAuthResponse>, Status> {
+        self.captured
+            .start_source_credential_oauth
+            .lock()
+            .expect("start_source_credential_oauth capture")
+            .push(request.into_inner());
+        Ok(Response::new(StartSourceCredentialOAuthResponse {
+            session_id: "test-oauth-session".to_string(),
+            authorization_url: "http://127.0.0.1:53682/oauth/authorize".to_string(),
+            expires_in_seconds: 600,
+        }))
+    }
+
+    async fn complete_source_credential_o_auth(
+        &self,
+        request: Request<CompleteSourceCredentialOAuthRequest>,
+    ) -> Result<Response<CompleteSourceCredentialOAuthResponse>, Status> {
+        self.captured
+            .complete_source_credential_oauth
+            .lock()
+            .expect("complete_source_credential_oauth capture")
+            .push(request.into_inner());
+        Ok(Response::new(CompleteSourceCredentialOAuthResponse {
+            input_key: "GITHUB_TOKEN".to_string(),
+            metadata: Vec::new(),
         }))
     }
 

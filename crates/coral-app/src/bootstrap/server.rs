@@ -38,6 +38,7 @@ use super::env::AppEnvironment;
 use super::error::AppError;
 use crate::EngineExtensionsProvider;
 use crate::catalog::service::CatalogService;
+use crate::credentials::oauth::OAuthCredentialManager;
 use crate::credentials::{CredentialManager, CredentialStore};
 use crate::feedback::manager::FeedbackManager;
 use crate::feedback::publisher::{
@@ -268,6 +269,7 @@ impl ServerBuilder {
             credential_manager.clone(),
             layout.clone(),
         );
+        let oauth_manager = OAuthCredentialManager::new(credential_manager.clone());
         let feedback_manager =
             FeedbackManager::with_publisher(layout.clone(), self.config.feedback_publisher);
         let query_manager = QueryManager::new(
@@ -285,6 +287,7 @@ impl ServerBuilder {
         start_server(
             source_manager,
             query_manager,
+            oauth_manager,
             feedback_manager,
             trace_service,
             self.config.mode,
@@ -366,11 +369,12 @@ impl Drop for RunningServer {
 async fn start_server(
     source_manager: SourceManager,
     query_manager: QueryManager,
+    oauth_manager: OAuthCredentialManager,
     feedback_manager: FeedbackManager,
     trace_service: Option<TraceService>,
     mode: ServerMode,
 ) -> Result<RunningServer, AppError> {
-    let source_service = SourceService::new(source_manager, query_manager.clone());
+    let source_service = SourceService::new(source_manager, query_manager.clone(), oauth_manager);
     let catalog_service = CatalogService::new(query_manager.clone());
     let query_service = QueryService::new(query_manager);
     let feedback_service = FeedbackService::new(feedback_manager);
@@ -629,6 +633,7 @@ mod tests {
         ServerBuilder, ServerMode, StaticAsset, StaticAssetsProvider, is_grpc_web_content_type,
         is_native_grpc_content_type, start_server,
     };
+    use crate::credentials::oauth::OAuthCredentialManager;
     use crate::credentials::{CredentialManager, CredentialStore};
     use crate::feedback::manager::FeedbackManager;
     use crate::query::manager::QueryManager;
@@ -700,6 +705,7 @@ enabled = false
             credential_manager.clone(),
             layout.clone(),
         );
+        let oauth_manager = OAuthCredentialManager::new(credential_manager.clone());
         let feedback_manager = FeedbackManager::new(layout.clone());
         let query_manager = QueryManager::new(
             config_store,
@@ -713,6 +719,7 @@ enabled = false
         let server = start_server(
             source_manager,
             query_manager,
+            oauth_manager,
             feedback_manager,
             Some(trace_service),
             ServerMode::NativeGrpc,
@@ -982,6 +989,7 @@ enabled = false
             credential_manager.clone(),
             layout.clone(),
         );
+        let oauth_manager = OAuthCredentialManager::new(credential_manager.clone());
         let feedback_manager = FeedbackManager::new(layout.clone());
         let query_manager = QueryManager::new(
             config_store,
@@ -995,6 +1003,7 @@ enabled = false
         let running = start_server(
             source_manager,
             query_manager,
+            oauth_manager,
             feedback_manager,
             None,
             ServerMode::NativeGrpc,
@@ -1070,6 +1079,7 @@ tables:
             credential_manager.clone(),
             layout.clone(),
         );
+        let oauth_manager = OAuthCredentialManager::new(credential_manager.clone());
         let feedback_manager = FeedbackManager::new(layout.clone());
         let query_manager = QueryManager::new(
             config_store,
@@ -1081,6 +1091,7 @@ tables:
         let running = start_server(
             source_manager,
             query_manager,
+            oauth_manager,
             feedback_manager,
             None,
             ServerMode::NativeGrpc,
@@ -1168,6 +1179,7 @@ tables:
             credential_manager.clone(),
             layout.clone(),
         );
+        let oauth_manager = OAuthCredentialManager::new(credential_manager.clone());
         let feedback_manager = FeedbackManager::new(layout.clone());
         let query_manager = QueryManager::new(
             config_store,
@@ -1179,6 +1191,7 @@ tables:
         let running = start_server(
             source_manager,
             query_manager,
+            oauth_manager,
             feedback_manager,
             None,
             ServerMode::NativeGrpc,
