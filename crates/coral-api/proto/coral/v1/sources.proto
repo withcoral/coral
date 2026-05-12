@@ -262,40 +262,6 @@ message ImportSourceResponse {
   Source source = 1;
 }
 
-// Starts OAuth retrieval for one source secret input.
-message StartSourceCredentialOAuthRequest {
-  // Owning workspace resource.
-  Workspace workspace = 1;
-  // Bundled or installed source name. Empty when `manifest_yaml` supplies the source context.
-  string source_name = 2;
-  // Raw imported manifest YAML. Empty when `source_name` supplies the source context.
-  string manifest_yaml = 3;
-  // Secret input key being retrieved.
-  string input_key = 4;
-  // Zero-based selected credential method index.
-  uint32 method_index = 5;
-  // Method-specific retrieval input values, such as client ID or client secret.
-  repeated SourceVariable credential_inputs = 6;
-}
-
-// OAuth retrieval start details.
-message StartSourceCredentialOAuthResponse {
-  // App-owned OAuth session ID.
-  string session_id = 1;
-  // Provider authorization URL the user must visit.
-  string authorization_url = 2;
-  // Seconds until the session expires.
-  uint64 expires_in_seconds = 3;
-}
-
-// Completes OAuth retrieval for one source secret input.
-message CompleteSourceCredentialOAuthRequest {
-  // Owning workspace resource.
-  Workspace workspace = 1;
-  // App-owned OAuth session ID returned by StartSourceCredentialOAuth.
-  string session_id = 2;
-}
-
 // Safe metadata returned after OAuth retrieval completes.
 message SourceCredentialMetadata {
   // Metadata key.
@@ -304,12 +270,59 @@ message SourceCredentialMetadata {
   string value = 2;
 }
 
-// OAuth retrieval completion details.
-message CompleteSourceCredentialOAuthResponse {
-  // Secret input key populated by the completed OAuth session.
+// OAuth credential retrieval selected for one source secret input.
+message ImportSourceOAuthCredential {
+  // Secret input key being retrieved.
+  string input_key = 1;
+  // Zero-based selected credential method index.
+  uint32 method_index = 2;
+  // Method-specific retrieval input values, such as client ID or client secret.
+  repeated SourceVariable credential_inputs = 3;
+}
+
+// Imports one user-provided source manifest with app-owned credential retrieval.
+message ImportSourceWithCredentialsRequest {
+  // Owning workspace resource.
+  Workspace workspace = 1;
+  // Raw imported manifest YAML.
+  string manifest_yaml = 2;
+  // Source variable bindings.
+  repeated SourceVariable variables = 3;
+  // Source-config secret bindings.
+  repeated SourceSecret secrets = 4;
+  // OAuth credentials the app should retrieve before validation and import.
+  repeated ImportSourceOAuthCredential oauth_credentials = 5;
+}
+
+// Authorization URL emitted while importing a source with OAuth credentials.
+message SourceCredentialOAuthAuthorization {
+  // Secret input key being retrieved.
+  string input_key = 1;
+  // Provider authorization URL the user must visit.
+  string authorization_url = 2;
+  // Seconds until the OAuth retrieval expires.
+  uint64 expires_in_seconds = 3;
+}
+
+// Safe completion metadata emitted after OAuth credential retrieval.
+message SourceCredentialOAuthCompleted {
+  // Secret input key populated by the completed OAuth retrieval.
   string input_key = 1;
   // Safe provider metadata, never token material.
   repeated SourceCredentialMetadata metadata = 2;
+}
+
+// Streaming event emitted while importing a source with app-owned credentials.
+message ImportSourceWithCredentialsResponse {
+  // Import progress or completion event.
+  oneof event {
+    // OAuth authorization URL is ready.
+    SourceCredentialOAuthAuthorization oauth_authorization = 1;
+    // OAuth credential retrieval completed.
+    SourceCredentialOAuthCompleted oauth_completed = 2;
+    // Source import completed.
+    ImportSourceResponse imported = 3;
+  }
 }
 
 // Lists all registered sources in one workspace.
@@ -422,12 +435,9 @@ service SourceService {
   rpc CreateBundledSource(CreateBundledSourceRequest) returns (CreateBundledSourceResponse);
   // Imports one user-provided source manifest.
   rpc ImportSource(ImportSourceRequest) returns (ImportSourceResponse);
-  // Starts OAuth retrieval for one source secret input.
-  rpc StartSourceCredentialOAuth(StartSourceCredentialOAuthRequest)
-      returns (StartSourceCredentialOAuthResponse);
-  // Completes OAuth retrieval for one source secret input.
-  rpc CompleteSourceCredentialOAuth(CompleteSourceCredentialOAuthRequest)
-      returns (CompleteSourceCredentialOAuthResponse);
+  // Imports one user-provided source manifest with app-owned credential retrieval.
+  rpc ImportSourceWithCredentials(ImportSourceWithCredentialsRequest)
+      returns (stream ImportSourceWithCredentialsResponse);
   // Deletes a registered source.
   rpc DeleteSource(DeleteSourceRequest) returns (DeleteSourceResponse);
   // Validates that a registered source is queryable.

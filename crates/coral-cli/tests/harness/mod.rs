@@ -3,6 +3,7 @@
     reason = "Integration test crates share this harness, but each target only uses a subset of the helpers."
 )]
 
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use arrow::array::Int64Array;
@@ -16,23 +17,23 @@ use coral_api::v1::query_service_server::{QueryService, QueryServiceServer};
 use coral_api::v1::source_service_server::{SourceService, SourceServiceServer};
 use coral_api::v1::{
     CatalogItem, CatalogSearchResult, Column, ColumnSearchResult, CreateBundledSourceRequest,
-    CompleteSourceCredentialOAuthRequest, CompleteSourceCredentialOAuthResponse,
     CreateBundledSourceResponse, DeleteSourceRequest, DeleteSourceResponse, DescribeTableRequest,
     DescribeTableResponse, DiscoverSourcesRequest, DiscoverSourcesResponse, ExecuteSqlRequest,
     ExecuteSqlResponse, ExplainSqlRequest, ExplainSqlResponse, GetSourceInfoRequest,
     GetSourceInfoResponse, GetSourceRequest, GetSourceResponse, ImportSourceRequest,
-    ImportSourceResponse, ListCatalogRequest, ListCatalogResponse, ListColumnsRequest,
-    ListColumnsResponse, ListSourcesRequest, ListSourcesResponse, PaginationRequest,
-    PaginationResponse, QueryPlan, SearchCatalogRequest, SearchCatalogResponse, Source, SourceInfo,
-    SourceInputSpec, SourceOrigin, SourceSecretInput, StartSourceCredentialOAuthRequest,
-    StartSourceCredentialOAuthResponse, Table, TableSummary, ValidateSourceRequest,
+    ImportSourceResponse, ImportSourceWithCredentialsRequest, ImportSourceWithCredentialsResponse,
+    ListCatalogRequest, ListCatalogResponse, ListColumnsRequest, ListColumnsResponse,
+    ListSourcesRequest, ListSourcesResponse, PaginationRequest, PaginationResponse, QueryPlan,
+    SearchCatalogRequest, SearchCatalogResponse, Source, SourceInfo, SourceInputSpec,
+    SourceOrigin, SourceSecretInput, Table, TableSummary, ValidateSourceRequest,
     ValidateSourceResponse, Workspace, catalog_item, source_input_spec::Input as ProtoSourceInput,
 };
 use coral_api::{CORAL_ERROR_DOMAIN, CORAL_ERROR_REASON_SOURCE_NOT_FOUND};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
-use tokio_stream::wrappers::TcpListenerStream;
+use tokio_stream::Stream;
+use tokio_stream::wrappers::{ReceiverStream, TcpListenerStream};
 use tonic::transport::Server;
 use tonic::{Code, Request, Response, Status};
 use tonic_types::{ErrorDetail, StatusExt as _};
@@ -555,8 +556,7 @@ struct Captured {
     get_source_info: Mutex<Vec<GetSourceInfoRequest>>,
     create_bundled_source: Mutex<Vec<CreateBundledSourceRequest>>,
     import_source: Mutex<Vec<ImportSourceRequest>>,
-    start_source_credential_oauth: Mutex<Vec<StartSourceCredentialOAuthRequest>>,
-    complete_source_credential_oauth: Mutex<Vec<CompleteSourceCredentialOAuthRequest>>,
+    import_source_with_credentials: Mutex<Vec<ImportSourceWithCredentialsRequest>>,
     delete_source: Mutex<Vec<DeleteSourceRequest>>,
     validate_source: Mutex<Vec<ValidateSourceRequest>>,
 }
@@ -789,6 +789,9 @@ struct MockSourceService {
 
 #[tonic::async_trait]
 impl SourceService for MockSourceService {
+    type ImportSourceWithCredentialsStream =
+        Pin<Box<dyn Stream<Item = Result<ImportSourceWithCredentialsResponse, Status>> + Send>>;
+
     async fn discover_sources(
         &self,
         request: Request<DiscoverSourcesRequest>,
@@ -874,35 +877,18 @@ impl SourceService for MockSourceService {
         }))
     }
 
-    async fn start_source_credential_o_auth(
+    async fn import_source_with_credentials(
         &self,
-        request: Request<StartSourceCredentialOAuthRequest>,
-    ) -> Result<Response<StartSourceCredentialOAuthResponse>, Status> {
+        request: Request<ImportSourceWithCredentialsRequest>,
+    ) -> Result<Response<Self::ImportSourceWithCredentialsStream>, Status> {
         self.captured
-            .start_source_credential_oauth
+            .import_source_with_credentials
             .lock()
-            .expect("start_source_credential_oauth capture")
+            .expect("import_source_with_credentials capture")
             .push(request.into_inner());
-        Ok(Response::new(StartSourceCredentialOAuthResponse {
-            session_id: "test-oauth-session".to_string(),
-            authorization_url: "http://127.0.0.1:53682/oauth/authorize".to_string(),
-            expires_in_seconds: 600,
-        }))
-    }
-
-    async fn complete_source_credential_o_auth(
-        &self,
-        request: Request<CompleteSourceCredentialOAuthRequest>,
-    ) -> Result<Response<CompleteSourceCredentialOAuthResponse>, Status> {
-        self.captured
-            .complete_source_credential_oauth
-            .lock()
-            .expect("complete_source_credential_oauth capture")
-            .push(request.into_inner());
-        Ok(Response::new(CompleteSourceCredentialOAuthResponse {
-            input_key: "GITHUB_TOKEN".to_string(),
-            metadata: Vec::new(),
-        }))
+        let (_tx, rx) =
+            tokio::sync::mpsc::channel::<Result<ImportSourceWithCredentialsResponse, Status>>(1);
+        Ok(Response::new(Box::pin(ReceiverStream::new(rx))))
     }
 
     async fn delete_source(

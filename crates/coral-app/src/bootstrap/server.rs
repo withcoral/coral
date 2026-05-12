@@ -38,7 +38,6 @@ use super::env::AppEnvironment;
 use super::error::AppError;
 use crate::EngineExtensionsProvider;
 use crate::catalog::service::CatalogService;
-use crate::credentials::oauth::OAuthCredentialManager;
 use crate::credentials::{CredentialManager, CredentialStore};
 use crate::feedback::manager::FeedbackManager;
 use crate::feedback::publisher::{
@@ -269,7 +268,6 @@ impl ServerBuilder {
             credential_manager.clone(),
             layout.clone(),
         );
-        let oauth_manager = OAuthCredentialManager::new(credential_manager.clone());
         let feedback_manager =
             FeedbackManager::with_publisher(layout.clone(), self.config.feedback_publisher);
         let query_manager = QueryManager::new(
@@ -287,7 +285,6 @@ impl ServerBuilder {
         start_server(
             source_manager,
             query_manager,
-            oauth_manager,
             feedback_manager,
             trace_service,
             self.config.mode,
@@ -369,12 +366,11 @@ impl Drop for RunningServer {
 async fn start_server(
     source_manager: SourceManager,
     query_manager: QueryManager,
-    oauth_manager: OAuthCredentialManager,
     feedback_manager: FeedbackManager,
     trace_service: Option<TraceService>,
     mode: ServerMode,
 ) -> Result<RunningServer, AppError> {
-    let source_service = SourceService::new(source_manager, query_manager.clone(), oauth_manager);
+    let source_service = SourceService::new(source_manager, query_manager.clone());
     let catalog_service = CatalogService::new(query_manager.clone());
     let query_service = QueryService::new(query_manager);
     let feedback_service = FeedbackService::new(feedback_manager);
@@ -621,7 +617,9 @@ mod tests {
     use coral_api::v1::source_service_client::SourceServiceClient;
     use coral_api::v1::trace_service_client::TraceServiceClient;
     use coral_api::v1::{
-        ExecuteSqlRequest, ImportSourceRequest, ListSourcesRequest, ListTracesRequest, Workspace,
+        ExecuteSqlRequest, ImportSourceRequest, ImportSourceWithCredentialsRequest,
+        ImportSourceWithCredentialsResponse, ListSourcesRequest, ListTracesRequest, Workspace,
+        import_source_with_credentials_response,
     };
     use coral_api::{HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE};
     use coral_engine::QueryRuntimeContext;
@@ -633,7 +631,6 @@ mod tests {
         ServerBuilder, ServerMode, StaticAsset, StaticAssetsProvider, is_grpc_web_content_type,
         is_native_grpc_content_type, start_server,
     };
-    use crate::credentials::oauth::OAuthCredentialManager;
     use crate::credentials::{CredentialManager, CredentialStore};
     use crate::feedback::manager::FeedbackManager;
     use crate::query::manager::QueryManager;
@@ -705,7 +702,6 @@ enabled = false
             credential_manager.clone(),
             layout.clone(),
         );
-        let oauth_manager = OAuthCredentialManager::new(credential_manager.clone());
         let feedback_manager = FeedbackManager::new(layout.clone());
         let query_manager = QueryManager::new(
             config_store,
@@ -719,7 +715,6 @@ enabled = false
         let server = start_server(
             source_manager,
             query_manager,
-            oauth_manager,
             feedback_manager,
             Some(trace_service),
             ServerMode::NativeGrpc,
@@ -760,6 +755,29 @@ enabled = false
         );
         body.extend_from_slice(&encoded);
         body
+    }
+
+    fn grpc_web_data_messages<T: prost::Message + Default>(body: &[u8]) -> Vec<T> {
+        let mut messages = Vec::new();
+        let mut offset = 0;
+        while offset + 5 <= body.len() {
+            let flags = body[offset];
+            let len = u32::from_be_bytes([
+                body[offset + 1],
+                body[offset + 2],
+                body[offset + 3],
+                body[offset + 4],
+            ]) as usize;
+            offset += 5;
+            let Some(frame) = body.get(offset..offset + len) else {
+                break;
+            };
+            offset += len;
+            if flags == 0 {
+                messages.push(T::decode(frame).expect("decode gRPC-Web data frame"));
+            }
+        }
+        messages
     }
 
     struct StubAssets;
@@ -862,6 +880,71 @@ enabled = false
             native_grpc.status(),
             reqwest::StatusCode::UNSUPPORTED_MEDIA_TYPE
         );
+
+        running.shutdown().await.expect("shutdown");
+    }
+
+    #[tokio::test]
+    async fn embedded_ui_server_streams_import_source_with_credentials_over_grpc_web() {
+        let temp = TempDir::new().expect("temp dir");
+        let running = ServerBuilder::embedded_ui_loopback(0, Arc::new(StubAssets))
+            .with_config_dir(temp.path().join("coral-config"))
+            .start()
+            .await
+            .expect("start embedded UI server");
+        let endpoint = running.endpoint_uri();
+        let path = format!("{endpoint}/coral.v1.SourceService/ImportSourceWithCredentials");
+        let client = reqwest::Client::new();
+
+        let response = client
+            .post(&path)
+            .header("content-type", "application/grpc-web+proto")
+            .header("x-grpc-web", "1")
+            .body(grpc_web_body(&ImportSourceWithCredentialsRequest {
+                workspace: Some(default_workspace()),
+                manifest_yaml: r#"
+name: stream_test
+version: 0.1.0
+dsl_version: 3
+backend: http
+base_url: "https://example.com"
+tables:
+  - name: messages
+    description: Messages
+    request:
+      method: GET
+      path: /messages
+    response: {}
+    columns:
+      - name: id
+        type: Utf8
+"#
+                .to_string(),
+                variables: Vec::new(),
+                secrets: Vec::new(),
+                oauth_credentials: Vec::new(),
+            }))
+            .send()
+            .await
+            .expect("gRPC-Web streaming request");
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let body = response.bytes().await.expect("gRPC-Web streaming body");
+        let messages = grpc_web_data_messages::<ImportSourceWithCredentialsResponse>(body.as_ref());
+        assert_eq!(messages.len(), 1, "expected one streamed import event");
+        let event = messages
+            .into_iter()
+            .next()
+            .and_then(|message| message.event)
+            .expect("stream event");
+        match event {
+            import_source_with_credentials_response::Event::Imported(imported) => {
+                assert_eq!(
+                    imported.source.expect("imported source").name,
+                    "stream_test"
+                );
+            }
+            other => panic!("unexpected stream event: {other:?}"),
+        }
 
         running.shutdown().await.expect("shutdown");
     }
@@ -989,7 +1072,6 @@ enabled = false
             credential_manager.clone(),
             layout.clone(),
         );
-        let oauth_manager = OAuthCredentialManager::new(credential_manager.clone());
         let feedback_manager = FeedbackManager::new(layout.clone());
         let query_manager = QueryManager::new(
             config_store,
@@ -1003,7 +1085,6 @@ enabled = false
         let running = start_server(
             source_manager,
             query_manager,
-            oauth_manager,
             feedback_manager,
             None,
             ServerMode::NativeGrpc,
@@ -1079,7 +1160,6 @@ tables:
             credential_manager.clone(),
             layout.clone(),
         );
-        let oauth_manager = OAuthCredentialManager::new(credential_manager.clone());
         let feedback_manager = FeedbackManager::new(layout.clone());
         let query_manager = QueryManager::new(
             config_store,
@@ -1091,7 +1171,6 @@ tables:
         let running = start_server(
             source_manager,
             query_manager,
-            oauth_manager,
             feedback_manager,
             None,
             ServerMode::NativeGrpc,
@@ -1179,7 +1258,6 @@ tables:
             credential_manager.clone(),
             layout.clone(),
         );
-        let oauth_manager = OAuthCredentialManager::new(credential_manager.clone());
         let feedback_manager = FeedbackManager::new(layout.clone());
         let query_manager = QueryManager::new(
             config_store,
@@ -1191,7 +1269,6 @@ tables:
         let running = start_server(
             source_manager,
             query_manager,
-            oauth_manager,
             feedback_manager,
             None,
             ServerMode::NativeGrpc,
