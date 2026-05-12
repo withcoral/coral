@@ -96,32 +96,7 @@ pub(crate) fn iter_manifests(paths: &[PathBuf]) -> Vec<PathBuf> {
             continue;
         }
         if p.is_dir() {
-            let direct = ["manifest.yaml", "manifest.yml"]
-                .iter()
-                .map(|name| p.join(name))
-                .find(|path| path.is_file());
-            if let Some(nested) = direct {
-                out.push(nested);
-                continue;
-            }
-            // No direct manifest — recurse for sources/**/manifest.y{a,}ml.
-            if let Ok(entries) = fs::read_dir(p) {
-                let mut children: Vec<PathBuf> = entries
-                    .filter_map(std::result::Result::ok)
-                    .map(|e| e.path())
-                    .filter(|c| c.is_dir())
-                    .collect();
-                children.sort();
-                for child in children {
-                    for name in ["manifest.yaml", "manifest.yml"] {
-                        let candidate = child.join(name);
-                        if candidate.is_file() {
-                            out.push(candidate);
-                            break;
-                        }
-                    }
-                }
-            }
+            collect_manifest_files(p, &mut out);
         }
     }
     let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
@@ -133,6 +108,30 @@ pub(crate) fn iter_manifests(paths: &[PathBuf]) -> Vec<PathBuf> {
         }
     }
     unique
+}
+
+fn collect_manifest_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    let direct = ["manifest.yaml", "manifest.yml"]
+        .iter()
+        .map(|name| dir.join(name))
+        .find(|path| path.is_file());
+    if let Some(manifest) = direct {
+        out.push(manifest);
+        return;
+    }
+
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    let mut children: Vec<PathBuf> = entries
+        .filter_map(std::result::Result::ok)
+        .map(|e| e.path())
+        .filter(|c| c.is_dir())
+        .collect();
+    children.sort();
+    for child in children {
+        collect_manifest_files(&child, out);
+    }
 }
 
 /// Walk a manifest file and yield (1-based line number, resolved description).
@@ -695,6 +694,23 @@ tables:
     }
 
     #[test]
+    fn iter_manifests_recurses_nested_source_groups() {
+        let root = unique_temp_dir("iter-manifests");
+        let core_manifest = root.join("sources/core/github/manifest.yaml");
+        let community_manifest = root.join("sources/community/hn/manifest.yaml");
+        fs::create_dir_all(core_manifest.parent().expect("core parent")).expect("create core");
+        fs::create_dir_all(community_manifest.parent().expect("community parent"))
+            .expect("create community");
+        fs::write(&core_manifest, "name: github\n").expect("write core manifest");
+        fs::write(&community_manifest, "name: hn\n").expect("write community manifest");
+
+        let manifests = iter_manifests(&[root.join("sources")]);
+
+        fs::remove_dir_all(&root).expect("remove temp dir");
+        assert_eq!(manifests, vec![community_manifest, core_manifest]);
+    }
+
+    #[test]
     fn extract_multi_line_plain_scalar() {
         let yaml = "
 tables:
@@ -772,5 +788,13 @@ tables:
         let text = "A short-form, server-generated string that provides succinct, important information about an object suitable for primary";
         let reasons = classify(text);
         assert!(reasons.iter().any(|r| r.starts_with("suspicious-length")));
+    }
+
+    fn unique_temp_dir(name: &str) -> PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("time after epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("coral-xtask-{name}-{}-{nonce}", std::process::id()))
     }
 }
