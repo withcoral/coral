@@ -377,9 +377,13 @@ Your Sentry organization slug (found in the Sentry URL after `/organizations/`)
 
 `SENTRY_TOKEN` (required)
 
-Create an internal integration and generate a token with the
-following scopes: org:read, event:read, member:read, project:read,
-and project:releases.
+Use OAuth during interactive setup, or create an internal integration
+and generate a token with the following read scopes: org:read,
+event:read, member:read, project:read, project:releases, and
+team:read.
+
+OAuth setup requires a Sentry OAuth app; use that app's client ID
+when prompted.
 See [Sentry auth token docs](https://docs.sentry.io/api/guides/create-auth-token/).
 
 ### `slack`
