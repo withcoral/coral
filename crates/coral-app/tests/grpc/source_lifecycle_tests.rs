@@ -1166,8 +1166,8 @@ async fn config_persists_across_rebuilds_without_local_trace_state() {
         r"
 version = 1
 
-[otel]
-enable_internal_tracing = false
+[local_traces]
+enabled = false
 ",
     )
     .expect("write config");
@@ -1354,6 +1354,10 @@ async fn adding_source_preserves_otel_config_and_existing_sources() {
 endpoint = "http://localhost:4318"
 headers = "from=config"
 
+[local_traces]
+enabled = false
+retention_days = 3
+
 [workspaces.default.sources.demo]
 version = "0.1.0"
 variables = {}
@@ -1385,6 +1389,18 @@ origin = "imported"
     assert!(
         config_raw.contains("headers = \"from=config\""),
         "otel headers should be preserved"
+    );
+    assert!(
+        config_raw.contains("[local_traces]"),
+        "local traces section should be preserved"
+    );
+    assert!(
+        config_raw.contains("enabled = false"),
+        "local traces enabled flag should be preserved"
+    );
+    assert!(
+        config_raw.contains("retention_days = 3"),
+        "local traces retention should be preserved"
     );
 
     // The pre-existing source must still be present.

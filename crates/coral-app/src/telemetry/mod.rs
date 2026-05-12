@@ -31,7 +31,7 @@ pub(crate) mod service;
 
 use crate::bootstrap::AppError;
 pub use config::TelemetryConfig;
-use config::{DEFAULT_INTERNAL_TRACE_FILTER, DEFAULT_LOG_FILTER, DEFAULT_TRACE_FILTER};
+use config::{DEFAULT_LOCAL_TRACE_FILTER, DEFAULT_LOG_FILTER, DEFAULT_TRACE_FILTER};
 
 static INIT: OnceLock<Result<(), String>> = OnceLock::new();
 static PROVIDER: Mutex<Option<SdkTracerProvider>> = Mutex::new(None);
@@ -191,7 +191,7 @@ fn trace_layer_filter(
     internal_trace_store_enabled: bool,
 ) -> (Targets, Option<String>) {
     let Some(otlp_filter) = otlp_filter else {
-        return build_trace_targets(DEFAULT_INTERNAL_TRACE_FILTER, DEFAULT_INTERNAL_TRACE_FILTER);
+        return build_trace_targets(DEFAULT_LOCAL_TRACE_FILTER, DEFAULT_LOCAL_TRACE_FILTER);
     };
     let (otlp_targets, error) = build_trace_targets(otlp_filter, DEFAULT_TRACE_FILTER);
     if internal_trace_store_enabled {
@@ -201,8 +201,8 @@ fn trace_layer_filter(
             otlp_filter
         };
         return build_trace_targets(
-            &format!("{effective_otlp_filter},{DEFAULT_INTERNAL_TRACE_FILTER}"),
-            DEFAULT_INTERNAL_TRACE_FILTER,
+            &format!("{effective_otlp_filter},{DEFAULT_LOCAL_TRACE_FILTER}"),
+            DEFAULT_LOCAL_TRACE_FILTER,
         );
     }
     (otlp_targets, error)
@@ -372,11 +372,12 @@ fn try_init_tracing(
 ) -> Result<(), AppError> {
     opentelemetry::global::set_text_map_propagator(TraceContextPropagator::new());
     let endpoint = config
+        .otel
         .endpoint
         .as_deref()
         .filter(|value| !value.is_empty())
         .map(str::to_string);
-    let (log_filter, log_filter_error) = build_log_filter(config.log_filter.as_deref());
+    let (log_filter, log_filter_error) = build_log_filter(config.otel.log_filter.as_deref());
     let stderr_layer = enable_stderr_logs.then(|| {
         tracing_subscriber::fmt::layer()
             .with_target(true)
@@ -385,8 +386,7 @@ fn try_init_tracing(
             .with_filter(log_filter.clone())
     });
 
-    let internal_trace_store_dir =
-        internal_trace_store_dir.filter(|_| config.enable_internal_tracing);
+    let internal_trace_store_dir = internal_trace_store_dir.filter(|_| config.local_traces.enabled);
     let internal_trace_store_enabled = internal_trace_store_dir.is_some();
     let should_export_traces = endpoint.is_some() || internal_trace_store_dir.is_some();
     let mut trace_filter_error = None;
@@ -394,16 +394,16 @@ fn try_init_tracing(
         let resource = opentelemetry_sdk::Resource::builder()
             .with_attribute(opentelemetry::KeyValue::new(
                 "service.name",
-                config.service_name.clone(),
+                config.otel.service_name.clone(),
             ))
             .build();
 
-        let headers = parse_headers(config.headers.as_deref().unwrap_or_default());
+        let headers = parse_headers(config.otel.headers.as_deref().unwrap_or_default());
         let mut builder = SdkTracerProvider::builder().with_resource(resource.clone());
 
         if let Some(ref endpoint) = endpoint {
             let (otlp_trace_targets, error) =
-                build_trace_targets(&config.trace_filter, DEFAULT_TRACE_FILTER);
+                build_trace_targets(&config.otel.trace_filter, DEFAULT_TRACE_FILTER);
             trace_filter_error = error;
             let trace_exporter = OtlpSpanExporter::builder()
                 .with_http()
@@ -457,10 +457,10 @@ fn try_init_tracing(
 
         if let Some(path) = internal_trace_store_dir {
             let exporter =
-                local_store::JsonlSpanExporter::new(path, config.internal_trace_retention())
+                local_store::JsonlSpanExporter::new(path, config.local_traces.retention())
                     .map_err(|e| AppError::InvalidInput(e.to_string()))?;
             let (internal_trace_targets, _) =
-                build_trace_targets(DEFAULT_INTERNAL_TRACE_FILTER, DEFAULT_INTERNAL_TRACE_FILTER);
+                build_trace_targets(DEFAULT_LOCAL_TRACE_FILTER, DEFAULT_LOCAL_TRACE_FILTER);
             let exporter = TargetFilteringSpanExporter::new(exporter, internal_trace_targets);
             builder = builder.with_span_processor(
                 opentelemetry_sdk::trace::BatchSpanProcessor::builder(exporter).build(),
@@ -470,7 +470,9 @@ fn try_init_tracing(
         let provider = builder.build();
         let tracer = provider.tracer("coral");
         let (trace_targets, layer_filter_error) = trace_layer_filter(
-            endpoint.as_deref().map(|_| config.trace_filter.as_str()),
+            endpoint
+                .as_deref()
+                .map(|_| config.otel.trace_filter.as_str()),
             internal_trace_store_enabled,
         );
         if trace_filter_error.is_none() {
@@ -515,7 +517,7 @@ fn try_init_tracing(
     }
     if let Some(error) = log_filter_error {
         tracing::warn!(
-            provided_filter = %config.log_filter.as_deref().unwrap_or(DEFAULT_LOG_FILTER),
+            provided_filter = %config.otel.log_filter.as_deref().unwrap_or(DEFAULT_LOG_FILTER),
             fallback_filter = DEFAULT_LOG_FILTER,
             detail = %error,
             "invalid log_filter; falling back to default filter"
@@ -523,7 +525,7 @@ fn try_init_tracing(
     }
     if let Some(error) = trace_filter_error {
         tracing::warn!(
-            provided_filter = %config.trace_filter,
+            provided_filter = %config.otel.trace_filter,
             fallback_filter = DEFAULT_TRACE_FILTER,
             detail = %error,
             "invalid trace_filter; falling back to default filter"
@@ -565,7 +567,7 @@ mod tests {
     use tracing_subscriber::layer::SubscriberExt as _;
 
     use super::{
-        DEFAULT_INTERNAL_TRACE_FILTER, DEFAULT_LOG_FILTER, DEFAULT_TRACE_FILTER,
+        DEFAULT_LOCAL_TRACE_FILTER, DEFAULT_LOG_FILTER, DEFAULT_TRACE_FILTER,
         HttpBodyFilteringSpanExporter, TargetFilteringSpanExporter, build_log_filter,
         build_trace_targets, normalize_otlp_endpoint, parse_headers, trace_layer_filter,
     };
@@ -622,9 +624,9 @@ mod tests {
     }
 
     #[test]
-    fn internal_trace_filter_includes_datafusion() {
+    fn local_trace_filter_includes_datafusion() {
         let (targets, error) =
-            build_trace_targets(DEFAULT_INTERNAL_TRACE_FILTER, DEFAULT_INTERNAL_TRACE_FILTER);
+            build_trace_targets(DEFAULT_LOCAL_TRACE_FILTER, DEFAULT_LOCAL_TRACE_FILTER);
 
         assert!(error.is_none());
         assert!(targets.would_enable("coral_client::grpc", &tracing::Level::TRACE));
@@ -634,7 +636,7 @@ mod tests {
     }
 
     #[test]
-    fn combined_trace_layer_filter_can_widen_for_internal_traces() {
+    fn otlp_trace_layer_filter_does_not_narrow_local_traces() {
         let (targets, error) = trace_layer_filter(Some(DEFAULT_TRACE_FILTER), true);
 
         assert!(error.is_none());

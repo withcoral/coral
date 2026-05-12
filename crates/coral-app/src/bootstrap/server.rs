@@ -235,7 +235,8 @@ impl ServerBuilder {
         layout.ensure()?;
         let telemetry_config = TelemetryConfig::load(&layout)?;
         let internal_trace_store_dir = telemetry_config
-            .enable_internal_tracing
+            .local_traces
+            .enabled
             .then(|| layout.local_trace_store_dir());
         crate::telemetry::init_tracing(
             &telemetry_config,
@@ -248,8 +249,9 @@ impl ServerBuilder {
             SourceManager::new(config_store.clone(), secret_store.clone(), layout.clone());
         let feedback_manager = FeedbackManager::new(layout.clone());
         let mut query_runtime_context = env.query_runtime_context();
-        query_runtime_context.http_trace_body_max_bytes =
-            telemetry_config.internal_http_body_recording_max_bytes();
+        query_runtime_context.http_trace_body_max_bytes = telemetry_config
+            .local_traces
+            .http_body_recording_max_bytes();
 
         let query_manager = QueryManager::new(
             config_store,
@@ -260,7 +262,7 @@ impl ServerBuilder {
         );
         let trace_service = internal_trace_store_dir
             .clone()
-            .map(|dir| TraceService::new(dir, telemetry_config.internal_trace_retention()));
+            .map(|dir| TraceService::new(dir, telemetry_config.local_traces.retention()));
         start_server(
             source_manager,
             query_manager,
@@ -614,15 +616,15 @@ mod tests {
         workspace_to_proto(&WorkspaceName::default())
     }
 
-    fn enable_internal_tracing(config_dir: &Path) {
+    fn enable_local_tracing(config_dir: &Path) {
         std::fs::create_dir_all(config_dir).expect("create config dir");
         std::fs::write(
             config_dir.join("config.toml"),
             r"
 version = 1
 
-[otel]
-enable_internal_tracing = true
+[local_traces]
+enabled = true
 ",
         )
         .expect("write telemetry config");
@@ -635,8 +637,8 @@ enable_internal_tracing = true
             r"
 version = 1
 
-[otel]
-enable_internal_tracing = false
+[local_traces]
+enabled = false
 ",
         )
         .expect("write telemetry config");
@@ -675,7 +677,7 @@ enable_internal_tracing = false
     async fn trace_service_lists_empty_store() {
         let temp = TempDir::new().expect("temp dir");
         let config_dir = temp.path().join("coral-config");
-        enable_internal_tracing(&config_dir);
+        enable_local_tracing(&config_dir);
         let server = ServerBuilder::new()
             .with_config_dir(config_dir)
             .start()

@@ -25,29 +25,31 @@ Coral keeps a local trace history for the UI by default. Local traces include qu
 By default, Coral retains seven days of local spans. To change that window:
 
 ```toml
-[otel]
-internal_trace_retention_days = 14
+[local_traces]
+retention_days = 14
 ```
 
 To disable local trace inspection:
 
 ```toml
-[otel]
-enable_internal_tracing = false
+[local_traces]
+enabled = false
 ```
 
-HTTP request and response bodies are recorded in local traces by default, up to `internal_http_body_max_bytes` bytes per body (`65536` by default). To disable local body recording:
+HTTP request and response bodies are recorded in local traces by default, up to `http_body_max_bytes` bytes per body (`65536` by default). To disable local body recording:
 
 ```toml
-[otel]
-record_internal_http_bodies = false
+[local_traces]
+record_http_bodies = false
 ```
 
 HTTP bodies are kept out of OTLP export even when local body recording is enabled.
 
 ## Configuration reference
 
-All telemetry settings live under `[otel]` in `config.toml`. There are no environment variable overrides except for [`CORAL_TRACE_PARENT`](#distributed-tracing).
+External OpenTelemetry export settings live under `[otel]` in `config.toml`. Coral-owned local trace inspection settings live under `[local_traces]`. There are no environment variable overrides except for [`CORAL_TRACE_PARENT`](#distributed-tracing).
+
+### `[otel]`
 
 | Key                            | Type    | Default                                                                | Description                                                                       |
 | ------------------------------ | ------- | ---------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
@@ -56,10 +58,15 @@ All telemetry settings live under `[otel]` in `config.toml`. There are no enviro
 | `log_filter`                   | string  | `coral_app=info,coral_engine=info`                                     | `tracing-subscriber` filter applied to logs (OTLP and stderr).                    |
 | `trace_filter`                 | string  | `coral_app=trace,coral_client=trace,coral_mcp=trace,coral_engine=trace,coral_engine::datafusion=off` | `tracing-subscriber` filter applied to OTLP spans.                                |
 | `service_name`                 | string  | `coral`                                                                | Value of the `service.name` resource attribute on every signal.                   |
-| `enable_internal_tracing`      | boolean | `true`                                                                 | Enables local trace inspection without requiring an OTLP collector.               |
-| `internal_trace_retention_days` | integer | `7`                                                                    | Number of days of local trace spans to retain.                                    |
-| `record_internal_http_bodies`  | boolean | `true`                                                                 | Records HTTP request and response bodies in local traces when internal tracing is enabled. |
-| `internal_http_body_max_bytes` | integer | `65536`                                                                | Maximum request or response body bytes recorded in a local trace.                 |
+
+### `[local_traces]`
+
+| Key                   | Type    | Default | Description                                                                       |
+| --------------------- | ------- | ------- | --------------------------------------------------------------------------------- |
+| `enabled`             | boolean | `true`  | Enables local trace inspection without requiring an OTLP collector.               |
+| `retention_days`      | integer | `7`     | Number of days of local trace spans to retain.                                    |
+| `record_http_bodies`  | boolean | `true`  | Records HTTP request and response bodies in local traces when local tracing is enabled. |
+| `http_body_max_bytes` | integer | `65536` | Maximum request or response body bytes recorded in a local trace.                 |
 
 Example with auth headers and a hosted endpoint:
 
@@ -81,7 +88,7 @@ When Coral runs over MCP, each MCP tool or resource request produces a `coral.mc
 
 Inbound Coral gRPC handler spans are exported as OpenTelemetry `server` spans with `rpc.system.name`, `rpc.method`, and `rpc.response.status_code`. HTTP source calls are exported as OpenTelemetry `client` spans with upstream dependency attributes including `peer.service`, `server.address`, `server.port`, `http.host`, `net.peer.name`, `http.request.method`, `http.request.resend_count` on retries, `http.response.status_code`, low-cardinality `error.type` on failures, and sanitized `url.full`. Coral also injects W3C Trace Context headers into outbound source requests, so an instrumented upstream API can emit a related `server` span in the same trace. Service-map tools that support virtual peer nodes can draw edges directly from Coral's HTTP client spans; tools that require related client/server span pairs, such as HyperDX, need the upstream service to emit the matching server span. Tools that group strictly by resource `service.name` may still display a single `coral` service for local CLI runs, because the CLI client span and local server span are emitted by the same Coral process.
 
-By default, the `coral_engine::datafusion` target is disabled to keep span volume low. Enable it when you want to see DataFusion physical-plan execution and optimizer-rule spans alongside the rest of the query trace:
+By default, the `coral_engine::datafusion` target is disabled for OTLP export to keep external span volume low. Enable it when you want to send DataFusion physical-plan execution and optimizer-rule spans to your external backend:
 
 ```toml
 [otel]
@@ -98,6 +105,8 @@ trace_filter = "coral_app=trace,coral_client=trace,coral_mcp=trace,coral_engine=
 ```
 
 The filter syntax is the same one accepted by [`tracing-subscriber`'s `Targets`](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.Targets.html). If the filter fails to parse, Coral logs a warning and falls back to the default.
+
+Changing `[otel].trace_filter` does not reduce local trace capture. The local trace UI uses Coral's fixed local trace filter so debugging evidence remains available without changing external export policy.
 
 ### Logs
 

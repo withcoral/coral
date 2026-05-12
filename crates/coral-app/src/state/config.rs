@@ -506,6 +506,10 @@ version = 1
 endpoint = "http://localhost:4318"
 headers = "from=config"
 
+[local_traces]
+enabled = false
+retention_days = 3
+
 [workspaces.default.sources.github]
 version = "1.0.0"
 variables = {}
@@ -532,6 +536,18 @@ origin = "bundled"
         assert!(
             raw.contains("headers = \"from=config\""),
             "otel headers should be preserved"
+        );
+        assert!(
+            raw.contains("[local_traces]"),
+            "local traces section should be preserved"
+        );
+        assert!(
+            raw.contains("enabled = false"),
+            "local traces enabled flag should be preserved"
+        );
+        assert!(
+            raw.contains("retention_days = 3"),
+            "local traces retention should be preserved"
         );
 
         // The newly added source must be present.

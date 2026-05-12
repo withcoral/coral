@@ -8,36 +8,42 @@ use crate::bootstrap::AppError;
 use crate::state::AppStateLayout;
 
 pub(super) const DEFAULT_TRACE_FILTER: &str = "coral_app=trace,coral_client=trace,coral_mcp=trace,coral_engine=trace,coral_engine::datafusion=off";
-pub(super) const DEFAULT_INTERNAL_TRACE_FILTER: &str = "coral_app=trace,coral_client=trace,coral_mcp=trace,coral_engine=trace,coral_engine::datafusion=trace";
+pub(super) const DEFAULT_LOCAL_TRACE_FILTER: &str = "coral_app=trace,coral_client=trace,coral_mcp=trace,coral_engine=trace,coral_engine::datafusion=trace";
 pub(super) const DEFAULT_LOG_FILTER: &str = "coral_app=info,coral_engine=info";
 const DEFAULT_SERVICE_NAME: &str = "coral";
-const DEFAULT_INTERNAL_HTTP_BODY_MAX_BYTES: usize = 64 * 1024;
-const DEFAULT_INTERNAL_TRACE_RETENTION_DAYS: u64 = 7;
+const DEFAULT_LOCAL_HTTP_BODY_MAX_BYTES: usize = 64 * 1024;
+const DEFAULT_LOCAL_TRACE_RETENTION_DAYS: u64 = 7;
 const HOURS_PER_DAY: u64 = 24;
 const SECONDS_PER_HOUR: u64 = 60 * 60;
 
 #[derive(Debug, Clone, Default, Deserialize)]
 struct TelemetryConfigFile {
     #[serde(default)]
-    otel: TelemetryConfig,
+    otel: OtlpConfig,
+    #[serde(default)]
+    local_traces: LocalTraceConfig,
 }
 
-/// Telemetry settings loaded from `config.toml`.
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+/// Telemetry and local trace settings loaded from `config.toml`.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct TelemetryConfig {
+    pub(crate) otel: OtlpConfig,
+    pub(crate) local_traces: LocalTraceConfig,
+}
+
+/// External OpenTelemetry export settings loaded from `[otel]`.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub(crate) struct OtlpConfig {
     pub(crate) endpoint: Option<String>,
     pub(crate) headers: Option<String>,
     pub(crate) log_filter: Option<String>,
     pub(crate) trace_filter: String,
     pub(crate) service_name: String,
-    pub(crate) enable_internal_tracing: bool,
-    pub(crate) internal_trace_retention_days: u64,
-    pub(crate) record_internal_http_bodies: bool,
-    pub(crate) internal_http_body_max_bytes: usize,
 }
 
-impl Default for TelemetryConfig {
+impl Default for OtlpConfig {
     fn default() -> Self {
         Self {
             endpoint: None,
@@ -45,16 +51,33 @@ impl Default for TelemetryConfig {
             log_filter: None,
             trace_filter: DEFAULT_TRACE_FILTER.to_string(),
             service_name: DEFAULT_SERVICE_NAME.to_string(),
-            enable_internal_tracing: true,
-            internal_trace_retention_days: DEFAULT_INTERNAL_TRACE_RETENTION_DAYS,
-            record_internal_http_bodies: true,
-            internal_http_body_max_bytes: DEFAULT_INTERNAL_HTTP_BODY_MAX_BYTES,
+        }
+    }
+}
+
+/// Product-owned local trace inspection settings loaded from `[local_traces]`.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub(crate) struct LocalTraceConfig {
+    pub(crate) enabled: bool,
+    pub(crate) retention_days: u64,
+    pub(crate) record_http_bodies: bool,
+    pub(crate) http_body_max_bytes: usize,
+}
+
+impl Default for LocalTraceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            retention_days: DEFAULT_LOCAL_TRACE_RETENTION_DAYS,
+            record_http_bodies: true,
+            http_body_max_bytes: DEFAULT_LOCAL_HTTP_BODY_MAX_BYTES,
         }
     }
 }
 
 impl TelemetryConfig {
-    /// Load the `[otel]` section from `config.toml`.
+    /// Load telemetry and local trace sections from `config.toml`.
     ///
     /// # Errors
     ///
@@ -62,24 +85,29 @@ impl TelemetryConfig {
     pub(crate) fn load(layout: &AppStateLayout) -> Result<Self, AppError> {
         let config = if layout.config_file().exists() {
             let raw = std::fs::read_to_string(layout.config_file())?;
-            toml::from_str::<TelemetryConfigFile>(&raw)?.otel
+            let file = toml::from_str::<TelemetryConfigFile>(&raw)?;
+            Self {
+                otel: file.otel,
+                local_traces: file.local_traces,
+            }
         } else {
             Self::default()
         };
 
         Ok(config)
     }
+}
 
+impl LocalTraceConfig {
     #[must_use]
-    pub(crate) fn internal_http_body_recording_max_bytes(&self) -> Option<usize> {
-        (self.enable_internal_tracing && self.record_internal_http_bodies)
-            .then_some(self.internal_http_body_max_bytes)
+    pub(crate) fn http_body_recording_max_bytes(&self) -> Option<usize> {
+        (self.enabled && self.record_http_bodies).then_some(self.http_body_max_bytes)
     }
 
     #[must_use]
-    pub(crate) fn internal_trace_retention(&self) -> Duration {
+    pub(crate) fn retention(&self) -> Duration {
         Duration::from_secs(
-            self.internal_trace_retention_days
+            self.retention_days
                 .max(1)
                 .saturating_mul(HOURS_PER_DAY)
                 .saturating_mul(SECONDS_PER_HOUR),
@@ -93,7 +121,7 @@ mod tests {
 
     use tempfile::TempDir;
 
-    use super::TelemetryConfig;
+    use super::{LocalTraceConfig, OtlpConfig, TelemetryConfig};
     use crate::state::AppStateLayout;
 
     #[test]
@@ -104,16 +132,16 @@ mod tests {
         let config = TelemetryConfig::load(&layout).expect("default telemetry config");
 
         assert_eq!(config, TelemetryConfig::default());
-        assert!(config.enable_internal_tracing);
-        assert!(config.record_internal_http_bodies);
+        assert!(config.local_traces.enabled);
+        assert!(config.local_traces.record_http_bodies);
         assert_eq!(
-            config.internal_http_body_recording_max_bytes(),
+            config.local_traces.http_body_recording_max_bytes(),
             Some(64 * 1024)
         );
     }
 
     #[test]
-    fn loads_otel_section_from_config_file() {
+    fn loads_otel_and_local_trace_sections_from_config_file() {
         let temp = TempDir::new().expect("temp dir");
         let layout = AppStateLayout::discover(Some(temp.path().join("config"))).expect("layout");
         layout.ensure().expect("ensure config dir");
@@ -128,54 +156,67 @@ headers = "from=config"
 log_filter = "info"
 trace_filter = "coral_app=debug"
 service_name = "from-config"
-enable_internal_tracing = true
-internal_trace_retention_days = 14
-record_internal_http_bodies = true
-internal_http_body_max_bytes = 42
+
+[local_traces]
+enabled = true
+retention_days = 14
+record_http_bodies = true
+http_body_max_bytes = 42
 "#,
         )
         .expect("write config");
 
         let config = TelemetryConfig::load(&layout).expect("telemetry config");
 
-        assert_eq!(config.endpoint.as_deref(), Some("http://localhost:4318"));
-        assert_eq!(config.headers.as_deref(), Some("from=config"));
-        assert_eq!(config.log_filter.as_deref(), Some("info"));
-        assert_eq!(config.trace_filter, "coral_app=debug");
-        assert_eq!(config.service_name, "from-config");
-        assert!(config.enable_internal_tracing);
-        assert_eq!(config.internal_trace_retention_days, 14);
         assert_eq!(
-            config.internal_trace_retention(),
+            config.otel.endpoint.as_deref(),
+            Some("http://localhost:4318")
+        );
+        assert_eq!(config.otel.headers.as_deref(), Some("from=config"));
+        assert_eq!(config.otel.log_filter.as_deref(), Some("info"));
+        assert_eq!(config.otel.trace_filter, "coral_app=debug");
+        assert_eq!(config.otel.service_name, "from-config");
+        assert!(config.local_traces.enabled);
+        assert_eq!(config.local_traces.retention_days, 14);
+        assert_eq!(
+            config.local_traces.retention(),
             Duration::from_hours(14 * 24)
         );
-        assert!(config.record_internal_http_bodies);
-        assert_eq!(config.internal_http_body_max_bytes, 42);
-        assert_eq!(config.internal_http_body_recording_max_bytes(), Some(42));
-    }
-
-    #[test]
-    fn http_body_recording_requires_internal_tracing() {
-        let config = TelemetryConfig {
-            enable_internal_tracing: false,
-            record_internal_http_bodies: true,
-            internal_http_body_max_bytes: 8,
-            ..TelemetryConfig::default()
-        };
-
-        assert_eq!(config.internal_http_body_recording_max_bytes(), None);
-    }
-
-    #[test]
-    fn internal_trace_retention_saturates_large_day_values() {
-        let config = TelemetryConfig {
-            internal_trace_retention_days: u64::MAX,
-            ..TelemetryConfig::default()
-        };
-
+        assert!(config.local_traces.record_http_bodies);
+        assert_eq!(config.local_traces.http_body_max_bytes, 42);
         assert_eq!(
-            config.internal_trace_retention(),
-            Duration::from_secs(u64::MAX)
+            config.local_traces.http_body_recording_max_bytes(),
+            Some(42)
         );
+    }
+
+    #[test]
+    fn http_body_recording_requires_local_tracing() {
+        let config = LocalTraceConfig {
+            enabled: false,
+            record_http_bodies: true,
+            http_body_max_bytes: 8,
+            ..LocalTraceConfig::default()
+        };
+
+        assert_eq!(config.http_body_recording_max_bytes(), None);
+    }
+
+    #[test]
+    fn local_trace_retention_saturates_large_day_values() {
+        let config = LocalTraceConfig {
+            retention_days: u64::MAX,
+            ..LocalTraceConfig::default()
+        };
+
+        assert_eq!(config.retention(), Duration::from_secs(u64::MAX));
+    }
+
+    #[test]
+    fn otel_defaults_do_not_include_local_trace_settings() {
+        let config = OtlpConfig::default();
+
+        assert_eq!(config.endpoint, None);
+        assert_eq!(config.trace_filter, super::DEFAULT_TRACE_FILTER);
     }
 }
