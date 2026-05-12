@@ -100,6 +100,7 @@ tempfile = "3"
 url = "2"
 urlencoding = "2"
 uuid = { version = "1", features = ["serde", "v4"] }
+walkdir = "2"
 wiremock = "0.6"
 
 coral-api = { path = "crates/coral-api" }

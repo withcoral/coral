@@ -22,6 +22,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use walkdir::WalkDir;
 
 /// Tokens that rarely, if ever, terminate a complete English description.
 /// If a description ends on one of these, it almost certainly got chopped.
@@ -96,9 +97,10 @@ pub(crate) fn iter_manifests(paths: &[PathBuf]) -> Vec<PathBuf> {
             continue;
         }
         if p.is_dir() {
-            collect_manifest_files(p, &mut out);
+            out.extend(manifest_files_under(p));
         }
     }
+    out.sort();
     let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
     let mut unique: Vec<PathBuf> = Vec::new();
     for p in out {
@@ -110,28 +112,17 @@ pub(crate) fn iter_manifests(paths: &[PathBuf]) -> Vec<PathBuf> {
     unique
 }
 
-fn collect_manifest_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let direct = ["manifest.yaml", "manifest.yml"]
-        .iter()
-        .map(|name| dir.join(name))
-        .find(|path| path.is_file());
-    if let Some(manifest) = direct {
-        out.push(manifest);
-        return;
-    }
-
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
-    };
-    let mut children: Vec<PathBuf> = entries
+fn manifest_files_under(dir: &Path) -> Vec<PathBuf> {
+    WalkDir::new(dir)
+        .follow_links(false)
+        .into_iter()
         .filter_map(std::result::Result::ok)
-        .map(|e| e.path())
-        .filter(|c| c.is_dir())
-        .collect();
-    children.sort();
-    for child in children {
-        collect_manifest_files(&child, out);
-    }
+        .filter(|entry| entry.file_type().is_file())
+        .filter_map(|entry| {
+            let file_name = entry.file_name().to_str()?;
+            matches!(file_name, "manifest.yaml" | "manifest.yml").then(|| entry.into_path())
+        })
+        .collect()
 }
 
 /// Walk a manifest file and yield (1-based line number, resolved description).
@@ -708,6 +699,27 @@ tables:
 
         fs::remove_dir_all(&root).expect("remove temp dir");
         assert_eq!(manifests, vec![community_manifest, core_manifest]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn iter_manifests_does_not_follow_symlinked_directories() {
+        let root = unique_temp_dir("iter-manifests-symlink");
+        let real_manifest = root.join("real/manifest.yaml");
+        let linked_manifest = root.join("sources/linked/manifest.yaml");
+        fs::create_dir_all(real_manifest.parent().expect("real parent")).expect("create real");
+        fs::create_dir_all(root.join("sources")).expect("create sources");
+        fs::write(&real_manifest, "name: real\n").expect("write manifest");
+        std::os::unix::fs::symlink(root.join("real"), root.join("sources/linked"))
+            .expect("create symlink");
+
+        let manifests = iter_manifests(&[root.join("sources")]);
+
+        fs::remove_dir_all(&root).expect("remove temp dir");
+        assert!(
+            manifests.is_empty(),
+            "symlinked manifest should not be traversed: {linked_manifest:?}"
+        );
     }
 
     #[test]

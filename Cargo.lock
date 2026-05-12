@@ -5981,6 +5981,7 @@ dependencies = [
  "insta",
  "pulldown-cmark",
  "serde_json",
+ "walkdir",
 ]
 
 [[package]]
