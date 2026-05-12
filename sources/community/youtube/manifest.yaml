@@ -1,6 +1,6 @@
 dsl_version: 3
 name: youtube
-version: 1.1.0
+version: 1.0.0
 description: >-
   Query channels, videos, playlists, search results, and comments from
   YouTube Data API v3.
