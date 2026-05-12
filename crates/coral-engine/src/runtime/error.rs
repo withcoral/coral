@@ -309,7 +309,7 @@ mod tests {
             CoreError::QueryFailure(sqe) => {
                 assert_eq!(sqe.reason(), crate::contracts::SQL_PARSE_ERROR_REASON);
                 assert_eq!(sqe.summary(), "SQL query could not be parsed");
-                assert!(sqe.hint().is_some_and(|hint| hint.contains("coral.tables")));
+                assert!(sqe.hint().is_none());
             }
             other => panic!("expected CoreError::QueryFailure, got {other:?}"),
         }

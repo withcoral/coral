@@ -289,7 +289,7 @@ async fn json_operators_are_rejected() {
         match error {
             CoreError::QueryFailure(sqe) => {
                 assert_eq!(sqe.reason(), "SQL_PARSE_ERROR");
-                assert!(sqe.hint().is_some());
+                assert!(sqe.hint().is_none());
             }
             CoreError::InvalidInput(_) | CoreError::Unimplemented(_) | CoreError::Internal(_) => {}
             other => panic!("expected a planning failure for `{sql}`, got {other:?}"),
