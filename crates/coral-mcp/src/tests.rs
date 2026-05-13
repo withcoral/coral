@@ -233,6 +233,17 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
             .expect("sql description")
             .contains("0 configured source")
     );
+    for tool in &initial_tools {
+        let Some(output_schema) = &tool.output_schema else {
+            continue;
+        };
+        assert_eq!(
+            output_schema.get("type").and_then(Value::as_str),
+            Some("object"),
+            "tool '{}' output schema root type should be object",
+            tool.name
+        );
+    }
     let initial_resources = client
         .list_all_resources()
         .await

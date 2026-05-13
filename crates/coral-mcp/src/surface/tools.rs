@@ -425,6 +425,7 @@ fn search_tables_output_schema() -> Arc<Map<String, Value>> {
 
 fn list_columns_output_schema() -> Arc<Map<String, Value>> {
     json_object_schema(&json!({
+        "type": "object",
         "oneOf": [
             list_columns_page_output_schema(),
             missing_table_output_schema()
