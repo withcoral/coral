@@ -275,6 +275,10 @@ fn table_to_proto_with_columns(
             name: column.name,
             data_type: column.data_type,
             nullable: column.nullable,
+            is_virtual: column.is_virtual,
+            is_required_filter: column.is_required_filter,
+            description: column.description,
+            ordinal_position: column.ordinal_position,
         })
         .collect();
 
@@ -441,6 +445,10 @@ mod tests {
                 name: "id".to_string(),
                 data_type: "Int64".to_string(),
                 nullable: false,
+                is_virtual: false,
+                is_required_filter: true,
+                description: "User id".to_string(),
+                ordinal_position: 0,
             }],
             required_filters: vec!["org_id".to_string()],
         };
@@ -456,6 +464,10 @@ mod tests {
         assert_eq!(proto.columns[0].name, "id");
         assert_eq!(proto.columns[0].data_type, "Int64");
         assert!(!proto.columns[0].nullable);
+        assert!(!proto.columns[0].is_virtual);
+        assert!(proto.columns[0].is_required_filter);
+        assert_eq!(proto.columns[0].description, "User id");
+        assert_eq!(proto.columns[0].ordinal_position, 0);
         assert_eq!(proto.required_filters, vec!["org_id"]);
     }
 
@@ -471,6 +483,10 @@ mod tests {
                 name: "id".to_string(),
                 data_type: "Int64".to_string(),
                 nullable: false,
+                is_virtual: false,
+                is_required_filter: true,
+                description: "User id".to_string(),
+                ordinal_position: 0,
             }],
             required_filters: vec!["org_id".to_string()],
         };

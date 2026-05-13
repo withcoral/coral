@@ -9,6 +9,14 @@ pub struct ColumnInfo {
     pub data_type: String,
     /// Whether the column can contain null values.
     pub nullable: bool,
+    /// Whether the column is provider-derived metadata, such as a filter or computed column.
+    pub is_virtual: bool,
+    /// Whether the column must be constrained before querying the table.
+    pub is_required_filter: bool,
+    /// User-facing column description.
+    pub description: String,
+    /// Zero-based position of the column within the table.
+    pub ordinal_position: u32,
 }
 
 /// Describes one queryable table.

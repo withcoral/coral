@@ -67,22 +67,34 @@ fn mock_visible_table() -> Table {
         guide: "Query fixture messages.".to_string(),
         columns: vec![
             Column {
-                name: "type".to_string(),
+                name: "owner".to_string(),
                 data_type: "Utf8".to_string(),
                 nullable: false,
+                is_virtual: true,
+                is_required_filter: true,
+                description: "Repository owner filter".to_string(),
+                ordinal_position: 0,
             },
             Column {
-                name: "sessionId".to_string(),
+                name: "repo".to_string(),
                 data_type: "Utf8".to_string(),
                 nullable: false,
+                is_virtual: true,
+                is_required_filter: true,
+                description: "Repository name filter".to_string(),
+                ordinal_position: 1,
             },
             Column {
                 name: "text".to_string(),
                 data_type: "Utf8".to_string(),
                 nullable: false,
+                is_virtual: false,
+                is_required_filter: false,
+                description: "Message text".to_string(),
+                ordinal_position: 2,
             },
         ],
-        required_filters: Vec::new(),
+        required_filters: vec!["owner".to_string(), "repo".to_string()],
     }
 }
 

@@ -103,10 +103,15 @@ pub(crate) fn collect_tables(active_sources: &[RegisteredSource]) -> Vec<TableIn
                 columns: table
                     .columns
                     .iter()
-                    .map(|column| ColumnInfo {
+                    .enumerate()
+                    .map(|(position, column)| ColumnInfo {
                         name: column.name.clone(),
                         data_type: column.data_type.clone(),
                         nullable: column.nullable,
+                        is_virtual: column.is_virtual,
+                        is_required_filter: column.is_required_filter,
+                        description: column.description.clone(),
+                        ordinal_position: u32::try_from(position).unwrap_or(u32::MAX),
                     })
                     .collect(),
                 required_filters: table.required_filters.clone(),

@@ -1,9 +1,12 @@
 name: hn
-version: 0.1.0
+version: 0.1.1
 dsl_version: 3
 backend: http
 description: Hacker News search and item lookup via the public Algolia HN API (no auth).
 base_url: https://hn.algolia.com/api/v1
+test_queries:
+  - SELECT * FROM hn.search_by_date WHERE query = 'rust' AND tags = 'story' LIMIT 1
+  - SELECT * FROM hn.users WHERE username = 'pg' LIMIT 1
 tables:
   - name: search
     description: |
@@ -11,6 +14,7 @@ tables:
       `tags` for type/author/story scoping (e.g. `story`, `comment`, `author_pg`,
       `story_8863`, `(story,poll)` for OR), and `numeric_filters` for points or
       time bounds (e.g. `points>100,created_at_i>1700000000`).
+    fetch_limit_default: 100
     filters:
       - name: query
       - name: tags
@@ -194,6 +198,7 @@ tables:
       Hacker News full-text search ordered newest-first. Same filters and
       pagination as `search`; useful for time-bounded scans via
       `numeric_filters` like `created_at_i>1700000000`.
+    fetch_limit_default: 100
     filters:
       - name: query
       - name: tags
@@ -375,8 +380,7 @@ tables:
     description: |
       Fetch a single HN item (story, comment, poll, or job) by ID. The API
       returns the item with its full nested comment thread under `children`,
-      which is omitted from this table — query individual descendant IDs to
-      walk the thread.
+      exposed as JSON so callers can inspect or expand the thread.
     filters:
       - name: id
         required: true
@@ -459,6 +463,14 @@ tables:
           kind: path
           path:
             - story_id
+      - name: children
+        type: Json
+        nullable: true
+        description: Nested child comments returned by Algolia for this item.
+        expr:
+          kind: path
+          path:
+            - children
       - name: created_at_i
         type: Int64
         nullable: false
