@@ -243,7 +243,7 @@ fn validate_table_and_function_names(
     let mut table_names = HashSet::new();
     for table in tables {
         validate_identifier(&table.name, &format!("source '{source_name}' table name"))?;
-        if !table_names.insert(table.name.as_str()) {
+        if !table_names.insert(table.name.to_ascii_lowercase()) {
             return Err(ManifestError::validation(format!(
                 "source '{source_name}' table '{}' is declared more than once",
                 table.name
@@ -257,13 +257,14 @@ fn validate_table_and_function_names(
             &function.name,
             &format!("source '{source_name}' function name"),
         )?;
-        if table_names.contains(function.name.as_str()) {
+        let normalized_name = function.name.to_ascii_lowercase();
+        if table_names.contains(&normalized_name) {
             return Err(ManifestError::validation(format!(
                 "source '{source_name}' declares both a table and function named '{}'",
                 function.name
             )));
         }
-        if !function_names.insert(function.name.as_str()) {
+        if !function_names.insert(normalized_name) {
             return Err(ManifestError::validation(format!(
                 "source '{source_name}' function '{}' is declared more than once",
                 function.name
@@ -649,6 +650,34 @@ mod tests {
     }
 
     #[test]
+    fn rejects_table_and_function_names_that_differ_only_by_case() {
+        let error = McpSourceManifest::parse_manifest_value(json!({
+            "dsl_version": 3,
+            "name": "demo",
+            "version": "0.1.0",
+            "backend": "mcp",
+            "server": { "transport": "stdio", "command": "demo-mcp-server" },
+            "tables": [{
+                "name": "Issues",
+                "tool": "list_issues",
+                "columns": [{ "name": "id", "type": "Utf8" }]
+            }],
+            "functions": [{
+                "name": "issues",
+                "tool": "search_issues",
+                "args": [],
+                "columns": [{ "name": "id", "type": "Utf8" }]
+            }]
+        }))
+        .expect_err("case-insensitive table/function name collision should fail");
+
+        assert_eq!(
+            error.to_string(),
+            "source 'demo' declares both a table and function named 'issues'"
+        );
+    }
+
+    #[test]
     fn rejects_duplicate_mcp_table_names() {
         let error = McpSourceManifest::parse_manifest_value(json!({
             "dsl_version": 3,
@@ -674,6 +703,64 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "source 'demo' table 'issues' is declared more than once"
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_mcp_table_names_that_differ_only_by_case() {
+        let error = McpSourceManifest::parse_manifest_value(json!({
+            "dsl_version": 3,
+            "name": "demo",
+            "version": "0.1.0",
+            "backend": "mcp",
+            "server": { "transport": "stdio", "command": "demo-mcp-server" },
+            "tables": [
+                {
+                    "name": "Issues",
+                    "tool": "list_issues",
+                    "columns": [{ "name": "id", "type": "Utf8" }]
+                },
+                {
+                    "name": "issues",
+                    "tool": "list_issues",
+                    "columns": [{ "name": "id", "type": "Utf8" }]
+                }
+            ]
+        }))
+        .expect_err("case-insensitive duplicate table names should fail");
+
+        assert_eq!(
+            error.to_string(),
+            "source 'demo' table 'issues' is declared more than once"
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_mcp_function_names_that_differ_only_by_case() {
+        let error = McpSourceManifest::parse_manifest_value(json!({
+            "dsl_version": 3,
+            "name": "demo",
+            "version": "0.1.0",
+            "backend": "mcp",
+            "server": { "transport": "stdio", "command": "demo-mcp-server" },
+            "functions": [
+                {
+                    "name": "Search",
+                    "tool": "search_issues",
+                    "columns": [{ "name": "id", "type": "Utf8" }]
+                },
+                {
+                    "name": "search",
+                    "tool": "search_issues",
+                    "columns": [{ "name": "id", "type": "Utf8" }]
+                }
+            ]
+        }))
+        .expect_err("case-insensitive duplicate function names should fail");
+
+        assert_eq!(
+            error.to_string(),
+            "source 'demo' function 'search' is declared more than once"
         );
     }
 

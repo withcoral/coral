@@ -15,7 +15,7 @@ pub(crate) fn extract_rows(response: &ResponseSpec, payload: &Value) -> Vec<Valu
     match response.row_strategy {
         RowStrategy::Direct => extract_direct(response, payload),
         RowStrategy::DictEntries => extract_dict_entries(response, payload),
-        RowStrategy::SeriesPointList => extract_series_point_list(payload),
+        RowStrategy::SeriesPointList => extract_series_point_list(response, payload),
     }
 }
 
@@ -46,10 +46,16 @@ fn extract_dict_entries(response: &ResponseSpec, payload: &Value) -> Vec<Value> 
         .collect()
 }
 
-fn extract_series_point_list(payload: &Value) -> Vec<Value> {
-    let series = get_path_value(payload, &["series".to_string()])
-        .and_then(Value::as_array)
+fn extract_series_point_list(response: &ResponseSpec, payload: &Value) -> Vec<Value> {
+    let root = response_root(response, payload);
+    let series = root
+        .as_array()
         .cloned()
+        .or_else(|| {
+            get_path_value(root, &["series".to_string()])
+                .and_then(Value::as_array)
+                .cloned()
+        })
         .unwrap_or_default();
 
     let mut rows = Vec::new();
@@ -193,6 +199,54 @@ mod tests {
                 "timestamp": 1_710_000_000_i64,
                 "value": 42.5
             })]
+        );
+    }
+
+    #[test]
+    fn series_point_list_honors_rows_path() {
+        let payload = json!({
+            "result": {
+                "series": [{
+                    "metric": "cpu",
+                    "scope": "host:demo",
+                    "pointlist": [[1_710_000_000, 42.5]]
+                }]
+            }
+        });
+        let rows = extract_rows(
+            &response(&["result"], RowStrategy::SeriesPointList),
+            &payload,
+        );
+        assert_eq!(
+            rows,
+            vec![json!({
+                "metric": "cpu",
+                "scope": "host:demo",
+                "timestamp": 1_710_000_000_i64,
+                "value": 42.5
+            })]
+        );
+    }
+
+    #[test]
+    fn series_point_list_accepts_rows_path_to_series_array() {
+        let payload = json!({
+            "result": {
+                "series": [{
+                    "metric": "cpu",
+                    "scope": "host:demo",
+                    "pointlist": [[1_710_000_000, 42.5]]
+                }]
+            }
+        });
+        let rows = extract_rows(
+            &response(&["result", "series"], RowStrategy::SeriesPointList),
+            &payload,
+        );
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows.first().and_then(|row| row.get("metric")),
+            Some(&json!("cpu"))
         );
     }
 

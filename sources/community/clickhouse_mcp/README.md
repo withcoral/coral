@@ -22,7 +22,7 @@ Run `mcp-remote` once interactively to complete the OAuth flow. A browser
 window opens; sign in with your ClickHouse Cloud account.
 
 ```bash
-npx -y mcp-remote https://mcp.clickhouse.cloud/mcp
+npx -y mcp-remote@0.1.37 https://mcp.clickhouse.cloud/mcp
 # Browser opens automatically.
 # After you authorize, the proxy prints "Proxy established successfully".
 # Press Ctrl+C.
@@ -131,7 +131,7 @@ organizations.id
 
 ```bash
 # 1. Authenticate once
-npx -y mcp-remote https://mcp.clickhouse.cloud/mcp   # browser flow, then Ctrl+C
+npx -y mcp-remote@0.1.37 https://mcp.clickhouse.cloud/mcp   # browser flow, then Ctrl+C
 
 # 2. Register the source
 coral source add --file sources/community/clickhouse_mcp/manifest.yaml
@@ -243,7 +243,7 @@ noise, not errors.
 Coral spawns `mcp-remote` per query, so every scan does the
 OAuth-token-read + connect handshake (~1s overhead). Fine for interactive
 use; less ideal for many small queries in a loop. Tracked in
-`worktrees/PLAN_mcp.md` "Open Decisions".
+the MCP backend follow-up plan.
 
 ### `timeoutSeconds` is not exposed on `run_select_query`
 
