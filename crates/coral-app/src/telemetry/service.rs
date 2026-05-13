@@ -46,6 +46,7 @@ impl TraceServiceApi for TraceService {
             let offset = parse_page_token(&request.page_token)?;
             let mut summaries = traces
                 .list_traces(page_size.saturating_add(1), offset)
+                .await
                 .map_err(trace_store_status)?;
             let next_page_token = if summaries.len() > page_size {
                 summaries.truncate(page_size);
@@ -76,7 +77,8 @@ impl TraceServiceApi for TraceService {
                 ));
             }
             let trace = traces
-                .get_trace(&request.trace_id)
+                .get_trace(request.trace_id)
+                .await
                 .map_err(trace_store_status)?;
             Ok(Response::new(trace_detail_to_proto(trace)))
         })
@@ -115,7 +117,8 @@ fn trace_store_status(error: TraceStoreError) -> Status {
         | TraceStoreError::OpenFile { .. }
         | TraceStoreError::ReadFile { .. }
         | TraceStoreError::DecodeLine { .. }
-        | TraceStoreError::PruneExpired { .. } => Status::new(Code::Internal, error.to_string()),
+        | TraceStoreError::PruneExpired { .. }
+        | TraceStoreError::Worker { .. } => Status::new(Code::Internal, error.to_string()),
     }
 }
 
