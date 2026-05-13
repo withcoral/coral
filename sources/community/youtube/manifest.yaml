@@ -1,8 +1,8 @@
 dsl_version: 3
 name: youtube
-version: 1.0.0
+version: 1.1.0
 description: >-
-  Query channels, videos, playlists, search results, and comments from
+  Query channels, videos, playlist items, search results, and comments from
   YouTube Data API v3.
 backend: http
 base_url: https://www.googleapis.com/youtube/v3
@@ -28,9 +28,9 @@ tables:
       Returns metadata and statistics for one or more YouTube channels.
       Provide either `handle` (the @-prefixed channel handle, e.g.
       `@DynamoGaming`) or `channel_id` (a UC-prefixed ID, or comma-separated
-      list of up to 50). At least one filter is required. Note: YouTube
-      returns statistics counts as strings (viewCount, subscriberCount,
-      videoCount).
+      list of up to 50). At least one filter is required — omitting both will
+      produce a 400 API error. Note: YouTube returns statistics counts as
+      strings (viewCount, subscriberCount, videoCount).
     filters:
       - name: channel_id
         required: false
@@ -64,14 +64,7 @@ tables:
       allow_404_empty: false
       row_strategy: direct
     pagination:
-      mode: cursor_query
-      page_size:
-        default: 50
-        max: 50
-        query_param: maxResults
-      cursor_param: pageToken
-      response_cursor_path:
-        - nextPageToken
+      mode: none
     columns:
       - name: handle
         type: Utf8
@@ -316,15 +309,6 @@ tables:
           path:
             - snippet
             - videoOwnerChannelTitle
-      - name: content_details__video_id
-        type: Utf8
-        nullable: true
-        description: YouTube video ID (from contentDetails part)
-        expr:
-          kind: path
-          path:
-            - contentDetails
-            - videoId
       - name: content_details__video_published_at
         type: Timestamp
         nullable: true
@@ -498,7 +482,7 @@ tables:
       - name: content_details__caption
         type: Utf8
         nullable: true
-        description: "Whether captions are available: true or false"
+        description: "Whether captions are available — returned as the string \"true\" or \"false\" by the YouTube API"
         expr:
           kind: path
           path:
@@ -614,6 +598,9 @@ tables:
       The result `id__video_id`, `id__channel_id`, or `id__playlist_id`
       column will be populated depending on the result type; the others will
       be null. Use `youtube.videos` to enrich video results with full metadata.
+
+      Omitting both `q` and `channel_id` returns 0 rows — YouTube requires
+      at least one search parameter.
     filters:
       - name: q
         required: false
@@ -807,11 +794,10 @@ tables:
     description: Top-level comment threads on a YouTube video
     guide: |
       Returns top-level comment threads for a video. Each row represents one
-      thread and includes the top-level comment text plus aggregate reply
-      metadata. The `replies` object in the API response contains only a
-      preview of replies (not all of them) — to retrieve every reply for a
-      thread, query `youtube.comments` with `parent_id` set to the thread
-      `id`.
+      thread. The top-level comment is in the `top_comment__*` columns;
+      `snippet__total_reply_count` shows how many replies exist. To retrieve
+      all replies for a thread, query `youtube.comments` with `parent_id`
+      set to the thread `id`.
 
       `order` accepts `time` (default) or `relevance`. `search_terms`
       filters threads to those containing the given text.
@@ -828,7 +814,7 @@ tables:
       query:
         - name: part
           from: literal
-          value: snippet,replies
+          value: snippet
         - name: videoId
           from: filter
           key: video_id
@@ -877,7 +863,7 @@ tables:
       - name: id
         type: Utf8
         nullable: false
-        description: Comment thread ID (use as parent_id in youtube.comments to fetch replies)
+        description: Comment thread ID — use as parent_id in youtube.comments to fetch all replies
         expr:
           kind: path
           path:
@@ -927,7 +913,7 @@ tables:
           path:
             - snippet
             - isPublic
-      - name: snippet__top_level_comment__id
+      - name: top_comment__id
         type: Utf8
         nullable: true
         description: ID of the top-level comment
@@ -937,7 +923,7 @@ tables:
             - snippet
             - topLevelComment
             - id
-      - name: snippet__top_level_comment__snippet__text_display
+      - name: top_comment__text
         type: Utf8
         nullable: true
         description: Display text of the top-level comment (may differ from original if links were rewritten)
@@ -948,7 +934,7 @@ tables:
             - topLevelComment
             - snippet
             - textDisplay
-      - name: snippet__top_level_comment__snippet__author_display_name
+      - name: top_comment__author_name
         type: Utf8
         nullable: true
         description: Display name of the commenter
@@ -959,7 +945,7 @@ tables:
             - topLevelComment
             - snippet
             - authorDisplayName
-      - name: snippet__top_level_comment__snippet__author_channel_url
+      - name: top_comment__author_channel_url
         type: Utf8
         nullable: true
         description: YouTube channel URL of the commenter
@@ -970,7 +956,7 @@ tables:
             - topLevelComment
             - snippet
             - authorChannelUrl
-      - name: snippet__top_level_comment__snippet__author_channel_id
+      - name: top_comment__author_channel_id
         type: Utf8
         nullable: true
         description: Channel ID of the commenter
@@ -982,7 +968,7 @@ tables:
             - snippet
             - authorChannelId
             - value
-      - name: snippet__top_level_comment__snippet__like_count
+      - name: top_comment__like_count
         type: Int64
         nullable: true
         description: Number of likes on the top-level comment
@@ -993,7 +979,7 @@ tables:
             - topLevelComment
             - snippet
             - likeCount
-      - name: snippet__top_level_comment__snippet__published_at
+      - name: top_comment__published_at
         type: Timestamp
         nullable: true
         description: Date and time the top-level comment was posted
@@ -1007,7 +993,7 @@ tables:
               - topLevelComment
               - snippet
               - publishedAt
-      - name: snippet__top_level_comment__snippet__updated_at
+      - name: top_comment__updated_at
         type: Timestamp
         nullable: true
         description: Date and time the top-level comment was last edited
