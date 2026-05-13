@@ -248,9 +248,9 @@ mod tests {
     use datafusion::common::{Column, TableReference};
     use datafusion::datasource::provider_as_source;
     use datafusion::logical_expr::logical_plan::builder::LogicalTableSource;
-    use datafusion::logical_expr::{JoinType, LogicalPlan, LogicalPlanBuilder};
+    use datafusion::logical_expr::{Expr, JoinType, LogicalPlan, LogicalPlanBuilder, lit};
     use datafusion::optimizer::OptimizerRule;
-    use serde_json::json;
+    use serde_json::{Value, json};
 
     use super::{
         DependentJoinAnalysis, DependentJoinFallbackReason, DependentJoinOptimizerRule, JoinSide,
@@ -290,6 +290,216 @@ mod tests {
                 table_name: "pull_requests".to_string(),
                 binding_filters: vec!["owner".to_string()],
             })
+        );
+    }
+
+    #[test]
+    fn inner_equi_composite_binding_preserves_filter_order() {
+        let plan = resolver_plan()
+            .join(
+                dependent_http_plan_with_filters(&[
+                    json!({ "name": "owner", "bindable": true }),
+                    json!({ "name": "repo", "bindable": true }),
+                    json!({ "name": "number", "bindable": true }),
+                ]),
+                JoinType::Inner,
+                (
+                    vec![
+                        column("i", "github_owner"),
+                        column("i", "github_repo"),
+                        column("i", "github_pr_number"),
+                    ],
+                    vec![
+                        column("github.pull_requests", "owner"),
+                        column("github.pull_requests", "repo"),
+                        column("github.pull_requests", "number"),
+                    ],
+                ),
+                None,
+            )
+            .expect("join should build")
+            .build()
+            .expect("plan should build");
+
+        let analysis = analyze_join(join(&plan));
+
+        assert_eq!(
+            analysis,
+            DependentJoinAnalysis::Candidate(super::DependentJoinCandidate {
+                dependent_side: JoinSide::Right,
+                source_name: "github".to_string(),
+                table_name: "pull_requests".to_string(),
+                binding_filters: vec![
+                    "owner".to_string(),
+                    "repo".to_string(),
+                    "number".to_string()
+                ],
+            })
+        );
+    }
+
+    #[test]
+    fn swapped_dependent_side_is_candidate() {
+        let plan = LogicalPlanBuilder::new(dependent_http_plan(bindable_pr_table()))
+            .join(
+                resolver_plan().build().expect("resolver plan should build"),
+                JoinType::Inner,
+                (
+                    vec![column("github.pull_requests", "owner")],
+                    vec![column("i", "github_owner")],
+                ),
+                None,
+            )
+            .expect("join should build")
+            .build()
+            .expect("plan should build");
+
+        let analysis = analyze_join(join(&plan));
+
+        assert_eq!(
+            analysis,
+            DependentJoinAnalysis::Candidate(super::DependentJoinCandidate {
+                dependent_side: JoinSide::Left,
+                source_name: "github".to_string(),
+                table_name: "pull_requests".to_string(),
+                binding_filters: vec!["owner".to_string()],
+            })
+        );
+    }
+
+    #[test]
+    fn required_filter_satisfied_by_join_is_candidate() {
+        let plan = resolver_plan()
+            .join(
+                dependent_http_plan_with_filters(&[
+                    json!({ "name": "owner", "bindable": true, "required": true }),
+                    json!({ "name": "repo" }),
+                    json!({ "name": "number" }),
+                ]),
+                JoinType::Inner,
+                (
+                    vec![column("i", "github_owner")],
+                    vec![column("github.pull_requests", "owner")],
+                ),
+                None,
+            )
+            .expect("join should build")
+            .build()
+            .expect("plan should build");
+
+        assert!(matches!(
+            analyze_join(join(&plan)),
+            DependentJoinAnalysis::Candidate(_)
+        ));
+    }
+
+    #[test]
+    fn missing_required_filter_falls_back() {
+        let plan = resolver_plan()
+            .join(
+                dependent_http_plan_with_filters(&[
+                    json!({ "name": "owner", "bindable": true }),
+                    json!({ "name": "repo", "bindable": true, "required": true }),
+                    json!({ "name": "number" }),
+                ]),
+                JoinType::Inner,
+                (
+                    vec![column("i", "github_owner")],
+                    vec![column("github.pull_requests", "owner")],
+                ),
+                None,
+            )
+            .expect("join should build")
+            .build()
+            .expect("plan should build");
+
+        assert_eq!(
+            analyze_join(join(&plan)),
+            DependentJoinAnalysis::Fallback(DependentJoinFallbackReason::MissingRequired)
+        );
+    }
+
+    #[test]
+    fn utf8_int64_and_boolean_resolver_bindings_are_candidate() {
+        let plan = resolver_plan()
+            .join(
+                dependent_http_plan_with_filters(&[
+                    json!({ "name": "owner", "bindable": true }),
+                    json!({ "name": "number", "bindable": true }),
+                    json!({ "name": "draft", "bindable": true }),
+                ]),
+                JoinType::Inner,
+                (
+                    vec![
+                        column("i", "github_owner"),
+                        column("i", "github_pr_number"),
+                        column("i", "draft"),
+                    ],
+                    vec![
+                        column("github.pull_requests", "owner"),
+                        column("github.pull_requests", "number"),
+                        column("github.pull_requests", "draft"),
+                    ],
+                ),
+                None,
+            )
+            .expect("join should build")
+            .build()
+            .expect("plan should build");
+
+        assert!(matches!(
+            analyze_join(join(&plan)),
+            DependentJoinAnalysis::Candidate(_)
+        ));
+    }
+
+    #[test]
+    fn unsupported_resolver_binding_type_falls_back() {
+        let plan =
+            LogicalPlanBuilder::new(file_like_plan("i", &[("github_owner", DataType::Float64)]))
+                .join(
+                    dependent_http_plan(bindable_pr_table()),
+                    JoinType::Inner,
+                    (
+                        vec![column("i", "github_owner")],
+                        vec![column("github.pull_requests", "owner")],
+                    ),
+                    None,
+                )
+                .expect("join should build")
+                .build()
+                .expect("plan should build");
+
+        assert_eq!(
+            analyze_join(join(&plan)),
+            DependentJoinAnalysis::Fallback(DependentJoinFallbackReason::NonCoercible)
+        );
+    }
+
+    #[test]
+    fn dependent_side_with_wrapper_falls_back_until_peeling_preserves_semantics() {
+        let dependent = LogicalPlanBuilder::new(dependent_http_plan(bindable_pr_table()))
+            .filter(Expr::Column(column("github.pull_requests", "state")).eq(lit("open")))
+            .expect("filter should build")
+            .build()
+            .expect("dependent plan should build");
+        let plan = resolver_plan()
+            .join(
+                dependent,
+                JoinType::Inner,
+                (
+                    vec![column("i", "github_owner")],
+                    vec![column("github.pull_requests", "owner")],
+                ),
+                None,
+            )
+            .expect("join should build")
+            .build()
+            .expect("plan should build");
+
+        assert_eq!(
+            analyze_join(join(&plan)),
+            DependentJoinAnalysis::Fallback(DependentJoinFallbackReason::NonPeelableWrapper)
         );
     }
 
@@ -373,6 +583,7 @@ mod tests {
                 ("github_owner", DataType::Utf8),
                 ("github_repo", DataType::Utf8),
                 ("github_pr_number", DataType::Int64),
+                ("draft", DataType::Boolean),
                 ("status", DataType::Utf8),
             ],
         ))
@@ -393,6 +604,14 @@ mod tests {
     }
 
     fn dependent_http_plan(bindable_owner: bool) -> LogicalPlan {
+        dependent_http_plan_with_filters(&[
+            json!({ "name": "owner", "bindable": bindable_owner }),
+            json!({ "name": "repo" }),
+            json!({ "name": "number" }),
+        ])
+    }
+
+    fn dependent_http_plan_with_filters(filters: &[Value]) -> LogicalPlan {
         let manifest = parse_source_manifest_value(json!({
             "name": "github",
             "version": "0.1.0",
@@ -402,16 +621,13 @@ mod tests {
             "tables": [{
                 "name": "pull_requests",
                 "description": "Pull requests",
-                "filters": [
-                    { "name": "owner", "bindable": bindable_owner },
-                    { "name": "repo" },
-                    { "name": "number" }
-                ],
-                "request": { "path": "/repos/{{filter.owner}}/{{filter.repo}}/pulls/{{filter.number}}" },
+                "filters": filters,
+                "request": { "path": "/pulls" },
                 "columns": [
                     { "name": "owner", "type": "Utf8" },
                     { "name": "repo", "type": "Utf8" },
                     { "name": "number", "type": "Int64" },
+                    { "name": "draft", "type": "Boolean" },
                     { "name": "state", "type": "Utf8" }
                 ]
             }]
