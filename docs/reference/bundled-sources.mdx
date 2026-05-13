@@ -26,6 +26,7 @@ If the source you need is not available, you can extend Coral by [writing a cust
 | [datadog](#datadog) | `http` | Query monitors, events, incidents, dashboards, hosts, services, APM dependencies, downtimes, SLOs, synthetic tests, users, logs, spans, and metrics from Datadog. |
 | [github](#github) | `http` | Query repositories, issues, pull requests, workflows, organizations, users, teams, and API metadata from GitHub (Cloud or Enterprise). |
 | [gitlab](#gitlab) | `http` | Query projects, groups, issues, merge requests, pipelines, deployments, packages, users, and instance metadata from GitLab (Cloud or self-hosted). |
+| [gmail](#gmail) | `http` | Query Gmail profile metadata, labels, messages, threads, drafts, history, filters, and send-as aliases from the authenticated mailbox. |
 | [google_calendar](#google_calendar) | `http` | Query Google Calendar calendars, events, user settings, and color palettes. |
 | [grafana](#grafana) | `http` | Query dashboards, folders, datasources, alert rules, annotations, contact points, teams, users, and dashboard panels from Grafana (Cloud or self-hosted). |
 | [incident_io](#incident_io) | `http` | Query incidents, alerts, escalations, schedules, status pages, workflows, teams, users, and catalog resources from incident.io. |
@@ -219,6 +220,26 @@ Base URL of your GitLab instance. Keep the default for
 Use GitLab OAuth or create a personal access token (PAT) with
 the `read_api` scope; some admin tables require elevated scopes.
 See [GitLab PAT docs](https://docs.gitlab.com/user/profile/personal_access_tokens/).
+
+### `gmail`
+
+`GMAIL_USER_ID` (optional)<br />
+default `me`
+
+Gmail user ID to query. Use `me` for the authenticated Google
+account, or an email address when the token has delegated access.
+
+`GMAIL_TOKEN` (required)
+
+Use a read-only OAuth 2.0 access token for the Gmail API with the
+`https://www.googleapis.com/auth/gmail.readonly` scope.
+For the guided OAuth flow, enable the Gmail API in a Google Cloud
+project and create an OAuth 2.0 client of type "Desktop app". The
+guided OAuth credential method uses that client ID and client secret,
+then requests that read-only scope.
+See [Google OAuth client setup](https://support.google.com/cloud/answer/6158849).
+
+To paste a token manually, use a token issued with that same scope.
 
 ### `google_calendar`
 
