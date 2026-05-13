@@ -1,0 +1,831 @@
+#![allow(
+    missing_docs,
+    reason = "This module defines field-heavy declarative source-spec types."
+)]
+
+//! Backend-owned manifest model and validation for MCP-backed sources.
+
+use std::collections::{BTreeMap, BTreeSet, HashSet};
+
+use serde::Deserialize;
+use serde_json::Value;
+
+use crate::{
+    ColumnSpec, FilterMode, FilterSpec, FunctionArgBinding, ManifestError, ManifestInputKind,
+    ManifestInputSpec, ResponseSpec, Result, SourceBackend, SourceManifestCommon,
+    TableFunctionArgSpec, ValueSourceSpec, inputs::collect_source_inputs_value, validate_columns,
+    validate_filters_and_column_exprs, validate_test_queries,
+};
+
+/// Validated top-level manifest for a Model Context Protocol-backed source.
+#[derive(Debug, Clone)]
+pub struct McpSourceManifest {
+    pub common: SourceManifestCommon,
+    pub server: McpServerSpec,
+    pub functions: Vec<McpTableFunctionSpec>,
+    pub tables: Vec<McpTableSpec>,
+    pub declared_inputs: Vec<ManifestInputSpec>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawMcpSourceManifest {
+    dsl_version: u32,
+    name: String,
+    version: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    test_queries: Vec<String>,
+    backend: SourceBackend,
+    #[serde(default)]
+    inputs: Option<Value>,
+    server: McpServerSpec,
+    #[serde(default)]
+    functions: Vec<McpTableFunctionSpec>,
+    #[serde(default)]
+    tables: Vec<McpTableSpec>,
+}
+
+/// MCP server connection settings.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpServerSpec {
+    pub transport: McpTransport,
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env: Vec<McpEnvSpec>,
+}
+
+/// Supported MCP transports.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum McpTransport {
+    Stdio,
+}
+
+/// One environment variable passed to a stdio MCP server process.
+#[derive(Debug, Clone, Deserialize)]
+pub struct McpEnvSpec {
+    pub name: String,
+    #[serde(flatten)]
+    pub value: crate::ValueSourceSpec,
+}
+
+/// One source-scoped table-valued function backed by an MCP tool call.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpTableFunctionSpec {
+    pub name: String,
+    pub tool: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub fetch_limit_default: Option<usize>,
+    #[serde(default)]
+    pub args: Vec<TableFunctionArgSpec>,
+    #[serde(default)]
+    pub response: ResponseSpec,
+    #[serde(default)]
+    pub columns: Vec<ColumnSpec>,
+}
+
+/// One SQL table backed by an MCP tool call.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpTableSpec {
+    pub name: String,
+    pub tool: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub guide: String,
+    #[serde(default)]
+    pub fetch_limit_default: Option<usize>,
+    #[serde(default)]
+    pub tool_args: BTreeMap<String, ValueSourceSpec>,
+    #[serde(default)]
+    pub filters: Vec<McpTableFilterSpec>,
+    #[serde(default)]
+    pub limit_binding: Option<McpLimitBinding>,
+    #[serde(default)]
+    pub response: ResponseSpec,
+    #[serde(default)]
+    pub columns: Vec<ColumnSpec>,
+}
+
+/// How `LIMIT` pushes into an MCP tool argument.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpLimitBinding {
+    pub tool_arg: String,
+    #[serde(default)]
+    pub max: Option<usize>,
+}
+
+/// One SQL filter declared on an MCP table that may bind into an MCP tool argument.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpTableFilterSpec {
+    pub name: String,
+    #[serde(default)]
+    pub required: bool,
+    #[serde(default)]
+    pub mode: FilterMode,
+    pub tool_arg: String,
+}
+
+impl McpTableSpec {
+    /// Returns the filter declarations as the backend-shared [`FilterSpec`] shape
+    /// used by the SQL filter extraction helper.
+    #[must_use]
+    pub fn filter_specs(&self) -> Vec<FilterSpec> {
+        self.filters
+            .iter()
+            .map(|filter| FilterSpec {
+                name: filter.name.clone(),
+                required: filter.required,
+                mode: filter.mode,
+            })
+            .collect()
+    }
+}
+
+impl McpSourceManifest {
+    /// Returns the source secrets required by this manifest.
+    pub fn required_secret_names(&self) -> BTreeSet<String> {
+        self.declared_inputs
+            .iter()
+            .filter(|input| input.kind == ManifestInputKind::Secret)
+            .map(|input| input.key.clone())
+            .collect()
+    }
+
+    pub(crate) fn parse_manifest_value(value: Value) -> Result<Self> {
+        let declared_inputs = collect_source_inputs_value(&value)?;
+        let raw: RawMcpSourceManifest =
+            serde_json::from_value(value).map_err(ManifestError::deserialize)?;
+        let RawMcpSourceManifest {
+            dsl_version,
+            name,
+            version,
+            description,
+            test_queries,
+            backend: _backend,
+            inputs: _inputs,
+            server,
+            functions,
+            tables,
+        } = raw;
+
+        if functions.is_empty() && tables.is_empty() {
+            return Err(ManifestError::validation(format!(
+                "source '{name}' must define at least one function or table"
+            )));
+        }
+        validate_test_queries(&name, &test_queries)?;
+        validate_server(&name, &server)?;
+        validate_table_and_function_names(&name, &tables, &functions)?;
+        for function in &functions {
+            validate_mcp_function(&name, function)?;
+        }
+        for table in &tables {
+            validate_mcp_table(&name, table)?;
+        }
+
+        Ok(Self {
+            common: SourceManifestCommon::new(
+                dsl_version,
+                name,
+                version,
+                description,
+                test_queries,
+            ),
+            server,
+            functions,
+            tables,
+            declared_inputs,
+        })
+    }
+}
+
+fn validate_server(source_name: &str, server: &McpServerSpec) -> Result<()> {
+    if server.command.trim().is_empty() {
+        return Err(ManifestError::validation(format!(
+            "source '{source_name}' MCP server command must not be empty"
+        )));
+    }
+
+    let mut env_names = HashSet::new();
+    for env in &server.env {
+        if env.name.trim().is_empty() {
+            return Err(ManifestError::validation(format!(
+                "source '{source_name}' MCP server env name must not be empty"
+            )));
+        }
+        if !env_names.insert(env.name.as_str()) {
+            return Err(ManifestError::validation(format!(
+                "source '{source_name}' MCP server env '{}' is declared more than once",
+                env.name
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_table_and_function_names(
+    source_name: &str,
+    tables: &[McpTableSpec],
+    functions: &[McpTableFunctionSpec],
+) -> Result<()> {
+    let mut table_names = HashSet::new();
+    for table in tables {
+        validate_identifier(&table.name, &format!("source '{source_name}' table name"))?;
+        if !table_names.insert(table.name.as_str()) {
+            return Err(ManifestError::validation(format!(
+                "source '{source_name}' table '{}' is declared more than once",
+                table.name
+            )));
+        }
+    }
+
+    let mut function_names = HashSet::new();
+    for function in functions {
+        validate_identifier(
+            &function.name,
+            &format!("source '{source_name}' function name"),
+        )?;
+        if table_names.contains(function.name.as_str()) {
+            return Err(ManifestError::validation(format!(
+                "source '{source_name}' declares both a table and function named '{}'",
+                function.name
+            )));
+        }
+        if !function_names.insert(function.name.as_str()) {
+            return Err(ManifestError::validation(format!(
+                "source '{source_name}' function '{}' is declared more than once",
+                function.name
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_mcp_function(source_name: &str, function: &McpTableFunctionSpec) -> Result<()> {
+    if function.tool.trim().is_empty() {
+        return Err(ManifestError::validation(format!(
+            "source '{source_name}' function '{}' must define a non-empty tool",
+            function.name
+        )));
+    }
+    if function.columns.is_empty() {
+        return Err(ManifestError::validation(format!(
+            "source '{source_name}' function '{}' must define columns",
+            function.name
+        )));
+    }
+
+    let mut arg_names = HashSet::new();
+    let mut request_arg_names = HashSet::new();
+    for arg in &function.args {
+        validate_identifier(
+            &arg.name,
+            &format!(
+                "source '{source_name}' function '{}' argument",
+                function.name
+            ),
+        )?;
+        if !arg_names.insert(arg.name.as_str()) {
+            return Err(ManifestError::validation(format!(
+                "source '{source_name}' function '{}' argument '{}' is declared more than once",
+                function.name, arg.name
+            )));
+        }
+        validate_unique_values(
+            &arg.values,
+            &format!(
+                "source '{source_name}' function '{}' argument '{}'",
+                function.name, arg.name
+            ),
+        )?;
+        validate_function_binding(
+            source_name,
+            &function.name,
+            &arg.bind,
+            &mut request_arg_names,
+        )?;
+    }
+
+    validate_columns(
+        &function.columns,
+        source_name,
+        &format!("function '{}'", function.name),
+    )?;
+    validate_filters_and_column_exprs(
+        &[],
+        &function.columns,
+        source_name,
+        &format!("function '{}'", function.name),
+    )?;
+    Ok(())
+}
+
+fn validate_mcp_table(source_name: &str, table: &McpTableSpec) -> Result<()> {
+    if table.tool.trim().is_empty() {
+        return Err(ManifestError::validation(format!(
+            "source '{source_name}' table '{}' must define a non-empty tool",
+            table.name
+        )));
+    }
+    if table.columns.is_empty() {
+        return Err(ManifestError::validation(format!(
+            "source '{source_name}' table '{}' must define columns",
+            table.name
+        )));
+    }
+
+    validate_columns(
+        &table.columns,
+        source_name,
+        &format!("table '{}'", table.name),
+    )?;
+    let known_filters = validate_filters_and_column_exprs(
+        &table.filter_specs(),
+        &table.columns,
+        source_name,
+        &format!("table '{}'", table.name),
+    )?;
+    let _ = known_filters;
+
+    let mut bound_tool_args: HashSet<&str> = HashSet::new();
+    for (name, source) in &table.tool_args {
+        if name.trim().is_empty() {
+            return Err(ManifestError::validation(format!(
+                "source '{source_name}' table '{}' tool_args has an empty key",
+                table.name
+            )));
+        }
+        if !bound_tool_args.insert(name.as_str()) {
+            return Err(ManifestError::validation(format!(
+                "source '{source_name}' table '{}' has multiple bindings for tool arg '{name}'",
+                table.name
+            )));
+        }
+        validate_table_tool_arg_value_source(source_name, &table.name, name, source)?;
+    }
+
+    let mut filter_names: HashSet<&str> = HashSet::new();
+    for filter in &table.filters {
+        if filter.tool_arg.trim().is_empty() {
+            return Err(ManifestError::validation(format!(
+                "source '{source_name}' table '{}' filter '{}' must define a non-empty tool_arg",
+                table.name, filter.name
+            )));
+        }
+        if !filter_names.insert(filter.name.as_str()) {
+            return Err(ManifestError::validation(format!(
+                "source '{source_name}' table '{}' has duplicate filter '{}'",
+                table.name, filter.name
+            )));
+        }
+        if !bound_tool_args.insert(filter.tool_arg.as_str()) {
+            return Err(ManifestError::validation(format!(
+                "source '{source_name}' table '{}' filter '{}' binds tool arg '{}' that is already bound",
+                table.name, filter.name, filter.tool_arg
+            )));
+        }
+    }
+
+    if let Some(limit_binding) = &table.limit_binding {
+        if limit_binding.tool_arg.trim().is_empty() {
+            return Err(ManifestError::validation(format!(
+                "source '{source_name}' table '{}' limit_binding.tool_arg must not be empty",
+                table.name
+            )));
+        }
+        if !bound_tool_args.insert(limit_binding.tool_arg.as_str()) {
+            return Err(ManifestError::validation(format!(
+                "source '{source_name}' table '{}' limit_binding binds tool arg '{}' that is already bound",
+                table.name, limit_binding.tool_arg
+            )));
+        }
+        if matches!(limit_binding.max, Some(0)) {
+            return Err(ManifestError::validation(format!(
+                "source '{source_name}' table '{}' limit_binding.max must be greater than 0",
+                table.name
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_table_tool_arg_value_source(
+    source_name: &str,
+    table_name: &str,
+    arg_name: &str,
+    source: &ValueSourceSpec,
+) -> Result<()> {
+    let context = format!("source '{source_name}' table '{table_name}' tool_args.{arg_name}");
+    match source {
+        ValueSourceSpec::Filter { key, .. }
+        | ValueSourceSpec::FilterInt { key, .. }
+        | ValueSourceSpec::FilterBool { key, .. }
+        | ValueSourceSpec::FilterSplit { key, .. }
+        | ValueSourceSpec::FilterSplitInt { key, .. } => Err(ManifestError::validation(format!(
+            "{context} references filter '{key}'; bind filters through filters[].tool_arg instead",
+        ))),
+        ValueSourceSpec::Arg { key, .. }
+        | ValueSourceSpec::ArgInt { key, .. }
+        | ValueSourceSpec::ArgBool { key, .. } => Err(ManifestError::validation(format!(
+            "{context} uses function argument '{key}' but tables do not take arguments",
+        ))),
+        ValueSourceSpec::Template { template } => {
+            for token in template.tokens() {
+                match token.namespace() {
+                    crate::TemplateNamespace::Filter => {
+                        return Err(ManifestError::validation(format!(
+                            "{context} template references filter '{}'; bind filters through filters[].tool_arg instead",
+                            token.key()
+                        )));
+                    }
+                    crate::TemplateNamespace::Arg => {
+                        return Err(ManifestError::validation(format!(
+                            "{context} template references function argument '{}' but tables do not take arguments",
+                            token.key()
+                        )));
+                    }
+                    _ => {}
+                }
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+fn validate_function_binding<'a>(
+    source_name: &str,
+    function_name: &str,
+    binding: &'a FunctionArgBinding,
+    request_arg_names: &mut HashSet<&'a str>,
+) -> Result<()> {
+    if !request_arg_names.insert(binding.arg.as_str()) {
+        return Err(ManifestError::validation(format!(
+            "source '{source_name}' function '{function_name}' has multiple bindings for tool arg '{}'",
+            binding.arg
+        )));
+    }
+    Ok(())
+}
+
+fn validate_unique_values(values: &[String], context: &str) -> Result<()> {
+    let mut seen = HashSet::new();
+    for value in values {
+        if value.trim().is_empty() {
+            return Err(ManifestError::validation(format!(
+                "{context} values must not contain empty strings"
+            )));
+        }
+        if !seen.insert(value.as_str()) {
+            return Err(ManifestError::validation(format!(
+                "{context} value '{value}' is declared more than once"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_identifier(value: &str, context: &str) -> Result<()> {
+    let mut chars = value.chars();
+    let Some(first) = chars.next() else {
+        return Err(ManifestError::validation(format!(
+            "{context} must not be empty"
+        )));
+    };
+    if !(first == '_' || first.is_ascii_alphabetic()) {
+        return Err(ManifestError::validation(format!(
+            "{context} '{value}' must start with a letter or underscore"
+        )));
+    }
+    if chars.any(|ch| !(ch == '_' || ch.is_ascii_alphanumeric())) {
+        return Err(ManifestError::validation(format!(
+            "{context} '{value}' may only contain letters, numbers, and underscores"
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::McpSourceManifest;
+    use serde_json::json;
+
+    #[test]
+    fn parses_mcp_manifest_with_secret_input() {
+        let manifest = McpSourceManifest::parse_manifest_value(json!({
+            "dsl_version": 3,
+            "name": "github_mcp",
+            "version": "0.1.0",
+            "backend": "mcp",
+            "inputs": {
+                "GITHUB_TOKEN": { "kind": "secret" }
+            },
+            "server": {
+                "transport": "stdio",
+                "command": "github-mcp-server",
+                "env": [{
+                    "name": "GITHUB_TOKEN",
+                    "from": "input",
+                    "key": "GITHUB_TOKEN"
+                }]
+            },
+            "functions": [{
+                "name": "search_issues",
+                "tool": "search_issues",
+                "args": [{
+                    "name": "query",
+                    "required": true,
+                    "bind": { "arg": "query" }
+                }],
+                "columns": [{ "name": "title", "type": "Utf8" }]
+            }]
+        }))
+        .expect("mcp manifest should parse");
+
+        assert_eq!(manifest.common.name, "github_mcp");
+        let function = manifest.functions.first().expect("function should parse");
+        assert_eq!(function.tool, "search_issues");
+        assert!(manifest.required_secret_names().contains("GITHUB_TOKEN"));
+    }
+
+    #[test]
+    fn rejects_mcp_function_without_columns() {
+        let error = McpSourceManifest::parse_manifest_value(json!({
+            "dsl_version": 3,
+            "name": "demo",
+            "version": "0.1.0",
+            "backend": "mcp",
+            "server": {
+                "transport": "stdio",
+                "command": "demo-mcp-server"
+            },
+            "functions": [{
+                "name": "lookup",
+                "tool": "lookup"
+            }]
+        }))
+        .expect_err("missing columns should fail");
+
+        assert_eq!(
+            error.to_string(),
+            "source 'demo' function 'lookup' must define columns"
+        );
+    }
+
+    #[test]
+    fn parses_minimal_mcp_table() {
+        let manifest = McpSourceManifest::parse_manifest_value(json!({
+            "dsl_version": 3,
+            "name": "demo_mcp",
+            "version": "0.1.0",
+            "backend": "mcp",
+            "server": { "transport": "stdio", "command": "demo-mcp-server" },
+            "tables": [{
+                "name": "issues",
+                "tool": "list_issues",
+                "tool_args": {
+                    "owner": { "from": "literal", "value": "acme" }
+                },
+                "filters": [{
+                    "name": "state",
+                    "tool_arg": "state"
+                }],
+                "response": { "rows_path": ["issues"] },
+                "columns": [
+                    { "name": "id", "type": "Utf8" },
+                    { "name": "title", "type": "Utf8" }
+                ]
+            }]
+        }))
+        .expect("table-only mcp manifest should parse");
+
+        assert_eq!(manifest.tables.len(), 1);
+        let table = manifest.tables.first().expect("one table");
+        assert_eq!(table.name, "issues");
+        assert_eq!(table.tool, "list_issues");
+        assert_eq!(table.filters.len(), 1);
+        assert_eq!(table.filters.first().expect("one filter").tool_arg, "state");
+    }
+
+    #[test]
+    fn rejects_table_and_function_with_same_name() {
+        let error = McpSourceManifest::parse_manifest_value(json!({
+            "dsl_version": 3,
+            "name": "demo",
+            "version": "0.1.0",
+            "backend": "mcp",
+            "server": { "transport": "stdio", "command": "demo-mcp-server" },
+            "tables": [{
+                "name": "issues",
+                "tool": "list_issues",
+                "columns": [{ "name": "id", "type": "Utf8" }]
+            }],
+            "functions": [{
+                "name": "issues",
+                "tool": "search_issues",
+                "args": [],
+                "columns": [{ "name": "id", "type": "Utf8" }]
+            }]
+        }))
+        .expect_err("table/function name collision should fail");
+
+        assert_eq!(
+            error.to_string(),
+            "source 'demo' declares both a table and function named 'issues'"
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_mcp_table_names() {
+        let error = McpSourceManifest::parse_manifest_value(json!({
+            "dsl_version": 3,
+            "name": "demo",
+            "version": "0.1.0",
+            "backend": "mcp",
+            "server": { "transport": "stdio", "command": "demo-mcp-server" },
+            "tables": [
+                {
+                    "name": "issues",
+                    "tool": "list_issues",
+                    "columns": [{ "name": "id", "type": "Utf8" }]
+                },
+                {
+                    "name": "issues",
+                    "tool": "list_issues",
+                    "columns": [{ "name": "id", "type": "Utf8" }]
+                }
+            ]
+        }))
+        .expect_err("duplicate table names should fail");
+
+        assert_eq!(
+            error.to_string(),
+            "source 'demo' table 'issues' is declared more than once"
+        );
+    }
+
+    #[test]
+    fn rejects_tool_args_referencing_filters() {
+        let error = McpSourceManifest::parse_manifest_value(json!({
+            "dsl_version": 3,
+            "name": "demo",
+            "version": "0.1.0",
+            "backend": "mcp",
+            "server": { "transport": "stdio", "command": "demo-mcp-server" },
+            "tables": [{
+                "name": "issues",
+                "tool": "list_issues",
+                "tool_args": {
+                    "state": { "from": "filter", "key": "state" }
+                },
+                "filters": [{
+                    "name": "state",
+                    "tool_arg": "state"
+                }],
+                "columns": [{ "name": "id", "type": "Utf8" }]
+            }]
+        }))
+        .expect_err("filter reference in tool_args should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("references filter 'state'; bind filters through filters[].tool_arg"),
+            "got: {error}"
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_tool_arg_bindings_across_filters_and_tool_args() {
+        let error = McpSourceManifest::parse_manifest_value(json!({
+            "dsl_version": 3,
+            "name": "demo",
+            "version": "0.1.0",
+            "backend": "mcp",
+            "server": { "transport": "stdio", "command": "demo-mcp-server" },
+            "tables": [{
+                "name": "issues",
+                "tool": "list_issues",
+                "tool_args": {
+                    "state": { "from": "literal", "value": "open" }
+                },
+                "filters": [{
+                    "name": "state",
+                    "tool_arg": "state"
+                }],
+                "columns": [{ "name": "id", "type": "Utf8" }]
+            }]
+        }))
+        .expect_err("duplicate tool arg bindings should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("binds tool arg 'state' that is already bound"),
+            "got: {error}"
+        );
+    }
+
+    #[test]
+    fn rejects_table_without_columns() {
+        let error = McpSourceManifest::parse_manifest_value(json!({
+            "dsl_version": 3,
+            "name": "demo",
+            "version": "0.1.0",
+            "backend": "mcp",
+            "server": { "transport": "stdio", "command": "demo-mcp-server" },
+            "tables": [{
+                "name": "issues",
+                "tool": "list_issues"
+            }]
+        }))
+        .expect_err("missing columns should fail");
+
+        assert_eq!(
+            error.to_string(),
+            "source 'demo' table 'issues' must define columns"
+        );
+    }
+
+    #[test]
+    fn parses_table_with_limit_binding() {
+        let manifest = McpSourceManifest::parse_manifest_value(json!({
+            "dsl_version": 3,
+            "name": "demo",
+            "version": "0.1.0",
+            "backend": "mcp",
+            "server": { "transport": "stdio", "command": "demo-mcp-server" },
+            "tables": [{
+                "name": "issues",
+                "tool": "list_issues",
+                "limit_binding": { "tool_arg": "page_size", "max": 200 },
+                "columns": [{ "name": "id", "type": "Utf8" }]
+            }]
+        }))
+        .expect("manifest with limit_binding should parse");
+
+        let table = manifest.tables.first().expect("one table");
+        let binding = table.limit_binding.as_ref().expect("binding present");
+        assert_eq!(binding.tool_arg, "page_size");
+        assert_eq!(binding.max, Some(200));
+    }
+
+    #[test]
+    fn rejects_limit_binding_colliding_with_filter() {
+        let error = McpSourceManifest::parse_manifest_value(json!({
+            "dsl_version": 3,
+            "name": "demo",
+            "version": "0.1.0",
+            "backend": "mcp",
+            "server": { "transport": "stdio", "command": "demo-mcp-server" },
+            "tables": [{
+                "name": "issues",
+                "tool": "list_issues",
+                "filters": [{
+                    "name": "state",
+                    "tool_arg": "state"
+                }],
+                "limit_binding": { "tool_arg": "state" },
+                "columns": [{ "name": "id", "type": "Utf8" }]
+            }]
+        }))
+        .expect_err("limit_binding colliding with filter should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("limit_binding binds tool arg 'state' that is already bound"),
+            "got: {error}"
+        );
+    }
+
+    #[test]
+    fn rejects_manifest_without_tables_or_functions() {
+        let error = McpSourceManifest::parse_manifest_value(json!({
+            "dsl_version": 3,
+            "name": "demo",
+            "version": "0.1.0",
+            "backend": "mcp",
+            "server": { "transport": "stdio", "command": "demo-mcp-server" }
+        }))
+        .expect_err("manifest needs at least one tool surface");
+
+        assert_eq!(
+            error.to_string(),
+            "source 'demo' must define at least one function or table"
+        );
+    }
+}

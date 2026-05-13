@@ -7,6 +7,7 @@ use datafusion::sql::sqlparser::dialect::GenericDialect;
 use datafusion::sql::sqlparser::parser::Parser;
 
 use crate::backends::http::ProviderQueryError;
+use crate::backends::mcp::McpProviderQueryError;
 use crate::contracts::{ColumnParts, StructuredQueryError, TableRefParts};
 use crate::{CoreError, QueryResultObserverError, SourceDecoratorError, TableInfo};
 
@@ -33,6 +34,9 @@ pub(crate) fn datafusion_to_core_with_sql(
         DataFusionError::External(inner) => {
             if let Some(provider_error) = inner.downcast_ref::<ProviderQueryError>() {
                 return provider_error_to_core(provider_error);
+            }
+            if let Some(mcp_error) = inner.downcast_ref::<McpProviderQueryError>() {
+                return mcp_provider_error_to_core(mcp_error);
             }
             if let Some(source_decorator_error) = inner.downcast_ref::<SourceDecoratorError>() {
                 return source_decorator_error_to_core(source_decorator_error);
@@ -227,6 +231,10 @@ fn table_ref_parts_from_object_name(object_name: ObjectName) -> Option<TableRefP
 }
 
 fn provider_error_to_core(error: &ProviderQueryError) -> CoreError {
+    CoreError::QueryFailure(Box::new(error.to_structured()))
+}
+
+fn mcp_provider_error_to_core(error: &McpProviderQueryError) -> CoreError {
     CoreError::QueryFailure(Box::new(error.to_structured()))
 }
 

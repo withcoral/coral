@@ -17,6 +17,7 @@ pub(crate) use common::{
 
 pub(crate) mod http;
 pub(crate) mod jsonl;
+pub(crate) mod mcp;
 pub(crate) mod parquet;
 pub(crate) mod shared;
 
@@ -67,6 +68,9 @@ pub(crate) fn compile_validated_manifest(
     }
     if let Some(jsonl_manifest) = manifest.as_jsonl() {
         return jsonl::compile_manifest(jsonl_manifest, request);
+    }
+    if let Some(mcp_manifest) = manifest.as_mcp() {
+        return Ok(mcp::compile_manifest(mcp_manifest, request));
     }
 
     Err(CoreError::internal(
