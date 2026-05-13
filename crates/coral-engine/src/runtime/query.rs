@@ -11,11 +11,14 @@ use datafusion_tracing::{InstrumentationOptions, RuleInstrumentationOptions};
 
 use crate::backends::compile_query_source;
 use crate::runtime::catalog;
+use crate::runtime::dependent_join::optimizer;
+use crate::runtime::dependent_join::planner::DependentJoinExtensionPlanner;
 use crate::runtime::error::{
     datafusion_to_core, datafusion_to_core_with_sql, query_result_observer_error_to_core,
 };
 use crate::runtime::json::register_json_support;
 use crate::runtime::pattern_validator::register_pattern_validator;
+use crate::runtime::query_planner::CoralQueryPlanner;
 use crate::runtime::registry::{
     CompiledQuerySource, SourceRegistrationCandidate, SourceRegistrationFailure, register_sources,
 };
@@ -58,6 +61,10 @@ pub(crate) async fn build_runtime(
         .with_config(session_config)
         .with_runtime_env(runtime_env)
         .with_default_features()
+        .with_optimizer_rule(Arc::new(optimizer::rule()))
+        .with_query_planner(Arc::new(CoralQueryPlanner::new(vec![Arc::new(
+            DependentJoinExtensionPlanner,
+        )])))
         .with_physical_optimizer_rule(instrument_rule)
         .build();
     let session_state = datafusion_tracing::instrument_rules_with_trace_spans!(
