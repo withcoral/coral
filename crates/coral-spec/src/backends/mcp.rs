@@ -87,6 +87,8 @@ pub struct McpTableFunctionSpec {
     #[serde(default)]
     pub args: Vec<TableFunctionArgSpec>,
     #[serde(default)]
+    pub pagination: Option<McpPaginationSpec>,
+    #[serde(default)]
     pub response: ResponseSpec,
     #[serde(default)]
     pub columns: Vec<ColumnSpec>,
@@ -111,6 +113,8 @@ pub struct McpTableSpec {
     #[serde(default)]
     pub limit_binding: Option<McpLimitBinding>,
     #[serde(default)]
+    pub pagination: Option<McpPaginationSpec>,
+    #[serde(default)]
     pub response: ResponseSpec,
     #[serde(default)]
     pub columns: Vec<ColumnSpec>,
@@ -123,6 +127,16 @@ pub struct McpLimitBinding {
     pub tool_arg: String,
     #[serde(default)]
     pub max: Option<usize>,
+}
+
+/// Cursor pagination for MCP tool results.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpPaginationSpec {
+    pub cursor_arg: String,
+    pub response_cursor_path: Vec<String>,
+    #[serde(default)]
+    pub max_pages: Option<usize>,
 }
 
 /// One SQL filter declared on an MCP table that may bind into an MCP tool argument.
@@ -318,6 +332,15 @@ fn validate_mcp_function(source_name: &str, function: &McpTableFunctionSpec) -> 
             &mut request_arg_names,
         )?;
     }
+    if let Some(pagination) = &function.pagination {
+        validate_pagination(
+            source_name,
+            "function",
+            &function.name,
+            pagination,
+            &mut request_arg_names,
+        )?;
+    }
 
     validate_columns(
         &function.columns,
@@ -419,7 +442,52 @@ fn validate_mcp_table(source_name: &str, table: &McpTableSpec) -> Result<()> {
             )));
         }
     }
+    if let Some(pagination) = &table.pagination {
+        validate_pagination(
+            source_name,
+            "table",
+            &table.name,
+            pagination,
+            &mut bound_tool_args,
+        )?;
+    }
 
+    Ok(())
+}
+
+fn validate_pagination<'a>(
+    source_name: &str,
+    relation_kind: &str,
+    relation_name: &str,
+    pagination: &'a McpPaginationSpec,
+    bound_tool_args: &mut HashSet<&'a str>,
+) -> Result<()> {
+    if pagination.cursor_arg.trim().is_empty() {
+        return Err(ManifestError::validation(format!(
+            "source '{source_name}' {relation_kind} '{relation_name}' pagination.cursor_arg must not be empty"
+        )));
+    }
+    if pagination.response_cursor_path.is_empty()
+        || pagination
+            .response_cursor_path
+            .iter()
+            .any(|segment| segment.trim().is_empty())
+    {
+        return Err(ManifestError::validation(format!(
+            "source '{source_name}' {relation_kind} '{relation_name}' pagination.response_cursor_path must not be empty"
+        )));
+    }
+    if matches!(pagination.max_pages, Some(0)) {
+        return Err(ManifestError::validation(format!(
+            "source '{source_name}' {relation_kind} '{relation_name}' pagination.max_pages must be greater than 0"
+        )));
+    }
+    if !bound_tool_args.insert(pagination.cursor_arg.as_str()) {
+        return Err(ManifestError::validation(format!(
+            "source '{source_name}' {relation_kind} '{relation_name}' pagination binds tool arg '{}' that is already bound",
+            pagination.cursor_arg
+        )));
+    }
     Ok(())
 }
 
@@ -868,6 +936,66 @@ mod tests {
         let binding = table.limit_binding.as_ref().expect("binding present");
         assert_eq!(binding.tool_arg, "page_size");
         assert_eq!(binding.max, Some(200));
+    }
+
+    #[test]
+    fn parses_table_with_cursor_pagination() {
+        let manifest = McpSourceManifest::parse_manifest_value(json!({
+            "dsl_version": 3,
+            "name": "demo",
+            "version": "0.1.0",
+            "backend": "mcp",
+            "server": { "transport": "stdio", "command": "demo-mcp-server" },
+            "tables": [{
+                "name": "issues",
+                "tool": "list_issues",
+                "pagination": {
+                    "cursor_arg": "cursor",
+                    "response_cursor_path": ["meta", "nextCursor"],
+                    "max_pages": 5
+                },
+                "columns": [{ "name": "id", "type": "Utf8" }]
+            }]
+        }))
+        .expect("manifest with pagination should parse");
+
+        let table = manifest.tables.first().expect("one table");
+        let pagination = table.pagination.as_ref().expect("pagination present");
+        assert_eq!(pagination.cursor_arg, "cursor");
+        assert_eq!(pagination.response_cursor_path, ["meta", "nextCursor"]);
+        assert_eq!(pagination.max_pages, Some(5));
+    }
+
+    #[test]
+    fn rejects_pagination_colliding_with_filter() {
+        let error = McpSourceManifest::parse_manifest_value(json!({
+            "dsl_version": 3,
+            "name": "demo",
+            "version": "0.1.0",
+            "backend": "mcp",
+            "server": { "transport": "stdio", "command": "demo-mcp-server" },
+            "tables": [{
+                "name": "issues",
+                "tool": "list_issues",
+                "filters": [{
+                    "name": "state",
+                    "tool_arg": "cursor"
+                }],
+                "pagination": {
+                    "cursor_arg": "cursor",
+                    "response_cursor_path": ["nextCursor"]
+                },
+                "columns": [{ "name": "id", "type": "Utf8" }]
+            }]
+        }))
+        .expect_err("pagination cursor colliding with filter should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("pagination binds tool arg 'cursor' that is already bound"),
+            "got: {error}"
+        );
     }
 
     #[test]

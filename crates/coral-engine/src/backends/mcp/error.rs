@@ -60,6 +60,14 @@ pub(crate) enum McpProviderQueryError {
         tool: String,
         detail: String,
     },
+
+    #[error("{source_schema}.{relation}: MCP tool '{tool}' pagination failed: {detail}")]
+    Pagination {
+        source_schema: String,
+        relation: String,
+        tool: String,
+        detail: String,
+    },
 }
 
 impl McpProviderQueryError {
@@ -229,6 +237,31 @@ impl McpProviderQueryError {
                         "The MCP tool returned content that did not match the source manifest's \
                          response shape. Confirm `response.rows_path` and column types match the \
                          tool's actual output."
+                            .to_string(),
+                    ),
+                    false,
+                    StatusCode::FailedPrecondition,
+                    metadata,
+                )
+            }
+            Self::Pagination {
+                source_schema,
+                relation,
+                tool,
+                detail,
+            } => {
+                let mut metadata = HashMap::new();
+                metadata.insert("source".to_string(), source_schema.clone());
+                metadata.insert("relation".to_string(), relation.clone());
+                metadata.insert("tool".to_string(), tool.clone());
+                metadata.insert("mcp_stage".to_string(), "pagination".to_string());
+                StructuredQueryError::new(
+                    "MCP_PAGINATION_FAILED",
+                    format!("MCP tool `{tool}` pagination failed for {source_schema}.{relation}"),
+                    detail.clone(),
+                    Some(
+                        "The MCP source pagination configuration did not terminate before \
+                         max_pages. Check the cursor argument and response cursor path."
                             .to_string(),
                     ),
                     false,

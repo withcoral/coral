@@ -492,6 +492,7 @@
           "type": "array",
           "items": { "$ref": "#/$defs/table_function_arg" }
         },
+        "pagination": { "$ref": "#/$defs/mcp_pagination" },
         "response": { "$ref": "#/$defs/response" },
         "columns": {
           "type": "array",
@@ -519,6 +520,7 @@
           "items": { "$ref": "#/$defs/mcp_table_filter" }
         },
         "limit_binding": { "$ref": "#/$defs/mcp_limit_binding" },
+        "pagination": { "$ref": "#/$defs/mcp_pagination" },
         "response": { "$ref": "#/$defs/response" },
         "columns": {
           "type": "array",
@@ -533,6 +535,20 @@
       "properties": {
         "tool_arg": { "type": "string", "minLength": 1 },
         "max": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "mcp_pagination": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cursor_arg", "response_cursor_path"],
+      "properties": {
+        "cursor_arg": { "type": "string", "minLength": 1 },
+        "response_cursor_path": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "max_pages": { "type": "integer", "minimum": 1 }
       }
     },
     "mcp_table_filter": {

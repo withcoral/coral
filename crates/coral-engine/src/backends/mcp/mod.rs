@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use coral_spec::backends::mcp::{
-    McpServerSpec, McpSourceManifest, McpTableFunctionSpec, McpTableSpec,
+    McpPaginationSpec, McpServerSpec, McpSourceManifest, McpTableFunctionSpec, McpTableSpec,
 };
 use coral_spec::{FilterMode, ResponseSpec};
 use datafusion::arrow::datatypes::SchemaRef;
@@ -28,6 +28,7 @@ use tokio::process::Command;
 
 use crate::backends::shared::filter_expr::{extract_filter_values, literal_to_string};
 use crate::backends::shared::json_exec::{JsonExec, RowFetcher};
+use crate::backends::shared::json_path::get_path_value;
 use crate::backends::shared::mapping::convert_items;
 use crate::backends::shared::response_rows::extract_rows;
 use crate::backends::shared::template::{RenderContext, resolve_value_source};
@@ -36,6 +37,8 @@ use crate::backends::{
     RegisteredTable, RegisteredTableFunction, SourceTableFunctions, build_registered_inputs,
     internal_table_function_name, registered_columns_from_specs, schema_from_columns,
 };
+
+const DEFAULT_MCP_MAX_PAGES: usize = 100;
 
 #[derive(Debug, Clone)]
 struct McpCompiledSource {
@@ -87,6 +90,7 @@ struct McpFunctionState {
     tool_name: String,
     schema: SchemaRef,
     response: ResponseSpec,
+    pagination: Option<McpPaginationSpec>,
     columns: Arc<[coral_spec::ColumnSpec]>,
     fetch_limit_default: Option<usize>,
 }
@@ -235,6 +239,7 @@ impl McpSourceTableFunction {
                 tool_name,
                 schema,
                 response: function.response,
+                pagination: function.pagination,
                 columns: Arc::from(function.columns),
                 fetch_limit_default: function.fetch_limit_default,
             }),
@@ -305,10 +310,12 @@ impl TableProvider for McpFunctionCallTableProvider {
             .collect::<serde_json::Map<_, _>>();
         let fetcher = Arc::new(McpFetchPlan {
             backend: self.state.backend.clone(),
+            source_schema: self.state.source_schema.clone(),
             relation: self.state.function_name.clone(),
             tool_name: self.state.tool_name.clone(),
             arguments,
             response: self.state.response.clone(),
+            pagination: self.state.pagination.clone(),
             limit: limit.or(self.state.fetch_limit_default),
         });
         let converter = {
@@ -448,10 +455,12 @@ impl TableProvider for McpTableProvider {
 
         let fetcher = Arc::new(McpFetchPlan {
             backend: self.backend.clone(),
+            source_schema: self.source_schema.clone(),
             relation: self.table.name.clone(),
             tool_name: self.table.tool.clone(),
             arguments,
             response: self.table.response.clone(),
+            pagination: self.table.pagination.clone(),
             limit: effective_limit,
         });
         let columns: Arc<[coral_spec::ColumnSpec]> = Arc::from(self.table.columns.clone());
@@ -541,29 +550,87 @@ fn classify_filter(
 #[derive(Debug)]
 struct McpFetchPlan {
     backend: McpSourceClient,
+    source_schema: String,
     relation: String,
     tool_name: String,
     arguments: JsonObject,
     response: ResponseSpec,
+    pagination: Option<McpPaginationSpec>,
     limit: Option<usize>,
 }
 
 #[async_trait]
 impl RowFetcher for McpFetchPlan {
     async fn fetch(&self) -> Result<Vec<Value>> {
-        let payload = self
-            .backend
-            .caller
-            .call_tool(&self.relation, &self.tool_name, self.arguments.clone())
-            .await?;
-        let mut rows = extract_rows(&self.response, &payload);
-        if let Some(limit) = self.limit
-            && rows.len() > limit
-        {
-            rows.truncate(limit);
+        let mut all_rows = Vec::new();
+        let mut next_cursor: Option<String> = None;
+        let mut page_count = 0usize;
+        let max_pages = self
+            .pagination
+            .as_ref()
+            .and_then(|pagination| pagination.max_pages)
+            .unwrap_or(DEFAULT_MCP_MAX_PAGES);
+
+        loop {
+            page_count += 1;
+            if page_count > max_pages {
+                return Err(DataFusionError::External(Box::new(
+                    McpProviderQueryError::Pagination {
+                        source_schema: self.source_schema.clone(),
+                        relation: self.relation.clone(),
+                        tool: self.tool_name.clone(),
+                        detail: format!("exceeded pagination max_pages={max_pages}"),
+                    },
+                )));
+            }
+
+            let arguments = self.arguments_for_cursor(next_cursor.as_deref());
+            let payload = self
+                .backend
+                .caller
+                .call_tool(&self.relation, &self.tool_name, arguments)
+                .await?;
+            let mut rows = extract_rows(&self.response, &payload);
+            all_rows.append(&mut rows);
+            if let Some(limit) = self.limit
+                && all_rows.len() >= limit
+            {
+                all_rows.truncate(limit);
+                break;
+            }
+
+            let Some(pagination) = &self.pagination else {
+                break;
+            };
+            match next_page_cursor(pagination, &payload) {
+                Some(cursor) => next_cursor = Some(cursor),
+                None => break,
+            }
         }
-        Ok(rows)
+        Ok(all_rows)
     }
+}
+
+impl McpFetchPlan {
+    fn arguments_for_cursor(&self, cursor: Option<&str>) -> JsonObject {
+        let Some((pagination, cursor)) = self.pagination.as_ref().zip(cursor) else {
+            return self.arguments.clone();
+        };
+        let mut arguments = self.arguments.clone();
+        arguments.insert(
+            pagination.cursor_arg.clone(),
+            Value::String(cursor.to_string()),
+        );
+        arguments
+    }
+}
+
+fn next_page_cursor(pagination: &McpPaginationSpec, payload: &Value) -> Option<String> {
+    get_path_value(payload, &pagination.response_cursor_path)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|cursor| !cursor.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 #[async_trait]
@@ -917,6 +984,44 @@ mod tests {
                     { "id": "3", "title": "Bug C", "state": "closed" }
                 ]
             }))
+        }
+    }
+
+    /// Returns two cursor-paginated pages and records each MCP tool call.
+    #[derive(Debug)]
+    struct FakePaginatedMcpTableCaller {
+        calls: Mutex<Vec<(String, JsonObject)>>,
+    }
+
+    #[async_trait]
+    impl McpToolCaller for FakePaginatedMcpTableCaller {
+        async fn call_tool(
+            &self,
+            _relation: &str,
+            tool_name: &str,
+            arguments: JsonObject,
+        ) -> Result<Value> {
+            self.calls
+                .lock()
+                .expect("calls lock")
+                .push((tool_name.to_string(), arguments.clone()));
+            let cursor = arguments.get("cursor").and_then(Value::as_str);
+            match cursor {
+                None => Ok(json!({
+                    "issues": [
+                        { "id": "1", "title": "Bug A", "state": "open" }
+                    ],
+                    "meta": { "nextCursor": "page-2" }
+                })),
+                Some("page-2") => Ok(json!({
+                    "issues": [
+                        { "id": "2", "title": "Bug B", "state": "open" },
+                        { "id": "3", "title": "Bug C", "state": "closed" }
+                    ],
+                    "meta": {}
+                })),
+                Some(other) => panic!("unexpected cursor: {other}"),
+            }
         }
     }
 
@@ -1294,6 +1399,33 @@ mod tests {
         .expect("limit-binding manifest should parse")
     }
 
+    fn mcp_table_with_cursor_pagination_manifest() -> coral_spec::ValidatedSourceManifest {
+        coral_spec::parse_source_manifest_value(json!({
+            "dsl_version": 3,
+            "name": "test_mcp",
+            "version": "0.1.0",
+            "backend": "mcp",
+            "server": { "transport": "stdio", "command": "unused" },
+            "tables": [{
+                "name": "issues",
+                "description": "issues with cursor pagination",
+                "tool": "list_issues",
+                "pagination": {
+                    "cursor_arg": "cursor",
+                    "response_cursor_path": ["meta", "nextCursor"],
+                    "max_pages": 3
+                },
+                "response": { "rows_path": ["issues"] },
+                "columns": [
+                    { "name": "id", "type": "Utf8" },
+                    { "name": "title", "type": "Utf8" },
+                    { "name": "state", "type": "Utf8" }
+                ]
+            }]
+        }))
+        .expect("pagination manifest should parse")
+    }
+
     #[tokio::test]
     async fn limit_binding_pushes_sql_limit_into_tool_arg() {
         let ctx = SessionContext::new();
@@ -1384,6 +1516,72 @@ mod tests {
             "unbounded scan should not pass page_size: {:?}",
             call.1
         );
+    }
+
+    #[tokio::test]
+    async fn cursor_pagination_fetches_until_response_cursor_is_absent() {
+        let ctx = SessionContext::new();
+        let caller = Arc::new(FakePaginatedMcpTableCaller {
+            calls: Mutex::new(Vec::new()),
+        });
+        register_test_sources(
+            &ctx,
+            compile_sources(mcp_table_with_cursor_pagination_manifest(), caller.clone()),
+        );
+
+        let batches = ctx
+            .sql("SELECT id FROM test_mcp.issues ORDER BY id")
+            .await
+            .expect("pagination query should plan")
+            .collect()
+            .await
+            .expect("pagination query should execute");
+
+        let rendered = pretty_format_batches(&batches)
+            .expect("batches should render")
+            .to_string();
+        assert!(rendered.contains("| 1"));
+        assert!(rendered.contains("| 2"));
+        assert!(rendered.contains("| 3"));
+
+        let calls = caller.calls.lock().expect("calls lock");
+        assert_eq!(calls.len(), 2);
+        let first_call = calls.first().expect("first call");
+        let second_call = calls.get(1).expect("second call");
+        assert!(first_call.1.get("cursor").is_none());
+        assert_eq!(
+            second_call.1.get("cursor"),
+            Some(&Value::String("page-2".to_string()))
+        );
+    }
+
+    #[tokio::test]
+    async fn cursor_pagination_stops_when_sql_limit_is_satisfied() {
+        let ctx = SessionContext::new();
+        let caller = Arc::new(FakePaginatedMcpTableCaller {
+            calls: Mutex::new(Vec::new()),
+        });
+        register_test_sources(
+            &ctx,
+            compile_sources(mcp_table_with_cursor_pagination_manifest(), caller.clone()),
+        );
+
+        let batches = ctx
+            .sql("SELECT id FROM test_mcp.issues LIMIT 1")
+            .await
+            .expect("pagination query should plan")
+            .collect()
+            .await
+            .expect("pagination query should execute");
+
+        let total_rows: usize = batches
+            .iter()
+            .map(datafusion::arrow::array::RecordBatch::num_rows)
+            .sum();
+        assert_eq!(total_rows, 1);
+
+        let calls = caller.calls.lock().expect("calls lock");
+        assert_eq!(calls.len(), 1);
     }
 
     #[tokio::test]
