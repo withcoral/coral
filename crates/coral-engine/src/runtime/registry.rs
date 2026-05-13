@@ -204,6 +204,7 @@ async fn register_source(
     source: &dyn CompiledBackendSource,
 ) -> DataFusionResult<BackendRegistration> {
     check_reserved_schema(source.schema_name())?;
+    validate_bindable_backend_support(source)?;
 
     if !seen_schemas.insert(source.schema_name().to_string()) {
         return Err(DataFusionError::Execution(format!(
@@ -213,6 +214,18 @@ async fn register_source(
     }
 
     source.register(ctx, registration_context).await
+}
+
+fn validate_bindable_backend_support(source: &dyn CompiledBackendSource) -> DataFusionResult<()> {
+    if source.has_bindable_filters() && source.backend_kind() != "http" {
+        return Err(DataFusionError::Execution(format!(
+            "source '{}': bindable filters are not supported by the current engine for backend '{}' in V1",
+            source.source_name(),
+            source.backend_kind()
+        )));
+    }
+
+    Ok(())
 }
 
 fn push_source_failure(

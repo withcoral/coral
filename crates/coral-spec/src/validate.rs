@@ -29,23 +29,36 @@ pub(crate) fn validate_table_names<'a>(
     Ok(())
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "HTTP table validation mirrors the source-spec fields it validates."
-)]
-pub(crate) fn validate_http_table(
-    schema: &str,
-    table_name: &str,
-    filters: &[FilterSpec],
-    columns: &[ColumnSpec],
-    request: &RequestSpec,
-    requests: &[RequestRouteSpec],
-    pagination: &PaginationSpec,
-    search_limits: Option<&SearchLimitsSpec>,
-    detail_hints: &[DetailHintSpec],
-    search_index: bool,
-    dependent_join: &DependentJoinTableConfig,
-) -> Result<()> {
+#[derive(Clone, Copy)]
+pub(crate) struct HttpTableValidation<'a> {
+    pub(crate) schema: &'a str,
+    pub(crate) table_name: &'a str,
+    pub(crate) filters: &'a [FilterSpec],
+    pub(crate) columns: &'a [ColumnSpec],
+    pub(crate) request: &'a RequestSpec,
+    pub(crate) requests: &'a [RequestRouteSpec],
+    pub(crate) pagination: &'a PaginationSpec,
+    pub(crate) search_limits: Option<&'a SearchLimitsSpec>,
+    pub(crate) detail_hints: &'a [DetailHintSpec],
+    pub(crate) search_index: bool,
+    pub(crate) dependent_join: &'a DependentJoinTableConfig,
+}
+
+pub(crate) fn validate_http_table(input: HttpTableValidation<'_>) -> Result<()> {
+    let HttpTableValidation {
+        schema,
+        table_name,
+        filters,
+        columns,
+        request,
+        requests,
+        pagination,
+        search_limits,
+        detail_hints,
+        search_index,
+        dependent_join,
+    } = input;
+
     if request.path.raw().trim().is_empty() {
         return Err(ManifestError::validation(format!(
             "{schema}.{table_name} has an empty request.path"
@@ -98,13 +111,11 @@ fn validate_http_dependent_join_config(
     search_index: bool,
     dependent_join: &DependentJoinTableConfig,
 ) -> Result<()> {
-    if search_index {
-        for filter in filters.iter().filter(|filter| filter.bindable) {
-            return Err(ManifestError::validation(format!(
-                "filter '{}': cannot be bindable because table '{}.{}' is declared as search_index. Search-index-backed endpoints do not return complete result sets under filtered queries and are unsafe for dependent joins.",
-                filter.name, schema, table_name
-            )));
-        }
+    if search_index && let Some(filter) = filters.iter().find(|filter| filter.bindable) {
+        return Err(ManifestError::validation(format!(
+            "filter '{}': cannot be bindable because table '{}.{}' is declared as search_index. Search-index-backed endpoints do not return complete result sets under filtered queries and are unsafe for dependent joins.",
+            filter.name, schema, table_name
+        )));
     }
 
     validate_non_zero_cap(
@@ -953,8 +964,9 @@ mod tests {
     use std::collections::HashMap;
 
     use super::{
-        validate_columns, validate_filters_and_column_exprs, validate_http_function,
-        validate_http_function_names, validate_http_table, validate_table_names,
+        HttpTableValidation, validate_columns, validate_filters_and_column_exprs,
+        validate_http_function, validate_http_function_names, validate_http_table,
+        validate_table_names,
     };
     use crate::common::{
         ColumnSpec, ExprSpec, FilterMode, FilterSpec, FunctionArgBinding,
@@ -1116,19 +1128,20 @@ mod tests {
         request: &RequestSpec,
         requests: &[RequestRouteSpec],
     ) -> crate::Result<()> {
-        validate_http_table(
-            "demo",
-            "messages",
+        let columns = [test_column()];
+        validate_http_table(HttpTableValidation {
+            schema: "demo",
+            table_name: "messages",
             filters,
-            &[test_column()],
+            columns: &columns,
             request,
             requests,
-            &PaginationSpec::default(),
-            None,
-            &[],
-            false,
-            &crate::DependentJoinTableConfig::default(),
-        )
+            pagination: &PaginationSpec::default(),
+            search_limits: None,
+            detail_hints: &[],
+            search_index: false,
+            dependent_join: &crate::DependentJoinTableConfig::default(),
+        })
     }
 
     fn function_with_request_value(value: ValueSourceSpec) -> SourceTableFunctionSpec {
@@ -1356,20 +1369,8 @@ mod tests {
             ..base_request()
         };
 
-        let error = validate_http_table(
-            "demo",
-            "messages",
-            &test_filters(),
-            &[test_column()],
-            &request,
-            &[],
-            &PaginationSpec::default(),
-            None,
-            &[],
-            false,
-            &crate::DependentJoinTableConfig::default(),
-        )
-        .expect_err("table request one_of values should reject function arguments");
+        let error = validate_test_http_table(&test_filters(), &request, &[])
+            .expect_err("table request one_of values should reject function arguments");
 
         assert!(
             error
@@ -1398,20 +1399,8 @@ mod tests {
             ..base_request()
         };
 
-        let error = validate_http_table(
-            "demo",
-            "messages",
-            &test_filters(),
-            &[test_column()],
-            &request,
-            &[],
-            &PaginationSpec::default(),
-            None,
-            &[],
-            false,
-            &crate::DependentJoinTableConfig::default(),
-        )
-        .expect_err("table request one_of values should reject unknown filters");
+        let error = validate_test_http_table(&test_filters(), &request, &[])
+            .expect_err("table request one_of values should reject unknown filters");
 
         assert!(
             error
@@ -1567,19 +1556,21 @@ mod tests {
             max_bindings: None,
         }];
 
-        validate_http_table(
-            "demo",
-            "search",
-            &filters,
-            &[test_column()],
-            &base_request(),
-            &[],
-            &PaginationSpec::default(),
-            None,
-            &[],
-            false,
-            &crate::DependentJoinTableConfig::default(),
-        )
+        let columns = [test_column()];
+        let request = base_request();
+        validate_http_table(HttpTableValidation {
+            schema: "demo",
+            table_name: "search",
+            filters: &filters,
+            columns: &columns,
+            request: &request,
+            requests: &[],
+            pagination: &PaginationSpec::default(),
+            search_limits: None,
+            detail_hints: &[],
+            search_index: false,
+            dependent_join: &crate::DependentJoinTableConfig::default(),
+        })
         .expect("contains filters should not force search metadata");
     }
 
@@ -1625,19 +1616,21 @@ mod tests {
             max_bindings: None,
         }];
 
-        validate_http_table(
-            "demo",
-            "search",
-            &filters,
-            &[test_column()],
-            &base_request(),
-            &[],
-            &PaginationSpec::default(),
-            Some(&search_limits),
-            &detail_hints,
-            false,
-            &crate::DependentJoinTableConfig::default(),
-        )
+        let columns = [test_column()];
+        let request = base_request();
+        validate_http_table(HttpTableValidation {
+            schema: "demo",
+            table_name: "search",
+            filters: &filters,
+            columns: &columns,
+            request: &request,
+            requests: &[],
+            pagination: &PaginationSpec::default(),
+            search_limits: Some(&search_limits),
+            detail_hints: &detail_hints,
+            search_index: false,
+            dependent_join: &crate::DependentJoinTableConfig::default(),
+        })
         .expect("search metadata should validate");
     }
 
@@ -1725,19 +1718,22 @@ mod tests {
             purpose: "Fetch full item details.".to_string(),
         }];
 
-        let error = validate_http_table(
-            "demo",
-            "messages",
-            &test_filters(),
-            &[test_column()],
-            &base_request(),
-            &[],
-            &PaginationSpec::default(),
-            None,
-            &detail_hints,
-            false,
-            &crate::DependentJoinTableConfig::default(),
-        )
+        let filters = test_filters();
+        let columns = [test_column()];
+        let request = base_request();
+        let error = validate_http_table(HttpTableValidation {
+            schema: "demo",
+            table_name: "messages",
+            filters: &filters,
+            columns: &columns,
+            request: &request,
+            requests: &[],
+            pagination: &PaginationSpec::default(),
+            search_limits: None,
+            detail_hints: &detail_hints,
+            search_index: false,
+            dependent_join: &crate::DependentJoinTableConfig::default(),
+        })
         .expect_err("unknown detail hint result column should fail");
 
         assert!(
@@ -1790,19 +1786,23 @@ mod tests {
         ];
 
         for (field_name, detail_hint) in cases {
-            let error = validate_http_table(
-                "demo",
-                "messages",
-                &test_filters(),
-                &[test_column()],
-                &base_request(),
-                &[],
-                &PaginationSpec::default(),
-                None,
-                &[detail_hint],
-                false,
-                &crate::DependentJoinTableConfig::default(),
-            )
+            let filters = test_filters();
+            let columns = [test_column()];
+            let request = base_request();
+            let detail_hints = [detail_hint];
+            let error = validate_http_table(HttpTableValidation {
+                schema: "demo",
+                table_name: "messages",
+                filters: &filters,
+                columns: &columns,
+                request: &request,
+                requests: &[],
+                pagination: &PaginationSpec::default(),
+                search_limits: None,
+                detail_hints: &detail_hints,
+                search_index: false,
+                dependent_join: &crate::DependentJoinTableConfig::default(),
+            })
             .expect_err("empty detail hint fields should fail");
 
             assert!(
@@ -1912,19 +1912,22 @@ mod tests {
 
     #[test]
     fn bindable_on_search_index_rejects() {
-        let error = validate_http_table(
-            "demo",
-            "messages",
-            &[bindable_filter("id")],
-            &[test_column()],
-            &base_request(),
-            &[],
-            &PaginationSpec::default(),
-            None,
-            &[],
-            true,
-            &crate::DependentJoinTableConfig::default(),
-        )
+        let filters = [bindable_filter("id")];
+        let columns = [test_column()];
+        let request = base_request();
+        let error = validate_http_table(HttpTableValidation {
+            schema: "demo",
+            table_name: "messages",
+            filters: &filters,
+            columns: &columns,
+            request: &request,
+            requests: &[],
+            pagination: &PaginationSpec::default(),
+            search_limits: None,
+            detail_hints: &[],
+            search_index: true,
+            dependent_join: &crate::DependentJoinTableConfig::default(),
+        })
         .expect_err("search-index table should reject bindable filters");
 
         assert!(error.to_string().contains(
@@ -1982,19 +1985,22 @@ mod tests {
         ];
 
         for (config, expected) in cases {
-            let error = validate_http_table(
-                "demo",
-                "messages",
-                &test_filters(),
-                &[test_column()],
-                &base_request(),
-                &[],
-                &PaginationSpec::default(),
-                None,
-                &[],
-                false,
-                &config,
-            )
+            let filters = test_filters();
+            let columns = [test_column()];
+            let request = base_request();
+            let error = validate_http_table(HttpTableValidation {
+                schema: "demo",
+                table_name: "messages",
+                filters: &filters,
+                columns: &columns,
+                request: &request,
+                requests: &[],
+                pagination: &PaginationSpec::default(),
+                search_limits: None,
+                detail_hints: &[],
+                search_index: false,
+                dependent_join: &config,
+            })
             .expect_err("zero table cap should fail");
 
             assert!(

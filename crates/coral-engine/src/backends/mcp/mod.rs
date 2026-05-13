@@ -146,6 +146,18 @@ impl CompiledBackendSource for McpCompiledSource {
         &self.manifest.common.name
     }
 
+    fn backend_kind(&self) -> &'static str {
+        "mcp"
+    }
+
+    fn has_bindable_filters(&self) -> bool {
+        self.manifest
+            .tables
+            .iter()
+            .flat_map(|table| table.filters())
+            .any(|filter| filter.bindable)
+    }
+
     async fn register(
         &self,
         _ctx: &datafusion::prelude::SessionContext,

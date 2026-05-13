@@ -74,6 +74,18 @@ impl CompiledBackendSource for FileCompiledSource {
         &self.manifest.common.name
     }
 
+    fn backend_kind(&self) -> &'static str {
+        "file"
+    }
+
+    fn has_bindable_filters(&self) -> bool {
+        self.manifest
+            .tables
+            .iter()
+            .flat_map(FileTableSpec::filters)
+            .any(|filter| filter.bindable)
+    }
+
     async fn register(
         &self,
         ctx: &SessionContext,

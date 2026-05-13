@@ -17,9 +17,9 @@ use serde_json::{Map, Value};
 
 use crate::{
     ColumnSpec, DetailHintDeclaringSurface, DetailHintSpec, DetailHintTargetTable, FilterSpec,
-    HeaderSpec, ManifestError, ManifestInputSpec, PaginationSpec, ParsedTemplate, RequestRouteSpec,
-    RequestSpec, ResponseSpec, Result, SearchLimitsSpec, SourceBackend, SourceManifestCommon,
-    SourceTableFunctionSpec, TableCommon,
+    HeaderSpec, HttpTableValidation, ManifestError, ManifestInputSpec, PaginationSpec,
+    ParsedTemplate, RequestRouteSpec, RequestSpec, ResponseSpec, Result, SearchLimitsSpec,
+    SourceBackend, SourceManifestCommon, SourceTableFunctionSpec, TableCommon,
     inputs::{
         collect_source_inputs_value, declared_secret_input_names, required_secret_input_names,
     },
@@ -260,19 +260,19 @@ fn validate_rate_limit(schema: &str, spec: &RateLimitSpec) -> Result<()> {
 
 impl RawHttpTableSpec {
     fn into_validated(self, schema: &str) -> Result<HttpTableSpec> {
-        validate_http_table(
+        validate_http_table(HttpTableValidation {
             schema,
-            &self.name,
-            &self.filters,
-            &self.columns,
-            &self.request,
-            &self.requests,
-            &self.pagination,
-            self.search_limits.as_ref(),
-            &self.detail_hints,
-            self.search_index,
-            &self.dependent_join,
-        )?;
+            table_name: &self.name,
+            filters: &self.filters,
+            columns: &self.columns,
+            request: &self.request,
+            requests: &self.requests,
+            pagination: &self.pagination,
+            search_limits: self.search_limits.as_ref(),
+            detail_hints: &self.detail_hints,
+            search_index: self.search_index,
+            dependent_join: &self.dependent_join,
+        })?;
 
         Ok(HttpTableSpec {
             common: TableCommon::new(

@@ -164,6 +164,10 @@ pub(crate) trait CompiledBackendSource: Send + Sync {
 
     fn source_name(&self) -> &str;
 
+    fn backend_kind(&self) -> &'static str;
+
+    fn has_bindable_filters(&self) -> bool;
+
     /// Register this compiled source into a `DataFusion` session.
     ///
     /// The registration context is batch-scoped and backend-agnostic. Backends
