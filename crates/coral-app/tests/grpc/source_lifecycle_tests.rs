@@ -724,6 +724,12 @@ async fn discover_bundled_sources_returns_catalog_and_marks_installed_sources() 
         .into_inner()
         .sources;
     assert!(!discovered.is_empty());
+    assert!(
+        discovered
+            .iter()
+            .all(|source| source.table_functions.is_empty()),
+        "discover_sources should return summary metadata without table function details"
+    );
     let github = discovered
         .iter()
         .find(|source| source.name == "github")
@@ -756,6 +762,12 @@ async fn discover_bundled_sources_returns_catalog_and_marks_installed_sources() 
         .expect("rediscover sources")
         .into_inner()
         .sources;
+    assert!(
+        rediscovered
+            .iter()
+            .all(|source| source.table_functions.is_empty()),
+        "discover_sources should keep table function details out of installed-source summaries"
+    );
     let github = rediscovered
         .iter()
         .find(|source| source.name == "github")
@@ -828,6 +840,74 @@ async fn get_source_info_uses_effective_installed_imported_manifest() {
     assert_eq!(info.inputs[0].key, "API_BASE");
     assert_eq!(info.inputs[0].default_value, "https://example.com");
     assert_eq!(info.inputs[1].key, "API_TOKEN");
+}
+
+#[tokio::test]
+async fn get_source_info_returns_table_function_metadata() {
+    let harness = GrpcHarness::new().await;
+
+    harness
+        .import_source(
+            r"
+name: function_demo
+version: 0.1.0
+dsl_version: 3
+backend: http
+base_url: https://example.com
+functions:
+  - name: issue_comments
+    description: Comments for one issue
+    args:
+      - name: issue
+        required: true
+        values: [SOURCE-496]
+        bind:
+          arg: issue
+    request:
+      method: GET
+      path: /issues/{{arg.issue}}/comments
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Comment id
+      - name: body
+        type: Utf8
+"
+            .to_string(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .await;
+
+    let info = harness
+        .source_client()
+        .get_source_info(Request::new(GetSourceInfoRequest {
+            workspace: Some(default_workspace()),
+            name: "function_demo".to_string(),
+        }))
+        .await
+        .expect("get source info")
+        .into_inner()
+        .source_info
+        .expect("get source info response");
+
+    assert_eq!(info.table_functions.len(), 1);
+    let function = &info.table_functions[0];
+    assert_eq!(function.name, "issue_comments");
+    assert_eq!(function.description, "Comments for one issue");
+    assert_eq!(function.arguments[0].name, "issue");
+    assert!(function.arguments[0].required);
+    assert_eq!(function.arguments[0].values, ["SOURCE-496"]);
+    assert_eq!(function.result_columns[0].name, "id");
+    assert_eq!(function.result_columns[0].data_type, "Utf8");
+    assert!(!function.result_columns[0].nullable);
+    assert!(!function.result_columns[0].is_virtual);
+    assert!(!function.result_columns[0].is_required_filter);
+    assert_eq!(function.result_columns[0].description, "Comment id");
+    assert_eq!(function.result_columns[0].ordinal_position, 0);
+    assert_eq!(function.result_columns[1].name, "body");
+    assert_eq!(function.result_columns[1].ordinal_position, 1);
 }
 
 #[tokio::test]

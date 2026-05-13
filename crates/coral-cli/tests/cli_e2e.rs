@@ -211,6 +211,14 @@ async fn source_info_renders_metadata_for_installed_source() {
         "expected input requirement: {stdout}"
     );
     assert!(
+        stdout.contains("issue_comments(issue required; values: SOURCE-496, ENG-42)"),
+        "expected table function signature: {stdout}"
+    );
+    assert!(
+        stdout.contains("Comments for one issue"),
+        "expected table function description: {stdout}"
+    );
+    assert!(
         !stdout.contains("github.com/settings/tokens"),
         "expected hint to be hidden without --verbose: {stdout}"
     );
@@ -237,6 +245,14 @@ async fn source_info_verbose_includes_input_hints() {
     assert!(
         stdout.contains("github.com/settings/tokens"),
         "expected hint with --verbose: {stdout}"
+    );
+    assert!(
+        stdout.contains("Returns"),
+        "expected table function return columns with --verbose: {stdout}"
+    );
+    assert!(
+        stdout.contains("Comment body"),
+        "expected result column description with --verbose: {stdout}"
     );
 
     server.shutdown().await;
@@ -780,6 +796,7 @@ async fn source_test_suggests_add_for_uninstalled_bundled_source() {
                     description: "A demo bundled source for testing".to_string(),
                     version: "1.0.0".to_string(),
                     inputs: Vec::new(),
+                    table_functions: Vec::new(),
                     installed: false,
                     origin: SourceOrigin::Bundled as i32,
                 }],

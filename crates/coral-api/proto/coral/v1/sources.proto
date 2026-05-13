@@ -76,6 +76,28 @@ message SourceInputSpec {
   string hint = 5;
 }
 
+// One argument accepted by a source table function.
+message SourceTableFunctionArgument {
+  // Function argument name.
+  string name = 1;
+  // Whether callers must provide this argument.
+  bool required = 2;
+  // Optional manifest-declared accepted values.
+  repeated string values = 3;
+}
+
+// One source-scoped table-valued function declared by a source manifest.
+message SourceTableFunction {
+  // Function name within the source schema.
+  string name = 1;
+  // Human-readable function description.
+  string description = 2;
+  // Arguments accepted by this function in stable manifest order.
+  repeated SourceTableFunctionArgument arguments = 3;
+  // Columns returned by this function in result order.
+  repeated Column result_columns = 4;
+}
+
 // One bundled or imported source metadata record.
 message SourceInfo {
   // Canonical source name.
@@ -90,6 +112,8 @@ message SourceInfo {
   bool installed = 5;
   // Where this source came from.
   SourceOrigin origin = 6;
+  // Table functions declared by this source manifest.
+  repeated SourceTableFunction table_functions = 7;
 }
 
 // Lists all bundled sources available for one workspace.

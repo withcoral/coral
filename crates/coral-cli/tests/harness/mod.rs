@@ -19,8 +19,9 @@ use coral_api::v1::{
     ExecuteSqlResponse, GetSourceInfoRequest, GetSourceInfoResponse, GetSourceRequest,
     GetSourceResponse, ImportSourceRequest, ImportSourceResponse, ListSourcesRequest,
     ListSourcesResponse, ListTablesRequest, ListTablesResponse, PaginationResponse, Source,
-    SourceInfo, SourceInputKind, SourceInputSpec, SourceOrigin, Table, TableSummary,
-    ValidateSourceRequest, ValidateSourceResponse, Workspace,
+    SourceInfo, SourceInputKind, SourceInputSpec, SourceOrigin, SourceTableFunction,
+    SourceTableFunctionArgument, Table, TableSummary, ValidateSourceRequest,
+    ValidateSourceResponse, Workspace,
 };
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
@@ -203,6 +204,7 @@ fn mock_discover_response() -> DiscoverSourcesResponse {
                     default_value: String::new(),
                     hint: "Create a token at github.com/settings/tokens".to_string(),
                 }],
+                table_functions: Vec::new(),
                 installed: true,
                 origin: SourceOrigin::Bundled as i32,
             },
@@ -211,6 +213,7 @@ fn mock_discover_response() -> DiscoverSourcesResponse {
                 description: "Slack data".to_string(),
                 version: "2.1.0".to_string(),
                 inputs: Vec::new(),
+                table_functions: Vec::new(),
                 installed: false,
                 origin: SourceOrigin::Bundled as i32,
             },
@@ -242,6 +245,7 @@ fn mock_source_info(name: &str) -> Result<SourceInfo, Status> {
                 default_value: String::new(),
                 hint: "Create a token at github.com/settings/tokens".to_string(),
             }],
+            table_functions: vec![mock_table_function()],
             installed: true,
             origin: SourceOrigin::Bundled as i32,
         }),
@@ -250,6 +254,7 @@ fn mock_source_info(name: &str) -> Result<SourceInfo, Status> {
             description: "Slack data".to_string(),
             version: "2.1.0".to_string(),
             inputs: Vec::new(),
+            table_functions: Vec::new(),
             installed: false,
             origin: SourceOrigin::Bundled as i32,
         }),
@@ -258,10 +263,43 @@ fn mock_source_info(name: &str) -> Result<SourceInfo, Status> {
             description: "Jira data".to_string(),
             version: "2.0.0".to_string(),
             inputs: Vec::new(),
+            table_functions: Vec::new(),
             installed: true,
             origin: SourceOrigin::Imported as i32,
         }),
         _ => Err(Status::not_found(format!("unknown source '{name}'"))),
+    }
+}
+
+fn mock_table_function() -> SourceTableFunction {
+    SourceTableFunction {
+        name: "issue_comments".to_string(),
+        description: "Comments for one issue".to_string(),
+        arguments: vec![SourceTableFunctionArgument {
+            name: "issue".to_string(),
+            required: true,
+            values: vec!["SOURCE-496".to_string(), "ENG-42".to_string()],
+        }],
+        result_columns: vec![
+            Column {
+                name: "id".to_string(),
+                data_type: "Utf8".to_string(),
+                nullable: false,
+                is_virtual: false,
+                is_required_filter: false,
+                description: "Comment id".to_string(),
+                ordinal_position: 0,
+            },
+            Column {
+                name: "body".to_string(),
+                data_type: "Utf8".to_string(),
+                nullable: true,
+                is_virtual: false,
+                is_required_filter: false,
+                description: "Comment body".to_string(),
+                ordinal_position: 1,
+            },
+        ],
     }
 }
 

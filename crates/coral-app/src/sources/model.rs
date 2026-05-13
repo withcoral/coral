@@ -14,8 +14,33 @@ pub(crate) struct CandidateSource {
     pub(crate) description: String,
     pub(crate) version: String,
     pub(crate) inputs: Vec<ManifestInputSpec>,
+    pub(crate) table_functions: Vec<CandidateTableFunction>,
     pub(crate) installed: bool,
     pub(crate) origin: SourceOrigin,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CandidateTableFunction {
+    pub(crate) name: String,
+    pub(crate) description: String,
+    pub(crate) arguments: Vec<CandidateTableFunctionArgument>,
+    pub(crate) result_columns: Vec<CandidateColumn>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CandidateTableFunctionArgument {
+    pub(crate) name: String,
+    pub(crate) required: bool,
+    pub(crate) values: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CandidateColumn {
+    pub(crate) name: String,
+    pub(crate) data_type: String,
+    pub(crate) nullable: bool,
+    pub(crate) description: String,
+    pub(crate) ordinal_position: u32,
 }
 
 /// App-owned model for one source installed in a workspace.

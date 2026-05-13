@@ -2,11 +2,16 @@
 
 use std::collections::BTreeSet;
 
-use coral_spec::{ValidatedSourceManifest, parse_source_manifest_yaml};
+use coral_spec::{
+    ColumnSpec, SourceTableFunctionSpec, ValidatedSourceManifest, parse_source_manifest_yaml,
+};
 
 use crate::bootstrap::AppError;
 use crate::sources::SourceName;
-use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
+use crate::sources::model::{
+    CandidateColumn, CandidateSource, CandidateTableFunction, CandidateTableFunctionArgument,
+    InstalledSource, SourceOrigin,
+};
 use crate::state::AppStateLayout;
 use crate::workspaces::WorkspaceName;
 
@@ -106,9 +111,58 @@ fn candidate_from_manifest(
         description: manifest.description().to_string(),
         version: manifest.source_version().to_string(),
         inputs: manifest.declared_inputs().to_vec(),
+        table_functions: candidate_table_functions_from_manifest(manifest),
         installed,
         origin,
     })
+}
+
+fn candidate_table_functions_from_manifest(
+    manifest: &ValidatedSourceManifest,
+) -> Vec<CandidateTableFunction> {
+    manifest
+        .as_http()
+        .map(|http| {
+            http.functions
+                .iter()
+                .map(candidate_table_function_from_spec)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn candidate_table_function_from_spec(
+    function: &SourceTableFunctionSpec,
+) -> CandidateTableFunction {
+    CandidateTableFunction {
+        name: function.name.clone(),
+        description: function.description.clone(),
+        arguments: function
+            .args
+            .iter()
+            .map(|arg| CandidateTableFunctionArgument {
+                name: arg.name.clone(),
+                required: arg.required,
+                values: arg.values.clone(),
+            })
+            .collect(),
+        result_columns: function
+            .columns
+            .iter()
+            .enumerate()
+            .map(|(index, column)| candidate_column_from_spec(index, column))
+            .collect(),
+    }
+}
+
+fn candidate_column_from_spec(index: usize, column: &ColumnSpec) -> CandidateColumn {
+    CandidateColumn {
+        name: column.name.clone(),
+        data_type: column.data_type.clone(),
+        nullable: column.nullable,
+        description: column.description.clone(),
+        ordinal_position: u32::try_from(index).expect("column ordinal fits u32"),
+    }
 }
 
 #[cfg(test)]
@@ -181,6 +235,23 @@ tables:
     columns:
       - name: id
         type: Utf8
+functions:
+  - name: message_comments
+    description: Comments for one message
+    args:
+      - name: message_id
+        required: true
+        values: [pinned]
+        bind:
+          arg: message_id
+    request:
+      method: GET
+      path: /messages/{{arg.message_id}}/comments
+    columns:
+      - name: body
+        type: Utf8
+        nullable: false
+        description: Comment body
 "#,
             SourceOrigin::Imported,
             false,
@@ -191,6 +262,18 @@ tables:
         assert_eq!(source.inputs[0].kind, ManifestInputKind::Variable);
         assert_eq!(source.inputs[1].key, "API_TOKEN");
         assert_eq!(source.inputs[1].kind, ManifestInputKind::Secret);
+        assert_eq!(source.table_functions.len(), 1);
+        let function = &source.table_functions[0];
+        assert_eq!(function.name, "message_comments");
+        assert_eq!(function.description, "Comments for one message");
+        assert_eq!(function.arguments[0].name, "message_id");
+        assert!(function.arguments[0].required);
+        assert_eq!(function.arguments[0].values, ["pinned"]);
+        assert_eq!(function.result_columns[0].name, "body");
+        assert_eq!(function.result_columns[0].data_type, "Utf8");
+        assert!(!function.result_columns[0].nullable);
+        assert_eq!(function.result_columns[0].description, "Comment body");
+        assert_eq!(function.result_columns[0].ordinal_position, 0);
     }
 
     #[test]

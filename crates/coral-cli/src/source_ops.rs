@@ -5,8 +5,9 @@ use std::path::Path;
 use coral_api::v1::{
     CreateBundledSourceRequest, DeleteSourceRequest, DiscoverSourcesRequest, GetSourceInfoRequest,
     ImportSourceRequest, ListSourcesRequest, QueryTestFailure, QueryTestSuccess, Source,
-    SourceInfo, SourceInputKind, SourceInputSpec, SourceOrigin, SourceSecret, SourceVariable,
-    ValidateSourceRequest, ValidateSourceResponse, query_test_result,
+    SourceInfo, SourceInputKind, SourceInputSpec, SourceOrigin, SourceSecret,
+    SourceTableFunctionArgument, SourceVariable, ValidateSourceRequest, ValidateSourceResponse,
+    query_test_result,
 };
 use coral_client::{AppClient, default_workspace};
 use coral_spec::{
@@ -180,35 +181,96 @@ fn print_source_info_response(source: &SourceInfo, verbose: bool) {
         println!("  Description: {}", source.description);
     }
 
-    if source.inputs.is_empty() {
+    if !source.inputs.is_empty() {
+        println!();
+        println!("  {}", style("Inputs").bold());
+        for input in &source.inputs {
+            let kind_label = match SourceInputKind::try_from(input.kind) {
+                Ok(SourceInputKind::Variable) => "variable",
+                Ok(SourceInputKind::Secret) => "secret",
+                Ok(SourceInputKind::Unspecified) | Err(_) => "unknown",
+            };
+            let requirement = if input.required {
+                "required"
+            } else {
+                "optional"
+            };
+            println!(
+                "    {} {}",
+                style(&input.key).bold(),
+                style(format!("({kind_label}, {requirement})")).dim()
+            );
+            if !input.default_value.is_empty() {
+                println!("      default: {}", input.default_value);
+            }
+            if verbose && !input.hint.is_empty() {
+                println!("      {}", style(&input.hint).dim());
+            }
+        }
+    }
+
+    if source.table_functions.is_empty() {
         return;
     }
 
     println!();
-    println!("  {}", style("Inputs").bold());
-    for input in &source.inputs {
-        let kind_label = match SourceInputKind::try_from(input.kind) {
-            Ok(SourceInputKind::Variable) => "variable",
-            Ok(SourceInputKind::Secret) => "secret",
-            Ok(SourceInputKind::Unspecified) | Err(_) => "unknown",
-        };
-        let requirement = if input.required {
-            "required"
-        } else {
-            "optional"
-        };
+    println!("  {}", style("Table functions").bold());
+    for function in &source.table_functions {
         println!(
-            "    {} {}",
-            style(&input.key).bold(),
-            style(format!("({kind_label}, {requirement})")).dim()
+            "    {}{}",
+            style(&function.name).bold(),
+            format_function_arguments(&function.arguments)
         );
-        if !input.default_value.is_empty() {
-            println!("      default: {}", input.default_value);
+        if !function.description.is_empty() {
+            println!("      {}", function.description);
         }
-        if verbose && !input.hint.is_empty() {
-            println!("      {}", style(&input.hint).dim());
+        if verbose && !function.result_columns.is_empty() {
+            println!("      {}", style("Returns").bold());
+            for column in &function.result_columns {
+                let nullability = if column.nullable {
+                    "nullable"
+                } else {
+                    "required"
+                };
+                println!(
+                    "        {} {} {}",
+                    style(&column.name).bold(),
+                    column.data_type,
+                    style(format!("({nullability})")).dim()
+                );
+                if !column.description.is_empty() {
+                    println!("          {}", style(&column.description).dim());
+                }
+            }
         }
     }
+}
+
+fn format_function_arguments(arguments: &[SourceTableFunctionArgument]) -> String {
+    if arguments.is_empty() {
+        return "()".to_string();
+    }
+
+    let formatted = arguments
+        .iter()
+        .map(format_function_argument)
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("({formatted})")
+}
+
+fn format_function_argument(argument: &SourceTableFunctionArgument) -> String {
+    let requirement = if argument.required {
+        "required"
+    } else {
+        "optional"
+    };
+    let mut formatted = format!("{} {requirement}", argument.name);
+    if !argument.values.is_empty() {
+        formatted.push_str("; values: ");
+        formatted.push_str(&argument.values.join(", "));
+    }
+    formatted
 }
 
 pub(crate) async fn delete_source(app: &AppClient, name: &str) -> Result<(), anyhow::Error> {

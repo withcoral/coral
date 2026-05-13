@@ -43,13 +43,13 @@ coral source list
 
 ### `coral source info <NAME>`
 
-Show metadata for a source: whether it is installed, its origin, version, description, and inputs. Works for bundled sources and imported sources installed via `coral source add --file`.
+Show metadata for a source: whether it is installed, its origin, version, description, inputs, and table functions. Works for bundled sources and imported sources installed via `coral source add --file`.
 
 ```shellscript
 coral source info datadog
 ```
 
-Pass `-v/--verbose` for more detailed output.
+Pass `-v/--verbose` for more detailed output, including input hints and table function result columns.
 
 ```shellscript
 coral source info datadog --verbose

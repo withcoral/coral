@@ -2,12 +2,13 @@
 
 use coral_api::v1::source_service_server::SourceService as SourceServiceApi;
 use coral_api::v1::{
-    CreateBundledSourceRequest, CreateBundledSourceResponse, DeleteSourceRequest,
+    Column, CreateBundledSourceRequest, CreateBundledSourceResponse, DeleteSourceRequest,
     DeleteSourceResponse, DiscoverSourcesRequest, DiscoverSourcesResponse, GetSourceInfoRequest,
     GetSourceInfoResponse, GetSourceRequest, GetSourceResponse, ImportSourceRequest,
     ImportSourceResponse, ListSourcesRequest, ListSourcesResponse, Source, SourceInfo,
     SourceInputKind, SourceInputSpec, SourceOrigin as ProtoSourceOrigin, SourceSecret,
-    SourceVariable, ValidateSourceRequest, ValidateSourceResponse,
+    SourceTableFunction, SourceTableFunctionArgument, SourceVariable, ValidateSourceRequest,
+    ValidateSourceResponse,
 };
 use coral_spec::{ManifestInputKind, ManifestInputSpec};
 use tonic::{Request, Response, Status};
@@ -18,7 +19,10 @@ use crate::sources::SourceName;
 use crate::sources::manager::{
     CreateBundledSourceCommand, ImportSourceCommand, SourceBinding, SourceBindings, SourceManager,
 };
-use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
+use crate::sources::model::{
+    CandidateColumn, CandidateSource, CandidateTableFunction, CandidateTableFunctionArgument,
+    InstalledSource, SourceOrigin,
+};
 use crate::transport::{
     grpc_span, instrument_grpc, query_status, validate_source_response_to_proto,
     workspace_name_from_proto, workspace_to_proto,
@@ -55,7 +59,7 @@ impl SourceServiceApi for SourceService {
                 .discover_sources(&workspace_name)
                 .map_err(app_status)?
                 .into_iter()
-                .map(candidate_source_to_proto)
+                .map(candidate_source_summary_to_proto)
                 .collect();
             Ok(Response::new(DiscoverSourcesResponse { sources }))
         })
@@ -116,7 +120,7 @@ impl SourceServiceApi for SourceService {
                 .get_source_info(&workspace_name, &source_name)
                 .map_err(app_status)?;
             Ok(Response::new(GetSourceInfoResponse {
-                source_info: Some(candidate_source_to_proto(source)),
+                source_info: Some(candidate_source_info_to_proto(source)),
             }))
         })
         .await
@@ -269,7 +273,15 @@ fn proto_source_origin(origin: SourceOrigin) -> ProtoSourceOrigin {
     }
 }
 
-fn candidate_source_to_proto(source: CandidateSource) -> SourceInfo {
+fn candidate_source_summary_to_proto(source: CandidateSource) -> SourceInfo {
+    candidate_source_to_proto(source, false)
+}
+
+fn candidate_source_info_to_proto(source: CandidateSource) -> SourceInfo {
+    candidate_source_to_proto(source, true)
+}
+
+fn candidate_source_to_proto(source: CandidateSource, include_table_functions: bool) -> SourceInfo {
     SourceInfo {
         name: source.name.as_str().to_string(),
         description: source.description,
@@ -279,6 +291,15 @@ fn candidate_source_to_proto(source: CandidateSource) -> SourceInfo {
             .into_iter()
             .map(candidate_source_input_to_proto)
             .collect(),
+        table_functions: if include_table_functions {
+            source
+                .table_functions
+                .into_iter()
+                .map(candidate_table_function_to_proto)
+                .collect()
+        } else {
+            Vec::new()
+        },
         installed: source.installed,
         origin: proto_source_origin(source.origin) as i32,
     }
@@ -298,5 +319,44 @@ fn proto_candidate_input_kind(kind: ManifestInputKind) -> SourceInputKind {
     match kind {
         ManifestInputKind::Variable => SourceInputKind::Variable,
         ManifestInputKind::Secret => SourceInputKind::Secret,
+    }
+}
+
+fn candidate_table_function_to_proto(function: CandidateTableFunction) -> SourceTableFunction {
+    SourceTableFunction {
+        name: function.name,
+        description: function.description,
+        arguments: function
+            .arguments
+            .into_iter()
+            .map(candidate_table_function_argument_to_proto)
+            .collect(),
+        result_columns: function
+            .result_columns
+            .into_iter()
+            .map(candidate_column_to_proto)
+            .collect(),
+    }
+}
+
+fn candidate_table_function_argument_to_proto(
+    argument: CandidateTableFunctionArgument,
+) -> SourceTableFunctionArgument {
+    SourceTableFunctionArgument {
+        name: argument.name,
+        required: argument.required,
+        values: argument.values,
+    }
+}
+
+fn candidate_column_to_proto(column: CandidateColumn) -> Column {
+    Column {
+        name: column.name,
+        data_type: column.data_type,
+        nullable: column.nullable,
+        is_virtual: false,
+        is_required_filter: false,
+        description: column.description,
+        ordinal_position: column.ordinal_position,
     }
 }

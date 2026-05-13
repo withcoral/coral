@@ -359,6 +359,7 @@ mod tests {
             description: "Query repositories and issues".to_string(),
             version: "1.0.0".to_string(),
             inputs: Vec::new(),
+            table_functions: Vec::new(),
             installed: true,
             origin: 1,
         };
@@ -375,6 +376,7 @@ mod tests {
             description: "Send and receive messages".to_string(),
             version: "1.0.0".to_string(),
             inputs: Vec::new(),
+            table_functions: Vec::new(),
             installed: false,
             origin: 1,
         };
@@ -390,6 +392,7 @@ mod tests {
             description: "GitHub".to_string(),
             version: "1.0.0".to_string(),
             inputs: Vec::new(),
+            table_functions: Vec::new(),
             installed: false,
             origin: 1,
         };
@@ -398,6 +401,7 @@ mod tests {
             description: "Status pages".to_string(),
             version: "1.0.0".to_string(),
             inputs: Vec::new(),
+            table_functions: Vec::new(),
             installed: false,
             origin: 1,
         };
