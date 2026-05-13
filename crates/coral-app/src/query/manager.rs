@@ -80,7 +80,7 @@ impl QueryManager {
         sql: &str,
     ) -> Result<QueryExecution, QueryManagerError> {
         run_query_operation(
-            "execute_sql",
+            QueryOperation::ExecuteSql,
             workspace_name,
             sql,
             async {
@@ -103,7 +103,7 @@ impl QueryManager {
         sql: &str,
     ) -> Result<QueryPlan, QueryManagerError> {
         run_query_operation(
-            "plan_sql",
+            QueryOperation::PlanSql,
             workspace_name,
             sql,
             async {
@@ -218,8 +218,23 @@ impl QueryManager {
     }
 }
 
+#[derive(Clone, Copy)]
+enum QueryOperation {
+    ExecuteSql,
+    PlanSql,
+}
+
+impl QueryOperation {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::ExecuteSql => "execute_sql",
+            Self::PlanSql => "plan_sql",
+        }
+    }
+}
+
 async fn run_query_operation<T, Fut, RowCount>(
-    operation: &'static str,
+    operation: QueryOperation,
     workspace_name: &WorkspaceName,
     sql: &str,
     query: Fut,
@@ -235,7 +250,7 @@ where
 
     let metrics = crate::telemetry::metrics::metrics();
     let status = crate::telemetry::metrics::status_attr(result.is_ok());
-    let attributes = [status, KeyValue::new("operation", operation)];
+    let attributes = [status, KeyValue::new("operation", operation.as_str())];
     metrics.count.add(1, &attributes);
     metrics
         .duration
@@ -263,10 +278,11 @@ where
 }
 
 fn create_query_span(
-    operation: &'static str,
+    operation: QueryOperation,
     workspace_name: &WorkspaceName,
     sql: &str,
 ) -> tracing::Span {
+    let operation = operation.as_str();
     tracing::info_span!(
         "coral.query",
         otel.name = "coral.query",
