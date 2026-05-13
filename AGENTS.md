@@ -44,6 +44,29 @@
   `type!: summary` or `type(scope)!: summary`. Local WIP commit messages can
   stay pragmatic unless the user explicitly asks for polished commit history.
 
+## Meta Changes
+
+A meta change modifies how contributors or agents should work in this repo, not
+only runtime behavior. Examples include repo layout, crate ownership, source
+directory conventions, docs generation behavior, CLI/MCP surface rules, PR
+title/scope guidance, verification commands, and agent-facing review or
+source-authoring instructions.
+
+For meta changes:
+
+- Update the nearest relevant `AGENTS.md` in the same change.
+- Update `docs/`, generated docs, or docs tooling when the changed behavior is
+  user-facing or docs-authoring-facing.
+- Preserve provenance: keep observed repo facts, project direction, local
+  preferences, and generated context separate instead of merging them into one
+  untraceable rule.
+- Treat repeated human steering as a defect in the operating loop. Identify the
+  failure class, update durable context or tooling when that can prevent
+  recurrence, and verify the new rule before resuming unrelated work.
+- Include explicit validation showing the guidance matches the implemented
+  behavior.
+- Mention in the PR description what agent or contributor behavior changed.
+
 ## What Counts As a Breaking Change for a CLI?
 
 For a CLI, the user interface is the API.
