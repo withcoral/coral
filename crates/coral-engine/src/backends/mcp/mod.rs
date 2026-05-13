@@ -20,6 +20,7 @@ use datafusion::datasource::TableProvider;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::logical_expr::{Expr, Operator, TableProviderFilterPushDown, TableType};
 use datafusion::physical_plan::ExecutionPlan;
+use datafusion::scalar::ScalarValue;
 use rmcp::model::{CallToolRequestParams, CallToolResult, ClientInfo, Implementation, JsonObject};
 use rmcp::transport::ConfigureCommandExt;
 use rmcp::{ClientHandler, ServiceExt};
@@ -259,7 +260,7 @@ impl TableFunctionImpl for McpSourceTableFunction {
 
 struct McpFunctionCallTableProvider {
     state: Arc<McpFunctionState>,
-    arg_values: HashMap<String, String>,
+    arg_values: HashMap<String, Value>,
 }
 
 impl std::fmt::Debug for McpFunctionCallTableProvider {
@@ -306,7 +307,7 @@ impl TableProvider for McpFunctionCallTableProvider {
         let arguments = self
             .arg_values
             .iter()
-            .map(|(key, value)| (key.clone(), Value::String(value.clone())))
+            .map(|(key, value)| (key.clone(), value.clone()))
             .collect::<serde_json::Map<_, _>>();
         let fetcher = Arc::new(McpFetchPlan {
             backend: self.state.backend.clone(),
@@ -822,7 +823,7 @@ fn bind_function_args(
     source_schema: &str,
     function: &McpTableFunctionSpec,
     args: &[Expr],
-) -> Result<HashMap<String, String>> {
+) -> Result<HashMap<String, Value>> {
     let context = FunctionCallContext {
         source_schema,
         function_name: function.name.as_str(),
@@ -875,14 +876,14 @@ fn resolve_call_arg_literal(
     context: &FunctionCallContext<'_>,
     arg_name: &str,
     expr: Option<&Expr>,
-) -> Result<Option<String>> {
+) -> Result<Option<Value>> {
     let Some(expr) = expr else {
         return Ok(None);
     };
     if is_null_literal(expr) {
         return Ok(None);
     }
-    let Some(value) = literal_to_string(expr) else {
+    let Some(value) = literal_to_json_value(expr) else {
         return Err(DataFusionError::Plan(format!(
             "{}.{} argument '{}' must be a literal",
             context.source_schema, context.function_name, arg_name
@@ -900,13 +901,51 @@ fn is_null_literal(expr: &Expr) -> bool {
     }
 }
 
+fn literal_to_json_value(expr: &Expr) -> Option<Value> {
+    match expr {
+        Expr::Literal(value, _) => scalar_value_to_json(value),
+        Expr::Cast(cast) => literal_to_json_value(cast.expr.as_ref()),
+        Expr::TryCast(cast) => literal_to_json_value(cast.expr.as_ref()),
+        _ => None,
+    }
+}
+
+fn scalar_value_to_json(value: &ScalarValue) -> Option<Value> {
+    match value {
+        ScalarValue::Utf8(Some(value)) | ScalarValue::LargeUtf8(Some(value)) => {
+            Some(Value::String(value.clone()))
+        }
+        ScalarValue::Boolean(Some(value)) => Some(Value::Bool(*value)),
+        ScalarValue::Int8(Some(value)) => Some(Value::from(*value)),
+        ScalarValue::Int16(Some(value)) => Some(Value::from(*value)),
+        ScalarValue::Int32(Some(value)) => Some(Value::from(*value)),
+        ScalarValue::Int64(Some(value)) => Some(Value::from(*value)),
+        ScalarValue::UInt8(Some(value)) => Some(Value::from(*value)),
+        ScalarValue::UInt16(Some(value)) => Some(Value::from(*value)),
+        ScalarValue::UInt32(Some(value)) => Some(Value::from(*value)),
+        ScalarValue::UInt64(Some(value)) => Some(Value::from(*value)),
+        ScalarValue::Float32(Some(value)) => {
+            serde_json::Number::from_f64(f64::from(*value)).map(Value::Number)
+        }
+        ScalarValue::Float64(Some(value)) => {
+            serde_json::Number::from_f64(*value).map(Value::Number)
+        }
+        _ => None,
+    }
+}
+
 fn ensure_call_arg_allowed_value(
     context: &FunctionCallContext<'_>,
     arg: &str,
-    value: &str,
+    value: &Value,
     allowed_values: &[String],
 ) -> Result<()> {
-    if !allowed_values.is_empty() && !allowed_values.iter().any(|allowed| allowed == value) {
+    let comparable_value = value_for_allowed_value_check(value);
+    if !allowed_values.is_empty()
+        && !allowed_values
+            .iter()
+            .any(|allowed| allowed == comparable_value.as_str())
+    {
         return Err(DataFusionError::Plan(format!(
             "{}.{} argument '{arg}' has invalid value '{value}'; expected one of: {}",
             context.source_schema,
@@ -915,6 +954,13 @@ fn ensure_call_arg_allowed_value(
         )));
     }
     Ok(())
+}
+
+fn value_for_allowed_value_check(value: &Value) -> String {
+    match value {
+        Value::String(value) => value.clone(),
+        other => other.to_string(),
+    }
 }
 
 #[cfg(test)]
@@ -1055,6 +1101,53 @@ mod tests {
         .expect("mcp manifest should parse")
     }
 
+    fn mcp_typed_args_manifest() -> coral_spec::ValidatedSourceManifest {
+        coral_spec::parse_source_manifest_value(json!({
+            "dsl_version": 3,
+            "name": "test_mcp",
+            "version": "0.1.0",
+            "backend": "mcp",
+            "server": {
+                "transport": "stdio",
+                "command": "unused"
+            },
+            "functions": [{
+                "name": "typed_search",
+                "tool": "typed_search_tool",
+                "args": [
+                    {
+                        "name": "query",
+                        "required": true,
+                        "bind": { "arg": "query" }
+                    },
+                    {
+                        "name": "limit",
+                        "required": true,
+                        "bind": { "arg": "limit" }
+                    },
+                    {
+                        "name": "include_archived",
+                        "required": true,
+                        "bind": { "arg": "include_archived" }
+                    },
+                    {
+                        "name": "threshold",
+                        "required": true,
+                        "bind": { "arg": "threshold" }
+                    }
+                ],
+                "response": {
+                    "rows_path": ["items"]
+                },
+                "columns": [
+                    { "name": "title", "type": "Utf8" },
+                    { "name": "url", "type": "Utf8" }
+                ]
+            }]
+        }))
+        .expect("mcp typed args manifest should parse")
+    }
+
     fn compile_sources(
         manifest: coral_spec::ValidatedSourceManifest,
         caller: Arc<dyn McpToolCaller>,
@@ -1110,6 +1203,44 @@ mod tests {
             call.1.get("query"),
             Some(&Value::String("issue".to_string()))
         );
+    }
+
+    #[tokio::test]
+    async fn mcp_table_function_preserves_json_scalar_arg_types() {
+        let ctx = SessionContext::new();
+        let caller = Arc::new(FakeMcpCaller {
+            calls: Mutex::new(Vec::new()),
+        });
+        register_test_sources(
+            &ctx,
+            compile_sources(mcp_typed_args_manifest(), caller.clone()),
+        );
+
+        let _ = ctx
+            .sql(
+                "SELECT title FROM test_mcp.typed_search(\
+                 query => 'issue', \
+                 limit => 10, \
+                 include_archived => true, \
+                 threshold => 0.75)",
+            )
+            .await
+            .expect("typed function query should plan")
+            .collect()
+            .await
+            .expect("typed function query should execute");
+
+        let calls = caller.calls.lock().expect("calls lock");
+        assert_eq!(calls.len(), 1);
+        let call = calls.first().expect("one MCP call should be recorded");
+        assert_eq!(call.0, "typed_search_tool");
+        assert_eq!(
+            call.1.get("query"),
+            Some(&Value::String("issue".to_string()))
+        );
+        assert_eq!(call.1.get("limit"), Some(&Value::from(10)));
+        assert_eq!(call.1.get("include_archived"), Some(&Value::Bool(true)));
+        assert_eq!(call.1.get("threshold"), Some(&json!(0.75)));
     }
 
     #[tokio::test]
