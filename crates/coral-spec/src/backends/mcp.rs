@@ -245,8 +245,16 @@ fn validate_server(source_name: &str, server: &McpServerSpec) -> Result<()> {
                 env.name
             )));
         }
+        validate_server_env_value_source(source_name, env)?;
     }
     Ok(())
+}
+
+fn validate_server_env_value_source(source_name: &str, env: &McpEnvSpec) -> Result<()> {
+    validate_source_scoped_value_source(
+        &env.value,
+        &format!("source '{source_name}' MCP server env '{}'", env.name),
+    )
 }
 
 fn validate_table_and_function_names(
@@ -511,6 +519,9 @@ fn validate_table_tool_arg_value_source(
         | ValueSourceSpec::ArgBool { key, .. } => Err(ManifestError::validation(format!(
             "{context} uses function argument '{key}' but tables do not take arguments",
         ))),
+        ValueSourceSpec::State { key } => Err(ManifestError::validation(format!(
+            "{context} uses state value '{key}' but MCP table tool_args are source-scoped",
+        ))),
         ValueSourceSpec::Template { template } => {
             for token in template.tokens() {
                 match token.namespace() {
@@ -526,12 +537,79 @@ fn validate_table_tool_arg_value_source(
                             token.key()
                         )));
                     }
-                    _ => {}
+                    crate::TemplateNamespace::State => {
+                        return Err(ManifestError::validation(format!(
+                            "{context} template references state value '{}' but MCP table tool_args are source-scoped",
+                            token.key()
+                        )));
+                    }
+                    crate::TemplateNamespace::Expr | crate::TemplateNamespace::Other(_) => {
+                        return Err(ManifestError::validation(format!(
+                            "{context} uses unsupported template token '{}'",
+                            token.raw()
+                        )));
+                    }
+                    crate::TemplateNamespace::Input => {}
                 }
             }
             Ok(())
         }
         _ => Ok(()),
+    }
+}
+
+fn validate_source_scoped_value_source(source: &ValueSourceSpec, context: &str) -> Result<()> {
+    match source {
+        ValueSourceSpec::Filter { key, .. }
+        | ValueSourceSpec::FilterInt { key, .. }
+        | ValueSourceSpec::FilterBool { key, .. }
+        | ValueSourceSpec::FilterSplit { key, .. }
+        | ValueSourceSpec::FilterSplitInt { key, .. } => Err(ManifestError::validation(format!(
+            "{context} uses table filter '{key}' but the value is source-scoped",
+        ))),
+        ValueSourceSpec::Arg { key, .. }
+        | ValueSourceSpec::ArgInt { key, .. }
+        | ValueSourceSpec::ArgBool { key, .. } => Err(ManifestError::validation(format!(
+            "{context} uses function argument '{key}' but the value is source-scoped",
+        ))),
+        ValueSourceSpec::State { key } => Err(ManifestError::validation(format!(
+            "{context} uses state value '{key}' but the value is source-scoped",
+        ))),
+        ValueSourceSpec::Template { template } => {
+            for token in template.tokens() {
+                match token.namespace() {
+                    crate::TemplateNamespace::Input => {}
+                    crate::TemplateNamespace::Filter => {
+                        return Err(ManifestError::validation(format!(
+                            "{context} template references table filter '{}' but the value is source-scoped",
+                            token.key()
+                        )));
+                    }
+                    crate::TemplateNamespace::Arg => {
+                        return Err(ManifestError::validation(format!(
+                            "{context} template references function argument '{}' but the value is source-scoped",
+                            token.key()
+                        )));
+                    }
+                    crate::TemplateNamespace::State => {
+                        return Err(ManifestError::validation(format!(
+                            "{context} template references state value '{}' but the value is source-scoped",
+                            token.key()
+                        )));
+                    }
+                    crate::TemplateNamespace::Expr | crate::TemplateNamespace::Other(_) => {
+                        return Err(ManifestError::validation(format!(
+                            "{context} uses unsupported template token '{}'",
+                            token.raw()
+                        )));
+                    }
+                }
+            }
+            Ok(())
+        }
+        ValueSourceSpec::Literal { .. }
+        | ValueSourceSpec::Input { .. }
+        | ValueSourceSpec::NowEpochMinusSeconds { .. } => Ok(()),
     }
 }
 
@@ -833,6 +911,70 @@ mod tests {
     }
 
     #[test]
+    fn rejects_mcp_server_env_referencing_state() {
+        let error = McpSourceManifest::parse_manifest_value(json!({
+            "dsl_version": 3,
+            "name": "demo",
+            "version": "0.1.0",
+            "backend": "mcp",
+            "server": {
+                "transport": "stdio",
+                "command": "demo-mcp-server",
+                "env": [{
+                    "name": "CURSOR",
+                    "from": "state",
+                    "key": "cursor"
+                }]
+            },
+            "tables": [{
+                "name": "issues",
+                "tool": "list_issues",
+                "columns": [{ "name": "id", "type": "Utf8" }]
+            }]
+        }))
+        .expect_err("state reference in server env should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("MCP server env 'CURSOR' uses state value 'cursor'"),
+            "got: {error}"
+        );
+    }
+
+    #[test]
+    fn rejects_mcp_server_env_template_referencing_filter() {
+        let error = McpSourceManifest::parse_manifest_value(json!({
+            "dsl_version": 3,
+            "name": "demo",
+            "version": "0.1.0",
+            "backend": "mcp",
+            "server": {
+                "transport": "stdio",
+                "command": "demo-mcp-server",
+                "env": [{
+                    "name": "FILTERED",
+                    "from": "template",
+                    "template": "{{filter.state}}"
+                }]
+            },
+            "tables": [{
+                "name": "issues",
+                "tool": "list_issues",
+                "columns": [{ "name": "id", "type": "Utf8" }]
+            }]
+        }))
+        .expect_err("filter template reference in server env should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("MCP server env 'FILTERED' template references table filter 'state'"),
+            "got: {error}"
+        );
+    }
+
+    #[test]
     fn rejects_tool_args_referencing_filters() {
         let error = McpSourceManifest::parse_manifest_value(json!({
             "dsl_version": 3,
@@ -859,6 +1001,60 @@ mod tests {
             error
                 .to_string()
                 .contains("references filter 'state'; bind filters through filters[].tool_arg"),
+            "got: {error}"
+        );
+    }
+
+    #[test]
+    fn rejects_tool_args_referencing_state() {
+        let error = McpSourceManifest::parse_manifest_value(json!({
+            "dsl_version": 3,
+            "name": "demo",
+            "version": "0.1.0",
+            "backend": "mcp",
+            "server": { "transport": "stdio", "command": "demo-mcp-server" },
+            "tables": [{
+                "name": "issues",
+                "tool": "list_issues",
+                "tool_args": {
+                    "cursor": { "from": "state", "key": "cursor" }
+                },
+                "columns": [{ "name": "id", "type": "Utf8" }]
+            }]
+        }))
+        .expect_err("state reference in tool_args should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("tool_args.cursor uses state value 'cursor'"),
+            "got: {error}"
+        );
+    }
+
+    #[test]
+    fn rejects_tool_args_template_referencing_state() {
+        let error = McpSourceManifest::parse_manifest_value(json!({
+            "dsl_version": 3,
+            "name": "demo",
+            "version": "0.1.0",
+            "backend": "mcp",
+            "server": { "transport": "stdio", "command": "demo-mcp-server" },
+            "tables": [{
+                "name": "issues",
+                "tool": "list_issues",
+                "tool_args": {
+                    "cursor": { "from": "template", "template": "{{state.cursor}}" }
+                },
+                "columns": [{ "name": "id", "type": "Utf8" }]
+            }]
+        }))
+        .expect_err("state template reference in tool_args should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("tool_args.cursor template references state value 'cursor'"),
             "got: {error}"
         );
     }
