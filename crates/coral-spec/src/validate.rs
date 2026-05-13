@@ -2,11 +2,12 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::backends::http::DependentJoinTableConfig;
 use crate::common::{
-    BodySpec, ColumnSpec, DetailHintSpec, ExprSpec, FilterSpec, FunctionArgBinding,
+    BodySpec, ColumnSpec, DetailHintSpec, ExprSpec, FilterMode, FilterSpec, FunctionArgBinding,
     MAX_SEARCH_CALLS_PER_QUERY, MAX_SEARCH_CANDIDATES_PER_QUERY, MAX_SEARCH_TOP_K, PaginationSpec,
     RequestRouteSpec, RequestSpec, SearchLimitsSpec, SourceTableFunctionKind,
-    SourceTableFunctionSpec, ValueSourceSpec,
+    SourceTableFunctionSpec, ValueSourceSpec, WireType,
 };
 use crate::{ManifestError, ParsedTemplate, Result, TemplateNamespace};
 
@@ -42,6 +43,8 @@ pub(crate) fn validate_http_table(
     pagination: &PaginationSpec,
     search_limits: Option<&SearchLimitsSpec>,
     detail_hints: &[DetailHintSpec],
+    search_index: bool,
+    dependent_join: &DependentJoinTableConfig,
 ) -> Result<()> {
     if request.path.raw().trim().is_empty() {
         return Err(ManifestError::validation(format!(
@@ -61,6 +64,7 @@ pub(crate) fn validate_http_table(
         detail_hints,
         columns,
     )?;
+    validate_http_dependent_join_config(schema, table_name, filters, search_index, dependent_join)?;
 
     validate_request_bindings(schema, table_name, request, &known_filters)?;
 
@@ -85,6 +89,36 @@ pub(crate) fn validate_http_table(
     }
 
     pagination.validate(schema, table_name)
+}
+
+fn validate_http_dependent_join_config(
+    schema: &str,
+    table_name: &str,
+    filters: &[FilterSpec],
+    search_index: bool,
+    dependent_join: &DependentJoinTableConfig,
+) -> Result<()> {
+    if search_index {
+        for filter in filters.iter().filter(|filter| filter.bindable) {
+            return Err(ManifestError::validation(format!(
+                "filter '{}': cannot be bindable because table '{}.{}' is declared as search_index. Search-index-backed endpoints do not return complete result sets under filtered queries and are unsafe for dependent joins.",
+                filter.name, schema, table_name
+            )));
+        }
+    }
+
+    validate_non_zero_cap(
+        dependent_join.max_bindings,
+        &format!("{schema}.{table_name} dependent_join.max_bindings"),
+    )?;
+    validate_non_zero_cap(
+        dependent_join.max_resolver_rows,
+        &format!("{schema}.{table_name} dependent_join.max_resolver_rows"),
+    )?;
+    validate_non_zero_cap(
+        dependent_join.max_rows_per_binding,
+        &format!("{schema}.{table_name} dependent_join.max_rows_per_binding"),
+    )
 }
 
 pub(crate) fn validate_http_function_names(
@@ -197,6 +231,7 @@ pub(crate) fn validate_filters_and_column_exprs(
 ) -> Result<HashSet<String>> {
     let mut known_filters = HashSet::new();
     for filter in filters {
+        validate_filter_capabilities(filter)?;
         if !known_filters.insert(filter.name.clone()) {
             return Err(ManifestError::validation(format!(
                 "{schema}.{table} has duplicate filter '{}'",
@@ -417,6 +452,32 @@ fn validate_detail_hints(
         }
     }
 
+    Ok(())
+}
+
+fn validate_filter_capabilities(filter: &FilterSpec) -> Result<()> {
+    if filter.bindable && filter.mode != FilterMode::Equality {
+        return Err(ManifestError::validation(format!(
+            "filter '{}': bindable=true requires mode=equality in V1",
+            filter.name
+        )));
+    }
+    if filter.bindable && filter.wire_type != WireType::String {
+        return Err(ManifestError::validation(format!(
+            "filter '{}': only wire_type=string is supported in V1",
+            filter.name
+        )));
+    }
+    validate_non_zero_cap(
+        filter.max_bindings,
+        &format!("filter '{}'.max_bindings", filter.name),
+    )
+}
+
+fn validate_non_zero_cap(cap: Option<usize>, name: &str) -> Result<()> {
+    if cap == Some(0) {
+        return Err(ManifestError::validation(format!("{name} = 0")));
+    }
     Ok(())
 }
 
@@ -923,7 +984,23 @@ mod tests {
             required: false,
             mode: FilterMode::Equality,
             description: String::new(),
+            bindable: false,
+            wire_type: crate::WireType::String,
+            max_bindings: None,
         }]
+    }
+
+    fn bindable_filter(name: &str) -> FilterSpec {
+        FilterSpec {
+            name: name.to_string(),
+            data_type: "Utf8".to_string(),
+            required: false,
+            mode: FilterMode::Equality,
+            description: String::new(),
+            bindable: true,
+            wire_type: crate::WireType::String,
+            max_bindings: None,
+        }
     }
 
     fn column_with_expr(expr: ExprSpec) -> ColumnSpec {
@@ -1034,6 +1111,26 @@ mod tests {
         })
     }
 
+    fn validate_test_http_table(
+        filters: &[FilterSpec],
+        request: &RequestSpec,
+        requests: &[RequestRouteSpec],
+    ) -> crate::Result<()> {
+        validate_http_table(
+            "demo",
+            "messages",
+            filters,
+            &[test_column()],
+            request,
+            requests,
+            &PaginationSpec::default(),
+            None,
+            &[],
+            false,
+            &crate::DependentJoinTableConfig::default(),
+        )
+    }
+
     fn function_with_request_value(value: ValueSourceSpec) -> SourceTableFunctionSpec {
         SourceTableFunctionSpec {
             name: "search".to_string(),
@@ -1092,18 +1189,8 @@ mod tests {
             ..base_request()
         };
 
-        let error = validate_http_table(
-            "demo",
-            "messages",
-            &test_filters(),
-            &[test_column()],
-            &request,
-            &[],
-            &PaginationSpec::default(),
-            None,
-            &[],
-        )
-        .expect_err("default request should reject unknown filters");
+        let error = validate_test_http_table(&test_filters(), &request, &[])
+            .expect_err("default request should reject unknown filters");
 
         assert!(
             error
@@ -1128,18 +1215,8 @@ mod tests {
             },
         };
 
-        let error = validate_http_table(
-            "demo",
-            "messages",
-            &test_filters(),
-            &[test_column()],
-            &base_request(),
-            &[route],
-            &PaginationSpec::default(),
-            None,
-            &[],
-        )
-        .expect_err("route request should reject unknown filters");
+        let error = validate_test_http_table(&test_filters(), &base_request(), &[route])
+            .expect_err("route request should reject unknown filters");
 
         assert!(
             error
@@ -1162,18 +1239,8 @@ mod tests {
             ..base_request()
         };
 
-        let error = validate_http_table(
-            "demo",
-            "messages",
-            &test_filters(),
-            &[test_column()],
-            &request,
-            &[],
-            &PaginationSpec::default(),
-            None,
-            &[],
-        )
-        .expect_err("filter_split should reject unknown filters");
+        let error = validate_test_http_table(&test_filters(), &request, &[])
+            .expect_err("filter_split should reject unknown filters");
 
         assert!(
             error
@@ -1196,18 +1263,8 @@ mod tests {
             ..base_request()
         };
 
-        let error = validate_http_table(
-            "demo",
-            "messages",
-            &test_filters(),
-            &[test_column()],
-            &request,
-            &[],
-            &PaginationSpec::default(),
-            None,
-            &[],
-        )
-        .expect_err("filter_split_int should reject unknown filters");
+        let error = validate_test_http_table(&test_filters(), &request, &[])
+            .expect_err("filter_split_int should reject unknown filters");
 
         assert!(
             error
@@ -1252,18 +1309,8 @@ mod tests {
                 ..base_request()
             };
 
-            let error = validate_http_table(
-                "demo",
-                "messages",
-                &test_filters(),
-                &[test_column()],
-                &request,
-                &[],
-                &PaginationSpec::default(),
-                None,
-                &[],
-            )
-            .expect_err("table requests should reject function arguments");
+            let error = validate_test_http_table(&test_filters(), &request, &[])
+                .expect_err("table requests should reject function arguments");
 
             assert!(
                 error.to_string().contains("uses function argument"),
@@ -1279,18 +1326,8 @@ mod tests {
             ..base_request()
         };
 
-        let error = validate_http_table(
-            "demo",
-            "messages",
-            &test_filters(),
-            &[test_column()],
-            &request,
-            &[],
-            &PaginationSpec::default(),
-            None,
-            &[],
-        )
-        .expect_err("table request templates should reject function arguments");
+        let error = validate_test_http_table(&test_filters(), &request, &[])
+            .expect_err("table request templates should reject function arguments");
 
         assert!(
             error
@@ -1329,6 +1366,8 @@ mod tests {
             &PaginationSpec::default(),
             None,
             &[],
+            false,
+            &crate::DependentJoinTableConfig::default(),
         )
         .expect_err("table request one_of values should reject function arguments");
 
@@ -1369,6 +1408,8 @@ mod tests {
             &PaginationSpec::default(),
             None,
             &[],
+            false,
+            &crate::DependentJoinTableConfig::default(),
         )
         .expect_err("table request one_of values should reject unknown filters");
 
@@ -1521,6 +1562,9 @@ mod tests {
             required: false,
             mode: FilterMode::Contains,
             description: String::new(),
+            bindable: false,
+            wire_type: crate::WireType::String,
+            max_bindings: None,
         }];
 
         validate_http_table(
@@ -1533,6 +1577,8 @@ mod tests {
             &PaginationSpec::default(),
             None,
             &[],
+            false,
+            &crate::DependentJoinTableConfig::default(),
         )
         .expect("contains filters should not force search metadata");
     }
@@ -1574,6 +1620,9 @@ mod tests {
             required: false,
             mode: FilterMode::Contains,
             description: String::new(),
+            bindable: false,
+            wire_type: crate::WireType::String,
+            max_bindings: None,
         }];
 
         validate_http_table(
@@ -1586,6 +1635,8 @@ mod tests {
             &PaginationSpec::default(),
             Some(&search_limits),
             &detail_hints,
+            false,
+            &crate::DependentJoinTableConfig::default(),
         )
         .expect("search metadata should validate");
     }
@@ -1684,6 +1735,8 @@ mod tests {
             &PaginationSpec::default(),
             None,
             &detail_hints,
+            false,
+            &crate::DependentJoinTableConfig::default(),
         )
         .expect_err("unknown detail hint result column should fail");
 
@@ -1747,6 +1800,8 @@ mod tests {
                 &PaginationSpec::default(),
                 None,
                 &[detail_hint],
+                false,
+                &crate::DependentJoinTableConfig::default(),
             )
             .expect_err("empty detail hint fields should fail");
 
@@ -1853,6 +1908,100 @@ mod tests {
             .expect_err("function columns should not reference table filters");
 
         assert!(error.to_string().contains("references unknown filter 'q'"));
+    }
+
+    #[test]
+    fn bindable_on_search_index_rejects() {
+        let error = validate_http_table(
+            "demo",
+            "messages",
+            &[bindable_filter("id")],
+            &[test_column()],
+            &base_request(),
+            &[],
+            &PaginationSpec::default(),
+            None,
+            &[],
+            true,
+            &crate::DependentJoinTableConfig::default(),
+        )
+        .expect_err("search-index table should reject bindable filters");
+
+        assert!(error.to_string().contains(
+            "cannot be bindable because table 'demo.messages' is declared as search_index"
+        ));
+    }
+
+    #[test]
+    fn bindable_non_equality_modes_reject() {
+        for mode in [FilterMode::Search, FilterMode::Contains] {
+            let mut filter = bindable_filter("q");
+            filter.mode = mode;
+
+            let error = validate_test_http_table(&[filter], &base_request(), &[])
+                .expect_err("non-equality bindable mode should fail");
+
+            assert!(
+                error
+                    .to_string()
+                    .contains("filter 'q': bindable=true requires mode=equality in V1")
+            );
+        }
+    }
+
+    #[test]
+    fn zero_dependent_join_caps_reject() {
+        let mut filter = bindable_filter("id");
+        filter.max_bindings = Some(0);
+        let error = validate_test_http_table(&[filter], &base_request(), &[])
+            .expect_err("zero filter cap should fail");
+        assert!(error.to_string().contains("filter 'id'.max_bindings = 0"));
+
+        let cases = [
+            (
+                crate::DependentJoinTableConfig {
+                    max_bindings: Some(0),
+                    ..crate::DependentJoinTableConfig::default()
+                },
+                "demo.messages dependent_join.max_bindings = 0",
+            ),
+            (
+                crate::DependentJoinTableConfig {
+                    max_resolver_rows: Some(0),
+                    ..crate::DependentJoinTableConfig::default()
+                },
+                "demo.messages dependent_join.max_resolver_rows = 0",
+            ),
+            (
+                crate::DependentJoinTableConfig {
+                    max_rows_per_binding: Some(0),
+                    ..crate::DependentJoinTableConfig::default()
+                },
+                "demo.messages dependent_join.max_rows_per_binding = 0",
+            ),
+        ];
+
+        for (config, expected) in cases {
+            let error = validate_http_table(
+                "demo",
+                "messages",
+                &test_filters(),
+                &[test_column()],
+                &base_request(),
+                &[],
+                &PaginationSpec::default(),
+                None,
+                &[],
+                false,
+                &config,
+            )
+            .expect_err("zero table cap should fail");
+
+            assert!(
+                error.to_string().contains(expected),
+                "unexpected error: {error}"
+            );
+        }
     }
 
     #[test]

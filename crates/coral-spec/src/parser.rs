@@ -196,6 +196,7 @@ fn parse_source_backend(value: &Value) -> Result<SourceBackend> {
 #[cfg(test)]
 mod tests {
     use super::parse_source_manifest_yaml;
+    use crate::schema::validate_manifest_schema;
 
     #[test]
     fn parse_source_manifest_preserves_test_query_order() {
@@ -222,6 +223,60 @@ tables:
         .expect("manifest should parse");
 
         assert_eq!(manifest.test_queries(), &["SELECT 1", "SELECT 2"]);
+    }
+
+    #[test]
+    fn bindable_on_non_http_accepts_at_spec_layer() {
+        let manifest: serde_json::Value = serde_yaml::from_str(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: file
+tables:
+  - name: messages
+    description: Demo messages
+    format: jsonl
+    filters:
+      - name: id
+        bindable: true
+    source:
+      location: file:///tmp/demo/
+    columns:
+      - name: id
+        type: Utf8
+",
+        )
+        .expect("manifest fixture should parse as YAML");
+
+        validate_manifest_schema(&manifest)
+            .expect("schema layer should accept bindable filters on non-http sources");
+    }
+
+    #[test]
+    fn http_rate_limit_max_concurrency_zero_rejects() {
+        let error = parse_source_manifest_yaml(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+base_url: https://example.com
+rate_limit:
+  max_concurrency: 0
+tables:
+  - name: messages
+    description: Demo messages
+    request:
+      path: /messages
+    columns:
+      - name: id
+        type: Utf8
+",
+        )
+        .expect_err("zero concurrency should fail schema validation");
+
+        assert!(error.to_string().contains("max_concurrency"));
     }
 
     #[test]

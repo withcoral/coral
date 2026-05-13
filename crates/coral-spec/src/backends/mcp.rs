@@ -289,6 +289,9 @@ impl McpTableFilterSpec {
             required: self.required,
             mode: self.mode,
             description: self.description.clone(),
+            bindable: false,
+            wire_type: crate::WireType::default(),
+            max_bindings: None,
         }
     }
 

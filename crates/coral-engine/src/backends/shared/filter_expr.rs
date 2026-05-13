@@ -288,6 +288,9 @@ mod tests {
             required,
             mode,
             description: String::new(),
+            bindable: false,
+            wire_type: coral_spec::WireType::String,
+            max_bindings: None,
         }
     }
 

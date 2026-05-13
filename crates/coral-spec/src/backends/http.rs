@@ -85,6 +85,8 @@ pub struct RateLimitSpec {
     pub remaining_header: Option<String>,
     #[serde(default)]
     pub reset_header: Option<String>,
+    #[serde(default)]
+    pub max_concurrency: Option<usize>,
 }
 
 /// Validated top-level manifest for an HTTP-backed source.
@@ -152,6 +154,22 @@ struct RawHttpTableSpec {
     pagination: PaginationSpec,
     #[serde(default)]
     columns: Vec<ColumnSpec>,
+    #[serde(default)]
+    search_index: bool,
+    #[serde(default)]
+    dependent_join: DependentJoinTableConfig,
+}
+
+/// Table-local caps for dependent predicate pushdown.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DependentJoinTableConfig {
+    #[serde(default)]
+    pub max_bindings: Option<usize>,
+    #[serde(default)]
+    pub max_resolver_rows: Option<usize>,
+    #[serde(default)]
+    pub max_rows_per_binding: Option<usize>,
 }
 
 /// One validated HTTP table declaration.
@@ -162,6 +180,8 @@ pub struct HttpTableSpec {
     pub requests: Vec<RequestRouteSpec>,
     pub response: ResponseSpec,
     pub pagination: PaginationSpec,
+    pub search_index: bool,
+    pub dependent_join: DependentJoinTableConfig,
 }
 
 impl HttpTableSpec {
@@ -229,6 +249,15 @@ impl HttpSourceManifest {
     }
 }
 
+fn validate_rate_limit(schema: &str, spec: &RateLimitSpec) -> Result<()> {
+    if spec.max_concurrency == Some(0) {
+        return Err(ManifestError::validation(format!(
+            "source '{schema}' rate_limit.max_concurrency = 0"
+        )));
+    }
+    Ok(())
+}
+
 impl RawHttpTableSpec {
     fn into_validated(self, schema: &str) -> Result<HttpTableSpec> {
         validate_http_table(
@@ -241,6 +270,8 @@ impl RawHttpTableSpec {
             &self.pagination,
             self.search_limits.as_ref(),
             &self.detail_hints,
+            self.search_index,
+            &self.dependent_join,
         )?;
 
         Ok(HttpTableSpec {
@@ -258,6 +289,8 @@ impl RawHttpTableSpec {
             requests: self.requests,
             response: self.response,
             pagination: self.pagination,
+            search_index: self.search_index,
+            dependent_join: self.dependent_join,
         })
     }
 }
@@ -287,6 +320,7 @@ impl HttpSourceManifest {
                 "source '{name}' must define at least one table or function"
             )));
         }
+        validate_rate_limit(&name, &rate_limit)?;
         validate_test_queries(&name, &test_queries)?;
         validate_table_names(&name, tables.iter().map(|table| table.name.as_str()))?;
         let common =
@@ -386,5 +420,7 @@ pub(crate) fn test_http_table_spec(
         requests: vec![],
         response: ResponseSpec::default(),
         pagination: PaginationSpec::default(),
+        search_index: false,
+        dependent_join: DependentJoinTableConfig::default(),
     }
 }
