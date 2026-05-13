@@ -170,7 +170,7 @@ impl QueryRuntimeAdapter {
         Ok(())
     }
 
-    pub(crate) async fn plan_sql(&self, sql: &str) -> Result<QueryPlan, CoreError> {
+    pub(crate) async fn explain_sql(&self, sql: &str) -> Result<QueryPlan, CoreError> {
         let df = self.sql_dataframe(sql).await?;
         let unoptimized_logical_plan = df.logical_plan().display_indent_schema().to_string();
         let (session_state, logical_plan) = df.into_parts();

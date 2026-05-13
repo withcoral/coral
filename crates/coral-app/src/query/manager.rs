@@ -97,13 +97,13 @@ impl QueryManager {
         .await
     }
 
-    pub(crate) async fn plan_sql(
+    pub(crate) async fn explain_sql(
         &self,
         workspace_name: &WorkspaceName,
         sql: &str,
     ) -> Result<QueryPlan, QueryManagerError> {
         run_query_operation(
-            QueryOperation::PlanSql,
+            QueryOperation::ExplainSql,
             workspace_name,
             sql,
             async {
@@ -111,7 +111,7 @@ impl QueryManager {
                     .load_query_sources(workspace_name)
                     .map_err(QueryManagerError::App)?;
                 let runtime = self.runtime_config(&sources);
-                CoralQuery::plan_sql(&sources, runtime, sql)
+                CoralQuery::explain_sql(&sources, runtime, sql)
                     .await
                     .map_err(QueryManagerError::Core)
             },
@@ -221,14 +221,14 @@ impl QueryManager {
 #[derive(Clone, Copy)]
 enum QueryOperation {
     ExecuteSql,
-    PlanSql,
+    ExplainSql,
 }
 
 impl QueryOperation {
     const fn as_str(self) -> &'static str {
         match self {
             Self::ExecuteSql => "execute_sql",
-            Self::PlanSql => "plan_sql",
+            Self::ExplainSql => "explain_sql",
         }
     }
 }

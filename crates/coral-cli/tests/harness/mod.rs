@@ -16,11 +16,12 @@ use coral_api::v1::source_service_server::{SourceService, SourceServiceServer};
 use coral_api::v1::{
     Column, CreateBundledSourceRequest, CreateBundledSourceResponse, DeleteSourceRequest,
     DeleteSourceResponse, DiscoverSourcesRequest, DiscoverSourcesResponse, ExecuteSqlRequest,
-    ExecuteSqlResponse, GetSourceInfoRequest, GetSourceInfoResponse, GetSourceRequest,
-    GetSourceResponse, ImportSourceRequest, ImportSourceResponse, ListSourcesRequest,
-    ListSourcesResponse, ListTablesRequest, ListTablesResponse, PaginationResponse, PlanSqlRequest,
-    PlanSqlResponse, QueryPlan, Source, SourceInfo, SourceInputKind, SourceInputSpec, SourceOrigin,
-    Table, TableSummary, ValidateSourceRequest, ValidateSourceResponse, Workspace,
+    ExecuteSqlResponse, ExplainSqlRequest, ExplainSqlResponse, GetSourceInfoRequest,
+    GetSourceInfoResponse, GetSourceRequest, GetSourceResponse, ImportSourceRequest,
+    ImportSourceResponse, ListSourcesRequest, ListSourcesResponse, ListTablesRequest,
+    ListTablesResponse, PaginationResponse, QueryPlan, Source, SourceInfo, SourceInputKind,
+    SourceInputSpec, SourceOrigin, Table, TableSummary, ValidateSourceRequest,
+    ValidateSourceResponse, Workspace,
 };
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
@@ -509,11 +510,11 @@ impl QueryService for MockQueryService {
         Ok(Response::new(response))
     }
 
-    async fn plan_sql(
+    async fn explain_sql(
         &self,
-        _request: Request<PlanSqlRequest>,
-    ) -> Result<Response<PlanSqlResponse>, Status> {
-        Ok(Response::new(PlanSqlResponse {
+        _request: Request<ExplainSqlRequest>,
+    ) -> Result<Response<ExplainSqlResponse>, Status> {
+        Ok(Response::new(ExplainSqlResponse {
             plan: Some(QueryPlan {
                 unoptimized_logical_plan: "LogicalPlan".to_string(),
                 optimized_logical_plan: "OptimizedLogicalPlan".to_string(),

@@ -21,9 +21,9 @@ message ExecuteSqlResponse {
   int64 row_count = 2;
 }
 
-// Produces query-engine plan renderings for one SQL statement without executing
-// it.
-message PlanSqlRequest {
+// Explains one SQL statement by producing query-engine plan renderings without
+// executing it.
+message ExplainSqlRequest {
   // Workspace that scopes the queryable source set.
   Workspace workspace = 1;
   // One read-only SQL statement.
@@ -40,8 +40,8 @@ message QueryPlan {
   string physical_plan = 3;
 }
 
-// Query planning response.
-message PlanSqlResponse {
+// SQL explanation response.
+message ExplainSqlResponse {
   // Generated query plan.
   QueryPlan plan = 1;
 }
@@ -98,6 +98,6 @@ service QueryService {
   rpc ListTables(ListTablesRequest) returns (ListTablesResponse);
   // Executes one read-only SQL statement and returns the full result set.
   rpc ExecuteSql(ExecuteSqlRequest) returns (ExecuteSqlResponse);
-  // Plans one read-only SQL statement without executing it.
-  rpc PlanSql(PlanSqlRequest) returns (PlanSqlResponse);
+  // Explains one read-only SQL statement without executing it.
+  rpc ExplainSql(ExplainSqlRequest) returns (ExplainSqlResponse);
 }

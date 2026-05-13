@@ -117,16 +117,16 @@ impl CoralQuery {
             .await
     }
 
-    /// Produces logical and physical plan renderings for one `SQL` statement.
+    /// Explains one `SQL` statement with logical and physical plan renderings.
     ///
-    /// This plans against the provided source set and current runtime state. It
-    /// does not execute the SQL statement.
+    /// The explanation is built against the provided source set and current
+    /// runtime state. It does not execute the SQL statement.
     ///
     /// # Errors
     ///
     /// Returns [`CoreError`] if the SQL is empty, if source compilation fails,
-    /// or if the query engine cannot plan the statement.
-    pub async fn plan_sql(
+    /// or if the query engine cannot explain the statement.
+    pub async fn explain_sql(
         sources: &[QuerySource],
         runtime: QueryRuntimeConfig,
         sql: &str,
@@ -137,7 +137,7 @@ impl CoralQuery {
 
         runtime::query::build_runtime(sources, runtime)
             .await?
-            .plan_sql(sql)
+            .explain_sql(sql)
             .await
     }
 

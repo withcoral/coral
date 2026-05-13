@@ -69,13 +69,14 @@ async fn quoted_fully_qualified_table_reference_reports_sql_reference_hint() {
 }
 
 #[tokio::test]
-async fn plan_sql_quoted_fully_qualified_table_reference_reports_sql_reference_hint() {
+async fn explain_sql_quoted_fully_qualified_table_reference_reports_sql_reference_hint() {
     let temp = TempDir::new().expect("temp dir");
     let source = github_pulls_source(temp.path());
 
-    let error = CoralQuery::plan_sql(&[source], test_runtime(), "SELECT * FROM \"github.pulls\"")
-        .await
-        .expect_err("whole-reference quoted table should fail during planning");
+    let error =
+        CoralQuery::explain_sql(&[source], test_runtime(), "SELECT * FROM \"github.pulls\"")
+            .await
+            .expect_err("whole-reference quoted table should fail during explanation");
 
     assert_quoted_fully_qualified_table_reference_hint(error);
 }
@@ -109,18 +110,18 @@ fn assert_quoted_fully_qualified_table_reference_hint(error: CoreError) {
 }
 
 #[tokio::test]
-async fn plan_sql_returns_logical_and_physical_plans() {
+async fn explain_sql_returns_logical_and_physical_plans() {
     let temp = TempDir::new().expect("temp dir");
     write_jsonl_file(temp.path(), "users.jsonl", &users_rows());
     let source = build_source(jsonl_manifest("jsonl_plan", temp.path(), "**/*.jsonl"));
 
-    let plan = CoralQuery::plan_sql(
+    let plan = CoralQuery::explain_sql(
         &[source],
         test_runtime(),
         "SELECT id, name FROM jsonl_plan.users WHERE id > 1 ORDER BY name",
     )
     .await
-    .expect("query should plan");
+    .expect("query should explain");
 
     assert!(plan.unoptimized_logical_plan().contains("jsonl_plan.users"));
     assert!(plan.optimized_logical_plan().contains("jsonl_plan.users"));

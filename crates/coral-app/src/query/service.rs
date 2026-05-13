@@ -5,8 +5,8 @@ use arrow::ipc::writer::StreamWriter;
 use arrow::record_batch::RecordBatch;
 use coral_api::v1::query_service_server::QueryService as QueryServiceApi;
 use coral_api::v1::{
-    ExecuteSqlRequest, ExecuteSqlResponse, ListTablesRequest, ListTablesResponse,
-    PaginationResponse, PlanSqlRequest, PlanSqlResponse, QueryPlan as QueryPlanProto,
+    ExecuteSqlRequest, ExecuteSqlResponse, ExplainSqlRequest, ExplainSqlResponse,
+    ListTablesRequest, ListTablesResponse, PaginationResponse, QueryPlan as QueryPlanProto,
 };
 use tonic::{Request, Response, Status};
 
@@ -125,20 +125,20 @@ impl QueryServiceApi for QueryService {
         .await
     }
 
-    async fn plan_sql(
+    async fn explain_sql(
         &self,
-        request: Request<PlanSqlRequest>,
-    ) -> Result<Response<PlanSqlResponse>, Status> {
+        request: Request<ExplainSqlRequest>,
+    ) -> Result<Response<ExplainSqlResponse>, Status> {
         let span = grpc_span(&request);
         let queries = self.queries.clone();
         instrument_grpc(span, async move {
             let inner = request.into_inner();
             let workspace_name = workspace_name_from_proto(inner.workspace.as_ref())?;
             let plan = queries
-                .plan_sql(&workspace_name, &inner.sql)
+                .explain_sql(&workspace_name, &inner.sql)
                 .await
                 .map_err(query_status)?;
-            Ok(Response::new(PlanSqlResponse {
+            Ok(Response::new(ExplainSqlResponse {
                 plan: Some(query_plan_to_proto(&plan)),
             }))
         })

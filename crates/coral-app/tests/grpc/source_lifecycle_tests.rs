@@ -8,8 +8,8 @@ use std::fs;
 
 use coral_api::v1::{
     CreateBundledSourceRequest, DeleteSourceRequest, DiscoverSourcesRequest, ExecuteSqlRequest,
-    GetSourceInfoRequest, GetSourceRequest, ImportSourceRequest, ListTablesRequest,
-    PaginationRequest, PlanSqlRequest, QueryTestFailure, QueryTestSuccess, SourceOrigin,
+    ExplainSqlRequest, GetSourceInfoRequest, GetSourceRequest, ImportSourceRequest,
+    ListTablesRequest, PaginationRequest, QueryTestFailure, QueryTestSuccess, SourceOrigin,
     SourceSecret, SourceVariable, ValidateSourceRequest, Workspace, query_test_result,
 };
 use coral_client::default_workspace;
@@ -338,7 +338,7 @@ async fn assert_exact_table_filter(harness: &GrpcHarness) {
 }
 
 #[tokio::test]
-async fn plan_sql_returns_logical_and_physical_plans() {
+async fn explain_sql_returns_logical_and_physical_plans() {
     let harness = GrpcHarness::new().await;
     harness
         .import_source(
@@ -350,12 +350,12 @@ async fn plan_sql_returns_logical_and_physical_plans() {
 
     let response = harness
         .query_client()
-        .plan_sql(Request::new(PlanSqlRequest {
+        .explain_sql(Request::new(ExplainSqlRequest {
             workspace: Some(default_workspace()),
             sql: "SELECT text FROM local_messages.messages ORDER BY text".to_string(),
         }))
         .await
-        .expect("plan sql")
+        .expect("explain sql")
         .into_inner();
     let plan = response.plan.expect("query plan");
 
