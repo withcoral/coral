@@ -292,7 +292,6 @@ mod tests {
         assert_eq!(value["total"], 2);
         assert_eq!(value["items"][0]["kind"], "table");
         assert_eq!(value["items"][0]["name"], "github.pulls");
-        assert_eq!(value["items"][0]["table"]["table_name"], "pulls");
         assert_eq!(value["items"][1]["kind"], "table_function");
         assert_eq!(
             value["items"][1]["table_function"]["arguments"][0]["values"],

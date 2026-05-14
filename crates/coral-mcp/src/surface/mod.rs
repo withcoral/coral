@@ -20,13 +20,12 @@ pub(crate) use errors::{
 };
 pub(crate) use resources::{
     format_schema_table_equivalent, guide_resource, guide_resource_content, initial_instructions,
-    list_tables_value, tables_resource, tables_resource_content,
+    tables_resource, tables_resource_content,
 };
 pub(crate) use tools::{
     build_tool_result, describe_table_arguments, describe_table_tool, feedback_tool,
     list_catalog_arguments, list_catalog_tool, list_columns_arguments, list_columns_tool,
-    list_tables_arguments, list_tables_tool, required_string_argument, search_tables_arguments,
-    search_tables_tool, sql_tool,
+    required_string_argument, search_tables_arguments, search_tables_tool, sql_tool,
 };
 
 fn json_object_schema(value: &Value) -> Arc<Map<String, Value>> {

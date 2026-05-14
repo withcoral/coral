@@ -30,10 +30,9 @@ use crate::{
         compile_metadata_regex, describe_table_arguments, describe_table_tool, feedback_tool,
         guide_resource, guide_resource_content, initial_instructions, internal_status,
         list_catalog_arguments, list_catalog_tool, list_columns_arguments, list_columns_tool,
-        list_tables_arguments, list_tables_tool, list_tables_value, page_items, paged_value,
-        required_string_argument, search_tables_arguments, search_tables_tool, sql_tool,
-        status_to_error_data, tables_resource, tables_resource_content, tool_error_from_status,
-        tool_error_result,
+        page_items, paged_value, required_string_argument, search_tables_arguments,
+        search_tables_tool, sql_tool, status_to_error_data, tables_resource,
+        tables_resource_content, tool_error_from_status, tool_error_result,
     },
     telemetry,
 };
@@ -398,22 +397,6 @@ impl CoralMcpServer {
                     self.execute_sql_value(&sql).await,
                 ))
             }
-            "list_tables" => {
-                let arguments = list_tables_arguments(request.arguments.as_ref())?;
-                let result = self
-                    .load_tables(LoadTablesParams {
-                        schema_name: arguments.schema.as_deref(),
-                        table_name: None,
-                        pagination: PaginationRequest {
-                            limit: arguments.limit,
-                            offset: arguments.offset,
-                        },
-                        omit_columns: true,
-                    })
-                    .await
-                    .map(|response| list_tables_value(&response));
-                Ok(ToolCallOutcome::from_value_result("Table listing", result))
-            }
             "list_catalog" => {
                 self.list_catalog_tool_result(request.arguments.as_ref())
                     .await
@@ -546,9 +529,10 @@ fn describe_missing_table_value(schema: &str, table: &str, summaries: &[TableSum
     })];
     if !same_schema_tables.is_empty() {
         suggested_calls.push(serde_json::json!({
-            "tool": "list_tables",
+            "tool": "list_catalog",
             "arguments": {
                 "schema": schema,
+                "kind": "table",
                 "limit": 10,
             }
         }));
@@ -632,7 +616,6 @@ impl ServerHandler for CoralMcpServer {
                 .map_err(|status| status_to_error_data(&status))?;
             let mut tools = vec![
                 sql_tool(&sources, visible_table_count),
-                list_tables_tool(visible_table_count),
                 list_catalog_tool(visible_table_count, visible_function_count),
                 search_tables_tool(visible_table_count),
                 describe_table_tool(),

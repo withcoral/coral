@@ -4,7 +4,7 @@
 
 ## Discovery Workflow
 
-Always inspect queryable tables, source-scoped table functions, and table metadata before writing queries. Call table functions from `FROM` with named arguments, for example `github.search_issues(q => 'repo:withcoral/coral deploy failure')`.
+Always inspect the queryable catalog and table metadata before writing queries. The catalog includes both ordinary tables and source-scoped table functions. Call table functions from `FROM` with named arguments, for example `github.search_issues(q => 'repo:withcoral/coral deploy failure')`.
 
 ```sql
 -- List visible tables, descriptions, and required filters
@@ -63,8 +63,7 @@ WHERE json_get_str(rules, 0, 'clauses', 0, 'values', 0) = 'phoebe-org';
 - Cross-source joins work with standard SQL after source scans complete.
 - Use `LIKE` or `ILIKE` for SQL wildcard matching with `%` and `_`. `SIMILAR TO` uses regex-shaped patterns, so write `.*` instead of `%`, `.` instead of `_`, or escape literal percent/underscore characters as `\%` and `\_`.
 - Regex operators such as `~` and `~*` treat `%` and `_` as ordinary literal characters.
-- `list_catalog` shows queryable tables and source-scoped table functions in pages; pass `schema`, `kind`, `limit`, and `offset` to narrow large catalogs.
-- `list_tables` shows queryable fully qualified tables in pages; pass `schema`, `limit`, and `offset` to narrow large catalogs.
+- `list_catalog` shows queryable tables and source-scoped table functions in one paginated catalog; pass `schema`, `kind`, `limit`, and `offset` to narrow large catalogs.
 - `search_tables` searches table names, descriptions, guides, and required filters with a Rust regex; use it before broad SQL metadata scans when you know part of the table name or required filters.
 - `describe_table` returns one compact table detail with guide text, required filters, and column count; use `coral.columns` when you need full column details.
 - `list_columns` lists columns for one table; pass `pattern`, `required_only`, `limit`, and `offset` to inspect large schemas progressively.

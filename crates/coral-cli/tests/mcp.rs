@@ -236,7 +236,6 @@ async fn mcp_stdio_lists_tools_and_resources() -> Result<(), Box<dyn std::error:
             .collect::<Vec<_>>(),
         vec![
             "sql",
-            "list_tables",
             "list_catalog",
             "search_tables",
             "describe_table",
@@ -254,18 +253,11 @@ async fn mcp_stdio_lists_tools_and_resources() -> Result<(), Box<dyn std::error:
         tools[1]
             .description
             .as_deref()
-            .expect("list_tables description")
-            .contains("3 table(s) are currently visible")
-    );
-    assert!(
-        tools[2]
-            .description
-            .as_deref()
             .expect("list_catalog description")
             .contains("3 table(s) and 0 table function(s) are currently visible")
     );
     assert!(
-        tools[3]
+        tools[2]
             .description
             .as_deref()
             .expect("search_tables description")
@@ -315,7 +307,6 @@ async fn mcp_stdio_enable_feedback_lists_feedback_tool() -> Result<(), Box<dyn s
             .collect::<Vec<_>>(),
         vec![
             "sql",
-            "list_tables",
             "list_catalog",
             "search_tables",
             "describe_table",
@@ -330,12 +321,11 @@ async fn mcp_stdio_enable_feedback_lists_feedback_tool() -> Result<(), Box<dyn s
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn mcp_stdio_sql_and_list_tables_return_structured_content()
+async fn mcp_stdio_sql_and_catalog_tools_return_structured_content()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = MockServer::start().await;
     let client = start_mcp_client(&server).await?;
 
-    assert_list_tables_tool(&client, &server).await?;
     assert_list_catalog_tool(&client, &server).await?;
     assert_search_tables_tool(&client, &server).await?;
     assert_describe_table_tool(&client, &server).await?;
@@ -344,44 +334,6 @@ async fn mcp_stdio_sql_and_list_tables_return_structured_content()
 
     client.cancel().await?;
     server.shutdown().await;
-    Ok(())
-}
-
-async fn assert_list_tables_tool(
-    client: &RunningService<RoleClient, ()>,
-    server: &MockServer,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let structured_tables =
-        structured_tool_content(client, CallToolRequestParams::new("list_tables")).await?;
-    assert_eq!(structured_tables["total"], 3);
-    assert_eq!(structured_tables["limit"], 50);
-    assert_eq!(structured_tables["offset"], 0);
-    assert_eq!(structured_tables["has_more"], false);
-    assert_eq!(
-        structured_tables["tables"][0]["name"],
-        "local_messages.events"
-    );
-    assert!(structured_tables["tables"][0]["columns"].is_null());
-    let requests = server.list_tables_requests();
-    let request = requests.last().expect("list tables request");
-    assert_eq!(request.schema_name, "");
-    let request_pagination = request.pagination.as_ref().expect("request pagination");
-    assert_eq!(request_pagination.limit, 50);
-    assert_eq!(request_pagination.offset, 0);
-    assert!(request.omit_columns);
-
-    let paginated = structured_tool_content(
-        client,
-        CallToolRequestParams::new("list_tables").with_arguments(json_object(&json!({
-            "schema": "local_messages",
-            "limit": 2,
-            "offset": 0
-        }))),
-    )
-    .await?;
-    assert_eq!(paginated["total"], 3);
-    assert_eq!(paginated["has_more"], true);
-    assert_eq!(paginated["next_offset"], 2);
     Ok(())
 }
 
@@ -433,25 +385,6 @@ async fn assert_list_catalog_tool(
     assert_eq!(paginated["has_more"], true);
     assert_eq!(paginated["next_offset"], 2);
     assert_eq!(paginated["items"].as_array().expect("items").len(), 2);
-
-    let functions = structured_tool_content(
-        client,
-        CallToolRequestParams::new("list_catalog").with_arguments(json_object(&json!({
-            "kind": "table_function"
-        }))),
-    )
-    .await?;
-    assert_eq!(functions["total"], 0);
-    assert!(functions["items"].as_array().expect("items").is_empty());
-
-    client
-        .call_tool(
-            CallToolRequestParams::new("list_catalog").with_arguments(json_object(&json!({
-                "kind": "function"
-            }))),
-        )
-        .await
-        .expect_err("invalid catalog kind should fail");
     Ok(())
 }
 
@@ -607,12 +540,12 @@ async fn mcp_stdio_tool_errors_do_not_end_the_session() -> Result<(), Box<dyn st
         "Query request is invalid"
     );
 
-    let tables = client
-        .call_tool(CallToolRequestParams::new("list_tables"))
+    let catalog = client
+        .call_tool(CallToolRequestParams::new("list_catalog"))
         .await?;
-    assert_eq!(tables.is_error, Some(false));
+    assert_eq!(catalog.is_error, Some(false));
     assert_eq!(
-        tables.structured_content.expect("structured content")["tables"][0]["name"],
+        catalog.structured_content.expect("structured content")["items"][0]["name"],
         "local_messages.events"
     );
 

@@ -1,11 +1,11 @@
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
-use coral_api::v1::{ListTablesResponse, Source, Table, TableSummary};
+use coral_api::v1::{Source, TableSummary};
 use rmcp::model::{AnnotateAble, RawResource, Resource};
 use serde_json::{Value, json};
 
-static INITIAL_INSTRUCTIONS: &str = "You are connected to Coral. Read `coral://guide` for query patterns, use `list_catalog` to inspect queryable tables and table functions, use `list_tables`, `search_tables`, `describe_table`, and `list_columns` for table-specific discovery, and use `sql` for final queries.";
+static INITIAL_INSTRUCTIONS: &str = "You are connected to Coral. Read `coral://guide` for query patterns, use `list_catalog`, `search_tables`, `describe_table`, and `list_columns` to inspect queryable catalog items and tables, and use `sql` for final queries.";
 static GUIDE_TEMPLATE: &str = include_str!("../guide_template.md");
 
 pub(crate) fn initial_instructions() -> &'static str {
@@ -74,25 +74,6 @@ pub(crate) fn tables_resource_content(
     serde_json::to_string_pretty(&json!({ "tables": queryable_tables(tables) }))
 }
 
-pub(crate) fn list_tables_value(response: &ListTablesResponse) -> Value {
-    let pagination = response.pagination.unwrap_or_default();
-    let table_summaries = response_table_summaries(response);
-    let mut value = json!({
-        "tables": queryable_tables(&table_summaries),
-        "total": pagination.total_count,
-        "limit": pagination.limit,
-        "offset": pagination.offset,
-        "has_more": pagination.has_more,
-    });
-    if pagination.has_more {
-        value
-            .as_object_mut()
-            .expect("list tables value is initialized as a JSON object")
-            .insert("next_offset".to_string(), json!(pagination.next_offset));
-    }
-    value
-}
-
 fn guide_resource_description(sources: &[Source], visible_table_count: usize) -> String {
     format!(
         "Query workflow and schema discovery guidance for {} configured source(s) and {} visible table(s).",
@@ -126,25 +107,6 @@ fn queryable_tables(tables: &[TableSummary]) -> Vec<Value> {
             .cmp(&right.get("name").and_then(Value::as_str))
     });
     summaries
-}
-
-fn response_table_summaries(response: &ListTablesResponse) -> Vec<TableSummary> {
-    if response.table_summaries.is_empty() {
-        response.tables.iter().map(table_to_summary).collect()
-    } else {
-        response.table_summaries.clone()
-    }
-}
-
-fn table_to_summary(table: &Table) -> TableSummary {
-    TableSummary {
-        workspace: table.workspace.clone(),
-        schema_name: table.schema_name.clone(),
-        name: table.name.clone(),
-        description: table.description.clone(),
-        required_filters: table.required_filters.clone(),
-        guide: table.guide.clone(),
-    }
 }
 
 fn first_visible_table(tables: &[TableSummary]) -> Option<(&str, &str)> {
@@ -190,10 +152,10 @@ mod tests {
         reason = "JSON shape assertions intentionally fail loudly in tests"
     )]
 
-    use coral_api::v1::{ListTablesResponse, PaginationResponse, Source, TableSummary, Workspace};
+    use coral_api::v1::{Source, TableSummary, Workspace};
     use serde_json::json;
 
-    use super::{format_schema_table_equivalent, guide_resource_content, list_tables_value};
+    use super::{format_schema_table_equivalent, guide_resource_content, tables_resource_content};
 
     fn source(name: &str) -> Source {
         Source {
@@ -240,24 +202,15 @@ mod tests {
         assert!(content.contains("- coral: System metadata schema."));
         assert!(content.contains("Visible source schemas:"));
         assert!(content.contains("- slack"));
-        assert!(
-            content.contains("Use each catalog item's `sql_reference` from `list_catalog`")
-        );
+        assert!(content.contains("Use each catalog item's `sql_reference` from `list_catalog`"));
     }
 
     #[test]
-    fn list_tables_value_includes_compatible_name_and_sql_reference() {
-        let value = list_tables_value(&ListTablesResponse {
-            tables: Vec::new(),
-            pagination: Some(PaginationResponse {
-                total_count: 1,
-                limit: 50,
-                offset: 0,
-                has_more: false,
-                next_offset: 0,
-            }),
-            table_summaries: vec![table("local_messages", "events")],
-        });
+    fn tables_resource_content_includes_compatible_name_and_sql_reference() {
+        let content = tables_resource_content(&[table("local_messages", "events")])
+            .expect("serialize tables resource");
+        let value: serde_json::Value =
+            serde_json::from_str(&content).expect("parse tables resource");
 
         assert_eq!(value["tables"][0]["name"], "local_messages.events");
         assert_eq!(value["tables"][0]["sql_reference"], "local_messages.events");
@@ -273,10 +226,6 @@ mod tests {
                 "required_filters": [],
             })
         );
-        assert_eq!(value["total"], 1);
-        assert_eq!(value["limit"], 50);
-        assert_eq!(value["offset"], 0);
-        assert_eq!(value["has_more"], false);
     }
 
     #[test]
