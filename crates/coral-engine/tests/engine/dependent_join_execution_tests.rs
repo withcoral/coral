@@ -325,7 +325,7 @@ async fn single_fetch_too_many_rows_returns_cap_error() {
 }
 
 #[tokio::test]
-async fn too_many_resolver_rows_returns_cap_error() {
+async fn too_many_resolver_rows_retries_without_dependent_pushdown() {
     let temp = TempDir::new().expect("temp dir");
     write_jsonl_file(
         temp.path(),
@@ -337,10 +337,27 @@ async fn too_many_resolver_rows_returns_cap_error() {
     );
 
     let server = MockServer::start().await;
-    let error = CoralQuery::execute_sql(
+    Mock::given(method("GET"))
+        .and(path("/pulls"))
+        .and(query_param_is_missing("owner"))
+        .and(query_param_is_missing("repo"))
+        .and(query_param_is_missing("number"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{
+                "owner": "withcoral",
+                "repo": "coral",
+                "number": 123,
+                "state": "open"
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let execution = CoralQuery::execute_sql(
         &[
             build_source(issues_manifest(temp.path())),
-            build_source(github_manifest_with_dependent_join(
+            build_source(github_broad_manifest_with_dependent_join(
                 &server.uri(),
                 Some(json!({ "max_resolver_rows": 1 })),
             )),
@@ -349,13 +366,15 @@ async fn too_many_resolver_rows_returns_cap_error() {
         dependent_join_sql(),
     )
     .await
-    .expect_err("query should fail when resolver row buffering cap is exceeded");
+    .expect("resolver-row overflow should retry without dependent pushdown");
 
-    assert_error_contains(
-        &error,
-        "dependent join resolver for 'github.pull_requests' produced 2 rows, which exceeds max_resolver_rows=1",
+    assert_eq!(
+        execution_to_rows(&execution),
+        vec![
+            json!({ "issue_title": "Duplicate", "pr_state": "open" }),
+            json!({ "issue_title": "First", "pr_state": "open" }),
+        ]
     );
-    assert_eq!(error.status_code(), StatusCode::FailedPrecondition);
 }
 
 #[tokio::test]
@@ -1174,6 +1193,13 @@ fn github_manifest_with_filters(
 }
 
 fn github_broad_manifest(base_url: &str) -> Value {
+    github_broad_manifest_with_dependent_join(base_url, None)
+}
+
+fn github_broad_manifest_with_dependent_join(
+    base_url: &str,
+    dependent_join: Option<Value>,
+) -> Value {
     json!({
         "name": "github",
         "version": "0.1.0",
@@ -1183,6 +1209,7 @@ fn github_broad_manifest(base_url: &str) -> Value {
         "tables": [{
             "name": "pull_requests",
             "description": "Pull requests",
+            "dependent_join": dependent_join.unwrap_or_else(|| json!({})),
             "filters": [
                 { "name": "owner", "bindable": true },
                 { "name": "repo", "bindable": true },

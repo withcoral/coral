@@ -3,6 +3,14 @@ use thiserror::Error;
 
 use crate::CoreError;
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ResolverRowsExceeded<'a> {
+    pub(crate) source_schema: &'a str,
+    pub(crate) table: &'a str,
+    pub(crate) observed: usize,
+    pub(crate) cap: usize,
+}
+
 #[derive(Debug, Error)]
 pub(crate) enum DependentJoinError {
     #[error(
@@ -45,5 +53,26 @@ impl DependentJoinError {
 
     pub(crate) fn to_core_error(&self) -> CoreError {
         CoreError::FailedPrecondition(self.to_string())
+    }
+}
+
+pub(crate) fn resolver_rows_exceeded(error: &DataFusionError) -> Option<ResolverRowsExceeded<'_>> {
+    let DataFusionError::External(inner) = error.find_root() else {
+        return None;
+    };
+    let error = inner.downcast_ref::<DependentJoinError>()?;
+    match error {
+        DependentJoinError::ResolverRows {
+            source_schema,
+            table,
+            observed,
+            cap,
+        } => Some(ResolverRowsExceeded {
+            source_schema,
+            table,
+            observed: *observed,
+            cap: *cap,
+        }),
+        DependentJoinError::Cardinality { .. } | DependentJoinError::RowsPerBinding { .. } => None,
     }
 }
