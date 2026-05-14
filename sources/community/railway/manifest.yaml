@@ -1,0 +1,1009 @@
+name: railway
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query projects, services, deployments, environments, variables, domains,
+  and volumes from Railway's GraphQL API.
+inputs:
+  RAILWAY_API_TOKEN:
+    kind: secret
+    hint: |
+      Create an account-level API token at
+      https://railway.com/account/tokens.
+      Account tokens provide access to all projects across all workspaces.
+      See [Railway API docs](https://docs.railway.com/integrations/api).
+base_url: https://backboard.railway.com/graphql/v2
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "Bearer {{input.RAILWAY_API_TOKEN}}"
+test_queries:
+  - SELECT * FROM railway.projects LIMIT 1
+tables:
+  # ─────────────────────────────────────────────────────────────
+  # projects – list all projects visible to the token
+  # ─────────────────────────────────────────────────────────────
+  - name: projects
+    description: Projects accessible by the authenticated token
+    guide: |
+      Start here to discover project IDs. Use `id` to scope queries
+      on services, deployments, environments, and variables tables.
+    request:
+      method: POST
+      path: /
+      query: []
+      body:
+        - path:
+            - query
+          from: literal
+          value: |
+            query Projects($first: Int!, $after: String) {
+              projects(first: $first, after: $after) {
+                edges {
+                  node {
+                    id
+                    name
+                    description
+                    createdAt
+                    updatedAt
+                    isPublic
+                    prDeploys
+                    workspaceId
+                  }
+                }
+                pageInfo {
+                  hasNextPage
+                  endCursor
+                }
+              }
+            }
+        - path:
+            - variables
+            - first
+          from: literal
+          value: 50
+    response:
+      rows_path:
+        - data
+        - projects
+        - edges
+    pagination:
+      mode: cursor_body
+      cursor_body_path:
+        - variables
+        - after
+      response_cursor_path:
+        - data
+        - projects
+        - pageInfo
+        - endCursor
+      page_size:
+        default: 50
+        max: 100
+        body_path:
+          - variables
+          - first
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Project ID
+        expr:
+          kind: path
+          path:
+            - node
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Project name
+        expr:
+          kind: path
+          path:
+            - node
+            - name
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Project description
+        expr:
+          kind: path
+          path:
+            - node
+            - description
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Creation timestamp (ISO 8601)
+        expr:
+          kind: path
+          path:
+            - node
+            - createdAt
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: Last update timestamp (ISO 8601)
+        expr:
+          kind: path
+          path:
+            - node
+            - updatedAt
+      - name: is_public
+        type: Boolean
+        nullable: true
+        description: Whether the project is publicly visible
+        expr:
+          kind: path
+          path:
+            - node
+            - isPublic
+      - name: pr_deploys
+        type: Boolean
+        nullable: true
+        description: Whether PR deploys are enabled
+        expr:
+          kind: path
+          path:
+            - node
+            - prDeploys
+      - name: workspace_id
+        type: Utf8
+        nullable: true
+        description: ID of the workspace owning the project
+        expr:
+          kind: path
+          path:
+            - node
+            - workspaceId
+
+  # ─────────────────────────────────────────────────────────────
+  # services – services within a project
+  # ─────────────────────────────────────────────────────────────
+  - name: services
+    description: Services within a Railway project
+    guide: |
+      Lists services for a specific project. Pass `project_id` as a
+      required filter. Join the `id` column to deployments or domains
+      tables for deeper inspection.
+    filters:
+      - name: project_id
+        required: true
+    request:
+      method: POST
+      path: /
+      query: []
+      body:
+        - path:
+            - query
+          from: literal
+          value: |
+            query Services($projectId: String!, $first: Int!, $after: String) {
+              project(id: $projectId) {
+                services(first: $first, after: $after) {
+                  edges {
+                    node {
+                      id
+                      name
+                      icon
+                      createdAt
+                      updatedAt
+                    }
+                  }
+                  pageInfo {
+                    hasNextPage
+                    endCursor
+                  }
+                }
+              }
+            }
+        - path:
+            - variables
+            - projectId
+          from: filter
+          key: project_id
+        - path:
+            - variables
+            - first
+          from: literal
+          value: 50
+    response:
+      rows_path:
+        - data
+        - project
+        - services
+        - edges
+    pagination:
+      mode: cursor_body
+      cursor_body_path:
+        - variables
+        - after
+      response_cursor_path:
+        - data
+        - project
+        - services
+        - pageInfo
+        - endCursor
+      page_size:
+        default: 50
+        max: 100
+        body_path:
+          - variables
+          - first
+    columns:
+      - name: project_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Project ID filter
+        expr:
+          kind: from_filter
+          key: project_id
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Service ID
+        expr:
+          kind: path
+          path:
+            - node
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Service name
+        expr:
+          kind: path
+          path:
+            - node
+            - name
+      - name: icon
+        type: Utf8
+        nullable: true
+        description: Service icon identifier
+        expr:
+          kind: path
+          path:
+            - node
+            - icon
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Creation timestamp (ISO 8601)
+        expr:
+          kind: path
+          path:
+            - node
+            - createdAt
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: Last update timestamp (ISO 8601)
+        expr:
+          kind: path
+          path:
+            - node
+            - updatedAt
+
+  # ─────────────────────────────────────────────────────────────
+  # environments – environments within a project
+  # ─────────────────────────────────────────────────────────────
+  - name: environments
+    description: Environments within a Railway project
+    guide: |
+      Lists environments for a specific project. Pass `project_id`
+      as a required filter. The `id` column can be used to scope
+      deployments and variables to a specific environment.
+    filters:
+      - name: project_id
+        required: true
+    request:
+      method: POST
+      path: /
+      query: []
+      body:
+        - path:
+            - query
+          from: literal
+          value: |
+            query Environments($projectId: String!, $first: Int!, $after: String) {
+              project(id: $projectId) {
+                environments(first: $first, after: $after) {
+                  edges {
+                    node {
+                      id
+                      name
+                      isEphemeral
+                      createdAt
+                      updatedAt
+                    }
+                  }
+                  pageInfo {
+                    hasNextPage
+                    endCursor
+                  }
+                }
+              }
+            }
+        - path:
+            - variables
+            - projectId
+          from: filter
+          key: project_id
+        - path:
+            - variables
+            - first
+          from: literal
+          value: 50
+    response:
+      rows_path:
+        - data
+        - project
+        - environments
+        - edges
+    pagination:
+      mode: cursor_body
+      cursor_body_path:
+        - variables
+        - after
+      response_cursor_path:
+        - data
+        - project
+        - environments
+        - pageInfo
+        - endCursor
+      page_size:
+        default: 50
+        max: 100
+        body_path:
+          - variables
+          - first
+    columns:
+      - name: project_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Project ID filter
+        expr:
+          kind: from_filter
+          key: project_id
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Environment ID
+        expr:
+          kind: path
+          path:
+            - node
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Environment name (e.g. production, staging)
+        expr:
+          kind: path
+          path:
+            - node
+            - name
+      - name: is_ephemeral
+        type: Boolean
+        nullable: true
+        description: Whether the environment is ephemeral (PR deploy)
+        expr:
+          kind: path
+          path:
+            - node
+            - isEphemeral
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Creation timestamp (ISO 8601)
+        expr:
+          kind: path
+          path:
+            - node
+            - createdAt
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: Last update timestamp (ISO 8601)
+        expr:
+          kind: path
+          path:
+            - node
+            - updatedAt
+
+  # ─────────────────────────────────────────────────────────────
+  # deployments – deployments for a project
+  # ─────────────────────────────────────────────────────────────
+  - name: deployments
+    description: Deployments for a Railway project
+    guide: |
+      Lists deployments scoped to a specific project. Use the `status`
+      column to find active, failed, or building deployments.
+    filters:
+      - name: project_id
+        required: true
+    request:
+      method: POST
+      path: /
+      query: []
+      body:
+        - path:
+            - query
+          from: literal
+          value: |
+            query Deployments($projectId: String!, $first: Int!, $after: String) {
+              deployments(
+                input: {projectId: $projectId}
+                first: $first
+                after: $after
+              ) {
+                edges {
+                  node {
+                    id
+                    status
+                    createdAt
+                    updatedAt
+                    environmentId
+                    serviceId
+                    staticUrl
+                    url
+                    canRollback
+                  }
+                }
+                pageInfo {
+                  hasNextPage
+                  endCursor
+                }
+              }
+            }
+        - path:
+            - variables
+            - projectId
+          from: filter
+          key: project_id
+        - path:
+            - variables
+            - first
+          from: literal
+          value: 50
+    response:
+      rows_path:
+        - data
+        - deployments
+        - edges
+    pagination:
+      mode: cursor_body
+      cursor_body_path:
+        - variables
+        - after
+      response_cursor_path:
+        - data
+        - deployments
+        - pageInfo
+        - endCursor
+      page_size:
+        default: 50
+        max: 100
+        body_path:
+          - variables
+          - first
+    columns:
+      - name: project_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Project ID filter
+        expr:
+          kind: from_filter
+          key: project_id
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Deployment ID
+        expr:
+          kind: path
+          path:
+            - node
+            - id
+      - name: status
+        type: Utf8
+        nullable: true
+        description: >-
+          Deployment status (BUILDING, DEPLOYING, SUCCESS, FAILED,
+          CRASHED, REMOVED, SLEEPING, SKIPPED, WAITING, QUEUED)
+        expr:
+          kind: path
+          path:
+            - node
+            - status
+      - name: environment_id
+        type: Utf8
+        nullable: true
+        description: ID of the environment
+        expr:
+          kind: path
+          path:
+            - node
+            - environmentId
+      - name: service_id
+        type: Utf8
+        nullable: true
+        description: ID of the service
+        expr:
+          kind: path
+          path:
+            - node
+            - serviceId
+      - name: static_url
+        type: Utf8
+        nullable: true
+        description: Static URL of the deployment
+        expr:
+          kind: path
+          path:
+            - node
+            - staticUrl
+      - name: url
+        type: Utf8
+        nullable: true
+        description: URL of the deployment
+        expr:
+          kind: path
+          path:
+            - node
+            - url
+      - name: can_rollback
+        type: Boolean
+        nullable: true
+        description: Whether the deployment can be rolled back to
+        expr:
+          kind: path
+          path:
+            - node
+            - canRollback
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Creation timestamp (ISO 8601)
+        expr:
+          kind: path
+          path:
+            - node
+            - createdAt
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: Last update timestamp (ISO 8601)
+        expr:
+          kind: path
+          path:
+            - node
+            - updatedAt
+
+  # ─────────────────────────────────────────────────────────────
+  # variables – environment variables for a service
+  # ─────────────────────────────────────────────────────────────
+  - name: variables
+    description: Environment variables for a project, environment, and service
+    guide: |
+      Returns key-value pairs for a given project + environment +
+      service combination. All three filters are required. Values may
+      contain Railway variable references (e.g. `${{shared.DB_URL}}`).
+    filters:
+      - name: project_id
+        required: true
+      - name: environment_id
+        required: true
+      - name: service_id
+        required: true
+    request:
+      method: POST
+      path: /
+      query: []
+      body:
+        - path:
+            - query
+          from: literal
+          value: |
+            query Variables($projectId: String!, $environmentId: String!, $serviceId: String!) {
+              variables(
+                projectId: $projectId
+                environmentId: $environmentId
+                serviceId: $serviceId
+              )
+            }
+        - path:
+            - variables
+            - projectId
+          from: filter
+          key: project_id
+        - path:
+            - variables
+            - environmentId
+          from: filter
+          key: environment_id
+        - path:
+            - variables
+            - serviceId
+          from: filter
+          key: service_id
+    response:
+      rows_path:
+        - data
+        - variables
+      row_strategy: dict_entries
+    pagination:
+      mode: none
+    columns:
+      - name: project_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Project ID filter
+        expr:
+          kind: from_filter
+          key: project_id
+      - name: environment_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Environment ID filter
+        expr:
+          kind: from_filter
+          key: environment_id
+      - name: service_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Service ID filter
+        expr:
+          kind: from_filter
+          key: service_id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Variable name (key)
+        expr:
+          kind: path
+          path:
+            - _key
+      - name: value
+        type: Utf8
+        nullable: true
+        description: Variable value
+        expr:
+          kind: path
+          path:
+            - _value
+
+  # ─────────────────────────────────────────────────────────────
+  # domains – service domains for a service + environment
+  # ─────────────────────────────────────────────────────────────
+  - name: domains
+    description: Railway-generated service domains
+    guide: |
+      Lists Railway-generated domains attached to a specific service
+      in an environment. Requires `project_id`, `service_id`, and
+      `environment_id` filters.
+    filters:
+      - name: project_id
+        required: true
+      - name: service_id
+        required: true
+      - name: environment_id
+        required: true
+    request:
+      method: POST
+      path: /
+      query: []
+      body:
+        - path:
+            - query
+          from: literal
+          value: |
+            query Domains($projectId: String!, $serviceId: String!, $environmentId: String!) {
+              domains(
+                projectId: $projectId
+                serviceId: $serviceId
+                environmentId: $environmentId
+              ) {
+                serviceDomains {
+                  id
+                  domain
+                  createdAt
+                  updatedAt
+                }
+                customDomains {
+                  id
+                  domain
+                  createdAt
+                  updatedAt
+                }
+              }
+            }
+        - path:
+            - variables
+            - projectId
+          from: filter
+          key: project_id
+        - path:
+            - variables
+            - serviceId
+          from: filter
+          key: service_id
+        - path:
+            - variables
+            - environmentId
+          from: filter
+          key: environment_id
+    response:
+      rows_path:
+        - data
+        - domains
+        - serviceDomains
+    pagination:
+      mode: none
+    columns:
+      - name: project_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Project ID filter
+        expr:
+          kind: from_filter
+          key: project_id
+      - name: service_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Service ID filter
+        expr:
+          kind: from_filter
+          key: service_id
+      - name: environment_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Environment ID filter
+        expr:
+          kind: from_filter
+          key: environment_id
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Domain ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: domain
+        type: Utf8
+        nullable: false
+        description: Domain name (e.g. myapp.up.railway.app)
+        expr:
+          kind: path
+          path:
+            - domain
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Creation timestamp (ISO 8601)
+        expr:
+          kind: path
+          path:
+            - createdAt
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: Last update timestamp (ISO 8601)
+        expr:
+          kind: path
+          path:
+            - updatedAt
+
+  # ─────────────────────────────────────────────────────────────
+  # custom_domains – custom domains for a service + environment
+  # ─────────────────────────────────────────────────────────────
+  - name: custom_domains
+    description: Custom domains attached to a service
+    guide: |
+      Lists custom domains (user-configured) attached to a specific
+      service in an environment. Uses the same `domains` GraphQL query
+      but extracts the `customDomains` array.
+    filters:
+      - name: project_id
+        required: true
+      - name: service_id
+        required: true
+      - name: environment_id
+        required: true
+    request:
+      method: POST
+      path: /
+      query: []
+      body:
+        - path:
+            - query
+          from: literal
+          value: |
+            query CustomDomains($projectId: String!, $serviceId: String!, $environmentId: String!) {
+              domains(
+                projectId: $projectId
+                serviceId: $serviceId
+                environmentId: $environmentId
+              ) {
+                customDomains {
+                  id
+                  domain
+                  createdAt
+                  updatedAt
+                }
+              }
+            }
+        - path:
+            - variables
+            - projectId
+          from: filter
+          key: project_id
+        - path:
+            - variables
+            - serviceId
+          from: filter
+          key: service_id
+        - path:
+            - variables
+            - environmentId
+          from: filter
+          key: environment_id
+    response:
+      rows_path:
+        - data
+        - domains
+        - customDomains
+    pagination:
+      mode: none
+    columns:
+      - name: project_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Project ID filter
+        expr:
+          kind: from_filter
+          key: project_id
+      - name: service_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Service ID filter
+        expr:
+          kind: from_filter
+          key: service_id
+      - name: environment_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Environment ID filter
+        expr:
+          kind: from_filter
+          key: environment_id
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Custom domain ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: domain
+        type: Utf8
+        nullable: false
+        description: Custom domain name
+        expr:
+          kind: path
+          path:
+            - domain
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Creation timestamp (ISO 8601)
+        expr:
+          kind: path
+          path:
+            - createdAt
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: Last update timestamp (ISO 8601)
+        expr:
+          kind: path
+          path:
+            - updatedAt
+
+  # ─────────────────────────────────────────────────────────────
+  # volumes – persistent volumes attached to services
+  # ─────────────────────────────────────────────────────────────
+  - name: volumes
+    description: Persistent volumes attached to services in a project
+    guide: |
+      Lists all volumes for a specific project. Use `project_id` as
+      a required filter. Volumes provide persistent storage for services.
+    filters:
+      - name: project_id
+        required: true
+    request:
+      method: POST
+      path: /
+      query: []
+      body:
+        - path:
+            - query
+          from: literal
+          value: |
+            query Volumes($projectId: String!) {
+              project(id: $projectId) {
+                volumes {
+                  edges {
+                    node {
+                      id
+                      name
+                      createdAt
+                    }
+                  }
+                }
+              }
+            }
+        - path:
+            - variables
+            - projectId
+          from: filter
+          key: project_id
+    response:
+      rows_path:
+        - data
+        - project
+        - volumes
+        - edges
+    pagination:
+      mode: none
+    columns:
+      - name: project_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Project ID filter
+        expr:
+          kind: from_filter
+          key: project_id
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Volume ID
+        expr:
+          kind: path
+          path:
+            - node
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Volume name
+        expr:
+          kind: path
+          path:
+            - node
+            - name
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Creation timestamp (ISO 8601)
+        expr:
+          kind: path
+          path:
+            - node
+            - createdAt
