@@ -1,0 +1,2035 @@
+name: clerk
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query users, organizations, memberships, invitations, sessions, domains,
+  permissions, roles, and OAuth applications from the Clerk Backend API.
+inputs:
+  CLERK_SECRET_KEY:
+    kind: secret
+    hint: |
+      Create or copy a Clerk Secret Key from the Clerk Dashboard API keys page.
+      Secret keys authenticate Backend API requests and must never be exposed in
+      frontend code. See https://clerk.com/docs/deployments/clerk-environment-variables#secret-and-public-keys.
+base_url: https://api.clerk.com/v1
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.CLERK_SECRET_KEY}}
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+rate_limit:
+  retry_after_header: Retry-After
+test_queries:
+  - SELECT * FROM clerk.users LIMIT 1
+  - SELECT * FROM clerk.domains LIMIT 1
+tables:
+  - name: users
+    description: Users in the Clerk instance.
+    guide: |
+      Start here for identity-level support and audit workflows. Use `query` for
+      partial lookups across user IDs, names, email addresses, phone numbers,
+      usernames, and web3 wallets. Join `id` to `clerk.sessions.user_id` and
+      membership tables.
+    fetch_limit_default: 100
+    filters:
+      - name: query
+      - name: email_address_query
+      - name: phone_number_query
+      - name: username_query
+      - name: name_query
+      - name: organization_id
+      - name: order_by
+      - name: banned
+    request:
+      method: GET
+      path: /users
+      query:
+        - name: query
+          from: filter
+          key: query
+        - name: email_address_query
+          from: filter
+          key: email_address_query
+        - name: phone_number_query
+          from: filter
+          key: phone_number_query
+        - name: username_query
+          from: filter
+          key: username_query
+        - name: name_query
+          from: filter
+          key: name_query
+        - name: organization_id
+          from: filter
+          key: organization_id
+        - name: order_by
+          from: filter
+          key: order_by
+        - name: banned
+          from: filter_bool
+          key: banned
+    response: {}
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 500
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Clerk user ID.
+        expr:
+          kind: path
+          path: [id]
+      - name: object
+        type: Utf8
+        nullable: true
+        description: Clerk object type, usually `user`.
+        expr:
+          kind: path
+          path: [object]
+      - name: external_id
+        type: Utf8
+        nullable: true
+        description: External ID supplied by the application, if any.
+        expr:
+          kind: path
+          path: [external_id]
+      - name: username
+        type: Utf8
+        nullable: true
+        description: Username, when enabled and set.
+        expr:
+          kind: path
+          path: [username]
+      - name: first_name
+        type: Utf8
+        nullable: true
+        description: User first name.
+        expr:
+          kind: path
+          path: [first_name]
+      - name: last_name
+        type: Utf8
+        nullable: true
+        description: User last name.
+        expr:
+          kind: path
+          path: [last_name]
+      - name: primary_email_address_id
+        type: Utf8
+        nullable: true
+        description: ID of the primary email address.
+        expr:
+          kind: path
+          path: [primary_email_address_id]
+      - name: primary_phone_number_id
+        type: Utf8
+        nullable: true
+        description: ID of the primary phone number.
+        expr:
+          kind: path
+          path: [primary_phone_number_id]
+      - name: primary_web3_wallet_id
+        type: Utf8
+        nullable: true
+        description: ID of the primary web3 wallet.
+        expr:
+          kind: path
+          path: [primary_web3_wallet_id]
+      - name: image_url
+        type: Utf8
+        nullable: true
+        description: User profile image URL.
+        expr:
+          kind: path
+          path: [image_url]
+      - name: has_image
+        type: Boolean
+        nullable: true
+        description: Whether the user has a custom image.
+        expr:
+          kind: path
+          path: [has_image]
+      - name: password_enabled
+        type: Boolean
+        nullable: true
+        description: Whether password authentication is enabled for the user.
+        expr:
+          kind: path
+          path: [password_enabled]
+      - name: two_factor_enabled
+        type: Boolean
+        nullable: true
+        description: Whether two-factor authentication is enabled.
+        expr:
+          kind: path
+          path: [two_factor_enabled]
+      - name: totp_enabled
+        type: Boolean
+        nullable: true
+        description: Whether TOTP is enabled.
+        expr:
+          kind: path
+          path: [totp_enabled]
+      - name: backup_code_enabled
+        type: Boolean
+        nullable: true
+        description: Whether backup codes are enabled.
+        expr:
+          kind: path
+          path: [backup_code_enabled]
+      - name: banned
+        type: Boolean
+        nullable: true
+        description: Whether the user is banned.
+        expr:
+          kind: path
+          path: [banned]
+      - name: locked
+        type: Boolean
+        nullable: true
+        description: Whether the user is locked.
+        expr:
+          kind: path
+          path: [locked]
+      - name: deprovisioned
+        type: Boolean
+        nullable: true
+        description: Whether the user is deprovisioned.
+        expr:
+          kind: path
+          path: [deprovisioned]
+      - name: create_organization_enabled
+        type: Boolean
+        nullable: true
+        description: Whether the user can create organizations from the Frontend API.
+        expr:
+          kind: path
+          path: [create_organization_enabled]
+      - name: create_organizations_limit
+        type: Int64
+        nullable: true
+        description: Maximum organizations the user can create. Zero means unlimited.
+        expr:
+          kind: path
+          path: [create_organizations_limit]
+      - name: delete_self_enabled
+        type: Boolean
+        nullable: true
+        description: Whether the user can delete themselves from the Frontend API.
+        expr:
+          kind: path
+          path: [delete_self_enabled]
+      - name: last_sign_in_at
+        type: Timestamp
+        nullable: true
+        description: User's last sign-in time.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path: [last_sign_in_at]
+      - name: last_active_at
+        type: Timestamp
+        nullable: true
+        description: Latest user session activity time, with Clerk's documented precision.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path: [last_active_at]
+      - name: mfa_enabled_at
+        type: Timestamp
+        nullable: true
+        description: When MFA was last enabled.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path: [mfa_enabled_at]
+      - name: mfa_disabled_at
+        type: Timestamp
+        nullable: true
+        description: When MFA was last disabled.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path: [mfa_disabled_at]
+      - name: legal_accepted_at
+        type: Timestamp
+        nullable: true
+        description: When legal requirements were accepted.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path: [legal_accepted_at]
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: User creation time.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path: [created_at]
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: User update time.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path: [updated_at]
+      - name: email_addresses
+        type: Json
+        nullable: true
+        description: Full email address objects for the user.
+        expr:
+          kind: path
+          path: [email_addresses]
+      - name: phone_numbers
+        type: Json
+        nullable: true
+        description: Full phone number objects for the user.
+        expr:
+          kind: path
+          path: [phone_numbers]
+      - name: web3_wallets
+        type: Json
+        nullable: true
+        description: Full web3 wallet objects for the user.
+        expr:
+          kind: path
+          path: [web3_wallets]
+      - name: passkeys
+        type: Json
+        nullable: true
+        description: Passkey objects for the user.
+        expr:
+          kind: path
+          path: [passkeys]
+      - name: external_accounts
+        type: Json
+        nullable: true
+        description: External OAuth account objects for the user.
+        expr:
+          kind: path
+          path: [external_accounts]
+      - name: saml_accounts
+        type: Json
+        nullable: true
+        description: SAML account objects for the user.
+        expr:
+          kind: path
+          path: [saml_accounts]
+      - name: enterprise_accounts
+        type: Json
+        nullable: true
+        description: Enterprise account objects for the user.
+        expr:
+          kind: path
+          path: [enterprise_accounts]
+      - name: organization_memberships
+        type: Json
+        nullable: true
+        description: Organization membership objects included on the user.
+        expr:
+          kind: path
+          path: [organization_memberships]
+      - name: public_metadata
+        type: Json
+        nullable: true
+        description: Public user metadata.
+        expr:
+          kind: path
+          path: [public_metadata]
+      - name: private_metadata
+        type: Json
+        nullable: true
+        description: Private user metadata visible through the Backend API.
+        expr:
+          kind: path
+          path: [private_metadata]
+      - name: unsafe_metadata
+        type: Json
+        nullable: true
+        description: Unsafe user metadata that can be modified from the frontend.
+        expr:
+          kind: path
+          path: [unsafe_metadata]
+      - name: query
+        type: Utf8
+        nullable: true
+        description: Echoes the `query` filter used for this request.
+        expr:
+          kind: from_filter
+          key: query
+      - name: organization_id_filter
+        type: Utf8
+        nullable: true
+        description: Echoes the `organization_id` filter used for this request.
+        expr:
+          kind: from_filter
+          key: organization_id
+
+  - name: organizations
+    description: Organizations in the Clerk instance.
+    guide: |
+      Use this table for organization discovery and account/customer support.
+      Join `id` to `organization_id` values in invitation, domain, and
+      membership-related tables.
+    fetch_limit_default: 100
+    filters:
+      - name: query
+      - name: user_id
+      - name: organization_id
+      - name: order_by
+      - name: include_members_count
+      - name: include_missing_member_with_elevated_permissions
+    request:
+      method: GET
+      path: /organizations
+      query:
+        - name: query
+          from: filter
+          key: query
+        - name: user_id
+          from: filter
+          key: user_id
+        - name: organization_id
+          from: filter
+          key: organization_id
+        - name: order_by
+          from: filter
+          key: order_by
+        - name: include_members_count
+          from: filter_bool
+          key: include_members_count
+        - name: include_missing_member_with_elevated_permissions
+          from: filter_bool
+          key: include_missing_member_with_elevated_permissions
+    response:
+      rows_path: [data]
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 500
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Clerk organization ID.
+        expr:
+          kind: path
+          path: [id]
+      - name: object
+        type: Utf8
+        nullable: true
+        description: Clerk object type, usually `organization`.
+        expr:
+          kind: path
+          path: [object]
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Organization name.
+        expr:
+          kind: path
+          path: [name]
+      - name: slug
+        type: Utf8
+        nullable: true
+        description: Organization slug.
+        expr:
+          kind: path
+          path: [slug]
+      - name: image_url
+        type: Utf8
+        nullable: true
+        description: Organization image URL.
+        expr:
+          kind: path
+          path: [image_url]
+      - name: has_image
+        type: Boolean
+        nullable: true
+        description: Whether the organization has a custom image.
+        expr:
+          kind: path
+          path: [has_image]
+      - name: members_count
+        type: Int64
+        nullable: true
+        description: Organization member count when requested from the API.
+        expr:
+          kind: path
+          path: [members_count]
+      - name: pending_invitations_count
+        type: Int64
+        nullable: true
+        description: Pending organization invitations count, when present.
+        expr:
+          kind: path
+          path: [pending_invitations_count]
+      - name: max_allowed_memberships
+        type: Int64
+        nullable: true
+        description: Maximum memberships allowed for the organization.
+        expr:
+          kind: path
+          path: [max_allowed_memberships]
+      - name: admin_delete_enabled
+        type: Boolean
+        nullable: true
+        description: Whether admins can delete the organization from the Frontend API.
+        expr:
+          kind: path
+          path: [admin_delete_enabled]
+      - name: created_by
+        type: Utf8
+        nullable: true
+        description: User ID that created the organization, when present.
+        expr:
+          kind: path
+          path: [created_by]
+      - name: role_set_key
+        type: Utf8
+        nullable: true
+        description: Role set key assigned to the organization.
+        expr:
+          kind: path
+          path: [role_set_key]
+      - name: last_active_at
+        type: Timestamp
+        nullable: true
+        description: Organization last activity time.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path: [last_active_at]
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Organization creation time.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path: [created_at]
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Organization update time.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path: [updated_at]
+      - name: public_metadata
+        type: Json
+        nullable: true
+        description: Public organization metadata.
+        expr:
+          kind: path
+          path: [public_metadata]
+      - name: private_metadata
+        type: Json
+        nullable: true
+        description: Private organization metadata visible through the Backend API.
+        expr:
+          kind: path
+          path: [private_metadata]
+      - name: query
+        type: Utf8
+        nullable: true
+        description: Echoes the `query` filter used for this request.
+        expr:
+          kind: from_filter
+          key: query
+
+  - name: organization_memberships
+    description: Organization user memberships across the Clerk instance.
+    guide: |
+      Use this table to audit organization access and roles. `organization_id`
+      is derived from the nested organization object, and `user_id` is derived
+      from `public_user_data.user_id`.
+    fetch_limit_default: 100
+    filters:
+      - name: order_by
+    request:
+      method: GET
+      path: /organization_memberships
+      query:
+        - name: order_by
+          from: filter
+          key: order_by
+    response:
+      rows_path: [data]
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 500
+        query_param: limit
+    columns: &organization_membership_columns
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Organization membership ID.
+        expr:
+          kind: path
+          path: [id]
+      - name: object
+        type: Utf8
+        nullable: true
+        description: Clerk object type, usually `organization_membership`.
+        expr:
+          kind: path
+          path: [object]
+      - name: organization_id
+        type: Utf8
+        nullable: true
+        description: ID of the organization for this membership.
+        expr:
+          kind: path
+          path: [organization, id]
+      - name: organization__name
+        type: Utf8
+        nullable: true
+        description: Organization name.
+        expr:
+          kind: path
+          path: [organization, name]
+      - name: organization__slug
+        type: Utf8
+        nullable: true
+        description: Organization slug.
+        expr:
+          kind: path
+          path: [organization, slug]
+      - name: user_id
+        type: Utf8
+        nullable: true
+        description: User ID for this membership.
+        expr:
+          kind: path
+          path: [public_user_data, user_id]
+      - name: public_user_data__identifier
+        type: Utf8
+        nullable: true
+        description: Public user identifier, usually the primary email address or username.
+        expr:
+          kind: path
+          path: [public_user_data, identifier]
+      - name: public_user_data__first_name
+        type: Utf8
+        nullable: true
+        description: Member first name.
+        expr:
+          kind: path
+          path: [public_user_data, first_name]
+      - name: public_user_data__last_name
+        type: Utf8
+        nullable: true
+        description: Member last name.
+        expr:
+          kind: path
+          path: [public_user_data, last_name]
+      - name: public_user_data__username
+        type: Utf8
+        nullable: true
+        description: Member username, when present.
+        expr:
+          kind: path
+          path: [public_user_data, username]
+      - name: public_user_data__image_url
+        type: Utf8
+        nullable: true
+        description: Member image URL.
+        expr:
+          kind: path
+          path: [public_user_data, image_url]
+      - name: public_user_data__banned
+        type: Boolean
+        nullable: true
+        description: Whether the public user data marks the member as banned.
+        expr:
+          kind: path
+          path: [public_user_data, banned]
+      - name: role
+        type: Utf8
+        nullable: true
+        description: Organization role key assigned to the member.
+        expr:
+          kind: path
+          path: [role]
+      - name: role_name
+        type: Utf8
+        nullable: true
+        description: Human-readable organization role name.
+        expr:
+          kind: path
+          path: [role_name]
+      - name: permissions
+        type: Json
+        nullable: true
+        description: Permission keys granted by this membership.
+        expr:
+          kind: path
+          path: [permissions]
+      - name: public_metadata
+        type: Json
+        nullable: true
+        description: Public membership metadata.
+        expr:
+          kind: path
+          path: [public_metadata]
+      - name: private_metadata
+        type: Json
+        nullable: true
+        description: Private membership metadata visible through the Backend API.
+        expr:
+          kind: path
+          path: [private_metadata]
+      - name: organization
+        type: Json
+        nullable: true
+        description: Full nested organization object.
+        expr:
+          kind: path
+          path: [organization]
+      - name: public_user_data
+        type: Json
+        nullable: true
+        description: Full nested public user data object.
+        expr:
+          kind: path
+          path: [public_user_data]
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Membership creation time.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path: [created_at]
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Membership update time.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path: [updated_at]
+
+  - name: organization_memberships_by_organization
+    description: Organization memberships for one organization.
+    guide: |
+      Use this filtered table when you already know an organization ID and want
+      server-side filtering by member role, user lookup, or search query.
+    fetch_limit_default: 100
+    filters:
+      - name: organization_id
+        required: true
+      - name: query
+      - name: role
+      - name: user_id
+      - name: email_address_query
+      - name: phone_number_query
+      - name: username_query
+      - name: name_query
+      - name: order_by
+    request:
+      method: GET
+      path: /organizations/{{filter.organization_id}}/memberships
+      query:
+        - name: query
+          from: filter
+          key: query
+        - name: role
+          from: filter
+          key: role
+        - name: user_id
+          from: filter
+          key: user_id
+        - name: email_address_query
+          from: filter
+          key: email_address_query
+        - name: phone_number_query
+          from: filter
+          key: phone_number_query
+        - name: username_query
+          from: filter
+          key: username_query
+        - name: name_query
+          from: filter
+          key: name_query
+        - name: order_by
+          from: filter
+          key: order_by
+    response:
+      rows_path: [data]
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 500
+        query_param: limit
+    columns: *organization_membership_columns
+
+  - name: organization_invitations
+    description: Organization invitations across the Clerk instance.
+    guide: |
+      Use this table to audit invited users across organizations. Filter with
+      `status` or `query` to narrow large instances.
+    fetch_limit_default: 100
+    filters:
+      - name: status
+      - name: query
+      - name: order_by
+    request:
+      method: GET
+      path: /organization_invitations
+      query:
+        - name: status
+          from: filter
+          key: status
+        - name: query
+          from: filter
+          key: query
+        - name: order_by
+          from: filter
+          key: order_by
+    response:
+      rows_path: [data]
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 500
+        query_param: limit
+    columns: &organization_invitation_columns
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Organization invitation ID.
+        expr:
+          kind: path
+          path: [id]
+      - name: object
+        type: Utf8
+        nullable: true
+        description: Clerk object type, usually `organization_invitation`.
+        expr:
+          kind: path
+          path: [object]
+      - name: organization_id
+        type: Utf8
+        nullable: true
+        description: Invited organization ID.
+        expr:
+          kind: path
+          path: [organization_id]
+      - name: public_organization_data__id
+        type: Utf8
+        nullable: true
+        description: Public organization ID on instance-level invitation responses.
+        expr:
+          kind: path
+          path: [public_organization_data, id]
+      - name: public_organization_data__name
+        type: Utf8
+        nullable: true
+        description: Public organization name on instance-level invitation responses.
+        expr:
+          kind: path
+          path: [public_organization_data, name]
+      - name: public_organization_data__slug
+        type: Utf8
+        nullable: true
+        description: Public organization slug on instance-level invitation responses.
+        expr:
+          kind: path
+          path: [public_organization_data, slug]
+      - name: email_address
+        type: Utf8
+        nullable: true
+        description: Invited email address.
+        expr:
+          kind: path
+          path: [email_address]
+      - name: role
+        type: Utf8
+        nullable: true
+        description: Role key assigned if accepted.
+        expr:
+          kind: path
+          path: [role]
+      - name: role_name
+        type: Utf8
+        nullable: true
+        description: Human-readable role name assigned if accepted.
+        expr:
+          kind: path
+          path: [role_name]
+      - name: inviter_id
+        type: Utf8
+        nullable: true
+        description: Inviting user ID, when present.
+        expr:
+          kind: path
+          path: [inviter_id]
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Invitation status.
+        expr:
+          kind: path
+          path: [status]
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Invitation URL, when returned by Clerk.
+        expr:
+          kind: path
+          path: [url]
+      - name: expires_at
+        type: Timestamp
+        nullable: true
+        description: Invitation expiration time.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path: [expires_at]
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Invitation creation time.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path: [created_at]
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Invitation update time.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path: [updated_at]
+      - name: public_metadata
+        type: Json
+        nullable: true
+        description: Public invitation metadata.
+        expr:
+          kind: path
+          path: [public_metadata]
+      - name: private_metadata
+        type: Json
+        nullable: true
+        description: Private invitation metadata visible through the Backend API.
+        expr:
+          kind: path
+          path: [private_metadata]
+      - name: public_inviter_data
+        type: Json
+        nullable: true
+        description: Public inviter data, when returned.
+        expr:
+          kind: path
+          path: [public_inviter_data]
+      - name: public_organization_data
+        type: Json
+        nullable: true
+        description: Public organization data, when returned.
+        expr:
+          kind: path
+          path: [public_organization_data]
+      - name: status_filter
+        type: Utf8
+        nullable: true
+        description: Echoes the `status` filter used for this request.
+        expr:
+          kind: from_filter
+          key: status
+
+  - name: organization_invitations_by_organization
+    description: Organization invitations for one organization.
+    guide: |
+      Use this filtered table when you already know an organization ID and want
+      organization-scoped invitation lookup with optional status or email filters.
+    fetch_limit_default: 100
+    filters:
+      - name: organization_id
+        required: true
+      - name: status
+      - name: email_address
+      - name: order_by
+    request:
+      method: GET
+      path: /organizations/{{filter.organization_id}}/invitations
+      query:
+        - name: status
+          from: filter
+          key: status
+        - name: email_address
+          from: filter
+          key: email_address
+        - name: order_by
+          from: filter
+          key: order_by
+    response:
+      rows_path: [data]
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 500
+        query_param: limit
+    columns: *organization_invitation_columns
+
+  - name: sessions
+    description: Sessions for a Clerk user or client.
+    guide: |
+      Clerk recommends providing at least `user_id` or `client_id` when listing
+      sessions. This table requires `user_id` to keep queries bounded and useful
+      for support workflows.
+    fetch_limit_default: 100
+    filters:
+      - name: user_id
+        required: true
+      - name: client_id
+      - name: status
+    request:
+      method: GET
+      path: /sessions
+      query:
+        - name: user_id
+          from: filter
+          key: user_id
+        - name: client_id
+          from: filter
+          key: client_id
+        - name: status
+          from: filter
+          key: status
+    response: {}
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 500
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Session ID.
+        expr:
+          kind: path
+          path: [id]
+      - name: object
+        type: Utf8
+        nullable: true
+        description: Clerk object type, usually `session`.
+        expr:
+          kind: path
+          path: [object]
+      - name: user_id
+        type: Utf8
+        nullable: true
+        description: Session user ID.
+        expr:
+          kind: path
+          path: [user_id]
+      - name: client_id
+        type: Utf8
+        nullable: true
+        description: Client ID associated with the session.
+        expr:
+          kind: path
+          path: [client_id]
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Session status.
+        expr:
+          kind: path
+          path: [status]
+      - name: last_active_organization_id
+        type: Utf8
+        nullable: true
+        description: Last active organization ID for the session.
+        expr:
+          kind: path
+          path: [last_active_organization_id]
+      - name: last_active_at
+        type: Timestamp
+        nullable: true
+        description: Last session activity time.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path: [last_active_at]
+      - name: expire_at
+        type: Timestamp
+        nullable: true
+        description: Session expiration time.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path: [expire_at]
+      - name: abandon_at
+        type: Timestamp
+        nullable: true
+        description: Session abandonment time.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path: [abandon_at]
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Session creation time.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path: [created_at]
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Session update time.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path: [updated_at]
+      - name: latest_activity
+        type: Json
+        nullable: true
+        description: Latest activity information, including device and location hints.
+        expr:
+          kind: path
+          path: [latest_activity]
+      - name: actor
+        type: Json
+        nullable: true
+        description: Actor impersonation payload, when present.
+        expr:
+          kind: path
+          path: [actor]
+      - name: user_id_filter
+        type: Utf8
+        nullable: true
+        description: Echoes the required `user_id` filter used for this request.
+        expr:
+          kind: from_filter
+          key: user_id
+
+  - name: invitations
+    description: Application-level invitations in the Clerk instance.
+    guide: |
+      This table covers application invitations, separate from organization
+      invitations. Use it for onboarding and invitation-status audits.
+    fetch_limit_default: 100
+    filters:
+      - name: status
+      - name: query
+      - name: order_by
+    request:
+      method: GET
+      path: /invitations
+      query:
+        - name: status
+          from: filter
+          key: status
+        - name: query
+          from: filter
+          key: query
+        - name: order_by
+          from: filter
+          key: order_by
+    response: {}
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 500
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Invitation ID.
+        expr:
+          kind: path
+          path: [id]
+      - name: object
+        type: Utf8
+        nullable: true
+        description: Clerk object type, usually `invitation`.
+        expr:
+          kind: path
+          path: [object]
+      - name: email_address
+        type: Utf8
+        nullable: true
+        description: Invited email address.
+        expr:
+          kind: path
+          path: [email_address]
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Invitation status.
+        expr:
+          kind: path
+          path: [status]
+      - name: revoked
+        type: Boolean
+        nullable: true
+        description: Whether the invitation was revoked.
+        expr:
+          kind: path
+          path: [revoked]
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Invitation URL, when returned by Clerk.
+        expr:
+          kind: path
+          path: [url]
+      - name: expires_at
+        type: Timestamp
+        nullable: true
+        description: Invitation expiration time.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path: [expires_at]
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Invitation creation time.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path: [created_at]
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Invitation update time.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path: [updated_at]
+      - name: public_metadata
+        type: Json
+        nullable: true
+        description: Public invitation metadata.
+        expr:
+          kind: path
+          path: [public_metadata]
+      - name: status_filter
+        type: Utf8
+        nullable: true
+        description: Echoes the `status` filter used for this request.
+        expr:
+          kind: from_filter
+          key: status
+
+  - name: organization_domains
+    description: Organization domains across the Clerk instance.
+    guide: |
+      Use this table for organization-domain enrollment and verification audits.
+      Filter by `organization_id`, `verified`, `enrollment_mode`, or `query` when
+      possible.
+    fetch_limit_default: 100
+    filters:
+      - name: organization_id
+      - name: verified
+      - name: enrollment_mode
+      - name: query
+      - name: domains
+      - name: order_by
+    request:
+      method: GET
+      path: /organization_domains
+      query:
+        - name: organization_id
+          from: filter
+          key: organization_id
+        - name: verified
+          from: filter
+          key: verified
+        - name: enrollment_mode
+          from: filter
+          key: enrollment_mode
+        - name: query
+          from: filter
+          key: query
+        - name: domains
+          from: filter
+          key: domains
+        - name: order_by
+          from: filter
+          key: order_by
+    response:
+      rows_path: [data]
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 500
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Organization domain ID.
+        expr:
+          kind: path
+          path: [id]
+      - name: object
+        type: Utf8
+        nullable: true
+        description: Clerk object type, usually `organization_domain`.
+        expr:
+          kind: path
+          path: [object]
+      - name: organization_id
+        type: Utf8
+        nullable: true
+        description: Organization ID that owns the domain.
+        expr:
+          kind: path
+          path: [organization_id]
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Domain name.
+        expr:
+          kind: path
+          path: [name]
+      - name: enrollment_mode
+        type: Utf8
+        nullable: true
+        description: Domain enrollment mode.
+        expr:
+          kind: path
+          path: [enrollment_mode]
+      - name: affiliation_email_address
+        type: Utf8
+        nullable: true
+        description: Affiliation email address, when available.
+        expr:
+          kind: path
+          path: [affiliation_email_address]
+      - name: verification__status
+        type: Utf8
+        nullable: true
+        description: Domain verification status.
+        expr:
+          kind: path
+          path: [verification, status]
+      - name: verification__strategy
+        type: Utf8
+        nullable: true
+        description: Domain verification strategy.
+        expr:
+          kind: path
+          path: [verification, strategy]
+      - name: total_pending_invitations
+        type: Int64
+        nullable: true
+        description: Pending invitations associated with this domain.
+        expr:
+          kind: path
+          path: [total_pending_invitations]
+      - name: total_pending_suggestions
+        type: Int64
+        nullable: true
+        description: Pending suggestions associated with this domain.
+        expr:
+          kind: path
+          path: [total_pending_suggestions]
+      - name: public_organization_data__id
+        type: Utf8
+        nullable: true
+        description: Public organization ID associated with the domain.
+        expr:
+          kind: path
+          path: [public_organization_data, id]
+      - name: public_organization_data__name
+        type: Utf8
+        nullable: true
+        description: Public organization name associated with the domain.
+        expr:
+          kind: path
+          path: [public_organization_data, name]
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Domain creation time.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path: [created_at]
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Domain update time.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path: [updated_at]
+      - name: verification
+        type: Json
+        nullable: true
+        description: Full verification object.
+        expr:
+          kind: path
+          path: [verification]
+      - name: public_organization_data
+        type: Json
+        nullable: true
+        description: Full public organization data object.
+        expr:
+          kind: path
+          path: [public_organization_data]
+
+  - name: organization_permissions
+    description: Organization permissions configured in the Clerk instance.
+    guide: |
+      Use this table with `role_sets` and membership `permissions` to understand
+      organization authorization semantics.
+    fetch_limit_default: 100
+    filters:
+      - name: query
+      - name: order_by
+    request:
+      method: GET
+      path: /organization_permissions
+      query:
+        - name: query
+          from: filter
+          key: query
+        - name: order_by
+          from: filter
+          key: order_by
+    response:
+      rows_path: [data]
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 500
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Permission ID.
+        expr:
+          kind: path
+          path: [id]
+      - name: object
+        type: Utf8
+        nullable: true
+        description: Clerk object type, usually `permission`.
+        expr:
+          kind: path
+          path: [object]
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Permission name.
+        expr:
+          kind: path
+          path: [name]
+      - name: key
+        type: Utf8
+        nullable: true
+        description: Permission key, for example `org:billing:manage`.
+        expr:
+          kind: path
+          path: [key]
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Permission description.
+        expr:
+          kind: path
+          path: [description]
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Permission type.
+        expr:
+          kind: path
+          path: [type]
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Permission creation time.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path: [created_at]
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Permission update time.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path: [updated_at]
+
+  - name: role_sets
+    description: Role sets configured for Clerk organizations.
+    guide: |
+      Role sets define the roles available to organization members. Inspect
+      `roles`, `default_role`, and `creator_role` JSON columns to understand role
+      assignment and membership behavior.
+    fetch_limit_default: 100
+    filters:
+      - name: query
+      - name: order_by
+    request:
+      method: GET
+      path: /role_sets
+      query:
+        - name: query
+          from: filter
+          key: query
+        - name: order_by
+          from: filter
+          key: order_by
+    response:
+      rows_path: [data]
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 500
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Role set ID.
+        expr:
+          kind: path
+          path: [id]
+      - name: object
+        type: Utf8
+        nullable: true
+        description: Clerk object type, usually `role_set`.
+        expr:
+          kind: path
+          path: [object]
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Role set name.
+        expr:
+          kind: path
+          path: [name]
+      - name: key
+        type: Utf8
+        nullable: true
+        description: Role set key.
+        expr:
+          kind: path
+          path: [key]
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Role set description.
+        expr:
+          kind: path
+          path: [description]
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Role set type, for example `initial` or `custom`.
+        expr:
+          kind: path
+          path: [type]
+      - name: roles
+        type: Json
+        nullable: true
+        description: Roles in this role set.
+        expr:
+          kind: path
+          path: [roles]
+      - name: default_role
+        type: Json
+        nullable: true
+        description: Default role assigned to new organization members.
+        expr:
+          kind: path
+          path: [default_role]
+      - name: creator_role
+        type: Json
+        nullable: true
+        description: Role assigned to organization creators.
+        expr:
+          kind: path
+          path: [creator_role]
+      - name: role_set_migration
+        type: Json
+        nullable: true
+        description: Active role set migration information, when present.
+        expr:
+          kind: path
+          path: [role_set_migration]
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Role set creation time.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path: [created_at]
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Role set update time.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path: [updated_at]
+
+  - name: domains
+    description: Clerk instance domains.
+    guide: |
+      Use this table to inspect primary and satellite domains, proxy settings,
+      Frontend API URLs, and DNS CNAME targets.
+    request:
+      method: GET
+      path: /domains
+    response:
+      rows_path: [data]
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Domain ID.
+        expr:
+          kind: path
+          path: [id]
+      - name: object
+        type: Utf8
+        nullable: true
+        description: Clerk object type, usually `domain`.
+        expr:
+          kind: path
+          path: [object]
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Domain name.
+        expr:
+          kind: path
+          path: [name]
+      - name: is_satellite
+        type: Boolean
+        nullable: true
+        description: Whether this is a satellite domain.
+        expr:
+          kind: path
+          path: [is_satellite]
+      - name: frontend_api_url
+        type: Utf8
+        nullable: true
+        description: Frontend API URL for the domain.
+        expr:
+          kind: path
+          path: [frontend_api_url]
+      - name: accounts_portal_url
+        type: Utf8
+        nullable: true
+        description: Accounts portal URL, null for satellite domains.
+        expr:
+          kind: path
+          path: [accounts_portal_url]
+      - name: proxy_url
+        type: Utf8
+        nullable: true
+        description: Proxy URL, when configured.
+        expr:
+          kind: path
+          path: [proxy_url]
+      - name: development_origin
+        type: Utf8
+        nullable: true
+        description: Development origin for the domain.
+        expr:
+          kind: path
+          path: [development_origin]
+      - name: cname_targets
+        type: Json
+        nullable: true
+        description: DNS CNAME targets needed for this domain.
+        expr:
+          kind: path
+          path: [cname_targets]
+
+  - name: oauth_applications
+    description: OAuth applications configured in the Clerk instance.
+    guide: |
+      Use this table to inspect Clerk-as-IdP OAuth client configuration. Secrets
+      are intentionally not returned by this list endpoint.
+    fetch_limit_default: 100
+    filters:
+      - name: name_query
+      - name: order_by
+    request:
+      method: GET
+      path: /oauth_applications
+      query:
+        - name: name_query
+          from: filter
+          key: name_query
+        - name: order_by
+          from: filter
+          key: order_by
+    response:
+      rows_path: [data]
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 500
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: OAuth application ID.
+        expr:
+          kind: path
+          path: [id]
+      - name: object
+        type: Utf8
+        nullable: true
+        description: Clerk object type, usually `oauth_application`.
+        expr:
+          kind: path
+          path: [object]
+      - name: instance_id
+        type: Utf8
+        nullable: true
+        description: Clerk instance ID.
+        expr:
+          kind: path
+          path: [instance_id]
+      - name: name
+        type: Utf8
+        nullable: true
+        description: OAuth application name.
+        expr:
+          kind: path
+          path: [name]
+      - name: client_id
+        type: Utf8
+        nullable: true
+        description: OAuth client ID.
+        expr:
+          kind: path
+          path: [client_id]
+      - name: client_uri
+        type: Utf8
+        nullable: true
+        description: OAuth client URI.
+        expr:
+          kind: path
+          path: [client_uri]
+      - name: client_image_url
+        type: Utf8
+        nullable: true
+        description: OAuth client image URL.
+        expr:
+          kind: path
+          path: [client_image_url]
+      - name: dynamically_registered
+        type: Boolean
+        nullable: true
+        description: Whether the application was dynamically registered.
+        expr:
+          kind: path
+          path: [dynamically_registered]
+      - name: consent_screen_enabled
+        type: Boolean
+        nullable: true
+        description: Whether the consent screen is enabled.
+        expr:
+          kind: path
+          path: [consent_screen_enabled]
+      - name: pkce_required
+        type: Boolean
+        nullable: true
+        description: Whether PKCE is required.
+        expr:
+          kind: path
+          path: [pkce_required]
+      - name: public
+        type: Boolean
+        nullable: true
+        description: Whether this is a public client.
+        expr:
+          kind: path
+          path: [public]
+      - name: scopes
+        type: Utf8
+        nullable: true
+        description: Space-separated allowed scopes.
+        expr:
+          kind: path
+          path: [scopes]
+      - name: authorize_url
+        type: Utf8
+        nullable: true
+        description: OAuth authorize URL.
+        expr:
+          kind: path
+          path: [authorize_url]
+      - name: token_fetch_url
+        type: Utf8
+        nullable: true
+        description: OAuth token URL.
+        expr:
+          kind: path
+          path: [token_fetch_url]
+      - name: user_info_url
+        type: Utf8
+        nullable: true
+        description: OAuth user info URL.
+        expr:
+          kind: path
+          path: [user_info_url]
+      - name: discovery_url
+        type: Utf8
+        nullable: true
+        description: OAuth discovery URL.
+        expr:
+          kind: path
+          path: [discovery_url]
+      - name: token_introspection_url
+        type: Utf8
+        nullable: true
+        description: OAuth token introspection URL.
+        expr:
+          kind: path
+          path: [token_introspection_url]
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: OAuth application creation time.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path: [created_at]
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: OAuth application update time.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path: [updated_at]
+      - name: redirect_uris
+        type: Json
+        nullable: true
+        description: OAuth redirect URIs.
+        expr:
+          kind: path
+          path: [redirect_uris]
+
+  - name: waitlist_entries
+    description: Waitlist entries in the Clerk instance.
+    guide: |
+      Use this table for product waitlist and onboarding analysis. Filter by
+      `status` or `query` to inspect specific entries.
+    fetch_limit_default: 100
+    filters:
+      - name: status
+      - name: query
+      - name: order_by
+    request:
+      method: GET
+      path: /waitlist_entries
+      query:
+        - name: status
+          from: filter
+          key: status
+        - name: query
+          from: filter
+          key: query
+        - name: order_by
+          from: filter
+          key: order_by
+    response:
+      rows_path: [data]
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 500
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Waitlist entry ID.
+        expr:
+          kind: path
+          path: [id]
+      - name: object
+        type: Utf8
+        nullable: true
+        description: Clerk object type, usually `waitlist_entry`.
+        expr:
+          kind: path
+          path: [object]
+      - name: email_address
+        type: Utf8
+        nullable: true
+        description: Waitlist email address.
+        expr:
+          kind: path
+          path: [email_address]
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Waitlist entry status.
+        expr:
+          kind: path
+          path: [status]
+      - name: is_locked
+        type: Boolean
+        nullable: true
+        description: Whether the entry is locked for batch processing.
+        expr:
+          kind: path
+          path: [is_locked]
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Waitlist entry creation time.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path: [created_at]
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Waitlist entry update time.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path: [updated_at]
+      - name: invitation
+        type: Json
+        nullable: true
+        description: Invitation associated with the waitlist entry, when present.
+        expr:
+          kind: path
+          path: [invitation]
