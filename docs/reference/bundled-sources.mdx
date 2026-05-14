@@ -17,6 +17,7 @@ If the source you need is not available, you can extend Coral by [writing a cust
 
 | Source | Backend | Description |
 | --- | --- | --- |
+| [claude](#claude) | `file` | Query local Claude Code transcript events and prompt history from ~/.claude. |
 | [clickup](#clickup) | `http` | Query tasks, spaces, folders, lists, goals, time entries, comments, views, tags, custom fields, teams, and users from ClickUp. |
 | [cloudwatch_logs](#cloudwatch_logs) | `http` | Query Amazon CloudWatch Logs groups, streams, and events. |
 | [cloudwatch_metrics](#cloudwatch_metrics) | `http` | Query Amazon CloudWatch metrics and monitoring metadata. |
@@ -56,6 +57,10 @@ To update bundled sources, upgrade the Coral binary. Coral resolves each bundled
 
 Each source has its own set of interactive inputs — API tokens, base URLs, or
 other per-install configuration.
+
+### `claude`
+
+No configuration required.
 
 ### `clickup`
 
