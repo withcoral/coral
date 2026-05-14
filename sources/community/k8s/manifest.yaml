@@ -1,0 +1,868 @@
+name: k8s
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Kubernetes workloads, networking, storage, events, and cluster nodes
+  through the Kubernetes REST API. Supports kubectl-proxy local dev and
+  configurable API base URLs for in-cluster or remote access.
+inputs:
+  K8S_BASE_URL:
+    kind: variable
+    default: http://127.0.0.1:8080
+    hint: |
+      Kubernetes API base URL. For local development, run
+      `kubectl proxy --port=8080` and keep the default. For in-cluster access,
+      use `https://kubernetes.default.svc`. For remote clusters, point at your API
+      gateway or load-balanced control-plane endpoint.
+base_url: "{{input.K8S_BASE_URL}}"
+test_queries:
+  - SELECT namespace, name, status FROM k8s.pods LIMIT 20
+  - SELECT namespace, name, replicas, available_replicas FROM k8s.deployments LIMIT 10
+  - SELECT namespace, object_name, reason, message FROM k8s.events WHERE object_kind = 'Pod' LIMIT 20
+tables:
+  - name: pods
+    description: Pods across all namespaces with phase, scheduling, and container status metadata.
+    guide: |
+      Pushdown filters (faster and lighter on the API server):
+      - label_selector: Kubernetes labelSelector
+      - field_selector: Kubernetes fieldSelector
+    filters:
+      - name: label_selector
+      - name: field_selector
+    request:
+      method: GET
+      path: /api/v1/pods
+      query:
+        - name: labelSelector
+          from: filter
+          key: label_selector
+        - name: fieldSelector
+          from: filter
+          key: field_selector
+    response:
+      rows_path: [items]
+    pagination:
+      mode: cursor_query
+      cursor_param: continue
+      response_cursor_path: [metadata, continue]
+      page_size:
+        default: 200
+        max: 500
+        query_param: limit
+    columns:
+      - name: uid
+        type: Utf8
+        expr:
+          kind: path
+          path: [metadata, uid]
+      - name: name
+        type: Utf8
+        expr:
+          kind: path
+          path: [metadata, name]
+      - name: namespace
+        type: Utf8
+        expr:
+          kind: path
+          path: [metadata, namespace]
+      - name: node_name
+        type: Utf8
+        expr:
+          kind: path
+          path: [spec, nodeName]
+      - name: pod_ip
+        type: Utf8
+        expr:
+          kind: path
+          path: [status, podIP]
+      - name: host_ip
+        type: Utf8
+        expr:
+          kind: path
+          path: [status, hostIP]
+      - name: start_time
+        type: Timestamp
+        expr:
+          kind: path
+          path: [status, startTime]
+      - name: status
+        type: Utf8
+        expr:
+          kind: path
+          path: [status, phase]
+      - name: status_reason
+        type: Utf8
+        expr:
+          kind: path
+          path: [status, reason]
+      - name: status_message
+        type: Utf8
+        expr:
+          kind: path
+          path: [status, message]
+      - name: labels
+        type: Json
+        expr:
+          kind: path
+          path: [metadata, labels]
+      - name: annotations
+        type: Json
+        expr:
+          kind: path
+          path: [metadata, annotations]
+      - name: annotation_commit_hash
+        type: Utf8
+        nullable: true
+        description: metadata.annotations.commit_hash when your CD pipeline injects it.
+        expr:
+          kind: path
+          path: [metadata, annotations, commit_hash]
+      - name: conditions
+        type: Json
+        expr:
+          kind: path
+          path: [status, conditions]
+      - name: container_statuses
+        type: Json
+        expr:
+          kind: path
+          path: [status, containerStatuses]
+      - name: init_container_statuses
+        type: Json
+        expr:
+          kind: path
+          path: [status, initContainerStatuses]
+      - name: volumes
+        type: Json
+        description: Pod spec.volumes; join claim names to k8s.persistentvolumeclaims.name.
+        expr:
+          kind: path
+          path: [spec, volumes]
+
+  - name: nodes
+    description: Cluster nodes with kubelet version and OS metadata.
+    guide: |
+      Pushdown filters:
+      - label_selector: Kubernetes labelSelector
+      - field_selector: Kubernetes fieldSelector
+    filters:
+      - name: label_selector
+      - name: field_selector
+    request:
+      method: GET
+      path: /api/v1/nodes
+      query:
+        - name: labelSelector
+          from: filter
+          key: label_selector
+        - name: fieldSelector
+          from: filter
+          key: field_selector
+    response:
+      rows_path: [items]
+    pagination:
+      mode: cursor_query
+      cursor_param: continue
+      response_cursor_path: [metadata, continue]
+      page_size:
+        default: 200
+        max: 500
+        query_param: limit
+    columns:
+      - name: uid
+        type: Utf8
+        expr:
+          kind: path
+          path: [metadata, uid]
+      - name: name
+        type: Utf8
+        expr:
+          kind: path
+          path: [metadata, name]
+      - name: kubelet_version
+        type: Utf8
+        expr:
+          kind: path
+          path: [status, nodeInfo, kubeletVersion]
+      - name: os_image
+        type: Utf8
+        expr:
+          kind: path
+          path: [status, nodeInfo, osImage]
+      - name: labels
+        type: Json
+        expr:
+          kind: path
+          path: [metadata, labels]
+
+  - name: services
+    description: Services across all namespaces.
+    guide: |
+      Pushdown filters:
+      - label_selector: Kubernetes labelSelector
+      - field_selector: Kubernetes fieldSelector
+    filters:
+      - name: label_selector
+      - name: field_selector
+    request:
+      method: GET
+      path: /api/v1/services
+      query:
+        - name: labelSelector
+          from: filter
+          key: label_selector
+        - name: fieldSelector
+          from: filter
+          key: field_selector
+    response:
+      rows_path: [items]
+    pagination:
+      mode: cursor_query
+      cursor_param: continue
+      response_cursor_path: [metadata, continue]
+      page_size:
+        default: 200
+        max: 500
+        query_param: limit
+    columns:
+      - name: uid
+        type: Utf8
+        expr:
+          kind: path
+          path: [metadata, uid]
+      - name: name
+        type: Utf8
+        expr:
+          kind: path
+          path: [metadata, name]
+      - name: namespace
+        type: Utf8
+        expr:
+          kind: path
+          path: [metadata, namespace]
+      - name: type
+        type: Utf8
+        expr:
+          kind: path
+          path: [spec, type]
+      - name: cluster_ip
+        type: Utf8
+        expr:
+          kind: path
+          path: [spec, clusterIP]
+      - name: selector
+        type: Json
+        expr:
+          kind: path
+          path: [spec, selector]
+      - name: labels
+        type: Json
+        expr:
+          kind: path
+          path: [metadata, labels]
+
+  - name: deployments
+    description: Deployments across all namespaces.
+    filters:
+      - name: label_selector
+      - name: field_selector
+    request:
+      method: GET
+      path: /apis/apps/v1/deployments
+      query:
+        - name: labelSelector
+          from: filter
+          key: label_selector
+        - name: fieldSelector
+          from: filter
+          key: field_selector
+    response:
+      rows_path: [items]
+    pagination:
+      mode: cursor_query
+      cursor_param: continue
+      response_cursor_path: [metadata, continue]
+      page_size:
+        default: 200
+        max: 500
+        query_param: limit
+    columns:
+      - name: uid
+        type: Utf8
+        expr: { kind: path, path: [metadata, uid] }
+      - name: namespace
+        type: Utf8
+        expr: { kind: path, path: [metadata, namespace] }
+      - name: name
+        type: Utf8
+        expr: { kind: path, path: [metadata, name] }
+      - name: replicas
+        type: Int64
+        expr: { kind: path, path: [spec, replicas] }
+      - name: available_replicas
+        type: Int64
+        expr: { kind: path, path: [status, availableReplicas] }
+      - name: labels
+        type: Json
+        expr: { kind: path, path: [metadata, labels] }
+
+  - name: daemonsets
+    description: DaemonSets across all namespaces.
+    filters:
+      - name: label_selector
+      - name: field_selector
+    request:
+      method: GET
+      path: /apis/apps/v1/daemonsets
+      query:
+        - name: labelSelector
+          from: filter
+          key: label_selector
+        - name: fieldSelector
+          from: filter
+          key: field_selector
+    response:
+      rows_path: [items]
+    pagination:
+      mode: cursor_query
+      cursor_param: continue
+      response_cursor_path: [metadata, continue]
+      page_size:
+        default: 200
+        max: 500
+        query_param: limit
+    columns:
+      - name: uid
+        type: Utf8
+        expr: { kind: path, path: [metadata, uid] }
+      - name: namespace
+        type: Utf8
+        expr: { kind: path, path: [metadata, namespace] }
+      - name: name
+        type: Utf8
+        expr: { kind: path, path: [metadata, name] }
+      - name: desired_number_scheduled
+        type: Int64
+        expr: { kind: path, path: [status, desiredNumberScheduled] }
+      - name: number_ready
+        type: Int64
+        expr: { kind: path, path: [status, numberReady] }
+      - name: labels
+        type: Json
+        expr: { kind: path, path: [metadata, labels] }
+
+  - name: statefulsets
+    description: StatefulSets across all namespaces.
+    filters:
+      - name: label_selector
+      - name: field_selector
+    request:
+      method: GET
+      path: /apis/apps/v1/statefulsets
+      query:
+        - name: labelSelector
+          from: filter
+          key: label_selector
+        - name: fieldSelector
+          from: filter
+          key: field_selector
+    response:
+      rows_path: [items]
+    pagination:
+      mode: cursor_query
+      cursor_param: continue
+      response_cursor_path: [metadata, continue]
+      page_size:
+        default: 200
+        max: 500
+        query_param: limit
+    columns:
+      - name: uid
+        type: Utf8
+        expr: { kind: path, path: [metadata, uid] }
+      - name: namespace
+        type: Utf8
+        expr: { kind: path, path: [metadata, namespace] }
+      - name: name
+        type: Utf8
+        expr: { kind: path, path: [metadata, name] }
+      - name: replicas
+        type: Int64
+        expr: { kind: path, path: [spec, replicas] }
+      - name: ready_replicas
+        type: Int64
+        expr: { kind: path, path: [status, readyReplicas] }
+      - name: labels
+        type: Json
+        expr: { kind: path, path: [metadata, labels] }
+
+  - name: replicasets
+    description: ReplicaSets across all namespaces.
+    filters:
+      - name: label_selector
+      - name: field_selector
+    request:
+      method: GET
+      path: /apis/apps/v1/replicasets
+      query:
+        - name: labelSelector
+          from: filter
+          key: label_selector
+        - name: fieldSelector
+          from: filter
+          key: field_selector
+    response:
+      rows_path: [items]
+    pagination:
+      mode: cursor_query
+      cursor_param: continue
+      response_cursor_path: [metadata, continue]
+      page_size:
+        default: 200
+        max: 500
+        query_param: limit
+    columns:
+      - name: uid
+        type: Utf8
+        expr: { kind: path, path: [metadata, uid] }
+      - name: namespace
+        type: Utf8
+        expr: { kind: path, path: [metadata, namespace] }
+      - name: name
+        type: Utf8
+        expr: { kind: path, path: [metadata, name] }
+      - name: replicas
+        type: Int64
+        expr: { kind: path, path: [spec, replicas] }
+      - name: ready_replicas
+        type: Int64
+        expr: { kind: path, path: [status, readyReplicas] }
+      - name: labels
+        type: Json
+        expr: { kind: path, path: [metadata, labels] }
+
+  - name: jobs
+    description: Jobs across all namespaces.
+    filters:
+      - name: label_selector
+      - name: field_selector
+    request:
+      method: GET
+      path: /apis/batch/v1/jobs
+      query:
+        - name: labelSelector
+          from: filter
+          key: label_selector
+        - name: fieldSelector
+          from: filter
+          key: field_selector
+    response:
+      rows_path: [items]
+    pagination:
+      mode: cursor_query
+      cursor_param: continue
+      response_cursor_path: [metadata, continue]
+      page_size:
+        default: 200
+        max: 500
+        query_param: limit
+    columns:
+      - name: uid
+        type: Utf8
+        expr: { kind: path, path: [metadata, uid] }
+      - name: namespace
+        type: Utf8
+        expr: { kind: path, path: [metadata, namespace] }
+      - name: name
+        type: Utf8
+        expr: { kind: path, path: [metadata, name] }
+      - name: succeeded
+        type: Int64
+        expr: { kind: path, path: [status, succeeded] }
+      - name: failed
+        type: Int64
+        expr: { kind: path, path: [status, failed] }
+      - name: labels
+        type: Json
+        expr: { kind: path, path: [metadata, labels] }
+
+  - name: cronjobs
+    description: CronJobs across all namespaces.
+    filters:
+      - name: label_selector
+      - name: field_selector
+    request:
+      method: GET
+      path: /apis/batch/v1/cronjobs
+      query:
+        - name: labelSelector
+          from: filter
+          key: label_selector
+        - name: fieldSelector
+          from: filter
+          key: field_selector
+    response:
+      rows_path: [items]
+    pagination:
+      mode: cursor_query
+      cursor_param: continue
+      response_cursor_path: [metadata, continue]
+      page_size:
+        default: 200
+        max: 500
+        query_param: limit
+    columns:
+      - name: uid
+        type: Utf8
+        expr: { kind: path, path: [metadata, uid] }
+      - name: namespace
+        type: Utf8
+        expr: { kind: path, path: [metadata, namespace] }
+      - name: name
+        type: Utf8
+        expr: { kind: path, path: [metadata, name] }
+      - name: schedule
+        type: Utf8
+        expr: { kind: path, path: [spec, schedule] }
+      - name: suspend
+        type: Boolean
+        expr: { kind: path, path: [spec, suspend] }
+      - name: labels
+        type: Json
+        expr: { kind: path, path: [metadata, labels] }
+
+  - name: ingresses
+    description: Ingresses across all namespaces.
+    filters:
+      - name: label_selector
+      - name: field_selector
+    request:
+      method: GET
+      path: /apis/networking.k8s.io/v1/ingresses
+      query:
+        - name: labelSelector
+          from: filter
+          key: label_selector
+        - name: fieldSelector
+          from: filter
+          key: field_selector
+    response:
+      rows_path: [items]
+    pagination:
+      mode: cursor_query
+      cursor_param: continue
+      response_cursor_path: [metadata, continue]
+      page_size:
+        default: 200
+        max: 500
+        query_param: limit
+    columns:
+      - name: uid
+        type: Utf8
+        expr: { kind: path, path: [metadata, uid] }
+      - name: namespace
+        type: Utf8
+        expr: { kind: path, path: [metadata, namespace] }
+      - name: name
+        type: Utf8
+        expr: { kind: path, path: [metadata, name] }
+      - name: ingress_class_name
+        type: Utf8
+        expr: { kind: path, path: [spec, ingressClassName] }
+      - name: labels
+        type: Json
+        expr: { kind: path, path: [metadata, labels] }
+
+  - name: endpoints
+    description: Endpoints across all namespaces.
+    filters:
+      - name: label_selector
+      - name: field_selector
+    request:
+      method: GET
+      path: /api/v1/endpoints
+      query:
+        - name: labelSelector
+          from: filter
+          key: label_selector
+        - name: fieldSelector
+          from: filter
+          key: field_selector
+    response:
+      rows_path: [items]
+    pagination:
+      mode: cursor_query
+      cursor_param: continue
+      response_cursor_path: [metadata, continue]
+      page_size:
+        default: 200
+        max: 500
+        query_param: limit
+    columns:
+      - name: uid
+        type: Utf8
+        expr: { kind: path, path: [metadata, uid] }
+      - name: namespace
+        type: Utf8
+        expr: { kind: path, path: [metadata, namespace] }
+      - name: name
+        type: Utf8
+        expr: { kind: path, path: [metadata, name] }
+      - name: subsets
+        type: Json
+        expr: { kind: path, path: [subsets] }
+      - name: labels
+        type: Json
+        expr: { kind: path, path: [metadata, labels] }
+
+  - name: networkpolicies
+    description: NetworkPolicies across all namespaces.
+    filters:
+      - name: label_selector
+      - name: field_selector
+    request:
+      method: GET
+      path: /apis/networking.k8s.io/v1/networkpolicies
+      query:
+        - name: labelSelector
+          from: filter
+          key: label_selector
+        - name: fieldSelector
+          from: filter
+          key: field_selector
+    response:
+      rows_path: [items]
+    pagination:
+      mode: cursor_query
+      cursor_param: continue
+      response_cursor_path: [metadata, continue]
+      page_size:
+        default: 200
+        max: 500
+        query_param: limit
+    columns:
+      - name: uid
+        type: Utf8
+        expr: { kind: path, path: [metadata, uid] }
+      - name: namespace
+        type: Utf8
+        expr: { kind: path, path: [metadata, namespace] }
+      - name: name
+        type: Utf8
+        expr: { kind: path, path: [metadata, name] }
+      - name: policy_types
+        type: Json
+        expr: { kind: path, path: [spec, policyTypes] }
+      - name: pod_selector
+        type: Json
+        expr: { kind: path, path: [spec, podSelector] }
+      - name: labels
+        type: Json
+        expr: { kind: path, path: [metadata, labels] }
+
+  - name: events
+    description: Events across all namespaces for operational debugging and audit trails.
+    guide: |
+      Join to pods: object_kind = 'Pod' and match object_namespace + object_name to k8s.pods.
+      Join to services: object_kind = 'Service' and match namespace + object_name.
+    filters:
+      - name: label_selector
+      - name: field_selector
+    request:
+      method: GET
+      path: /api/v1/events
+      query:
+        - name: labelSelector
+          from: filter
+          key: label_selector
+        - name: fieldSelector
+          from: filter
+          key: field_selector
+    response:
+      rows_path: [items]
+    pagination:
+      mode: cursor_query
+      cursor_param: continue
+      response_cursor_path: [metadata, continue]
+      page_size:
+        default: 200
+        max: 500
+        query_param: limit
+    columns:
+      - name: uid
+        type: Utf8
+        expr: { kind: path, path: [metadata, uid] }
+      - name: namespace
+        type: Utf8
+        expr: { kind: path, path: [metadata, namespace] }
+      - name: name
+        type: Utf8
+        expr: { kind: path, path: [metadata, name] }
+      - name: reason
+        type: Utf8
+        expr: { kind: path, path: [reason] }
+      - name: type
+        type: Utf8
+        expr: { kind: path, path: [type] }
+      - name: message
+        type: Utf8
+        expr: { kind: path, path: [message] }
+      - name: object_kind
+        type: Utf8
+        description: involvedObject.kind (Pod, Service, etc.) for joins.
+        expr: { kind: path, path: [involvedObject, kind] }
+      - name: object_name
+        type: Utf8
+        description: involvedObject.name; join to pods.name or services.name when kind matches.
+        expr: { kind: path, path: [involvedObject, name] }
+      - name: object_namespace
+        type: Utf8
+        description: involvedObject.namespace (empty for cluster-scoped kinds).
+        expr: { kind: path, path: [involvedObject, namespace] }
+      - name: involved_object
+        type: Json
+        expr: { kind: path, path: [involvedObject] }
+
+  - name: persistentvolumeclaims
+    description: PersistentVolumeClaims with phase and storage class metadata.
+    filters:
+      - name: label_selector
+      - name: field_selector
+    request:
+      method: GET
+      path: /api/v1/persistentvolumeclaims
+      query:
+        - name: labelSelector
+          from: filter
+          key: label_selector
+        - name: fieldSelector
+          from: filter
+          key: field_selector
+    response:
+      rows_path: [items]
+    pagination:
+      mode: cursor_query
+      cursor_param: continue
+      response_cursor_path: [metadata, continue]
+      page_size:
+        default: 200
+        max: 500
+        query_param: limit
+    columns:
+      - name: uid
+        type: Utf8
+        expr: { kind: path, path: [metadata, uid] }
+      - name: namespace
+        type: Utf8
+        expr: { kind: path, path: [metadata, namespace] }
+      - name: name
+        type: Utf8
+        expr: { kind: path, path: [metadata, name] }
+      - name: phase
+        type: Utf8
+        expr: { kind: path, path: [status, phase] }
+      - name: storage_class
+        type: Utf8
+        expr: { kind: path, path: [spec, storageClassName] }
+      - name: volume_name
+        type: Utf8
+        expr: { kind: path, path: [spec, volumeName] }
+      - name: capacity
+        type: Json
+        expr: { kind: path, path: [status, capacity] }
+      - name: access_modes
+        type: Json
+        expr: { kind: path, path: [spec, accessModes] }
+      - name: labels
+        type: Json
+        expr: { kind: path, path: [metadata, labels] }
+
+  - name: configmaps
+    description: ConfigMaps; list responses may omit large data payloads depending on cluster settings.
+    filters:
+      - name: label_selector
+      - name: field_selector
+    request:
+      method: GET
+      path: /api/v1/configmaps
+      query:
+        - name: labelSelector
+          from: filter
+          key: label_selector
+        - name: fieldSelector
+          from: filter
+          key: field_selector
+    response:
+      rows_path: [items]
+    pagination:
+      mode: cursor_query
+      cursor_param: continue
+      response_cursor_path: [metadata, continue]
+      page_size:
+        default: 200
+        max: 500
+        query_param: limit
+    columns:
+      - name: uid
+        type: Utf8
+        expr: { kind: path, path: [metadata, uid] }
+      - name: namespace
+        type: Utf8
+        expr: { kind: path, path: [metadata, namespace] }
+      - name: name
+        type: Utf8
+        expr: { kind: path, path: [metadata, name] }
+      - name: resource_version
+        type: Utf8
+        description: Bump indicates the object changed.
+        expr: { kind: path, path: [metadata, resourceVersion] }
+      - name: labels
+        type: Json
+        expr: { kind: path, path: [metadata, labels] }
+      - name: data
+        type: Json
+        description: Present when the API returns keys in list responses.
+        expr: { kind: path, path: [data] }
+
+  - name: serviceaccounts
+    description: ServiceAccounts across all namespaces.
+    filters:
+      - name: label_selector
+      - name: field_selector
+    request:
+      method: GET
+      path: /api/v1/serviceaccounts
+      query:
+        - name: labelSelector
+          from: filter
+          key: label_selector
+        - name: fieldSelector
+          from: filter
+          key: field_selector
+    response:
+      rows_path: [items]
+    pagination:
+      mode: cursor_query
+      cursor_param: continue
+      response_cursor_path: [metadata, continue]
+      page_size:
+        default: 200
+        max: 500
+        query_param: limit
+    columns:
+      - name: uid
+        type: Utf8
+        expr: { kind: path, path: [metadata, uid] }
+      - name: namespace
+        type: Utf8
+        expr: { kind: path, path: [metadata, namespace] }
+      - name: name
+        type: Utf8
+        expr: { kind: path, path: [metadata, name] }
+      - name: secrets
+        type: Json
+        expr: { kind: path, path: [secrets] }
+      - name: labels
+        type: Json
+        expr: { kind: path, path: [metadata, labels] }
