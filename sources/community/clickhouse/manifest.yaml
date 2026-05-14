@@ -15,6 +15,7 @@ inputs:
       Base URL of your ClickHouse HTTP interface, including scheme and port.
       Default is `http://localhost:8123` for a local instance.
       For ClickHouse Cloud use `https://<host>.clickhouse.cloud:8443`.
+      Do not include a trailing slash.
   CLICKHOUSE_USER:
     kind: variable
     default: default
@@ -24,9 +25,12 @@ inputs:
   CLICKHOUSE_PASSWORD:
     kind: secret
     hint: |
-      Password for the ClickHouse user. Leave empty if the default user
-      has no password configured. In ClickHouse Cloud this is the service
-      password shown at cluster creation time.
+      Password for the ClickHouse user. A non-empty password is required —
+      Coral cannot install a source with a blank secret. If your default
+      user has no password, set one first:
+      `ALTER USER default IDENTIFIED BY 'your_password'`.
+      In ClickHouse Cloud this is the service password shown at cluster
+      creation time.
 auth:
   type: BasicAuth
   username: "{{input.CLICKHOUSE_USER}}"
@@ -37,6 +41,7 @@ request_headers:
     value: JSON
 test_queries:
   - SELECT * FROM clickhouse.databases LIMIT 1
+  - SELECT * FROM clickhouse.metrics LIMIT 1
 tables:
   - name: databases
     description: ClickHouse databases visible to the configured user
@@ -374,15 +379,26 @@ tables:
             - data_uncompressed_bytes
 
   - name: query_log
-    description: Recent completed queries from system.query_log
+    description: Recent query history from system.query_log including failures
     guide: |
-      Returns the 1000 most recent completed queries (type = QueryFinish),
-      newest first. Filter on `user`, `current_database`, `query_kind`, or
-      check `exception` for non-empty values to find failures.
+      Returns the 1000 most recent query log entries across all event types,
+      newest first. Filter on `type` to narrow results:
+      - `QueryFinish` — queries that completed successfully
+      - `ExceptionWhileProcessing` — queries that failed during execution
+      - `ExceptionBeforeStart` — queries that failed before starting
+      - `QueryStart` — query start events (paired with a finish or exception row)
+
+      Check `exception` for non-empty values to find failures. Filter on
+      `user`, `current_database`, or `query_kind` using SQL WHERE clauses.
 
       Note: query_log is only populated when `log_queries = 1` is set in the
       ClickHouse server configuration. An empty result may mean logging is
       disabled rather than that no queries ran.
+
+      The table returns the 1000 most recent entries. On a high-traffic server
+      this may cover only seconds of history. Use a WHERE clause on `event_time`
+      to narrow results after the data is fetched (e.g.
+      `WHERE event_time > '2026-05-14 00:00:00'`).
 
       `query_kind` values include Select, Insert, Create, Drop, Alter, and
       System. `read_rows`, `read_bytes`, `result_rows`, and `memory_usage`
@@ -411,7 +427,6 @@ tables:
               current_database,
               is_initial_query
             FROM system.query_log
-            WHERE type = 'QueryFinish'
             ORDER BY event_time DESC
             LIMIT 1000
     response:
@@ -425,7 +440,7 @@ tables:
       - name: type
         type: Utf8
         nullable: true
-        description: "Query lifecycle event type (always QueryFinish for this table)"
+        description: "Query lifecycle event type: QueryFinish, ExceptionWhileProcessing, ExceptionBeforeStart, or QueryStart"
         expr:
           kind: path
           path:
@@ -555,8 +570,9 @@ tables:
       identify long-running queries. `total_rows_approx` is an estimate;
       0 means ClickHouse has not yet calculated it.
 
-      To cancel a running query, use the ClickHouse KILL QUERY statement
-      with the `query_id` value from this table.
+      Note: the Coral query fetching this table will appear as one of the
+      returned rows. To cancel a running query, use the ClickHouse KILL QUERY
+      statement with the `query_id` value from this table.
     request:
       method: GET
       path: /
