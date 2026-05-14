@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use datafusion::error::{DataFusionError, Result};
 use opentelemetry::propagation::Injector;
@@ -36,6 +36,7 @@ const DEFAULT_MAX_PAGES: usize = 10_000;
 const DEFAULT_HTTP_REQUEST_TIMEOUT_SECS: u64 = 30;
 const DEFAULT_HTTP_USER_AGENT: &str = concat!("coral/", env!("CARGO_PKG_VERSION"));
 const HTTP_BODY_PREVIEW_IDLE_TIMEOUT: Duration = Duration::from_millis(50);
+const HTTP_BODY_PREVIEW_TOTAL_TIMEOUT: Duration = Duration::from_millis(200);
 static NEXT_HTTP_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Executes manifest-driven HTTP requests for one registered source.
@@ -1047,6 +1048,7 @@ async fn read_unconsumed_response_body_preview(
     let complete_body_size = response
         .content_length()
         .and_then(|length| usize::try_from(length).ok());
+    let read_started_at = Instant::now();
     let mut bytes = Vec::new();
     while bytes.len() < read_limit {
         if complete_body_size.is_some_and(|body_size| bytes.len() >= body_size) {
@@ -1057,13 +1059,21 @@ async fn read_unconsumed_response_body_preview(
                 false,
             ));
         }
-        let chunk =
-            match tokio::time::timeout(HTTP_BODY_PREVIEW_IDLE_TIMEOUT, response.chunk()).await {
-                Ok(chunk) => chunk?,
-                Err(_elapsed) => {
-                    return Ok(trace_body_preview_from_bytes(&bytes, max_bytes, None, true));
-                }
-            };
+        let Some(total_remaining) =
+            HTTP_BODY_PREVIEW_TOTAL_TIMEOUT.checked_sub(read_started_at.elapsed())
+        else {
+            return Ok(trace_body_preview_from_bytes(&bytes, max_bytes, None, true));
+        };
+        if total_remaining.is_zero() {
+            return Ok(trace_body_preview_from_bytes(&bytes, max_bytes, None, true));
+        }
+        let chunk_timeout = HTTP_BODY_PREVIEW_IDLE_TIMEOUT.min(total_remaining);
+        let chunk = match tokio::time::timeout(chunk_timeout, response.chunk()).await {
+            Ok(chunk) => chunk?,
+            Err(_elapsed) => {
+                return Ok(trace_body_preview_from_bytes(&bytes, max_bytes, None, true));
+            }
+        };
         let Some(chunk) = chunk else {
             return Ok(trace_body_preview_from_bytes(
                 &bytes,
@@ -1806,7 +1816,7 @@ fn extract_next_link_url(
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, HashMap};
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use datafusion::error::DataFusionError;
     use reqwest::header::{HeaderMap, HeaderValue};
@@ -1874,6 +1884,37 @@ mod tests {
                 )
                 .await
                 .expect("write partial response");
+            std::future::pending::<()>().await;
+        });
+
+        (format!("http://{addr}"), task)
+    }
+
+    async fn spawn_trickling_response_body_server(
+        chunk_count: usize,
+        chunk_delay: Duration,
+    ) -> (String, JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind trickling body http server");
+        let addr = listener.local_addr().expect("local addr");
+        let task = tokio::spawn(async move {
+            let (mut socket, _) = listener
+                .accept()
+                .await
+                .expect("accept trickling body request");
+            socket
+                .write_all(
+                    b"HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\n",
+                )
+                .await
+                .expect("write response headers");
+            for _ in 0..chunk_count {
+                if socket.write_all(b"x").await.is_err() {
+                    return;
+                }
+                tokio::time::sleep(chunk_delay).await;
+            }
             std::future::pending::<()>().await;
         });
 
@@ -2017,6 +2058,35 @@ mod tests {
         .expect("preview read");
 
         assert_eq!(preview.content.body, "abc");
+        assert!(preview.content.truncated);
+        assert_eq!(preview.complete_body_size, None);
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn unconsumed_response_preview_total_budget_bounds_trickling_body() {
+        let (base_url, task) =
+            spawn_trickling_response_body_server(128, Duration::from_millis(25)).await;
+        let response = reqwest::Client::new()
+            .get(format!("{base_url}/items"))
+            .send()
+            .await
+            .expect("response headers");
+
+        let started_at = Instant::now();
+        let preview = tokio::time::timeout(
+            Duration::from_millis(500),
+            read_unconsumed_response_body_preview(response, 1024),
+        )
+        .await
+        .expect("trickling preview should obey total timeout")
+        .expect("preview read");
+
+        assert!(
+            started_at.elapsed() < Duration::from_millis(450),
+            "preview should return on the total budget, not wait for the trickle stream"
+        );
+        assert!(preview.content.body.len() < 1024);
         assert!(preview.content.truncated);
         assert_eq!(preview.complete_body_size, None);
         task.abort();

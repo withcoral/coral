@@ -1,7 +1,7 @@
 //! JSONL-backed span export for local trace capture.
 
 use std::collections::{BTreeMap, HashMap};
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process;
@@ -18,6 +18,8 @@ use opentelemetry_sdk::trace::{SpanData, SpanExporter};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Number as JsonNumber, Value as JsonValue, json};
 use tokio::task;
+
+use crate::storage::fs as storage_fs;
 
 const JSONL_MAX_FILE_BYTES: u64 = 16 * 1024 * 1024;
 const JSONL_MAX_FILE_ROWS: usize = 50_000;
@@ -209,9 +211,11 @@ impl RollingJsonlWriter {
             return Ok(());
         }
 
-        fs::create_dir_all(&self.dir).map_err(|source| LocalTraceStoreError::CreateDir {
-            path: self.dir.clone(),
-            source,
+        storage_fs::ensure_private_dir(&self.dir).map_err(|source| {
+            LocalTraceStoreError::CreateDir {
+                path: self.dir.clone(),
+                source,
+            }
         })?;
 
         let now = SystemTime::now();
@@ -281,14 +285,12 @@ impl RollingJsonlWriter {
     ) -> Result<&mut OpenJsonlFile, LocalTraceStoreError> {
         if self.current.is_none() {
             let path = self.next_file_path(now);
-            let file = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&path)
-                .map_err(|source| LocalTraceStoreError::CreateFile {
+            let file = storage_fs::create_new_file_private(&path).map_err(|source| {
+                LocalTraceStoreError::CreateFile {
                     path: path.clone(),
                     source,
-                })?;
+                }
+            })?;
             self.current = Some(OpenJsonlFile {
                 path,
                 created_at: now,
@@ -1676,6 +1678,29 @@ mod tests {
             span.attributes_json
                 .contains(r#""coral.http.request.body.truncated":false"#)
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rolling_writer_creates_private_dir_and_file() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let temp = TempDir::new().expect("temp dir");
+        let dir = temp.path().join("telemetry").join("traces");
+        fs::create_dir_all(&dir).expect("trace dir");
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755))
+            .expect("make trace dir permissive");
+        let mut writer = RollingJsonlWriter::new(dir.clone(), TRACE_RETENTION, "body-previews")
+            .expect("jsonl writer");
+
+        writer
+            .write_records(&[trace_record("trace-1", "span-1")])
+            .expect("write record");
+
+        let file_path = writer.current.as_ref().expect("open file").path.clone();
+        let mode = |path: &Path| fs::metadata(path).expect("metadata").permissions().mode() & 0o777;
+        assert_eq!(mode(&dir), 0o700);
+        assert_eq!(mode(&file_path), 0o600);
     }
 
     #[test]
