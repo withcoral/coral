@@ -29,7 +29,7 @@ use coral_api::v1::ExecuteSqlRequest;
 use coral_app::StaticAssetsProvider;
 use coral_client::{
     AppClient, decode_execute_sql_response, default_workspace, format_batches_json,
-    format_batches_table,
+    format_batches_table, manifest_input_from_proto,
 };
 use dialoguer::console::measure_text_width;
 use tonic::Request;
@@ -645,8 +645,9 @@ async fn run_source_add(app: &AppClient, args: SourceAddArgs) -> Result<(), CliE
             let inputs = available
                 .inputs
                 .iter()
-                .map(source_ops::manifest_input_from_proto)
-                .collect::<Result<Vec<_>, _>>()?;
+                .map(manifest_input_from_proto)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(anyhow::Error::from)?;
             let (variables, secrets) = collect(&inputs)?;
             source_ops::add_bundled_source(app, &available.name, variables, secrets).await?
         }

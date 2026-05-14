@@ -74,7 +74,8 @@ message SourceInputSpec {
   string default_value = 4;
   // Optional authored hint shown to the user while collecting this input.
   string hint = 5;
-  // Optional credential retrieval choices for secret inputs.
+  // Optional credential retrieval choices for secret inputs. If absent, clients
+  // collect the secret value as if a source_config method were declared.
   SourceCredential credential = 6;
 }
 
@@ -122,7 +123,8 @@ message OAuthCredentialMethod {
 
 // Supported OAuth credential flow kinds.
 enum OAuthCredentialFlowType {
-  // Flow kind is unspecified.
+  // Flow kind is unspecified. This is invalid for OAuth credential methods;
+  // clients must reject it instead of inferring a default flow.
   O_AUTH_CREDENTIAL_FLOW_TYPE_UNSPECIFIED = 0;
   // OAuth authorization-code flow.
   O_AUTH_CREDENTIAL_FLOW_TYPE_AUTHORIZATION_CODE = 1;
@@ -130,7 +132,8 @@ enum OAuthCredentialFlowType {
 
 // Supported OAuth PKCE modes.
 enum OAuthCredentialPkceMode {
-  // PKCE mode is unspecified.
+  // PKCE mode is unspecified. This is invalid for OAuth credential methods;
+  // clients must reject it instead of inferring a PKCE policy.
   O_AUTH_CREDENTIAL_PKCE_MODE_UNSPECIFIED = 0;
   // PKCE must be used for the OAuth flow.
   O_AUTH_CREDENTIAL_PKCE_MODE_REQUIRED = 1;

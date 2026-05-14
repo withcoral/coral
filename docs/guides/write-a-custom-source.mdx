@@ -193,11 +193,7 @@ tables:
         type: Utf8
 ```
 
-<<<<<<< HEAD
 When you run `coral source add --file`, Coral reads each declared `input` from an environment variable of the same name, or prompts for it when you pass `--interactive`. `kind: variable` values go to source variables; `kind: secret` values go to the secret store. API keys, bearer tokens, passwords, private keys, and authorization values must be secrets, even when the API key is read-only. Declaring an input only configures storage; it does not send the value to the API. Runtime request fields such as `auth.headers`, `BasicAuth`, `CustomAuth`, and request headers decide where stored inputs are used. For secret inputs, `credential.methods` controls how the secret is collected: `type: source_config` means environment-variable lookup by default or an interactive prompt with `--interactive`; other methods, such as OAuth authorization-code flow, describe alternative install-time retrieval choices.
-=======
-When you run `coral source add --file`, Coral reads each declared `input` from an environment variable of the same name, or prompts for them when you pass `--interactive`. `kind: variable` values go to source variables; `kind: secret` values go to the secret store. Secret inputs can declare `credential.methods` metadata for retrieval choices such as `source_config` or OAuth authorization-code flow, but the CLI still collects those secret values through the normal environment variable or prompt path. The top-level `auth` block controls runtime request authentication.
->>>>>>> a6b51374 (docs: clarify OAuth credential metadata scope)
 
 For the full set of HTTP response, pagination, auth, and column fields, see [HTTP-backed tables](/reference/source-spec-reference#http-backed-tables).
 
