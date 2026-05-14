@@ -104,6 +104,10 @@ pub(super) fn default_http_client(
 }
 
 impl HttpSourceClient {
+    pub(crate) fn max_concurrency(&self) -> Option<usize> {
+        self.rate_limit.max_concurrency
+    }
+
     /// Build a backend client from a validated source spec.
     ///
     /// # Errors

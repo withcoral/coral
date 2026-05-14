@@ -1,34 +1,52 @@
-use std::cmp::Ordering;
+use std::collections::BTreeMap;
 use std::fmt;
-use std::sync::Arc;
+use std::hash::{Hash, Hasher};
 
-use datafusion::common::{DFSchemaRef, Result, plan_err};
+use coral_spec::WireType;
+use datafusion::common::{Column, DFSchemaRef, Result, TableReference, plan_err};
 use datafusion::logical_expr::{Expr, LogicalPlan, UserDefinedLogicalNodeCore};
 
 /// Logical extension node reserved for dependent predicate pushdown plans.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct DependentJoinNode {
-    resolver: LogicalPlan,
-    schema: DFSchemaRef,
+    pub(crate) resolver: LogicalPlan,
+    pub(crate) dependent_table: TableReference,
+    pub(crate) binding_keys: Vec<BindingKey>,
+    pub(crate) literal_filters: BTreeMap<String, String>,
+    pub(crate) dependent_projection: Vec<usize>,
+    pub(crate) dependent_first: bool,
+    pub(crate) schema: DFSchemaRef,
+    pub(crate) max_bindings: usize,
+    pub(crate) max_resolver_rows: usize,
+    pub(crate) max_rows_per_binding: usize,
+    pub(crate) max_concurrency: usize,
+    pub(crate) page_hint: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BindingKey {
+    pub(crate) resolver_column: Column,
+    pub(crate) dependent_filter: String,
+    pub(crate) wire_type: WireType,
+}
+
+impl Hash for BindingKey {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.resolver_column.hash(state);
+        self.dependent_filter.hash(state);
+        match self.wire_type {
+            WireType::String => "string".hash(state),
+        }
+    }
 }
 
 impl PartialOrd for DependentJoinNode {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         if self == other {
-            return Some(Ordering::Equal);
+            return Some(std::cmp::Ordering::Equal);
         }
 
-        match self.resolver.partial_cmp(&other.resolver) {
-            Some(Ordering::Equal) => {}
-            ordering => return ordering,
-        }
-
-        let schema_ordering = format!("{:?}", self.schema).cmp(&format!("{:?}", other.schema));
-        if schema_ordering != Ordering::Equal {
-            return Some(schema_ordering);
-        }
-
-        Some((Arc::as_ptr(&self.schema) as usize).cmp(&(Arc::as_ptr(&other.schema) as usize)))
+        Some(format!("{self:?}").cmp(&format!("{other:?}")))
     }
 }
 
@@ -60,7 +78,17 @@ impl UserDefinedLogicalNodeCore for DependentJoinNode {
 
         Ok(Self {
             resolver: inputs.into_iter().next().expect("input length was checked"),
+            dependent_table: self.dependent_table.clone(),
+            binding_keys: self.binding_keys.clone(),
+            literal_filters: self.literal_filters.clone(),
+            dependent_projection: self.dependent_projection.clone(),
+            dependent_first: self.dependent_first,
             schema: self.schema.clone(),
+            max_bindings: self.max_bindings,
+            max_resolver_rows: self.max_resolver_rows,
+            max_rows_per_binding: self.max_rows_per_binding,
+            max_concurrency: self.max_concurrency,
+            page_hint: self.page_hint,
         })
     }
 }
