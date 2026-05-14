@@ -23,14 +23,18 @@ test_queries:
   - SELECT * FROM youtube.channels WHERE handle = '@DynamoGaming' LIMIT 1
 tables:
   - name: channels
-    description: YouTube channel metadata and statistics
+    description: YouTube channel metadata, statistics, and content details
     guide: |
-      Returns metadata and statistics for one or more YouTube channels.
-      Provide either `handle` (the @-prefixed channel handle, e.g.
+      Returns metadata, statistics, and content details for one or more YouTube
+      channels. Provide either `handle` (the @-prefixed channel handle, e.g.
       `@DynamoGaming`) or `channel_id` (a UC-prefixed ID, or comma-separated
       list of up to 50). At least one filter is required — omitting both will
       produce a 400 API error. Note: YouTube returns statistics counts as
       strings (viewCount, subscriberCount, videoCount).
+
+      Use `content_details__related_playlists__uploads` to get the channel's
+      uploads playlist ID directly. To list all videos, copy that value into
+      a second query: SELECT * FROM youtube.playlist_items WHERE playlist_id = '<value>'
     filters:
       - name: channel_id
         required: false
@@ -42,7 +46,7 @@ tables:
       query:
         - name: part
           from: literal
-          value: snippet,statistics
+          value: snippet,statistics,contentDetails
         - name: id
           from: filter
           key: channel_id
@@ -54,7 +58,7 @@ tables:
         query:
           - name: part
             from: literal
-            value: snippet,statistics
+            value: snippet,statistics,contentDetails
           - name: forHandle
             from: filter
             key: handle
@@ -172,15 +176,24 @@ tables:
           path:
             - statistics
             - hiddenSubscriberCount
+      - name: content_details__related_playlists__uploads
+        type: Utf8
+        nullable: true
+        description: Uploads playlist ID — pass directly to youtube.playlist_items to list all videos
+        expr:
+          kind: path
+          path:
+            - contentDetails
+            - relatedPlaylists
+            - uploads
 
   - name: playlist_items
     description: Videos and other items within a YouTube playlist
     guide: |
       Returns all items in a YouTube playlist in order. `playlist_id` is
-      required; a channel's uploads playlist ID has the form `UU` followed
-      by the channel ID without its first two characters (e.g. channel
-      `UCXuqSBlHAE6Xw-yeJA0Tunw` → uploads playlist `UUXuqSBlHAE6Xw-yeJA0Tunw`).
-      Results paginate automatically via pageToken.
+      required. To list a channel's uploads, query `youtube.channels` first
+      and use the `content_details__related_playlists__uploads` value as the
+      playlist_id. Results paginate automatically via pageToken.
     filters:
       - name: playlist_id
         required: true
@@ -582,25 +595,26 @@ tables:
   - name: search
     description: Search YouTube for videos, channels, or playlists
     guide: |
-      Returns search results matching the given query. `q` and `channel_id`
-      are both optional but at least one should be provided for meaningful
-      results. Use `type` to restrict to `video`, `channel`, or `playlist`
-      (default: all three). `order` accepts `relevance` (default), `date`,
-      `rating`, `title`, `videoCount`, or `viewCount`. `published_after` and
-      `published_before` accept RFC 3339 timestamps (e.g.
-      `2024-01-01T00:00:00Z`).
+      Returns search results matching the given query. All filters are
+      optional per the YouTube API — only `part` is required, and Coral sets
+      that automatically. Use `q` for keyword search, `channel_id` to scope
+      results to a specific channel, and `type` to restrict to `video`,
+      `channel`, or `playlist` (default: all three). `order` accepts
+      `relevance` (default), `date`, `rating`, `title`, `videoCount`, or
+      `viewCount`. `published_after` and `published_before` accept RFC 3339
+      timestamps (e.g. `2024-01-01T00:00:00Z`).
 
-      WARNING: each search call costs 100 API quota units (vs. 1 unit for
-      other endpoints). The default daily quota is 10,000 units, so limit
-      usage to ~100 calls/day or request a quota increase in Google Cloud
-      Console.
+      WARNING: each search call costs 100 quota units vs. 1 unit for every
+      other endpoint. The default daily quota is 10,000 units (~100 calls).
+      This table defaults to 50 results to limit accidental quota drain —
+      add an explicit LIMIT for larger scans.
 
       The result `id__video_id`, `id__channel_id`, or `id__playlist_id`
       column will be populated depending on the result type; the others will
       be null. Use `youtube.videos` to enrich video results with full metadata.
 
-      Omitting both `q` and `channel_id` returns 0 rows — YouTube requires
-      at least one search parameter.
+      Omitting both `q` and `channel_id` returns 0 rows silently.
+    fetch_limit_default: 50
     filters:
       - name: q
         required: false
