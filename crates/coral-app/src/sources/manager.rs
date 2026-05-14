@@ -244,7 +244,7 @@ impl SourceManager {
         }
 
         let credential_set_id = CredentialSetId::for_source(&source_name);
-        let persisted_secret_keys = match self.credential_manager.write_material(
+        let persisted_secret_keys = match self.credential_manager.replace_material(
             workspace_name,
             &credential_set_id,
             &request.bindings.secrets,
@@ -343,7 +343,7 @@ impl SourceManager {
                 None => {}
             }
             let credential_set_id = CredentialSetId::for_source(source_name);
-            if let Err(e) = self.credential_manager.write_material(
+            if let Err(e) = self.credential_manager.replace_material(
                 workspace_name,
                 &credential_set_id,
                 &previous.credential_material,

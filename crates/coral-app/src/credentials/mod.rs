@@ -51,16 +51,15 @@ impl CredentialManager {
         Self { store }
     }
 
-    pub(crate) fn write_material(
+    pub(crate) fn replace_material(
         &self,
         workspace_name: &WorkspaceName,
         credential_set_id: &CredentialSetId,
         secrets: &BTreeMap<String, String>,
     ) -> Result<Vec<String>, AppError> {
-        self.update_material(workspace_name, credential_set_id, |material| {
-            *material = secrets.clone();
-            Ok(material.keys().cloned().collect())
-        })
+        self.store
+            .replace_material(workspace_name, credential_set_id, secrets)?;
+        Ok(secrets.keys().cloned().collect())
     }
 
     pub(crate) fn read_material(
@@ -78,16 +77,5 @@ impl CredentialManager {
     ) -> Result<(), AppError> {
         self.store
             .remove_material(workspace_name, credential_set_id)
-    }
-
-    /// Mutates credential material under the app state lock.
-    pub(crate) fn update_material<T>(
-        &self,
-        workspace_name: &WorkspaceName,
-        credential_set_id: &CredentialSetId,
-        update: impl FnOnce(&mut BTreeMap<String, String>) -> Result<T, AppError>,
-    ) -> Result<T, AppError> {
-        self.store
-            .update_material(workspace_name, credential_set_id, update)
     }
 }

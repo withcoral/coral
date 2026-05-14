@@ -31,25 +31,17 @@ impl CredentialStore {
         Self { layout }
     }
 
-    pub(crate) fn update_material<T>(
+    pub(crate) fn replace_material(
         &self,
         workspace_name: &WorkspaceName,
         credential_set_id: &CredentialSetId,
-        update: impl FnOnce(&mut BTreeMap<String, String>) -> Result<T, AppError>,
-    ) -> Result<T, AppError> {
+        values: &BTreeMap<String, String>,
+    ) -> Result<(), AppError> {
         let path = self.material_file(workspace_name, credential_set_id)?;
-        tracing::trace!(%credential_set_id, "updating credential material");
+        tracing::trace!(%credential_set_id, "replacing credential material");
         let _lock = FileLock::exclusive(self.layout.state_lock())?;
-        let mut values = load_file(&path)?;
-        let result = update(&mut values)?;
-        if values.is_empty() {
-            if path.exists() {
-                std::fs::remove_file(&path)?;
-            }
-        } else {
-            save_file_unlocked(&path, &values)?;
-        }
-        Ok(result)
+        save_values_unlocked(&path, values)?;
+        Ok(())
     }
 
     pub(crate) fn read_material(
@@ -100,13 +92,20 @@ fn save_file(
     values: &BTreeMap<String, String>,
 ) -> Result<(), CredentialsError> {
     let _lock = FileLock::exclusive(lock_path)?;
-    save_file_unlocked(path, values)
+    save_values_unlocked(path, values)
 }
 
-fn save_file_unlocked(
+fn save_values_unlocked(
     path: &Path,
     values: &BTreeMap<String, String>,
 ) -> Result<(), CredentialsError> {
+    if values.is_empty() {
+        if path.exists() {
+            std::fs::remove_file(path)?;
+        }
+        return Ok(());
+    }
+
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     storage_fs::ensure_dir(parent)?;
 
@@ -232,7 +231,13 @@ fn encode_env_value(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_env_value, encode_env_value, load_file, save_file};
+    use std::collections::BTreeMap;
+
+    use super::{CredentialStore, decode_env_value, encode_env_value, load_file, save_file};
+    use crate::credentials::CredentialSetId;
+    use crate::sources::SourceName;
+    use crate::state::AppStateLayout;
+    use crate::workspaces::WorkspaceName;
     use tempfile::TempDir;
 
     #[test]
@@ -251,5 +256,32 @@ mod tests {
             decode_env_value("\"hello\\nworld\"", 1).expect("decode"),
             "hello\nworld"
         );
+    }
+
+    #[test]
+    fn replace_material_does_not_parse_existing_file() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let store = CredentialStore::new(layout.clone());
+        let workspace_name = WorkspaceName::default();
+        let source_name = SourceName::parse("secured_messages").expect("source");
+        let credential_set_id = CredentialSetId::for_source(&source_name);
+        let path = layout.secret_file(&workspace_name, &source_name);
+        std::fs::create_dir_all(path.parent().expect("secret parent")).expect("secret parent dir");
+        std::fs::write(&path, "BROKEN\n").expect("write malformed existing env file");
+
+        let values = BTreeMap::from([("API_TOKEN".to_string(), "secret-token".to_string())]);
+        store
+            .replace_material(&workspace_name, &credential_set_id, &values)
+            .expect("replace malformed material");
+        assert_eq!(load_file(&path).expect("load replaced material"), values);
+
+        std::fs::write(&path, "BROKEN\n").expect("write malformed existing env file");
+        store
+            .replace_material(&workspace_name, &credential_set_id, &BTreeMap::new())
+            .expect("remove malformed material");
+        assert!(!path.exists(), "empty replacement should remove material");
     }
 }
