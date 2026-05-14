@@ -8,9 +8,9 @@ use std::fs;
 
 use coral_api::v1::{
     CreateBundledSourceRequest, DeleteSourceRequest, DiscoverSourcesRequest, ExecuteSqlRequest,
-    GetSourceInfoRequest, GetSourceRequest, ImportSourceRequest, ListTablesRequest,
-    PaginationRequest, QueryTestFailure, QueryTestSuccess, SourceOrigin, SourceSecret,
-    SourceVariable, ValidateSourceRequest, Workspace, query_test_result,
+    ExplainSqlRequest, GetSourceInfoRequest, GetSourceRequest, ImportSourceRequest,
+    ListTablesRequest, PaginationRequest, QueryTestFailure, QueryTestSuccess, SourceOrigin,
+    SourceSecret, SourceVariable, ValidateSourceRequest, Workspace, query_test_result,
 };
 use coral_client::default_workspace;
 use tempfile::TempDir;
@@ -335,6 +335,39 @@ async fn assert_exact_table_filter(harness: &GrpcHarness) {
     assert_eq!(exact_table.tables[0].schema_name, "local_messages");
     assert_eq!(exact_table.tables[0].name, "messages");
     assert!(!exact_table.tables[0].columns.is_empty());
+}
+
+#[tokio::test]
+async fn explain_sql_returns_logical_and_physical_plans() {
+    let harness = GrpcHarness::new().await;
+    harness
+        .import_source(
+            fixture_manifest_yaml(harness.temp_path()),
+            Vec::new(),
+            Vec::new(),
+        )
+        .await;
+
+    let response = harness
+        .query_client()
+        .explain_sql(Request::new(ExplainSqlRequest {
+            workspace: Some(default_workspace()),
+            sql: "SELECT text FROM local_messages.messages ORDER BY text".to_string(),
+        }))
+        .await
+        .expect("explain sql")
+        .into_inner();
+    let plan = response.plan.expect("query plan");
+
+    assert!(
+        plan.unoptimized_logical_plan
+            .contains("local_messages.messages")
+    );
+    assert!(
+        plan.optimized_logical_plan
+            .contains("local_messages.messages")
+    );
+    assert!(plan.physical_plan.contains("Exec"));
 }
 
 #[tokio::test]
@@ -1156,10 +1189,21 @@ origin = "imported"
 }
 
 #[tokio::test]
-async fn config_persists_across_rebuilds_without_local_trace_state() {
+async fn config_persists_across_rebuilds_without_trace_history_state() {
     let temp = TempDir::new().expect("temp dir");
     let manifest_yaml = fixture_manifest_yaml(temp.path());
     let config_dir = temp.path().join("coral-config");
+    fs::create_dir_all(&config_dir).expect("create config dir");
+    fs::write(
+        config_dir.join("config.toml"),
+        r"
+version = 1
+
+[trace_history]
+enabled = false
+",
+    )
+    .expect("write config");
 
     {
         let harness = GrpcHarness::start_with_config_dir(config_dir.clone()).await;
@@ -1180,8 +1224,8 @@ async fn config_persists_across_rebuilds_without_local_trace_state() {
         .await;
     assert_eq!(rows[0]["n"], 2);
     assert!(
-        !config_dir.join("state").join("state.sqlite3").exists(),
-        "trace/state sqlite should not be created"
+        !config_dir.join("telemetry").join("traces").exists(),
+        "local trace store should not be created"
     );
 }
 
@@ -1343,6 +1387,10 @@ async fn adding_source_preserves_otel_config_and_existing_sources() {
 endpoint = "http://localhost:4318"
 headers = "from=config"
 
+[trace_history]
+enabled = false
+retention_days = 3
+
 [workspaces.default.sources.demo]
 version = "0.1.0"
 variables = {}
@@ -1374,6 +1422,18 @@ origin = "imported"
     assert!(
         config_raw.contains("headers = \"from=config\""),
         "otel headers should be preserved"
+    );
+    assert!(
+        config_raw.contains("[trace_history]"),
+        "trace history section should be preserved"
+    );
+    assert!(
+        config_raw.contains("enabled = false"),
+        "trace history enabled flag should be preserved"
+    );
+    assert!(
+        config_raw.contains("retention_days = 3"),
+        "trace history retention should be preserved"
     );
 
     // The pre-existing source must still be present.

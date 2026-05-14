@@ -40,6 +40,6 @@ message SubmitFeedbackResponse {
 
 // Feedback submission APIs.
 service FeedbackService {
-  // Persists one blocked-agent feedback report locally.
+  // Persists one blocked-agent feedback report locally and may publish it remotely.
   rpc SubmitFeedback(SubmitFeedbackRequest) returns (SubmitFeedbackResponse);
 }

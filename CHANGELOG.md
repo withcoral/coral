@@ -1,5 +1,49 @@
 # Changelog
 
+## [0.2.1](https://github.com/withcoral/coral/compare/v0.2.0...v0.2.1) (2026-05-14)
+
+
+### Features
+
+* **cli:** bootstrap local web UI ([#233](https://github.com/withcoral/coral/issues/233)) ([e46f8e1](https://github.com/withcoral/coral/commit/e46f8e1241f4440c9e98a1c011284e2d410dc76e))
+* **client:** instrument local gRPC service spans ([#327](https://github.com/withcoral/coral/issues/327)) ([13d571a](https://github.com/withcoral/coral/commit/13d571ad50a4807491ae594b1ef5f2ca2c662481))
+* **engine:** add final-result observer hook ([#304](https://github.com/withcoral/coral/issues/304)) ([f08c9c1](https://github.com/withcoral/coral/commit/f08c9c1398f5d300f812bc713b8794d9a2db672e))
+* **engine:** advertise source-scoped table functions ([#237](https://github.com/withcoral/coral/issues/237)) ([f63bc52](https://github.com/withcoral/coral/commit/f63bc52f40f4882d043fe17796d236075be16032))
+* **engine:** emit service-map-friendly HTTP client spans ([#326](https://github.com/withcoral/coral/issues/326)) ([a0990c0](https://github.com/withcoral/coral/commit/a0990c0bda56f3c20a17b573a9bac968b28737a7))
+* **engine:** execute internal source UDTFs ([#306](https://github.com/withcoral/coral/issues/306)) ([9f348f6](https://github.com/withcoral/coral/commit/9f348f6c8978a5429d152a9ac40b6bf6585c43dd))
+* **engine:** instrument optimizer rules ([#300](https://github.com/withcoral/coral/issues/300)) ([b5c6d13](https://github.com/withcoral/coral/commit/b5c6d1352026d4a9549e1265c20a9f2f74448000))
+* **engine:** plan source-scoped table functions ([#243](https://github.com/withcoral/coral/issues/243)) ([3d8ace5](https://github.com/withcoral/coral/commit/3d8ace5128a6f540d3f903c36ef86845a4d2acd2))
+* **feedback:** upload MCP feedback reports to Coral ([#353](https://github.com/withcoral/coral/issues/353)) ([838fb9a](https://github.com/withcoral/coral/commit/838fb9a3e5b96b4000edd0f36f4cec41c9a907f8))
+* **mcp:** add describe_table discovery ([#282](https://github.com/withcoral/coral/issues/282)) ([9233c47](https://github.com/withcoral/coral/commit/9233c47bdd6c2b8291c76db0dfd552f9ce9259f4))
+* **mcp:** add protocol spans and error telemetry ([#328](https://github.com/withcoral/coral/issues/328)) ([6ef2464](https://github.com/withcoral/coral/commit/6ef24647956b5a3bfb86241cca50f143eec3ec01))
+* **mcp:** add regex table discovery ([#281](https://github.com/withcoral/coral/issues/281)) ([543f4ce](https://github.com/withcoral/coral/commit/543f4cece9c02c642f250f9ee0747490d245a73d))
+* **mcp:** list table columns progressively ([#283](https://github.com/withcoral/coral/issues/283)) ([54037d3](https://github.com/withcoral/coral/commit/54037d33c60707339abdff58f44a4cb24bb48c97))
+* **mcp:** paginate list_tables discovery ([#265](https://github.com/withcoral/coral/issues/265)) ([a651d38](https://github.com/withcoral/coral/commit/a651d38257d3c175e0f79dcf2ec74e9fea13f1e6))
+* **plugin:** add Coral Codex plugin ([#315](https://github.com/withcoral/coral/issues/315)) ([730d31a](https://github.com/withcoral/coral/commit/730d31ad9f173fa2ca3003619238fba88861daa1))
+* **sources/wandb:** add W&B experiment metrics source ([#316](https://github.com/withcoral/coral/issues/316)) ([1083477](https://github.com/withcoral/coral/commit/10834779da41f6d703d840dd29414cf60fd6d73c))
+* **sources:** roll out source-scoped table functions ([#244](https://github.com/withcoral/coral/issues/244)) ([dcc7d0d](https://github.com/withcoral/coral/commit/dcc7d0dbd0b18b37d688380e5646ad24758babae))
+* **spec:** add source-scoped table function specs ([#245](https://github.com/withcoral/coral/issues/245)) ([cf25086](https://github.com/withcoral/coral/commit/cf25086db5899851f79c6c26068bb9ee2382806b))
+
+
+### Bug Fixes
+
+* **app:** record telemetry status attributes ([#285](https://github.com/withcoral/coral/issues/285)) ([920e4b5](https://github.com/withcoral/coral/commit/920e4b51823abac425c88387aeaf836797c1f664))
+* **engine:** preserve structured table-not-found references ([#299](https://github.com/withcoral/coral/issues/299)) ([28ce34f](https://github.com/withcoral/coral/commit/28ce34f31f65cdc0a4967475eaa263486ab3f4f1))
+* **mcp:** advertise object-root output schema ([#415](https://github.com/withcoral/coral/issues/415)) ([2cef7de](https://github.com/withcoral/coral/commit/2cef7de7184657e8bb89ffbf4fdf22a356722bd0))
+* **mcp:** align search table output schema with response ([#349](https://github.com/withcoral/coral/issues/349)) ([3048f5c](https://github.com/withcoral/coral/commit/3048f5cec2b23156a87bb666af934737b1be42c1))
+* **mcp:** preserve structured resource errors ([#295](https://github.com/withcoral/coral/issues/295)) ([c1286a3](https://github.com/withcoral/coral/commit/c1286a35a2a78bf9d089b2498edafbb73f54cb09))
+* **mcp:** return guide in table search results ([#340](https://github.com/withcoral/coral/issues/340)) ([5196b22](https://github.com/withcoral/coral/commit/5196b22910c5fb313fa221d4de01ebd257fd86d1))
+* quote qualified table hints ([#280](https://github.com/withcoral/coral/issues/280)) ([3be0ff6](https://github.com/withcoral/coral/commit/3be0ff6066a1a8cbe706fe8d0e044721126542fd))
+* **sources:** push down repository owner filter ([#284](https://github.com/withcoral/coral/issues/284)) ([703f349](https://github.com/withcoral/coral/commit/703f349c3ada3bd78dfceb98abacb8e0076fec48))
+* **spec:** allow function-only HTTP manifests ([#310](https://github.com/withcoral/coral/issues/310)) ([4e7e127](https://github.com/withcoral/coral/commit/4e7e1277ecc0f84a11d629f9e3d2d0726e950d9f))
+* **spec:** validate inner expr for base64_decode ([#322](https://github.com/withcoral/coral/issues/322)) ([9af5382](https://github.com/withcoral/coral/commit/9af5382c32f701246471e17520340f5aab19db69))
+* table name validation ([#317](https://github.com/withcoral/coral/issues/317)) ([3f1a70e](https://github.com/withcoral/coral/commit/3f1a70e9f2d219756a606dd9f938f2d2282d3c43))
+
+
+### Performance Improvements
+
+* **app:** avoid parsing installed manifests twice ([#298](https://github.com/withcoral/coral/issues/298)) ([539e1c9](https://github.com/withcoral/coral/commit/539e1c96e6d52c341ad012e2434a8538f0534b98))
+
 ## [0.2.0](https://github.com/withcoral/coral/compare/v0.1.5...v0.2.0) (2026-05-06)
 
 

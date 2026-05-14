@@ -55,7 +55,6 @@ pub(crate) fn compile_manifest(
     manifest: &HttpSourceManifest,
     request: &BackendCompileRequest<'_>,
 ) -> Box<dyn CompiledBackendSource> {
-    let _ = request.runtime_context;
     compile_source(
         manifest.clone(),
         request.source_secrets.clone(),

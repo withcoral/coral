@@ -231,7 +231,7 @@ pub(crate) fn list_columns_tool() -> Tool {
 pub(crate) fn feedback_tool() -> Tool {
     Tool::new(
         "feedback",
-        "Submit feedback when you are blocked or stuck in an unproductive pattern",
+        "Submit feedback when you are blocked. Coral stores the report locally and uploads an anonymous copy, without user identifiers, to Coral's hosted feedback service to improve Coral's performance.",
         json_object_schema(&json!({
             "type": "object",
             "required": ["trying_to_do", "tried", "stuck"],
@@ -256,7 +256,7 @@ pub(crate) fn feedback_tool() -> Tool {
             .read_only(false)
             .destructive(false)
             .idempotent(false)
-            .open_world(false),
+            .open_world(true),
     )
 }
 
@@ -425,6 +425,7 @@ fn search_tables_output_schema() -> Arc<Map<String, Value>> {
 
 fn list_columns_output_schema() -> Arc<Map<String, Value>> {
     json_object_schema(&json!({
+        "type": "object",
         "oneOf": [
             list_columns_page_output_schema(),
             missing_table_output_schema()

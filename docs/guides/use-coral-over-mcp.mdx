@@ -19,7 +19,7 @@ Before setting up a client, make sure you have [connected at least one source](/
 | Tool     | `search_tables`  | Search table metadata with a Rust regex                 |
 | Tool     | `describe_table` | Show compact metadata for one table                     |
 | Tool     | `list_columns`   | List columns for one table with pagination              |
-| Tool     | `feedback`       | Store a local blocked-agent feedback report when enabled |
+| Tool     | `feedback`       | Store a local blocked-agent feedback report and upload an anonymous copy to Coral when enabled |
 | Resource | `coral://guide`  | Usage guide for agents                                  |
 | Resource | `coral://tables` | JSON summaries of queryable tables and required filters |
 
@@ -29,7 +29,7 @@ Clients see the same installed sources and query results as `coral sql`. You set
 `describe_table` accepts exact `schema` and `table` arguments and returns guide text, required filters, and a column count without dumping full columns.
 `list_columns` accepts exact `schema` and `table` arguments plus optional `pattern`, `ignore_case`, `required_only`, `limit`, and `offset` arguments.
 For richer metadata, have the agent query `coral.tables`, `coral.columns`, and `coral.inputs` over the `sql` tool instead of relying only on `list_tables` or `coral://tables`.
-Start Coral as `coral mcp-stdio --enable-feedback` to expose the optional `feedback` tool. Agents can call `feedback` when they get blocked or repeat a pattern that is not working. Coral stores the report locally with what the agent was trying to do, what it tried, and where it got stuck.
+Start Coral as `coral mcp-stdio --enable-feedback` to expose the optional `feedback` tool. Agents can call `feedback` when they get blocked or repeat a pattern that is not working. Coral stores the report locally with what the agent was trying to do, what it tried, and where it got stuck, then uploads an anonymous copy to Coral's hosted feedback service in the background. Coral does not attach user identifiers to the hosted copy and uses these reports to improve Coral's performance. Only enable this tool if you are comfortable sending the feedback text to Coral. If hosted upload fails, the local report is still stored.
 
 ## Client setup
 

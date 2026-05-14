@@ -21,6 +21,31 @@ message ExecuteSqlResponse {
   int64 row_count = 2;
 }
 
+// Explains one SQL statement by producing query-engine plan renderings without
+// executing it.
+message ExplainSqlRequest {
+  // Workspace that scopes the queryable source set.
+  Workspace workspace = 1;
+  // One read-only SQL statement.
+  string sql = 2;
+}
+
+// Query-engine plan renderings for one SQL statement.
+message QueryPlan {
+  // Parsed logical plan before logical optimization.
+  string unoptimized_logical_plan = 1;
+  // Logical plan after logical optimization.
+  string optimized_logical_plan = 2;
+  // Physical execution plan after physical optimization.
+  string physical_plan = 3;
+}
+
+// SQL explanation response.
+message ExplainSqlResponse {
+  // Generated query plan.
+  QueryPlan plan = 1;
+}
+
 // Page request parameters for list-style APIs.
 message PaginationRequest {
   // Maximum number of items to return. Zero means unbounded for compatibility.
@@ -73,4 +98,6 @@ service QueryService {
   rpc ListTables(ListTablesRequest) returns (ListTablesResponse);
   // Executes one read-only SQL statement and returns the full result set.
   rpc ExecuteSql(ExecuteSqlRequest) returns (ExecuteSqlResponse);
+  // Explains one read-only SQL statement without executing it.
+  rpc ExplainSql(ExplainSqlRequest) returns (ExplainSqlResponse);
 }
