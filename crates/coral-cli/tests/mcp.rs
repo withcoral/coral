@@ -10,7 +10,11 @@
 
 mod harness;
 
+use std::process::Stdio;
+use std::time::Duration;
+
 use harness::MockServer;
+use jsonschema::JSONSchema;
 use rmcp::{
     RoleClient, ServiceExt,
     model::{CallToolRequestParams, ReadResourceRequestParams},
@@ -18,6 +22,11 @@ use rmcp::{
     transport::{ConfigureCommandExt, TokioChildProcess},
 };
 use serde_json::{Map, Value, json};
+use tokio::{
+    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    process::{ChildStdin, ChildStdout, Command},
+    time::timeout,
+};
 
 fn json_object(value: &Value) -> Map<String, Value> {
     value.as_object().cloned().expect("json object")
@@ -60,6 +69,158 @@ async fn structured_tool_content(
     let result = client.call_tool(request).await?;
     assert_eq!(result.is_error, Some(false));
     Ok(result.structured_content.expect("structured content"))
+}
+
+async fn write_jsonrpc_message(
+    stdin: &mut ChildStdin,
+    message: &Value,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut payload = serde_json::to_vec(message)?;
+    payload.push(b'\n');
+    stdin.write_all(&payload).await?;
+    stdin.flush().await?;
+    Ok(())
+}
+
+async fn read_jsonrpc_response(
+    stdout: &mut BufReader<ChildStdout>,
+    id: i64,
+) -> Result<Value, Box<dyn std::error::Error>> {
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let bytes_read = timeout(Duration::from_secs(5), stdout.read_line(&mut line)).await??;
+        if bytes_read == 0 {
+            return Err(format!("mcp stdio closed before response id {id}").into());
+        }
+        let response: Value = serde_json::from_str(line.trim_end())?;
+        if response.get("id").and_then(Value::as_i64) != Some(id) {
+            continue;
+        }
+        assert_eq!(
+            response.get("jsonrpc").and_then(Value::as_str),
+            Some("2.0"),
+            "response id {id} must declare JSON-RPC 2.0: {response}"
+        );
+        assert!(
+            response.get("error").is_none(),
+            "response id {id} must not be an error: {response}"
+        );
+        return Ok(response);
+    }
+}
+
+fn assert_raw_tools_list_contract(response: &Value) {
+    let tools = response
+        .pointer("/result/tools")
+        .and_then(Value::as_array)
+        .expect("tools/list response should contain result.tools array");
+    assert!(!tools.is_empty(), "tools/list should advertise tools");
+    for tool in tools {
+        let name = tool
+            .get("name")
+            .and_then(Value::as_str)
+            .expect("advertised tool should include a string name");
+        let input_schema = tool
+            .get("inputSchema")
+            .unwrap_or_else(|| panic!("tool '{name}' should advertise inputSchema"));
+        assert!(
+            input_schema.is_object(),
+            "tool '{name}' inputSchema must be an object: {input_schema}"
+        );
+        JSONSchema::compile(input_schema).unwrap_or_else(|error| {
+            panic!(
+                "tool '{name}' inputSchema must compile as JSON Schema: {error}; schema: {input_schema}"
+            )
+        });
+        let Some(output_schema) = tool.get("outputSchema") else {
+            continue;
+        };
+        assert!(
+            output_schema.is_object(),
+            "tool '{name}' outputSchema must be an object when advertised: {output_schema}"
+        );
+        assert_eq!(
+            output_schema.get("type").and_then(Value::as_str),
+            Some("object"),
+            "tool '{name}' outputSchema must declare root type object: {output_schema}"
+        );
+        JSONSchema::compile(output_schema).unwrap_or_else(|error| {
+            panic!(
+                "tool '{name}' outputSchema must compile as JSON Schema: {error}; schema: {output_schema}"
+            )
+        });
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_stdio_raw_tools_list_advertises_client_compatible_schemas()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = MockServer::start().await;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_coral"))
+        .arg("mcp-stdio")
+        .env("CORAL_ENDPOINT", server.endpoint_uri())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()?;
+    let mut stdin = child.stdin.take().expect("mcp stdio stdin");
+    let stdout = child.stdout.take().expect("mcp stdio stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {
+                    "name": "coral-cli-raw-stdio-test",
+                    "version": "0.0.0"
+                }
+            }
+        }),
+    )
+    .await?;
+    let initialize = read_jsonrpc_response(&mut stdout, 1).await?;
+    assert!(
+        initialize.pointer("/result/protocolVersion").is_some(),
+        "initialize response should include protocolVersion: {initialize}"
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized",
+            "params": {}
+        }),
+    )
+    .await?;
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/list",
+            "params": {}
+        }),
+    )
+    .await?;
+    let tools_list = read_jsonrpc_response(&mut stdout, 2).await?;
+    assert_raw_tools_list_contract(&tools_list);
+
+    drop(stdin);
+    if timeout(Duration::from_secs(5), child.wait()).await.is_err() {
+        child.start_kill()?;
+        child.wait().await?;
+    }
+    server.shutdown().await;
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread")]

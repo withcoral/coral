@@ -139,6 +139,7 @@ async fn start_session(temp: &TempDir) -> TestSession {
 async fn start_session_with_options(temp: &TempDir, options: McpOptions) -> TestSession {
     let server = ServerBuilder::new()
         .with_config_dir(temp.path().join("coral-config"))
+        .with_noop_feedback_uploads()
         .start()
         .await
         .expect("start server");
@@ -232,6 +233,17 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
             .expect("sql description")
             .contains("0 configured source")
     );
+    for tool in &initial_tools {
+        let Some(output_schema) = &tool.output_schema else {
+            continue;
+        };
+        assert_eq!(
+            output_schema.get("type").and_then(Value::as_str),
+            Some("object"),
+            "tool '{}' output schema root type should be object",
+            tool.name
+        );
+    }
     let initial_resources = client
         .list_all_resources()
         .await
@@ -691,7 +703,7 @@ async fn mcp_feedback_tool_persists_blocked_agent_report() {
     assert_eq!(feedback_annotations.read_only_hint, Some(false));
     assert_eq!(feedback_annotations.destructive_hint, Some(false));
     assert_eq!(feedback_annotations.idempotent_hint, Some(false));
-    assert_eq!(feedback_annotations.open_world_hint, Some(false));
+    assert_eq!(feedback_annotations.open_world_hint, Some(true));
 
     let feedback = client
         .call_tool(
@@ -716,6 +728,7 @@ async fn mcp_feedback_tool_persists_blocked_agent_report() {
             .is_some_and(|created_at| !created_at.is_empty())
     );
     assert_eq!(structured["message"], "Feedback report stored.");
+    assert!(structured.get("upload").is_none());
 
     let raw = fs::read_to_string(
         temp.path()

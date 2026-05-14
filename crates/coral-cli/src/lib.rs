@@ -305,11 +305,12 @@ pub async fn run_from_env() -> Result<(), CliError> {
 
     match command.required_runtime() {
         RequiredRuntime::AppClient => {
-            let enable_stderr_logs = command.enables_stderr_logs();
             let is_mcp_stdio = matches!(&command, Command::McpStdio(_));
-            let bootstrap = bootstrap::bootstrap(enable_stderr_logs)
-                .await
-                .map_err(anyhow::Error::from)?;
+            let bootstrap = bootstrap::bootstrap(bootstrap::BootstrapOptions {
+                enable_stderr_logs: command.enables_stderr_logs(),
+            })
+            .await
+            .map_err(anyhow::Error::from)?;
             let app = bootstrap.app.clone();
             let result = if is_mcp_stdio {
                 run_app_command(app, command, Some(&ctx)).await

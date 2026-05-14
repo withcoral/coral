@@ -58,6 +58,10 @@ impl AppStateLayout {
         &self.state_lock
     }
 
+    pub(crate) fn local_trace_store_dir(&self) -> PathBuf {
+        self.config_dir.join("telemetry").join("traces")
+    }
+
     pub(crate) fn workspaces_root(&self) -> PathBuf {
         self.config_dir.join("workspaces")
     }
@@ -134,6 +138,10 @@ mod tests {
         assert_eq!(
             layout.feedback_reports_file(&workspace_name),
             std::path::Path::new("/tmp/coral-config/workspaces/default/feedback/reports.jsonl")
+        );
+        assert_eq!(
+            layout.local_trace_store_dir(),
+            std::path::Path::new("/tmp/coral-config/telemetry/traces")
         );
     }
 }
