@@ -92,6 +92,53 @@ tables:
     manifest_path
 }
 
+fn table_function_manifest_yaml() -> String {
+    r"
+name: searchy
+version: 0.1.0
+dsl_version: 3
+backend: http
+base_url: https://example.com
+tables:
+  - name: placeholder
+    description: Placeholder table
+    request:
+      method: GET
+      path: /placeholder
+    columns:
+      - name: id
+        type: Utf8
+functions:
+  - name: search_issues
+    description: Search issues
+    args:
+      - name: q
+        required: true
+        bind:
+          arg: q
+      - name: mode
+        values: [lexical, semantic, hybrid]
+        bind:
+          arg: search_type
+    request:
+      method: GET
+      path: /search/issues
+      query:
+        - name: q
+          from: arg
+          key: q
+    response:
+      rows_path: [items]
+    columns:
+      - name: title
+        type: Utf8
+        description: Issue title
+      - name: score
+        type: Float64
+"
+    .to_string()
+}
+
 fn json_object(value: &Value) -> Map<String, Value> {
     value.as_object().cloned().expect("json object")
 }
@@ -300,7 +347,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
             .description
             .as_deref()
             .expect("catalog description")
-            .contains("3 table(s) are currently visible")
+            .contains("3 table(s) and 0 table function(s) are currently visible")
     );
     assert!(
         updated_tools[3]
@@ -494,7 +541,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
     client
         .call_tool(
             CallToolRequestParams::new("list_catalog").with_arguments(json_object(&json!({
-                "kind": "table_function"
+                "kind": "function"
             }))),
         )
         .await
@@ -758,6 +805,106 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
         )
         .await
         .expect_err("empty column regex should fail");
+
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn mcp_list_catalog_returns_tables_and_table_functions() {
+    let temp = TempDir::new().expect("temp dir");
+    let mut session = start_session(&temp).await;
+    let client = &session.client;
+
+    add_demo_source(&mut session.source_client, table_function_manifest_yaml()).await;
+
+    let tools = client.list_all_tools().await.expect("tools");
+    assert!(tool_by_name(&tools, "list_tables").name.as_ref() == "list_tables");
+    let list_catalog_tool = tool_by_name(&tools, "list_catalog");
+    assert!(
+        list_catalog_tool
+            .description
+            .as_deref()
+            .expect("catalog description")
+            .contains("1 table(s) and 1 table function(s) are currently visible")
+    );
+
+    let catalog = client
+        .call_tool(CallToolRequestParams::new("list_catalog"))
+        .await
+        .expect("list catalog");
+    let catalog = catalog.structured_content.expect("structured catalog");
+    assert_eq!(catalog["total"], 2);
+    assert_eq!(catalog["items"][0]["kind"], "table");
+    assert_eq!(catalog["items"][0]["name"], "searchy.placeholder");
+    assert_eq!(catalog["items"][1]["kind"], "table_function");
+    assert_eq!(catalog["items"][1]["name"], "searchy.search_issues");
+    assert_eq!(
+        catalog["items"][1]["sql_reference"],
+        "searchy.search_issues"
+    );
+    assert_eq!(
+        catalog["items"][1]["table_function"]["function_name"],
+        "search_issues"
+    );
+    assert_eq!(
+        catalog["items"][1]["table_function"]["arguments"][1]["values"],
+        json!(["lexical", "semantic", "hybrid"])
+    );
+    assert_eq!(
+        catalog["items"][1]["table_function"]["result_columns"][0]["column_name"],
+        "title"
+    );
+    assert_matches_output_schema(list_catalog_tool, &catalog);
+
+    let explicit_all_kinds = client
+        .call_tool(
+            CallToolRequestParams::new("list_catalog").with_arguments(json_object(&json!({
+                "schema": "searchy",
+                "kind": null,
+            }))),
+        )
+        .await
+        .expect("list catalog with null kind");
+    let explicit_all_kinds = explicit_all_kinds
+        .structured_content
+        .expect("structured catalog");
+    assert_eq!(explicit_all_kinds["total"], 2);
+    assert_matches_output_schema(list_catalog_tool, &explicit_all_kinds);
+
+    let functions = client
+        .call_tool(
+            CallToolRequestParams::new("list_catalog").with_arguments(json_object(&json!({
+                "schema": "searchy",
+                "kind": "table_function",
+                "limit": 10,
+                "offset": 0
+            }))),
+        )
+        .await
+        .expect("list table functions through catalog");
+    let functions = functions.structured_content.expect("structured catalog");
+    assert_eq!(functions["total"], 1);
+    assert_eq!(functions["items"][0]["kind"], "table_function");
+    assert_eq!(functions["items"][0]["name"], "searchy.search_issues");
+    assert_matches_output_schema(list_catalog_tool, &functions);
+
+    let page = client
+        .call_tool(
+            CallToolRequestParams::new("list_catalog").with_arguments(json_object(&json!({
+                "schema": "searchy",
+                "limit": 1,
+                "offset": 1
+            }))),
+        )
+        .await
+        .expect("list paginated catalog");
+    let page = page.structured_content.expect("structured catalog");
+    assert_eq!(page["total"], 2);
+    assert_eq!(page["limit"], 1);
+    assert_eq!(page["offset"], 1);
+    assert_eq!(page["has_more"], false);
+    assert_eq!(page["items"][0]["kind"], "table_function");
+    assert_matches_output_schema(list_catalog_tool, &page);
 
     session.shutdown().await;
 }

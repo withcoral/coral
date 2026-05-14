@@ -3,9 +3,9 @@
 use std::collections::BTreeSet;
 
 use coral_api::v1::{
-    ExecuteSqlRequest, ListSourcesRequest, ListTablesRequest, ListTablesResponse,
-    PaginationRequest, Source, SubmitFeedbackRequest, Table as ProtoTable,
-    TableSummary as ProtoTableSummary,
+    ExecuteSqlRequest, ListSourcesRequest, ListTableFunctionsRequest, ListTableFunctionsResponse,
+    ListTablesRequest, ListTablesResponse, PaginationRequest, Source, SubmitFeedbackRequest,
+    Table as ProtoTable, TableSummary as ProtoTableSummary,
 };
 use coral_client::{
     AppClient, FeedbackClient, QueryClient, SourceClient, batches_to_json_rows,
@@ -40,12 +40,20 @@ use crate::{
 
 const LIST_TABLES_COUNT_LIMIT: u32 = 1;
 const LIST_TABLES_UNBOUNDED_LIMIT: u32 = 0;
+const LIST_TABLE_FUNCTIONS_COUNT_LIMIT: u32 = 1;
+const LIST_TABLE_FUNCTIONS_UNBOUNDED_LIMIT: u32 = 0;
 
 struct LoadTablesParams<'a> {
     schema_name: Option<&'a str>,
     table_name: Option<&'a str>,
     pagination: PaginationRequest,
     omit_columns: bool,
+}
+
+struct LoadTableFunctionsParams<'a> {
+    schema_name: Option<&'a str>,
+    function_name: Option<&'a str>,
+    pagination: PaginationRequest,
 }
 
 enum ToolCallOutcome {
@@ -111,6 +119,22 @@ impl CoralMcpServer {
             .into_inner())
     }
 
+    async fn load_table_functions(
+        &self,
+        params: LoadTableFunctionsParams<'_>,
+    ) -> Result<ListTableFunctionsResponse, tonic::Status> {
+        let mut query_client = self.query.clone();
+        Ok(query_client
+            .list_table_functions(Request::new(ListTableFunctionsRequest {
+                workspace: Some(default_workspace()),
+                schema_name: params.schema_name.unwrap_or_default().to_string(),
+                function_name: params.function_name.unwrap_or_default().to_string(),
+                pagination: Some(params.pagination),
+            }))
+            .await?
+            .into_inner())
+    }
+
     async fn load_all_table_summaries(&self) -> Result<Vec<ProtoTableSummary>, tonic::Status> {
         self.load_table_summaries(None).await
     }
@@ -170,6 +194,31 @@ impl CoralMcpServer {
                 .pagination
                 .map_or(0, |pagination| pagination.total_count as usize)
         })
+    }
+
+    async fn load_table_function_count(&self) -> Result<usize, tonic::Status> {
+        self.load_table_functions(LoadTableFunctionsParams {
+            schema_name: None,
+            function_name: None,
+            pagination: PaginationRequest {
+                limit: LIST_TABLE_FUNCTIONS_COUNT_LIMIT,
+                offset: 0,
+            },
+        })
+        .await
+        .map(|response| {
+            response
+                .pagination
+                .map_or(0, |pagination| pagination.total_count as usize)
+        })
+    }
+
+    async fn load_sources_and_counts(&self) -> Result<(Vec<Source>, usize, usize), tonic::Status> {
+        tokio::try_join!(
+            self.load_sources(),
+            self.load_table_count(),
+            self.load_table_function_count()
+        )
     }
 
     async fn load_sources_and_table_count(&self) -> Result<(Vec<Source>, usize), tonic::Status> {
@@ -281,9 +330,25 @@ impl CoralMcpServer {
         kind: Option<&str>,
         pagination: crate::surface::Pagination,
     ) -> Result<Value, tonic::Status> {
-        debug_assert!(matches!(kind, None | Some("table")));
-        let tables = self.load_table_summaries(schema_name).await?;
-        let items = tables.iter().map(CatalogItem::from_table).collect();
+        let mut items = Vec::new();
+        if kind != Some("table_function") {
+            let tables = self.load_table_summaries(schema_name).await?;
+            items.extend(tables.iter().map(CatalogItem::from_table));
+        }
+        if kind != Some("table") {
+            let functions = self
+                .load_table_functions(LoadTableFunctionsParams {
+                    schema_name,
+                    function_name: None,
+                    pagination: PaginationRequest {
+                        limit: LIST_TABLE_FUNCTIONS_UNBOUNDED_LIMIT,
+                        offset: 0,
+                    },
+                })
+                .await?
+                .table_functions;
+            items.extend(functions.iter().map(CatalogItem::from_table_function));
+        }
         catalog_value(items, pagination).map_err(|error| tonic::Status::internal(error.to_string()))
     }
 
@@ -561,14 +626,14 @@ impl ServerHandler for CoralMcpServer {
     ) -> Result<ListToolsResult, ErrorData> {
         let span = telemetry::list_tools_span(self.options.trace_parent.as_deref());
         telemetry::instrument_protocol(span, async {
-            let (sources, visible_table_count) = self
-                .load_sources_and_table_count()
+            let (sources, visible_table_count, visible_function_count) = self
+                .load_sources_and_counts()
                 .await
                 .map_err(|status| status_to_error_data(&status))?;
             let mut tools = vec![
                 sql_tool(&sources, visible_table_count),
                 list_tables_tool(visible_table_count),
-                list_catalog_tool(visible_table_count),
+                list_catalog_tool(visible_table_count, visible_function_count),
                 search_tables_tool(visible_table_count),
                 describe_table_tool(),
                 list_columns_tool(),

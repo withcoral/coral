@@ -107,10 +107,12 @@ pub(crate) fn list_tables_tool(visible_table_count: usize) -> Tool {
     )
 }
 
-pub(crate) fn list_catalog_tool(visible_table_count: usize) -> Tool {
+pub(crate) fn list_catalog_tool(visible_table_count: usize, visible_function_count: usize) -> Tool {
     Tool::new(
         "list_catalog",
-        format!("List queryable catalog items. {visible_table_count} table(s) are currently visible."),
+        format!(
+            "List queryable catalog items, including tables and source-scoped table functions. {visible_table_count} table(s) and {visible_function_count} table function(s) are currently visible."
+        ),
         json_object_schema(&json!({
             "type": "object",
             "properties": {
@@ -123,7 +125,7 @@ pub(crate) fn list_catalog_tool(visible_table_count: usize) -> Tool {
                     "anyOf": [
                         {
                             "type": "string",
-                            "enum": ["table"]
+                            "enum": ["table", "table_function"]
                         },
                         {
                             "type": "null"
@@ -350,10 +352,10 @@ pub(crate) fn list_catalog_arguments(
 ) -> Result<ListCatalogArguments, ErrorData> {
     let kind = optional_string_argument(arguments, "kind")?;
     match kind.as_deref() {
-        None | Some("table") => {}
+        None | Some("table" | "table_function") => {}
         Some(_) => {
             return Err(ErrorData::invalid_params(
-                "argument 'kind' must be 'table'",
+                "argument 'kind' must be 'table' or 'table_function'",
                 None,
             ));
         }

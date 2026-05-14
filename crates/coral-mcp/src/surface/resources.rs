@@ -5,7 +5,7 @@ use coral_api::v1::{ListTablesResponse, Source, Table, TableSummary};
 use rmcp::model::{AnnotateAble, RawResource, Resource};
 use serde_json::{Value, json};
 
-static INITIAL_INSTRUCTIONS: &str = "You are connected to Coral. Read `coral://guide` for query patterns, use `list_catalog`, `list_tables`, `search_tables`, `describe_table`, and `list_columns` to inspect queryable tables, and use `sql` for final queries.";
+static INITIAL_INSTRUCTIONS: &str = "You are connected to Coral. Read `coral://guide` for query patterns, use `list_catalog` to inspect queryable tables and table functions, use `list_tables`, `search_tables`, `describe_table`, and `list_columns` for table-specific discovery, and use `sql` for final queries.";
 static GUIDE_TEMPLATE: &str = include_str!("../guide_template.md");
 
 pub(crate) fn initial_instructions() -> &'static str {
@@ -241,9 +241,7 @@ mod tests {
         assert!(content.contains("Visible source schemas:"));
         assert!(content.contains("- slack"));
         assert!(
-            content.contains(
-                "Use each table's `sql_reference` from `list_tables` or `coral://tables`"
-            )
+            content.contains("Use each catalog item's `sql_reference` from `list_catalog`")
         );
     }
 

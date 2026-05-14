@@ -262,7 +262,7 @@ async fn mcp_stdio_lists_tools_and_resources() -> Result<(), Box<dyn std::error:
             .description
             .as_deref()
             .expect("list_catalog description")
-            .contains("3 table(s) are currently visible")
+            .contains("3 table(s) and 0 table function(s) are currently visible")
     );
     assert!(
         tools[3]
@@ -434,10 +434,20 @@ async fn assert_list_catalog_tool(
     assert_eq!(paginated["next_offset"], 2);
     assert_eq!(paginated["items"].as_array().expect("items").len(), 2);
 
+    let functions = structured_tool_content(
+        client,
+        CallToolRequestParams::new("list_catalog").with_arguments(json_object(&json!({
+            "kind": "table_function"
+        }))),
+    )
+    .await?;
+    assert_eq!(functions["total"], 0);
+    assert!(functions["items"].as_array().expect("items").is_empty());
+
     client
         .call_tool(
             CallToolRequestParams::new("list_catalog").with_arguments(json_object(&json!({
-                "kind": "table_function"
+                "kind": "function"
             }))),
         )
         .await
