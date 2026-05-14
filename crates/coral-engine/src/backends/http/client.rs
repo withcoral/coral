@@ -35,6 +35,7 @@ use coral_spec::{
 const DEFAULT_MAX_PAGES: usize = 10_000;
 const DEFAULT_HTTP_REQUEST_TIMEOUT_SECS: u64 = 30;
 const DEFAULT_HTTP_USER_AGENT: &str = concat!("coral/", env!("CARGO_PKG_VERSION"));
+const HTTP_BODY_PREVIEW_IDLE_TIMEOUT: Duration = Duration::from_millis(50);
 static NEXT_HTTP_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Executes manifest-driven HTTP requests for one registered source.
@@ -1043,14 +1044,33 @@ async fn read_unconsumed_response_body_preview(
     max_bytes: usize,
 ) -> reqwest::Result<UnconsumedTraceBodyPreview> {
     let read_limit = max_bytes.saturating_add(1);
+    let complete_body_size = response
+        .content_length()
+        .and_then(|length| usize::try_from(length).ok());
     let mut bytes = Vec::new();
     while bytes.len() < read_limit {
-        let Some(chunk) = response.chunk().await? else {
-            let body = String::from_utf8_lossy(&bytes);
-            return Ok(UnconsumedTraceBodyPreview {
-                content: trace_body_content(body.as_ref(), max_bytes),
-                complete_body_size: Some(bytes.len()),
-            });
+        if complete_body_size.is_some_and(|body_size| bytes.len() >= body_size) {
+            return Ok(trace_body_preview_from_bytes(
+                &bytes,
+                max_bytes,
+                Some(bytes.len()),
+                false,
+            ));
+        }
+        let chunk =
+            match tokio::time::timeout(HTTP_BODY_PREVIEW_IDLE_TIMEOUT, response.chunk()).await {
+                Ok(chunk) => chunk?,
+                Err(_elapsed) => {
+                    return Ok(trace_body_preview_from_bytes(&bytes, max_bytes, None, true));
+                }
+            };
+        let Some(chunk) = chunk else {
+            return Ok(trace_body_preview_from_bytes(
+                &bytes,
+                max_bytes,
+                Some(bytes.len()),
+                false,
+            ));
         };
         let remaining = read_limit.saturating_sub(bytes.len());
         let take = chunk.len().min(remaining);
@@ -1061,6 +1081,15 @@ async fn read_unconsumed_response_body_preview(
         );
     }
 
+    Ok(trace_body_preview_from_bytes(&bytes, max_bytes, None, true))
+}
+
+fn trace_body_preview_from_bytes(
+    bytes: &[u8],
+    max_bytes: usize,
+    complete_body_size: Option<usize>,
+    force_truncated: bool,
+) -> UnconsumedTraceBodyPreview {
     let preview_len = bytes.len().min(max_bytes);
     let body = String::from_utf8_lossy(
         bytes
@@ -1068,11 +1097,13 @@ async fn read_unconsumed_response_body_preview(
             .expect("preview length is bounded by buffer length"),
     );
     let mut content = trace_body_content(body.as_ref(), max_bytes);
-    content.truncated = true;
-    Ok(UnconsumedTraceBodyPreview {
+    if force_truncated {
+        content.truncated = true;
+    }
+    UnconsumedTraceBodyPreview {
         content,
-        complete_body_size: None,
-    })
+        complete_body_size,
+    }
 }
 
 fn request_error(
@@ -1963,6 +1994,29 @@ mod tests {
         .expect("preview read");
 
         assert_eq!(preview.content.body, "abcd");
+        assert!(preview.content.truncated);
+        assert_eq!(preview.complete_body_size, None);
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn unconsumed_response_preview_does_not_wait_for_short_body_eof() {
+        let (base_url, task) = spawn_hanging_response_body_server("abc".to_string()).await;
+        let response = reqwest::Client::new()
+            .get(format!("{base_url}/items"))
+            .send()
+            .await
+            .expect("response headers");
+
+        let preview = tokio::time::timeout(
+            Duration::from_millis(500),
+            read_unconsumed_response_body_preview(response, 4),
+        )
+        .await
+        .expect("short preview should return before EOF")
+        .expect("preview read");
+
+        assert_eq!(preview.content.body, "abc");
         assert!(preview.content.truncated);
         assert_eq!(preview.complete_body_size, None);
         task.abort();

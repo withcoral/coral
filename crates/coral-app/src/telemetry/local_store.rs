@@ -467,28 +467,13 @@ pub(crate) struct TraceSpanRecord {
     pub(crate) is_remote: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum StoredHttpBodyPreviewDirection {
-    Request,
-    Response,
-}
-
-impl From<HttpBodyPreviewDirection> for StoredHttpBodyPreviewDirection {
-    fn from(direction: HttpBodyPreviewDirection) -> Self {
-        match direction {
-            HttpBodyPreviewDirection::Request => Self::Request,
-            HttpBodyPreviewDirection::Response => Self::Response,
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct StoredHttpBodyPreviewRecord {
     trace_id: String,
     span_id: String,
     request_id: u64,
-    direction: StoredHttpBodyPreviewDirection,
+    #[serde(with = "http_body_preview_direction_serde")]
+    direction: HttpBodyPreviewDirection,
     body: String,
     truncated: bool,
 }
@@ -499,9 +484,43 @@ impl From<HttpBodyPreview> for StoredHttpBodyPreviewRecord {
             trace_id: preview.trace_id,
             span_id: preview.span_id,
             request_id: preview.request_id,
-            direction: preview.direction.into(),
+            direction: preview.direction,
             body: preview.body,
             truncated: preview.truncated,
+        }
+    }
+}
+
+mod http_body_preview_direction_serde {
+    use coral_engine::HttpBodyPreviewDirection;
+    use serde::{Deserialize as _, Deserializer, Serializer, de};
+
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "serde with-module serializers receive a borrowed field value"
+    )]
+    pub(super) fn serialize<S>(
+        direction: &HttpBodyPreviewDirection,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(match direction {
+            HttpBodyPreviewDirection::Request => "request",
+            HttpBodyPreviewDirection::Response => "response",
+        })
+    }
+
+    pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<HttpBodyPreviewDirection, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        match value.as_str() {
+            "request" => Ok(HttpBodyPreviewDirection::Request),
+            "response" => Ok(HttpBodyPreviewDirection::Response),
+            _ => Err(de::Error::unknown_variant(&value, &["request", "response"])),
         }
     }
 }
@@ -1056,11 +1075,11 @@ fn merge_http_body_preview(span: &mut TraceSpanRecord, preview: &StoredHttpBodyP
         })
         .unwrap_or_default();
     let (body_key, truncated_key) = match preview.direction {
-        StoredHttpBodyPreviewDirection::Request => (
+        HttpBodyPreviewDirection::Request => (
             "coral.http.request.body",
             "coral.http.request.body.truncated",
         ),
-        StoredHttpBodyPreviewDirection::Response => (
+        HttpBodyPreviewDirection::Response => (
             "coral.http.response.body",
             "coral.http.response.body.truncated",
         ),
