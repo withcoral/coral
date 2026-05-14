@@ -9,18 +9,19 @@ use std::fs;
 use coral_api::v1::{
     CreateBundledSourceRequest, DeleteSourceRequest, DiscoverSourcesRequest, ExecuteSqlRequest,
     ExplainSqlRequest, GetSourceInfoRequest, GetSourceRequest, ImportSourceRequest,
-    ListTablesRequest, PaginationRequest, QueryTestFailure, QueryTestSuccess, SourceOrigin,
-    SourceSecret, SourceVariable, ValidateSourceRequest, Workspace, query_test_result,
+    ListTableFunctionsRequest, ListTablesRequest, PaginationRequest, QueryTestFailure,
+    QueryTestSuccess, SourceOrigin, SourceSecret, SourceVariable, ValidateSourceRequest, Workspace,
+    query_test_result,
 };
 use coral_client::default_workspace;
 use tempfile::TempDir;
 use tonic::Request;
 
 use crate::harness::{
-    FailingHttpFixture, GrpcHarness, fixture_manifest_with_inputs_yaml,
-    fixture_manifest_with_multiple_tables_yaml, fixture_manifest_with_required_inputs_yaml,
-    fixture_manifest_with_test_queries_yaml, fixture_manifest_yaml, invalid_manifest_yaml,
-    source_dir,
+    FailingHttpFixture, GrpcHarness, fixture_manifest_with_functions_yaml,
+    fixture_manifest_with_inputs_yaml, fixture_manifest_with_multiple_tables_yaml,
+    fixture_manifest_with_required_inputs_yaml, fixture_manifest_with_test_queries_yaml,
+    fixture_manifest_yaml, invalid_manifest_yaml, source_dir,
 };
 
 #[tokio::test]
@@ -335,6 +336,89 @@ async fn assert_exact_table_filter(harness: &GrpcHarness) {
     assert_eq!(exact_table.tables[0].schema_name, "local_messages");
     assert_eq!(exact_table.tables[0].name, "messages");
     assert!(!exact_table.tables[0].columns.is_empty());
+}
+
+#[tokio::test]
+async fn list_table_functions_supports_filters_and_pagination() {
+    let harness = GrpcHarness::new().await;
+    harness
+        .import_source(
+            fixture_manifest_with_functions_yaml(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .await;
+
+    let page = harness
+        .query_client()
+        .list_table_functions(Request::new(ListTableFunctionsRequest {
+            workspace: Some(default_workspace()),
+            schema_name: "searchy".to_string(),
+            function_name: String::new(),
+            pagination: Some(PaginationRequest {
+                limit: 1,
+                offset: 0,
+            }),
+        }))
+        .await
+        .expect("paginated list table functions")
+        .into_inner();
+    let page_pagination = page.pagination.as_ref().expect("page pagination");
+    assert_eq!(page_pagination.total_count, 2);
+    assert_eq!(page_pagination.limit, 1);
+    assert_eq!(page_pagination.offset, 0);
+    assert!(page_pagination.has_more);
+    assert_eq!(page_pagination.next_offset, 1);
+    assert_eq!(page.table_functions.len(), 1);
+    assert_eq!(page.table_functions[0].schema_name, "searchy");
+    assert_eq!(page.table_functions[0].name, "lookup_issue");
+    assert_eq!(page.table_functions[0].arguments[0].name, "number");
+    assert!(page.table_functions[0].arguments[0].required);
+    assert_eq!(page.table_functions[0].result_columns[0].name, "title");
+    assert_eq!(
+        page.table_functions[0].result_columns[0].description,
+        "Issue title"
+    );
+
+    let exact = harness
+        .query_client()
+        .list_table_functions(Request::new(ListTableFunctionsRequest {
+            workspace: Some(default_workspace()),
+            schema_name: "searchy".to_string(),
+            function_name: "search_issues".to_string(),
+            pagination: None,
+        }))
+        .await
+        .expect("exact list table functions")
+        .into_inner();
+    let function = exact.table_functions.first().expect("exact table function");
+    assert_eq!(
+        exact.pagination.as_ref().expect("pagination").total_count,
+        1
+    );
+    assert_eq!(function.name, "search_issues");
+    assert_eq!(
+        function.arguments[1].values,
+        ["lexical", "semantic", "hybrid"]
+    );
+    assert_eq!(function.result_columns[1].data_type, "Float64");
+
+    let missing = harness
+        .query_client()
+        .list_table_functions(Request::new(ListTableFunctionsRequest {
+            workspace: Some(default_workspace()),
+            schema_name: "searchy".to_string(),
+            function_name: "missing".to_string(),
+            pagination: None,
+        }))
+        .await
+        .expect("missing list table functions")
+        .into_inner();
+    assert_eq!(
+        missing.pagination.as_ref().expect("pagination").total_count,
+        0
+    );
+    assert!(missing.table_functions.is_empty());
 }
 
 #[tokio::test]

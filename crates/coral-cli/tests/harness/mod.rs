@@ -18,10 +18,10 @@ use coral_api::v1::{
     DeleteSourceResponse, DiscoverSourcesRequest, DiscoverSourcesResponse, ExecuteSqlRequest,
     ExecuteSqlResponse, ExplainSqlRequest, ExplainSqlResponse, GetSourceInfoRequest,
     GetSourceInfoResponse, GetSourceRequest, GetSourceResponse, ImportSourceRequest,
-    ImportSourceResponse, ListSourcesRequest, ListSourcesResponse, ListTablesRequest,
-    ListTablesResponse, PaginationResponse, QueryPlan, Source, SourceInfo, SourceInputKind,
-    SourceInputSpec, SourceOrigin, Table, TableSummary, ValidateSourceRequest,
-    ValidateSourceResponse, Workspace,
+    ImportSourceResponse, ListSourcesRequest, ListSourcesResponse, ListTableFunctionsRequest,
+    ListTableFunctionsResponse, ListTablesRequest, ListTablesResponse, PaginationResponse,
+    QueryPlan, Source, SourceInfo, SourceInputKind, SourceInputSpec, SourceOrigin, Table,
+    TableSummary, ValidateSourceRequest, ValidateSourceResponse, Workspace,
 };
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
@@ -391,6 +391,7 @@ impl MockServerConfig {
 struct Captured {
     execute_sql: Mutex<Vec<ExecuteSqlRequest>>,
     list_tables: Mutex<Vec<ListTablesRequest>>,
+    list_table_functions: Mutex<Vec<ListTableFunctionsRequest>>,
     discover_sources: Mutex<Vec<DiscoverSourcesRequest>>,
     list_sources: Mutex<Vec<ListSourcesRequest>>,
     get_source: Mutex<Vec<GetSourceRequest>>,
@@ -480,6 +481,21 @@ impl QueryService for MockQueryService {
                 has_more,
                 next_offset,
             }),
+        }))
+    }
+
+    async fn list_table_functions(
+        &self,
+        request: Request<ListTableFunctionsRequest>,
+    ) -> Result<Response<ListTableFunctionsResponse>, Status> {
+        self.captured
+            .list_table_functions
+            .lock()
+            .expect("list_table_functions capture")
+            .push(request.into_inner());
+        Ok(Response::new(ListTableFunctionsResponse {
+            table_functions: Vec::new(),
+            pagination: Some(PaginationResponse::default()),
         }))
     }
 

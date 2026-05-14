@@ -55,3 +55,41 @@ message TableSummary {
   // User-facing query guidance.
   string guide = 6;
 }
+
+// An argument accepted by a source-scoped table function.
+message TableFunctionArgument {
+  // Argument name as used in a named SQL function call.
+  string name = 1;
+  // Whether callers must provide this argument.
+  bool required = 2;
+  // Allowed values, if the source declares an enum-like value set.
+  repeated string values = 3;
+}
+
+// A result column returned by a source-scoped table function.
+message TableFunctionResultColumn {
+  // Column name returned by the table function.
+  string name = 1;
+  // The DataFusion/Arrow data type rendered as text.
+  string data_type = 2;
+  // Whether the column can contain null values.
+  bool nullable = 3;
+  // Human-readable column description.
+  string description = 4;
+}
+
+// A source-scoped table function in one workspace.
+message TableFunction {
+  // Workspace whose source set makes this function visible.
+  Workspace workspace = 1;
+  // The schema name used for SQL qualification.
+  string schema_name = 2;
+  // The bare function name within the schema.
+  string name = 3;
+  // The user-facing function description.
+  string description = 4;
+  // Arguments accepted by the function.
+  repeated TableFunctionArgument arguments = 5;
+  // Columns returned by the function.
+  repeated TableFunctionResultColumn result_columns = 6;
+}

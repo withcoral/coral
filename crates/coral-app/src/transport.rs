@@ -5,8 +5,9 @@ use std::future::Future;
 use coral_api::{
     CORAL_ERROR_DOMAIN, grpc_response_status_code,
     v1::{
-        Column, QueryTestFailure, QueryTestResult, QueryTestSuccess, Source, Table, TableSummary,
-        ValidateSourceResponse, Workspace, query_test_result,
+        Column, QueryTestFailure, QueryTestResult, QueryTestSuccess, Source, Table, TableFunction,
+        TableFunctionArgument, TableFunctionResultColumn, TableSummary, ValidateSourceResponse,
+        Workspace, query_test_result,
     },
 };
 use opentelemetry::propagation::Extractor;
@@ -261,6 +262,37 @@ pub(crate) fn table_summary_to_proto(
         description: table.description,
         required_filters: table.required_filters,
         guide: table.guide,
+    }
+}
+
+pub(crate) fn table_function_to_proto(
+    workspace_name: &WorkspaceName,
+    function: coral_engine::TableFunctionInfo,
+) -> TableFunction {
+    TableFunction {
+        workspace: Some(workspace_to_proto(workspace_name)),
+        schema_name: function.schema_name,
+        name: function.function_name,
+        description: function.description,
+        arguments: function
+            .arguments
+            .into_iter()
+            .map(|argument| TableFunctionArgument {
+                name: argument.name,
+                required: argument.required,
+                values: argument.values,
+            })
+            .collect(),
+        result_columns: function
+            .result_columns
+            .into_iter()
+            .map(|column| TableFunctionResultColumn {
+                name: column.name,
+                data_type: column.data_type,
+                nullable: column.nullable,
+                description: column.description,
+            })
+            .collect(),
     }
 }
 

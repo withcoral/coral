@@ -251,6 +251,79 @@ pub(crate) fn fixture_manifest_with_multiple_tables_yaml(root: &Path) -> String 
     }))
 }
 
+pub(crate) fn fixture_manifest_with_functions_yaml() -> String {
+    manifest_yaml(&json!({
+        "name": "searchy",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": "https://example.com",
+        "tables": [{
+            "name": "placeholder",
+            "description": "Placeholder table",
+            "request": {
+                "method": "GET",
+                "path": "/placeholder",
+            },
+            "columns": [
+                { "name": "id", "type": "Utf8" },
+            ],
+        }],
+        "functions": [
+            {
+                "name": "lookup_issue",
+                "description": "Lookup issue",
+                "args": [
+                    {
+                        "name": "number",
+                        "required": true,
+                        "bind": { "arg": "number" },
+                    },
+                ],
+                "request": {
+                    "method": "GET",
+                    "path": "/issues/{{arg.number}}",
+                },
+                "response": {},
+                "columns": [
+                    { "name": "title", "type": "Utf8", "description": "Issue title" },
+                ],
+            },
+            {
+                "name": "search_issues",
+                "description": "Search issues",
+                "args": [
+                    {
+                        "name": "q",
+                        "required": true,
+                        "bind": { "arg": "q" },
+                    },
+                    {
+                        "name": "mode",
+                        "values": ["lexical", "semantic", "hybrid"],
+                        "bind": { "arg": "search_type" },
+                    },
+                ],
+                "request": {
+                    "method": "GET",
+                    "path": "/search/issues",
+                    "query": [
+                        { "name": "q", "from": "arg", "key": "q" },
+                        { "name": "search_type", "from": "arg", "key": "search_type" },
+                    ],
+                },
+                "response": {
+                    "rows_path": ["items"],
+                },
+                "columns": [
+                    { "name": "title", "type": "Utf8", "description": "Issue title" },
+                    { "name": "score", "type": "Float64" },
+                ],
+            },
+        ],
+    }))
+}
+
 pub(crate) fn fixture_manifest_with_test_queries_yaml(
     root: &Path,
     test_queries: &[&str],

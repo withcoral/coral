@@ -6,15 +6,16 @@ use arrow::record_batch::RecordBatch;
 use coral_api::v1::query_service_server::QueryService as QueryServiceApi;
 use coral_api::v1::{
     ExecuteSqlRequest, ExecuteSqlResponse, ExplainSqlRequest, ExplainSqlResponse,
-    ListTablesRequest, ListTablesResponse, PaginationResponse, QueryPlan as QueryPlanProto,
+    ListTableFunctionsRequest, ListTableFunctionsResponse, ListTablesRequest, ListTablesResponse,
+    PaginationResponse, QueryPlan as QueryPlanProto,
 };
 use tonic::{Request, Response, Status};
 
 use crate::bootstrap::core_status;
 use crate::query::manager::QueryManager;
 use crate::transport::{
-    grpc_span, instrument_grpc, query_status, table_summary_to_proto, table_to_proto,
-    workspace_name_from_proto,
+    grpc_span, instrument_grpc, query_status, table_function_to_proto, table_summary_to_proto,
+    table_to_proto, workspace_name_from_proto,
 };
 
 #[derive(Clone)]
@@ -61,7 +62,7 @@ impl QueryServiceApi for QueryService {
             let total = tables.len();
             let offset = pagination.offset as usize;
             let limit = pagination.limit as usize;
-            let page = paginate_tables(tables, offset, limit);
+            let page = paginate_items(tables, offset, limit);
             let returned_count = page.len();
             let has_more = pagination.limit != 0 && offset.saturating_add(returned_count) < total;
             let (tables, table_summaries) = if request.omit_columns {
@@ -82,6 +83,59 @@ impl QueryServiceApi for QueryService {
             Ok(Response::new(ListTablesResponse {
                 tables,
                 table_summaries,
+                pagination: Some(PaginationResponse {
+                    total_count: count_to_u32(total),
+                    limit: pagination.limit,
+                    offset: pagination.offset,
+                    has_more,
+                    next_offset: if has_more {
+                        count_to_u32(offset.saturating_add(returned_count))
+                    } else {
+                        0
+                    },
+                }),
+            }))
+        })
+        .await
+    }
+
+    async fn list_table_functions(
+        &self,
+        request: Request<ListTableFunctionsRequest>,
+    ) -> Result<Response<ListTableFunctionsResponse>, Status> {
+        let span = grpc_span(&request);
+        let queries = self.queries.clone();
+        instrument_grpc(span, async move {
+            let request = request.into_inner();
+            let pagination = request.pagination.unwrap_or_default();
+            let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            let schema_name = request.schema_name.trim();
+            let schema_name = if schema_name.is_empty() {
+                None
+            } else {
+                Some(schema_name)
+            };
+            let function_name = request.function_name.trim();
+            let function_name = if function_name.is_empty() {
+                None
+            } else {
+                Some(function_name)
+            };
+            let functions = queries
+                .list_table_functions(&workspace_name, schema_name, function_name)
+                .await
+                .map_err(query_status)?;
+            let total = functions.len();
+            let offset = pagination.offset as usize;
+            let limit = pagination.limit as usize;
+            let page = paginate_items(functions, offset, limit);
+            let returned_count = page.len();
+            let has_more = pagination.limit != 0 && offset.saturating_add(returned_count) < total;
+            Ok(Response::new(ListTableFunctionsResponse {
+                table_functions: page
+                    .into_iter()
+                    .map(|function| table_function_to_proto(&workspace_name, function))
+                    .collect(),
                 pagination: Some(PaginationResponse {
                     total_count: count_to_u32(total),
                     limit: pagination.limit,
@@ -146,12 +200,8 @@ impl QueryServiceApi for QueryService {
     }
 }
 
-fn paginate_tables(
-    tables: Vec<coral_engine::TableInfo>,
-    offset: usize,
-    limit: usize,
-) -> Vec<coral_engine::TableInfo> {
-    let iter = tables.into_iter().skip(offset);
+fn paginate_items<T>(items: Vec<T>, offset: usize, limit: usize) -> Vec<T> {
+    let iter = items.into_iter().skip(offset);
     if limit == 0 {
         iter.collect()
     } else {

@@ -92,10 +92,32 @@ message ListTablesResponse {
   repeated TableSummary table_summaries = 3;
 }
 
+// Lists all query-visible table functions in one workspace.
+message ListTableFunctionsRequest {
+  // Workspace whose current query-visible table functions should be listed.
+  Workspace workspace = 1;
+  // Optional exact schema/source name.
+  string schema_name = 2;
+  // Optional page request. Missing or zero limit keeps the unbounded behavior.
+  PaginationRequest pagination = 3;
+  // Optional exact function name. If set without `schema_name`, matches across all schemas.
+  string function_name = 4;
+}
+
+// Returns the query-visible table functions in one workspace.
+message ListTableFunctionsResponse {
+  // Query-visible table functions.
+  repeated TableFunction table_functions = 1;
+  // Page metadata for the table function list.
+  PaginationResponse pagination = 2;
+}
+
 // SQL query execution APIs.
 service QueryService {
   // Lists query-visible tables for one workspace.
   rpc ListTables(ListTablesRequest) returns (ListTablesResponse);
+  // Lists query-visible table functions for one workspace.
+  rpc ListTableFunctions(ListTableFunctionsRequest) returns (ListTableFunctionsResponse);
   // Executes one read-only SQL statement and returns the full result set.
   rpc ExecuteSql(ExecuteSqlRequest) returns (ExecuteSqlResponse);
   // Explains one read-only SQL statement without executing it.
