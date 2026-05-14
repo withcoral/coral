@@ -92,6 +92,53 @@ tables:
     manifest_path
 }
 
+fn table_function_manifest_yaml() -> String {
+    r"
+name: searchy
+version: 0.1.0
+dsl_version: 3
+backend: http
+base_url: https://example.com
+tables:
+  - name: placeholder
+    description: Placeholder table
+    request:
+      method: GET
+      path: /placeholder
+    columns:
+      - name: id
+        type: Utf8
+functions:
+  - name: search_issues
+    description: Search issues
+    args:
+      - name: q
+        required: true
+        bind:
+          arg: q
+      - name: mode
+        values: [lexical, semantic, hybrid]
+        bind:
+          arg: search_type
+    request:
+      method: GET
+      path: /search/issues
+      query:
+        - name: q
+          from: arg
+          key: q
+    response:
+      rows_path: [items]
+    columns:
+      - name: title
+        type: Utf8
+        description: Issue title
+      - name: score
+        type: Float64
+"
+    .to_string()
+}
+
 fn json_object(value: &Value) -> Map<String, Value> {
     value.as_object().cloned().expect("json object")
 }
@@ -222,6 +269,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
             "sql",
             "list_tables",
             "search_tables",
+            "list_table_functions",
             "describe_table",
             "list_columns"
         ]
@@ -672,6 +720,85 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
 }
 
 #[tokio::test]
+async fn mcp_list_table_functions_returns_metadata() {
+    let temp = TempDir::new().expect("temp dir");
+    let mut session = start_session(&temp).await;
+    let client = &session.client;
+
+    add_demo_source(&mut session.source_client, table_function_manifest_yaml()).await;
+    add_demo_source(
+        &mut session.source_client,
+        table_function_manifest_yaml().replace("name: searchy", "name: searchable"),
+    )
+    .await;
+
+    let tools = client.list_all_tools().await.expect("tools");
+    let list_tool = tool_by_name(&tools, "list_table_functions");
+    assert!(
+        list_tool
+            .description
+            .as_deref()
+            .expect("list function description")
+            .contains("2 table function(s) are currently visible")
+    );
+
+    let page = client
+        .call_tool(
+            CallToolRequestParams::new("list_table_functions")
+                .with_arguments(json_object(&json!({ "limit": 1 }))),
+        )
+        .await
+        .expect("list table function page");
+    let page = page.structured_content.expect("structured page");
+    assert_eq!(page["total"], 2);
+    assert_eq!(page["limit"], 1);
+    assert_eq!(page["offset"], 0);
+    assert_eq!(page["has_more"], true);
+    assert_eq!(page["next_offset"], 1);
+    assert_eq!(
+        page["table_functions"]
+            .as_array()
+            .expect("table functions array")
+            .len(),
+        1
+    );
+
+    let listed = client
+        .call_tool(
+            CallToolRequestParams::new("list_table_functions").with_arguments(json_object(
+                &json!({
+                    "schema": "searchy",
+                    "function": "search_issues"
+                }),
+            )),
+        )
+        .await
+        .expect("list exact table function");
+    let listed = listed.structured_content.expect("structured content");
+    assert_eq!(listed["total"], 1);
+    assert_eq!(listed["limit"], 50);
+    assert_eq!(
+        listed["table_functions"][0]["name"],
+        "searchy.search_issues"
+    );
+    assert_eq!(
+        listed["table_functions"][0]["arguments"][1]["values"],
+        json!(["lexical", "semantic", "hybrid"])
+    );
+    assert_eq!(
+        listed["table_functions"][0]["result_columns"][1]["data_type"],
+        "Float64"
+    );
+    assert_eq!(
+        listed["table_functions"][0]["sql_reference"],
+        "searchy.search_issues"
+    );
+    assert_matches_output_schema(list_tool, &listed);
+
+    session.shutdown().await;
+}
+
+#[tokio::test]
 async fn mcp_feedback_tool_persists_blocked_agent_report() {
     let temp = TempDir::new().expect("temp dir");
     let session = start_session_with_options(
@@ -694,12 +821,13 @@ async fn mcp_feedback_tool_persists_blocked_agent_report() {
             "sql",
             "list_tables",
             "search_tables",
+            "list_table_functions",
             "describe_table",
             "list_columns",
             "feedback"
         ]
     );
-    let feedback_annotations = tools[5].annotations.as_ref().expect("feedback annotations");
+    let feedback_annotations = tools[6].annotations.as_ref().expect("feedback annotations");
     assert_eq!(feedback_annotations.read_only_hint, Some(false));
     assert_eq!(feedback_annotations.destructive_hint, Some(false));
     assert_eq!(feedback_annotations.idempotent_hint, Some(false));

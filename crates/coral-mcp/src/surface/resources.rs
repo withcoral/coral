@@ -5,7 +5,7 @@ use coral_api::v1::{ListTablesResponse, Source, Table, TableSummary};
 use rmcp::model::{AnnotateAble, RawResource, Resource};
 use serde_json::{Value, json};
 
-static INITIAL_INSTRUCTIONS: &str = "You are connected to Coral. Read `coral://guide` for query patterns, use `list_tables`, `search_tables`, `describe_table`, and `list_columns` to inspect queryable tables, and use `sql` for final queries.";
+static INITIAL_INSTRUCTIONS: &str = "You are connected to Coral. Read `coral://guide` for query patterns, use `list_tables`, `search_tables`, `list_table_functions`, `describe_table`, and `list_columns` to inspect queryable tables and source-scoped table functions, and use `sql` for final queries.";
 static GUIDE_TEMPLATE: &str = include_str!("../guide_template.md");
 
 pub(crate) fn initial_instructions() -> &'static str {
@@ -29,7 +29,7 @@ pub(crate) fn tables_resource(visible_table_count: usize) -> Resource {
 pub(crate) fn guide_resource_content(sources: &[Source], tables: &[TableSummary]) -> String {
     let mut sources_section = String::from("## Available Schemas\n\n");
     sources_section.push_str(
-        "- coral: System metadata schema. Use `coral.tables` and `coral.columns` to discover queryable tables, columns, descriptions, and required filters.\n",
+        "- coral: System metadata schema. Use `coral.tables`, `coral.columns`, and `coral.table_functions` to discover queryable tables, columns, descriptions, required filters, and source-scoped table functions.\n",
     );
     let schemas = tables
         .iter()

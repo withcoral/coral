@@ -15,6 +15,13 @@ pub(crate) struct ListTablesArguments {
     pub(crate) offset: u32,
 }
 
+pub(crate) struct ListTableFunctionsArguments {
+    pub(crate) schema: Option<String>,
+    pub(crate) function: Option<String>,
+    pub(crate) limit: u32,
+    pub(crate) offset: u32,
+}
+
 pub(crate) struct SearchTablesArguments {
     pub(crate) pattern: String,
     pub(crate) schema: Option<String>,
@@ -138,6 +145,50 @@ pub(crate) fn search_tables_tool(visible_table_count: usize) -> Tool {
     .with_raw_output_schema(search_tables_output_schema())
     .with_annotations(
         ToolAnnotations::with_title("Search Tables")
+            .read_only(true)
+            .destructive(false)
+            .idempotent(true)
+            .open_world(false),
+    )
+}
+
+pub(crate) fn list_table_functions_tool(visible_function_count: usize) -> Tool {
+    Tool::new(
+        "list_table_functions",
+        format!(
+            "List queryable source-scoped table functions. {visible_function_count} table function(s) are currently visible."
+        ),
+        json_object_schema(&json!({
+            "type": "object",
+            "properties": {
+                "schema": {
+                    "type": "string",
+                    "description": "Optional exact schema/source name to list."
+                },
+                "function": {
+                    "type": "string",
+                    "description": "Optional exact table function name within the schema."
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum table functions to return, from 1 to 200. Defaults to 50.",
+                    "minimum": 1,
+                    "maximum": 200,
+                    "default": 50
+                },
+                "offset": {
+                    "type": "integer",
+                    "description": "Number of matching table functions to skip. Defaults to 0.",
+                    "minimum": 0,
+                    "maximum": u32::MAX,
+                    "default": 0
+                }
+            }
+        })),
+    )
+    .with_raw_output_schema(list_table_functions_output_schema())
+    .with_annotations(
+        ToolAnnotations::with_title("List Table Functions")
             .read_only(true)
             .destructive(false)
             .idempotent(true)
@@ -286,6 +337,18 @@ pub(crate) fn list_tables_arguments(
     })
 }
 
+pub(crate) fn list_table_functions_arguments(
+    arguments: Option<&Map<String, Value>>,
+) -> Result<ListTableFunctionsArguments, ErrorData> {
+    let pagination = parse_pagination(arguments)?;
+    Ok(ListTableFunctionsArguments {
+        schema: optional_string_argument(arguments, "schema")?,
+        function: optional_string_argument(arguments, "function")?,
+        limit: pagination.limit,
+        offset: pagination.offset,
+    })
+}
+
 pub(crate) fn search_tables_arguments(
     arguments: Option<&Map<String, Value>>,
 ) -> Result<SearchTablesArguments, ErrorData> {
@@ -418,6 +481,86 @@ fn search_tables_output_schema() -> Arc<Map<String, Value>> {
                         "required_filters"
                     ]
                 }
+            }
+        }
+    }))
+}
+
+fn list_table_functions_output_schema() -> Arc<Map<String, Value>> {
+    json_object_schema(&json!({
+        "type": "object",
+        "required": ["table_functions", "total", "limit", "offset", "has_more"],
+        "additionalProperties": false,
+        "properties": {
+            "table_functions": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": [
+                        "schema_name",
+                        "function_name",
+                        "name",
+                        "sql_reference",
+                        "description",
+                        "arguments",
+                        "result_columns"
+                    ],
+                    "additionalProperties": false,
+                    "properties": {
+                        "schema_name": { "type": "string" },
+                        "function_name": { "type": "string" },
+                        "name": { "type": "string" },
+                        "sql_reference": { "type": "string" },
+                        "description": { "type": "string" },
+                        "arguments": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "required": ["name", "required", "values"],
+                                "additionalProperties": false,
+                                "properties": {
+                                    "name": { "type": "string" },
+                                    "required": { "type": "boolean" },
+                                    "values": {
+                                        "type": "array",
+                                        "items": { "type": "string" }
+                                    }
+                                }
+                            }
+                        },
+                        "result_columns": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "required": ["column_name", "data_type", "is_nullable", "description"],
+                                "additionalProperties": false,
+                                "properties": {
+                                    "column_name": { "type": "string" },
+                                    "data_type": { "type": "string" },
+                                    "is_nullable": { "type": "boolean" },
+                                    "description": { "type": "string" }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "total": {
+                "type": "integer",
+                "minimum": 0
+            },
+            "limit": {
+                "type": "integer",
+                "minimum": 1
+            },
+            "offset": {
+                "type": "integer",
+                "minimum": 0
+            },
+            "has_more": { "type": "boolean" },
+            "next_offset": {
+                "type": "integer",
+                "minimum": 0
             }
         }
     }))

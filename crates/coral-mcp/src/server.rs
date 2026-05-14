@@ -3,9 +3,9 @@
 use std::collections::BTreeSet;
 
 use coral_api::v1::{
-    ExecuteSqlRequest, ListSourcesRequest, ListTablesRequest, ListTablesResponse,
-    PaginationRequest, Source, SubmitFeedbackRequest, Table as ProtoTable,
-    TableSummary as ProtoTableSummary,
+    ExecuteSqlRequest, ListSourcesRequest, ListTableFunctionsRequest, ListTableFunctionsResponse,
+    ListTablesRequest, ListTablesResponse, PaginationRequest, Source, SubmitFeedbackRequest,
+    Table as ProtoTable, TableFunction as ProtoTableFunction, TableSummary as ProtoTableSummary,
 };
 use coral_client::{
     AppClient, FeedbackClient, QueryClient, SourceClient, batches_to_json_rows,
@@ -27,24 +27,32 @@ use crate::{
     McpOptions,
     surface::{
         ColumnSummary, TableSummary, build_tool_result, compile_metadata_regex,
-        describe_table_arguments, describe_table_tool, feedback_tool, guide_resource,
-        guide_resource_content, initial_instructions, internal_status, list_columns_arguments,
-        list_columns_tool, list_tables_arguments, list_tables_tool, list_tables_value, page_items,
-        paged_value, required_string_argument, search_tables_arguments, search_tables_tool,
-        sql_tool, status_to_error_data, tables_resource, tables_resource_content,
-        tool_error_from_status, tool_error_result,
+        describe_table_arguments, describe_table_tool, feedback_tool,
+        format_schema_table_equivalent, guide_resource, guide_resource_content,
+        initial_instructions, internal_status, list_columns_arguments, list_columns_tool,
+        list_table_functions_arguments, list_table_functions_tool, list_tables_arguments,
+        list_tables_tool, list_tables_value, page_items, paged_value, required_string_argument,
+        search_tables_arguments, search_tables_tool, sql_tool, status_to_error_data,
+        tables_resource, tables_resource_content, tool_error_from_status, tool_error_result,
     },
     telemetry,
 };
 
 const LIST_TABLES_COUNT_LIMIT: u32 = 1;
 const LIST_TABLES_UNBOUNDED_LIMIT: u32 = 0;
+const LIST_TABLE_FUNCTIONS_COUNT_LIMIT: u32 = 1;
 
 struct LoadTablesParams<'a> {
     schema_name: Option<&'a str>,
     table_name: Option<&'a str>,
     pagination: PaginationRequest,
     omit_columns: bool,
+}
+
+struct LoadTableFunctionsParams<'a> {
+    schema_name: Option<&'a str>,
+    function_name: Option<&'a str>,
+    pagination: PaginationRequest,
 }
 
 enum ToolCallOutcome {
@@ -110,6 +118,22 @@ impl CoralMcpServer {
             .into_inner())
     }
 
+    async fn load_table_functions(
+        &self,
+        params: LoadTableFunctionsParams<'_>,
+    ) -> Result<ListTableFunctionsResponse, tonic::Status> {
+        let mut query_client = self.query.clone();
+        Ok(query_client
+            .list_table_functions(Request::new(ListTableFunctionsRequest {
+                workspace: Some(default_workspace()),
+                schema_name: params.schema_name.unwrap_or_default().to_string(),
+                function_name: params.function_name.unwrap_or_default().to_string(),
+                pagination: Some(params.pagination),
+            }))
+            .await?
+            .into_inner())
+    }
+
     async fn load_all_table_summaries(&self) -> Result<Vec<ProtoTableSummary>, tonic::Status> {
         self.load_table_summaries(None).await
     }
@@ -169,6 +193,31 @@ impl CoralMcpServer {
                 .pagination
                 .map_or(0, |pagination| pagination.total_count as usize)
         })
+    }
+
+    async fn load_table_function_count(&self) -> Result<usize, tonic::Status> {
+        self.load_table_functions(LoadTableFunctionsParams {
+            schema_name: None,
+            function_name: None,
+            pagination: PaginationRequest {
+                limit: LIST_TABLE_FUNCTIONS_COUNT_LIMIT,
+                offset: 0,
+            },
+        })
+        .await
+        .map(|response| {
+            response
+                .pagination
+                .map_or(0, |pagination| pagination.total_count as usize)
+        })
+    }
+
+    async fn load_sources_and_counts(&self) -> Result<(Vec<Source>, usize, usize), tonic::Status> {
+        tokio::try_join!(
+            self.load_sources(),
+            self.load_table_count(),
+            self.load_table_function_count()
+        )
     }
 
     async fn load_sources_and_table_count(&self) -> Result<(Vec<Source>, usize), tonic::Status> {
@@ -318,6 +367,24 @@ impl CoralMcpServer {
                     .map(|response| list_tables_value(&response));
                 Ok(ToolCallOutcome::from_value_result("Table listing", result))
             }
+            "list_table_functions" => {
+                let arguments = list_table_functions_arguments(request.arguments.as_ref())?;
+                let result = self
+                    .load_table_functions(LoadTableFunctionsParams {
+                        schema_name: arguments.schema.as_deref(),
+                        function_name: arguments.function.as_deref(),
+                        pagination: PaginationRequest {
+                            limit: arguments.limit,
+                            offset: arguments.offset,
+                        },
+                    })
+                    .await
+                    .map(|response| list_table_functions_value(&response));
+                Ok(ToolCallOutcome::from_value_result(
+                    "Table function listing",
+                    result,
+                ))
+            }
             "search_tables" => {
                 self.search_tables_tool_result(request.arguments.as_ref())
                     .await
@@ -400,6 +467,56 @@ impl CoralMcpServer {
 
 fn table_summaries_from_proto(tables: &[ProtoTableSummary]) -> Vec<TableSummary> {
     tables.iter().map(TableSummary::from_proto).collect()
+}
+
+fn list_table_functions_value(response: &ListTableFunctionsResponse) -> Value {
+    let pagination = response.pagination.unwrap_or_default();
+    let mut value = serde_json::json!({
+        "table_functions": response
+            .table_functions
+            .iter()
+            .map(table_function_value)
+            .collect::<Vec<_>>(),
+        "total": pagination.total_count,
+        "limit": pagination.limit,
+        "offset": pagination.offset,
+        "has_more": pagination.has_more,
+    });
+    if pagination.has_more {
+        value
+            .as_object_mut()
+            .expect("list table functions value is initialized as a JSON object")
+            .insert(
+                "next_offset".to_string(),
+                serde_json::json!(pagination.next_offset),
+            );
+    }
+    value
+}
+
+fn table_function_value(function: &ProtoTableFunction) -> Value {
+    serde_json::json!({
+        "schema_name": function.schema_name,
+        "function_name": function.name,
+        "name": format!("{}.{}", function.schema_name, function.name),
+        "sql_reference": format_schema_table_equivalent(&function.schema_name, &function.name),
+        "description": function.description,
+        "arguments": function.arguments.iter().map(|argument| {
+            serde_json::json!({
+                "name": argument.name,
+                "required": argument.required,
+                "values": argument.values,
+            })
+        }).collect::<Vec<_>>(),
+        "result_columns": function.result_columns.iter().map(|column| {
+            serde_json::json!({
+                "column_name": column.name,
+                "data_type": column.data_type,
+                "is_nullable": column.nullable,
+                "description": column.description,
+            })
+        }).collect::<Vec<_>>(),
+    })
 }
 
 fn describe_found_table_value(table: &ProtoTable) -> Value {
@@ -526,14 +643,15 @@ impl ServerHandler for CoralMcpServer {
     ) -> Result<ListToolsResult, ErrorData> {
         let span = telemetry::list_tools_span(self.options.trace_parent.as_deref());
         telemetry::instrument_protocol(span, async {
-            let (sources, visible_table_count) = self
-                .load_sources_and_table_count()
+            let (sources, visible_table_count, visible_function_count) = self
+                .load_sources_and_counts()
                 .await
                 .map_err(|status| status_to_error_data(&status))?;
             let mut tools = vec![
                 sql_tool(&sources, visible_table_count),
                 list_tables_tool(visible_table_count),
                 search_tables_tool(visible_table_count),
+                list_table_functions_tool(visible_function_count),
                 describe_table_tool(),
                 list_columns_tool(),
             ];

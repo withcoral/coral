@@ -238,6 +238,7 @@ async fn mcp_stdio_lists_tools_and_resources() -> Result<(), Box<dyn std::error:
             "sql",
             "list_tables",
             "search_tables",
+            "list_table_functions",
             "describe_table",
             "list_columns"
         ]
@@ -263,7 +264,6 @@ async fn mcp_stdio_lists_tools_and_resources() -> Result<(), Box<dyn std::error:
             .expect("search_tables description")
             .contains("3 table(s) are currently visible")
     );
-
     let resources = client.list_all_resources().await?;
     assert_eq!(
         resources
@@ -309,6 +309,7 @@ async fn mcp_stdio_enable_feedback_lists_feedback_tool() -> Result<(), Box<dyn s
             "sql",
             "list_tables",
             "search_tables",
+            "list_table_functions",
             "describe_table",
             "list_columns",
             "feedback"
