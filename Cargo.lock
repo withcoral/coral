@@ -1045,6 +1045,7 @@ dependencies = [
  "coral-mcp",
  "coral-spec",
  "dialoguer",
+ "jsonschema",
  "rmcp",
  "rust-embed",
  "serde_json",
