@@ -1,9 +1,10 @@
 //! RMCP server implementation for Coral's stdio MCP surface.
 
 use coral_api::v1::{
-    DescribeTableRequest, DescribeTableResponse, ExecuteSqlRequest, ListColumnsRequest,
-    ListSourcesRequest, ListTablesRequest, ListTablesResponse, PaginationRequest,
-    SearchTablesRequest, Source, SubmitFeedbackRequest, TableSummary as ProtoTableSummary,
+    CatalogItemKind as ProtoCatalogItemKind, DescribeTableRequest, DescribeTableResponse,
+    ExecuteSqlRequest, ListCatalogRequest, ListCatalogResponse, ListColumnsRequest,
+    ListSourcesRequest, PaginationRequest, SearchCatalogRequest, Source, SubmitFeedbackRequest,
+    TableSummary as ProtoTableSummary, catalog_item,
 };
 use coral_client::{
     AppClient, CatalogClient, FeedbackClient, QueryClient, SourceClient, batches_to_json_rows,
@@ -18,6 +19,7 @@ use rmcp::{
     },
     service::{RequestContext, RoleServer},
 };
+use serde::Serialize;
 use serde_json::{Map, Value};
 use tonic::Request;
 
@@ -26,9 +28,9 @@ use crate::{
     surface::{
         build_tool_result, describe_table_arguments, describe_table_tool, describe_table_value,
         feedback_tool, guide_resource, guide_resource_content, initial_instructions,
-        internal_status, list_columns_arguments, list_columns_tool, list_columns_value,
-        list_tables_arguments, list_tables_tool, list_tables_value, required_string_argument,
-        search_tables_arguments, search_tables_tool, search_tables_value, sql_tool,
+        internal_status, list_catalog_arguments, list_catalog_tool, list_catalog_value,
+        list_columns_arguments, list_columns_tool, list_columns_value, required_string_argument,
+        search_catalog_arguments, search_catalog_tool, search_catalog_value, sql_tool,
         status_to_error_data, tables_resource, tables_resource_content, tool_error_from_status,
         tool_error_result,
     },
@@ -36,14 +38,11 @@ use crate::{
 };
 
 const LIST_TABLES_COUNT_LIMIT: u32 = 1;
-const LIST_TABLES_UNBOUNDED_LIMIT: u32 = 0;
-
-struct LoadTablesParams<'a> {
-    schema_name: Option<&'a str>,
-    table_name: Option<&'a str>,
-    pagination: PaginationRequest,
-    omit_columns: bool,
-}
+const LIST_TABLE_FUNCTIONS_COUNT_LIMIT: u32 = 1;
+const LIST_CATALOG_UNBOUNDED_LIMIT: u32 = 0;
+const CATALOG_KIND_ALL: ProtoCatalogItemKind = ProtoCatalogItemKind::Unspecified;
+const CATALOG_KIND_TABLE: ProtoCatalogItemKind = ProtoCatalogItemKind::Table;
+const CATALOG_KIND_TABLE_FUNCTION: ProtoCatalogItemKind = ProtoCatalogItemKind::TableFunction;
 
 enum ToolCallOutcome {
     Success(Value),
@@ -51,6 +50,18 @@ enum ToolCallOutcome {
         operation: &'static str,
         status: tonic::Status,
     },
+}
+
+#[derive(Serialize)]
+struct SqlRowsValue {
+    rows: Vec<Value>,
+}
+
+#[derive(Serialize)]
+struct FeedbackStoredValue {
+    feedback_id: String,
+    created_at: String,
+    message: &'static str,
 }
 
 impl ToolCallOutcome {
@@ -93,18 +104,19 @@ impl CoralMcpServer {
             .sources)
     }
 
-    async fn load_tables(
+    async fn load_catalog(
         &self,
-        params: LoadTablesParams<'_>,
-    ) -> Result<ListTablesResponse, tonic::Status> {
+        schema_name: Option<&str>,
+        kind: ProtoCatalogItemKind,
+        pagination: PaginationRequest,
+    ) -> Result<ListCatalogResponse, tonic::Status> {
         let mut catalog_client = self.catalog.clone();
         Ok(catalog_client
-            .list_tables(Request::new(ListTablesRequest {
+            .list_catalog(Request::new(ListCatalogRequest {
                 workspace: Some(default_workspace()),
-                schema_name: params.schema_name.unwrap_or_default().to_string(),
-                table_name: params.table_name.unwrap_or_default().to_string(),
-                pagination: Some(params.pagination),
-                omit_columns: params.omit_columns,
+                schema_name: schema_name.unwrap_or_default().to_string(),
+                kind: kind as i32,
+                pagination: Some(pagination),
             }))
             .await?
             .into_inner())
@@ -118,18 +130,40 @@ impl CoralMcpServer {
         &self,
         schema_name: Option<&str>,
     ) -> Result<Vec<ProtoTableSummary>, tonic::Status> {
-        Ok(self
-            .load_tables(LoadTablesParams {
-                schema_name,
-                table_name: None,
-                pagination: PaginationRequest {
-                    limit: LIST_TABLES_UNBOUNDED_LIMIT,
-                    offset: 0,
-                },
-                omit_columns: true,
-            })
-            .await?
-            .table_summaries)
+        self.load_catalog(
+            schema_name,
+            CATALOG_KIND_TABLE,
+            PaginationRequest {
+                limit: LIST_CATALOG_UNBOUNDED_LIMIT,
+                offset: 0,
+            },
+        )
+        .await
+        .map(|response| {
+            response
+                .items
+                .into_iter()
+                .filter_map(|item| match item.item {
+                    Some(catalog_item::Item::Table(table)) => Some(table),
+                    Some(catalog_item::Item::TableFunction(_)) | None => None,
+                })
+                .collect()
+        })
+    }
+
+    async fn load_guide_catalog(
+        &self,
+    ) -> Result<(Vec<ProtoTableSummary>, Vec<String>), tonic::Status> {
+        self.load_catalog(
+            None,
+            CATALOG_KIND_ALL,
+            PaginationRequest {
+                limit: LIST_CATALOG_UNBOUNDED_LIMIT,
+                offset: 0,
+            },
+        )
+        .await
+        .map(guide_catalog_from_response)
     }
 
     async fn load_table_description(
@@ -149,15 +183,14 @@ impl CoralMcpServer {
     }
 
     async fn load_table_count(&self) -> Result<usize, tonic::Status> {
-        self.load_tables(LoadTablesParams {
-            schema_name: None,
-            table_name: None,
-            pagination: PaginationRequest {
+        self.load_catalog(
+            None,
+            CATALOG_KIND_TABLE,
+            PaginationRequest {
                 limit: LIST_TABLES_COUNT_LIMIT,
                 offset: 0,
             },
-            omit_columns: true,
-        })
+        )
         .await
         .map(|response| {
             response
@@ -166,14 +199,39 @@ impl CoralMcpServer {
         })
     }
 
-    async fn load_sources_and_table_count(&self) -> Result<(Vec<Source>, usize), tonic::Status> {
-        tokio::try_join!(self.load_sources(), self.load_table_count())
+    async fn load_table_function_count(&self) -> Result<usize, tonic::Status> {
+        self.load_catalog(
+            None,
+            CATALOG_KIND_TABLE_FUNCTION,
+            PaginationRequest {
+                limit: LIST_TABLE_FUNCTIONS_COUNT_LIMIT,
+                offset: 0,
+            },
+        )
+        .await
+        .map(|response| {
+            response
+                .pagination
+                .map_or(0, |pagination| pagination.total_count as usize)
+        })
     }
 
-    async fn load_sources_and_table_summaries(
+    async fn load_sources_and_catalog_counts(
         &self,
-    ) -> Result<(Vec<Source>, Vec<ProtoTableSummary>), tonic::Status> {
-        tokio::try_join!(self.load_sources(), self.load_all_table_summaries())
+    ) -> Result<(Vec<Source>, usize, usize), tonic::Status> {
+        tokio::try_join!(
+            self.load_sources(),
+            self.load_table_count(),
+            self.load_table_function_count()
+        )
+    }
+
+    async fn load_sources_and_guide_catalog(
+        &self,
+    ) -> Result<(Vec<Source>, Vec<ProtoTableSummary>, Vec<String>), tonic::Status> {
+        let (sources, (tables, table_function_schema_names)) =
+            tokio::try_join!(self.load_sources(), self.load_guide_catalog())?;
+        Ok((sources, tables, table_function_schema_names))
     }
 
     async fn query_rows(&self, sql: &str) -> Result<Vec<Value>, tonic::Status> {
@@ -192,9 +250,9 @@ impl CoralMcpServer {
     }
 
     async fn execute_sql_value(&self, sql: &str) -> Result<Value, tonic::Status> {
-        self.query_rows(sql)
-            .await
-            .map(|rows| serde_json::json!({ "rows": rows }))
+        self.query_rows(sql).await.map(|rows| {
+            serde_json::to_value(SqlRowsValue { rows }).expect("SQL rows value serializes")
+        })
     }
 
     async fn submit_feedback_value(
@@ -216,42 +274,68 @@ impl CoralMcpServer {
         let report = response
             .report
             .ok_or_else(|| tonic::Status::internal("feedback response missing report"))?;
-        Ok(serde_json::json!({
-            "feedback_id": report.id,
-            "created_at": report.created_at,
-            "message": "Feedback report stored.",
-        }))
+        Ok(serde_json::to_value(FeedbackStoredValue {
+            feedback_id: report.id,
+            created_at: report.created_at,
+            message: "Feedback report stored.",
+        })
+        .expect("feedback stored value serializes"))
     }
 
-    async fn search_tables_tool_result(
+    async fn search_catalog_tool_result(
         &self,
         request_arguments: Option<&Map<String, Value>>,
     ) -> Result<ToolCallOutcome, ErrorData> {
-        let arguments = search_tables_arguments(request_arguments)?;
+        let arguments = search_catalog_arguments(request_arguments)?;
         let mut catalog_client = self.catalog.clone();
         match catalog_client
-            .search_tables(Request::new(SearchTablesRequest {
+            .search_catalog(Request::new(SearchCatalogRequest {
                 workspace: Some(default_workspace()),
                 pattern: arguments.pattern,
                 ignore_case: arguments.ignore_case,
                 schema_name: arguments.schema.unwrap_or_default(),
+                kind: catalog_item_kind_from_tool(arguments.kind.as_deref()) as i32,
                 pagination: Some(PaginationRequest {
                     limit: arguments.pagination.limit,
                     offset: arguments.pagination.offset,
                 }),
             }))
             .await
-            .map(|response| search_tables_value(&response.into_inner()))
+            .map(|response| search_catalog_value(&response.into_inner()))
         {
             Ok(value) => Ok(ToolCallOutcome::Success(value)),
             Err(status) if status.code() == tonic::Code::InvalidArgument => {
                 Err(status_to_error_data(&status))
             }
             Err(status) => Ok(ToolCallOutcome::ToolError {
-                operation: "Table search",
+                operation: "Catalog search",
                 status,
             }),
         }
+    }
+
+    async fn list_catalog_tool_result(
+        &self,
+        request_arguments: Option<&Map<String, Value>>,
+    ) -> Result<ToolCallOutcome, ErrorData> {
+        let arguments = list_catalog_arguments(request_arguments)?;
+        let mut catalog_client = self.catalog.clone();
+        let result = catalog_client
+            .list_catalog(Request::new(ListCatalogRequest {
+                workspace: Some(default_workspace()),
+                schema_name: arguments.schema.unwrap_or_default(),
+                kind: catalog_item_kind_from_tool(arguments.kind.as_deref()) as i32,
+                pagination: Some(PaginationRequest {
+                    limit: arguments.pagination.limit,
+                    offset: arguments.pagination.offset,
+                }),
+            }))
+            .await
+            .map(|response| list_catalog_value(&response.into_inner()));
+        Ok(ToolCallOutcome::from_value_result(
+            "Catalog listing",
+            result,
+        ))
     }
 
     async fn describe_table_tool_result(
@@ -287,24 +371,12 @@ impl CoralMcpServer {
                     self.execute_sql_value(&sql).await,
                 ))
             }
-            "list_tables" => {
-                let arguments = list_tables_arguments(request.arguments.as_ref())?;
-                let result = self
-                    .load_tables(LoadTablesParams {
-                        schema_name: arguments.schema.as_deref(),
-                        table_name: None,
-                        pagination: PaginationRequest {
-                            limit: arguments.limit,
-                            offset: arguments.offset,
-                        },
-                        omit_columns: true,
-                    })
+            "list_catalog" => {
+                self.list_catalog_tool_result(request.arguments.as_ref())
                     .await
-                    .map(|response| list_tables_value(&response));
-                Ok(ToolCallOutcome::from_value_result("Table listing", result))
             }
-            "search_tables" => {
-                self.search_tables_tool_result(request.arguments.as_ref())
+            "search_catalog" => {
+                self.search_catalog_tool_result(request.arguments.as_ref())
                     .await
             }
             "describe_table" => {
@@ -405,14 +477,14 @@ impl ServerHandler for CoralMcpServer {
     ) -> Result<ListToolsResult, ErrorData> {
         let span = telemetry::list_tools_span(self.options.trace_parent.as_deref());
         telemetry::instrument_protocol(span, async {
-            let (sources, visible_table_count) = self
-                .load_sources_and_table_count()
+            let (sources, visible_table_count, visible_function_count) = self
+                .load_sources_and_catalog_counts()
                 .await
                 .map_err(|status| status_to_error_data(&status))?;
             let mut tools = vec![
                 sql_tool(&sources, visible_table_count),
-                list_tables_tool(visible_table_count),
-                search_tables_tool(visible_table_count),
+                list_catalog_tool(visible_table_count, visible_function_count),
+                search_catalog_tool(visible_table_count, visible_function_count),
                 describe_table_tool(),
                 list_columns_tool(),
             ];
@@ -442,12 +514,12 @@ impl ServerHandler for CoralMcpServer {
     ) -> Result<ListResourcesResult, ErrorData> {
         let span = telemetry::list_resources_span(self.options.trace_parent.as_deref());
         telemetry::instrument_protocol(span, async {
-            let (sources, visible_table_count) = self
-                .load_sources_and_table_count()
+            let (sources, visible_table_count, visible_function_count) = self
+                .load_sources_and_catalog_counts()
                 .await
                 .map_err(|status| status_to_error_data(&status))?;
             Ok(ListResourcesResult::with_all_items(vec![
-                guide_resource(&sources, visible_table_count),
+                guide_resource(&sources, visible_table_count, visible_function_count),
                 tables_resource(visible_table_count),
             ]))
         })
@@ -466,13 +538,13 @@ impl ServerHandler for CoralMcpServer {
         telemetry::instrument_protocol(span, async {
             match request.uri.as_str() {
                 "coral://guide" => {
-                    let (sources, tables) = self
-                        .load_sources_and_table_summaries()
+                    let (sources, tables, table_function_schema_names) = self
+                        .load_sources_and_guide_catalog()
                         .await
                         .map_err(|status| status_to_error_data(&status))?;
                     Ok(ReadResourceResult::new(vec![
                         ResourceContents::text(
-                            guide_resource_content(&sources, &tables),
+                            guide_resource_content(&sources, &tables, &table_function_schema_names),
                             request.uri,
                         )
                         .with_mime_type("text/markdown"),
@@ -522,4 +594,30 @@ fn finish_tool_call(
             Err(error)
         }
     }
+}
+
+fn catalog_item_kind_from_tool(kind: Option<&str>) -> ProtoCatalogItemKind {
+    match kind {
+        Some("table") => ProtoCatalogItemKind::Table,
+        Some("table_function") => ProtoCatalogItemKind::TableFunction,
+        None => ProtoCatalogItemKind::Unspecified,
+        Some(_) => unreachable!("catalog tool argument validation restricts kind"),
+    }
+}
+
+fn guide_catalog_from_response(
+    response: ListCatalogResponse,
+) -> (Vec<ProtoTableSummary>, Vec<String>) {
+    let mut tables = Vec::new();
+    let mut table_function_schema_names = Vec::new();
+    for item in response.items {
+        match item.item {
+            Some(catalog_item::Item::Table(table)) => tables.push(table),
+            Some(catalog_item::Item::TableFunction(function)) => {
+                table_function_schema_names.push(function.schema_name);
+            }
+            None => {}
+        }
+    }
+    (tables, table_function_schema_names)
 }

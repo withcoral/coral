@@ -5,11 +5,12 @@ use std::future::Future;
 use coral_api::{
     CORAL_ERROR_DOMAIN, grpc_response_status_code,
     v1::{
-        Column, ColumnSearchResult as ProtoColumnSearchResult,
+        CatalogItem as ProtoCatalogItem, CatalogSearchResult as ProtoCatalogSearchResult, Column,
+        ColumnSearchResult as ProtoColumnSearchResult,
         DescribeTableResponse as ProtoDescribeTableResponse, PaginationResponse, QueryTestFailure,
-        QueryTestResult, QueryTestSuccess, Source, Table,
-        TableSearchResult as ProtoTableSearchResult, TableSummary, ValidateSourceResponse,
-        Workspace, query_test_result,
+        QueryTestResult, QueryTestSuccess, Source, Table, TableFunction, TableFunctionArgument,
+        TableFunctionResultColumn, TableSummary, ValidateSourceResponse, Workspace, catalog_item,
+        query_test_result,
     },
 };
 use opentelemetry::propagation::Extractor;
@@ -22,8 +23,8 @@ use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
 use crate::bootstrap::{AppError, app_status, core_status};
 use crate::catalog::discovery::{
-    ColumnMetadataField, ColumnSearchResult, DescribeTableResult, TableMetadataField,
-    TableSearchResult,
+    CatalogItem, CatalogMetadataField, CatalogSearchResult, ColumnMetadataField,
+    ColumnSearchResult, DescribeTableResult,
 };
 use crate::query::manager::QueryManagerError;
 use crate::workspaces::WorkspaceName;
@@ -271,17 +272,68 @@ pub(crate) fn table_summary_to_proto(
     }
 }
 
-pub(crate) fn table_search_result_to_proto(
+pub(crate) fn catalog_item_to_proto(
     workspace_name: &WorkspaceName,
-    result: TableSearchResult,
-) -> ProtoTableSearchResult {
-    ProtoTableSearchResult {
-        table: Some(table_summary_to_proto(workspace_name, result.table)),
+    item: CatalogItem,
+) -> ProtoCatalogItem {
+    match item {
+        CatalogItem::Table(table) => ProtoCatalogItem {
+            item: Some(catalog_item::Item::Table(table_summary_to_proto(
+                workspace_name,
+                table,
+            ))),
+        },
+        CatalogItem::TableFunction(function) => ProtoCatalogItem {
+            item: Some(catalog_item::Item::TableFunction(table_function_to_proto(
+                workspace_name,
+                function,
+            ))),
+        },
+    }
+}
+
+pub(crate) fn catalog_search_result_to_proto(
+    workspace_name: &WorkspaceName,
+    result: CatalogSearchResult,
+) -> ProtoCatalogSearchResult {
+    ProtoCatalogSearchResult {
+        item: Some(catalog_item_to_proto(workspace_name, result.item)),
         matched_fields: result
             .matched_fields
             .into_iter()
-            .map(TableMetadataField::as_proto_name)
+            .map(CatalogMetadataField::as_proto_name)
             .map(str::to_string)
+            .collect(),
+    }
+}
+
+pub(crate) fn table_function_to_proto(
+    workspace_name: &WorkspaceName,
+    function: coral_engine::TableFunctionInfo,
+) -> TableFunction {
+    TableFunction {
+        workspace: Some(workspace_to_proto(workspace_name)),
+        schema_name: function.schema_name,
+        name: function.function_name,
+        description: function.description,
+        arguments: function
+            .arguments
+            .into_iter()
+            .map(|argument| TableFunctionArgument {
+                name: argument.name,
+                required: argument.required,
+                values: argument.values,
+            })
+            .collect(),
+        result_columns: function
+            .result_columns
+            .into_iter()
+            .map(|column| TableFunctionResultColumn {
+                name: column.name,
+                data_type: column.data_type,
+                nullable: column.nullable,
+                description: column.description,
+            })
             .collect(),
     }
 }

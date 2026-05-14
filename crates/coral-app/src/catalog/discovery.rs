@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 
-use coral_engine::{ColumnInfo, TableInfo};
+use coral_engine::{ColumnInfo, TableFunctionInfo, TableInfo};
 use regex::{Regex, RegexBuilder};
 
 use crate::bootstrap::AppError;
@@ -34,30 +34,48 @@ pub(crate) struct Page<T> {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct TableSearchResult {
-    pub(crate) table: TableInfo,
-    pub(crate) matched_fields: Vec<TableMetadataField>,
+pub(crate) enum CatalogItem {
+    Table(TableInfo),
+    TableFunction(TableFunctionInfo),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum TableMetadataField {
+pub(crate) enum CatalogItemKind {
+    Table,
+    TableFunction,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct CatalogSearchResult {
+    pub(crate) item: CatalogItem,
+    pub(crate) matched_fields: Vec<CatalogMetadataField>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CatalogMetadataField {
     SchemaName,
     TableName,
+    FunctionName,
     Name,
     Description,
     Guide,
     RequiredFilters,
+    Arguments,
+    ResultColumns,
 }
 
-impl TableMetadataField {
+impl CatalogMetadataField {
     pub(crate) fn as_proto_name(self) -> &'static str {
         match self {
             Self::SchemaName => "schema_name",
             Self::TableName => "table_name",
+            Self::FunctionName => "function_name",
             Self::Name => "name",
             Self::Description => "description",
             Self::Guide => "guide",
             Self::RequiredFilters => "required_filters",
+            Self::Arguments => "arguments",
+            Self::ResultColumns => "result_columns",
         }
     }
 }
@@ -133,45 +151,80 @@ impl CatalogDiscovery {
         }
     }
 
-    pub(crate) async fn list_tables(
+    pub(crate) async fn list_catalog(
         &self,
         workspace_name: &WorkspaceName,
         schema_name: Option<&str>,
-        table_name: Option<&str>,
-        omit_columns: bool,
+        kind: Option<CatalogItemKind>,
         pagination: Pagination,
-    ) -> Result<Page<TableInfo>, QueryManagerError> {
-        let mut tables = self
-            .queries
-            .list_tables(workspace_name, schema_name, table_name)
+    ) -> Result<Page<CatalogItem>, QueryManagerError> {
+        let items = self
+            .catalog_items(workspace_name, schema_name, kind)
             .await?;
-        if omit_columns {
-            for table in &mut tables {
-                table.columns.clear();
-            }
-        }
-        Ok(page_items(tables, pagination))
+        Ok(page_items(items, pagination))
     }
 
-    pub(crate) async fn search_tables(
+    async fn catalog_items(
+        &self,
+        workspace_name: &WorkspaceName,
+        schema_name: Option<&str>,
+        kind: Option<CatalogItemKind>,
+    ) -> Result<Vec<CatalogItem>, QueryManagerError> {
+        let mut items = match kind {
+            None => {
+                let catalog = self
+                    .queries
+                    .list_catalog(workspace_name, schema_name)
+                    .await?;
+                catalog
+                    .tables
+                    .into_iter()
+                    .map(CatalogItem::Table)
+                    .chain(
+                        catalog
+                            .table_functions
+                            .into_iter()
+                            .map(CatalogItem::TableFunction),
+                    )
+                    .collect::<Vec<_>>()
+            }
+            Some(CatalogItemKind::Table) => self
+                .queries
+                .list_tables(workspace_name, schema_name, None)
+                .await?
+                .into_iter()
+                .map(CatalogItem::Table)
+                .collect(),
+            Some(CatalogItemKind::TableFunction) => self
+                .queries
+                .list_table_functions(workspace_name, schema_name, None)
+                .await?
+                .into_iter()
+                .map(CatalogItem::TableFunction)
+                .collect(),
+        };
+        items.sort_by(|left, right| catalog_item_sort_key(left).cmp(&catalog_item_sort_key(right)));
+        Ok(items)
+    }
+
+    pub(crate) async fn search_catalog(
         &self,
         workspace_name: &WorkspaceName,
         pattern: &str,
         schema_name: Option<&str>,
+        kind: Option<CatalogItemKind>,
         ignore_case: bool,
         pagination: Pagination,
-    ) -> Result<Page<TableSearchResult>, QueryManagerError> {
+    ) -> Result<Page<CatalogSearchResult>, QueryManagerError> {
         let regex = compile_metadata_regex(pattern, ignore_case).map_err(QueryManagerError::App)?;
-        let tables = self
-            .queries
-            .list_tables(workspace_name, schema_name, None)
-            .await?;
-        let matches = tables
+        let matches = self
+            .catalog_items(workspace_name, schema_name, kind)
+            .await?
             .into_iter()
-            .filter_map(|table| {
-                let matched_fields = table_matched_fields(&table, &regex);
-                (!matched_fields.is_empty()).then_some(TableSearchResult {
-                    table,
+            .filter_map(|item| {
+                let matched_fields = catalog_item_matched_fields(&item, &regex);
+                (!matched_fields.is_empty()).then_some(CatalogSearchResult {
+                    item,
                     matched_fields,
                 })
             })
@@ -274,6 +327,17 @@ impl CatalogDiscovery {
     }
 }
 
+fn catalog_item_sort_key(item: &CatalogItem) -> (&str, &str, &'static str) {
+    match item {
+        CatalogItem::Table(table) => (&table.schema_name, &table.table_name, "table"),
+        CatalogItem::TableFunction(function) => (
+            &function.schema_name,
+            &function.function_name,
+            "table_function",
+        ),
+    }
+}
+
 pub(crate) fn search_pagination(pagination: Option<Pagination>) -> Result<Pagination, AppError> {
     pagination_with_limits(pagination, DEFAULT_SEARCH_LIMIT, MAX_SEARCH_LIMIT)
 }
@@ -325,14 +389,24 @@ pub(crate) fn compile_metadata_regex(pattern: &str, ignore_case: bool) -> Result
         .map_err(|error| AppError::InvalidInput(format!("invalid regex pattern: {error}")))
 }
 
-fn table_matched_fields(table: &TableInfo, regex: &Regex) -> Vec<TableMetadataField> {
+fn catalog_item_matched_fields(item: &CatalogItem, regex: &Regex) -> Vec<CatalogMetadataField> {
+    match item {
+        CatalogItem::Table(table) => table_matched_fields(table, regex),
+        CatalogItem::TableFunction(function) => table_function_matched_fields(function, regex),
+    }
+}
+
+fn table_matched_fields(table: &TableInfo, regex: &Regex) -> Vec<CatalogMetadataField> {
     let name = format!("{}.{}", table.schema_name, table.table_name);
     let candidates = [
-        (TableMetadataField::SchemaName, table.schema_name.as_str()),
-        (TableMetadataField::TableName, table.table_name.as_str()),
-        (TableMetadataField::Name, name.as_str()),
-        (TableMetadataField::Description, table.description.as_str()),
-        (TableMetadataField::Guide, table.guide.as_str()),
+        (CatalogMetadataField::SchemaName, table.schema_name.as_str()),
+        (CatalogMetadataField::TableName, table.table_name.as_str()),
+        (CatalogMetadataField::Name, name.as_str()),
+        (
+            CatalogMetadataField::Description,
+            table.description.as_str(),
+        ),
+        (CatalogMetadataField::Guide, table.guide.as_str()),
     ];
     let mut matches = candidates
         .into_iter()
@@ -343,7 +417,46 @@ fn table_matched_fields(table: &TableInfo, regex: &Regex) -> Vec<TableMetadataFi
         .iter()
         .any(|filter| regex.is_match(filter))
     {
-        matches.push(TableMetadataField::RequiredFilters);
+        matches.push(CatalogMetadataField::RequiredFilters);
+    }
+    matches
+}
+
+fn table_function_matched_fields(
+    function: &TableFunctionInfo,
+    regex: &Regex,
+) -> Vec<CatalogMetadataField> {
+    let name = format!("{}.{}", function.schema_name, function.function_name);
+    let candidates = [
+        (
+            CatalogMetadataField::SchemaName,
+            function.schema_name.as_str(),
+        ),
+        (
+            CatalogMetadataField::FunctionName,
+            function.function_name.as_str(),
+        ),
+        (CatalogMetadataField::Name, name.as_str()),
+        (
+            CatalogMetadataField::Description,
+            function.description.as_str(),
+        ),
+    ];
+    let mut matches = candidates
+        .into_iter()
+        .filter_map(|(field, value)| regex.is_match(value).then_some(field))
+        .collect::<Vec<_>>();
+    if function.arguments.iter().any(|argument| {
+        regex.is_match(&argument.name) || argument.values.iter().any(|value| regex.is_match(value))
+    }) {
+        matches.push(CatalogMetadataField::Arguments);
+    }
+    if function.result_columns.iter().any(|column| {
+        regex.is_match(&column.name)
+            || regex.is_match(&column.data_type)
+            || regex.is_match(&column.description)
+    }) {
+        matches.push(CatalogMetadataField::ResultColumns);
     }
     matches
 }
@@ -433,7 +546,7 @@ pub(crate) fn page_items<T>(items: Vec<T>, pagination: Pagination) -> Page<T> {
 
 #[cfg(test)]
 mod tests {
-    use super::{TableMetadataField, compile_metadata_regex, table_matched_fields};
+    use super::{CatalogMetadataField, compile_metadata_regex, table_matched_fields};
     use coral_engine::TableInfo;
 
     fn table(required_filters: Vec<String>) -> TableInfo {
@@ -453,7 +566,7 @@ mod tests {
 
         assert_eq!(
             table_matched_fields(&summary, &regex::Regex::new("^repo$").expect("regex")),
-            vec![TableMetadataField::RequiredFilters]
+            vec![CatalogMetadataField::RequiredFilters]
         );
         assert!(
             table_matched_fields(&summary, &regex::Regex::new("r.r").expect("regex")).is_empty()

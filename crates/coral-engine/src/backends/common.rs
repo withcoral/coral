@@ -44,9 +44,24 @@ pub(crate) struct RegisteredTableFunction {
     pub(crate) function_name: String,
     pub(crate) internal_name: String,
     pub(crate) description: String,
-    pub(crate) arguments_json: String,
-    pub(crate) result_columns_json: String,
+    pub(crate) arguments: Vec<RegisteredTableFunctionArgument>,
+    pub(crate) result_columns: Vec<RegisteredTableFunctionResultColumn>,
     pub(crate) arg_names: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RegisteredTableFunctionArgument {
+    pub(crate) name: String,
+    pub(crate) required: bool,
+    pub(crate) values: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RegisteredTableFunctionResultColumn {
+    pub(crate) name: String,
+    pub(crate) data_type: String,
+    pub(crate) nullable: bool,
+    pub(crate) description: String,
 }
 
 #[derive(Debug, Clone)]
@@ -230,23 +245,19 @@ pub(crate) fn build_registered_table_function(
     let arguments = function
         .args
         .iter()
-        .map(|arg| {
-            serde_json::json!({
-                "name": arg.name,
-                "required": arg.required,
-                "values": arg.values,
-            })
+        .map(|arg| RegisteredTableFunctionArgument {
+            name: arg.name.clone(),
+            required: arg.required,
+            values: arg.values.clone(),
         })
         .collect::<Vec<_>>();
     let result_columns = registered_columns_from_specs(&function.columns, &[])
         .into_iter()
-        .map(|column| {
-            serde_json::json!({
-                "name": column.name,
-                "type": column.data_type,
-                "nullable": column.nullable,
-                "description": column.description,
-            })
+        .map(|column| RegisteredTableFunctionResultColumn {
+            name: column.name,
+            data_type: column.data_type,
+            nullable: column.nullable,
+            description: column.description,
         })
         .collect::<Vec<_>>();
 
@@ -255,8 +266,8 @@ pub(crate) fn build_registered_table_function(
         function_name: function.name.clone(),
         internal_name,
         description: function.description.clone(),
-        arguments_json: serde_json::to_string(&arguments).expect("arguments json"),
-        result_columns_json: serde_json::to_string(&result_columns).expect("result columns json"),
+        arguments,
+        result_columns,
         arg_names: function.args.iter().map(|arg| arg.name.clone()).collect(),
     }
 }

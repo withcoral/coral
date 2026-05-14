@@ -79,57 +79,114 @@ message TableSummary {
   string guide = 6;
 }
 
-// Lists all query-visible tables in one workspace.
-message ListTablesRequest {
-  // Workspace whose current query-visible tables should be listed.
+// An argument accepted by a source-scoped table function.
+message TableFunctionArgument {
+  // Argument name as used in a named SQL function call.
+  string name = 1;
+  // Whether callers must provide this argument.
+  bool required = 2;
+  // Allowed values, if the source declares an enum-like value set.
+  repeated string values = 3;
+}
+
+// A result column returned by a source-scoped table function.
+message TableFunctionResultColumn {
+  // Column name returned by the table function.
+  string name = 1;
+  // The DataFusion/Arrow data type rendered as text.
+  string data_type = 2;
+  // Whether the column can contain null values.
+  bool nullable = 3;
+  // Human-readable column description.
+  string description = 4;
+}
+
+// A source-scoped table function in one workspace.
+message TableFunction {
+  // Workspace whose source set makes this function visible.
+  Workspace workspace = 1;
+  // The schema name used for SQL qualification.
+  string schema_name = 2;
+  // The bare function name within the schema.
+  string name = 3;
+  // The user-facing function description.
+  string description = 4;
+  // Arguments accepted by the function.
+  repeated TableFunctionArgument arguments = 5;
+  // Columns returned by the function.
+  repeated TableFunctionResultColumn result_columns = 6;
+}
+
+// Catalog item kind filter for unified discovery.
+enum CatalogItemKind {
+  // Return every currently supported catalog item kind.
+  CATALOG_ITEM_KIND_UNSPECIFIED = 0;
+  // Ordinary query-visible tables.
+  CATALOG_ITEM_KIND_TABLE = 1;
+  // Query-visible table functions.
+  CATALOG_ITEM_KIND_TABLE_FUNCTION = 2;
+}
+
+// One queryable catalog item.
+message CatalogItem {
+  // Queryable catalog item payload.
+  oneof item {
+    // Ordinary query-visible table metadata.
+    TableSummary table = 1;
+    // Query-visible table function metadata.
+    TableFunction table_function = 2;
+  }
+}
+
+// Lists queryable catalog items in one workspace.
+message ListCatalogRequest {
+  // Workspace whose current queryable catalog should be listed.
   Workspace workspace = 1;
   // Optional exact schema/source name.
   string schema_name = 2;
-  // Optional page request. Missing or zero limit keeps the legacy unbounded behavior.
-  PaginationRequest pagination = 3;
-  // Whether table columns should be omitted from the response.
-  bool omit_columns = 4;
-  // Optional exact table name. If set without `schema_name`, matches across all schemas.
-  string table_name = 5;
+  // Optional item kind. Unspecified lists every currently supported kind.
+  CatalogItemKind kind = 3;
+  // Optional page request. Missing or zero limit keeps the unbounded behavior.
+  PaginationRequest pagination = 4;
 }
 
-// Returns the query-visible tables in one workspace.
-message ListTablesResponse {
-  // Full query-visible tables for legacy callers.
-  repeated Table tables = 1;
-  // Page metadata for the table list.
+// Returns queryable catalog items in one workspace.
+message ListCatalogResponse {
+  // Queryable catalog items for the requested page.
+  repeated CatalogItem items = 1;
+  // Page metadata for the catalog list.
   PaginationResponse pagination = 2;
-  // Query-visible table summaries for callers that do not need columns.
-  repeated TableSummary table_summaries = 3;
 }
 
-// Searches table-level catalog metadata.
-message SearchTablesRequest {
-  // Workspace whose current query-visible tables should be searched.
+// Searches queryable catalog metadata.
+message SearchCatalogRequest {
+  // Workspace whose current queryable catalog should be searched.
   Workspace workspace = 1;
-  // Rust regex pattern matched over table metadata.
+  // Rust regex pattern matched over catalog metadata.
   string pattern = 2;
   // Whether regex matching should ignore case.
   bool ignore_case = 3;
   // Optional exact schema/source name.
   string schema_name = 4;
+  // Optional item kind. Unspecified searches every currently supported kind.
+  CatalogItemKind kind = 5;
   // Optional page request. Missing or zero limit applies the search default.
-  PaginationRequest pagination = 5;
+  PaginationRequest pagination = 6;
 }
 
-// One table search match.
-message TableSearchResult {
-  // Matched table metadata.
-  TableSummary table = 1;
+// One catalog search match.
+message CatalogSearchResult {
+  // Matched catalog item metadata.
+  CatalogItem item = 1;
   // Metadata fields matched by the pattern.
   repeated string matched_fields = 2;
 }
 
-// Returns table metadata matches.
-message SearchTablesResponse {
-  // Matching tables for the requested page.
-  repeated TableSearchResult tables = 1;
-  // Page metadata for the table search.
+// Returns catalog metadata matches.
+message SearchCatalogResponse {
+  // Matching catalog items for the requested page.
+  repeated CatalogSearchResult items = 1;
+  // Page metadata for the catalog search.
   PaginationResponse pagination = 2;
 }
 
@@ -191,10 +248,10 @@ message ListColumnsResponse {
 
 // Catalog discovery APIs.
 service CatalogService {
-  // Lists query-visible tables for one workspace.
-  rpc ListTables(ListTablesRequest) returns (ListTablesResponse);
-  // Searches query-visible table metadata.
-  rpc SearchTables(SearchTablesRequest) returns (SearchTablesResponse);
+  // Lists queryable catalog items for one workspace.
+  rpc ListCatalog(ListCatalogRequest) returns (ListCatalogResponse);
+  // Searches queryable catalog metadata.
+  rpc SearchCatalog(SearchCatalogRequest) returns (SearchCatalogResponse);
   // Fetches one query-visible table.
   rpc DescribeTable(DescribeTableRequest) returns (DescribeTableResponse);
   // Lists and filters columns for one query-visible table.

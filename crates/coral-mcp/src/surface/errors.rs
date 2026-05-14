@@ -6,7 +6,8 @@ use rmcp::{
     ErrorData,
     model::{CallToolResult, Content},
 };
-use serde_json::{Map, Value, json};
+use serde::Serialize;
+use serde_json::{Map, Value};
 
 #[derive(Debug, Clone)]
 pub(crate) struct ToolError {
@@ -32,27 +33,24 @@ pub(crate) fn tool_error_result(error: ToolError) -> CallToolResult {
         write!(text, "\nHint: {hint}").expect("writing to String cannot fail");
     }
 
-    let mut error_obj = json!({
-        "summary": error.summary,
-        "detail": error.detail,
-        "grpc_code": error.grpc_code,
-        "retryable": error.retryable,
-    });
-    let obj = error_obj.as_object_mut().expect("just created as object");
-    if let Some(hint) = &error.hint {
-        obj.insert("hint".to_string(), Value::String(hint.clone()));
-    }
-    if let Some(reason) = &error.reason {
-        obj.insert("reason".to_string(), Value::String(reason.clone()));
-    }
     let metadata = error
         .metadata
         .iter()
         .map(|(key, value)| (key.clone(), Value::String(value.clone())))
         .collect::<Map<_, _>>();
-    obj.insert("metadata".to_string(), Value::Object(metadata));
 
-    let structured = json!({ "error": error_obj });
+    let structured = serde_json::to_value(StructuredToolErrorValue {
+        error: ToolErrorValue {
+            summary: &error.summary,
+            detail: &error.detail,
+            hint: error.hint.as_deref(),
+            grpc_code: &error.grpc_code,
+            reason: error.reason.as_deref(),
+            retryable: error.retryable,
+            metadata: Value::Object(metadata),
+        },
+    })
+    .expect("tool error value serializes");
     let mut result = CallToolResult::structured_error(structured);
     result.content = vec![Content::text(text)];
     result
@@ -118,18 +116,15 @@ fn plain_fallback(operation: &str, code: tonic::Code) -> (String, Option<String>
 pub(crate) fn status_to_error_data(status: &tonic::Status) -> ErrorData {
     match decode_status_error(status) {
         DecodedStatusError::Structured(error) => {
-            let mut data = json!({
-                "detail": error.detail,
-                "grpc_code": status.code().to_string(),
-                "reason": error.reason,
-                "retryable": error.retryable,
-                "metadata": error.metadata,
-            });
-            if let Some(hint) = error.hint {
-                data.as_object_mut()
-                    .expect("error data is initialized as a JSON object")
-                    .insert("hint".to_string(), Value::String(hint));
-            }
+            let data = serde_json::to_value(StatusErrorDataValue {
+                detail: &error.detail,
+                grpc_code: status.code().to_string(),
+                reason: &error.reason,
+                retryable: error.retryable,
+                metadata: &error.metadata,
+                hint: error.hint.as_deref(),
+            })
+            .expect("status error data value serializes");
             match status.code() {
                 tonic::Code::NotFound => ErrorData::resource_not_found(error.summary, Some(data)),
                 tonic::Code::InvalidArgument => {
@@ -148,6 +143,35 @@ pub(crate) fn status_to_error_data(status: &tonic::Status) -> ErrorData {
 
 pub(crate) fn internal_status(error: &serde_json::Error) -> tonic::Status {
     tonic::Status::internal(error.to_string())
+}
+
+#[derive(Serialize)]
+struct StructuredToolErrorValue<'a> {
+    error: ToolErrorValue<'a>,
+}
+
+#[derive(Serialize)]
+struct ToolErrorValue<'a> {
+    summary: &'a str,
+    detail: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hint: Option<&'a str>,
+    grpc_code: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<&'a str>,
+    retryable: bool,
+    metadata: Value,
+}
+
+#[derive(Serialize)]
+struct StatusErrorDataValue<'a> {
+    detail: &'a str,
+    grpc_code: String,
+    reason: &'a str,
+    retryable: bool,
+    metadata: &'a HashMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hint: Option<&'a str>,
 }
 
 #[cfg(test)]

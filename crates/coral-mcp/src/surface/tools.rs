@@ -9,15 +9,16 @@ use serde_json::{Map, Value, json};
 
 use super::{Pagination, parse_pagination, parse_pagination_with_limits};
 
-pub(crate) struct ListTablesArguments {
+pub(crate) struct ListCatalogArguments {
     pub(crate) schema: Option<String>,
-    pub(crate) limit: u32,
-    pub(crate) offset: u32,
+    pub(crate) kind: Option<String>,
+    pub(crate) pagination: Pagination,
 }
 
-pub(crate) struct SearchTablesArguments {
+pub(crate) struct SearchCatalogArguments {
     pub(crate) pattern: String,
     pub(crate) schema: Option<String>,
+    pub(crate) kind: Option<String>,
     pub(crate) ignore_case: bool,
     pub(crate) pagination: Pagination,
 }
@@ -60,10 +61,12 @@ pub(crate) fn sql_tool(sources: &[Source], visible_table_count: usize) -> Tool {
     )
 }
 
-pub(crate) fn list_tables_tool(visible_table_count: usize) -> Tool {
+pub(crate) fn list_catalog_tool(visible_table_count: usize, visible_function_count: usize) -> Tool {
     Tool::new(
-        "list_tables",
-        list_tables_description(visible_table_count),
+        "list_catalog",
+        format!(
+            "List queryable catalog items. {visible_table_count} table(s) and {visible_function_count} table function(s) are currently visible."
+        ),
         json_object_schema(&json!({
             "type": "object",
             "properties": {
@@ -71,16 +74,28 @@ pub(crate) fn list_tables_tool(visible_table_count: usize) -> Tool {
                     "type": "string",
                     "description": "Optional exact schema/source name to list."
                 },
+                "kind": {
+                    "description": "Optional item kind to list. Omit or pass null to list all catalog items.",
+                    "anyOf": [
+                        {
+                            "type": "string",
+                            "enum": ["table", "table_function"]
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
                 "limit": {
                     "type": "integer",
-                    "description": "Maximum tables to return, from 1 to 200. Defaults to 50.",
+                    "description": "Maximum catalog items to return, from 1 to 200. Defaults to 50.",
                     "minimum": 1,
                     "maximum": 200,
                     "default": 50
                 },
                 "offset": {
                     "type": "integer",
-                    "description": "Number of matching tables to skip. Defaults to 0.",
+                    "description": "Number of matching catalog items to skip. Defaults to 0.",
                     "minimum": 0,
                     "maximum": u32::MAX,
                     "default": 0
@@ -88,9 +103,9 @@ pub(crate) fn list_tables_tool(visible_table_count: usize) -> Tool {
             }
         })),
     )
-    .with_raw_output_schema(list_tables_output_schema())
+    .with_raw_output_schema(list_catalog_output_schema())
     .with_annotations(
-        ToolAnnotations::with_title("List Tables")
+        ToolAnnotations::with_title("List Catalog")
             .read_only(true)
             .destructive(false)
             .idempotent(true)
@@ -98,21 +113,36 @@ pub(crate) fn list_tables_tool(visible_table_count: usize) -> Tool {
     )
 }
 
-pub(crate) fn search_tables_tool(visible_table_count: usize) -> Tool {
+pub(crate) fn search_catalog_tool(
+    visible_table_count: usize,
+    visible_function_count: usize,
+) -> Tool {
     Tool::new(
-        "search_tables",
-        search_tables_description(visible_table_count),
+        "search_catalog",
+        search_catalog_description(visible_table_count, visible_function_count),
         json_object_schema(&json!({
             "type": "object",
             "required": ["pattern"],
             "properties": {
                 "pattern": {
                     "type": "string",
-                    "description": "Rust regex pattern to match table metadata."
+                    "description": "Rust regex pattern to match catalog metadata."
                 },
                 "schema": {
                     "type": "string",
                     "description": "Optional exact schema/source name to search."
+                },
+                "kind": {
+                    "description": "Optional item kind to search. Omit or pass null to search all catalog items.",
+                    "anyOf": [
+                        {
+                            "type": "string",
+                            "enum": ["table", "table_function"]
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
                 },
                 "ignore_case": {
                     "type": "boolean",
@@ -120,14 +150,14 @@ pub(crate) fn search_tables_tool(visible_table_count: usize) -> Tool {
                 },
                 "limit": {
                     "type": "integer",
-                    "description": "Maximum tables to return, from 1 to 100. Defaults to 20.",
+                    "description": "Maximum catalog items to return, from 1 to 100. Defaults to 20.",
                     "minimum": 1,
                     "maximum": 100,
                     "default": 20
                 },
                 "offset": {
                     "type": "integer",
-                    "description": "Number of matching tables to skip. Defaults to 0.",
+                    "description": "Number of matching catalog items to skip. Defaults to 0.",
                     "minimum": 0,
                     "maximum": u32::MAX,
                     "default": 0
@@ -135,9 +165,9 @@ pub(crate) fn search_tables_tool(visible_table_count: usize) -> Tool {
             }
         })),
     )
-    .with_raw_output_schema(search_tables_output_schema())
+    .with_raw_output_schema(search_catalog_output_schema())
     .with_annotations(
-        ToolAnnotations::with_title("Search Tables")
+        ToolAnnotations::with_title("Search Catalog")
             .read_only(true)
             .destructive(false)
             .idempotent(true)
@@ -275,23 +305,43 @@ pub(crate) fn required_string_argument(
     Ok(value.to_string())
 }
 
-pub(crate) fn list_tables_arguments(
+pub(crate) fn list_catalog_arguments(
     arguments: Option<&Map<String, Value>>,
-) -> Result<ListTablesArguments, ErrorData> {
-    let pagination = parse_pagination(arguments)?;
-    Ok(ListTablesArguments {
+) -> Result<ListCatalogArguments, ErrorData> {
+    let kind = optional_string_argument(arguments, "kind")?;
+    match kind.as_deref() {
+        None | Some("table" | "table_function") => {}
+        Some(_) => {
+            return Err(ErrorData::invalid_params(
+                "argument 'kind' must be 'table' or 'table_function'",
+                None,
+            ));
+        }
+    }
+    Ok(ListCatalogArguments {
         schema: optional_string_argument(arguments, "schema")?,
-        limit: pagination.limit,
-        offset: pagination.offset,
+        kind,
+        pagination: parse_pagination(arguments)?,
     })
 }
 
-pub(crate) fn search_tables_arguments(
+pub(crate) fn search_catalog_arguments(
     arguments: Option<&Map<String, Value>>,
-) -> Result<SearchTablesArguments, ErrorData> {
-    Ok(SearchTablesArguments {
+) -> Result<SearchCatalogArguments, ErrorData> {
+    let kind = optional_string_argument(arguments, "kind")?;
+    match kind.as_deref() {
+        None | Some("table" | "table_function") => {}
+        Some(_) => {
+            return Err(ErrorData::invalid_params(
+                "argument 'kind' must be 'table' or 'table_function'",
+                None,
+            ));
+        }
+    }
+    Ok(SearchCatalogArguments {
         pattern: required_string_argument(arguments, "pattern")?,
         schema: optional_string_argument(arguments, "schema")?,
+        kind,
         ignore_case: optional_bool_argument(arguments, "ignore_case", true)?,
         pagination: parse_pagination_with_limits(arguments, 20, 100)?,
     })
@@ -340,87 +390,208 @@ fn sql_tool_description(sources: &[Source], visible_table_count: usize) -> Strin
     }
 }
 
-fn list_tables_description(visible_table_count: usize) -> String {
+fn search_catalog_description(visible_table_count: usize, visible_function_count: usize) -> String {
     format!(
-        "List queryable fully qualified tables. {visible_table_count} table(s) are currently visible."
+        "Search queryable catalog metadata with a Rust regex. {visible_table_count} table(s) and {visible_function_count} table function(s) are currently visible."
     )
 }
 
-fn search_tables_description(visible_table_count: usize) -> String {
-    format!(
-        "Search queryable table metadata with a Rust regex. {visible_table_count} table(s) are currently visible."
-    )
-}
-
-fn list_tables_output_schema() -> Arc<Map<String, Value>> {
-    paginated_table_output_schema(&json!({
+fn list_catalog_output_schema() -> Arc<Map<String, Value>> {
+    json_object_schema(&json!({
         "type": "object",
-        "required": [
-            "schema_name",
-            "table_name",
-            "name",
-            "sql_reference",
-            "description",
-            "guide",
-            "required_filters"
-        ],
+        "required": ["items", "total", "limit", "offset", "has_more"],
         "additionalProperties": false,
         "properties": {
-            "schema_name": { "type": "string" },
-            "table_name": { "type": "string" },
-            "name": { "type": "string" },
-            "sql_reference": { "type": "string" },
-            "description": { "type": "string" },
-            "guide": { "type": "string" },
-            "required_filters": {
+            "items": {
                 "type": "array",
-                "items": { "type": "string" }
+                "items": {
+                    "oneOf": [
+                        catalog_table_item_output_schema(),
+                        catalog_table_function_item_output_schema()
+                    ]
+                }
+            },
+            "total": {
+                "type": "integer",
+                "minimum": 0
+            },
+            "limit": {
+                "type": "integer",
+                "minimum": 1
+            },
+            "offset": {
+                "type": "integer",
+                "minimum": 0
+            },
+            "has_more": { "type": "boolean" },
+            "next_offset": {
+                "type": "integer",
+                "minimum": 0
             }
         }
     }))
 }
 
-fn search_tables_output_schema() -> Arc<Map<String, Value>> {
-    paginated_table_output_schema(&json!({
+fn catalog_table_item_output_schema() -> Value {
+    json!({
         "type": "object",
-        "required": [
-            "schema_name",
-            "table_name",
-            "name",
-            "sql_reference",
-            "description",
-            "guide",
-            "required_filters",
-            "matched_fields"
-        ],
+        "required": ["kind", "schema_name", "name", "sql_reference", "description", "table"],
         "additionalProperties": false,
         "properties": {
+            "kind": { "enum": ["table"] },
             "schema_name": { "type": "string" },
-            "table_name": { "type": "string" },
             "name": { "type": "string" },
             "sql_reference": { "type": "string" },
             "description": { "type": "string" },
-            "guide": { "type": "string" },
-            "required_filters": {
+            "table": {
+                "type": "object",
+                "required": ["table_name", "guide", "required_filters"],
+                "additionalProperties": false,
+                "properties": {
+                    "table_name": { "type": "string" },
+                    "guide": { "type": "string" },
+                    "required_filters": {
+                        "type": "array",
+                        "items": { "type": "string" }
+                    }
+                }
+            }
+        }
+    })
+}
+
+fn catalog_table_function_item_output_schema() -> Value {
+    json!({
+        "type": "object",
+        "required": [
+            "kind",
+            "schema_name",
+            "name",
+            "sql_function_reference",
+            "sql_call_example",
+            "description",
+            "table_function"
+        ],
+        "additionalProperties": false,
+        "properties": {
+            "kind": { "enum": ["table_function"] },
+            "schema_name": { "type": "string" },
+            "name": { "type": "string" },
+            "sql_function_reference": { "type": "string" },
+            "sql_call_example": { "type": "string" },
+            "description": { "type": "string" },
+            "table_function": {
+                "type": "object",
+                "required": ["function_name", "arguments", "result_columns"],
+                "additionalProperties": false,
+                "properties": {
+                    "function_name": { "type": "string" },
+                    "arguments": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "required": ["name", "required", "values"],
+                            "additionalProperties": false,
+                            "properties": {
+                                "name": { "type": "string" },
+                                "required": { "type": "boolean" },
+                                "values": {
+                                    "type": "array",
+                                    "items": { "type": "string" }
+                                }
+                            }
+                        }
+                    },
+                    "result_columns": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "required": ["column_name", "data_type", "is_nullable", "description"],
+                            "additionalProperties": false,
+                            "properties": {
+                                "column_name": { "type": "string" },
+                                "data_type": { "type": "string" },
+                                "is_nullable": { "type": "boolean" },
+                                "description": { "type": "string" }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    })
+}
+
+fn search_catalog_output_schema() -> Arc<Map<String, Value>> {
+    json_object_schema(&json!({
+        "type": "object",
+        "required": ["items", "total", "limit", "offset", "has_more"],
+        "additionalProperties": false,
+        "properties": {
+            "items": {
                 "type": "array",
-                "items": { "type": "string" }
+                "items": {
+                    "oneOf": [
+                        catalog_search_item_output_schema(catalog_table_item_output_schema()),
+                        catalog_search_item_output_schema(catalog_table_function_item_output_schema())
+                    ]
+                }
             },
-            "matched_fields": {
+            "total": {
+                "type": "integer",
+                "minimum": 0
+            },
+            "limit": {
+                "type": "integer",
+                "minimum": 1
+            },
+            "offset": {
+                "type": "integer",
+                "minimum": 0
+            },
+            "has_more": { "type": "boolean" },
+            "next_offset": {
+                "type": "integer",
+                "minimum": 0
+            }
+        }
+    }))
+}
+
+fn catalog_search_item_output_schema(mut schema: Value) -> Value {
+    let object = schema
+        .as_object_mut()
+        .expect("catalog item schema is an object");
+    object
+        .get_mut("required")
+        .and_then(Value::as_array_mut)
+        .expect("catalog item schema has required array")
+        .push(json!("matched_fields"));
+    object
+        .get_mut("properties")
+        .and_then(Value::as_object_mut)
+        .expect("catalog item schema has properties object")
+        .insert(
+            "matched_fields".to_string(),
+            json!({
                 "type": "array",
                 "items": {
                     "type": "string",
                     "enum": [
                         "schema_name",
                         "table_name",
+                        "function_name",
                         "name",
                         "description",
                         "guide",
-                        "required_filters"
+                        "required_filters",
+                        "arguments",
+                        "result_columns"
                     ]
                 }
-            }
-        }
-    }))
+            }),
+        );
+    schema
 }
 
 fn list_columns_output_schema() -> Arc<Map<String, Value>> {
@@ -535,7 +706,7 @@ fn missing_table_output_schema() -> Value {
                     "properties": {
                         "tool": {
                             "type": "string",
-                            "enum": ["search_tables", "list_tables"]
+                            "enum": ["search_catalog", "list_catalog"]
                         },
                         "arguments": { "type": "object" }
                     }
@@ -563,37 +734,6 @@ fn missing_table_summary_output_schema() -> Value {
     })
 }
 
-fn paginated_table_output_schema(table_item_schema: &Value) -> Arc<Map<String, Value>> {
-    json_object_schema(&json!({
-        "type": "object",
-        "required": ["tables", "total", "limit", "offset", "has_more"],
-        "additionalProperties": false,
-        "properties": {
-            "tables": {
-                "type": "array",
-                "items": table_item_schema
-            },
-            "total": {
-                "type": "integer",
-                "minimum": 0
-            },
-            "limit": {
-                "type": "integer",
-                "minimum": 1
-            },
-            "offset": {
-                "type": "integer",
-                "minimum": 0
-            },
-            "has_more": { "type": "boolean" },
-            "next_offset": {
-                "type": "integer",
-                "minimum": 0
-            }
-        }
-    }))
-}
-
 pub(crate) fn optional_string_argument(
     arguments: Option<&Map<String, Value>>,
     key: &str,
@@ -601,6 +741,9 @@ pub(crate) fn optional_string_argument(
     let Some(value) = arguments.and_then(|arguments| arguments.get(key)) else {
         return Ok(None);
     };
+    if value.is_null() {
+        return Ok(None);
+    }
     let value = value.as_str().ok_or_else(|| {
         ErrorData::invalid_params(format!("argument '{key}' must be a string"), None)
     })?;

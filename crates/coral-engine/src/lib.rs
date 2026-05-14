@@ -66,9 +66,10 @@ pub use composition::{
     SourceTables,
 };
 pub use contracts::{
-    ColumnInfo, CoreError, QueryExecution, QueryPlan, QueryRuntimeConfig, QueryRuntimeContext,
-    QuerySource, QueryTestFailure, QueryTestResult, QueryTestSuccess, SourceValidationReport,
-    StatusCode, StructuredQueryError, TableInfo,
+    CatalogInfo, ColumnInfo, CoreError, QueryExecution, QueryPlan, QueryRuntimeConfig,
+    QueryRuntimeContext, QuerySource, QueryTestFailure, QueryTestResult, QueryTestSuccess,
+    SourceValidationReport, StatusCode, StructuredQueryError, TableFunctionArgumentInfo,
+    TableFunctionInfo, TableFunctionResultColumnInfo, TableInfo,
 };
 
 /// High-level query operations for the local query engine.
@@ -94,6 +95,50 @@ impl CoralQuery {
         Ok(runtime::query::build_runtime(sources, runtime)
             .await?
             .list_tables(schema_filter, table_filter))
+    }
+
+    /// Lists source-scoped table functions from the provided source set.
+    ///
+    /// When `schema_filter` is present, only functions for that visible `SQL`
+    /// schema are returned. When `function_filter` is present, only the exact
+    /// function name within the schema is returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if credential resolution fails, if any validated
+    /// source spec cannot be compiled, or if the underlying query runtime
+    /// cannot be built.
+    pub async fn list_table_functions(
+        sources: &[QuerySource],
+        runtime: QueryRuntimeConfig,
+        schema_filter: Option<&str>,
+        function_filter: Option<&str>,
+    ) -> Result<Vec<TableFunctionInfo>, CoreError> {
+        Ok(runtime::query::build_runtime(sources, runtime)
+            .await?
+            .list_table_functions(schema_filter, function_filter))
+    }
+
+    /// Lists queryable catalog metadata from the provided source set.
+    ///
+    /// When `schema_filter` is present, only catalog items for that visible
+    /// `SQL` schema are returned. Tables and source-scoped table functions are
+    /// collected from one runtime build so callers see one consistent catalog
+    /// snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if credential resolution fails, if any validated
+    /// source spec cannot be compiled, or if the underlying query runtime
+    /// cannot be built.
+    pub async fn list_catalog(
+        sources: &[QuerySource],
+        runtime: QueryRuntimeConfig,
+        schema_filter: Option<&str>,
+    ) -> Result<CatalogInfo, CoreError> {
+        Ok(runtime::query::build_runtime(sources, runtime)
+            .await?
+            .catalog_info(schema_filter))
     }
 
     /// Executes one `SQL` statement over the provided source set.

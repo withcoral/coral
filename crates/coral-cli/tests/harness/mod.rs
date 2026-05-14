@@ -15,16 +15,16 @@ use coral_api::v1::catalog_service_server::{CatalogService, CatalogServiceServer
 use coral_api::v1::query_service_server::{QueryService, QueryServiceServer};
 use coral_api::v1::source_service_server::{SourceService, SourceServiceServer};
 use coral_api::v1::{
-    Column, ColumnSearchResult, CreateBundledSourceRequest, CreateBundledSourceResponse,
-    DeleteSourceRequest, DeleteSourceResponse, DescribeTableRequest, DescribeTableResponse,
-    DiscoverSourcesRequest, DiscoverSourcesResponse, ExecuteSqlRequest, ExecuteSqlResponse,
-    ExplainSqlRequest, ExplainSqlResponse, GetSourceInfoRequest, GetSourceInfoResponse,
-    GetSourceRequest, GetSourceResponse, ImportSourceRequest, ImportSourceResponse,
-    ListColumnsRequest, ListColumnsResponse, ListSourcesRequest, ListSourcesResponse,
-    ListTablesRequest, ListTablesResponse, PaginationRequest, PaginationResponse, QueryPlan,
-    SearchTablesRequest, SearchTablesResponse, Source, SourceInfo, SourceInputKind,
-    SourceInputSpec, SourceOrigin, Table, TableSearchResult, TableSummary, ValidateSourceRequest,
-    ValidateSourceResponse, Workspace,
+    CatalogItem, CatalogSearchResult, Column, ColumnSearchResult, CreateBundledSourceRequest,
+    CreateBundledSourceResponse, DeleteSourceRequest, DeleteSourceResponse, DescribeTableRequest,
+    DescribeTableResponse, DiscoverSourcesRequest, DiscoverSourcesResponse, ExecuteSqlRequest,
+    ExecuteSqlResponse, ExplainSqlRequest, ExplainSqlResponse, GetSourceInfoRequest,
+    GetSourceInfoResponse, GetSourceRequest, GetSourceResponse, ImportSourceRequest,
+    ImportSourceResponse, ListCatalogRequest, ListCatalogResponse, ListColumnsRequest,
+    ListColumnsResponse, ListSourcesRequest, ListSourcesResponse, PaginationRequest,
+    PaginationResponse, QueryPlan, SearchCatalogRequest, SearchCatalogResponse, Source, SourceInfo,
+    SourceInputKind, SourceInputSpec, SourceOrigin, Table, TableSummary, ValidateSourceRequest,
+    ValidateSourceResponse, Workspace, catalog_item,
 };
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
@@ -123,34 +123,6 @@ fn table_summary(table: &Table) -> TableSummary {
         description: table.description.clone(),
         required_filters: table.required_filters.clone(),
         guide: table.guide.clone(),
-    }
-}
-
-fn list_tables_response(request: &ListTablesRequest) -> ListTablesResponse {
-    let tables = mock_visible_tables()
-        .into_iter()
-        .filter(|table| request.schema_name.is_empty() || table.schema_name == request.schema_name)
-        .filter(|table| request.table_name.is_empty() || table.name == request.table_name)
-        .collect::<Vec<_>>();
-    let (mut tables, pagination) = paginate(
-        tables,
-        request.pagination.unwrap_or(PaginationRequest {
-            limit: 0,
-            offset: 0,
-        }),
-    );
-    let table_summaries = if request.omit_columns {
-        tables.iter().map(table_summary).collect()
-    } else {
-        Vec::new()
-    };
-    if request.omit_columns {
-        tables.clear();
-    }
-    ListTablesResponse {
-        tables,
-        table_summaries,
-        pagination: Some(pagination),
     }
 }
 
@@ -486,11 +458,33 @@ impl MockServerConfig {
     }
 }
 
+fn list_catalog_response(request: &ListCatalogRequest) -> ListCatalogResponse {
+    let items = mock_visible_tables()
+        .into_iter()
+        .filter(|table| request.schema_name.is_empty() || table.schema_name == request.schema_name)
+        .filter(|_| request.kind == 0 || request.kind == 1)
+        .map(|table| CatalogItem {
+            item: Some(catalog_item::Item::Table(table_summary(&table))),
+        })
+        .collect::<Vec<_>>();
+    let (items, pagination) = paginate(
+        items,
+        request.pagination.unwrap_or(PaginationRequest {
+            limit: 0,
+            offset: 0,
+        }),
+    );
+    ListCatalogResponse {
+        items,
+        pagination: Some(pagination),
+    }
+}
+
 #[derive(Default)]
 struct Captured {
     execute_sql: Mutex<Vec<ExecuteSqlRequest>>,
-    list_tables: Mutex<Vec<ListTablesRequest>>,
-    search_tables: Mutex<Vec<SearchTablesRequest>>,
+    list_catalog: Mutex<Vec<ListCatalogRequest>>,
+    search_catalog: Mutex<Vec<SearchCatalogRequest>>,
     describe_table: Mutex<Vec<DescribeTableRequest>>,
     list_columns: Mutex<Vec<ListColumnsRequest>>,
     discover_sources: Mutex<Vec<DiscoverSourcesRequest>>,
@@ -574,54 +568,58 @@ struct MockCatalogService {
 
 #[tonic::async_trait]
 impl CatalogService for MockCatalogService {
-    async fn list_tables(
+    async fn list_catalog(
         &self,
-        request: Request<ListTablesRequest>,
-    ) -> Result<Response<ListTablesResponse>, Status> {
+        request: Request<ListCatalogRequest>,
+    ) -> Result<Response<ListCatalogResponse>, Status> {
         let request = request.into_inner();
         self.captured
-            .list_tables
+            .list_catalog
             .lock()
-            .expect("list_tables capture")
+            .expect("list_catalog capture")
             .push(request.clone());
-        Ok(Response::new(list_tables_response(&request)))
+        Ok(Response::new(list_catalog_response(&request)))
     }
 
-    async fn search_tables(
+    async fn search_catalog(
         &self,
-        request: Request<SearchTablesRequest>,
-    ) -> Result<Response<SearchTablesResponse>, Status> {
+        request: Request<SearchCatalogRequest>,
+    ) -> Result<Response<SearchCatalogResponse>, Status> {
         let request = request.into_inner();
         self.captured
-            .search_tables
+            .search_catalog
             .lock()
-            .expect("search_tables capture")
+            .expect("search_catalog capture")
             .push(request.clone());
         let pattern = regex::RegexBuilder::new(&request.pattern)
             .case_insensitive(request.ignore_case)
             .build()
             .map_err(|error| Status::invalid_argument(format!("invalid regex pattern: {error}")))?;
         let mut matches = Vec::new();
-        for table in mock_visible_tables().into_iter().filter(|table| {
-            request.schema_name.is_empty() || table.schema_name == request.schema_name
-        }) {
-            let matched_fields = table_matched_fields(&table, &pattern);
-            if !matched_fields.is_empty() {
-                matches.push(TableSearchResult {
-                    table: Some(table_summary(&table)),
-                    matched_fields,
-                });
+        if request.kind == 0 || request.kind == 1 {
+            for table in mock_visible_tables().into_iter().filter(|table| {
+                request.schema_name.is_empty() || table.schema_name == request.schema_name
+            }) {
+                let matched_fields = table_matched_fields(&table, &pattern);
+                if !matched_fields.is_empty() {
+                    matches.push(CatalogSearchResult {
+                        item: Some(CatalogItem {
+                            item: Some(catalog_item::Item::Table(table_summary(&table))),
+                        }),
+                        matched_fields,
+                    });
+                }
             }
         }
-        let (tables, pagination) = paginate(
+        let (items, pagination) = paginate(
             matches,
             request.pagination.unwrap_or(PaginationRequest {
                 limit: 20,
                 offset: 0,
             }),
         );
-        Ok(Response::new(SearchTablesResponse {
-            tables,
+        Ok(Response::new(SearchCatalogResponse {
+            items,
             pagination: Some(pagination),
         }))
     }
@@ -929,19 +927,19 @@ impl MockServer {
             .clone()
     }
 
-    pub(crate) fn list_tables_requests(&self) -> Vec<ListTablesRequest> {
+    pub(crate) fn list_catalog_requests(&self) -> Vec<ListCatalogRequest> {
         self.captured
-            .list_tables
+            .list_catalog
             .lock()
-            .expect("list_tables capture")
+            .expect("list_catalog capture")
             .clone()
     }
 
-    pub(crate) fn search_tables_requests(&self) -> Vec<SearchTablesRequest> {
+    pub(crate) fn search_catalog_requests(&self) -> Vec<SearchCatalogRequest> {
         self.captured
-            .search_tables
+            .search_catalog
             .lock()
-            .expect("search_tables capture")
+            .expect("search_catalog capture")
             .clone()
     }
 

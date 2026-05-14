@@ -9,8 +9,9 @@ use std::fs;
 use coral_api::v1::{
     CreateBundledSourceRequest, DeleteSourceRequest, DiscoverSourcesRequest, ExecuteSqlRequest,
     ExplainSqlRequest, GetSourceInfoRequest, GetSourceRequest, ImportSourceRequest,
-    ListTablesRequest, PaginationRequest, QueryTestFailure, QueryTestSuccess, SourceOrigin,
-    SourceSecret, SourceVariable, ValidateSourceRequest, Workspace, query_test_result,
+    ListCatalogRequest, PaginationRequest, QueryTestFailure, QueryTestSuccess, SourceOrigin,
+    SourceSecret, SourceVariable, ValidateSourceRequest, Workspace, catalog_item,
+    query_test_result,
 };
 use coral_client::default_workspace;
 use tempfile::TempDir;
@@ -221,7 +222,7 @@ async fn validate_source_returns_tables() {
 }
 
 #[tokio::test]
-async fn list_tables_supports_legacy_full_response_and_paginated_summaries() {
+async fn list_catalog_supports_table_kind_and_pagination() {
     let harness = GrpcHarness::new().await;
     harness
         .import_source(
@@ -231,42 +232,19 @@ async fn list_tables_supports_legacy_full_response_and_paginated_summaries() {
         )
         .await;
 
-    let legacy = harness
-        .catalog_client()
-        .list_tables(Request::new(ListTablesRequest {
-            workspace: Some(default_workspace()),
-            schema_name: String::new(),
-            table_name: String::new(),
-            pagination: None,
-            omit_columns: false,
-        }))
-        .await
-        .expect("legacy list tables")
-        .into_inner();
-    let legacy_pagination = legacy.pagination.as_ref().expect("legacy pagination");
-    assert_eq!(legacy_pagination.total_count, 3);
-    assert_eq!(legacy_pagination.limit, 0);
-    assert_eq!(legacy_pagination.offset, 0);
-    assert!(!legacy_pagination.has_more);
-    assert_eq!(legacy.tables.len(), 3);
-    assert!(legacy.table_summaries.is_empty());
-    assert_eq!(legacy.tables[0].name, "events");
-    assert!(!legacy.tables[0].columns.is_empty());
-
     let page = harness
         .catalog_client()
-        .list_tables(Request::new(ListTablesRequest {
+        .list_catalog(Request::new(ListCatalogRequest {
             workspace: Some(default_workspace()),
             schema_name: "local_messages".to_string(),
-            table_name: String::new(),
+            kind: 1,
             pagination: Some(PaginationRequest {
                 limit: 2,
                 offset: 0,
             }),
-            omit_columns: true,
         }))
         .await
-        .expect("paginated list tables")
+        .expect("paginated list catalog")
         .into_inner();
     let page_pagination = page.pagination.as_ref().expect("page pagination");
     assert_eq!(page_pagination.total_count, 3);
@@ -275,66 +253,37 @@ async fn list_tables_supports_legacy_full_response_and_paginated_summaries() {
     assert!(page_pagination.has_more);
     assert_eq!(page_pagination.next_offset, 2);
     assert_eq!(
-        page.table_summaries
+        page.items
             .iter()
-            .map(|table| table.name.as_str())
+            .filter_map(|item| match item.item.as_ref().expect("catalog item") {
+                catalog_item::Item::Table(table) => Some(table.name.as_str()),
+                catalog_item::Item::TableFunction(_) => None,
+            })
             .collect::<Vec<_>>(),
         vec!["events", "messages"]
     );
-    assert!(page.tables.is_empty());
-
-    assert_exact_table_filter(&harness).await;
 
     let unknown_schema = harness
         .catalog_client()
-        .list_tables(Request::new(ListTablesRequest {
+        .list_catalog(Request::new(ListCatalogRequest {
             workspace: Some(default_workspace()),
             schema_name: "missing".to_string(),
-            table_name: String::new(),
+            kind: 1,
             pagination: Some(PaginationRequest {
                 limit: 2,
                 offset: 0,
             }),
-            omit_columns: true,
         }))
         .await
-        .expect("unknown schema list tables")
+        .expect("unknown schema list catalog")
         .into_inner();
     let unknown_schema_pagination = unknown_schema
         .pagination
         .as_ref()
         .expect("unknown schema pagination");
     assert_eq!(unknown_schema_pagination.total_count, 0);
-    assert!(unknown_schema.tables.is_empty());
-    assert!(unknown_schema.table_summaries.is_empty());
+    assert!(unknown_schema.items.is_empty());
     assert!(!unknown_schema_pagination.has_more);
-}
-
-async fn assert_exact_table_filter(harness: &GrpcHarness) {
-    let exact_table = harness
-        .catalog_client()
-        .list_tables(Request::new(ListTablesRequest {
-            workspace: Some(default_workspace()),
-            schema_name: "local_messages".to_string(),
-            table_name: "messages".to_string(),
-            pagination: Some(PaginationRequest {
-                limit: 1,
-                offset: 0,
-            }),
-            omit_columns: false,
-        }))
-        .await
-        .expect("exact table list tables")
-        .into_inner();
-    let exact_pagination = exact_table
-        .pagination
-        .as_ref()
-        .expect("exact table pagination");
-    assert_eq!(exact_pagination.total_count, 1);
-    assert_eq!(exact_table.tables.len(), 1);
-    assert_eq!(exact_table.tables[0].schema_name, "local_messages");
-    assert_eq!(exact_table.tables[0].name, "messages");
-    assert!(!exact_table.tables[0].columns.is_empty());
 }
 
 #[tokio::test]
@@ -1348,14 +1297,13 @@ async fn rejects_invalid_workspace_and_source_names() {
 
     let invalid_workspace = harness
         .catalog_client()
-        .list_tables(Request::new(ListTablesRequest {
+        .list_catalog(Request::new(ListCatalogRequest {
             workspace: Some(Workspace {
                 name: r"bad\workspace".to_string(),
             }),
             schema_name: String::new(),
-            table_name: String::new(),
+            kind: 1,
             pagination: None,
-            omit_columns: false,
         }))
         .await
         .expect_err("workspace with backslash should fail");
