@@ -1,5 +1,5 @@
 name: github
-version: 1.1.5
+version: 1.1.6
 dsl_version: 3
 backend: http
 description: >-
@@ -153327,7 +153327,10 @@ tables:
   - name: stargazers
     description: List stargazers
     guide: >
-      Requires owner and repo. Keep queries repository-scoped; fan out across repos client-side when you
+      Requires owner and repo. Returns `starred_at` (UTC, ISO 8601) for each
+      user that has starred the repository, enabling time-series analysis
+      such as star velocity around a launch or marketing campaign. Keep
+      queries repository-scoped; fan out across repos client-side when you
       need broader coverage.
     filters:
       - name: owner
@@ -153337,6 +153340,10 @@ tables:
     request:
       method: GET
       path: /repos/{{filter.owner}}/{{filter.repo}}/stargazers
+      headers:
+        - name: Accept
+          from: literal
+          value: application/vnd.github.star+json
     response:
       allow_404_empty: false
       row_strategy: direct
@@ -153357,6 +153364,35 @@ tables:
         virtual: false
         expr:
           kind: current_row
+      - name: starred_at
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: ISO 8601 UTC timestamp of when the user starred the repository.
+        expr:
+          kind: path
+          path:
+            - starred_at
+      - name: user_login
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: GitHub login of the user who starred the repository.
+        expr:
+          kind: path
+          path:
+            - user
+            - login
+      - name: user_id
+        type: Int64
+        nullable: true
+        virtual: false
+        description: GitHub numeric user ID of the stargazer.
+        expr:
+          kind: path
+          path:
+            - user
+            - id
       - name: owner
         type: Utf8
         nullable: true
