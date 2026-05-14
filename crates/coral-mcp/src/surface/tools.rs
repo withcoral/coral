@@ -7,7 +7,7 @@ use rmcp::{
 };
 use serde_json::{Map, Value, json};
 
-use super::{Pagination, parse_pagination, parse_pagination_with_limits};
+use super::{Pagination, hints_schema, parse_pagination, parse_pagination_with_limits};
 
 pub(crate) struct ListTablesArguments {
     pub(crate) schema: Option<String>,
@@ -470,13 +470,13 @@ fn sql_tool_description(sources: &[Source], visible_table_count: usize) -> Strin
 
 fn list_tables_description(visible_table_count: usize) -> String {
     format!(
-        "List queryable fully qualified tables. {visible_table_count} table(s) are currently visible."
+        "List queryable fully qualified tables. {visible_table_count} table(s) are currently visible. Table functions are separate; use list_table_functions or search_table_functions when a table is missing."
     )
 }
 
 fn search_tables_description(visible_table_count: usize) -> String {
     format!(
-        "Search queryable table metadata with a Rust regex. {visible_table_count} table(s) are currently visible."
+        "Search queryable table metadata with a Rust regex. {visible_table_count} table(s) are currently visible. This does not search table functions; use search_table_functions for provider-native search, lookup, and range capabilities."
     )
 }
 
@@ -840,6 +840,7 @@ fn paginated_table_output_schema(table_item_schema: &Value) -> Arc<Map<String, V
                 "minimum": 0
             },
             "has_more": { "type": "boolean" },
+            "hints": hints_schema(),
             "next_offset": {
                 "type": "integer",
                 "minimum": 0

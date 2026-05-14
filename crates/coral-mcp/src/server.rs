@@ -26,9 +26,9 @@ use tonic::Request;
 use crate::{
     McpOptions,
     surface::{
-        ColumnSummary, TableFunctionSummary, TableSummary, build_tool_result,
-        compile_metadata_regex, describe_table_arguments, describe_table_tool, feedback_tool,
-        format_schema_table_equivalent, guide_resource, guide_resource_content,
+        ColumnSummary, TABLE_FUNCTIONS_ARE_SEPARATE, TableFunctionSummary, TableSummary, add_hints,
+        build_tool_result, compile_metadata_regex, describe_table_arguments, describe_table_tool,
+        feedback_tool, format_schema_table_equivalent, guide_resource, guide_resource_content,
         initial_instructions, internal_status, list_columns_arguments, list_columns_tool,
         list_table_functions_arguments, list_table_functions_tool, list_tables_arguments,
         list_tables_tool, list_tables_value, page_items, paged_value, required_string_argument,
@@ -312,10 +312,9 @@ impl CoralMcpServer {
                         matches.push(summary.search_result_value(&matched_fields));
                     }
                 }
-                Ok(ToolCallOutcome::Success(paged_value(
-                    "tables",
-                    page_items(matches, arguments.pagination),
-                )))
+                let mut value = paged_value("tables", page_items(matches, arguments.pagination));
+                add_hints(&mut value, &[TABLE_FUNCTIONS_ARE_SEPARATE]);
+                Ok(ToolCallOutcome::Success(value))
             }
             Err(status) => Ok(ToolCallOutcome::ToolError {
                 operation: "Table search",

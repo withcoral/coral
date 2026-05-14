@@ -5,6 +5,8 @@ use coral_api::v1::{ListTablesResponse, Source, Table, TableSummary};
 use rmcp::model::{AnnotateAble, RawResource, Resource};
 use serde_json::{Value, json};
 
+use super::{TABLE_FUNCTIONS_ARE_SEPARATE, add_hints};
+
 static INITIAL_INSTRUCTIONS: &str = "You are connected to Coral. Read `coral://guide` for query patterns, use `list_tables`, `search_tables`, `list_table_functions`, `search_table_functions`, `describe_table`, and `list_columns` to inspect queryable tables and source-scoped table functions, and use `sql` for final queries.";
 static GUIDE_TEMPLATE: &str = include_str!("../guide_template.md");
 
@@ -90,6 +92,7 @@ pub(crate) fn list_tables_value(response: &ListTablesResponse) -> Value {
             .expect("list tables value is initialized as a JSON object")
             .insert("next_offset".to_string(), json!(pagination.next_offset));
     }
+    add_hints(&mut value, &[TABLE_FUNCTIONS_ARE_SEPARATE]);
     value
 }
 
@@ -279,6 +282,17 @@ mod tests {
         assert_eq!(value["limit"], 50);
         assert_eq!(value["offset"], 0);
         assert_eq!(value["has_more"], false);
+        assert!(
+            value["hints"]
+                .as_array()
+                .expect("hints array")
+                .iter()
+                .any(|hint| hint["suggested_tools"]
+                    .as_array()
+                    .expect("suggested tools")
+                    .iter()
+                    .any(|tool| tool == "search_table_functions"))
+        );
     }
 
     #[test]

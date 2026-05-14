@@ -2,6 +2,7 @@
 
 mod discovery;
 mod errors;
+mod hints;
 mod resources;
 mod tools;
 
@@ -12,6 +13,7 @@ pub(crate) use discovery::{
 pub(crate) use errors::{
     internal_status, status_to_error_data, tool_error_from_status, tool_error_result,
 };
+pub(crate) use hints::{TABLE_FUNCTIONS_ARE_SEPARATE, add_hints, hints_schema};
 pub(crate) use resources::{
     format_schema_table_equivalent, guide_resource, guide_resource_content, initial_instructions,
     list_tables_value, tables_resource, tables_resource_content,

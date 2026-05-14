@@ -63,8 +63,8 @@ WHERE json_get_str(rules, 0, 'clauses', 0, 'values', 0) = 'phoebe-org';
 - Cross-source joins work with standard SQL after source scans complete.
 - Use `LIKE` or `ILIKE` for SQL wildcard matching with `%` and `_`. `SIMILAR TO` uses regex-shaped patterns, so write `.*` instead of `%`, `.` instead of `_`, or escape literal percent/underscore characters as `\%` and `\_`.
 - Regex operators such as `~` and `~*` treat `%` and `_` as ordinary literal characters.
-- `list_tables` shows queryable fully qualified tables in pages; pass `schema`, `limit`, and `offset` to narrow large catalogs.
-- `search_tables` searches table names, descriptions, guides, and required filters with a Rust regex; use it before broad SQL metadata scans when you know part of the table name or required filters.
+- `list_tables` shows queryable fully qualified tables in pages; pass `schema`, `limit`, and `offset` to narrow large catalogs. It does not include table functions; if the table you need is missing, inspect table functions too.
+- `search_tables` searches table names, descriptions, guides, and required filters with a Rust regex; use it before broad SQL metadata scans when you know part of the table name or required filters. It does not search table functions; if it misses a provider-native search, lookup, or range capability, call `search_table_functions`.
 - `list_table_functions` shows queryable source-scoped table functions in pages; pass `schema`, `function`, `limit`, and `offset` to narrow large catalogs.
 - `search_table_functions` searches table function names, descriptions, arguments, and result columns with a Rust regex; use it when you know part of a provider-native search or lookup capability.
 - `describe_table` returns one compact table detail with guide text, required filters, and column count; use `coral.columns` when you need full column details.

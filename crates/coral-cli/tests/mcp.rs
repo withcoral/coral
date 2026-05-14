@@ -32,6 +32,17 @@ fn json_object(value: &Value) -> Map<String, Value> {
     value.as_object().cloned().expect("json object")
 }
 
+fn assert_has_table_function_hint(value: &Value) {
+    let hints = value["hints"].as_array().expect("hints array");
+    assert!(hints.iter().any(|hint| {
+        hint["suggested_tools"]
+            .as_array()
+            .expect("suggested tools")
+            .iter()
+            .any(|tool| tool == "search_table_functions")
+    }));
+}
+
 async fn start_mcp_client(
     server: &MockServer,
 ) -> Result<RunningService<RoleClient, ()>, Box<dyn std::error::Error>> {
@@ -350,6 +361,7 @@ async fn assert_list_tables_tool(
     assert_eq!(structured_tables["limit"], 50);
     assert_eq!(structured_tables["offset"], 0);
     assert_eq!(structured_tables["has_more"], false);
+    assert_has_table_function_hint(&structured_tables);
     assert_eq!(
         structured_tables["tables"][0]["name"],
         "local_messages.events"
@@ -393,6 +405,7 @@ async fn assert_search_tables_tool(
     .await?;
     assert_eq!(search["total"], 1);
     assert_eq!(search["tables"][0]["name"], "local_messages.messages");
+    assert_has_table_function_hint(&search);
     assert_eq!(
         search["tables"][0]["sql_reference"],
         "local_messages.messages"

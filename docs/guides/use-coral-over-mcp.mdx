@@ -26,8 +26,8 @@ Before setting up a client, make sure you have [connected at least one source](/
 | Resource | `coral://tables` | JSON summaries of queryable tables and required filters |
 
 Clients see the same installed sources and query results as `coral sql`. You set up sources with the CLI, then agents query them over MCP.
-`list_tables` returns table summaries in pages and accepts optional `schema`, `limit`, and `offset` arguments. Use each table's `sql_reference` value in `FROM` and `JOIN` clauses. Do not quote the whole `schema.table` string: write `github.pulls` or `"github"."pulls"`, not `"github.pulls"`.
-`search_tables` accepts a required `pattern` plus optional `schema`, `ignore_case`, `limit`, and `offset` arguments for deterministic regex matching over table names, descriptions, guides, and required filters.
+`list_tables` returns table summaries in pages and accepts optional `schema`, `limit`, and `offset` arguments. Use each table's `sql_reference` value in `FROM` and `JOIN` clauses. Do not quote the whole `schema.table` string: write `github.pulls` or `"github"."pulls"`, not `"github.pulls"`. Table functions are separate, so a missing table result can still mean a source-scoped function exists.
+`search_tables` accepts a required `pattern` plus optional `schema`, `ignore_case`, `limit`, and `offset` arguments for deterministic regex matching over table names, descriptions, guides, and required filters. It does not search table functions; use `search_table_functions` when looking for provider-native search, lookup, or range capabilities.
 `list_table_functions` returns source-scoped table function metadata in pages and accepts optional `schema`, `function`, `limit`, and `offset` arguments.
 `search_table_functions` accepts a required `pattern` plus optional `schema`, `ignore_case`, `limit`, and `offset` arguments for deterministic regex matching over table function names, descriptions, arguments, and result columns.
 `describe_table` accepts exact `schema` and `table` arguments and returns guide text, required filters, and a column count without dumping full columns.

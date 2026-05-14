@@ -152,6 +152,17 @@ fn json_object(value: &Value) -> Map<String, Value> {
     value.as_object().cloned().expect("json object")
 }
 
+fn assert_has_table_function_hint(value: &Value) {
+    let hints = value["hints"].as_array().expect("hints array");
+    assert!(hints.iter().any(|hint| {
+        hint["suggested_tools"]
+            .as_array()
+            .expect("suggested tools")
+            .iter()
+            .any(|tool| tool == "search_table_functions")
+    }));
+}
+
 async fn add_demo_source(source_client: &mut SourceClient, manifest_yaml: String) {
     source_client
         .import_source(Request::new(ImportSourceRequest {
@@ -433,6 +444,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
     assert_eq!(page["limit"], 2);
     assert_eq!(page["has_more"], true);
     assert_eq!(page["next_offset"], 2);
+    assert_has_table_function_hint(&page);
     assert_eq!(page["tables"].as_array().expect("tables").len(), 2);
     assert_matches_output_schema(list_tables_tool, &page);
 
@@ -799,6 +811,33 @@ async fn mcp_list_table_functions_returns_metadata() {
         "searchy.search_issues"
     );
     assert_matches_output_schema(list_tool, &listed);
+
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn mcp_search_tables_hints_at_table_functions() {
+    let temp = TempDir::new().expect("temp dir");
+    let mut session = start_session(&temp).await;
+    let client = &session.client;
+
+    add_table_function_demo_sources(&mut session.source_client).await;
+
+    let tools = client.list_all_tools().await.expect("tools");
+    let search_tables_tool = tool_by_name(&tools, "search_tables");
+    let table_search = client
+        .call_tool(
+            CallToolRequestParams::new("search_tables").with_arguments(json_object(&json!({
+                "pattern": "search_issues",
+                "schema": "searchy"
+            }))),
+        )
+        .await
+        .expect("search tables should not find table functions");
+    let table_search = table_search.structured_content.expect("structured content");
+    assert_eq!(table_search["total"], 0);
+    assert_has_table_function_hint(&table_search);
+    assert_matches_output_schema(search_tables_tool, &table_search);
 
     session.shutdown().await;
 }
