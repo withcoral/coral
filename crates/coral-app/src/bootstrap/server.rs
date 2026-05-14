@@ -1115,10 +1115,11 @@ tables:
 name: tilde_demo
 version: 0.1.0
 dsl_version: 3
-backend: jsonl
+backend: file
 tables:
   - name: messages
     description: Fixture messages
+    format: jsonl
     source:
       location: file://~/fixture-data/
       glob: "**/*.jsonl"
@@ -1255,10 +1256,11 @@ tables:
         manifest.push_str("name: wide_demo\n");
         manifest.push_str("version: 0.1.0\n");
         manifest.push_str("dsl_version: 3\n");
-        manifest.push_str("backend: jsonl\n");
+        manifest.push_str("backend: file\n");
         manifest.push_str("tables:\n");
         manifest.push_str("  - name: wide\n");
         manifest.push_str("    description: Wide fixture\n");
+        manifest.push_str("    format: jsonl\n");
         manifest.push_str("    source:\n");
         writeln!(manifest, "      location: {location}").expect("write to String");
         manifest.push_str("      glob: \"**/*.jsonl\"\n");
