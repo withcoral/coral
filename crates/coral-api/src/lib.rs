@@ -48,6 +48,12 @@ pub mod v1 {
 /// needs the bump — requests are small SQL strings.
 pub const QUERY_RESPONSE_MAX_MESSAGE_SIZE: usize = 64 * 1024 * 1024;
 
+/// Maximum gRPC message size for `TraceService` *responses*, in bytes.
+///
+/// Trace details can include large span attributes, which may exceed tonic's
+/// default 4 MB response cap.
+pub const TRACE_RESPONSE_MAX_MESSAGE_SIZE: usize = 16 * 1024 * 1024;
+
 /// HTTP/2 `SETTINGS_MAX_HEADER_LIST_SIZE` for the local Coral transport,
 /// in bytes.
 ///
