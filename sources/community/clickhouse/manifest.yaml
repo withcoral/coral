@@ -134,7 +134,7 @@ tables:
               engine,
               total_rows,
               total_bytes,
-              formatDateTime(metadata_modification_time, '%Y-%m-%dT%H:%i:%SZ') AS metadata_modification_time,
+              formatDateTime(toTimeZone(metadata_modification_time, 'UTC'), '%Y-%m-%dT%H:%i:%SZ') AS metadata_modification_time,
               partition_key,
               sorting_key,
               primary_key,
@@ -412,7 +412,7 @@ tables:
           value: >-
             SELECT
               type,
-              formatDateTime(event_time, '%Y-%m-%dT%H:%i:%SZ') AS event_time,
+              formatDateTime(toTimeZone(event_time, 'UTC'), '%Y-%m-%dT%H:%i:%SZ') AS event_time,
               query_duration_ms,
               query,
               exception,
@@ -785,7 +785,7 @@ tables:
               data_compressed_bytes,
               data_uncompressed_bytes,
               marks,
-              formatDateTime(modification_time, '%Y-%m-%dT%H:%i:%SZ') AS modification_time,
+              formatDateTime(toTimeZone(modification_time, 'UTC'), '%Y-%m-%dT%H:%i:%SZ') AS modification_time,
               min_date,
               max_date,
               primary_key_bytes_in_memory
@@ -948,7 +948,7 @@ tables:
               absolute_delay,
               total_replicas,
               active_replicas,
-              formatDateTime(last_queue_update, '%Y-%m-%dT%H:%i:%SZ') AS last_queue_update,
+              formatDateTime(toTimeZone(last_queue_update, 'UTC'), '%Y-%m-%dT%H:%i:%SZ') AS last_queue_update,
               replica_name,
               zookeeper_path
             FROM system.replicas
