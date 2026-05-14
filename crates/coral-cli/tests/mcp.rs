@@ -239,6 +239,7 @@ async fn mcp_stdio_lists_tools_and_resources() -> Result<(), Box<dyn std::error:
             "list_tables",
             "search_tables",
             "list_table_functions",
+            "search_table_functions",
             "describe_table",
             "list_columns"
         ]
@@ -310,6 +311,7 @@ async fn mcp_stdio_enable_feedback_lists_feedback_tool() -> Result<(), Box<dyn s
             "list_tables",
             "search_tables",
             "list_table_functions",
+            "search_table_functions",
             "describe_table",
             "list_columns",
             "feedback"

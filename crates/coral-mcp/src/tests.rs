@@ -139,6 +139,15 @@ functions:
     .to_string()
 }
 
+async fn add_table_function_demo_sources(source_client: &mut SourceClient) {
+    add_demo_source(source_client, table_function_manifest_yaml()).await;
+    add_demo_source(
+        source_client,
+        table_function_manifest_yaml().replace("name: searchy", "name: searchable"),
+    )
+    .await;
+}
+
 fn json_object(value: &Value) -> Map<String, Value> {
     value.as_object().cloned().expect("json object")
 }
@@ -270,6 +279,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
             "list_tables",
             "search_tables",
             "list_table_functions",
+            "search_table_functions",
             "describe_table",
             "list_columns"
         ]
@@ -725,12 +735,7 @@ async fn mcp_list_table_functions_returns_metadata() {
     let mut session = start_session(&temp).await;
     let client = &session.client;
 
-    add_demo_source(&mut session.source_client, table_function_manifest_yaml()).await;
-    add_demo_source(
-        &mut session.source_client,
-        table_function_manifest_yaml().replace("name: searchy", "name: searchable"),
-    )
-    .await;
+    add_table_function_demo_sources(&mut session.source_client).await;
 
     let tools = client.list_all_tools().await.expect("tools");
     let list_tool = tool_by_name(&tools, "list_table_functions");
@@ -799,6 +804,113 @@ async fn mcp_list_table_functions_returns_metadata() {
 }
 
 #[tokio::test]
+async fn mcp_search_table_functions_returns_metadata() {
+    let temp = TempDir::new().expect("temp dir");
+    let mut session = start_session(&temp).await;
+    let client = &session.client;
+
+    add_table_function_demo_sources(&mut session.source_client).await;
+
+    let tools = client.list_all_tools().await.expect("tools");
+    let search_tool = tool_by_name(&tools, "search_table_functions");
+    assert!(
+        search_tool
+            .description
+            .as_deref()
+            .expect("search function description")
+            .contains("2 table function(s) are currently visible")
+    );
+
+    let search = client
+        .call_tool(
+            CallToolRequestParams::new("search_table_functions").with_arguments(json_object(
+                &json!({
+                    "pattern": "^SEARCH_ISSUES$",
+                    "schema": "searchy",
+                    "ignore_case": true
+                }),
+            )),
+        )
+        .await
+        .expect("search exact table function");
+    let search = search.structured_content.expect("structured content");
+    assert_eq!(search["total"], 1);
+    assert_eq!(
+        search["table_functions"][0]["name"],
+        "searchy.search_issues"
+    );
+    assert!(
+        search["table_functions"][0]["matched_fields"]
+            .as_array()
+            .expect("matched fields")
+            .iter()
+            .any(|field| field == "function_name")
+    );
+    assert_matches_output_schema(search_tool, &search);
+
+    let search_page = client
+        .call_tool(
+            CallToolRequestParams::new("search_table_functions").with_arguments(json_object(
+                &json!({
+                    "pattern": "hybrid",
+                    "limit": 1
+                }),
+            )),
+        )
+        .await
+        .expect("search table function page");
+    let search_page = search_page.structured_content.expect("structured content");
+    assert_eq!(search_page["total"], 2);
+    assert_eq!(search_page["limit"], 1);
+    assert_eq!(search_page["has_more"], true);
+    assert_eq!(search_page["next_offset"], 1);
+    assert!(
+        search_page["table_functions"][0]["matched_fields"]
+            .as_array()
+            .expect("matched fields")
+            .iter()
+            .any(|field| field == "arguments")
+    );
+    assert_matches_output_schema(search_tool, &search_page);
+
+    let result_column_search = client
+        .call_tool(
+            CallToolRequestParams::new("search_table_functions").with_arguments(json_object(
+                &json!({
+                    "pattern": "issue title",
+                    "schema": "searchy"
+                }),
+            )),
+        )
+        .await
+        .expect("search table function result columns");
+    let result_column_search = result_column_search
+        .structured_content
+        .expect("structured content");
+    assert_eq!(result_column_search["total"], 1);
+    assert!(
+        result_column_search["table_functions"][0]["matched_fields"]
+            .as_array()
+            .expect("matched fields")
+            .iter()
+            .any(|field| field == "result_columns")
+    );
+
+    client
+        .call_tool(
+            CallToolRequestParams::new("search_table_functions").with_arguments(json_object(
+                &json!({
+                    "pattern": "["
+                }),
+            )),
+        )
+        .await
+        .expect_err("invalid regex should fail");
+
+    session.shutdown().await;
+}
+
+#[tokio::test]
 async fn mcp_feedback_tool_persists_blocked_agent_report() {
     let temp = TempDir::new().expect("temp dir");
     let session = start_session_with_options(
@@ -822,12 +934,13 @@ async fn mcp_feedback_tool_persists_blocked_agent_report() {
             "list_tables",
             "search_tables",
             "list_table_functions",
+            "search_table_functions",
             "describe_table",
             "list_columns",
             "feedback"
         ]
     );
-    let feedback_annotations = tools[6].annotations.as_ref().expect("feedback annotations");
+    let feedback_annotations = tools[7].annotations.as_ref().expect("feedback annotations");
     assert_eq!(feedback_annotations.read_only_hint, Some(false));
     assert_eq!(feedback_annotations.destructive_hint, Some(false));
     assert_eq!(feedback_annotations.idempotent_hint, Some(false));

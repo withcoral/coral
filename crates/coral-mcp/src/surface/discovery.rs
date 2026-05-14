@@ -1,5 +1,6 @@
 use coral_api::v1::{
-    Column as ProtoColumn, Table as ProtoTable, TableSummary as ProtoTableSummary,
+    Column as ProtoColumn, Table as ProtoTable, TableFunction as ProtoTableFunction,
+    TableSummary as ProtoTableSummary,
 };
 use regex::{Regex, RegexBuilder};
 use rmcp::ErrorData;
@@ -35,6 +36,30 @@ pub(crate) struct TableSummary {
     pub(crate) description: String,
     pub(crate) guide: String,
     pub(crate) required_filters: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct TableFunctionSummary {
+    pub(crate) schema_name: String,
+    pub(crate) function_name: String,
+    pub(crate) description: String,
+    pub(crate) arguments: Vec<TableFunctionArgumentSummary>,
+    pub(crate) result_columns: Vec<TableFunctionResultColumnSummary>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct TableFunctionArgumentSummary {
+    pub(crate) name: String,
+    pub(crate) required: bool,
+    pub(crate) values: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct TableFunctionResultColumnSummary {
+    pub(crate) name: String,
+    pub(crate) data_type: String,
+    pub(crate) nullable: bool,
+    pub(crate) description: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -151,6 +176,89 @@ impl TableSummary {
             "name": format!("{}.{}", self.schema_name, self.table_name),
             "description": self.description,
             "required_filters": self.required_filters,
+        })
+    }
+}
+
+impl TableFunctionSummary {
+    pub(crate) fn from_proto(function: &ProtoTableFunction) -> Self {
+        Self {
+            schema_name: function.schema_name.clone(),
+            function_name: function.name.clone(),
+            description: function.description.clone(),
+            arguments: function
+                .arguments
+                .iter()
+                .map(|argument| TableFunctionArgumentSummary {
+                    name: argument.name.clone(),
+                    required: argument.required,
+                    values: argument.values.clone(),
+                })
+                .collect(),
+            result_columns: function
+                .result_columns
+                .iter()
+                .map(|column| TableFunctionResultColumnSummary {
+                    name: column.name.clone(),
+                    data_type: column.data_type.clone(),
+                    nullable: column.nullable,
+                    description: column.description.clone(),
+                })
+                .collect(),
+        }
+    }
+
+    pub(crate) fn matched_fields(&self, regex: &Regex) -> Vec<&'static str> {
+        let name = format!("{}.{}", self.schema_name, self.function_name);
+        let candidates = [
+            ("schema_name", self.schema_name.as_str()),
+            ("function_name", self.function_name.as_str()),
+            ("name", name.as_str()),
+            ("description", self.description.as_str()),
+        ];
+        let mut matches = candidates
+            .into_iter()
+            .filter_map(|(field, value)| regex.is_match(value).then_some(field))
+            .collect::<Vec<_>>();
+        if self.arguments.iter().any(|argument| {
+            regex.is_match(&argument.name)
+                || argument.values.iter().any(|value| regex.is_match(value))
+        }) {
+            matches.push("arguments");
+        }
+        if self.result_columns.iter().any(|column| {
+            regex.is_match(&column.name)
+                || regex.is_match(&column.data_type)
+                || regex.is_match(&column.description)
+        }) {
+            matches.push("result_columns");
+        }
+        matches
+    }
+
+    pub(crate) fn search_result_value(&self, matched_fields: &[&'static str]) -> Value {
+        json!({
+            "schema_name": self.schema_name,
+            "function_name": self.function_name,
+            "name": format!("{}.{}", self.schema_name, self.function_name),
+            "sql_reference": format_schema_table_equivalent(&self.schema_name, &self.function_name),
+            "description": self.description,
+            "arguments": self.arguments.iter().map(|argument| {
+                json!({
+                    "name": argument.name,
+                    "required": argument.required,
+                    "values": argument.values,
+                })
+            }).collect::<Vec<_>>(),
+            "result_columns": self.result_columns.iter().map(|column| {
+                json!({
+                    "column_name": column.name,
+                    "data_type": column.data_type,
+                    "is_nullable": column.nullable,
+                    "description": column.description,
+                })
+            }).collect::<Vec<_>>(),
+            "matched_fields": matched_fields,
         })
     }
 }

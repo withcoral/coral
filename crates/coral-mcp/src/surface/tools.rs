@@ -29,6 +29,13 @@ pub(crate) struct SearchTablesArguments {
     pub(crate) pagination: Pagination,
 }
 
+pub(crate) struct SearchTableFunctionsArguments {
+    pub(crate) pattern: String,
+    pub(crate) schema: Option<String>,
+    pub(crate) ignore_case: bool,
+    pub(crate) pagination: Pagination,
+}
+
 pub(crate) struct DescribeTableArguments {
     pub(crate) schema: String,
     pub(crate) table: String,
@@ -189,6 +196,53 @@ pub(crate) fn list_table_functions_tool(visible_function_count: usize) -> Tool {
     .with_raw_output_schema(list_table_functions_output_schema())
     .with_annotations(
         ToolAnnotations::with_title("List Table Functions")
+            .read_only(true)
+            .destructive(false)
+            .idempotent(true)
+            .open_world(false),
+    )
+}
+
+pub(crate) fn search_table_functions_tool(visible_function_count: usize) -> Tool {
+    Tool::new(
+        "search_table_functions",
+        search_table_functions_description(visible_function_count),
+        json_object_schema(&json!({
+            "type": "object",
+            "required": ["pattern"],
+            "properties": {
+                "pattern": {
+                    "type": "string",
+                    "description": "Rust regex pattern to match table function metadata."
+                },
+                "schema": {
+                    "type": "string",
+                    "description": "Optional exact schema/source name to search."
+                },
+                "ignore_case": {
+                    "type": "boolean",
+                    "description": "Whether regex matching is case-insensitive. Defaults to true."
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum table functions to return, from 1 to 100. Defaults to 20.",
+                    "minimum": 1,
+                    "maximum": 100,
+                    "default": 20
+                },
+                "offset": {
+                    "type": "integer",
+                    "description": "Number of matching table functions to skip. Defaults to 0.",
+                    "minimum": 0,
+                    "maximum": u32::MAX,
+                    "default": 0
+                }
+            }
+        })),
+    )
+    .with_raw_output_schema(search_table_functions_output_schema())
+    .with_annotations(
+        ToolAnnotations::with_title("Search Table Functions")
             .read_only(true)
             .destructive(false)
             .idempotent(true)
@@ -360,6 +414,17 @@ pub(crate) fn search_tables_arguments(
     })
 }
 
+pub(crate) fn search_table_functions_arguments(
+    arguments: Option<&Map<String, Value>>,
+) -> Result<SearchTableFunctionsArguments, ErrorData> {
+    Ok(SearchTableFunctionsArguments {
+        pattern: required_string_argument(arguments, "pattern")?,
+        schema: optional_string_argument(arguments, "schema")?,
+        ignore_case: optional_bool_argument(arguments, "ignore_case", true)?,
+        pagination: parse_pagination_with_limits(arguments, 20, 100)?,
+    })
+}
+
 pub(crate) fn describe_table_arguments(
     arguments: Option<&Map<String, Value>>,
 ) -> Result<DescribeTableArguments, ErrorData> {
@@ -412,6 +477,12 @@ fn list_tables_description(visible_table_count: usize) -> String {
 fn search_tables_description(visible_table_count: usize) -> String {
     format!(
         "Search queryable table metadata with a Rust regex. {visible_table_count} table(s) are currently visible."
+    )
+}
+
+fn search_table_functions_description(visible_function_count: usize) -> String {
+    format!(
+        "Search queryable source-scoped table function metadata with a Rust regex. {visible_function_count} table function(s) are currently visible."
     )
 }
 
@@ -487,6 +558,99 @@ fn search_tables_output_schema() -> Arc<Map<String, Value>> {
 }
 
 fn list_table_functions_output_schema() -> Arc<Map<String, Value>> {
+    paginated_table_functions_output_schema(&table_function_output_schema(false))
+}
+
+fn search_table_functions_output_schema() -> Arc<Map<String, Value>> {
+    paginated_table_functions_output_schema(&table_function_output_schema(true))
+}
+
+fn table_function_output_schema(include_matched_fields: bool) -> Value {
+    let mut required = vec![
+        "schema_name",
+        "function_name",
+        "name",
+        "sql_reference",
+        "description",
+        "arguments",
+        "result_columns",
+    ];
+    if include_matched_fields {
+        required.push("matched_fields");
+    }
+    let mut properties = Map::from_iter([
+        ("schema_name".to_string(), json!({ "type": "string" })),
+        ("function_name".to_string(), json!({ "type": "string" })),
+        ("name".to_string(), json!({ "type": "string" })),
+        ("sql_reference".to_string(), json!({ "type": "string" })),
+        ("description".to_string(), json!({ "type": "string" })),
+        (
+            "arguments".to_string(),
+            json!({
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["name", "required", "values"],
+                    "additionalProperties": false,
+                    "properties": {
+                        "name": { "type": "string" },
+                        "required": { "type": "boolean" },
+                        "values": {
+                            "type": "array",
+                            "items": { "type": "string" }
+                        }
+                    }
+                }
+            }),
+        ),
+        (
+            "result_columns".to_string(),
+            json!({
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["column_name", "data_type", "is_nullable", "description"],
+                    "additionalProperties": false,
+                    "properties": {
+                        "column_name": { "type": "string" },
+                        "data_type": { "type": "string" },
+                        "is_nullable": { "type": "boolean" },
+                        "description": { "type": "string" }
+                    }
+                }
+            }),
+        ),
+    ]);
+    if include_matched_fields {
+        properties.insert(
+            "matched_fields".to_string(),
+            json!({
+                "type": "array",
+                "items": {
+                    "type": "string",
+                    "enum": [
+                        "schema_name",
+                        "function_name",
+                        "name",
+                        "description",
+                        "arguments",
+                        "result_columns"
+                    ]
+                }
+            }),
+        );
+    }
+    json!({
+        "type": "object",
+        "required": required,
+        "additionalProperties": false,
+        "properties": properties,
+    })
+}
+
+fn paginated_table_functions_output_schema(
+    function_item_schema: &Value,
+) -> Arc<Map<String, Value>> {
     json_object_schema(&json!({
         "type": "object",
         "required": ["table_functions", "total", "limit", "offset", "has_more"],
@@ -494,56 +658,7 @@ fn list_table_functions_output_schema() -> Arc<Map<String, Value>> {
         "properties": {
             "table_functions": {
                 "type": "array",
-                "items": {
-                    "type": "object",
-                    "required": [
-                        "schema_name",
-                        "function_name",
-                        "name",
-                        "sql_reference",
-                        "description",
-                        "arguments",
-                        "result_columns"
-                    ],
-                    "additionalProperties": false,
-                    "properties": {
-                        "schema_name": { "type": "string" },
-                        "function_name": { "type": "string" },
-                        "name": { "type": "string" },
-                        "sql_reference": { "type": "string" },
-                        "description": { "type": "string" },
-                        "arguments": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "required": ["name", "required", "values"],
-                                "additionalProperties": false,
-                                "properties": {
-                                    "name": { "type": "string" },
-                                    "required": { "type": "boolean" },
-                                    "values": {
-                                        "type": "array",
-                                        "items": { "type": "string" }
-                                    }
-                                }
-                            }
-                        },
-                        "result_columns": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "required": ["column_name", "data_type", "is_nullable", "description"],
-                                "additionalProperties": false,
-                                "properties": {
-                                    "column_name": { "type": "string" },
-                                    "data_type": { "type": "string" },
-                                    "is_nullable": { "type": "boolean" },
-                                    "description": { "type": "string" }
-                                }
-                            }
-                        }
-                    }
-                }
+                "items": function_item_schema
             },
             "total": {
                 "type": "integer",

@@ -26,14 +26,15 @@ use tonic::Request;
 use crate::{
     McpOptions,
     surface::{
-        ColumnSummary, TableSummary, build_tool_result, compile_metadata_regex,
-        describe_table_arguments, describe_table_tool, feedback_tool,
+        ColumnSummary, TableFunctionSummary, TableSummary, build_tool_result,
+        compile_metadata_regex, describe_table_arguments, describe_table_tool, feedback_tool,
         format_schema_table_equivalent, guide_resource, guide_resource_content,
         initial_instructions, internal_status, list_columns_arguments, list_columns_tool,
         list_table_functions_arguments, list_table_functions_tool, list_tables_arguments,
         list_tables_tool, list_tables_value, page_items, paged_value, required_string_argument,
-        search_tables_arguments, search_tables_tool, sql_tool, status_to_error_data,
-        tables_resource, tables_resource_content, tool_error_from_status, tool_error_result,
+        search_table_functions_arguments, search_table_functions_tool, search_tables_arguments,
+        search_tables_tool, sql_tool, status_to_error_data, tables_resource,
+        tables_resource_content, tool_error_from_status, tool_error_result,
     },
     telemetry,
 };
@@ -41,6 +42,7 @@ use crate::{
 const LIST_TABLES_COUNT_LIMIT: u32 = 1;
 const LIST_TABLES_UNBOUNDED_LIMIT: u32 = 0;
 const LIST_TABLE_FUNCTIONS_COUNT_LIMIT: u32 = 1;
+const LIST_TABLE_FUNCTIONS_UNBOUNDED_LIMIT: u32 = 0;
 
 struct LoadTablesParams<'a> {
     schema_name: Option<&'a str>,
@@ -154,6 +156,23 @@ impl CoralMcpServer {
             })
             .await?
             .table_summaries)
+    }
+
+    async fn load_table_function_summaries(
+        &self,
+        schema_name: Option<&str>,
+    ) -> Result<Vec<ProtoTableFunction>, tonic::Status> {
+        Ok(self
+            .load_table_functions(LoadTableFunctionsParams {
+                schema_name,
+                function_name: None,
+                pagination: PaginationRequest {
+                    limit: LIST_TABLE_FUNCTIONS_UNBOUNDED_LIMIT,
+                    offset: 0,
+                },
+            })
+            .await?
+            .table_functions)
     }
 
     async fn load_exact_table(
@@ -305,6 +324,37 @@ impl CoralMcpServer {
         }
     }
 
+    async fn search_table_functions_tool_result(
+        &self,
+        request_arguments: Option<&Map<String, Value>>,
+    ) -> Result<ToolCallOutcome, ErrorData> {
+        let arguments = search_table_functions_arguments(request_arguments)?;
+        let regex = compile_metadata_regex(&arguments.pattern, arguments.ignore_case)?;
+        match self
+            .load_table_function_summaries(arguments.schema.as_deref())
+            .await
+        {
+            Ok(functions) => {
+                let mut matches = Vec::new();
+                for function in &functions {
+                    let summary = TableFunctionSummary::from_proto(function);
+                    let matched_fields = summary.matched_fields(&regex);
+                    if !matched_fields.is_empty() {
+                        matches.push(summary.search_result_value(&matched_fields));
+                    }
+                }
+                Ok(ToolCallOutcome::Success(paged_value(
+                    "table_functions",
+                    page_items(matches, arguments.pagination),
+                )))
+            }
+            Err(status) => Ok(ToolCallOutcome::ToolError {
+                operation: "Table function search",
+                status,
+            }),
+        }
+    }
+
     async fn describe_table_tool_result(
         &self,
         request_arguments: Option<&Map<String, Value>>,
@@ -387,6 +437,10 @@ impl CoralMcpServer {
             }
             "search_tables" => {
                 self.search_tables_tool_result(request.arguments.as_ref())
+                    .await
+            }
+            "search_table_functions" => {
+                self.search_table_functions_tool_result(request.arguments.as_ref())
                     .await
             }
             "describe_table" => {
@@ -652,6 +706,7 @@ impl ServerHandler for CoralMcpServer {
                 list_tables_tool(visible_table_count),
                 search_tables_tool(visible_table_count),
                 list_table_functions_tool(visible_function_count),
+                search_table_functions_tool(visible_function_count),
                 describe_table_tool(),
                 list_columns_tool(),
             ];
