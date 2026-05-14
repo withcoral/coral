@@ -752,15 +752,7 @@ impl TraceStore {
                 source,
             })?;
             let path = entry.path();
-            if path
-                .extension()
-                .and_then(std::ffi::OsStr::to_str)
-                .is_some_and(|extension| extension == "jsonl")
-                && path
-                    .file_name()
-                    .and_then(std::ffi::OsStr::to_str)
-                    .is_some_and(|name| name.starts_with("spans-"))
-            {
+            if prefixed_jsonl_file(&path, "spans") {
                 files.push(path);
             }
         }
@@ -784,21 +776,26 @@ impl TraceStore {
                 source,
             })?;
             let path = entry.path();
-            if path
-                .extension()
-                .and_then(std::ffi::OsStr::to_str)
-                .is_some_and(|extension| extension == "jsonl")
-                && path
-                    .file_name()
-                    .and_then(std::ffi::OsStr::to_str)
-                    .is_some_and(|name| name.starts_with("body-previews-"))
-            {
+            if prefixed_jsonl_file(&path, "body-previews") {
                 files.push(path);
             }
         }
         files.sort();
         Ok(files)
     }
+}
+
+fn prefixed_jsonl_file(path: &Path, prefix: &str) -> bool {
+    path.extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .is_some_and(|extension| extension == "jsonl")
+        && path
+            .file_name()
+            .and_then(std::ffi::OsStr::to_str)
+            .is_some_and(|name| {
+                name.strip_prefix(prefix)
+                    .is_some_and(|suffix| suffix.starts_with('-'))
+            })
 }
 
 impl TracePrimaryCandidate {
@@ -1626,12 +1623,14 @@ mod tests {
 
         let store = TraceStore::new(dir.clone());
         let summary = store
-            .list_traces(10, 0)
+            .list_traces_sync(10, 0)
             .expect("list traces")
             .into_iter()
             .next()
             .expect("trace summary");
-        let detail = store.get_trace(&summary.trace_id).expect("trace detail");
+        let detail = store
+            .get_trace_sync(&summary.trace_id)
+            .expect("trace detail");
         let span = detail.spans.first().expect("trace span");
 
         let recorder =
@@ -1646,7 +1645,7 @@ mod tests {
         });
 
         let detail = TraceStore::new(dir)
-            .get_trace(&summary.trace_id)
+            .get_trace_sync(&summary.trace_id)
             .expect("trace detail");
         let span = detail.spans.first().expect("trace span");
 
@@ -1738,7 +1737,16 @@ mod tests {
             "events_json".to_string(),
             json!({ "large_detail_payload": ["ignored by list"] }),
         );
-        fs::write(dir.join("spans.jsonl"), format!("{value}\n")).expect("write trace record");
+        fs::write(
+            dir.join(timestamped_jsonl_path(SystemTime::now())),
+            format!("{value}\n"),
+        )
+        .expect("write trace record");
+        fs::write(
+            dir.join("body-previews-00000000000000000001-test-0000000000000000.jsonl"),
+            "{}\n",
+        )
+        .expect("write body preview record");
 
         let summaries = TraceStore::new(dir)
             .list_traces_sync(10, 0)
@@ -1758,7 +1766,11 @@ mod tests {
         let temp = TempDir::new().expect("temp dir");
         let dir = temp.path().join("telemetry").join("traces");
         fs::create_dir_all(&dir).expect("trace dir");
-        fs::write(dir.join("spans.jsonl"), "{\"trace_id\":").expect("write partial jsonl");
+        fs::write(
+            dir.join(timestamped_jsonl_path(SystemTime::now())),
+            "{\"trace_id\":",
+        )
+        .expect("write partial jsonl");
 
         let store = TraceStore::new(dir);
 
