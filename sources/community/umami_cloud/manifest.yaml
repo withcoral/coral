@@ -668,6 +668,7 @@ tables:
       Valid type values: path, entry, exit, title, query, referrer, channel,
       domain, country, region, city, browser, os, device, language, screen,
       event, hostname, tag, distinctId.
+      Results are paginated automatically (500 rows per page).
       Example:
         SELECT x AS browser, y AS visitors
         FROM umami_cloud.metrics
@@ -709,9 +710,6 @@ tables:
         - name: type
           from: filter
           key: type
-        - name: limit
-          from: literal
-          value: 500
         - name: path
           from: filter
           key: path
@@ -745,7 +743,13 @@ tables:
     response:
       rows_path: []
     pagination:
-      mode: none
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 500
+        max: 500
+        query_param: limit
     columns:
       - name: x
         type: Utf8
