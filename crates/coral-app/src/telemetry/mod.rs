@@ -33,22 +33,50 @@ use crate::bootstrap::AppError;
 pub use config::TelemetryConfig;
 use config::{DEFAULT_LOCAL_TRACE_FILTER, DEFAULT_LOG_FILTER, DEFAULT_TRACE_FILTER};
 
-static INIT: OnceLock<Result<(), String>> = OnceLock::new();
+static INIT: OnceLock<Result<TracingInitState, String>> = OnceLock::new();
 static PROVIDER: Mutex<Option<SdkTracerProvider>> = Mutex::new(None);
 static LOGGER_PROVIDER: Mutex<Option<SdkLoggerProvider>> = Mutex::new(None);
 static METER_PROVIDER: Mutex<Option<SdkMeterProvider>> = Mutex::new(None);
 
 const METRICS_INTERVAL: Duration = Duration::from_secs(5);
+const LOCAL_TRACE_EXCLUDED_RPC_SERVICES: &[&str] = &["coral.v1.TraceService"];
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct InstalledLocalTraceStore {
+    pub(crate) dir: PathBuf,
+    pub(crate) retention: Duration,
+}
+
+impl InstalledLocalTraceStore {
+    fn new(dir: PathBuf, retention: Duration) -> Self {
+        Self { dir, retention }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct TracingInitState {
+    local_trace_store: Option<InstalledLocalTraceStore>,
+}
 
 #[derive(Debug)]
 struct TargetFilteringSpanExporter<E> {
     inner: E,
     targets: Targets,
+    excluded_rpc_services: &'static [&'static str],
 }
 
 impl<E> TargetFilteringSpanExporter<E> {
     fn new(inner: E, targets: Targets) -> Self {
-        Self { inner, targets }
+        Self {
+            inner,
+            targets,
+            excluded_rpc_services: &[],
+        }
+    }
+
+    fn excluding_rpc_services(mut self, services: &'static [&'static str]) -> Self {
+        self.excluded_rpc_services = services;
+        self
     }
 }
 
@@ -57,7 +85,10 @@ where
     E: SpanExporter,
 {
     async fn export(&self, mut batch: Vec<SpanData>) -> opentelemetry_sdk::error::OTelSdkResult {
-        batch.retain(|span| span_matches_targets(span, &self.targets));
+        batch.retain(|span| {
+            span_matches_targets(span, &self.targets)
+                && !span_matches_excluded_rpc_service(span, self.excluded_rpc_services)
+        });
         if batch.is_empty() {
             return Ok(());
         }
@@ -88,6 +119,15 @@ fn span_matches_targets(span: &SpanData, targets: &Targets) -> bool {
         return false;
     };
     targets.would_enable(&target, &level)
+}
+
+fn span_matches_excluded_rpc_service(span: &SpanData, excluded_services: &[&str]) -> bool {
+    let Some(service) = span_string_attribute(span, "rpc.service") else {
+        return false;
+    };
+    excluded_services
+        .iter()
+        .any(|excluded| service == *excluded)
 }
 
 fn span_string_attribute(span: &SpanData, key: &str) -> Option<String> {
@@ -299,14 +339,15 @@ pub(crate) fn init_tracing(
     config: &TelemetryConfig,
     enable_stderr_logs: bool,
     internal_trace_store_dir: Option<PathBuf>,
-) -> Result<(), AppError> {
-    INIT.get_or_init(|| {
-        try_init_tracing(config, enable_stderr_logs, internal_trace_store_dir)
-            .map_err(|e| e.to_string())
-    })
-    .as_ref()
-    .map_err(|e| AppError::InvalidInput(e.clone()))?;
-    Ok(())
+) -> Result<Option<InstalledLocalTraceStore>, AppError> {
+    let state = INIT
+        .get_or_init(|| {
+            try_init_tracing(config, enable_stderr_logs, internal_trace_store_dir)
+                .map_err(|e| e.to_string())
+        })
+        .as_ref()
+        .map_err(|e| AppError::InvalidInput(e.clone()))?;
+    Ok(state.local_trace_store.clone())
 }
 
 #[expect(
@@ -317,7 +358,7 @@ fn try_init_tracing(
     config: &TelemetryConfig,
     enable_stderr_logs: bool,
     internal_trace_store_dir: Option<PathBuf>,
-) -> Result<(), AppError> {
+) -> Result<TracingInitState, AppError> {
     opentelemetry::global::set_text_map_propagator(TraceContextPropagator::new());
     let endpoint = config
         .otel
@@ -334,9 +375,11 @@ fn try_init_tracing(
             .with_filter(log_filter.clone())
     });
 
-    let internal_trace_store_dir = internal_trace_store_dir.filter(|_| config.local_traces.enabled);
-    let internal_trace_store_enabled = internal_trace_store_dir.is_some();
-    let should_export_traces = endpoint.is_some() || internal_trace_store_dir.is_some();
+    let local_trace_store = internal_trace_store_dir
+        .filter(|_| config.trace_history.enabled)
+        .map(|dir| InstalledLocalTraceStore::new(dir, config.trace_history.retention()));
+    let internal_trace_store_enabled = local_trace_store.is_some();
+    let should_export_traces = endpoint.is_some() || internal_trace_store_enabled;
     let mut trace_filter_error = None;
     let otel_trace_layer = if should_export_traces {
         let resource = opentelemetry_sdk::Resource::builder()
@@ -402,13 +445,13 @@ fn try_init_tracing(
             }
         }
 
-        if let Some(path) = internal_trace_store_dir {
-            let exporter =
-                local_store::JsonlSpanExporter::new(path, config.local_traces.retention())
-                    .map_err(|e| AppError::InvalidInput(e.to_string()))?;
+        if let Some(store) = local_trace_store.as_ref() {
+            let exporter = local_store::JsonlSpanExporter::new(store.dir.clone(), store.retention)
+                .map_err(|e| AppError::InvalidInput(e.to_string()))?;
             let (internal_trace_targets, _) =
                 build_trace_targets(DEFAULT_LOCAL_TRACE_FILTER, DEFAULT_LOCAL_TRACE_FILTER);
-            let exporter = TargetFilteringSpanExporter::new(exporter, internal_trace_targets);
+            let exporter = TargetFilteringSpanExporter::new(exporter, internal_trace_targets)
+                .excluding_rpc_services(LOCAL_TRACE_EXCLUDED_RPC_SERVICES);
             builder = builder.with_span_processor(
                 opentelemetry_sdk::trace::BatchSpanProcessor::builder(exporter).build(),
             );
@@ -460,7 +503,7 @@ fn try_init_tracing(
             detail = %error,
             "skipping coral-app tracing subscriber: host process has already installed one"
         );
-        return Ok(());
+        return Ok(TracingInitState::default());
     }
     if let Some(error) = log_filter_error {
         tracing::warn!(
@@ -479,7 +522,7 @@ fn try_init_tracing(
         );
     }
 
-    Ok(())
+    Ok(TracingInitState { local_trace_store })
 }
 
 /// Flush any pending tracing, log, and metric exports before process exit.
@@ -514,8 +557,8 @@ mod tests {
 
     use super::{
         DEFAULT_LOCAL_TRACE_FILTER, DEFAULT_LOG_FILTER, DEFAULT_TRACE_FILTER,
-        TargetFilteringSpanExporter, build_log_filter, build_trace_targets,
-        normalize_otlp_endpoint, parse_headers, trace_layer_filter,
+        LOCAL_TRACE_EXCLUDED_RPC_SERVICES, TargetFilteringSpanExporter, build_log_filter,
+        build_trace_targets, normalize_otlp_endpoint, parse_headers, trace_layer_filter,
     };
 
     #[test]
@@ -582,7 +625,7 @@ mod tests {
     }
 
     #[test]
-    fn otlp_trace_layer_filter_does_not_narrow_local_traces() {
+    fn otlp_trace_layer_filter_does_not_narrow_trace_history() {
         let (targets, error) = trace_layer_filter(Some(DEFAULT_TRACE_FILTER), true);
 
         assert!(error.is_none());
@@ -630,6 +673,51 @@ mod tests {
         span_names.sort();
 
         assert_eq!(span_names, vec!["kept"]);
+        provider.shutdown().expect("provider shutdown");
+    }
+
+    #[test]
+    fn target_filtering_exporter_can_exclude_trace_service_rpc_spans() {
+        let memory = InMemorySpanExporter::default();
+        let (targets, error) =
+            build_trace_targets(DEFAULT_LOCAL_TRACE_FILTER, DEFAULT_LOCAL_TRACE_FILTER);
+        assert!(error.is_none());
+        let exporter = TargetFilteringSpanExporter::new(memory.clone(), targets)
+            .excluding_rpc_services(LOCAL_TRACE_EXCLUDED_RPC_SERVICES);
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter)
+            .build();
+        let tracer = provider.tracer("filter-test");
+        let layer = tracing_opentelemetry::layer()
+            .with_tracer(tracer)
+            .with_level(true);
+        let subscriber = tracing_subscriber::Registry::default().with(layer);
+
+        tracing::subscriber::with_default(subscriber, || {
+            let dropped = tracing::info_span!(
+                target: "coral_app::transport",
+                "trace_service_grpc",
+                rpc.service = "coral.v1.TraceService",
+            );
+            let _dropped = dropped.enter();
+
+            let kept = tracing::info_span!(
+                target: "coral_app::transport",
+                "query_service_grpc",
+                rpc.service = "coral.v1.QueryService",
+            );
+            let _kept = kept.enter();
+        });
+        provider.force_flush().expect("flush spans");
+
+        let span_names = memory
+            .get_finished_spans()
+            .expect("finished spans")
+            .into_iter()
+            .map(|span| span.name.to_string())
+            .collect::<Vec<_>>();
+
+        assert_eq!(span_names, vec!["query_service_grpc"]);
         provider.shutdown().expect("provider shutdown");
     }
 

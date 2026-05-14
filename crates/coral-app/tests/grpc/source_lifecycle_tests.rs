@@ -1156,7 +1156,7 @@ origin = "imported"
 }
 
 #[tokio::test]
-async fn config_persists_across_rebuilds_without_local_trace_state() {
+async fn config_persists_across_rebuilds_without_trace_history_state() {
     let temp = TempDir::new().expect("temp dir");
     let manifest_yaml = fixture_manifest_yaml(temp.path());
     let config_dir = temp.path().join("coral-config");
@@ -1166,7 +1166,7 @@ async fn config_persists_across_rebuilds_without_local_trace_state() {
         r"
 version = 1
 
-[local_traces]
+[trace_history]
 enabled = false
 ",
     )
@@ -1354,7 +1354,7 @@ async fn adding_source_preserves_otel_config_and_existing_sources() {
 endpoint = "http://localhost:4318"
 headers = "from=config"
 
-[local_traces]
+[trace_history]
 enabled = false
 retention_days = 3
 
@@ -1391,16 +1391,16 @@ origin = "imported"
         "otel headers should be preserved"
     );
     assert!(
-        config_raw.contains("[local_traces]"),
-        "local traces section should be preserved"
+        config_raw.contains("[trace_history]"),
+        "trace history section should be preserved"
     );
     assert!(
         config_raw.contains("enabled = false"),
-        "local traces enabled flag should be preserved"
+        "trace history enabled flag should be preserved"
     );
     assert!(
         config_raw.contains("retention_days = 3"),
-        "local traces retention should be preserved"
+        "trace history retention should be preserved"
     );
 
     // The pre-existing source must still be present.

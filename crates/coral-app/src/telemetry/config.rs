@@ -11,7 +11,7 @@ pub(super) const DEFAULT_TRACE_FILTER: &str = "coral_app=trace,coral_client=trac
 pub(super) const DEFAULT_LOCAL_TRACE_FILTER: &str = "coral_app=trace,coral_client=trace,coral_mcp=trace,coral_engine=trace,coral_engine::datafusion=trace";
 pub(super) const DEFAULT_LOG_FILTER: &str = "coral_app=info,coral_engine=info";
 const DEFAULT_SERVICE_NAME: &str = "coral";
-const DEFAULT_LOCAL_TRACE_RETENTION_DAYS: u64 = 7;
+const DEFAULT_TRACE_HISTORY_RETENTION_DAYS: u64 = 7;
 const HOURS_PER_DAY: u64 = 24;
 const SECONDS_PER_HOUR: u64 = 60 * 60;
 
@@ -20,15 +20,15 @@ struct TelemetryConfigFile {
     #[serde(default)]
     otel: OtlpConfig,
     #[serde(default)]
-    local_traces: LocalTraceConfig,
+    trace_history: TraceHistoryConfig,
 }
 
-/// Telemetry and local trace settings loaded from `config.toml`.
+/// Telemetry and trace history settings loaded from `config.toml`.
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct TelemetryConfig {
     pub(crate) otel: OtlpConfig,
-    pub(crate) local_traces: LocalTraceConfig,
+    pub(crate) trace_history: TraceHistoryConfig,
 }
 
 /// External OpenTelemetry export settings loaded from `[otel]`.
@@ -54,25 +54,25 @@ impl Default for OtlpConfig {
     }
 }
 
-/// Product-owned local trace inspection settings loaded from `[local_traces]`.
+/// Product-owned trace history settings loaded from `[trace_history]`.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(default)]
-pub(crate) struct LocalTraceConfig {
+pub(crate) struct TraceHistoryConfig {
     pub(crate) enabled: bool,
     pub(crate) retention_days: u64,
 }
 
-impl Default for LocalTraceConfig {
+impl Default for TraceHistoryConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            retention_days: DEFAULT_LOCAL_TRACE_RETENTION_DAYS,
+            retention_days: DEFAULT_TRACE_HISTORY_RETENTION_DAYS,
         }
     }
 }
 
 impl TelemetryConfig {
-    /// Load telemetry and local trace sections from `config.toml`.
+    /// Load telemetry and trace history sections from `config.toml`.
     ///
     /// # Errors
     ///
@@ -83,7 +83,7 @@ impl TelemetryConfig {
             let file = toml::from_str::<TelemetryConfigFile>(&raw)?;
             Self {
                 otel: file.otel,
-                local_traces: file.local_traces,
+                trace_history: file.trace_history,
             }
         } else {
             Self::default()
@@ -93,7 +93,7 @@ impl TelemetryConfig {
     }
 }
 
-impl LocalTraceConfig {
+impl TraceHistoryConfig {
     #[must_use]
     pub(crate) fn retention(&self) -> Duration {
         Duration::from_secs(
@@ -111,7 +111,7 @@ mod tests {
 
     use tempfile::TempDir;
 
-    use super::{LocalTraceConfig, OtlpConfig, TelemetryConfig};
+    use super::{OtlpConfig, TelemetryConfig, TraceHistoryConfig};
     use crate::state::AppStateLayout;
 
     #[test]
@@ -122,11 +122,11 @@ mod tests {
         let config = TelemetryConfig::load(&layout).expect("default telemetry config");
 
         assert_eq!(config, TelemetryConfig::default());
-        assert!(config.local_traces.enabled);
+        assert!(config.trace_history.enabled);
     }
 
     #[test]
-    fn loads_otel_and_local_trace_sections_from_config_file() {
+    fn loads_otel_and_trace_history_sections_from_config_file() {
         let temp = TempDir::new().expect("temp dir");
         let layout = AppStateLayout::discover(Some(temp.path().join("config"))).expect("layout");
         layout.ensure().expect("ensure config dir");
@@ -142,7 +142,7 @@ log_filter = "info"
 trace_filter = "coral_app=debug"
 service_name = "from-config"
 
-[local_traces]
+[trace_history]
 enabled = true
 retention_days = 14
 "#,
@@ -159,26 +159,26 @@ retention_days = 14
         assert_eq!(config.otel.log_filter.as_deref(), Some("info"));
         assert_eq!(config.otel.trace_filter, "coral_app=debug");
         assert_eq!(config.otel.service_name, "from-config");
-        assert!(config.local_traces.enabled);
-        assert_eq!(config.local_traces.retention_days, 14);
+        assert!(config.trace_history.enabled);
+        assert_eq!(config.trace_history.retention_days, 14);
         assert_eq!(
-            config.local_traces.retention(),
+            config.trace_history.retention(),
             Duration::from_hours(14 * 24)
         );
     }
 
     #[test]
-    fn local_trace_retention_saturates_large_day_values() {
-        let config = LocalTraceConfig {
+    fn trace_history_retention_saturates_large_day_values() {
+        let config = TraceHistoryConfig {
             retention_days: u64::MAX,
-            ..LocalTraceConfig::default()
+            ..TraceHistoryConfig::default()
         };
 
         assert_eq!(config.retention(), Duration::from_secs(u64::MAX));
     }
 
     #[test]
-    fn otel_defaults_do_not_include_local_trace_settings() {
+    fn otel_defaults_do_not_include_trace_history_settings() {
         let config = OtlpConfig::default();
 
         assert_eq!(config.endpoint, None);

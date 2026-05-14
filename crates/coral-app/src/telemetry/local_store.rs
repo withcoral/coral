@@ -320,8 +320,8 @@ fn prune_expired_jsonl_files(
         {
             continue;
         }
-        let timestamp = jsonl_file_timestamp(&path)?;
-        if timestamp <= cutoff {
+        let modified = jsonl_file_modified(&path)?;
+        if modified <= cutoff {
             fs::remove_file(&path)
                 .map_err(|source| LocalTraceStoreError::RemoveFile { path, source })?;
         }
@@ -329,33 +329,13 @@ fn prune_expired_jsonl_files(
     Ok(())
 }
 
-fn jsonl_file_timestamp(path: &Path) -> Result<SystemTime, LocalTraceStoreError> {
-    if let Some(timestamp) = path
-        .file_name()
-        .and_then(std::ffi::OsStr::to_str)
-        .and_then(parse_jsonl_file_timestamp)
-    {
-        return Ok(timestamp);
-    }
-
+fn jsonl_file_modified(path: &Path) -> Result<SystemTime, LocalTraceStoreError> {
     path.metadata()
         .and_then(|metadata| metadata.modified())
         .map_err(|source| LocalTraceStoreError::FileMetadata {
             path: path.to_path_buf(),
             source,
         })
-}
-
-fn parse_jsonl_file_timestamp(file_name: &str) -> Option<SystemTime> {
-    let unix_nanos = file_name
-        .strip_prefix("spans-")?
-        .split('-')
-        .next()?
-        .parse::<u128>()
-        .ok()?;
-    let secs = u64::try_from(unix_nanos / 1_000_000_000).ok()?;
-    let nanos = u32::try_from(unix_nanos % 1_000_000_000).ok()?;
-    UNIX_EPOCH.checked_add(Duration::new(secs, nanos))
 }
 
 #[derive(Debug, Clone)]
@@ -1326,7 +1306,7 @@ fn duration_nanos(start: SystemTime, end: SystemTime) -> i64 {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::fs::{self, FileTimes};
     use std::path::Path;
     use std::time::{Duration, SystemTime};
 
@@ -1522,18 +1502,22 @@ mod tests {
         let temp = TempDir::new().expect("temp dir");
         let dir = temp.path().join("telemetry").join("traces");
         fs::create_dir_all(&dir).expect("trace dir");
-        let old_path = dir.join(timestamped_jsonl_path(
+        let expired_path = dir.join(timestamped_jsonl_path(SystemTime::now()));
+        let old_name_fresh_path = dir.join(timestamped_jsonl_path(
             SystemTime::now() - Duration::from_hours(8 * 24),
         ));
-        let fresh_path = dir.join(timestamped_jsonl_path(SystemTime::now()));
-        fs::write(&old_path, "{}\n").expect("write expired trace file");
-        fs::write(&fresh_path, "{}\n").expect("write fresh trace file");
+        fs::write(&expired_path, "{}\n").expect("write expired trace file");
+        fs::write(&old_name_fresh_path, "{}\n").expect("write fresh trace file");
+        set_modified_time(
+            &expired_path,
+            SystemTime::now() - Duration::from_hours(8 * 24),
+        );
 
         let _exporter =
             JsonlSpanExporter::new(dir.clone(), TRACE_RETENTION).expect("jsonl span exporter");
 
-        assert!(!old_path.exists());
-        assert!(fresh_path.exists());
+        assert!(!expired_path.exists());
+        assert!(old_name_fresh_path.exists());
     }
 
     #[test]
@@ -1541,18 +1525,25 @@ mod tests {
         let temp = TempDir::new().expect("temp dir");
         let dir = temp.path().join("telemetry").join("traces");
         fs::create_dir_all(&dir).expect("trace dir");
-        let old_path = dir.join(timestamped_jsonl_path(
+        let expired_path = dir.join(timestamped_jsonl_path(SystemTime::now()));
+        let old_name_fresh_path = dir.join(timestamped_jsonl_path(
             SystemTime::now() - Duration::from_hours(8 * 24),
         ));
-        let fresh_path = dir.join(timestamped_jsonl_path(SystemTime::now()));
-        write_record_file(&old_path, &trace_record("old-trace", "old-span"));
-        write_record_file(&fresh_path, &trace_record("fresh-trace", "fresh-span"));
+        write_record_file(&expired_path, &trace_record("old-trace", "old-span"));
+        write_record_file(
+            &old_name_fresh_path,
+            &trace_record("fresh-trace", "fresh-span"),
+        );
+        set_modified_time(
+            &expired_path,
+            SystemTime::now() - Duration::from_hours(8 * 24),
+        );
         let store = TraceStore::with_retention(dir, TRACE_RETENTION);
 
         let traces = store.list_traces_sync(10, 0).expect("list traces");
 
-        assert!(!old_path.exists());
-        assert!(fresh_path.exists());
+        assert!(!expired_path.exists());
+        assert!(old_name_fresh_path.exists());
         assert_eq!(traces.len(), 1);
         assert_eq!(traces.first().expect("fresh trace").trace_id, "fresh-trace");
     }
@@ -1601,6 +1592,15 @@ mod tests {
         let mut line = serde_json::to_string(record).expect("serialize record");
         line.push('\n');
         fs::write(path, line).expect("write trace record");
+    }
+
+    fn set_modified_time(path: &Path, modified: SystemTime) {
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .expect("open trace file for timestamp update");
+        file.set_times(FileTimes::new().set_modified(modified))
+            .expect("set trace file modified time");
     }
 
     fn trace_record(trace_id: &str, span_id: &str) -> TraceSpanRecord {

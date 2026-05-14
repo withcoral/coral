@@ -18,27 +18,27 @@ Coral picks up the new settings on the next invocation, and spans, logs, and met
 
 The `endpoint` is the OTLP/HTTP base URL. Coral automatically appends `/v1/traces`, `/v1/logs`, and `/v1/metrics` for each signal, so you do not need to set those paths yourself. If you point at a URL that already includes one of those suffixes, Coral strips it before re-appending the right one per signal.
 
-## Local Trace Inspection
+## Trace History
 
 Coral keeps a local trace history for the UI by default. Local traces include query, source-loading, HTTP, and DataFusion spans. They also include DataFusion optimizer-rule spans so the trace view can show the planning work that happened for a query. This local filter is separate from `trace_filter`, which only controls OTLP span export.
 
 By default, Coral retains seven days of local spans. To change that window:
 
 ```toml
-[local_traces]
+[trace_history]
 retention_days = 14
 ```
 
-To disable local trace inspection:
+To disable trace history:
 
 ```toml
-[local_traces]
+[trace_history]
 enabled = false
 ```
 
 ## Configuration reference
 
-External OpenTelemetry export settings live under `[otel]` in `config.toml`. Coral-owned local trace inspection settings live under `[local_traces]`. There are no environment variable overrides except for [`CORAL_TRACE_PARENT`](#distributed-tracing).
+External OpenTelemetry export settings live under `[otel]` in `config.toml`. Coral-owned trace history settings live under `[trace_history]`. There are no environment variable overrides except for [`CORAL_TRACE_PARENT`](#distributed-tracing).
 
 ### `[otel]`
 
@@ -50,11 +50,11 @@ External OpenTelemetry export settings live under `[otel]` in `config.toml`. Cor
 | `trace_filter`                 | string  | `coral_app=trace,coral_client=trace,coral_mcp=trace,coral_engine=trace,coral_engine::datafusion=off` | `tracing-subscriber` filter applied to OTLP spans.                                |
 | `service_name`                 | string  | `coral`                                                                | Value of the `service.name` resource attribute on every signal.                   |
 
-### `[local_traces]`
+### `[trace_history]`
 
 | Key                   | Type    | Default | Description                                                                       |
 | --------------------- | ------- | ------- | --------------------------------------------------------------------------------- |
-| `enabled`             | boolean | `true`  | Enables local trace inspection without requiring an OTLP collector.               |
+| `enabled`             | boolean | `true`  | Enables trace history without requiring an OTLP collector.                        |
 | `retention_days`      | integer | `7`     | Number of days of local trace spans to retain.                                    |
 
 Example with auth headers and a hosted endpoint:

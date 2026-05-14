@@ -235,10 +235,10 @@ impl ServerBuilder {
         layout.ensure()?;
         let telemetry_config = TelemetryConfig::load(&layout)?;
         let internal_trace_store_dir = telemetry_config
-            .local_traces
+            .trace_history
             .enabled
             .then(|| layout.local_trace_store_dir());
-        crate::telemetry::init_tracing(
+        let installed_trace_store = crate::telemetry::init_tracing(
             &telemetry_config,
             self.config.enable_stderr_logs,
             internal_trace_store_dir.clone(),
@@ -255,9 +255,11 @@ impl ServerBuilder {
             layout,
             self.config.engine_extensions_providers,
         );
-        let trace_service = internal_trace_store_dir
-            .clone()
-            .map(|dir| TraceService::new(dir, telemetry_config.local_traces.retention()));
+        let trace_service = if telemetry_config.trace_history.enabled {
+            installed_trace_store.map(|store| TraceService::new(store.dir, store.retention))
+        } else {
+            None
+        };
         start_server(
             source_manager,
             query_manager,
@@ -582,6 +584,7 @@ mod tests {
     use std::net::{Ipv4Addr, TcpListener};
     use std::path::Path;
     use std::sync::Arc;
+    use std::time::Duration;
 
     use coral_api::v1::query_service_client::QueryServiceClient;
     use coral_api::v1::source_service_client::SourceServiceClient;
@@ -603,26 +606,13 @@ mod tests {
     use crate::query::manager::QueryManager;
     use crate::sources::manager::SourceManager;
     use crate::state::{AppStateLayout, ConfigStore, SecretStore};
+    use crate::telemetry::service::TraceService;
     use crate::transport::workspace_to_proto;
     use crate::workspaces::WorkspaceName;
     use crate::{AwsEngineExtensionsProvider, NoopEngineExtensionsProvider};
 
     fn default_workspace() -> Workspace {
         workspace_to_proto(&WorkspaceName::default())
-    }
-
-    fn enable_local_tracing(config_dir: &Path) {
-        std::fs::create_dir_all(config_dir).expect("create config dir");
-        std::fs::write(
-            config_dir.join("config.toml"),
-            r"
-version = 1
-
-[local_traces]
-enabled = true
-",
-        )
-        .expect("write telemetry config");
     }
 
     fn disable_internal_tracing(config_dir: &Path) {
@@ -632,7 +622,7 @@ enabled = true
             r"
 version = 1
 
-[local_traces]
+[trace_history]
 enabled = false
 ",
         )
@@ -672,12 +662,31 @@ enabled = false
     async fn trace_service_lists_empty_store() {
         let temp = TempDir::new().expect("temp dir");
         let config_dir = temp.path().join("coral-config");
-        enable_local_tracing(&config_dir);
-        let server = ServerBuilder::new()
-            .with_config_dir(config_dir)
-            .start()
-            .await
-            .expect("start server");
+        let layout = AppStateLayout::discover(Some(config_dir)).expect("layout");
+        layout.ensure().expect("layout dirs");
+        let config_store = ConfigStore::new(layout.clone());
+        let secret_store = SecretStore::new(layout.clone());
+        let source_manager =
+            SourceManager::new(config_store.clone(), secret_store.clone(), layout.clone());
+        let feedback_manager = FeedbackManager::new(layout.clone());
+        let query_manager = QueryManager::new(
+            config_store,
+            secret_store,
+            QueryRuntimeContext::default(),
+            layout,
+            vec![Arc::new(NoopEngineExtensionsProvider)],
+        );
+        let trace_service =
+            TraceService::new(temp.path().join("trace-store"), Duration::from_mins(1));
+        let server = start_server(
+            source_manager,
+            query_manager,
+            feedback_manager,
+            Some(trace_service),
+            ServerMode::NativeGrpc,
+        )
+        .await
+        .expect("start server");
         let channel = Endpoint::from_shared(server.endpoint_uri().to_string())
             .expect("endpoint")
             .connect()

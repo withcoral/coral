@@ -506,7 +506,7 @@ version = 1
 endpoint = "http://localhost:4318"
 headers = "from=config"
 
-[local_traces]
+[trace_history]
 enabled = false
 retention_days = 3
 
@@ -538,16 +538,16 @@ origin = "bundled"
             "otel headers should be preserved"
         );
         assert!(
-            raw.contains("[local_traces]"),
-            "local traces section should be preserved"
+            raw.contains("[trace_history]"),
+            "trace history section should be preserved"
         );
         assert!(
             raw.contains("enabled = false"),
-            "local traces enabled flag should be preserved"
+            "trace history enabled flag should be preserved"
         );
         assert!(
             raw.contains("retention_days = 3"),
-            "local traces retention should be preserved"
+            "trace history retention should be preserved"
         );
 
         // The newly added source must be present.
