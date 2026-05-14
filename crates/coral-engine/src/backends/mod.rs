@@ -11,13 +11,12 @@ pub(crate) use common::{
     BackendCompileRequest, BackendRegistration, CompiledBackendSource, RegisteredSource,
     RegisteredTable, RegisteredTableFunction, SourceTableFunctions, build_registered_inputs,
     build_registered_table, build_registered_table_function, internal_table_function_name,
-    partition_columns_to_arrow, registered_columns_from_schema, registered_columns_from_specs,
-    required_filter_names, schema_from_columns,
+    registered_columns_from_schema, registered_columns_from_specs, required_filter_names,
+    schema_from_columns,
 };
 
+pub(crate) mod file;
 pub(crate) mod http;
-pub(crate) mod jsonl;
-pub(crate) mod parquet;
 pub(crate) mod shared;
 
 pub(crate) fn compile_query_source(
@@ -62,11 +61,8 @@ pub(crate) fn compile_validated_manifest(
     if let Some(http_manifest) = manifest.as_http() {
         return Ok(http::compile_manifest(http_manifest, request));
     }
-    if let Some(parquet_manifest) = manifest.as_parquet() {
-        return Ok(parquet::compile_manifest(parquet_manifest, request));
-    }
-    if let Some(jsonl_manifest) = manifest.as_jsonl() {
-        return jsonl::compile_manifest(jsonl_manifest, request);
+    if let Some(file_manifest) = manifest.as_file() {
+        return Ok(file::compile_manifest(file_manifest, request));
     }
 
     Err(CoreError::internal(

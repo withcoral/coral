@@ -51,7 +51,9 @@ pub(crate) fn convert_items(
             ManifestDataType::Json => {
                 let array: StringArray = items
                     .iter()
-                    .map(|row| to_json_utf8(eval_expr(&expr, row, filters)))
+                    .map(|row| {
+                        eval_expr(&expr, row, filters).and_then(|value| json_value_to_text(&value))
+                    })
                     .collect();
                 arrays.push(Arc::new(array));
             }
@@ -355,11 +357,20 @@ fn to_utf8(value: Option<Value>) -> Option<String> {
     }
 }
 
-fn to_json_utf8(value: Option<Value>) -> Option<String> {
-    match value? {
+pub(crate) fn json_value_to_text(value: &Value) -> Option<String> {
+    match value {
         Value::Null => None,
-        other => serde_json::to_string(&other).ok(),
+        Value::String(value) if is_json_text(value) => Some(value.clone()),
+        other => serde_json::to_string(other).ok(),
     }
+}
+
+fn is_json_text(value: &str) -> bool {
+    let trimmed = value.trim_start();
+    if !matches!(trimmed.as_bytes().first(), Some(b'{' | b'[' | b'"')) {
+        return false;
+    }
+    serde_json::from_str::<Value>(value).is_ok()
 }
 
 #[expect(
@@ -836,6 +847,7 @@ mod tests {
         let items = vec![
             json!({"properties": {"country": "US", "count": 3}}),
             json!({"properties": "hello"}),
+            json!({"properties": "{\"country\":\"DE\",\"count\":7}"}),
             json!({"properties": true}),
             json!({"properties": 3}),
             json!({"properties": null}),
@@ -858,13 +870,17 @@ mod tests {
         );
         assert_eq!(
             serde_json::from_str::<Value>(col.value(2)).unwrap(),
-            json!(true)
+            json!({"country": "DE", "count": 7}),
         );
         assert_eq!(
             serde_json::from_str::<Value>(col.value(3)).unwrap(),
+            json!(true)
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(col.value(4)).unwrap(),
             json!(3)
         );
-        assert!(col.is_null(4));
         assert!(col.is_null(5));
+        assert!(col.is_null(6));
     }
 }
