@@ -378,6 +378,146 @@ async fn too_many_resolver_rows_retries_without_dependent_pushdown() {
 }
 
 #[tokio::test]
+async fn parent_limit_is_page_hint_not_dependent_row_limit() {
+    let temp = TempDir::new().expect("temp dir");
+    write_jsonl_file(
+        temp.path(),
+        "issues.jsonl",
+        &[issue_row("First", "withcoral", "coral", 123)],
+    );
+
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/repos/withcoral/coral/pulls/123"))
+        .and(query_param("page", "1"))
+        .and(query_param("per_page", "1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{
+                "owner": "withcoral",
+                "repo": "coral",
+                "number": 123,
+                "state": "open"
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/withcoral/coral/pulls/123"))
+        .and(query_param("page", "2"))
+        .and(query_param("per_page", "1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{
+                "owner": "withcoral",
+                "repo": "coral",
+                "number": 123,
+                "state": "closed"
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/withcoral/coral/pulls/123"))
+        .and(query_param("page", "3"))
+        .and(query_param("per_page", "1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": [] })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let sources = [
+        build_source(issues_manifest(temp.path())),
+        build_source(github_paginated_manifest(&server.uri())),
+    ];
+    let sql = "
+    SELECT i.title AS issue_title, pr.state AS pr_state
+    FROM issues.items AS i
+    JOIN github.pull_requests AS pr
+      ON pr.owner = i.github_owner
+     AND pr.repo = i.github_repo
+     AND pr.number = i.github_pr_number
+    LIMIT 1
+    ";
+
+    let explain = execution_text(
+        &CoralQuery::execute_sql(&sources, test_runtime(), &format!("EXPLAIN {sql}"))
+            .await
+            .expect("explain should succeed"),
+    );
+    assert!(explain.contains("page_hint=1"), "{explain}");
+
+    let execution = CoralQuery::execute_sql(&sources, test_runtime(), sql)
+        .await
+        .expect("query should succeed");
+
+    assert_eq!(
+        execution_to_rows(&execution),
+        vec![json!({ "issue_title": "First", "pr_state": "open" })]
+    );
+}
+
+#[tokio::test]
+async fn fetch_limit_default_does_not_truncate_dependent_fetches() {
+    let temp = TempDir::new().expect("temp dir");
+    write_jsonl_file(
+        temp.path(),
+        "issues.jsonl",
+        &[issue_row("First", "withcoral", "coral", 123)],
+    );
+
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/repos/withcoral/coral/pulls/123"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [
+                {
+                    "owner": "withcoral",
+                    "repo": "coral",
+                    "number": 123,
+                    "state": "open"
+                },
+                {
+                    "owner": "withcoral",
+                    "repo": "coral",
+                    "number": 123,
+                    "state": "closed"
+                }
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let execution = CoralQuery::execute_sql(
+        &[
+            build_source(issues_manifest(temp.path())),
+            build_source(github_manifest_with_fetch_limit_default(&server.uri(), 1)),
+        ],
+        test_runtime(),
+        "
+        SELECT i.title AS issue_title, pr.state AS pr_state
+        FROM issues.items AS i
+        JOIN github.pull_requests AS pr
+          ON pr.owner = i.github_owner
+         AND pr.repo = i.github_repo
+         AND pr.number = i.github_pr_number
+        ORDER BY pr.state DESC
+        ",
+    )
+    .await
+    .expect("query should succeed");
+
+    assert_eq!(
+        execution_to_rows(&execution),
+        vec![
+            json!({ "issue_title": "First", "pr_state": "open" }),
+            json!({ "issue_title": "First", "pr_state": "closed" }),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn first_dependent_fetch_error_fails_query_and_stops_dispatching_new_bindings() {
     let temp = TempDir::new().expect("temp dir");
     let issues = (1..=9)
@@ -1150,6 +1290,42 @@ fn github_manifest_with_dependent_join(base_url: &str, dependent_join: Option<Va
             json!({ "name": "state" }),
         ],
     )
+}
+
+fn github_manifest_with_fetch_limit_default(base_url: &str, fetch_limit_default: usize) -> Value {
+    let mut manifest = github_manifest(base_url);
+    first_table_object_mut(&mut manifest).insert(
+        "fetch_limit_default".to_string(),
+        json!(fetch_limit_default),
+    );
+    manifest
+}
+
+fn github_paginated_manifest(base_url: &str) -> Value {
+    let mut manifest = github_manifest(base_url);
+    first_table_object_mut(&mut manifest).insert(
+        "pagination".to_string(),
+        json!({
+            "mode": "page",
+            "page_param": "page",
+            "page_start": 1,
+            "page_size": {
+                "default": 100,
+                "max": 100,
+                "query_param": "per_page"
+            }
+        }),
+    );
+    manifest
+}
+
+fn first_table_object_mut(manifest: &mut Value) -> &mut serde_json::Map<String, Value> {
+    manifest
+        .get_mut("tables")
+        .and_then(Value::as_array_mut)
+        .and_then(|tables| tables.first_mut())
+        .and_then(Value::as_object_mut)
+        .expect("test manifest should contain one table object")
 }
 
 fn github_manifest_with_filters(

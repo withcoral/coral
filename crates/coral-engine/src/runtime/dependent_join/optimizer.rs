@@ -8,7 +8,9 @@ use coral_spec::backends::http::HttpTableSpec;
 use datafusion::common::tree_node::Transformed;
 use datafusion::common::{Column, DFSchemaRef, ExprSchema, Result, TableReference};
 use datafusion::datasource::source_as_provider;
-use datafusion::logical_expr::{Expr, Extension, Join, JoinType, LogicalPlan};
+use datafusion::logical_expr::{
+    Expr, Extension, FetchType, Join, JoinType, Limit, LogicalPlan, SkipType,
+};
 use datafusion::optimizer::{ApplyOrder, OptimizerConfig, OptimizerRule};
 
 use crate::backends::http::HttpSourceTableProvider;
@@ -97,6 +99,12 @@ impl OptimizerRule for DependentJoinOptimizerRule {
         plan: LogicalPlan,
         _config: &dyn OptimizerConfig,
     ) -> Result<Transformed<LogicalPlan>> {
+        if let LogicalPlan::Limit(limit) = &plan
+            && let Some(rewritten) = rewrite_limit_page_hint(limit)?
+        {
+            return Ok(Transformed::yes(rewritten));
+        }
+
         if let LogicalPlan::Join(join) = &plan
             && let Some(rewritten) = rewrite_join(join)
         {
@@ -273,6 +281,40 @@ fn rewrite_join(join: &Join) -> Option<LogicalPlan> {
     Some(LogicalPlan::Extension(Extension {
         node: Arc::new(node),
     }))
+}
+
+fn rewrite_limit_page_hint(limit: &Limit) -> Result<Option<LogicalPlan>> {
+    let FetchType::Literal(Some(fetch)) = limit.get_fetch_type()? else {
+        return Ok(None);
+    };
+    let SkipType::Literal(skip) = limit.get_skip_type()? else {
+        return Ok(None);
+    };
+    let page_hint = fetch.saturating_add(skip);
+    if page_hint == 0 {
+        return Ok(None);
+    }
+
+    let LogicalPlan::Extension(extension) = limit.input.as_ref() else {
+        return Ok(None);
+    };
+    let Some(node) = extension.node.as_any().downcast_ref::<DependentJoinNode>() else {
+        return Ok(None);
+    };
+    if node.page_hint == Some(page_hint) {
+        return Ok(None);
+    }
+
+    let mut hinted = node.clone();
+    hinted.page_hint = Some(page_hint);
+
+    Ok(Some(LogicalPlan::Limit(Limit {
+        skip: limit.skip.clone(),
+        fetch: limit.fetch.clone(),
+        input: Arc::new(LogicalPlan::Extension(Extension {
+            node: Arc::new(hinted),
+        })),
+    })))
 }
 
 fn binding_keys_for_join(

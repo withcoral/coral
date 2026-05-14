@@ -119,7 +119,7 @@ impl BindingFetcher {
         let target = http_target_for_filters(&self.table, &filter_values);
         let rows = self
             .client
-            .fetch(&target, &filter_values, &HashMap::new(), self.page_hint)
+            .fetch_complete(&target, &filter_values, &HashMap::new(), self.page_hint)
             .await?;
 
         if rows.len() > self.max_rows_per_binding {

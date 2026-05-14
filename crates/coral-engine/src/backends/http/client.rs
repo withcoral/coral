@@ -35,6 +35,12 @@ const DEFAULT_HTTP_REQUEST_TIMEOUT_SECS: u64 = 30;
 const DEFAULT_HTTP_USER_AGENT: &str = concat!("coral/", env!("CARGO_PKG_VERSION"));
 static NEXT_HTTP_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
+#[derive(Debug, Clone, Copy, Default)]
+struct FetchOptions {
+    row_limit: Option<usize>,
+    page_hint: Option<usize>,
+}
+
 /// Executes manifest-driven HTTP requests for one registered source.
 #[derive(Clone)]
 pub(crate) struct HttpSourceClient {
@@ -146,10 +152,6 @@ impl HttpSourceClient {
         })
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "Paginated fetch logic is stateful and easier to audit in one sequential function"
-    )]
     /// Fetch rows for a single table from the backend API.
     ///
     /// # Errors
@@ -164,8 +166,49 @@ impl HttpSourceClient {
         arg_values: &HashMap<String, String>,
         sql_limit: Option<usize>,
     ) -> Result<Vec<Value>> {
+        self.fetch_with_options(
+            target,
+            filter_values,
+            arg_values,
+            FetchOptions {
+                row_limit: sql_limit.or(target.fetch_limit_default()),
+                page_hint: sql_limit,
+            },
+        )
+        .await
+    }
+
+    pub(crate) async fn fetch_complete(
+        &self,
+        target: &HttpFetchTarget,
+        filter_values: &HashMap<String, String>,
+        arg_values: &HashMap<String, String>,
+        page_hint: Option<usize>,
+    ) -> Result<Vec<Value>> {
+        self.fetch_with_options(
+            target,
+            filter_values,
+            arg_values,
+            FetchOptions {
+                row_limit: None,
+                page_hint,
+            },
+        )
+        .await
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Paginated fetch logic is stateful and easier to audit in one sequential function"
+    )]
+    async fn fetch_with_options(
+        &self,
+        target: &HttpFetchTarget,
+        filter_values: &HashMap<String, String>,
+        arg_values: &HashMap<String, String>,
+        options: FetchOptions,
+    ) -> Result<Vec<Value>> {
         let mut all_rows = Vec::new();
-        let effective_limit = sql_limit.or(target.fetch_limit_default());
         let pagination = target
             .pagination()
             .validated(&self.source_schema, target.name())
@@ -178,7 +221,7 @@ impl HttpSourceClient {
                     detail: error.to_string(),
                 })
             })?;
-        let page_size = resolve_page_size(pagination.page_size.as_ref(), sql_limit);
+        let page_size = resolve_page_size(pagination.page_size.as_ref(), options.page_hint);
 
         let active_request = target.resolved_request();
 
@@ -320,7 +363,7 @@ impl HttpSourceClient {
             let rows_on_page = rows.len();
             all_rows.append(&mut rows);
 
-            if let Some(limit) = effective_limit
+            if let Some(limit) = options.row_limit
                 && all_rows.len() >= limit
             {
                 all_rows.truncate(limit);
