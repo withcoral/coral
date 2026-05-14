@@ -20,6 +20,7 @@ If the source you need is not available, you can extend Coral by [writing a cust
 | [clickup](#clickup) | `http` | Query tasks, spaces, folders, lists, goals, time entries, comments, views, tags, custom fields, teams, and users from ClickUp. |
 | [cloudwatch_logs](#cloudwatch_logs) | `http` | Query Amazon CloudWatch Logs groups, streams, and events. |
 | [cloudwatch_metrics](#cloudwatch_metrics) | `http` | Query Amazon CloudWatch metrics and monitoring metadata. |
+| [codex](#codex) | `file` | Query local Codex session event logs from ~/.codex/sessions. |
 | [confluence](#confluence) | `http` | Query spaces, pages, blog posts, comments, attachments, labels, and related metadata from Confluence Cloud. |
 | [datadog](#datadog) | `http` | Query monitors, events, incidents, dashboards, hosts, services, APM dependencies, downtimes, SLOs, synthetic tests, users, logs, spans, and metrics from Datadog. |
 | [github](#github) | `http` | Query repositories, issues, pull requests, workflows, organizations, users, teams, and API metadata from GitHub (Cloud or Enterprise). |
@@ -114,6 +115,10 @@ AWS access key ID with the CloudWatch read permissions.
 AWS secret access key.
 Coral does not read your AWS CLI profile, AWS SSO cache, or
 `AWS_PROFILE` at query time for this bundled source.
+
+### `codex`
+
+No configuration required.
 
 ### `confluence`
 
