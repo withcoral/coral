@@ -1119,6 +1119,7 @@ dependencies = [
  "opentelemetry",
  "regex",
  "rmcp",
+ "serde",
  "serde_json",
  "tempfile",
  "thiserror",

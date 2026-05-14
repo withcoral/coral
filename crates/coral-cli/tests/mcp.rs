@@ -237,6 +237,7 @@ async fn mcp_stdio_lists_tools_and_resources() -> Result<(), Box<dyn std::error:
         vec![
             "sql",
             "list_tables",
+            "list_catalog",
             "search_tables",
             "describe_table",
             "list_columns"
@@ -258,6 +259,13 @@ async fn mcp_stdio_lists_tools_and_resources() -> Result<(), Box<dyn std::error:
     );
     assert!(
         tools[2]
+            .description
+            .as_deref()
+            .expect("list_catalog description")
+            .contains("3 table(s) are currently visible")
+    );
+    assert!(
+        tools[3]
             .description
             .as_deref()
             .expect("search_tables description")
@@ -308,6 +316,7 @@ async fn mcp_stdio_enable_feedback_lists_feedback_tool() -> Result<(), Box<dyn s
         vec![
             "sql",
             "list_tables",
+            "list_catalog",
             "search_tables",
             "describe_table",
             "list_columns",
@@ -327,6 +336,7 @@ async fn mcp_stdio_sql_and_list_tables_return_structured_content()
     let client = start_mcp_client(&server).await?;
 
     assert_list_tables_tool(&client, &server).await?;
+    assert_list_catalog_tool(&client, &server).await?;
     assert_search_tables_tool(&client, &server).await?;
     assert_describe_table_tool(&client, &server).await?;
     assert_list_columns_tool(&client).await?;
@@ -372,6 +382,66 @@ async fn assert_list_tables_tool(
     assert_eq!(paginated["total"], 3);
     assert_eq!(paginated["has_more"], true);
     assert_eq!(paginated["next_offset"], 2);
+    Ok(())
+}
+
+async fn assert_list_catalog_tool(
+    client: &RunningService<RoleClient, ()>,
+    server: &MockServer,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let structured_catalog =
+        structured_tool_content(client, CallToolRequestParams::new("list_catalog")).await?;
+    assert_eq!(structured_catalog["total"], 3);
+    assert_eq!(structured_catalog["limit"], 50);
+    assert_eq!(structured_catalog["offset"], 0);
+    assert_eq!(structured_catalog["has_more"], false);
+    assert_eq!(
+        structured_catalog["items"][0]["name"],
+        "local_messages.events"
+    );
+    assert_eq!(structured_catalog["items"][0]["kind"], "table");
+    let requests = server.list_tables_requests();
+    let request = requests.last().expect("list catalog tables request");
+    assert_eq!(request.schema_name, "");
+    let request_pagination = request.pagination.as_ref().expect("request pagination");
+    assert_eq!(request_pagination.limit, 0);
+    assert_eq!(request_pagination.offset, 0);
+    assert!(request.omit_columns);
+
+    let all_kinds = structured_tool_content(
+        client,
+        CallToolRequestParams::new("list_catalog").with_arguments(json_object(&json!({
+            "schema": "local_messages",
+            "kind": null
+        }))),
+    )
+    .await?;
+    assert_eq!(all_kinds["total"], 3);
+    assert_eq!(all_kinds["items"][0]["kind"], "table");
+
+    let paginated = structured_tool_content(
+        client,
+        CallToolRequestParams::new("list_catalog").with_arguments(json_object(&json!({
+            "schema": "local_messages",
+            "kind": "table",
+            "limit": 2,
+            "offset": 0
+        }))),
+    )
+    .await?;
+    assert_eq!(paginated["total"], 3);
+    assert_eq!(paginated["has_more"], true);
+    assert_eq!(paginated["next_offset"], 2);
+    assert_eq!(paginated["items"].as_array().expect("items").len(), 2);
+
+    client
+        .call_tool(
+            CallToolRequestParams::new("list_catalog").with_arguments(json_object(&json!({
+                "kind": "table_function"
+            }))),
+        )
+        .await
+        .expect_err("invalid catalog kind should fail");
     Ok(())
 }
 

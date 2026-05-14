@@ -26,13 +26,14 @@ use tonic::Request;
 use crate::{
     McpOptions,
     surface::{
-        ColumnSummary, TableSummary, build_tool_result, compile_metadata_regex,
-        describe_table_arguments, describe_table_tool, feedback_tool, guide_resource,
-        guide_resource_content, initial_instructions, internal_status, list_columns_arguments,
-        list_columns_tool, list_tables_arguments, list_tables_tool, list_tables_value, page_items,
-        paged_value, required_string_argument, search_tables_arguments, search_tables_tool,
-        sql_tool, status_to_error_data, tables_resource, tables_resource_content,
-        tool_error_from_status, tool_error_result,
+        CatalogItem, ColumnSummary, TableSummary, build_tool_result, catalog_value,
+        compile_metadata_regex, describe_table_arguments, describe_table_tool, feedback_tool,
+        guide_resource, guide_resource_content, initial_instructions, internal_status,
+        list_catalog_arguments, list_catalog_tool, list_columns_arguments, list_columns_tool,
+        list_tables_arguments, list_tables_tool, list_tables_value, page_items, paged_value,
+        required_string_argument, search_tables_arguments, search_tables_tool, sql_tool,
+        status_to_error_data, tables_resource, tables_resource_content, tool_error_from_status,
+        tool_error_result,
     },
     telemetry,
 };
@@ -256,6 +257,36 @@ impl CoralMcpServer {
         }
     }
 
+    async fn list_catalog_tool_result(
+        &self,
+        request_arguments: Option<&Map<String, Value>>,
+    ) -> Result<ToolCallOutcome, ErrorData> {
+        let arguments = list_catalog_arguments(request_arguments)?;
+        let result = self
+            .list_catalog_value(
+                arguments.schema.as_deref(),
+                arguments.kind.as_deref(),
+                arguments.pagination,
+            )
+            .await;
+        Ok(ToolCallOutcome::from_value_result(
+            "Catalog listing",
+            result,
+        ))
+    }
+
+    async fn list_catalog_value(
+        &self,
+        schema_name: Option<&str>,
+        kind: Option<&str>,
+        pagination: crate::surface::Pagination,
+    ) -> Result<Value, tonic::Status> {
+        debug_assert!(matches!(kind, None | Some("table")));
+        let tables = self.load_table_summaries(schema_name).await?;
+        let items = tables.iter().map(CatalogItem::from_table).collect();
+        catalog_value(items, pagination).map_err(|error| tonic::Status::internal(error.to_string()))
+    }
+
     async fn describe_table_tool_result(
         &self,
         request_arguments: Option<&Map<String, Value>>,
@@ -317,6 +348,10 @@ impl CoralMcpServer {
                     .await
                     .map(|response| list_tables_value(&response));
                 Ok(ToolCallOutcome::from_value_result("Table listing", result))
+            }
+            "list_catalog" => {
+                self.list_catalog_tool_result(request.arguments.as_ref())
+                    .await
             }
             "search_tables" => {
                 self.search_tables_tool_result(request.arguments.as_ref())
@@ -533,6 +568,7 @@ impl ServerHandler for CoralMcpServer {
             let mut tools = vec![
                 sql_tool(&sources, visible_table_count),
                 list_tables_tool(visible_table_count),
+                list_catalog_tool(visible_table_count),
                 search_tables_tool(visible_table_count),
                 describe_table_tool(),
                 list_columns_tool(),

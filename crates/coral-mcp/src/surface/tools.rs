@@ -7,12 +7,21 @@ use rmcp::{
 };
 use serde_json::{Map, Value, json};
 
-use super::{Pagination, parse_pagination, parse_pagination_with_limits};
+use super::{
+    Pagination, catalog_output_schema, json_object_schema, parse_pagination,
+    parse_pagination_with_limits,
+};
 
 pub(crate) struct ListTablesArguments {
     pub(crate) schema: Option<String>,
     pub(crate) limit: u32,
     pub(crate) offset: u32,
+}
+
+pub(crate) struct ListCatalogArguments {
+    pub(crate) schema: Option<String>,
+    pub(crate) kind: Option<String>,
+    pub(crate) pagination: Pagination,
 }
 
 pub(crate) struct SearchTablesArguments {
@@ -91,6 +100,56 @@ pub(crate) fn list_tables_tool(visible_table_count: usize) -> Tool {
     .with_raw_output_schema(list_tables_output_schema())
     .with_annotations(
         ToolAnnotations::with_title("List Tables")
+            .read_only(true)
+            .destructive(false)
+            .idempotent(true)
+            .open_world(false),
+    )
+}
+
+pub(crate) fn list_catalog_tool(visible_table_count: usize) -> Tool {
+    Tool::new(
+        "list_catalog",
+        format!("List queryable catalog items. {visible_table_count} table(s) are currently visible."),
+        json_object_schema(&json!({
+            "type": "object",
+            "properties": {
+                "schema": {
+                    "type": "string",
+                    "description": "Optional exact schema/source name to list."
+                },
+                "kind": {
+                    "description": "Optional item kind to list. Omit or pass null to list all catalog items.",
+                    "anyOf": [
+                        {
+                            "type": "string",
+                            "enum": ["table"]
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum catalog items to return, from 1 to 200. Defaults to 50.",
+                    "minimum": 1,
+                    "maximum": 200,
+                    "default": 50
+                },
+                "offset": {
+                    "type": "integer",
+                    "description": "Number of matching catalog items to skip. Defaults to 0.",
+                    "minimum": 0,
+                    "maximum": u32::MAX,
+                    "default": 0
+                }
+            }
+        })),
+    )
+    .with_raw_output_schema(catalog_output_schema())
+    .with_annotations(
+        ToolAnnotations::with_title("List Catalog")
             .read_only(true)
             .destructive(false)
             .idempotent(true)
@@ -283,6 +342,26 @@ pub(crate) fn list_tables_arguments(
         schema: optional_string_argument(arguments, "schema")?,
         limit: pagination.limit,
         offset: pagination.offset,
+    })
+}
+
+pub(crate) fn list_catalog_arguments(
+    arguments: Option<&Map<String, Value>>,
+) -> Result<ListCatalogArguments, ErrorData> {
+    let kind = optional_string_argument(arguments, "kind")?;
+    match kind.as_deref() {
+        None | Some("table") => {}
+        Some(_) => {
+            return Err(ErrorData::invalid_params(
+                "argument 'kind' must be 'table'",
+                None,
+            ));
+        }
+    }
+    Ok(ListCatalogArguments {
+        schema: optional_string_argument(arguments, "schema")?,
+        kind,
+        pagination: parse_pagination(arguments)?,
     })
 }
 
@@ -597,6 +676,9 @@ pub(crate) fn optional_string_argument(
     let Some(value) = arguments.and_then(|arguments| arguments.get(key)) else {
         return Ok(None);
     };
+    if value.is_null() {
+        return Ok(None);
+    }
     let value = value.as_str().ok_or_else(|| {
         ErrorData::invalid_params(format!("argument '{key}' must be a string"), None)
     })?;
@@ -640,13 +722,4 @@ fn optional_bool_argument(
     value.as_bool().ok_or_else(|| {
         ErrorData::invalid_params(format!("argument '{key}' must be a boolean"), None)
     })
-}
-
-fn json_object_schema(value: &Value) -> Arc<Map<String, Value>> {
-    Arc::new(
-        value
-            .as_object()
-            .cloned()
-            .expect("tool schemas should be JSON objects"),
-    )
 }

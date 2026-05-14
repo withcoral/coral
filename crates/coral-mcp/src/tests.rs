@@ -221,6 +221,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
         vec![
             "sql",
             "list_tables",
+            "list_catalog",
             "search_tables",
             "describe_table",
             "list_columns"
@@ -277,6 +278,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
 
     let updated_tools = client.list_all_tools().await.expect("updated tools");
     let list_tables_tool = tool_by_name(&updated_tools, "list_tables");
+    let list_catalog_tool = tool_by_name(&updated_tools, "list_catalog");
     let search_tables_tool = tool_by_name(&updated_tools, "search_tables");
     let list_columns_tool = tool_by_name(&updated_tools, "list_columns");
     assert!(
@@ -295,6 +297,13 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
     );
     assert!(
         updated_tools[2]
+            .description
+            .as_deref()
+            .expect("catalog description")
+            .contains("3 table(s) are currently visible")
+    );
+    assert!(
+        updated_tools[3]
             .description
             .as_deref()
             .expect("table search description")
@@ -360,6 +369,37 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
     assert_eq!(tables.is_error, Some(false));
     assert_matches_output_schema(list_tables_tool, &structured_tables);
 
+    let catalog = client
+        .call_tool(CallToolRequestParams::new("list_catalog"))
+        .await
+        .expect("list catalog");
+    let catalog = catalog.structured_content.expect("structured catalog");
+    assert_eq!(catalog["total"], 3);
+    assert_eq!(catalog["items"][0]["kind"], "table");
+    assert_eq!(catalog["items"][0]["name"], "local_messages.events");
+    assert_eq!(
+        catalog["items"][0]["sql_reference"],
+        "local_messages.events"
+    );
+    assert_eq!(catalog["items"][0]["table"]["table_name"], "events");
+    assert_matches_output_schema(list_catalog_tool, &catalog);
+
+    let explicit_all_kinds = client
+        .call_tool(
+            CallToolRequestParams::new("list_catalog").with_arguments(json_object(&json!({
+                "schema": "local_messages",
+                "kind": null,
+            }))),
+        )
+        .await
+        .expect("list catalog with null kind");
+    let explicit_all_kinds = explicit_all_kinds
+        .structured_content
+        .expect("structured content");
+    assert_eq!(explicit_all_kinds["total"], 3);
+    assert_eq!(explicit_all_kinds["items"][0]["kind"], "table");
+    assert_matches_output_schema(list_catalog_tool, &explicit_all_kinds);
+
     let page = client
         .call_tool(
             CallToolRequestParams::new("list_tables").with_arguments(json_object(&json!({
@@ -377,6 +417,25 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
     assert_eq!(page["next_offset"], 2);
     assert_eq!(page["tables"].as_array().expect("tables").len(), 2);
     assert_matches_output_schema(list_tables_tool, &page);
+
+    let catalog_page = client
+        .call_tool(
+            CallToolRequestParams::new("list_catalog").with_arguments(json_object(&json!({
+                "schema": "local_messages",
+                "kind": "table",
+                "limit": 2,
+                "offset": 0
+            }))),
+        )
+        .await
+        .expect("list paginated catalog");
+    let catalog_page = catalog_page.structured_content.expect("structured content");
+    assert_eq!(catalog_page["total"], 3);
+    assert_eq!(catalog_page["limit"], 2);
+    assert_eq!(catalog_page["has_more"], true);
+    assert_eq!(catalog_page["next_offset"], 2);
+    assert_eq!(catalog_page["items"].as_array().expect("items").len(), 2);
+    assert_matches_output_schema(list_catalog_tool, &catalog_page);
 
     let unknown_schema = client
         .call_tool(
@@ -400,6 +459,29 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
     );
     assert_matches_output_schema(list_tables_tool, &unknown_schema);
 
+    let unknown_catalog_schema = client
+        .call_tool(
+            CallToolRequestParams::new("list_catalog").with_arguments(json_object(&json!({
+                "schema": "missing",
+                "kind": "table",
+                "limit": 2,
+                "offset": 0
+            }))),
+        )
+        .await
+        .expect("list unknown catalog schema");
+    let unknown_catalog_schema = unknown_catalog_schema
+        .structured_content
+        .expect("structured content");
+    assert_eq!(unknown_catalog_schema["total"], 0);
+    assert!(
+        unknown_catalog_schema["items"]
+            .as_array()
+            .expect("items")
+            .is_empty()
+    );
+    assert_matches_output_schema(list_catalog_tool, &unknown_catalog_schema);
+
     client
         .call_tool(
             CallToolRequestParams::new("list_tables").with_arguments(json_object(&json!({
@@ -408,6 +490,15 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
         )
         .await
         .expect_err("limit zero should be invalid");
+
+    client
+        .call_tool(
+            CallToolRequestParams::new("list_catalog").with_arguments(json_object(&json!({
+                "kind": "table_function"
+            }))),
+        )
+        .await
+        .expect_err("invalid catalog kind should fail");
 
     let search = client
         .call_tool(
@@ -693,13 +784,14 @@ async fn mcp_feedback_tool_persists_blocked_agent_report() {
         vec![
             "sql",
             "list_tables",
+            "list_catalog",
             "search_tables",
             "describe_table",
             "list_columns",
             "feedback"
         ]
     );
-    let feedback_annotations = tools[5].annotations.as_ref().expect("feedback annotations");
+    let feedback_annotations = tools[6].annotations.as_ref().expect("feedback annotations");
     assert_eq!(feedback_annotations.read_only_hint, Some(false));
     assert_eq!(feedback_annotations.destructive_hint, Some(false));
     assert_eq!(feedback_annotations.idempotent_hint, Some(false));

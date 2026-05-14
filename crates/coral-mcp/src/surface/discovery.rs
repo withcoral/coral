@@ -3,6 +3,7 @@ use coral_api::v1::{
 };
 use regex::{Regex, RegexBuilder};
 use rmcp::ErrorData;
+use serde::Serialize;
 use serde_json::{Map, Value, json};
 
 use super::resources::format_schema_table_equivalent;
@@ -237,6 +238,35 @@ pub(crate) fn paged_value(key: &str, page: Page<Value>) -> Value {
             .insert("next_offset".to_string(), json!(next_offset));
     }
     value
+}
+
+pub(crate) fn paged_serialized_value<T: Serialize>(
+    key: &str,
+    page: Page<T>,
+) -> Result<Value, serde_json::Error> {
+    let Page {
+        items,
+        total,
+        limit,
+        offset,
+        has_more,
+        next_offset,
+    } = page;
+    let items = items
+        .into_iter()
+        .map(serde_json::to_value)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(paged_value(
+        key,
+        Page {
+            items,
+            total,
+            limit,
+            offset,
+            has_more,
+            next_offset,
+        },
+    ))
 }
 
 fn optional_u32_argument(
