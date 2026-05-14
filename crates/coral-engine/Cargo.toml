@@ -25,6 +25,7 @@ object_store.workspace = true
 opentelemetry.workspace = true
 parquet.workspace = true
 reqwest.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 strsim.workspace = true
 thiserror.workspace = true

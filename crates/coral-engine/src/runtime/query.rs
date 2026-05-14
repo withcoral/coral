@@ -22,12 +22,13 @@ use crate::runtime::registry::{
 use crate::runtime::source_functions::SourceFunctionRegistry;
 use crate::{
     CoreError, QueryExecution, QueryPlan, QueryResultObserver, QueryResultObserverError,
-    QueryRuntimeConfig, QuerySource, TableInfo,
+    QueryRuntimeConfig, QuerySource, TableFunctionInfo, TableInfo,
 };
 
 pub(crate) struct QueryRuntimeAdapter {
     ctx: Arc<SessionContext>,
     tables: Vec<TableInfo>,
+    table_functions: Vec<TableFunctionInfo>,
     failures: Vec<SourceRegistrationFailure>,
     query_result_observers: Vec<Arc<dyn QueryResultObserver>>,
 }
@@ -96,6 +97,7 @@ pub(crate) async fn build_runtime(
     catalog::register(&ctx, &registration.active_sources)
         .map_err(|err| datafusion_to_core(&err, &[]))?;
     let tables = catalog::collect_tables(&registration.active_sources);
+    let table_functions = catalog::collect_table_functions(&registration.active_sources);
     let source_functions = SourceFunctionRegistry::new(
         registration
             .active_sources
@@ -117,6 +119,7 @@ pub(crate) async fn build_runtime(
     Ok(QueryRuntimeAdapter {
         ctx,
         tables,
+        table_functions,
         failures: registration.failures,
         query_result_observers: extensions.query_result_observers,
     })
@@ -132,6 +135,19 @@ impl QueryRuntimeAdapter {
             .iter()
             .filter(|table| source_filter.is_none_or(|value| table.schema_name == value))
             .filter(|table| table_filter.is_none_or(|value| table.table_name == value))
+            .cloned()
+            .collect()
+    }
+
+    pub(crate) fn list_table_functions(
+        &self,
+        source_filter: Option<&str>,
+        function_filter: Option<&str>,
+    ) -> Vec<TableFunctionInfo> {
+        self.table_functions
+            .iter()
+            .filter(|function| source_filter.is_none_or(|value| function.schema_name == value))
+            .filter(|function| function_filter.is_none_or(|value| function.function_name == value))
             .cloned()
             .collect()
     }
