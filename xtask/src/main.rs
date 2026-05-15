@@ -6,6 +6,8 @@
 //!     nav from `sources/core/*/manifest.y{a,}ml` plus `CHANGELOG.md`.
 //!   - `detect-truncations` scans manifests for likely-truncated descriptions
 //!     (the regression gate for the SOURCE-465 manifest cleanup).
+//!   - `export-skills` exports installable agent skills from the canonical
+//!     plugin tree into a distribution checkout.
 
 #![allow(
     clippy::print_stderr,
@@ -24,6 +26,7 @@ use coral_spec::{ValidatedSourceManifest, parse_source_manifest_yaml};
 mod detect;
 mod nav;
 mod render;
+mod skills;
 
 #[derive(Debug, Parser)]
 #[command(name = "xtask", about = "Developer tooling for Coral bundled sources")]
@@ -38,6 +41,8 @@ enum Command {
     GenerateDocs(GenerateDocsArgs),
     /// Scan manifests for likely-truncated descriptions.
     DetectTruncations(DetectArgs),
+    /// Export installable skills from plugins/coral/skills.
+    ExportSkills(ExportSkillsArgs),
 }
 
 #[derive(Debug, clap::Args)]
@@ -88,6 +93,13 @@ struct DetectArgs {
     verbose: bool,
 }
 
+#[derive(Debug, clap::Args)]
+struct ExportSkillsArgs {
+    /// Destination checkout or directory to receive the exported skills.
+    #[arg(long)]
+    dest: PathBuf,
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match run(&cli.command) {
@@ -113,6 +125,7 @@ fn run(command: &Command) -> Result<bool> {
             };
             detect::run(&paths, args.verbose)
         }
+        Command::ExportSkills(args) => skills::export(&args.dest),
     }
 }
 
