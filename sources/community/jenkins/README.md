@@ -11,14 +11,15 @@ API scripts.
 
 ## Install
 
-Community sources are not bundled with the Coral binary. Import the manifest from
+Community sources are not bundled with the Coral binary. Add the manifest from
 this directory:
 
 ```bash
-coral source import sources/community/Jenkins/manifest.yaml
+coral source add --file sources/community/jenkins/manifest.yaml
 ```
 
-Or copy `manifest.yaml` into your workspace and import the local path.
+Or copy `manifest.yaml` into your workspace and pass that path to
+`coral source add --file`.
 
 Reference the linked GitHub issue in your PR so maintainers can connect the
 contribution to the prior discussion.
@@ -28,12 +29,12 @@ contribution to the prior discussion.
 ### Local development (recommended for contributors)
 
 Jenkins uses **HTTP Basic** for the JSON API, not a bare Bearer token. Export the
-full `Authorization` header before import:
+full `Authorization` header before adding the source:
 
 ```bash
 export JENKINS_BASE_URL=http://127.0.0.1:8081
 export JENKINS_AUTHORIZATION="Basic $(echo -n 'admin:YOUR_API_TOKEN' | base64 -w0)"
-coral source import sources/community/Jenkins/manifest.yaml
+coral source add --file sources/community/jenkins/manifest.yaml
 ```
 
 Create an API token under **User** → **Configure** → **API Token**. Use a user
@@ -148,10 +149,10 @@ WHERE job_name = 'my-pipeline';
 make lint-sources
 
 # Manifest structure and smoke queries (requires Coral CLI)
-coral source lint sources/community/Jenkins/manifest.yaml
+coral source lint sources/community/jenkins/manifest.yaml
 export JENKINS_BASE_URL=http://127.0.0.1:8081
 export JENKINS_AUTHORIZATION="Basic $(echo -n 'admin:YOUR_API_TOKEN' | base64 -w0)"
-coral source import sources/community/Jenkins/manifest.yaml
+coral source add --file sources/community/jenkins/manifest.yaml
 coral source test jenkins
 ```
 
@@ -162,7 +163,6 @@ coral source test jenkins
 - `trigger_build` may fail with `403` when Jenkins CSRF protection is enabled.
 - `commit_hash` and Git SHA columns depend on job type and installed plugins.
 - `trigger_build` responses may be empty or non-JSON.
-- Rename the directory to `sources/community/jenkins` (lowercase) before upstream PR.
 - Community sources are maintained separately from bundled core sources.
 
 ## Contributing
