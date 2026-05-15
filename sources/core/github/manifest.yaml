@@ -153362,8 +153362,12 @@ tables:
         type: Utf8
         nullable: true
         virtual: false
+        description: >-
+          Deprecated: use the user field instead
         expr:
-          kind: current_row
+          kind: path
+          path:
+            - user
       - name: starred_at
         type: Utf8
         nullable: true
@@ -153373,26 +153377,15 @@ tables:
           kind: path
           path:
             - starred_at
-      - name: user_login
+      - name: user
         type: Utf8
         nullable: true
         virtual: false
-        description: GitHub login of the user who starred the repository.
+        description: User object for the Github user who starred the repo
         expr:
           kind: path
           path:
             - user
-            - login
-      - name: user_id
-        type: Int64
-        nullable: true
-        virtual: false
-        description: GitHub numeric user ID of the stargazer.
-        expr:
-          kind: path
-          path:
-            - user
-            - id
       - name: owner
         type: Utf8
         nullable: true
