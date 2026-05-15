@@ -8,7 +8,7 @@ use serde_json::Value;
 
 use super::values::queryable_table_summary_values;
 
-static INITIAL_INSTRUCTIONS: &str = "You are connected to Coral. Read `coral://guide` for query patterns, use `list_catalog` and `search_catalog` to inspect queryable tables and source-scoped table functions, use `describe_table` and `list_columns` for table-specific metadata, and use `sql` for final queries.";
+static INITIAL_INSTRUCTIONS: &str = "You are connected to Coral, a read-only SQL database. Treat exposed data as database schemas, tables, and table functions. Use `list_catalog` and `search_catalog` as catalog helpers, use `describe_table` and `list_columns` for table-specific metadata, then answer with set-based SQL through `sql`. Prefer one SQL statement with joins, CROSS JOIN, CTEs, subqueries, and aggregates over row-by-row tool calls.";
 static GUIDE_TEMPLATE: &str = include_str!("../guide_template.md");
 
 pub(crate) fn initial_instructions() -> &'static str {
@@ -44,7 +44,7 @@ pub(crate) fn guide_resource_content(
 ) -> String {
     let mut sources_section = String::from("## Available Schemas\n\n");
     sources_section.push_str(
-        "- coral: System metadata schema. Use `coral.tables`, `coral.columns`, and `coral.table_functions` to discover queryable tables, source-scoped table functions, columns, descriptions, and required filters.\n",
+        "- coral: System catalog schema. Query `coral.tables`, `coral.columns`, `coral.table_functions`, and `coral.inputs` like database catalog tables.\n",
     );
     let mut schemas = tables
         .iter()
@@ -53,13 +53,12 @@ pub(crate) fn guide_resource_content(
     schemas.extend(table_function_schema_names.iter().map(String::as_str));
     if schemas.is_empty() {
         if sources.is_empty() {
-            sources_section.push_str("\nNo source schemas are currently configured.\n");
+            sources_section.push_str("\nNo user schemas are currently configured.\n");
         } else {
-            sources_section
-                .push_str("\nNo query-visible source schemas are currently available.\n");
+            sources_section.push_str("\nNo user-visible schemas are currently available.\n");
         }
     } else {
-        sources_section.push_str("\nVisible source schemas:\n");
+        sources_section.push_str("\nVisible schemas:\n");
         for schema in schemas {
             writeln!(sources_section, "- {schema}").expect("writing to String is infallible");
         }
@@ -103,7 +102,7 @@ fn guide_resource_description(
     visible_function_count: usize,
 ) -> String {
     format!(
-        "Query workflow and schema discovery guidance for {} configured source(s), {} visible table(s), and {} visible table function(s).",
+        "Database workflow and catalog discovery guidance for {} configured connection(s), {} visible table(s), and {} visible table function(s).",
         sources.len(),
         visible_table_count,
         visible_function_count
@@ -111,7 +110,7 @@ fn guide_resource_description(
 }
 
 fn tables_resource_description(visible_table_count: usize) -> String {
-    format!("Queryable fully qualified Coral tables ({visible_table_count} table(s)).")
+    format!("Fully qualified database tables in Coral ({visible_table_count} table(s)).")
 }
 
 fn first_visible_table(tables: &[TableSummary]) -> Option<(&str, &str)> {
@@ -127,7 +126,7 @@ fn first_visible_table(tables: &[TableSummary]) -> Option<(&str, &str)> {
 mod tests {
     use coral_api::v1::{Source, TableSummary, Workspace};
 
-    use super::guide_resource_content;
+    use super::{guide_resource_content, initial_instructions};
     use crate::surface::values::format_schema_table_equivalent;
 
     fn source(name: &str) -> Source {
@@ -157,11 +156,20 @@ mod tests {
     }
 
     #[test]
+    fn initial_instructions_frame_coral_as_sql_database() {
+        let instructions = initial_instructions();
+        assert!(instructions.contains("read-only SQL database"));
+        assert!(instructions.contains("catalog helpers"));
+        assert!(instructions.contains("CROSS JOIN"));
+        assert!(instructions.contains("row-by-row tool calls"));
+    }
+
+    #[test]
     fn guide_content_renders_placeholder_when_no_schemas_exist() {
         let content = guide_resource_content(&[source("demo")], &[], &[]);
         assert!(content.contains("## Available Schemas"));
-        assert!(content.contains("- coral: System metadata schema."));
-        assert!(content.contains("No query-visible source schemas are currently available."));
+        assert!(content.contains("- coral: System catalog schema."));
+        assert!(content.contains("No user-visible schemas are currently available."));
         assert!(content.contains("schema_name = '<schema>'"));
     }
 
@@ -173,8 +181,8 @@ mod tests {
             &[],
         );
         assert!(content.contains("## Available Schemas"));
-        assert!(content.contains("- coral: System metadata schema."));
-        assert!(content.contains("Visible source schemas:"));
+        assert!(content.contains("- coral: System catalog schema."));
+        assert!(content.contains("Visible schemas:"));
         assert!(content.contains("- slack"));
         assert!(
             content.contains(
@@ -189,9 +197,9 @@ mod tests {
 
         let content = guide_resource_content(&[source("searchy")], &[], &function_schemas);
 
-        assert!(content.contains("Visible source schemas:"));
+        assert!(content.contains("Visible schemas:"));
         assert!(content.contains("- searchy"));
-        assert!(!content.contains("No query-visible source schemas are currently available."));
+        assert!(!content.contains("No user-visible schemas are currently available."));
     }
 
     #[test]

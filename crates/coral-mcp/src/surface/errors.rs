@@ -98,12 +98,12 @@ fn plain_fallback(operation: &str, code: tonic::Code) -> (String, Option<String>
         tonic::Code::NotFound => (
             format!("{operation} target was not found"),
             Some(
-                "Confirm the visible source, schema, and table names before retrying.".to_string(),
+                "Confirm the visible SQL schema and table names before retrying.".to_string(),
             ),
         ),
         tonic::Code::FailedPrecondition => (
             format!("{operation} prerequisites are not satisfied"),
-            Some("Check source configuration and required filters, then retry.".to_string()),
+            Some("Check database catalog metadata, configured inputs, and required filters, then retry.".to_string()),
         ),
         tonic::Code::Unavailable => (
             format!("{operation} is unavailable"),
