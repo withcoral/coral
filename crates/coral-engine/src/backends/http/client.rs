@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use datafusion::error::{DataFusionError, Result};
+use opentelemetry::Context as OtelContext;
 use opentelemetry::propagation::Injector;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde_json::{Map, Value, json};
@@ -53,6 +54,7 @@ pub(crate) struct HttpSourceClient {
     request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>>,
     rate_limit: RateLimitSpec,
     resolved_inputs: Arc<BTreeMap<String, String>>,
+    trace_context: Option<OtelContext>,
 }
 
 impl std::fmt::Debug for HttpSourceClient {
@@ -86,6 +88,7 @@ struct OutgoingHttpRequest<'a> {
     auth: &'a AuthSpec,
     request_headers: &'a [HeaderSpec],
     request_authenticators: &'a HashMap<String, Arc<dyn RequestAuthenticator>>,
+    trace_context: Option<&'a OtelContext>,
     table_headers: &'a [HeaderSpec],
     table_name: &'a str,
     method: HttpMethod,
@@ -122,6 +125,7 @@ impl HttpSourceClient {
         source_secrets: &BTreeMap<String, String>,
         source_variables: &BTreeMap<String, String>,
         request_authenticators: &HashMap<String, Arc<dyn RequestAuthenticator>>,
+        trace_context: Option<OtelContext>,
     ) -> Result<Self> {
         let resolved_inputs =
             coral_spec::resolve_inputs(&manifest.declared_inputs, source_secrets, source_variables);
@@ -149,6 +153,7 @@ impl HttpSourceClient {
             request_authenticators: request_authenticators.clone(),
             rate_limit: manifest.rate_limit.clone(),
             resolved_inputs: Arc::new(resolved_inputs),
+            trace_context,
         })
     }
 
@@ -311,6 +316,7 @@ impl HttpSourceClient {
                     auth: &self.auth,
                     request_headers: &self.request_headers,
                     request_authenticators: &self.request_authenticators,
+                    trace_context: self.trace_context.as_ref(),
                     table_headers: &active_request.headers,
                     table_name: target.name(),
                     method: active_request.method,
@@ -602,6 +608,7 @@ async fn execute_request(
         auth,
         request_headers,
         request_authenticators,
+        trace_context,
         table_headers,
         table_name,
         method,
@@ -686,6 +693,9 @@ async fn execute_request(
             server.port = field::Empty,
             url.full = %traced_url,
         );
+        if let Some(trace_context) = trace_context {
+            drop(request_span.set_parent(trace_context.clone()));
+        }
         record_trace_http_endpoint(&request_span, &trace_endpoint);
         if attempt > 1 {
             request_span.record(
@@ -2031,6 +2041,7 @@ mod tests {
             &source_secrets,
             &BTreeMap::new(),
             &HashMap::new(),
+            None,
         )
         .expect_err("missing source-scoped credentials must fail");
 
@@ -2071,6 +2082,7 @@ mod tests {
             &BTreeMap::new(),
             &BTreeMap::new(),
             &HashMap::new(),
+            None,
         )
         .expect_err("missing table request path inputs must fail");
 
@@ -2115,6 +2127,7 @@ mod tests {
             &BTreeMap::new(),
             &BTreeMap::new(),
             &HashMap::new(),
+            None,
         )
         .expect_err("missing table request header inputs must fail");
 
@@ -2159,6 +2172,7 @@ mod tests {
             &BTreeMap::new(),
             &BTreeMap::new(),
             &HashMap::new(),
+            None,
         )
         .expect_err("missing table request query inputs must fail");
 
@@ -2204,6 +2218,7 @@ mod tests {
             &BTreeMap::new(),
             &BTreeMap::new(),
             &HashMap::new(),
+            None,
         )
         .expect_err("missing table request body inputs must fail");
 
@@ -2249,6 +2264,7 @@ mod tests {
             &BTreeMap::new(),
             &BTreeMap::new(),
             &HashMap::new(),
+            None,
         )
         .expect_err("missing request route inputs must fail");
 
@@ -2341,6 +2357,7 @@ mod tests {
                 &BTreeMap::new(),
                 &BTreeMap::new(),
                 &HashMap::new(),
+                None,
             )
             .expect_err(&format!(
                 "missing function request {name} input should fail"
@@ -2649,6 +2666,7 @@ mod tests {
                 auth: &AuthSpec::default(),
                 request_headers: &[],
                 request_authenticators: &HashMap::new(),
+                trace_context: None,
                 table_headers: &[],
                 table_name: "items",
                 method: HttpMethod::GET,

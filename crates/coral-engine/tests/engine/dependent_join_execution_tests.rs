@@ -142,6 +142,64 @@ async fn sql_join_reads_all_resolver_partitions() {
 }
 
 #[tokio::test]
+async fn sql_join_rewrites_when_resolver_side_is_also_http() {
+    let resolver_server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/channels"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "channels": [
+                { "name": "general", "id": "C-general" },
+                { "name": "random", "id": "C-random" }
+            ]
+        })))
+        .expect(1)
+        .mount(&resolver_server)
+        .await;
+
+    let dependent_server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/conversations.history"))
+        .and(query_param("channel", "C-general"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "messages": [
+                { "channel": "C-general", "user": "U1", "text": "hello" }
+            ]
+        })))
+        .expect(1)
+        .mount(&dependent_server)
+        .await;
+
+    let sources = [
+        build_source(slack_channels_http_manifest(&resolver_server.uri())),
+        build_source(slack_messages_manifest(&dependent_server.uri())),
+    ];
+    let sql = "
+    SELECT c.name AS channel_name, m.text
+    FROM slack_channels.channels AS c
+    JOIN slack.messages AS m
+      ON m.channel = c.id
+    WHERE c.name = 'general'
+    ";
+
+    let explain = execution_text(
+        &CoralQuery::execute_sql(&sources, test_runtime(), &format!("EXPLAIN {sql}"))
+            .await
+            .expect("explain should succeed"),
+    );
+    assert!(explain.contains("DependentJoinExec"), "{explain}");
+    assert!(explain.contains("channel <- c.id"), "{explain}");
+
+    let execution = CoralQuery::execute_sql(&sources, test_runtime(), sql)
+        .await
+        .expect("query should succeed");
+
+    assert_eq!(
+        execution_to_rows(&execution),
+        vec![json!({ "channel_name": "general", "text": "hello" })]
+    );
+}
+
+#[tokio::test]
 async fn literal_filters_and_join_bindings_together_satisfy_required_dependent_filters() {
     let temp = TempDir::new().expect("temp dir");
     write_jsonl_file(
@@ -1193,6 +1251,31 @@ fn slack_channels_manifest(dir: &Path) -> Value {
             "source": {
                 "location": dir_url(dir),
                 "glob": "**/*.jsonl"
+            },
+            "columns": [
+                { "name": "name", "type": "Utf8" },
+                { "name": "id", "type": "Utf8" }
+            ]
+        }]
+    })
+}
+
+fn slack_channels_http_manifest(base_url: &str) -> Value {
+    json!({
+        "name": "slack_channels",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": base_url,
+        "tables": [{
+            "name": "channels",
+            "description": "Slack channel fixture",
+            "request": {
+                "method": "GET",
+                "path": "/api/channels"
+            },
+            "response": {
+                "rows_path": ["channels"]
             },
             "columns": [
                 { "name": "name", "type": "Utf8" },

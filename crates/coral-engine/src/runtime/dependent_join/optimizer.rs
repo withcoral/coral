@@ -128,24 +128,49 @@ fn analyze_join(join: &Join) -> DependentJoinAnalysis {
         return DependentJoinAnalysis::Fallback(DependentJoinFallbackReason::NonEqui);
     }
 
-    let left_dependent = peel_dependent_side(join.left.as_ref());
-    let right_dependent = peel_dependent_side(join.right.as_ref());
+    let left = analyze_side_as_dependent(
+        JoinSide::Left,
+        join.left.as_ref(),
+        join.right.schema(),
+        &join.on,
+    );
+    let right = analyze_side_as_dependent(
+        JoinSide::Right,
+        join.right.as_ref(),
+        join.left.schema(),
+        &join.on,
+    );
 
-    match (left_dependent, right_dependent) {
-        (PeelOutcome::NonPeelableWrapper, _) | (_, PeelOutcome::NonPeelableWrapper) => {
-            DependentJoinAnalysis::Fallback(DependentJoinFallbackReason::NonPeelableWrapper)
+    match (&left, &right) {
+        (DependentJoinAnalysis::Candidate(_), DependentJoinAnalysis::Fallback(_)) => left,
+        (DependentJoinAnalysis::Fallback(_), DependentJoinAnalysis::Candidate(_)) => right,
+        (DependentJoinAnalysis::Candidate(_), DependentJoinAnalysis::Candidate(_)) => {
+            DependentJoinAnalysis::Fallback(DependentJoinFallbackReason::MixedBindable)
         }
-        (PeelOutcome::Match(dependent), PeelOutcome::NotHttp) => {
-            analyze_dependent_bindings(JoinSide::Left, &dependent, join.right.schema(), &join.on)
+        (
+            DependentJoinAnalysis::Fallback(DependentJoinFallbackReason::NonHttpProvider),
+            DependentJoinAnalysis::Fallback(DependentJoinFallbackReason::NonHttpProvider),
+        ) => DependentJoinAnalysis::Fallback(DependentJoinFallbackReason::NonHttpProvider),
+        (DependentJoinAnalysis::Fallback(reason), _) => DependentJoinAnalysis::Fallback(*reason),
+    }
+}
+
+fn analyze_side_as_dependent(
+    dependent_side: JoinSide,
+    dependent_plan: &LogicalPlan,
+    resolver_schema: &DFSchemaRef,
+    join_on: &[(Expr, Expr)],
+) -> DependentJoinAnalysis {
+    let peeled = peel_dependent_side(dependent_plan);
+    match &peeled {
+        PeelOutcome::Match(dependent) => {
+            analyze_dependent_bindings(dependent_side, dependent, resolver_schema, join_on)
         }
-        (PeelOutcome::NotHttp, PeelOutcome::Match(dependent)) => {
-            analyze_dependent_bindings(JoinSide::Right, &dependent, join.left.schema(), &join.on)
-        }
-        (PeelOutcome::NotHttp, PeelOutcome::NotHttp) => {
+        PeelOutcome::NotHttp => {
             DependentJoinAnalysis::Fallback(DependentJoinFallbackReason::NonHttpProvider)
         }
-        (PeelOutcome::Match(_), PeelOutcome::Match(_)) => {
-            DependentJoinAnalysis::Fallback(DependentJoinFallbackReason::MixedBindable)
+        PeelOutcome::NonPeelableWrapper => {
+            DependentJoinAnalysis::Fallback(DependentJoinFallbackReason::NonPeelableWrapper)
         }
     }
 }

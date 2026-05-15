@@ -893,6 +893,7 @@ mod tests {
             SecretStore::new(layout.clone()),
             QueryRuntimeContext {
                 home_dir: Some(fake_home.clone()),
+                ..QueryRuntimeContext::default()
             },
             layout,
             vec![Arc::new(NoopEngineExtensionsProvider)],
