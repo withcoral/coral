@@ -1,0 +1,589 @@
+name: buildkite
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Buildkite users, organizations, pipelines, builds, and agents.
+base_url: https://api.buildkite.com/v2
+
+inputs:
+  BUILDKITE_API_TOKEN:
+    kind: secret
+    hint: |
+      Buildkite API access token. Create one from Buildkite user settings
+      under API Access Tokens. Use read scopes for the organizations,
+      pipelines, builds, and agents you plan to query.
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.BUILDKITE_API_TOKEN}}
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT id, email, name FROM buildkite.current_user LIMIT 1
+
+tables:
+  - name: current_user
+    description: Current authenticated Buildkite user.
+    fetch_limit_default: 1
+    request:
+      method: GET
+      path: /user
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Buildkite user ID.
+        expr: {kind: path, path: [id]}
+      - name: graphql_id
+        type: Utf8
+        nullable: true
+        description: GraphQL node ID for the user.
+        expr: {kind: path, path: [graphql_id]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: User display name.
+        expr: {kind: path, path: [name]}
+      - name: email
+        type: Utf8
+        nullable: true
+        description: User email address.
+        expr: {kind: path, path: [email]}
+      - name: avatar_url
+        type: Utf8
+        nullable: true
+        description: User avatar URL.
+        expr: {kind: path, path: [avatar_url]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: User creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created_at]}
+
+  - name: organizations
+    description: Buildkite organizations visible to the authenticated user.
+    request:
+      method: GET
+      path: /organizations
+    response:
+      row_strategy: direct
+    pagination:
+      mode: link_header
+      page_size:
+        default: 30
+        max: 100
+        query_param: per_page
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Organization ID.
+        expr: {kind: path, path: [id]}
+      - name: graphql_id
+        type: Utf8
+        nullable: true
+        description: GraphQL node ID for the organization.
+        expr: {kind: path, path: [graphql_id]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Organization display name.
+        expr: {kind: path, path: [name]}
+      - name: slug
+        type: Utf8
+        nullable: false
+        description: Organization slug used in other Buildkite API paths.
+        expr: {kind: path, path: [slug]}
+      - name: url
+        type: Utf8
+        nullable: true
+        description: API URL for the organization.
+        expr: {kind: path, path: [url]}
+      - name: web_url
+        type: Utf8
+        nullable: true
+        description: Browser URL for the organization.
+        expr: {kind: path, path: [web_url]}
+      - name: pipelines_url
+        type: Utf8
+        nullable: true
+        description: API URL for organization pipelines.
+        expr: {kind: path, path: [pipelines_url]}
+      - name: agents_url
+        type: Utf8
+        nullable: true
+        description: API URL for organization agents.
+        expr: {kind: path, path: [agents_url]}
+
+  - name: pipelines
+    description: Pipelines in a Buildkite organization.
+    filters:
+      - name: org_slug
+        required: true
+    request:
+      method: GET
+      path: /organizations/{{filter.org_slug}}/pipelines
+    response:
+      row_strategy: direct
+    pagination:
+      mode: link_header
+      page_size:
+        default: 30
+        max: 100
+        query_param: per_page
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Pipeline ID.
+        expr: {kind: path, path: [id]}
+      - name: graphql_id
+        type: Utf8
+        nullable: true
+        description: GraphQL node ID for the pipeline.
+        expr: {kind: path, path: [graphql_id]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Pipeline name.
+        expr: {kind: path, path: [name]}
+      - name: slug
+        type: Utf8
+        nullable: false
+        description: Pipeline slug.
+        expr: {kind: path, path: [slug]}
+      - name: repository
+        type: Utf8
+        nullable: true
+        description: Repository URL configured for the pipeline.
+        expr: {kind: path, path: [repository]}
+      - name: branch_configuration
+        type: Utf8
+        nullable: true
+        description: Branch filter configuration.
+        expr: {kind: path, path: [branch_configuration]}
+      - name: default_branch
+        type: Utf8
+        nullable: true
+        description: Pipeline default branch.
+        expr: {kind: path, path: [default_branch]}
+      - name: provider
+        type: Json
+        nullable: true
+        description: Source control provider metadata.
+        expr: {kind: path, path: [provider]}
+      - name: steps
+        type: Json
+        nullable: true
+        description: Pipeline steps.
+        expr: {kind: path, path: [steps]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Pipeline creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created_at]}
+      - name: archived_at
+        type: Timestamp
+        nullable: true
+        description: Pipeline archive time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [archived_at]}
+      - name: url
+        type: Utf8
+        nullable: true
+        description: API URL for the pipeline.
+        expr: {kind: path, path: [url]}
+      - name: web_url
+        type: Utf8
+        nullable: true
+        description: Browser URL for the pipeline.
+        expr: {kind: path, path: [web_url]}
+      - name: org_slug
+        type: Utf8
+        nullable: false
+        description: Organization slug used for the request.
+        expr:
+          kind: from_filter
+          key: org_slug
+
+  - name: organization_builds
+    description: Builds across an organization.
+    filters:
+      - name: org_slug
+        required: true
+      - name: state
+      - name: branch
+      - name: commit
+      - name: creator
+    request:
+      method: GET
+      path: /organizations/{{filter.org_slug}}/builds
+      query:
+        - name: state
+          from: filter
+          key: state
+        - name: branch
+          from: filter
+          key: branch
+        - name: commit
+          from: filter
+          key: commit
+        - name: creator
+          from: filter
+          key: creator
+    response:
+      row_strategy: direct
+    pagination:
+      mode: link_header
+      page_size:
+        default: 30
+        max: 100
+        query_param: per_page
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Build ID.
+        expr: {kind: path, path: [id]}
+      - name: graphql_id
+        type: Utf8
+        nullable: true
+        description: GraphQL node ID for the build.
+        expr: {kind: path, path: [graphql_id]}
+      - name: number
+        type: Int64
+        nullable: true
+        description: Build number.
+        expr: {kind: path, path: [number]}
+      - name: state
+        type: Utf8
+        nullable: true
+        description: Build state.
+        expr: {kind: path, path: [state]}
+      - name: blocked
+        type: Boolean
+        nullable: true
+        description: Whether the build is blocked.
+        expr: {kind: path, path: [blocked]}
+      - name: message
+        type: Utf8
+        nullable: true
+        description: Build message.
+        expr: {kind: path, path: [message]}
+      - name: commit
+        type: Utf8
+        nullable: true
+        description: Git commit SHA.
+        expr: {kind: path, path: [commit]}
+      - name: branch
+        type: Utf8
+        nullable: true
+        description: Git branch.
+        expr: {kind: path, path: [branch]}
+      - name: tag
+        type: Utf8
+        nullable: true
+        description: Git tag.
+        expr: {kind: path, path: [tag]}
+      - name: source
+        type: Utf8
+        nullable: true
+        description: Build source.
+        expr: {kind: path, path: [source]}
+      - name: creator__id
+        type: Utf8
+        nullable: true
+        description: Build creator user ID.
+        expr: {kind: path, path: [creator, id]}
+      - name: creator__email
+        type: Utf8
+        nullable: true
+        description: Build creator email address.
+        expr: {kind: path, path: [creator, email]}
+      - name: pipeline__slug
+        type: Utf8
+        nullable: true
+        description: Pipeline slug for the build.
+        expr: {kind: path, path: [pipeline, slug]}
+      - name: pipeline__name
+        type: Utf8
+        nullable: true
+        description: Pipeline name for the build.
+        expr: {kind: path, path: [pipeline, name]}
+      - name: jobs
+        type: Json
+        nullable: true
+        description: Jobs in the build.
+        expr: {kind: path, path: [jobs]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Build creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created_at]}
+      - name: scheduled_at
+        type: Timestamp
+        nullable: true
+        description: Build scheduled time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [scheduled_at]}
+      - name: started_at
+        type: Timestamp
+        nullable: true
+        description: Build start time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [started_at]}
+      - name: finished_at
+        type: Timestamp
+        nullable: true
+        description: Build finish time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [finished_at]}
+      - name: url
+        type: Utf8
+        nullable: true
+        description: API URL for the build.
+        expr: {kind: path, path: [url]}
+      - name: web_url
+        type: Utf8
+        nullable: true
+        description: Browser URL for the build.
+        expr: {kind: path, path: [web_url]}
+      - name: org_slug
+        type: Utf8
+        nullable: false
+        description: Organization slug used for the request.
+        expr:
+          kind: from_filter
+          key: org_slug
+
+  - name: pipeline_builds
+    description: Builds for a single pipeline.
+    filters:
+      - name: org_slug
+        required: true
+      - name: pipeline_slug
+        required: true
+      - name: state
+      - name: branch
+      - name: commit
+      - name: creator
+    request:
+      method: GET
+      path: /organizations/{{filter.org_slug}}/pipelines/{{filter.pipeline_slug}}/builds
+      query:
+        - name: state
+          from: filter
+          key: state
+        - name: branch
+          from: filter
+          key: branch
+        - name: commit
+          from: filter
+          key: commit
+        - name: creator
+          from: filter
+          key: creator
+    response:
+      row_strategy: direct
+    pagination:
+      mode: link_header
+      page_size:
+        default: 30
+        max: 100
+        query_param: per_page
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Build ID.
+        expr: {kind: path, path: [id]}
+      - name: number
+        type: Int64
+        nullable: true
+        description: Build number.
+        expr: {kind: path, path: [number]}
+      - name: state
+        type: Utf8
+        nullable: true
+        description: Build state.
+        expr: {kind: path, path: [state]}
+      - name: blocked
+        type: Boolean
+        nullable: true
+        description: Whether the build is blocked.
+        expr: {kind: path, path: [blocked]}
+      - name: message
+        type: Utf8
+        nullable: true
+        description: Build message.
+        expr: {kind: path, path: [message]}
+      - name: commit
+        type: Utf8
+        nullable: true
+        description: Git commit SHA.
+        expr: {kind: path, path: [commit]}
+      - name: branch
+        type: Utf8
+        nullable: true
+        description: Git branch.
+        expr: {kind: path, path: [branch]}
+      - name: creator__email
+        type: Utf8
+        nullable: true
+        description: Build creator email address.
+        expr: {kind: path, path: [creator, email]}
+      - name: jobs
+        type: Json
+        nullable: true
+        description: Jobs in the build.
+        expr: {kind: path, path: [jobs]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Build creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created_at]}
+      - name: started_at
+        type: Timestamp
+        nullable: true
+        description: Build start time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [started_at]}
+      - name: finished_at
+        type: Timestamp
+        nullable: true
+        description: Build finish time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [finished_at]}
+      - name: web_url
+        type: Utf8
+        nullable: true
+        description: Browser URL for the build.
+        expr: {kind: path, path: [web_url]}
+      - name: org_slug
+        type: Utf8
+        nullable: false
+        description: Organization slug used for the request.
+        expr:
+          kind: from_filter
+          key: org_slug
+      - name: pipeline_slug
+        type: Utf8
+        nullable: false
+        description: Pipeline slug used for the request.
+        expr:
+          kind: from_filter
+          key: pipeline_slug
+
+  - name: agents
+    description: Buildkite agents connected to an organization.
+    filters:
+      - name: org_slug
+        required: true
+    request:
+      method: GET
+      path: /organizations/{{filter.org_slug}}/agents
+    response:
+      row_strategy: direct
+    pagination:
+      mode: link_header
+      page_size:
+        default: 30
+        max: 100
+        query_param: per_page
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Agent ID.
+        expr: {kind: path, path: [id]}
+      - name: graphql_id
+        type: Utf8
+        nullable: true
+        description: GraphQL node ID for the agent.
+        expr: {kind: path, path: [graphql_id]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Agent name.
+        expr: {kind: path, path: [name]}
+      - name: connection_state
+        type: Utf8
+        nullable: true
+        description: Current agent connection state.
+        expr: {kind: path, path: [connection_state]}
+      - name: ip_address
+        type: Utf8
+        nullable: true
+        description: Agent IP address.
+        expr: {kind: path, path: [ip_address]}
+      - name: hostname
+        type: Utf8
+        nullable: true
+        description: Agent host name.
+        expr: {kind: path, path: [hostname]}
+      - name: user_agent
+        type: Utf8
+        nullable: true
+        description: Agent user-agent string.
+        expr: {kind: path, path: [user_agent]}
+      - name: version
+        type: Utf8
+        nullable: true
+        description: Agent version.
+        expr: {kind: path, path: [version]}
+      - name: job
+        type: Json
+        nullable: true
+        description: Current job running on the agent, if any.
+        expr: {kind: path, path: [job]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Agent creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created_at]}
+      - name: org_slug
+        type: Utf8
+        nullable: false
+        description: Organization slug used for the request.
+        expr:
+          kind: from_filter
+          key: org_slug
