@@ -97,28 +97,6 @@ impl CoralQuery {
             .list_tables(schema_filter, table_filter))
     }
 
-    /// Lists source-scoped table functions from the provided source set.
-    ///
-    /// When `schema_filter` is present, only functions for that visible `SQL`
-    /// schema are returned. When `function_filter` is present, only the exact
-    /// function name within the schema is returned.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CoreError`] if credential resolution fails, if any validated
-    /// source spec cannot be compiled, or if the underlying query runtime
-    /// cannot be built.
-    pub async fn list_table_functions(
-        sources: &[QuerySource],
-        runtime: QueryRuntimeConfig,
-        schema_filter: Option<&str>,
-        function_filter: Option<&str>,
-    ) -> Result<Vec<TableFunctionInfo>, CoreError> {
-        Ok(runtime::query::build_runtime(sources, runtime)
-            .await?
-            .list_table_functions(schema_filter, function_filter))
-    }
-
     /// Lists queryable catalog metadata from the provided source set.
     ///
     /// When `schema_filter` is present, only catalog items for that visible

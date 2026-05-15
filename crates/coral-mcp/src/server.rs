@@ -26,13 +26,13 @@ use tonic::Request;
 use crate::{
     McpOptions,
     surface::{
-        build_tool_result, describe_table_arguments, describe_table_tool, describe_table_value,
-        feedback_tool, guide_resource, guide_resource_content, initial_instructions,
-        internal_status, list_catalog_arguments, list_catalog_tool, list_catalog_value,
-        list_columns_arguments, list_columns_tool, list_columns_value, required_string_argument,
-        search_catalog_arguments, search_catalog_tool, search_catalog_value, sql_tool,
-        status_to_error_data, tables_resource, tables_resource_content, tool_error_from_status,
-        tool_error_result,
+        CatalogToolKind, build_tool_result, describe_table_arguments, describe_table_tool,
+        describe_table_value, feedback_tool, guide_resource, guide_resource_content,
+        initial_instructions, internal_status, list_catalog_arguments, list_catalog_tool,
+        list_catalog_value, list_columns_arguments, list_columns_tool, list_columns_value,
+        required_string_argument, search_catalog_arguments, search_catalog_tool,
+        search_catalog_value, sql_tool, status_to_error_data, tables_resource,
+        tables_resource_content, tool_error_from_status, tool_error_result,
     },
     telemetry,
 };
@@ -62,6 +62,10 @@ struct FeedbackStoredValue {
     feedback_id: String,
     created_at: String,
     message: &'static str,
+}
+
+fn serialize_tool_value(value: impl Serialize) -> Result<Value, tonic::Status> {
+    serde_json::to_value(value).map_err(|error| tonic::Status::internal(error.to_string()))
 }
 
 impl ToolCallOutcome {
@@ -250,8 +254,8 @@ impl CoralMcpServer {
     }
 
     async fn execute_sql_value(&self, sql: &str) -> Result<Value, tonic::Status> {
-        self.query_rows(sql).await.map(|rows| {
-            serde_json::to_value(SqlRowsValue { rows }).expect("SQL rows value serializes")
+        serialize_tool_value(SqlRowsValue {
+            rows: self.query_rows(sql).await?,
         })
     }
 
@@ -274,12 +278,11 @@ impl CoralMcpServer {
         let report = response
             .report
             .ok_or_else(|| tonic::Status::internal("feedback response missing report"))?;
-        Ok(serde_json::to_value(FeedbackStoredValue {
+        serialize_tool_value(FeedbackStoredValue {
             feedback_id: report.id,
             created_at: report.created_at,
             message: "Feedback report stored.",
         })
-        .expect("feedback stored value serializes"))
     }
 
     async fn search_catalog_tool_result(
@@ -294,7 +297,7 @@ impl CoralMcpServer {
                 pattern: arguments.pattern,
                 ignore_case: arguments.ignore_case,
                 schema_name: arguments.schema.unwrap_or_default(),
-                kind: catalog_item_kind_from_tool(arguments.kind.as_deref()) as i32,
+                kind: catalog_item_kind_from_tool(arguments.kind) as i32,
                 pagination: Some(PaginationRequest {
                     limit: arguments.pagination.limit,
                     offset: arguments.pagination.offset,
@@ -324,7 +327,7 @@ impl CoralMcpServer {
             .list_catalog(Request::new(ListCatalogRequest {
                 workspace: Some(default_workspace()),
                 schema_name: arguments.schema.unwrap_or_default(),
-                kind: catalog_item_kind_from_tool(arguments.kind.as_deref()) as i32,
+                kind: catalog_item_kind_from_tool(arguments.kind) as i32,
                 pagination: Some(PaginationRequest {
                     limit: arguments.pagination.limit,
                     offset: arguments.pagination.offset,
@@ -596,12 +599,11 @@ fn finish_tool_call(
     }
 }
 
-fn catalog_item_kind_from_tool(kind: Option<&str>) -> ProtoCatalogItemKind {
+fn catalog_item_kind_from_tool(kind: Option<CatalogToolKind>) -> ProtoCatalogItemKind {
     match kind {
-        Some("table") => ProtoCatalogItemKind::Table,
-        Some("table_function") => ProtoCatalogItemKind::TableFunction,
-        None => ProtoCatalogItemKind::Unspecified,
-        Some(_) => unreachable!("catalog tool argument validation restricts kind"),
+        None => CATALOG_KIND_ALL,
+        Some(CatalogToolKind::Table) => CATALOG_KIND_TABLE,
+        Some(CatalogToolKind::TableFunction) => CATALOG_KIND_TABLE_FUNCTION,
     }
 }
 

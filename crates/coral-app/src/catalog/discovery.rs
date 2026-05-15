@@ -170,39 +170,22 @@ impl CatalogDiscovery {
         schema_name: Option<&str>,
         kind: Option<CatalogItemKind>,
     ) -> Result<Vec<CatalogItem>, QueryManagerError> {
-        let mut items = match kind {
-            None => {
-                let catalog = self
-                    .queries
-                    .list_catalog(workspace_name, schema_name)
-                    .await?;
+        let catalog = self
+            .queries
+            .list_catalog(workspace_name, schema_name)
+            .await?;
+        let mut items = Vec::with_capacity(catalog.tables.len() + catalog.table_functions.len());
+        if kind.is_none_or(|kind| kind == CatalogItemKind::Table) {
+            items.extend(catalog.tables.into_iter().map(CatalogItem::Table));
+        }
+        if kind.is_none_or(|kind| kind == CatalogItemKind::TableFunction) {
+            items.extend(
                 catalog
-                    .tables
+                    .table_functions
                     .into_iter()
-                    .map(CatalogItem::Table)
-                    .chain(
-                        catalog
-                            .table_functions
-                            .into_iter()
-                            .map(CatalogItem::TableFunction),
-                    )
-                    .collect::<Vec<_>>()
-            }
-            Some(CatalogItemKind::Table) => self
-                .queries
-                .list_tables(workspace_name, schema_name, None)
-                .await?
-                .into_iter()
-                .map(CatalogItem::Table)
-                .collect(),
-            Some(CatalogItemKind::TableFunction) => self
-                .queries
-                .list_table_functions(workspace_name, schema_name, None)
-                .await?
-                .into_iter()
-                .map(CatalogItem::TableFunction)
-                .collect(),
-        };
+                    .map(CatalogItem::TableFunction),
+            );
+        }
         items.sort_by(|left, right| catalog_item_sort_key(left).cmp(&catalog_item_sort_key(right)));
         Ok(items)
     }

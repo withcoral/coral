@@ -436,14 +436,14 @@ async fn coral_table_functions_lists_source_functions() {
 }
 
 #[tokio::test]
-async fn list_table_functions_matches_catalog_metadata() {
+async fn list_catalog_matches_table_function_metadata() {
     let sources = vec![build_source(http_manifest_with_function())];
 
-    let functions =
-        CoralQuery::list_table_functions(&sources, test_runtime(), Some("searchy"), None)
-            .await
-            .expect("list_table_functions should succeed");
+    let catalog = CoralQuery::list_catalog(&sources, test_runtime(), Some("searchy"))
+        .await
+        .expect("list_catalog should succeed");
 
+    let functions = &catalog.table_functions;
     assert_eq!(functions.len(), 1);
     let function = &functions[0];
     assert_eq!(function.schema_name, "searchy");
@@ -459,26 +459,6 @@ async fn list_table_functions_matches_catalog_metadata() {
     assert_eq!(function.result_columns.len(), 2);
     assert_eq!(function.result_columns[0].name, "title");
     assert_eq!(function.result_columns[1].data_type, "Float64");
-
-    let exact = CoralQuery::list_table_functions(
-        &sources,
-        test_runtime(),
-        Some("searchy"),
-        Some("search_issues"),
-    )
-    .await
-    .expect("exact function filter should succeed");
-    assert_eq!(exact.len(), 1);
-
-    let missing = CoralQuery::list_table_functions(
-        &sources,
-        test_runtime(),
-        Some("searchy"),
-        Some("missing"),
-    )
-    .await
-    .expect("missing function filter should succeed");
-    assert!(missing.is_empty());
 }
 
 #[tokio::test]

@@ -279,7 +279,7 @@ struct CatalogTableFunctionItemValue<'a> {
     kind: &'static str,
     schema_name: &'a str,
     name: String,
-    sql_function_reference: String,
+    sql_reference: String,
     sql_call_example: String,
     description: &'a str,
     table_function: CatalogTableFunctionValue<'a>,
@@ -291,10 +291,7 @@ impl<'a> From<&'a ProtoTableFunction> for CatalogTableFunctionItemValue<'a> {
             kind: "table_function",
             schema_name: &function.schema_name,
             name: format!("{}.{}", function.schema_name, function.name),
-            sql_function_reference: format_schema_table_equivalent(
-                &function.schema_name,
-                &function.name,
-            ),
+            sql_reference: format_schema_table_equivalent(&function.schema_name, &function.name),
             sql_call_example: minimal_table_function_call_example(function),
             description: &function.description,
             table_function: CatalogTableFunctionValue {

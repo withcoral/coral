@@ -139,7 +139,7 @@ impl QueryRuntimeAdapter {
             .collect()
     }
 
-    pub(crate) fn list_table_functions(
+    fn list_table_functions(
         &self,
         source_filter: Option<&str>,
         function_filter: Option<&str>,

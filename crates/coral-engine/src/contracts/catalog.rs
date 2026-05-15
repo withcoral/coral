@@ -1,7 +1,5 @@
 //! Typed query-visible catalog metadata.
 
-use serde::Serialize;
-
 /// Describes one queryable column.
 #[derive(Debug, Clone)]
 pub struct ColumnInfo {
@@ -48,7 +46,7 @@ pub struct CatalogInfo {
 }
 
 /// Describes one argument accepted by a source-scoped table function.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 pub struct TableFunctionArgumentInfo {
     /// Argument name as used in a named SQL function call.
     pub name: String,
@@ -59,12 +57,11 @@ pub struct TableFunctionArgumentInfo {
 }
 
 /// Describes one result column returned by a source-scoped table function.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 pub struct TableFunctionResultColumnInfo {
     /// Column name returned by the table function.
     pub name: String,
     /// Data type rendered in `Arrow`/`DataFusion` string form.
-    #[serde(rename = "type")]
     pub data_type: String,
     /// Whether the column can contain null values.
     pub nullable: bool,
@@ -73,7 +70,7 @@ pub struct TableFunctionResultColumnInfo {
 }
 
 /// Describes one source-scoped table function.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 pub struct TableFunctionInfo {
     /// `SQL` schema name.
     pub schema_name: String,

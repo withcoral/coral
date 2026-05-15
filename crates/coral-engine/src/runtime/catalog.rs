@@ -9,6 +9,7 @@ use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use datafusion::datasource::MemTable;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::prelude::SessionContext;
+use serde::Serialize;
 
 use crate::backends::RegisteredSource;
 use crate::runtime::schema_provider::StaticSchemaProvider;
@@ -88,13 +89,58 @@ fn build_table_functions_table(active_sources: &[RegisteredSource]) -> Result<Me
 }
 
 fn table_function_arguments_json(row: &TableFunctionInfo) -> Result<String> {
-    serde_json::to_string(&row.arguments)
-        .map_err(|error| DataFusionError::External(Box::new(error)))
+    let arguments = row
+        .arguments
+        .iter()
+        .map(TableFunctionArgumentJson::from)
+        .collect::<Vec<_>>();
+    serde_json::to_string(&arguments).map_err(|error| DataFusionError::External(Box::new(error)))
 }
 
 fn table_function_result_columns_json(row: &TableFunctionInfo) -> Result<String> {
-    serde_json::to_string(&row.result_columns)
-        .map_err(|error| DataFusionError::External(Box::new(error)))
+    let columns = row
+        .result_columns
+        .iter()
+        .map(TableFunctionResultColumnJson::from)
+        .collect::<Vec<_>>();
+    serde_json::to_string(&columns).map_err(|error| DataFusionError::External(Box::new(error)))
+}
+
+#[derive(Serialize)]
+struct TableFunctionArgumentJson<'a> {
+    name: &'a str,
+    required: bool,
+    values: &'a [String],
+}
+
+impl<'a> From<&'a TableFunctionArgumentInfo> for TableFunctionArgumentJson<'a> {
+    fn from(argument: &'a TableFunctionArgumentInfo) -> Self {
+        Self {
+            name: &argument.name,
+            required: argument.required,
+            values: &argument.values,
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct TableFunctionResultColumnJson<'a> {
+    name: &'a str,
+    #[serde(rename = "type")]
+    data_type: &'a str,
+    nullable: bool,
+    description: &'a str,
+}
+
+impl<'a> From<&'a TableFunctionResultColumnInfo> for TableFunctionResultColumnJson<'a> {
+    fn from(column: &'a TableFunctionResultColumnInfo) -> Self {
+        Self {
+            name: &column.name,
+            data_type: &column.data_type,
+            nullable: column.nullable,
+            description: &column.description,
+        }
+    }
 }
 
 fn utf8_column<'a>(values: impl IntoIterator<Item = Option<&'a str>>) -> ArrayRef {

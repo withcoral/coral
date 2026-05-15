@@ -11,16 +11,22 @@ use super::{Pagination, parse_pagination, parse_pagination_with_limits};
 
 pub(crate) struct ListCatalogArguments {
     pub(crate) schema: Option<String>,
-    pub(crate) kind: Option<String>,
+    pub(crate) kind: Option<CatalogToolKind>,
     pub(crate) pagination: Pagination,
 }
 
 pub(crate) struct SearchCatalogArguments {
     pub(crate) pattern: String,
     pub(crate) schema: Option<String>,
-    pub(crate) kind: Option<String>,
+    pub(crate) kind: Option<CatalogToolKind>,
     pub(crate) ignore_case: bool,
     pub(crate) pagination: Pagination,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CatalogToolKind {
+    Table,
+    TableFunction,
 }
 
 pub(crate) struct DescribeTableArguments {
@@ -308,19 +314,9 @@ pub(crate) fn required_string_argument(
 pub(crate) fn list_catalog_arguments(
     arguments: Option<&Map<String, Value>>,
 ) -> Result<ListCatalogArguments, ErrorData> {
-    let kind = optional_string_argument(arguments, "kind")?;
-    match kind.as_deref() {
-        None | Some("table" | "table_function") => {}
-        Some(_) => {
-            return Err(ErrorData::invalid_params(
-                "argument 'kind' must be 'table' or 'table_function'",
-                None,
-            ));
-        }
-    }
     Ok(ListCatalogArguments {
         schema: optional_string_argument(arguments, "schema")?,
-        kind,
+        kind: optional_catalog_kind_argument(arguments)?,
         pagination: parse_pagination(arguments)?,
     })
 }
@@ -328,23 +324,29 @@ pub(crate) fn list_catalog_arguments(
 pub(crate) fn search_catalog_arguments(
     arguments: Option<&Map<String, Value>>,
 ) -> Result<SearchCatalogArguments, ErrorData> {
-    let kind = optional_string_argument(arguments, "kind")?;
-    match kind.as_deref() {
-        None | Some("table" | "table_function") => {}
-        Some(_) => {
-            return Err(ErrorData::invalid_params(
-                "argument 'kind' must be 'table' or 'table_function'",
-                None,
-            ));
-        }
-    }
     Ok(SearchCatalogArguments {
         pattern: required_string_argument(arguments, "pattern")?,
         schema: optional_string_argument(arguments, "schema")?,
-        kind,
+        kind: optional_catalog_kind_argument(arguments)?,
         ignore_case: optional_bool_argument(arguments, "ignore_case", true)?,
         pagination: parse_pagination_with_limits(arguments, 20, 100)?,
     })
+}
+
+fn optional_catalog_kind_argument(
+    arguments: Option<&Map<String, Value>>,
+) -> Result<Option<CatalogToolKind>, ErrorData> {
+    let Some(kind) = optional_string_argument(arguments, "kind")? else {
+        return Ok(None);
+    };
+    match kind.as_str() {
+        "table" => Ok(Some(CatalogToolKind::Table)),
+        "table_function" => Ok(Some(CatalogToolKind::TableFunction)),
+        _ => Err(ErrorData::invalid_params(
+            "argument 'kind' must be 'table' or 'table_function'",
+            None,
+        )),
+    }
 }
 
 pub(crate) fn describe_table_arguments(
@@ -467,7 +469,7 @@ fn catalog_table_function_item_output_schema() -> Value {
             "kind",
             "schema_name",
             "name",
-            "sql_function_reference",
+            "sql_reference",
             "sql_call_example",
             "description",
             "table_function"
@@ -477,7 +479,7 @@ fn catalog_table_function_item_output_schema() -> Value {
             "kind": { "enum": ["table_function"] },
             "schema_name": { "type": "string" },
             "name": { "type": "string" },
-            "sql_function_reference": { "type": "string" },
+            "sql_reference": { "type": "string" },
             "sql_call_example": { "type": "string" },
             "description": { "type": "string" },
             "table_function": {
@@ -796,4 +798,23 @@ fn json_object_schema(value: &Value) -> Arc<Map<String, Value>> {
             .cloned()
             .expect("tool schemas should be JSON objects"),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::{Map, Value};
+
+    use super::{list_catalog_arguments, search_catalog_arguments};
+
+    #[test]
+    fn catalog_kind_argument_accepts_null_as_all_kinds() {
+        let mut arguments = Map::new();
+        arguments.insert("kind".to_string(), Value::Null);
+        let list = list_catalog_arguments(Some(&arguments)).expect("list arguments");
+        assert_eq!(list.kind, None);
+
+        arguments.insert("pattern".to_string(), Value::String("issue".to_string()));
+        let search = search_catalog_arguments(Some(&arguments)).expect("search arguments");
+        assert_eq!(search.kind, None);
+    }
 }

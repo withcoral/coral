@@ -804,10 +804,7 @@ async fn list_catalog_surfaces_table_functions() {
     assert_eq!(catalog["total"], 3);
     assert_eq!(catalog["items"][0]["kind"], "table_function");
     assert_eq!(catalog["items"][0]["name"], "searchy.lookup_issue");
-    assert_eq!(
-        catalog["items"][0]["sql_function_reference"],
-        "searchy.lookup_issue"
-    );
+    assert_eq!(catalog["items"][0]["sql_reference"], "searchy.lookup_issue");
     assert_eq!(
         catalog["items"][0]["sql_call_example"],
         "searchy.lookup_issue(number => '<value>')"
