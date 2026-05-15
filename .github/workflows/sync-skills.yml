@@ -20,6 +20,7 @@ jobs:
   sync:
     name: Open skills sync PR
     runs-on: ubuntu-latest
+    environment: skills-sync
     steps:
       - name: Check out Coral
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
