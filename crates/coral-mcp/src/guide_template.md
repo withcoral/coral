@@ -66,5 +66,5 @@ WHERE json_get_str(rules, 0, 'clauses', 0, 'values', 0) = 'phoebe-org';
 - `list_tables` shows queryable fully qualified tables in pages; pass `schema`, `limit`, and `offset` to narrow large catalogs.
 - `search_tables` searches table names, descriptions, guides, and required filters with a Rust regex; use it before broad SQL metadata scans when you know part of the table name or required filters.
 - `describe_table` returns one compact table detail with guide text, required filters, and column count; use `coral.columns` when you need full column details.
-- `list_columns` lists columns for one table; pass `pattern`, `required_only`, `limit`, and `offset` to inspect large schemas progressively.
+- `list_columns` lists columns for one table; pass `pattern`, `required_only`, `limit`, and `offset` to inspect large schemas progressively. Existing tables return paginated `columns` plus `total`, `has_more`, and optional `next_offset`; regex matches add `matched_fields` per column. Missing tables return `found: false` with suggested recovery calls instead of an empty page.
 - `coral://tables` shows table summaries for all installed sources; `coral.tables`, `coral.columns`, and `coral.inputs` provide richer SQL metadata.

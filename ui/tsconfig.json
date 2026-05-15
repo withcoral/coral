@@ -12,8 +12,13 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "useDefineForClassFields": true,
-    "resolveJsonModule": true,
-    "outDir": "dist"
+    "jsx": "react-jsx",
+    "noEmit": true,
+    "types": ["vite/client"],
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./src/*"]
+    }
   },
   "include": ["src"]
 }
