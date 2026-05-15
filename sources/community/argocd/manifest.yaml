@@ -47,7 +47,7 @@ test_queries:
   - SELECT * FROM argocd.applications LIMIT 1
 tables:
   - name: applications
-    description: ArgoCD applications with sync status, health, source, and destination
+    description: ArgoCD applications with sync status, health, source or sources, and destination
     guide: |
       The primary table. Returns all applications visible to the configured
       token. Filter on `health_status`, `sync_status`, `spec__project`, or
@@ -63,8 +63,15 @@ tables:
       payload on large fleets — especially important when using a
       project-scoped automation token. All other WHERE filters (`health_status`,
       `sync_status`, `dest_server`, etc.) apply locally after the full list
-      is fetched. `source__chart` is populated for Helm chart sources;
-      `source__path` is populated for plain Git sources.
+      is fetched.
+
+      ArgoCD supports two source modes that are mutually exclusive:
+      - Single-source apps use `spec.source` — the `source__repo_url`,
+        `source__target_revision`, `source__path`, and `source__chart`
+        columns are populated; `sources` is null.
+      - Multi-source apps (ArgoCD v2.6+) use `spec.sources[]` — all
+        `source__*` columns are null; inspect the `sources` JSON column
+        for the full array of source definitions.
     fetch_limit_default: 200
     filters:
       - name: project
@@ -114,7 +121,7 @@ tables:
       - name: source__repo_url
         type: Utf8
         nullable: true
-        description: Git repository URL
+        description: "Git repository URL (single-source apps only; null for multi-source apps — see sources column)"
         expr:
           kind: path
           path:
@@ -124,7 +131,7 @@ tables:
       - name: source__target_revision
         type: Utf8
         nullable: true
-        description: "Target branch, tag, or commit SHA"
+        description: "Target branch, tag, or commit SHA (single-source apps only)"
         expr:
           kind: path
           path:
@@ -134,7 +141,7 @@ tables:
       - name: source__path
         type: Utf8
         nullable: true
-        description: Path within the repo (Git sources)
+        description: "Path within the repo for Git sources (single-source apps only)"
         expr:
           kind: path
           path:
@@ -144,13 +151,22 @@ tables:
       - name: source__chart
         type: Utf8
         nullable: true
-        description: Helm chart name (Helm sources only)
+        description: "Helm chart name for Helm sources (single-source apps only)"
         expr:
           kind: path
           path:
             - spec
             - source
             - chart
+      - name: sources
+        type: Json
+        nullable: true
+        description: "Full sources array for multi-source apps (ArgoCD v2.6+); null for single-source apps — use source__* columns instead"
+        expr:
+          kind: path
+          path:
+            - spec
+            - sources
       - name: dest_server
         type: Utf8
         nullable: true
