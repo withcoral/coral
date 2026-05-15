@@ -412,6 +412,8 @@ tables:
           value: >-
             SELECT
               type,
+              query_id,
+              initial_query_id,
               formatDateTime(toTimeZone(event_time, 'UTC'), '%Y-%m-%dT%H:%i:%SZ') AS event_time,
               query_duration_ms,
               query,
@@ -445,10 +447,26 @@ tables:
           kind: path
           path:
             - type
+      - name: query_id
+        type: Utf8
+        nullable: true
+        description: Unique query identifier — use to correlate paired QueryStart/QueryFinish rows and join with clickhouse.processes
+        expr:
+          kind: path
+          path:
+            - query_id
+      - name: initial_query_id
+        type: Utf8
+        nullable: true
+        description: query_id of the initial query that triggered this one; same as query_id for non-distributed queries
+        expr:
+          kind: path
+          path:
+            - initial_query_id
       - name: event_time
         type: Timestamp
         nullable: true
-        description: Time the query completed
+        description: Time this log event was recorded; for QueryFinish rows this is the completion time, for QueryStart rows this is the start time
         expr:
           kind: format_timestamp
           input: iso8601
@@ -764,10 +782,16 @@ tables:
       tables. Parts are the physical storage units ClickHouse merges in the
       background. Filter on `database` or `table` using SQL WHERE clauses.
 
+      WARNING: on production clusters with many tables, system.parts can
+      return hundreds of thousands of rows before local WHERE filtering
+      applies. Always add a WHERE clause on `database` or `table` when
+      querying specific tables, and use LIMIT for exploratory queries.
+
       Use `bytes_on_disk` and `rows` to understand partition size distribution.
       A high part count for a table (thousands) usually means merges are
       falling behind inserts. `min_date`/`max_date` show the date range
       covered by each part (only meaningful when the partition key is a Date).
+    fetch_limit_default: 1000
     request:
       method: GET
       path: /
