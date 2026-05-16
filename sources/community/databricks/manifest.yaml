@@ -345,6 +345,11 @@ tables:
       Returns job run history. Optionally filter to a specific job using the
       `job_id` filter. Results are paginated with up to 25 runs per page.
 
+      WARNING: on workspaces with many jobs this table can have millions of
+      runs. Unfiltered queries page through all of them. Always use a
+      `WHERE job_id = <id>` clause or an explicit `LIMIT` to scope the
+      result. The default fetch limit is 200 runs.
+
       Key values for `state__life_cycle_state`: PENDING, RUNNING,
       TERMINATING, TERMINATED, SKIPPED, INTERNAL_ERROR, WAITING_FOR_RETRY.
       Key values for `state__result_state`: SUCCESS, FAILED, TIMEDOUT,
@@ -354,6 +359,7 @@ tables:
       `setup_duration`, `execution_duration`, and `cleanup_duration` are
       milliseconds. `trigger` indicates what caused the run: PERIODIC,
       ONE_TIME, or RETRY.
+    fetch_limit_default: 200
     filters:
       - name: job_id
         required: false
