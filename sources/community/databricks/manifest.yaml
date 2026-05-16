@@ -1,0 +1,975 @@
+dsl_version: 3
+name: databricks
+version: 1.0.0
+description: >-
+  Query Databricks clusters, jobs, job runs, SQL warehouses, and Unity
+  Catalog resources (catalogs, schemas, tables) via the Databricks REST API.
+backend: http
+base_url: "{{input.DATABRICKS_HOST}}"
+inputs:
+  DATABRICKS_HOST:
+    kind: variable
+    hint: |
+      The full URL of your Databricks workspace, including scheme. Do not
+      include a trailing slash. Azure example:
+      `https://adb-1234567890.12.azuredatabricks.net`. AWS example:
+      `https://dbc-12345678-abcd.cloud.databricks.com`. GCP example:
+      `https://1234567890.1.gcp.databricks.com`.
+  DATABRICKS_TOKEN:
+    kind: secret
+    hint: |
+      A Databricks personal access token (PAT). To generate one:
+        1. Go to your workspace Settings → Developer → Access tokens
+        2. Click Generate new token
+        3. Set a description and expiry, then copy the token
+
+      The token must belong to a user or service principal with at least
+      CAN_VIEW permission on the resources you plan to query. For Unity
+      Catalog tables, the user must also have USE CATALOG and USE SCHEMA
+      privileges.
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.DATABRICKS_TOKEN}}
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+test_queries:
+  - SELECT * FROM databricks.warehouses LIMIT 1
+  - SELECT * FROM databricks.clusters LIMIT 1
+tables:
+  - name: clusters
+    description: Databricks compute clusters with state, size, and configuration
+    guide: |
+      Returns all clusters in the workspace visible to the configured token.
+      Filter on `state` or `cluster_source` using SQL WHERE clauses.
+
+      Key values for `state`: PENDING, RUNNING, RESTARTING, RESIZING,
+      WAITING, TERMINATING, TERMINATED, ERROR, UNKNOWN.
+      Key values for `cluster_source`: UI, JOB, API, MODELS, PIPELINE,
+      PIPELINE_MAINTENANCE.
+
+      `start_time`, `terminated_time`, and `last_activity_time` are
+      milliseconds since epoch (Unix ms). Cast with
+      `CAST(start_time / 1000 AS TIMESTAMP)` for time comparisons.
+      `autoscale__min_workers` and `autoscale__max_workers` are null for
+      fixed-size clusters that use `num_workers` instead. The clusters API
+      returns all clusters in one call — no server-side pagination. On very
+      large workspaces use LIMIT to cap results.
+    fetch_limit_default: 500
+    request:
+      method: GET
+      path: /api/2.0/clusters/list
+    response:
+      rows_path:
+        - clusters
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: cluster_id
+        type: Utf8
+        nullable: false
+        description: Unique cluster identifier
+        expr:
+          kind: path
+          path:
+            - cluster_id
+      - name: cluster_name
+        type: Utf8
+        nullable: true
+        description: Human-readable cluster name
+        expr:
+          kind: path
+          path:
+            - cluster_name
+      - name: state
+        type: Utf8
+        nullable: true
+        description: "Current cluster state: PENDING, RUNNING, TERMINATED, ERROR, etc."
+        expr:
+          kind: path
+          path:
+            - state
+      - name: state_message
+        type: Utf8
+        nullable: true
+        description: Human-readable message describing the current state
+        expr:
+          kind: path
+          path:
+            - state_message
+      - name: cluster_source
+        type: Utf8
+        nullable: true
+        description: "What created the cluster: UI, JOB, API, PIPELINE, etc."
+        expr:
+          kind: path
+          path:
+            - cluster_source
+      - name: spark_version
+        type: Utf8
+        nullable: true
+        description: Databricks Runtime version (e.g. 13.3.x-scala2.12)
+        expr:
+          kind: path
+          path:
+            - spark_version
+      - name: node_type_id
+        type: Utf8
+        nullable: true
+        description: Worker node instance type
+        expr:
+          kind: path
+          path:
+            - node_type_id
+      - name: driver_node_type_id
+        type: Utf8
+        nullable: true
+        description: Driver node instance type; defaults to node_type_id if not set
+        expr:
+          kind: path
+          path:
+            - driver_node_type_id
+      - name: num_workers
+        type: Int64
+        nullable: true
+        description: Number of worker nodes (null for autoscaling clusters)
+        expr:
+          kind: path
+          path:
+            - num_workers
+      - name: autoscale__min_workers
+        type: Int64
+        nullable: true
+        description: Minimum workers for autoscaling clusters (null for fixed-size)
+        expr:
+          kind: path
+          path:
+            - autoscale
+            - min_workers
+      - name: autoscale__max_workers
+        type: Int64
+        nullable: true
+        description: Maximum workers for autoscaling clusters (null for fixed-size)
+        expr:
+          kind: path
+          path:
+            - autoscale
+            - max_workers
+      - name: cluster_cores
+        type: Float64
+        nullable: true
+        description: Total CPU cores across all nodes
+        expr:
+          kind: path
+          path:
+            - cluster_cores
+      - name: cluster_memory_mb
+        type: Int64
+        nullable: true
+        description: Total memory in MB across all nodes
+        expr:
+          kind: path
+          path:
+            - cluster_memory_mb
+      - name: creator_user_name
+        type: Utf8
+        nullable: true
+        description: User who created the cluster
+        expr:
+          kind: path
+          path:
+            - creator_user_name
+      - name: start_time
+        type: Int64
+        nullable: true
+        description: Time the cluster was started in milliseconds since epoch
+        expr:
+          kind: path
+          path:
+            - start_time
+      - name: terminated_time
+        type: Int64
+        nullable: true
+        description: Time the cluster was terminated in milliseconds since epoch; null if still running
+        expr:
+          kind: path
+          path:
+            - terminated_time
+      - name: last_activity_time
+        type: Int64
+        nullable: true
+        description: Time of last cluster activity in milliseconds since epoch
+        expr:
+          kind: path
+          path:
+            - last_activity_time
+      - name: enable_elastic_disk
+        type: Boolean
+        nullable: true
+        description: Whether autoscaling local storage is enabled
+        expr:
+          kind: path
+          path:
+            - enable_elastic_disk
+
+  - name: jobs
+    description: Databricks jobs with schedule, configuration, and ownership
+    guide: |
+      Returns all jobs in the workspace. Results are paginated; Coral fetches
+      all pages automatically. Filter on `settings__name`, `creator_user_name`,
+      or `settings__format` using SQL WHERE clauses.
+
+      `created_time` is milliseconds since epoch. `settings__schedule` is
+      null for jobs without a cron schedule. `settings__max_concurrent_runs`
+      controls how many runs of the same job can overlap.
+    request:
+      method: GET
+      path: /api/2.1/jobs/list
+      query:
+        - name: limit
+          from: literal
+          value: "100"
+        - name: expand_tasks
+          from: literal
+          value: "false"
+    response:
+      rows_path:
+        - jobs
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: page_token
+      response_cursor_path:
+        - next_page_token
+    columns:
+      - name: job_id
+        type: Int64
+        nullable: false
+        description: Unique job identifier
+        expr:
+          kind: path
+          path:
+            - job_id
+      - name: settings__name
+        type: Utf8
+        nullable: true
+        description: Job display name
+        expr:
+          kind: path
+          path:
+            - settings
+            - name
+      - name: settings__max_concurrent_runs
+        type: Int64
+        nullable: true
+        description: Maximum number of concurrent runs allowed for this job
+        expr:
+          kind: path
+          path:
+            - settings
+            - max_concurrent_runs
+      - name: settings__format
+        type: Utf8
+        nullable: true
+        description: "Job format: MULTI_TASK or SINGLE_TASK"
+        expr:
+          kind: path
+          path:
+            - settings
+            - format
+      - name: settings__schedule__quartz_cron_expression
+        type: Utf8
+        nullable: true
+        description: Cron schedule expression (null for unscheduled jobs)
+        expr:
+          kind: path
+          path:
+            - settings
+            - schedule
+            - quartz_cron_expression
+      - name: settings__schedule__timezone_id
+        type: Utf8
+        nullable: true
+        description: Timezone for the cron schedule (e.g. UTC, America/New_York)
+        expr:
+          kind: path
+          path:
+            - settings
+            - schedule
+            - timezone_id
+      - name: settings__schedule__pause_status
+        type: Utf8
+        nullable: true
+        description: "Schedule pause state: PAUSED or UNPAUSED"
+        expr:
+          kind: path
+          path:
+            - settings
+            - schedule
+            - pause_status
+      - name: creator_user_name
+        type: Utf8
+        nullable: true
+        description: User who created the job
+        expr:
+          kind: path
+          path:
+            - creator_user_name
+      - name: run_as_user_name
+        type: Utf8
+        nullable: true
+        description: User the job runs as (may differ from creator)
+        expr:
+          kind: path
+          path:
+            - run_as_user_name
+      - name: created_time
+        type: Int64
+        nullable: true
+        description: Job creation time in milliseconds since epoch
+        expr:
+          kind: path
+          path:
+            - created_time
+
+  - name: job_runs
+    description: Databricks job run history with state and duration
+    guide: |
+      Returns job run history. Optionally filter to a specific job using the
+      `job_id` filter. Results are paginated with up to 25 runs per page.
+
+      Key values for `state__life_cycle_state`: PENDING, RUNNING,
+      TERMINATING, TERMINATED, SKIPPED, INTERNAL_ERROR, WAITING_FOR_RETRY.
+      Key values for `state__result_state`: SUCCESS, FAILED, TIMEDOUT,
+      CANCELED (only present when life_cycle_state = TERMINATED).
+
+      `start_time` and `end_time` are milliseconds since epoch.
+      `setup_duration`, `execution_duration`, and `cleanup_duration` are
+      milliseconds. `trigger` indicates what caused the run: PERIODIC,
+      ONE_TIME, or RETRY.
+    filters:
+      - name: job_id
+        required: false
+    request:
+      method: GET
+      path: /api/2.1/jobs/runs/list
+      query:
+        - name: job_id
+          from: filter
+          key: job_id
+        - name: limit
+          from: literal
+          value: "25"
+    response:
+      rows_path:
+        - runs
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: page_token
+      response_cursor_path:
+        - next_page_token
+    columns:
+      - name: run_id
+        type: Int64
+        nullable: false
+        description: Unique run identifier
+        expr:
+          kind: path
+          path:
+            - run_id
+      - name: run_name
+        type: Utf8
+        nullable: true
+        description: Run display name
+        expr:
+          kind: path
+          path:
+            - run_name
+      - name: job_id
+        type: Int64
+        nullable: true
+        description: ID of the job this run belongs to
+        expr:
+          kind: path
+          path:
+            - job_id
+      - name: run_type
+        type: Utf8
+        nullable: true
+        description: "Run type: JOB_RUN, WORKFLOW_RUN, or SUBMIT_RUN"
+        expr:
+          kind: path
+          path:
+            - run_type
+      - name: trigger
+        type: Utf8
+        nullable: true
+        description: "What triggered the run: PERIODIC, ONE_TIME, or RETRY"
+        expr:
+          kind: path
+          path:
+            - trigger
+      - name: attempt_number
+        type: Int64
+        nullable: true
+        description: Retry attempt number; 0 for the first attempt
+        expr:
+          kind: path
+          path:
+            - attempt_number
+      - name: state__life_cycle_state
+        type: Utf8
+        nullable: true
+        description: "Run lifecycle state: PENDING, RUNNING, TERMINATED, SKIPPED, INTERNAL_ERROR, etc."
+        expr:
+          kind: path
+          path:
+            - state
+            - life_cycle_state
+      - name: state__result_state
+        type: Utf8
+        nullable: true
+        description: "Terminal result: SUCCESS, FAILED, TIMEDOUT, CANCELED (only set when terminated)"
+        expr:
+          kind: path
+          path:
+            - state
+            - result_state
+      - name: state__state_message
+        type: Utf8
+        nullable: true
+        description: Human-readable message about the current state
+        expr:
+          kind: path
+          path:
+            - state
+            - state_message
+      - name: creator_user_name
+        type: Utf8
+        nullable: true
+        description: User who triggered the run
+        expr:
+          kind: path
+          path:
+            - creator_user_name
+      - name: start_time
+        type: Int64
+        nullable: true
+        description: Run start time in milliseconds since epoch
+        expr:
+          kind: path
+          path:
+            - start_time
+      - name: end_time
+        type: Int64
+        nullable: true
+        description: Run end time in milliseconds since epoch; 0 if still running
+        expr:
+          kind: path
+          path:
+            - end_time
+      - name: setup_duration
+        type: Int64
+        nullable: true
+        description: Cluster setup time in milliseconds
+        expr:
+          kind: path
+          path:
+            - setup_duration
+      - name: execution_duration
+        type: Int64
+        nullable: true
+        description: Task execution time in milliseconds
+        expr:
+          kind: path
+          path:
+            - execution_duration
+      - name: cleanup_duration
+        type: Int64
+        nullable: true
+        description: Cluster teardown time in milliseconds
+        expr:
+          kind: path
+          path:
+            - cleanup_duration
+
+  - name: warehouses
+    description: Databricks SQL warehouses with state, size, and configuration
+    guide: |
+      Returns all SQL warehouses in the workspace. Filter on `state` or
+      `warehouse_type` using SQL WHERE clauses.
+
+      Key values for `state`: RUNNING, STOPPED, STARTING, STOPPING,
+      DELETED, DEGRADED.
+      Key values for `warehouse_type`: CLASSIC, PRO, SERVERLESS.
+
+      `num_active_sessions` shows current query load. `auto_stop_mins` is
+      the idle timeout before the warehouse stops automatically.
+      `cluster_size` is the t-shirt size: 2X-Small through 4X-Large.
+    request:
+      method: GET
+      path: /api/2.0/sql/warehouses
+    response:
+      rows_path:
+        - warehouses
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique warehouse identifier
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Warehouse display name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: state
+        type: Utf8
+        nullable: true
+        description: "Current state: RUNNING, STOPPED, STARTING, STOPPING, DELETED, DEGRADED"
+        expr:
+          kind: path
+          path:
+            - state
+      - name: warehouse_type
+        type: Utf8
+        nullable: true
+        description: "Warehouse tier: CLASSIC, PRO, or SERVERLESS"
+        expr:
+          kind: path
+          path:
+            - warehouse_type
+      - name: cluster_size
+        type: Utf8
+        nullable: true
+        description: "T-shirt size: 2X-Small, X-Small, Small, Medium, Large, X-Large, 2X-Large, 3X-Large, 4X-Large"
+        expr:
+          kind: path
+          path:
+            - cluster_size
+      - name: min_num_clusters
+        type: Int64
+        nullable: true
+        description: Minimum number of clusters for multi-cluster warehouses
+        expr:
+          kind: path
+          path:
+            - min_num_clusters
+      - name: max_num_clusters
+        type: Int64
+        nullable: true
+        description: Maximum number of clusters for multi-cluster warehouses
+        expr:
+          kind: path
+          path:
+            - max_num_clusters
+      - name: num_clusters
+        type: Int64
+        nullable: true
+        description: Current number of active clusters
+        expr:
+          kind: path
+          path:
+            - num_clusters
+      - name: num_active_sessions
+        type: Int64
+        nullable: true
+        description: Number of queries currently running on this warehouse
+        expr:
+          kind: path
+          path:
+            - num_active_sessions
+      - name: auto_stop_mins
+        type: Int64
+        nullable: true
+        description: Minutes of inactivity before the warehouse stops automatically; 0 means never
+        expr:
+          kind: path
+          path:
+            - auto_stop_mins
+      - name: enable_photon
+        type: Boolean
+        nullable: true
+        description: Whether the Photon query engine is enabled
+        expr:
+          kind: path
+          path:
+            - enable_photon
+      - name: creator_name
+        type: Utf8
+        nullable: true
+        description: User who created the warehouse
+        expr:
+          kind: path
+          path:
+            - creator_name
+      - name: jdbc_url
+        type: Utf8
+        nullable: true
+        description: JDBC connection URL for this warehouse
+        expr:
+          kind: path
+          path:
+            - jdbc_url
+
+  - name: catalogs
+    description: Unity Catalog catalogs in the Databricks metastore
+    guide: |
+      Returns all Unity Catalog catalogs the configured user can see.
+      Requires Unity Catalog to be enabled on the workspace.
+
+      `catalog_type` values include MANAGED_CATALOG (standard user catalog),
+      SYSTEM_CATALOG (Databricks system tables), and FOREIGN_CATALOG
+      (external metastore). `created_at` and `updated_at` are milliseconds
+      since epoch.
+
+      Use `name` values from this table as the `catalog_name` filter in
+      `databricks.schemas`.
+    request:
+      method: GET
+      path: /api/2.1/unity-catalog/catalogs
+    response:
+      rows_path:
+        - catalogs
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Catalog name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: full_name
+        type: Utf8
+        nullable: true
+        description: Fully qualified catalog name
+        expr:
+          kind: path
+          path:
+            - full_name
+      - name: catalog_type
+        type: Utf8
+        nullable: true
+        description: "Catalog type: MANAGED_CATALOG, SYSTEM_CATALOG, or FOREIGN_CATALOG"
+        expr:
+          kind: path
+          path:
+            - catalog_type
+      - name: owner
+        type: Utf8
+        nullable: true
+        description: User or group that owns the catalog
+        expr:
+          kind: path
+          path:
+            - owner
+      - name: comment
+        type: Utf8
+        nullable: true
+        description: Optional description of the catalog
+        expr:
+          kind: path
+          path:
+            - comment
+      - name: storage_root
+        type: Utf8
+        nullable: true
+        description: Default storage location for managed tables in this catalog
+        expr:
+          kind: path
+          path:
+            - storage_root
+      - name: created_at
+        type: Int64
+        nullable: true
+        description: Catalog creation time in milliseconds since epoch
+        expr:
+          kind: path
+          path:
+            - created_at
+      - name: updated_at
+        type: Int64
+        nullable: true
+        description: Time of last catalog modification in milliseconds since epoch
+        expr:
+          kind: path
+          path:
+            - updated_at
+      - name: created_by
+        type: Utf8
+        nullable: true
+        description: User who created the catalog
+        expr:
+          kind: path
+          path:
+            - created_by
+
+  - name: schemas
+    description: Unity Catalog schemas within a catalog
+    guide: |
+      Returns all schemas in the specified catalog that the configured user
+      can see. `catalog_name` is required. Use `name` values from
+      `databricks.catalogs` as the filter value.
+
+      `created_at` and `updated_at` are milliseconds since epoch.
+      To list tables in a schema, use `name` from this table as the
+      `schema_name` filter in `databricks.tables`, along with the same
+      `catalog_name` value.
+    filters:
+      - name: catalog_name
+        required: true
+    request:
+      method: GET
+      path: /api/2.1/unity-catalog/schemas
+      query:
+        - name: catalog_name
+          from: filter
+          key: catalog_name
+        - name: max_results
+          from: literal
+          value: "50"
+    response:
+      rows_path:
+        - schemas
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: page_token
+      response_cursor_path:
+        - next_page_token
+    columns:
+      - name: catalog_name
+        type: Utf8
+        nullable: true
+        description: Catalog name filter
+        expr:
+          kind: from_filter
+          key: catalog_name
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Schema name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: full_name
+        type: Utf8
+        nullable: true
+        description: "Fully qualified name in format catalog.schema"
+        expr:
+          kind: path
+          path:
+            - full_name
+      - name: owner
+        type: Utf8
+        nullable: true
+        description: User or group that owns the schema
+        expr:
+          kind: path
+          path:
+            - owner
+      - name: comment
+        type: Utf8
+        nullable: true
+        description: Optional description of the schema
+        expr:
+          kind: path
+          path:
+            - comment
+      - name: created_at
+        type: Int64
+        nullable: true
+        description: Schema creation time in milliseconds since epoch
+        expr:
+          kind: path
+          path:
+            - created_at
+      - name: updated_at
+        type: Int64
+        nullable: true
+        description: Time of last schema modification in milliseconds since epoch
+        expr:
+          kind: path
+          path:
+            - updated_at
+      - name: created_by
+        type: Utf8
+        nullable: true
+        description: User who created the schema
+        expr:
+          kind: path
+          path:
+            - created_by
+
+  - name: tables
+    description: Unity Catalog tables and views within a schema
+    guide: |
+      Returns all tables and views in the specified catalog and schema that
+      the configured user can see. Both `catalog_name` and `schema_name` are
+      required.
+
+      Key values for `table_type`: MANAGED, EXTERNAL, VIEW,
+      MATERIALIZED_VIEW, STREAMING_TABLE.
+      Key values for `data_source_format`: DELTA, CSV, JSON, AVRO, PARQUET,
+      ORC, TEXT.
+
+      `created_at` and `updated_at` are milliseconds since epoch.
+      `full_name` has the format `catalog.schema.table` and can be used
+      directly in Databricks SQL queries.
+    filters:
+      - name: catalog_name
+        required: true
+      - name: schema_name
+        required: true
+    request:
+      method: GET
+      path: /api/2.1/unity-catalog/tables
+      query:
+        - name: catalog_name
+          from: filter
+          key: catalog_name
+        - name: schema_name
+          from: filter
+          key: schema_name
+        - name: max_results
+          from: literal
+          value: "50"
+    response:
+      rows_path:
+        - tables
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: page_token
+      response_cursor_path:
+        - next_page_token
+    columns:
+      - name: catalog_name
+        type: Utf8
+        nullable: true
+        description: Catalog name filter
+        expr:
+          kind: from_filter
+          key: catalog_name
+      - name: schema_name
+        type: Utf8
+        nullable: true
+        description: Schema name filter
+        expr:
+          kind: from_filter
+          key: schema_name
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Table or view name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: full_name
+        type: Utf8
+        nullable: true
+        description: "Fully qualified name in format catalog.schema.table"
+        expr:
+          kind: path
+          path:
+            - full_name
+      - name: table_type
+        type: Utf8
+        nullable: true
+        description: "Table kind: MANAGED, EXTERNAL, VIEW, MATERIALIZED_VIEW, or STREAMING_TABLE"
+        expr:
+          kind: path
+          path:
+            - table_type
+      - name: data_source_format
+        type: Utf8
+        nullable: true
+        description: "Underlying file format: DELTA, CSV, JSON, AVRO, PARQUET, ORC, TEXT"
+        expr:
+          kind: path
+          path:
+            - data_source_format
+      - name: owner
+        type: Utf8
+        nullable: true
+        description: User or group that owns the table
+        expr:
+          kind: path
+          path:
+            - owner
+      - name: comment
+        type: Utf8
+        nullable: true
+        description: Optional description of the table
+        expr:
+          kind: path
+          path:
+            - comment
+      - name: storage_location
+        type: Utf8
+        nullable: true
+        description: External storage path (populated for EXTERNAL tables only)
+        expr:
+          kind: path
+          path:
+            - storage_location
+      - name: created_at
+        type: Int64
+        nullable: true
+        description: Table creation time in milliseconds since epoch
+        expr:
+          kind: path
+          path:
+            - created_at
+      - name: updated_at
+        type: Int64
+        nullable: true
+        description: Time of last table modification in milliseconds since epoch
+        expr:
+          kind: path
+          path:
+            - updated_at
+      - name: created_by
+        type: Utf8
+        nullable: true
+        description: User who created the table
+        expr:
+          kind: path
+          path:
+            - created_by
+      - name: updated_by
+        type: Utf8
+        nullable: true
+        description: User who last modified the table
+        expr:
+          kind: path
+          path:
+            - updated_by
