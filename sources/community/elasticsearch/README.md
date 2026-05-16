@@ -8,8 +8,8 @@ templates, and pending cluster tasks through the native REST and `_cat` APIs.
 ### Requirements
 
 - Network access to an Elasticsearch HTTP endpoint (default port `9200`).
-- A user with the `monitor` cluster privilege (the built-in `elastic`
-  superuser works for every table).
+- A user with sufficient privileges (see [Required privileges](#required-privileges)).
+  The built-in `elastic` superuser works for every table.
 
 ### Add the Source
 
@@ -91,6 +91,37 @@ HTTP Basic against the Elasticsearch security realm:
 Authorization: Basic base64(ELASTICSEARCH_USER:ELASTICSEARCH_PASSWORD)
 ```
 
+## Required privileges
+
+The built-in `elastic` superuser works out of the box. For a least-privilege
+user, the `monitor` **cluster** privilege alone is **not** enough — it covers
+cluster-level APIs only. The `indices`, `shards`, and `aliases` tables read
+the `_cat` index APIs and additionally require an **index-level** privilege
+on the indices you want visible.
+
+| Table | Endpoint | Required privilege |
+| ----- | -------- | ------------------ |
+| `cluster_health` | `/_cluster/health` | cluster `monitor` |
+| `nodes` | `/_cat/nodes` | cluster `monitor` |
+| `templates` | `/_cat/templates` | cluster `monitor` |
+| `pending_tasks` | `/_cat/pending_tasks` | cluster `monitor` |
+| `indices` | `/_cat/indices` | index `monitor` (or `view_index_metadata`) |
+| `shards` | `/_cat/shards` | index `monitor` (or `view_index_metadata`) |
+| `aliases` | `/_cat/aliases` | index `view_index_metadata` (or `monitor`) |
+
+A role that covers every table:
+
+```json
+{
+  "cluster": ["monitor"],
+  "indices": [
+    { "names": ["*"], "privileges": ["monitor", "view_index_metadata"] }
+  ]
+}
+```
+
+Narrow `names` to the index patterns you actually need to expose.
+
 ## Limits
 
 - This source is **read-only**. It exposes monitoring and `_cat` endpoints
@@ -150,4 +181,6 @@ ORDER BY heap_pct DESC
 - Works with self-managed Elasticsearch and Elastic Cloud. OpenSearch
   exposes the same `_cat` and `_cluster/health` shapes and is largely
   compatible, but is not officially targeted here.
-- The `monitor` cluster privilege is the minimum required role.
+- See [Required privileges](#required-privileges) for the least-privilege
+  role; `monitor` cluster privilege alone does not cover the index-level
+  tables (`indices`, `shards`, `aliases`).

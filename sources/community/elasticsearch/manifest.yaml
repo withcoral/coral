@@ -21,8 +21,12 @@ inputs:
     default: elastic
     hint: |
       Elasticsearch username. Defaults to `elastic` for the built-in
-      superuser. A user with the `monitor` cluster privilege is sufficient
-      for every table in this source.
+      superuser. For a least-privilege user, grant the `monitor` cluster
+      privilege (covers cluster_health, nodes, templates, pending_tasks)
+      plus the `monitor` index privilege on the indices you want visible
+      (required for the indices, shards, and aliases tables) — e.g. a role
+      with cluster `["monitor"]` and indices `[{names:["*"],
+      privileges:["monitor","view_index_metadata"]}]`.
   ELASTICSEARCH_PASSWORD:
     kind: secret
     hint: |
