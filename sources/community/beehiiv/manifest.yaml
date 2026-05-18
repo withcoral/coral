@@ -1,0 +1,634 @@
+name: beehiiv
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query publications, posts, and subscribers from Beehiiv.
+  Covers publication stats, post metadata (title, slug, status, URLs),
+  and subscriber acquisition data.
+base_url: https://api.beehiiv.com/v2
+
+inputs:
+  BEEHIIV_API_KEY:
+    kind: secret
+    hint: |
+      Your Beehiiv API key. Generate one from:
+      Workspace Settings → API → Generate API Key.
+      See https://developers.beehiiv.com/docs/v2/
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.BEEHIIV_API_KEY}}
+
+test_queries:
+  # Only the parameter-less publications table is safe as a smoke-test query.
+  # posts and subscriptions require a real publication_id — see README for examples.
+  - SELECT * FROM beehiiv.publications LIMIT 5
+
+tables:
+  # ------------------------------------------------------------------
+  # beehiiv.publications — workspace-wide publication list
+  # GET /v2/publications?expand=stats
+  # Pagination: page-based (offset). No path filter required.
+  # ------------------------------------------------------------------
+  - name: publications
+    description: >-
+      All Beehiiv publications accessible to the API key. Each row is one
+      newsletter publication. Includes subscriber counts and engagement stats.
+      Use `id` as the `publication_id` filter on the `posts` and
+      `subscriptions` tables.
+    guide: |
+      Workspace-wide table — no filter required. Returns all publications the
+      API key can access. `id` (e.g. `pub_00000000-0000-0000-0000-000000000000`)
+      is the value to pass as `publication_id` when querying `posts` or
+      `subscriptions`. `created_at` is a Unix epoch timestamp. Stats fields
+      (`stats__*`) reflect current counts at query time.
+    request:
+      method: GET
+      path: /publications
+      query:
+        - name: expand
+          from: literal
+          value: stats
+    response:
+      rows_path:
+        - data
+      row_strategy: direct
+      allow_404_empty: false
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      page_size:
+        default: 10
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Publication ID (e.g. pub_...). Use as `publication_id` in posts and subscriptions.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Publication name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: organization_name
+        type: Utf8
+        nullable: true
+        description: Name of the organization that owns this publication.
+        expr:
+          kind: path
+          path:
+            - organization_name
+      - name: referral_program_enabled
+        type: Boolean
+        nullable: true
+        description: Whether the referral program is enabled for this publication.
+        expr:
+          kind: path
+          path:
+            - referral_program_enabled
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: >-
+          Publication creation time. The OpenAPI spec types this field as
+          number/double rather than integer; DSL truncates to whole seconds,
+          which is sufficient for date/time queries.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr:
+            kind: path
+            path:
+              - created
+      - name: stats__active_subscriptions
+        type: Int64
+        nullable: true
+        description: Total active subscribers (free + premium).
+        expr:
+          kind: path
+          path:
+            - stats
+            - active_subscriptions
+      - name: stats__active_premium_subscriptions
+        type: Int64
+        nullable: true
+        description: Active paid (premium) subscribers.
+        expr:
+          kind: path
+          path:
+            - stats
+            - active_premium_subscriptions
+      - name: stats__active_free_subscriptions
+        type: Int64
+        nullable: true
+        description: Active free subscribers.
+        expr:
+          kind: path
+          path:
+            - stats
+            - active_free_subscriptions
+      - name: stats__average_open_rate
+        type: Float64
+        nullable: true
+        description: Average open rate across all sends (0.0–1.0).
+        expr:
+          kind: path
+          path:
+            - stats
+            - average_open_rate
+      - name: stats__average_click_rate
+        type: Float64
+        nullable: true
+        description: Average click rate across all sends (0.0–1.0).
+        expr:
+          kind: path
+          path:
+            - stats
+            - average_click_rate
+      - name: stats__total_sent
+        type: Int64
+        nullable: true
+        description: Total number of emails sent.
+        expr:
+          kind: path
+          path:
+            - stats
+            - total_sent
+      - name: stats__total_unique_opened
+        type: Int64
+        nullable: true
+        description: Total unique opens across all sends.
+        expr:
+          kind: path
+          path:
+            - stats
+            - total_unique_opened
+      - name: stats__total_clicked
+        type: Int64
+        nullable: true
+        description: Total link clicks across all sends.
+        expr:
+          kind: path
+          path:
+            - stats
+            - total_clicked
+
+  # ------------------------------------------------------------------
+  # beehiiv.posts — posts for a publication
+  # GET /v2/publications/:publicationId/posts
+  # Pagination: page-based (offset). Requires publication_id filter (path param).
+  # Response envelope: {data, limit, page, total_results, total_pages}
+  # ------------------------------------------------------------------
+  - name: posts
+    description: >-
+      Newsletter posts for a Beehiiv publication. Requires `publication_id`
+      (from `beehiiv.publications.id`). Optionally filter by `status`,
+      `audience`, or `platform`.
+    guide: |
+      Requires `publication_id` — obtain it from `beehiiv.publications`.
+      `status` filter values: `draft`, `confirmed`, `archived`, `all`.
+      `audience` filter values: `free`, `premium`, `all`.
+      `platform` filter values: `web`, `email`, `both`, `all`.
+      `published_at` and `displayed_date` are Unix epoch timestamps.
+      `content_tags` and `authors` are comma-joined strings.
+      `subject_line` is the email subject (A/B-test winner after send).
+    filters:
+      - name: publication_id
+        required: true
+      - name: status
+        required: false
+      - name: audience
+        required: false
+      - name: platform
+        required: false
+    request:
+      method: GET
+      path: /publications/{{filter.publication_id}}/posts
+      query:
+        - name: status
+          from: filter
+          key: status
+        - name: audience
+          from: filter
+          key: audience
+        - name: platform
+          from: filter
+          key: platform
+    response:
+      rows_path:
+        - data
+      row_strategy: direct
+      allow_404_empty: false
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      page_size:
+        default: 10
+        max: 100
+        query_param: limit
+    columns:
+      - name: publication_id
+        type: Utf8
+        nullable: false
+        description: Publication ID this post belongs to (echoes the filter).
+        expr:
+          kind: from_filter
+          key: publication_id
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Post ID (e.g. post_...).
+        expr:
+          kind: path
+          path:
+            - id
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Post title.
+        expr:
+          kind: path
+          path:
+            - title
+      - name: subtitle
+        type: Utf8
+        nullable: true
+        description: Post subtitle.
+        expr:
+          kind: path
+          path:
+            - subtitle
+      - name: slug
+        type: Utf8
+        nullable: true
+        description: URL slug for the post.
+        expr:
+          kind: path
+          path:
+            - slug
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Post status (draft, confirmed, archived).
+        expr:
+          kind: path
+          path:
+            - status
+      - name: audience
+        type: Utf8
+        nullable: true
+        description: Audience tier the post targets (free, premium).
+        expr:
+          kind: path
+          path:
+            - audience
+      - name: platform
+        type: Utf8
+        nullable: true
+        description: Platform the post is published on (web, email, both).
+        expr:
+          kind: path
+          path:
+            - platform
+      - name: published_at
+        type: Timestamp
+        nullable: true
+        description: Publication timestamp (Unix epoch seconds). API field name is `publish_date`.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr:
+            kind: path
+            path:
+              - publish_date
+      - name: displayed_date
+        type: Timestamp
+        nullable: true
+        description: Display date shown to readers (Unix epoch seconds).
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr:
+            kind: path
+            path:
+              - displayed_date
+      - name: web_url
+        type: Utf8
+        nullable: true
+        description: Canonical public URL for the post on the web.
+        expr:
+          kind: path
+          path:
+            - web_url
+      - name: thumbnail_url
+        type: Utf8
+        nullable: true
+        description: URL of the post thumbnail image.
+        expr:
+          kind: path
+          path:
+            - thumbnail_url
+      - name: content_tags
+        type: Utf8
+        nullable: true
+        description: Comma-joined content tag names applied to this post.
+        expr:
+          kind: join_array
+          path:
+            - content_tags
+      - name: subject_line
+        type: Utf8
+        nullable: true
+        description: Email subject line (A/B-test winner after the post is sent).
+        expr:
+          kind: path
+          path:
+            - subject_line
+      - name: preview_text
+        type: Utf8
+        nullable: true
+        description: Email preview text shown in inbox clients before the email is opened.
+        expr:
+          kind: path
+          path:
+            - preview_text
+      - name: authors
+        type: Utf8
+        nullable: true
+        description: Comma-joined list of author names for this post.
+        expr:
+          kind: join_array
+          path:
+            - authors
+      - name: newsletter_list_id
+        type: Utf8
+        nullable: true
+        description: Newsletter list this post was sent to, if scoped to a specific list.
+        expr:
+          kind: path
+          path:
+            - newsletter_list_id
+
+
+  # ------------------------------------------------------------------
+  # beehiiv.subscriptions — subscribers for a publication
+  # GET /v2/publications/:publicationId/subscriptions
+  # Pagination: cursor-based (endpoint accepts cursor param; preferred over
+  # page-based for large subscriber lists where total_results is not needed).
+  # next_cursor is at the response root — no pagination wrapper object.
+  # expand[] sent as bracketed array params per the OpenAPI spec.
+  # ------------------------------------------------------------------
+  - name: subscriptions
+    description: >-
+      Subscribers for a Beehiiv publication. Requires `publication_id`
+      (from `beehiiv.publications.id`). Optionally filter by `status`
+      or `email`. Includes UTM attribution, tier, and acquisition data.
+    guide: |
+      Requires `publication_id` — obtain it from `beehiiv.publications`.
+      `status` filter values: `active`, `churned`, `pending`, `validating`.
+      `email` filter performs an exact match (case sensitivity is not
+      documented in the API spec; treat as case-sensitive to be safe).
+      `created_at` is a Unix epoch timestamp.
+      `subscription_premium_tiers`, `custom_fields`, and `tags` are JSON
+      arrays returned via hardcoded expand[] params. Use SQL JSON functions
+      to inspect them. `stats` contains per-subscriber open/click metrics
+      and also requires expand (hardcoded).
+      Cursor pagination is used over page-based because subscriber lists
+      can be very large and total_results is not needed for iteration.
+    filters:
+      - name: publication_id
+        required: true
+      - name: status
+        required: false
+      - name: email
+        required: false
+    request:
+      method: GET
+      path: /publications/{{filter.publication_id}}/subscriptions
+      query:
+        - name: "expand[]"
+          from: literal
+          value: custom_fields
+        - name: "expand[]"
+          from: literal
+          value: tags
+        - name: "expand[]"
+          from: literal
+          value: subscription_premium_tiers
+        - name: "expand[]"
+          from: literal
+          value: stats
+        - name: status
+          from: filter
+          key: status
+        - name: email
+          from: filter
+          key: email
+    response:
+      rows_path:
+        - data
+      row_strategy: direct
+      allow_404_empty: false
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      response_cursor_path:
+        - next_cursor
+      page_size:
+        default: 10
+        max: 100
+        query_param: limit
+    columns:
+      - name: publication_id
+        type: Utf8
+        nullable: false
+        description: Publication ID this subscription belongs to (echoes the filter).
+        expr:
+          kind: from_filter
+          key: publication_id
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Subscription ID (e.g. sub_...).
+        expr:
+          kind: path
+          path:
+            - id
+      - name: email
+        type: Utf8
+        nullable: false
+        description: Subscriber email address.
+        expr:
+          kind: path
+          path:
+            - email
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Subscription status (active, churned, pending, validating).
+        expr:
+          kind: path
+          path:
+            - status
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the subscription was created (Unix epoch seconds). API field name is `created`.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr:
+            kind: path
+            path:
+              - created
+      - name: referral_code
+        type: Utf8
+        nullable: true
+        description: Unique referral code for this subscriber.
+        expr:
+          kind: path
+          path:
+            - referral_code
+      - name: referring_site
+        type: Utf8
+        nullable: true
+        description: Website URL from which this subscriber was referred.
+        expr:
+          kind: path
+          path:
+            - referring_site
+      - name: utm_source
+        type: Utf8
+        nullable: true
+        description: UTM source associated with this subscription.
+        expr:
+          kind: path
+          path:
+            - utm_source
+      - name: utm_medium
+        type: Utf8
+        nullable: true
+        description: UTM medium associated with this subscription.
+        expr:
+          kind: path
+          path:
+            - utm_medium
+      - name: utm_campaign
+        type: Utf8
+        nullable: true
+        description: UTM campaign associated with this subscription.
+        expr:
+          kind: path
+          path:
+            - utm_campaign
+      - name: utm_term
+        type: Utf8
+        nullable: true
+        description: UTM term associated with this subscription.
+        expr:
+          kind: path
+          path:
+            - utm_term
+      - name: utm_channel
+        type: Utf8
+        nullable: true
+        description: UTM channel associated with this subscription.
+        expr:
+          kind: path
+          path:
+            - utm_channel
+      - name: utm_content
+        type: Utf8
+        nullable: true
+        description: UTM content associated with this subscription.
+        expr:
+          kind: path
+          path:
+            - utm_content
+      - name: subscription_tier
+        type: Utf8
+        nullable: true
+        description: >-
+          Current subscription tier (e.g. free, premium). Use
+          `WHERE subscription_tier = 'premium'` to filter paid subscribers
+          without parsing the nested subscription_premium_tiers JSON.
+        expr:
+          kind: path
+          path:
+            - subscription_tier
+      - name: subscription_premium_tier_names
+        type: Utf8
+        nullable: true
+        description: >-
+          Comma-joined flat list of premium tier names. Lighter than
+          subscription_premium_tiers JSON for simple name-based filtering.
+        expr:
+          kind: join_array
+          path:
+            - subscription_premium_tier_names
+      - name: newsletter_list_ids
+        type: Json
+        nullable: true
+        description: JSON array of newsletter list IDs this subscriber belongs to.
+        expr:
+          kind: path
+          path:
+            - newsletter_list_ids
+      - name: stats
+        type: Json
+        nullable: true
+        description: >-
+          Per-subscriber engagement stats (emails_received, open_rate,
+          click_through_rate). Populated via hardcoded expand[] param.
+          Use SQL JSON functions to inspect.
+        expr:
+          kind: path
+          path:
+            - stats
+      - name: subscription_premium_tiers
+        type: Json
+        nullable: true
+        description: >-
+          JSON array of premium tier objects the subscriber belongs to.
+          Each object has `id`, `name`, and `status`. Requires expand
+          (hardcoded). Use SQL JSON functions to inspect.
+        expr:
+          kind: path
+          path:
+            - subscription_premium_tiers
+      - name: custom_fields
+        type: Json
+        nullable: true
+        description: >-
+          JSON array of custom field values set on this subscription.
+          Requires expand (hardcoded). Use SQL JSON functions to inspect.
+        expr:
+          kind: path
+          path:
+            - custom_fields
+      - name: tags
+        type: Json
+        nullable: true
+        description: >-
+          JSON array of tag strings applied to this subscription.
+          Requires expand (hardcoded). Use SQL JSON functions to inspect.
+        expr:
+          kind: path
+          path:
+            - tags
