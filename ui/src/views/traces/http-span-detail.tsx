@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import classNames from 'classnames'
 
 import * as Button from '@/wax/components/button'
+import * as ScrollArea from '@/wax/components/scroll-area'
 import { Typography } from '@/wax/components/typography'
 import type { TraceSpan } from '@/generated/coral/v1/traces_pb'
 
@@ -118,7 +119,23 @@ function metaChip(label: string, value: React.ReactNode) {
   )
 }
 
-export function HttpSpanDetail({ span, traceStart }: { span: TraceSpan; traceStart: bigint }) {
+export function HttpSpanDetail({
+  canSelectNextSpan,
+  canSelectPreviousSpan,
+  onClose,
+  onSelectNextSpan,
+  onSelectPreviousSpan,
+  span,
+  traceStart,
+}: {
+  canSelectNextSpan: boolean
+  canSelectPreviousSpan: boolean
+  onClose: () => void
+  onSelectNextSpan: () => void
+  onSelectPreviousSpan: () => void
+  span: TraceSpan
+  traceStart: bigint
+}) {
   const [activeTab, setActiveTab] = useState<HttpDetailTab>('response')
   const [copyState, setCopyState] = useState<CopyKind | 'failed' | 'idle'>('idle')
   const attrs = parseJsonObject(span.attributesJson)
@@ -182,59 +199,94 @@ export function HttpSpanDetail({ span, traceStart }: { span: TraceSpan; traceSta
   }
 
   return (
-    <div className={s.waterfallHttpDetail} onClick={(event) => event.stopPropagation()}>
-      <div className={s.requestUrlRow}>
-        <Typography.CodeSmallInline as="span" className={s.methodBadge}>{spanOperation(span)}</Typography.CodeSmallInline>
-        <Typography.Body as="span" variant="tertiary" className={s.requestUrl}>{url || 'No URL recorded'}</Typography.Body>
-      </div>
-      <div className={s.httpMetaRow}>
-        {statusCode && metaChip('Status', statusCode)}
-        {metaChip('Duration', formatDurationFromNanos(span.durationNanos))}
-        {metaChip('Start', `+${formatDuration(offsetMs)}`)}
-        {requestId && metaChip('Request', `#${requestId}`)}
-        {attempt && metaChip('Attempt', attempt)}
-        {source && metaChip('Source', table ? `${source}.${table}` : source)}
-      </div>
-      <div className={s.waterfallHttpTabRow}>
-        <div className={s.tabList} role="tablist" aria-label="HTTP span details">
-          {tabs.map((tab) => (
-            <button
-              aria-controls={`http-detail-${span.spanId}-${tab.id}`}
-              aria-selected={activeTab === tab.id}
-              className={classNames(s.tabTrigger, { [s.tabTriggerActive]: activeTab === tab.id })}
-              id={`http-detail-tab-${span.spanId}-${tab.id}`}
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              role="tab"
-              type="button"
-            >
-              <Typography.BodySmallStrong as="span">{tab.label}</Typography.BodySmallStrong>
-            </button>
-          ))}
+    <div className={s.waterfallHttpDetail} data-span-inspector="true" onClick={(event) => event.stopPropagation()}>
+      <div className={s.waterfallHttpDetailHeader}>
+        <div className={s.waterfallHttpDetailTitle}>
+          <Typography.BodySmallStrong as="span">Span details</Typography.BodySmallStrong>
+          <Typography.BodySmall as="span" variant="tertiary" truncate>{spanOperation(span)}</Typography.BodySmall>
         </div>
-        <div className={s.copyButtonGroup}>
-          {hasSeparateRawCopy && (
-            <Button.TextButton disabled={!rawCopyValue} onClick={() => copyValueToClipboard(rawCopyValue, 'raw')} size="22" variant="secondary">
-              {copyState === 'raw' ? 'Raw copied' : 'Copy raw'}
-            </Button.TextButton>
-          )}
-          <Button.TextButton disabled={!copyValue} onClick={() => copyValueToClipboard(copyValue, 'formatted')} size="22" variant="secondary">
-            {copyState === 'formatted' ? 'Copied' : copyState === 'failed' ? 'Copy failed' : 'Copy formatted'}
-          </Button.TextButton>
+        <div className={s.waterfallHttpDetailHeaderActions}>
+          <Button.IconButton
+            disabled={!canSelectPreviousSpan}
+            name="ArrowUp"
+            onClick={onSelectPreviousSpan}
+            size="32"
+            tooltipText="Previous span"
+            variant="bare"
+          />
+          <Button.IconButton
+            disabled={!canSelectNextSpan}
+            name="ArrowDown"
+            onClick={onSelectNextSpan}
+            size="32"
+            tooltipText="Next span"
+            variant="bare"
+          />
+          <Button.IconButton
+            name="X"
+            onClick={onClose}
+            size="32"
+            tooltipText="Close span details"
+            variant="bare"
+          />
         </div>
       </div>
-      <section
-        aria-labelledby={`http-detail-tab-${span.spanId}-${activeTab}`}
-        className={s.waterfallHttpDetailSection}
-        id={`http-detail-${span.spanId}-${activeTab}`}
-        role="tabpanel"
-      >
-        <DetailPre emptyText={activeEmptyText} value={activeValue} />
-      </section>
-      <details>
-        <summary className={s.detailsSummary}><Typography.Body as="span" variant="tertiary">Span attributes</Typography.Body></summary>
-        <pre className={s.detailsPre}>{JSON.stringify(visibleAttrs, null, 2)}</pre>
-      </details>
+      <ScrollArea.Container className={s.waterfallHttpDetailScroll} constrainWidth fade="bottom" height="100%">
+        <div className={s.waterfallHttpDetailContent}>
+          <div className={s.requestUrlRow}>
+            <Typography.CodeSmallInline as="span" className={s.methodBadge}>{spanOperation(span)}</Typography.CodeSmallInline>
+            <Typography.Body as="span" variant="tertiary" className={s.requestUrl}>{url || 'No URL recorded'}</Typography.Body>
+          </div>
+          <div className={s.httpMetaRow}>
+            {statusCode && metaChip('Status', statusCode)}
+            {metaChip('Duration', formatDurationFromNanos(span.durationNanos))}
+            {metaChip('Start', `+${formatDuration(offsetMs)}`)}
+            {requestId && metaChip('Request', `#${requestId}`)}
+            {attempt && metaChip('Attempt', attempt)}
+            {source && metaChip('Source', table ? `${source}.${table}` : source)}
+          </div>
+          <div className={s.waterfallHttpTabRow}>
+            <div className={s.tabList} role="tablist" aria-label="HTTP span details">
+              {tabs.map((tab) => (
+                <button
+                  aria-controls={`http-detail-${span.spanId}-${tab.id}`}
+                  aria-selected={activeTab === tab.id}
+                  className={classNames(s.tabTrigger, { [s.tabTriggerActive]: activeTab === tab.id })}
+                  id={`http-detail-tab-${span.spanId}-${tab.id}`}
+                  key={tab.id}
+                  onClick={() => setActiveTab(tab.id)}
+                  role="tab"
+                  type="button"
+                >
+                  <Typography.BodySmallStrong as="span">{tab.label}</Typography.BodySmallStrong>
+                </button>
+              ))}
+            </div>
+            <div className={s.copyButtonGroup}>
+              {hasSeparateRawCopy && (
+                <Button.TextButton disabled={!rawCopyValue} onClick={() => copyValueToClipboard(rawCopyValue, 'raw')} size="22" variant="secondary">
+                  {copyState === 'raw' ? 'Raw copied' : 'Copy raw'}
+                </Button.TextButton>
+              )}
+              <Button.TextButton disabled={!copyValue} onClick={() => copyValueToClipboard(copyValue, 'formatted')} size="22" variant="secondary">
+                {copyState === 'formatted' ? 'Copied' : copyState === 'failed' ? 'Copy failed' : 'Copy formatted'}
+              </Button.TextButton>
+            </div>
+          </div>
+          <section
+            aria-labelledby={`http-detail-tab-${span.spanId}-${activeTab}`}
+            className={s.waterfallHttpDetailSection}
+            id={`http-detail-${span.spanId}-${activeTab}`}
+            role="tabpanel"
+          >
+            <DetailPre emptyText={activeEmptyText} value={activeValue} />
+          </section>
+          <details>
+            <summary className={s.detailsSummary}><Typography.Body as="span" variant="tertiary">Span attributes</Typography.Body></summary>
+            <pre className={s.detailsPre}>{JSON.stringify(visibleAttrs, null, 2)}</pre>
+          </details>
+        </div>
+      </ScrollArea.Container>
     </div>
   )
 }
