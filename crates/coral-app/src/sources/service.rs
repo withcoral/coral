@@ -4,20 +4,18 @@ use std::pin::Pin;
 
 use coral_api::v1::source_service_server::SourceService as SourceServiceApi;
 use coral_api::v1::{
-    CreateBundledSourceRequest, CreateBundledSourceResponse, DeleteSourceRequest,
-    DeleteSourceResponse, DiscoverSourcesRequest, DiscoverSourcesResponse, GetSourceInfoRequest,
-    GetSourceInfoResponse, GetSourceRequest, GetSourceResponse, ImportSourceRequest,
-    ImportSourceResponse, ImportSourceWithCredentialsRequest, ImportSourceWithCredentialsResponse,
-    ListSourcesRequest, ListSourcesResponse,
+    CreateBundledSourceRequest, CreateBundledSourceResponse, CredentialMetadata,
+    DeleteSourceRequest, DeleteSourceResponse, DiscoverSourcesRequest, DiscoverSourcesResponse,
+    GetSourceInfoRequest, GetSourceInfoResponse, GetSourceRequest, GetSourceResponse,
+    ImportSourceRequest, ImportSourceResponse, ListSourcesRequest, ListSourcesResponse,
     OAuthAuthorizationCodeCredentialMethod, OAuthCredentialClient, OAuthCredentialClientId,
-    OAuthCredentialClientSecret, OAuthCredentialEndpoints, OAuthCredentialScope,
-    OAuthCredentialScopes, OauthCredentialClientSecretTransport, OauthCredentialPkceMode,
-    OauthCredentialScopeDelimiter, Source, SourceConfigCredentialMethod, SourceCredential,
-    SourceCredentialMetadata, SourceCredentialMethod, SourceCredentialOAuthAuthorization,
-    SourceCredentialOAuthCompleted, SourceInfo, SourceInputSpec, SourceOrigin as ProtoSourceOrigin,
-    SourceSecret, SourceSecretInput, SourceVariable, SourceVariableInput, ValidateSourceRequest,
-    ValidateSourceResponse, import_source_with_credentials_response,
-    source_credential_method::Method as ProtoCredentialMethod,
+    OAuthCredentialAuthorization, OAuthCredentialClientSecret, OAuthCredentialCompleted,
+    OAuthCredentialEndpoints, OAuthCredentialScope, OAuthCredentialScopes,
+    OauthCredentialClientSecretTransport, OauthCredentialPkceMode, OauthCredentialScopeDelimiter,
+    Source, SourceConfigCredentialMethod, SourceCredential, SourceCredentialMethod, SourceInfo,
+    SourceInputSpec, SourceOrigin as ProtoSourceOrigin, SourceSecret, SourceSecretInput,
+    SourceVariable, SourceVariableInput, ValidateSourceRequest, ValidateSourceResponse,
+    import_source_response, source_credential_method::Method as ProtoCredentialMethod,
     source_input_spec::Input as ProtoSourceInput,
 };
 use coral_spec::{
@@ -61,8 +59,8 @@ impl SourceService {
 
 #[tonic::async_trait]
 impl SourceServiceApi for SourceService {
-    type ImportSourceWithCredentialsStream =
-        Pin<Box<dyn Stream<Item = Result<ImportSourceWithCredentialsResponse, Status>> + Send>>;
+    type ImportSourceStream =
+        Pin<Box<dyn Stream<Item = Result<ImportSourceResponse, Status>> + Send>>;
 
     async fn discover_sources(
         &self,
@@ -171,35 +169,30 @@ impl SourceServiceApi for SourceService {
     async fn import_source(
         &self,
         request: Request<ImportSourceRequest>,
-    ) -> Result<Response<ImportSourceResponse>, Status> {
-        let span = grpc_span(&request);
-        let sources = self.sources.clone();
-        instrument_grpc(span, async move {
-            let request = request.into_inner();
-            let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            let command = ImportSourceCommand {
-                manifest_yaml: request.manifest_yaml,
-                bindings: source_bindings_from_proto(request.variables, request.secrets),
-            };
-            let installed = sources
-                .import_source(&workspace_name, &command)
-                .map_err(app_status)?;
-            Ok(Response::new(ImportSourceResponse {
-                source: Some(installed_source_to_proto(&workspace_name, installed)),
-            }))
-        })
-        .await
-    }
-
-    async fn import_source_with_credentials(
-        &self,
-        request: Request<ImportSourceWithCredentialsRequest>,
-    ) -> Result<Response<Self::ImportSourceWithCredentialsStream>, Status> {
+    ) -> Result<Response<Self::ImportSourceStream>, Status> {
         let span = grpc_span(&request);
         let sources = self.sources.clone();
         let request = request.into_inner();
         let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
         let response_workspace_name = workspace_name.clone();
+        if request.oauth_credentials.is_empty() {
+            let command = ImportSourceCommand {
+                manifest_yaml: request.manifest_yaml,
+                bindings: source_bindings_from_proto(request.variables, request.secrets),
+            };
+            let installed = instrument_grpc(span, async move {
+                sources
+                    .import_source(&workspace_name, &command)
+                    .map_err(app_status)
+            })
+            .await?;
+            let response = ImportSourceResponse {
+                event: Some(import_source_response::Event::Source(
+                    installed_source_to_proto(&response_workspace_name, installed),
+                )),
+            };
+            return Ok(Response::new(Box::pin(tokio_stream::once(Ok(response)))));
+        }
         let command = ImportSourceWithCredentialsCommand {
             manifest_yaml: request.manifest_yaml,
             bindings: source_bindings_from_proto(request.variables, request.secrets),
@@ -242,14 +235,9 @@ impl SourceServiceApi for SourceService {
             drop(forwarder.await);
             match result {
                 Ok(installed) => {
-                    let response = ImportSourceWithCredentialsResponse {
-                        event: Some(import_source_with_credentials_response::Event::Imported(
-                            ImportSourceResponse {
-                                source: Some(installed_source_to_proto(
-                                    &response_workspace_name,
-                                    installed,
-                                )),
-                            },
+                    let response = ImportSourceResponse {
+                        event: Some(import_source_response::Event::Source(
+                            installed_source_to_proto(&response_workspace_name, installed),
                         )),
                     };
                     drop(response_tx.send(Ok(response)).await);
@@ -333,35 +321,29 @@ fn source_secret_from_proto(secret: SourceSecret) -> SourceBinding {
     }
 }
 
-fn import_source_event_to_proto(
-    event: ImportSourceWithCredentialsEvent,
-) -> ImportSourceWithCredentialsResponse {
+fn import_source_event_to_proto(event: ImportSourceWithCredentialsEvent) -> ImportSourceResponse {
     let event = match event {
         ImportSourceWithCredentialsEvent::OAuthAuthorization {
             input_key,
             authorization_url,
             expires_in_seconds,
-        } => import_source_with_credentials_response::Event::OauthAuthorization(
-            SourceCredentialOAuthAuthorization {
-                input_key,
-                authorization_url,
-                expires_in_seconds,
-            },
-        ),
+        } => import_source_response::Event::OauthAuthorization(OAuthCredentialAuthorization {
+            input_key,
+            authorization_url,
+            expires_in_seconds,
+        }),
         ImportSourceWithCredentialsEvent::OAuthCompleted {
             input_key,
             metadata,
-        } => import_source_with_credentials_response::Event::OauthCompleted(
-            SourceCredentialOAuthCompleted {
-                input_key,
-                metadata: metadata
-                    .into_iter()
-                    .map(|(key, value)| SourceCredentialMetadata { key, value })
-                    .collect(),
-            },
-        ),
+        } => import_source_response::Event::OauthCompleted(OAuthCredentialCompleted {
+            input_key,
+            metadata: metadata
+                .into_iter()
+                .map(|(key, value)| CredentialMetadata { key, value })
+                .collect(),
+        }),
     };
-    ImportSourceWithCredentialsResponse { event: Some(event) }
+    ImportSourceResponse { event: Some(event) }
 }
 
 fn installed_source_to_proto(workspace_name: &WorkspaceName, source: InstalledSource) -> Source {

@@ -704,6 +704,7 @@ Rules:
 - `hint` is optional and shown alongside the input during `coral source add --interactive`
 - references elsewhere in the manifest use `{{input.KEY}}` templates or `from: input`
 - credential-like inputs such as API keys, tokens, passwords, secrets, private keys, and bearer or authorization values must be `kind: secret`; Coral rejects those names as variables because variable values are visible through source APIs and `coral.inputs`
+- input keys must not start with Coral's reserved internal prefix `__coral`
 - declaring an input does not add it to any request by itself; reference it from `auth`, headers, query params, body fields, or other runtime request configuration where it should be used
 
 Secret inputs can also declare `credential.methods` metadata for install-time

@@ -16,10 +16,11 @@ pub(crate) use store::{CredentialStore, CredentialsError};
 #[derive(Clone)]
 pub(crate) struct CredentialMaterialSnapshot(Option<Vec<u8>>);
 
+pub(crate) const CORAL_INTERNAL_KEY_PREFIX: &str = "__coral";
 pub(crate) const OAUTH_INTERNAL_KEY_PREFIX: &str = "__coral_oauth.";
 
 pub(crate) fn is_internal_material_key(key: &str) -> bool {
-    key.starts_with(OAUTH_INTERNAL_KEY_PREFIX)
+    key.starts_with(CORAL_INTERNAL_KEY_PREFIX)
 }
 
 /// App-owned identity for one durable credential set.

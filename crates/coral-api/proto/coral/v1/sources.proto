@@ -254,16 +254,25 @@ message ImportSourceRequest {
   repeated SourceVariable variables = 3;
   // Source-owned secret values.
   repeated SourceSecret secrets = 4;
+  // OAuth credentials the app should retrieve before validation and import.
+  repeated ImportSourceOAuthCredential oauth_credentials = 5;
 }
 
-// Returns the imported source.
+// Streaming event emitted while importing a source.
 message ImportSourceResponse {
-  // The imported source resource.
-  Source source = 1;
+  // Import progress or completion event.
+  oneof event {
+    // Source import completed.
+    Source source = 1;
+    // OAuth authorization URL is ready.
+    OAuthCredentialAuthorization oauth_authorization = 2;
+    // OAuth credential retrieval completed.
+    OAuthCredentialCompleted oauth_completed = 3;
+  }
 }
 
 // Safe metadata returned after OAuth retrieval completes.
-message SourceCredentialMetadata {
+message CredentialMetadata {
   // Metadata key.
   string key = 1;
   // Metadata value.
@@ -280,22 +289,8 @@ message ImportSourceOAuthCredential {
   repeated SourceVariable credential_inputs = 3;
 }
 
-// Imports one user-provided source manifest with app-owned credential retrieval.
-message ImportSourceWithCredentialsRequest {
-  // Owning workspace resource.
-  Workspace workspace = 1;
-  // Raw imported manifest YAML.
-  string manifest_yaml = 2;
-  // Source variable bindings.
-  repeated SourceVariable variables = 3;
-  // Source-config secret bindings.
-  repeated SourceSecret secrets = 4;
-  // OAuth credentials the app should retrieve before validation and import.
-  repeated ImportSourceOAuthCredential oauth_credentials = 5;
-}
-
 // Authorization URL emitted while importing a source with OAuth credentials.
-message SourceCredentialOAuthAuthorization {
+message OAuthCredentialAuthorization {
   // Secret input key being retrieved.
   string input_key = 1;
   // Provider authorization URL the user must visit.
@@ -305,24 +300,11 @@ message SourceCredentialOAuthAuthorization {
 }
 
 // Safe completion metadata emitted after OAuth credential retrieval.
-message SourceCredentialOAuthCompleted {
+message OAuthCredentialCompleted {
   // Secret input key populated by the completed OAuth retrieval.
   string input_key = 1;
   // Safe provider metadata, never token material.
-  repeated SourceCredentialMetadata metadata = 2;
-}
-
-// Streaming event emitted while importing a source with app-owned credentials.
-message ImportSourceWithCredentialsResponse {
-  // Import progress or completion event.
-  oneof event {
-    // OAuth authorization URL is ready.
-    SourceCredentialOAuthAuthorization oauth_authorization = 1;
-    // OAuth credential retrieval completed.
-    SourceCredentialOAuthCompleted oauth_completed = 2;
-    // Source import completed.
-    ImportSourceResponse imported = 3;
-  }
+  repeated CredentialMetadata metadata = 2;
 }
 
 // Lists all registered sources in one workspace.
@@ -433,11 +415,9 @@ service SourceService {
   rpc GetSourceInfo(GetSourceInfoRequest) returns (GetSourceInfoResponse);
   // Installs one bundled source.
   rpc CreateBundledSource(CreateBundledSourceRequest) returns (CreateBundledSourceResponse);
-  // Imports one user-provided source manifest.
-  rpc ImportSource(ImportSourceRequest) returns (ImportSourceResponse);
-  // Imports one user-provided source manifest with app-owned credential retrieval.
-  rpc ImportSourceWithCredentials(ImportSourceWithCredentialsRequest)
-      returns (stream ImportSourceWithCredentialsResponse);
+  // Imports one user-provided source manifest, streaming credential retrieval
+  // progress before the final source event when credentials are app-owned.
+  rpc ImportSource(ImportSourceRequest) returns (stream ImportSourceResponse);
   // Deletes a registered source.
   rpc DeleteSource(DeleteSourceRequest) returns (DeleteSourceResponse);
   // Validates that a registered source is queryable.

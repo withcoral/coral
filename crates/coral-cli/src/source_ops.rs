@@ -7,7 +7,8 @@ use coral_api::v1::{
     CreateBundledSourceRequest, DeleteSourceRequest, DiscoverSourcesRequest, GetSourceInfoRequest,
     ImportSourceRequest, ListSourcesRequest, QueryTestFailure, QueryTestSuccess, Source,
     SourceInfo, SourceOrigin, SourceSecret, SourceVariable, ValidateSourceRequest,
-    ValidateSourceResponse, query_test_result, source_input_spec::Input as ProtoSourceInput,
+    ValidateSourceResponse, import_source_response, query_test_result,
+    source_input_spec::Input as ProtoSourceInput,
 };
 use coral_client::{AppClient, DecodedStatusError, decode_status_error, default_workspace};
 use coral_spec::{
@@ -102,19 +103,23 @@ pub(crate) async fn import_source(
     variables: Vec<SourceVariable>,
     secrets: Vec<SourceSecret>,
 ) -> Result<Source, anyhow::Error> {
-    let response = app
+    let mut responses = app
         .source_client()
         .import_source(Request::new(ImportSourceRequest {
             workspace: Some(default_workspace()),
             manifest_yaml,
             variables,
             secrets,
+            oauth_credentials: Vec::new(),
         }))
         .await?
         .into_inner();
-    response
-        .source
-        .ok_or_else(|| anyhow::anyhow!("import source response missing source"))
+    while let Some(response) = responses.message().await? {
+        if let Some(import_source_response::Event::Source(source)) = response.event {
+            return Ok(source);
+        }
+    }
+    Err(anyhow::anyhow!("import source stream ended without source"))
 }
 
 pub(crate) async fn validate_source(

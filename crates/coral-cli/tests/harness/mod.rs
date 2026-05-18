@@ -21,12 +21,12 @@ use coral_api::v1::{
     DescribeTableResponse, DiscoverSourcesRequest, DiscoverSourcesResponse, ExecuteSqlRequest,
     ExecuteSqlResponse, ExplainSqlRequest, ExplainSqlResponse, GetSourceInfoRequest,
     GetSourceInfoResponse, GetSourceRequest, GetSourceResponse, ImportSourceRequest,
-    ImportSourceResponse, ImportSourceWithCredentialsRequest, ImportSourceWithCredentialsResponse,
-    ListCatalogRequest, ListCatalogResponse, ListColumnsRequest, ListColumnsResponse,
-    ListSourcesRequest, ListSourcesResponse, PaginationRequest, PaginationResponse, QueryPlan,
-    SearchCatalogRequest, SearchCatalogResponse, Source, SourceInfo, SourceInputSpec,
-    SourceOrigin, SourceSecretInput, Table, TableSummary, ValidateSourceRequest,
-    ValidateSourceResponse, Workspace, catalog_item, source_input_spec::Input as ProtoSourceInput,
+    ImportSourceResponse, ListCatalogRequest, ListCatalogResponse, ListColumnsRequest,
+    ListColumnsResponse, ListSourcesRequest, ListSourcesResponse, PaginationRequest,
+    PaginationResponse, QueryPlan, SearchCatalogRequest, SearchCatalogResponse, Source, SourceInfo,
+    SourceInputSpec, SourceOrigin, SourceSecretInput, Table, TableSummary, ValidateSourceRequest,
+    ValidateSourceResponse, Workspace, catalog_item, import_source_response,
+    source_input_spec::Input as ProtoSourceInput,
 };
 use coral_api::{CORAL_ERROR_DOMAIN, CORAL_ERROR_REASON_SOURCE_NOT_FOUND};
 use tokio::net::TcpListener;
@@ -556,7 +556,6 @@ struct Captured {
     get_source_info: Mutex<Vec<GetSourceInfoRequest>>,
     create_bundled_source: Mutex<Vec<CreateBundledSourceRequest>>,
     import_source: Mutex<Vec<ImportSourceRequest>>,
-    import_source_with_credentials: Mutex<Vec<ImportSourceWithCredentialsRequest>>,
     delete_source: Mutex<Vec<DeleteSourceRequest>>,
     validate_source: Mutex<Vec<ValidateSourceRequest>>,
 }
@@ -789,8 +788,8 @@ struct MockSourceService {
 
 #[tonic::async_trait]
 impl SourceService for MockSourceService {
-    type ImportSourceWithCredentialsStream =
-        Pin<Box<dyn Stream<Item = Result<ImportSourceWithCredentialsResponse, Status>> + Send>>;
+    type ImportSourceStream =
+        Pin<Box<dyn Stream<Item = Result<ImportSourceResponse, Status>> + Send>>;
 
     async fn discover_sources(
         &self,
@@ -866,28 +865,18 @@ impl SourceService for MockSourceService {
     async fn import_source(
         &self,
         request: Request<ImportSourceRequest>,
-    ) -> Result<Response<ImportSourceResponse>, Status> {
+    ) -> Result<Response<Self::ImportSourceStream>, Status> {
         self.captured
             .import_source
             .lock()
             .expect("import_source capture")
             .push(request.into_inner());
-        Ok(Response::new(ImportSourceResponse {
-            source: Some(mock_source()),
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<ImportSourceResponse, Status>>(1);
+        tx.send(Ok(ImportSourceResponse {
+            event: Some(import_source_response::Event::Source(mock_source())),
         }))
-    }
-
-    async fn import_source_with_credentials(
-        &self,
-        request: Request<ImportSourceWithCredentialsRequest>,
-    ) -> Result<Response<Self::ImportSourceWithCredentialsStream>, Status> {
-        self.captured
-            .import_source_with_credentials
-            .lock()
-            .expect("import_source_with_credentials capture")
-            .push(request.into_inner());
-        let (_tx, rx) =
-            tokio::sync::mpsc::channel::<Result<ImportSourceWithCredentialsResponse, Status>>(1);
+        .await
+        .expect("send import source response");
         Ok(Response::new(Box::pin(ReceiverStream::new(rx))))
     }
 

@@ -7,7 +7,10 @@ use crate::credentials::oauth::{
     OAuthCredentialManager, OAuthCredentialMaterial, StartOAuthCredentialRequest,
     material_key_belongs_to_input,
 };
-use crate::credentials::{CredentialManager, CredentialMaterialSnapshot, CredentialSetId};
+use crate::credentials::{
+    CORAL_INTERNAL_KEY_PREFIX, CredentialManager, CredentialMaterialSnapshot, CredentialSetId,
+    CredentialsError,
+};
 use crate::sources::SourceName;
 use crate::sources::catalog::{
     describe_manifest, list_bundled_sources, load_bundled_source, resolve_installed_manifest,
@@ -324,6 +327,7 @@ impl SourceManager {
             .read_material(workspace_name, &credential_set_id)
         {
             Ok(material) => material,
+            Err(AppError::Credentials(CredentialsError::Parse(_))) => BTreeMap::new(),
             Err(error) => {
                 self.restore_source_rollback_state(workspace_name, &source_name, previous);
                 return Err(error);
@@ -659,8 +663,8 @@ fn validate_bindings(
 
     Ok(ValidatedBindings {
         variables: variable_values,
+        replaced_oauth_inputs: secret_values.keys().cloned().collect(),
         secrets: secret_values,
-        replaced_oauth_inputs: BTreeSet::new(),
     })
 }
 
@@ -806,6 +810,11 @@ fn normalize_binding_key(label: &str, value: &str) -> Result<String, AppError> {
     if trimmed.starts_with('#') {
         return Err(AppError::InvalidInput(format!(
             "{label} must not start with '#'"
+        )));
+    }
+    if trimmed.starts_with(CORAL_INTERNAL_KEY_PREFIX) {
+        return Err(AppError::InvalidInput(format!(
+            "{label} must not start with reserved prefix '{CORAL_INTERNAL_KEY_PREFIX}'"
         )));
     }
     Ok(trimmed.to_string())
@@ -1029,6 +1038,17 @@ tables:
     }
 
     #[test]
+    fn rejects_reserved_internal_binding_keys() {
+        let error = normalize_binding_key("source secret key", "__coral.API_TOKEN")
+            .expect_err("reserved prefix should be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("must not start with reserved prefix '__coral'")
+        );
+    }
+
+    #[test]
     fn import_materializes_variable_defaults_server_side() {
         let temp = TempDir::new().expect("temp dir");
         let layout =
@@ -1211,6 +1231,67 @@ tables:
                 .get("__coral_oauth.QVBJX1RPS0VO.method")
                 .map(String::as_str),
             Some("oauth")
+        );
+    }
+
+    #[test]
+    fn manual_secret_reimport_clears_prior_oauth_material() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let credential_store = CredentialStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(credential_store);
+        let manager = SourceManager::new(config_store, credential_manager.clone(), layout);
+        let source_name = SourceName::parse("secured_messages").expect("source");
+        let credential_set_id = CredentialSetId::for_source(&source_name);
+        credential_manager
+            .replace_material(
+                &default_workspace(),
+                &credential_set_id,
+                &BTreeMap::from([
+                    ("API_TOKEN".to_string(), "oauth-token".to_string()),
+                    (
+                        "__coral_oauth.QVBJX1RPS0VO.refresh_token".to_string(),
+                        "refresh-token".to_string(),
+                    ),
+                    (
+                        "__coral_oauth.QVBJX1RPS0VO.method".to_string(),
+                        "oauth".to_string(),
+                    ),
+                ]),
+            )
+            .expect("seed credential material");
+
+        manager
+            .import_source(
+                &default_workspace(),
+                &ImportSourceCommand {
+                    manifest_yaml: manifest_with_secret(),
+                    bindings: SourceBindings {
+                        variables: Vec::new(),
+                        secrets: vec![SourceBinding {
+                            key: "API_TOKEN".to_string(),
+                            value: "manual-token".to_string(),
+                        }],
+                    },
+                },
+            )
+            .expect("import source");
+
+        let material = credential_manager
+            .read_material(&default_workspace(), &credential_set_id)
+            .expect("read material");
+        assert_eq!(
+            material.get("API_TOKEN").map(String::as_str),
+            Some("manual-token")
+        );
+        assert!(
+            !material
+                .keys()
+                .any(|key| key.starts_with("__coral_oauth.QVBJX1RPS0VO.")),
+            "manual secret replacement should clear stale OAuth metadata"
         );
     }
 

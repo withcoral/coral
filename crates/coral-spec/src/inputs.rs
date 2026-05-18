@@ -15,6 +15,8 @@ use url::Url;
 
 use crate::{ManifestError, ParsedTemplate, Result, TemplateNamespace};
 
+const RESERVED_INPUT_KEY_PREFIXES: &[&str] = &["__coral"];
+
 /// The kind of interactive input required by one validated source spec.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ManifestInputKind {
@@ -728,6 +730,14 @@ fn validate_input_key(label: &str, value: &str) -> Result<()> {
             "{label} must not start with '#'"
         )));
     }
+    if let Some(prefix) = RESERVED_INPUT_KEY_PREFIXES
+        .iter()
+        .find(|prefix| trimmed.starts_with(**prefix))
+    {
+        return Err(ManifestError::validation(format!(
+            "{label} must not start with reserved prefix '{prefix}'"
+        )));
+    }
     Ok(())
 }
 
@@ -913,6 +923,23 @@ tables: []
                   - read:org
 "
         ))
+    }
+
+    #[test]
+    fn reserved_input_key_prefix_is_rejected() {
+        let error = collect(&manifest_with_input(
+            r"
+  __coral.API_TOKEN:
+    kind: secret
+",
+        ))
+        .expect_err("reserved input key");
+
+        assert!(
+            error
+                .to_string()
+                .contains("must not start with reserved prefix '__coral'")
+        );
     }
 
     #[test]

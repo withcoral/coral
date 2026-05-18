@@ -19,7 +19,7 @@ use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::TcpListener;
-use url::Url;
+use url::{Url, form_urlencoded};
 use uuid::Uuid;
 
 use crate::bootstrap::AppError;
@@ -333,12 +333,7 @@ fn pkce_challenge(verifier: &str) -> String {
 
 async fn receive_callback(session: &OAuthSessionConfig) -> Result<Callback, AppError> {
     let (mut stream, _peer): (_, SocketAddr) = session.listener.accept().await?;
-    let mut buffer = vec![0_u8; MAX_CALLBACK_BYTES];
-    let read = stream.read(&mut buffer).await?;
-    let request_bytes = buffer.get(..read).ok_or_else(|| {
-        AppError::FailedPrecondition("OAuth callback request exceeded read buffer".to_string())
-    })?;
-    let request = String::from_utf8_lossy(request_bytes);
+    let request = read_callback_http_request(&mut stream).await?;
     let result = parse_callback_request(&request, session);
     let page = match &result {
         Ok(_) => callback_page("OAuth complete. You can return to Coral."),
@@ -351,6 +346,40 @@ async fn receive_callback(session: &OAuthSessionConfig) -> Result<Callback, AppE
     };
     write_callback_response(&mut stream, status, &page).await?;
     result
+}
+
+async fn read_callback_http_request(
+    stream: &mut tokio::net::TcpStream,
+) -> Result<String, AppError> {
+    let mut buffer = Vec::new();
+    let mut chunk = [0_u8; 1024];
+    loop {
+        let read = stream.read(&mut chunk).await?;
+        if read == 0 {
+            if buffer.is_empty() {
+                return Err(AppError::FailedPrecondition(
+                    "OAuth callback request was empty".to_string(),
+                ));
+            }
+            break;
+        }
+        let next_len = buffer.len().checked_add(read).ok_or_else(|| {
+            AppError::FailedPrecondition("OAuth callback request exceeded read buffer".to_string())
+        })?;
+        if next_len > MAX_CALLBACK_BYTES {
+            return Err(AppError::FailedPrecondition(
+                "OAuth callback request exceeded read buffer".to_string(),
+            ));
+        }
+        let bytes = chunk.get(..read).ok_or_else(|| {
+            AppError::FailedPrecondition("OAuth callback request exceeded read buffer".to_string())
+        })?;
+        buffer.extend_from_slice(bytes);
+        if buffer.windows(4).any(|window| window == b"\r\n\r\n") {
+            break;
+        }
+    }
+    Ok(String::from_utf8_lossy(&buffer).into_owned())
 }
 
 fn parse_callback_request(raw: &str, session: &OAuthSessionConfig) -> Result<Callback, AppError> {
@@ -472,8 +501,10 @@ async fn exchange_authorization_code(
             .map(|secret| secret.transport),
     ) {
         (Some(secret), Some(ManifestOAuthClientSecretTransport::BasicAuth)) => {
-            let encoded = BASE64_STANDARD.encode(format!("{}:{secret}", session.client_id));
-            request = request.header(AUTHORIZATION, format!("Basic {encoded}"));
+            request = request.header(
+                AUTHORIZATION,
+                basic_client_authorization(&session.client_id, secret),
+            );
         }
         (Some(secret), Some(ManifestOAuthClientSecretTransport::RequestBody)) => {
             form.push(("client_id", session.client_id.clone()));
@@ -505,6 +536,14 @@ async fn exchange_authorization_code(
         )));
     }
     parse_token_response(&body)
+}
+
+fn basic_client_authorization(client_id: &str, client_secret: &str) -> String {
+    let client_id = form_urlencoded::byte_serialize(client_id.as_bytes()).collect::<String>();
+    let client_secret =
+        form_urlencoded::byte_serialize(client_secret.as_bytes()).collect::<String>();
+    let encoded = BASE64_STANDARD.encode(format!("{client_id}:{client_secret}"));
+    format!("Basic {encoded}")
 }
 
 fn parse_token_response(body: &str) -> Result<TokenResponse, AppError> {
@@ -650,8 +689,9 @@ mod tests {
     use std::net::TcpListener as StdTcpListener;
 
     use super::{
-        OAuthCredentialManager, StartOAuthCredentialRequest, join_scope_values,
-        material_key_belongs_to_input, oauth_metadata_prefix, pkce_challenge,
+        OAuthCredentialManager, OAuthSessionConfig, StartOAuthCredentialRequest,
+        basic_client_authorization, join_scope_values, material_key_belongs_to_input,
+        oauth_metadata_prefix, pkce_challenge, receive_callback,
     };
     use coral_spec::{
         ManifestOAuthClientIdSpec, ManifestOAuthClientSecretSpec,
@@ -661,6 +701,7 @@ mod tests {
     };
     use tokio::sync::oneshot;
     use tokio::task::JoinHandle;
+    use tokio::{io::AsyncReadExt as _, io::AsyncWriteExt as _};
     use url::Url;
 
     #[test]
@@ -681,6 +722,14 @@ mod tests {
         assert_eq!(
             pkce_challenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"),
             "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        );
+    }
+
+    #[test]
+    fn basic_client_authorization_form_encodes_credentials_before_base64() {
+        assert_eq!(
+            basic_client_authorization("client id", "sec+ret:1"),
+            "Basic Y2xpZW50K2lkOnNlYyUyQnJldCUzQTE="
         );
     }
 
@@ -845,6 +894,66 @@ mod tests {
             Some("Basic Y2xpZW50OnNlY3JldA==")
         );
         assert!(!captured.form.contains_key("client_secret"));
+    }
+
+    #[tokio::test]
+    async fn oauth_callback_accepts_request_split_across_reads() {
+        let redirect_port = free_loopback_port();
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", redirect_port))
+            .await
+            .expect("bind callback listener");
+        let session = OAuthSessionConfig {
+            input_key: "API_TOKEN".to_string(),
+            oauth: oauth_spec(
+                "https://provider.example.com/oauth/token",
+                redirect_port,
+                ManifestOAuthPkceMode::Disabled,
+                ManifestOAuthClientSpec {
+                    id: ManifestOAuthClientIdSpec {
+                        default: Some("client".to_string()),
+                        input: None,
+                    },
+                    secret: None,
+                },
+            ),
+            client_id: "client".to_string(),
+            client_secret: None,
+            state: "expected-state".to_string(),
+            code_verifier: None,
+            redirect_uri: Url::parse(&format!("http://127.0.0.1:{redirect_port}/oauth/callback"))
+                .expect("redirect uri"),
+            listener,
+            expires_at: std::time::Instant::now() + std::time::Duration::from_mins(1),
+        };
+
+        let receive = receive_callback(&session);
+        let send = async move {
+            let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", redirect_port))
+                .await
+                .expect("connect callback");
+            stream
+                .write_all(b"GET /oauth/callback?sta")
+                .await
+                .expect("write partial callback");
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            stream
+                .write_all(b"te=expected-state&code=test-code HTTP/1.1\r\nhost: 127.0.0.1\r\n\r\n")
+                .await
+                .expect("write rest of callback");
+            let mut response = Vec::new();
+            stream
+                .read_to_end(&mut response)
+                .await
+                .expect("read callback response");
+            assert!(
+                String::from_utf8_lossy(&response).starts_with("HTTP/1.1 200 OK"),
+                "unexpected callback response: {}",
+                String::from_utf8_lossy(&response)
+            );
+        };
+
+        let (callback, ()) = tokio::join!(receive, send);
+        assert_eq!(callback.expect("callback").code, "test-code");
     }
 
     #[tokio::test]
