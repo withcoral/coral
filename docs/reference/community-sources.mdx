@@ -1,0 +1,61 @@
+---
+title: "Community sources"
+description: "Discover community-maintained Coral source specs and import them into your workspace."
+---
+
+{/* AUTO-GENERATED — DO NOT EDIT. Run `make docs-generate` to update. */}
+
+Community sources are source specs kept in the Coral repository under
+[sources/community](https://github.com/withcoral/coral/tree/main/sources/community).
+They are useful when a source is not bundled into the Coral binary yet, but a
+reviewable source spec already exists.
+
+<Note>
+  Community sources are not included in `coral source discover`, and `coral
+  source add <name>` only installs bundled sources. Import community sources
+  with `coral source add --file`.
+</Note>
+
+## Install a community source
+
+Clone the Coral repository so you have the source specs locally:
+
+```shellscript
+git clone https://github.com/withcoral/coral.git
+cd coral
+```
+
+Review the source's manifest and README when one exists, then add it from its manifest file:
+
+```shellscript
+coral source add --file sources/community/hn/manifest.yaml
+coral source test hn
+```
+
+If a source declares inputs, Coral reads them from environment variables by default. Add `--interactive` to be prompted instead:
+
+```shellscript
+coral source add --interactive --file sources/community/fly/manifest.yaml
+```
+
+After importing, the source behaves like any other installed source. It appears in `coral source list`, works with `coral source info <name> --verbose`, and exposes tables through `coral.tables`, `coral.columns`, the CLI, and MCP.
+
+## Available community sources
+
+| Source | Description | Inputs |
+| --- | --- | --- |
+| [beehiiv](https://github.com/withcoral/coral/tree/main/sources/community/beehiiv) | Query publications, posts, and subscribers from Beehiiv. Covers publication stats, post metadata (title, slug, status, URLs), and subscriber acquisition data. | `BEEHIIV_API_KEY` |
+| [cal](https://github.com/withcoral/coral/tree/main/sources/community/cal) | Query bookings, event types, schedules, and profile data from Cal.com (Cloud or self-hosted). | `CAL_API_KEY`, `CAL_BASE_URL` |
+| [clickhouse](https://github.com/withcoral/coral/tree/main/sources/community/clickhouse) | Query ClickHouse databases, tables, columns, query history, running processes, server metrics, storage parts, and replication health via the ClickHouse HTTP interface. | `CLICKHOUSE_HOST`, `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD` |
+| [cloudflare](https://github.com/withcoral/coral/tree/main/sources/community/cloudflare) | Query zones, DNS records, accounts, members, Workers scripts, R2 buckets, and audit logs from Cloudflare. | `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` |
+| [crates_io](https://github.com/withcoral/coral/tree/main/sources/community/crates_io) | Query the Rust crate registry (crates.io) for packages, versions, dependencies, owners, categories, and keywords via the public crates.io API. No authentication required. | None |
+| [fly](https://github.com/withcoral/coral/tree/main/sources/community/fly) | Query apps, machines, and volumes from Fly.io. | `FLY_API_TOKEN` |
+| [hn](https://github.com/withcoral/coral/tree/main/sources/community/hn) | Hacker News search and item lookup via the public Algolia HN API (no auth). | None |
+| [neondb](https://github.com/withcoral/coral/tree/main/sources/community/neondb) | Query Neon organizations, projects, branches, databases, roles, compute endpoints, operations, and user identity. | `NEON_API_KEY` |
+| [postman](https://github.com/withcoral/coral/tree/main/sources/community/postman) | Query workspaces, collections, requests, environments, and monitors from Postman. Access API collections, test configurations, and monitoring data for API inventory analysis and governance workflows. | `POSTMAN_API_KEY` |
+| [sendgrid](https://github.com/withcoral/coral/tree/main/sources/community/sendgrid) | Query email templates, suppression lists (bounces, blocks, spam reports, invalid emails), marketing lists, single sends, suppression groups, sender identities, verified senders, API keys, and teammates from Twilio SendGrid. | `SENDGRID_BASE_URL`, `SENDGRID_API_KEY` |
+| [trino](https://github.com/withcoral/coral/tree/main/sources/community/trino) | Query Trino coordinator information and the cluster's active and recently completed query history, including state, errors, timings, driver counts, and memory usage, from a self-hosted Trino coordinator. | `TRINO_URL`, `TRINO_USER` |
+
+## If a source is missing
+
+If the source you need is not bundled and does not have a community spec yet, [write a custom source spec](/guides/write-a-custom-source). If the source is generally useful, open a pull request that adds it under `sources/community` with a `manifest.yaml` and source-specific README.
