@@ -156,8 +156,6 @@ pub struct FilterSpec {
     pub bindable: bool,
     #[serde(default)]
     pub wire_type: WireType,
-    #[serde(default)]
-    pub max_bindings: Option<usize>,
 }
 
 /// Declarative source-scoped table-valued function.
@@ -887,7 +885,6 @@ mod tests {
                 mode: FilterMode::default(),
                 bindable: false,
                 wire_type: WireType::default(),
-                max_bindings: None,
             }],
             RequestSpec {
                 method: HttpMethod::GET,
@@ -925,7 +922,6 @@ mod tests {
                     mode: FilterMode::default(),
                     bindable: false,
                     wire_type: WireType::default(),
-                    max_bindings: None,
                 },
                 FilterSpec {
                     name: "org".into(),
@@ -933,7 +929,6 @@ mod tests {
                     mode: FilterMode::default(),
                     bindable: false,
                     wire_type: WireType::default(),
-                    max_bindings: None,
                 },
             ],
             RequestSpec {
@@ -1039,7 +1034,6 @@ mod tests {
         assert_eq!(spec.mode, FilterMode::Equality);
         assert!(!spec.bindable);
         assert_eq!(spec.wire_type, WireType::String);
-        assert_eq!(spec.max_bindings, None);
     }
 
     #[test]
@@ -1077,14 +1071,12 @@ mod tests {
         let spec: FilterSpec = serde_json::from_value(serde_json::json!({
             "name": "repo",
             "bindable": true,
-            "wire_type": "string",
-            "max_bindings": 50
+            "wire_type": "string"
         }))
         .unwrap();
 
         assert!(spec.bindable);
         assert_eq!(spec.wire_type, WireType::String);
-        assert_eq!(spec.max_bindings, Some(50));
     }
 
     #[test]

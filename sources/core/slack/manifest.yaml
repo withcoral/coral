@@ -250,6 +250,7 @@ tables:
     filters:
       - name: channel
         required: true
+        bindable: true
       - name: oldest
       - name: latest
   - name: thread_replies

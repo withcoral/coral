@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use datafusion::error::{DataFusionError, Result};
+use opentelemetry::Context as OtelContext;
 use opentelemetry::propagation::Injector;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde_json::{Map, Value, json};
@@ -35,6 +36,12 @@ const DEFAULT_HTTP_REQUEST_TIMEOUT_SECS: u64 = 30;
 const DEFAULT_HTTP_USER_AGENT: &str = concat!("coral/", env!("CARGO_PKG_VERSION"));
 static NEXT_HTTP_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
+#[derive(Debug, Clone, Copy, Default)]
+struct FetchOptions {
+    row_limit: Option<usize>,
+    page_hint: Option<usize>,
+}
+
 /// Executes manifest-driven HTTP requests for one registered source.
 #[derive(Clone)]
 pub(crate) struct HttpSourceClient {
@@ -47,6 +54,7 @@ pub(crate) struct HttpSourceClient {
     request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>>,
     rate_limit: RateLimitSpec,
     resolved_inputs: Arc<BTreeMap<String, String>>,
+    trace_context: Option<OtelContext>,
 }
 
 impl std::fmt::Debug for HttpSourceClient {
@@ -80,6 +88,7 @@ struct OutgoingHttpRequest<'a> {
     auth: &'a AuthSpec,
     request_headers: &'a [HeaderSpec],
     request_authenticators: &'a HashMap<String, Arc<dyn RequestAuthenticator>>,
+    trace_context: Option<&'a OtelContext>,
     table_headers: &'a [HeaderSpec],
     table_name: &'a str,
     method: HttpMethod,
@@ -116,6 +125,7 @@ impl HttpSourceClient {
         source_secrets: &BTreeMap<String, String>,
         source_variables: &BTreeMap<String, String>,
         request_authenticators: &HashMap<String, Arc<dyn RequestAuthenticator>>,
+        trace_context: Option<OtelContext>,
     ) -> Result<Self> {
         let resolved_inputs =
             coral_spec::resolve_inputs(&manifest.declared_inputs, source_secrets, source_variables);
@@ -143,13 +153,10 @@ impl HttpSourceClient {
             request_authenticators: request_authenticators.clone(),
             rate_limit: manifest.rate_limit.clone(),
             resolved_inputs: Arc::new(resolved_inputs),
+            trace_context,
         })
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "Paginated fetch logic is stateful and easier to audit in one sequential function"
-    )]
     /// Fetch rows for a single table from the backend API.
     ///
     /// # Errors
@@ -164,8 +171,50 @@ impl HttpSourceClient {
         arg_values: &HashMap<String, String>,
         sql_limit: Option<usize>,
     ) -> Result<Vec<Value>> {
+        self.fetch_with_options(
+            target,
+            filter_values,
+            arg_values,
+            FetchOptions {
+                row_limit: sql_limit.or(target.fetch_limit_default()),
+                page_hint: sql_limit,
+            },
+        )
+        .await
+    }
+
+    pub(crate) async fn fetch_complete(
+        &self,
+        target: &HttpFetchTarget,
+        filter_values: &HashMap<String, String>,
+        arg_values: &HashMap<String, String>,
+        row_limit: Option<usize>,
+        page_hint: Option<usize>,
+    ) -> Result<Vec<Value>> {
+        self.fetch_with_options(
+            target,
+            filter_values,
+            arg_values,
+            FetchOptions {
+                row_limit,
+                page_hint,
+            },
+        )
+        .await
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Paginated fetch logic is stateful and easier to audit in one sequential function"
+    )]
+    async fn fetch_with_options(
+        &self,
+        target: &HttpFetchTarget,
+        filter_values: &HashMap<String, String>,
+        arg_values: &HashMap<String, String>,
+        options: FetchOptions,
+    ) -> Result<Vec<Value>> {
         let mut all_rows = Vec::new();
-        let effective_limit = sql_limit.or(target.fetch_limit_default());
         let pagination = target
             .pagination()
             .validated(&self.source_schema, target.name())
@@ -178,7 +227,7 @@ impl HttpSourceClient {
                     detail: error.to_string(),
                 })
             })?;
-        let page_size = resolve_page_size(pagination.page_size.as_ref(), sql_limit);
+        let page_size = resolve_page_size(pagination.page_size.as_ref(), options.page_hint);
 
         let active_request = target.resolved_request();
 
@@ -268,6 +317,7 @@ impl HttpSourceClient {
                     auth: &self.auth,
                     request_headers: &self.request_headers,
                     request_authenticators: &self.request_authenticators,
+                    trace_context: self.trace_context.as_ref(),
                     table_headers: &active_request.headers,
                     table_name: target.name(),
                     method: active_request.method,
@@ -320,7 +370,7 @@ impl HttpSourceClient {
             let rows_on_page = rows.len();
             all_rows.append(&mut rows);
 
-            if let Some(limit) = effective_limit
+            if let Some(limit) = options.row_limit
                 && all_rows.len() >= limit
             {
                 all_rows.truncate(limit);
@@ -559,6 +609,7 @@ async fn execute_request(
         auth,
         request_headers,
         request_authenticators,
+        trace_context,
         table_headers,
         table_name,
         method,
@@ -643,6 +694,9 @@ async fn execute_request(
             server.port = field::Empty,
             url.full = %traced_url,
         );
+        if let Some(trace_context) = trace_context {
+            drop(request_span.set_parent(trace_context.clone()));
+        }
         record_trace_http_endpoint(&request_span, &trace_endpoint);
         if attempt > 1 {
             request_span.record(
@@ -1988,6 +2042,7 @@ mod tests {
             &source_secrets,
             &BTreeMap::new(),
             &HashMap::new(),
+            None,
         )
         .expect_err("missing source-scoped credentials must fail");
 
@@ -2028,6 +2083,7 @@ mod tests {
             &BTreeMap::new(),
             &BTreeMap::new(),
             &HashMap::new(),
+            None,
         )
         .expect_err("missing table request path inputs must fail");
 
@@ -2072,6 +2128,7 @@ mod tests {
             &BTreeMap::new(),
             &BTreeMap::new(),
             &HashMap::new(),
+            None,
         )
         .expect_err("missing table request header inputs must fail");
 
@@ -2116,6 +2173,7 @@ mod tests {
             &BTreeMap::new(),
             &BTreeMap::new(),
             &HashMap::new(),
+            None,
         )
         .expect_err("missing table request query inputs must fail");
 
@@ -2161,6 +2219,7 @@ mod tests {
             &BTreeMap::new(),
             &BTreeMap::new(),
             &HashMap::new(),
+            None,
         )
         .expect_err("missing table request body inputs must fail");
 
@@ -2206,6 +2265,7 @@ mod tests {
             &BTreeMap::new(),
             &BTreeMap::new(),
             &HashMap::new(),
+            None,
         )
         .expect_err("missing request route inputs must fail");
 
@@ -2298,6 +2358,7 @@ mod tests {
                 &BTreeMap::new(),
                 &BTreeMap::new(),
                 &HashMap::new(),
+                None,
             )
             .expect_err(&format!(
                 "missing function request {name} input should fail"
@@ -2606,6 +2667,7 @@ mod tests {
                 auth: &AuthSpec::default(),
                 request_headers: &[],
                 request_authenticators: &HashMap::new(),
+                trace_context: None,
                 table_headers: &[],
                 table_name: "items",
                 method: HttpMethod::GET,

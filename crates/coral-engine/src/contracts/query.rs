@@ -1,12 +1,14 @@
 //! Typed query inputs and results.
 
 use std::collections::BTreeMap;
+use std::fmt;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use arrow::datatypes::Schema;
 use arrow::record_batch::RecordBatch;
 use coral_spec::ValidatedSourceManifest;
+use opentelemetry::Context as OtelContext;
 
 use super::ColumnInfo;
 use crate::EngineExtensions;
@@ -176,10 +178,21 @@ impl SourceValidationReport {
 }
 
 /// App-owned non-secret runtime inputs needed while compiling sources.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct QueryRuntimeContext {
     /// Current user's home directory for local path resolution.
     pub home_dir: Option<PathBuf>,
+    /// Active query trace context, when the app layer is executing under one.
+    pub trace_context: Option<OtelContext>,
+}
+
+impl fmt::Debug for QueryRuntimeContext {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("QueryRuntimeContext")
+            .field("home_dir", &self.home_dir)
+            .field("trace_context", &self.trace_context.is_some())
+            .finish()
+    }
 }
 
 /// Owned runtime-build inputs needed while compiling and registering sources.

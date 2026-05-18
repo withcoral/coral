@@ -161,7 +161,6 @@
         },
         "fetch_limit_default": { "type": "integer", "minimum": 1 },
         "search_index": { "type": "boolean" },
-        "dependent_join": { "$ref": "#/$defs/dependent_join" },
         "request": { "$ref": "#/$defs/request" },
         "requests": {
           "type": "array",
@@ -198,15 +197,6 @@
         }
       }
     },
-    "dependent_join": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "max_bindings": { "type": "integer", "minimum": 1 },
-        "max_resolver_rows": { "type": "integer", "minimum": 1 },
-        "max_rows_per_binding": { "type": "integer", "minimum": 1 }
-      }
-    },
     "source": {
       "type": "object",
       "additionalProperties": false,
@@ -238,8 +228,7 @@
         "required": { "type": "boolean" },
         "mode": { "type": "string", "enum": ["equality", "search", "contains"] },
         "bindable": { "type": "boolean" },
-        "wire_type": { "type": "string", "enum": ["string"] },
-        "max_bindings": { "type": "integer", "minimum": 1 }
+        "wire_type": { "type": "string", "enum": ["string"] }
       }
     },
     "table_function": {

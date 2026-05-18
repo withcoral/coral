@@ -89535,8 +89535,10 @@ tables:
     filters:
       - name: owner
         required: true
+        bindable: true
       - name: repo
         required: true
+        bindable: true
       - name: state
         required: false
       - name: head
@@ -89549,6 +89551,7 @@ tables:
         required: false
       - name: pull_number
         required: false
+        bindable: true
       - name: commit_sha
         required: false
     request:
