@@ -1,5 +1,5 @@
 name: weaviate
-version: 0.1.0
+version: 0.1.1
 dsl_version: 3
 backend: http
 description: >-
@@ -18,13 +18,11 @@ inputs:
       `https://my-cluster.weaviate.network`. Do not include a trailing
       slash.
   WEAVIATE_API_KEY:
-    kind: variable
-    default: ""
+    kind: secret
     hint: |
-      Weaviate API key sent as `Authorization: Bearer <key>`. Leave empty
-      for an instance with anonymous access enabled (the header is then
-      omitted). Set it for API-key-protected clusters and Weaviate Cloud,
-      where it is the cluster's admin or read API key.
+      Weaviate API key sent as `Authorization: Bearer <key>`. Use the
+      cluster's admin or read API key for API-key-protected clusters and
+      Weaviate Cloud.
 auth:
   type: HeaderAuth
   headers:

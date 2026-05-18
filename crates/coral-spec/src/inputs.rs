@@ -119,6 +119,11 @@ fn collect_declared_inputs(root: &Value) -> Result<Vec<ManifestInputSpec>> {
                 "manifest secret input '{key}' must not declare a default"
             )));
         }
+        if kind == ManifestInputKind::Variable && credential_like_input_key(key) {
+            return Err(ManifestError::validation(format!(
+                "manifest input '{key}' looks credential-like and must use kind: secret"
+            )));
+        }
         let hint = input
             .get("hint")
             .and_then(Value::as_str)
@@ -133,6 +138,30 @@ fn collect_declared_inputs(root: &Value) -> Result<Vec<ManifestInputSpec>> {
     }
 
     Ok(ordered)
+}
+
+fn credential_like_input_key(key: &str) -> bool {
+    const MARKERS: &[&str] = &[
+        "API_KEY",
+        "APPLICATION_KEY",
+        "ACCESS_KEY",
+        "ACCESS_KEY_ID",
+        "ACCESS_TOKEN",
+        "ADMIN_KEY",
+        "AUTHORIZATION",
+        "BEARER_TOKEN",
+        "CLIENT_SECRET",
+        "PASSWORD",
+        "PRIVATE_KEY",
+        "READ_KEY",
+        "SECRET",
+        "TOKEN",
+    ];
+
+    let key = key.to_ascii_uppercase();
+    MARKERS
+        .iter()
+        .any(|marker| key == *marker || key.ends_with(&format!("_{marker}")))
 }
 
 fn validate_input_references(root: &Value, inputs: &[ManifestInputSpec]) -> Result<()> {
@@ -380,5 +409,25 @@ tables: []
 ";
         let error = collect(manifest).expect_err("secret default");
         assert!(error.to_string().contains("must not declare a default"));
+    }
+
+    #[test]
+    fn credential_like_variables_are_rejected() {
+        let manifest = r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+inputs:
+  SERVICE_API_KEY:
+    kind: variable
+tables: []
+";
+        let error = collect(manifest).expect_err("credential variable");
+        assert!(
+            error
+                .to_string()
+                .contains("SERVICE_API_KEY' looks credential-like")
+        );
     }
 }

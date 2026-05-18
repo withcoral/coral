@@ -9,8 +9,7 @@ database, through the Weaviate REST API.
 ### Requirements
 
 - Network access to a Weaviate REST endpoint (default port `8080`).
-- For API-key-protected clusters or Weaviate Cloud: a Weaviate API key.
-  For an instance with anonymous access enabled, no key is needed.
+- A Weaviate API key for the target cluster.
 
 ### Add the Source
 
@@ -19,7 +18,7 @@ manifest:
 
 ```bash
 export WEAVIATE_URL=http://localhost:8080
-export WEAVIATE_API_KEY=        # leave empty for anonymous instances
+export WEAVIATE_API_KEY=your_weaviate_api_key
 coral source add --file sources/community/weaviate/manifest.yaml
 ```
 
@@ -29,7 +28,6 @@ Inputs:
   `http://localhost:8080` or `https://my-cluster.weaviate.network`.
   No trailing slash.
 - `WEAVIATE_API_KEY` — API key sent as `Authorization: Bearer <key>`.
-  Leave empty for anonymous instances; the header is then omitted.
 
 ## Tables
 
@@ -64,9 +62,7 @@ Weaviate uses bearer-token API keys. This source sends:
 Authorization: Bearer <WEAVIATE_API_KEY>
 ```
 
-When `WEAVIATE_API_KEY` is empty, the header is omitted entirely so the
-source works against instances with anonymous access enabled. Username /
-password and OIDC flows are not configured by this source.
+Username / password and OIDC flows are not configured by this source.
 
 ## Limits
 
