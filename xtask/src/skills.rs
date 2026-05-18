@@ -53,10 +53,8 @@ pub(crate) fn export(dest: &Path) -> Result<bool> {
     }
 
     let license = dest.join("LICENSE");
-    if !license.exists() {
-        fs::copy(repo_root.join("LICENSE"), &license)
-            .with_context(|| format!("copying {}", license.display()))?;
-    }
+    fs::copy(repo_root.join("LICENSE"), &license)
+        .with_context(|| format!("copying {}", license.display()))?;
 
     fs::write(dest.join("README.md"), render_readme(&skills))
         .with_context(|| format!("writing {}", dest.join("README.md").display()))?;
