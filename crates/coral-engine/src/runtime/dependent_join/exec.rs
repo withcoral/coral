@@ -41,6 +41,7 @@ pub(crate) struct DependentJoinExec {
     max_bindings: usize,
     max_resolver_rows: usize,
     max_rows_per_binding: usize,
+    max_resolver_rows_per_binding: usize,
     max_concurrency: usize,
     page_hint: Option<usize>,
     output_schema: SchemaRef,
@@ -61,6 +62,7 @@ pub(crate) struct DependentJoinExecConfig {
     pub(crate) max_bindings: usize,
     pub(crate) max_resolver_rows: usize,
     pub(crate) max_rows_per_binding: usize,
+    pub(crate) max_resolver_rows_per_binding: usize,
     pub(crate) max_concurrency: usize,
     pub(crate) page_hint: Option<usize>,
     pub(crate) output_schema: SchemaRef,
@@ -88,6 +90,7 @@ impl DependentJoinExec {
             max_bindings: config.max_bindings,
             max_resolver_rows: config.max_resolver_rows,
             max_rows_per_binding: config.max_rows_per_binding,
+            max_resolver_rows_per_binding: config.max_resolver_rows_per_binding,
             max_concurrency: config.max_concurrency,
             page_hint: config.page_hint,
             output_schema: config.output_schema,
@@ -110,6 +113,7 @@ impl DependentJoinExec {
             max_bindings: self.max_bindings,
             max_resolver_rows: self.max_resolver_rows,
             max_rows_per_binding: self.max_rows_per_binding,
+            max_resolver_rows_per_binding: self.max_resolver_rows_per_binding,
             max_concurrency: self.max_concurrency,
             page_hint: self.page_hint,
             output_schema: Arc::clone(&self.output_schema),
@@ -160,7 +164,7 @@ impl DisplayAs for DependentJoinExec {
     fn fmt_as(&self, _format: DisplayFormatType, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "DependentJoinExec: table={}.{}, binding_keys={}, literal_filters={}, max_bindings={}, max_resolver_rows={}, max_rows_per_binding={}, max_concurrency={}, page_hint={}",
+            "DependentJoinExec: table={}.{}, binding_keys={}, literal_filters={}, max_bindings={}, max_resolver_rows={}, max_rows_per_binding={}, max_resolver_rows_per_binding={}, max_concurrency={}, page_hint={}",
             self.dependent_source_schema,
             self.table.name(),
             format_binding_keys(&self.binding_keys),
@@ -168,6 +172,7 @@ impl DisplayAs for DependentJoinExec {
             self.max_bindings,
             self.max_resolver_rows,
             self.max_rows_per_binding,
+            self.max_resolver_rows_per_binding,
             self.max_concurrency,
             format_page_hint(self.page_hint),
         )
@@ -276,6 +281,7 @@ impl ExecutionPlan for DependentJoinExec {
             table: table.name().to_string(),
             max_bindings: self.max_bindings,
             max_resolver_rows: self.max_resolver_rows,
+            max_resolver_rows_per_binding: self.max_resolver_rows_per_binding,
             binding_filters: binding_filters.clone(),
         };
         let max_concurrency = self.max_concurrency;

@@ -66,6 +66,61 @@ async fn sql_join_fetches_when_http_dependent_table_is_projected() {
 }
 
 #[tokio::test]
+async fn duplicate_resolver_rows_for_one_binding_emit_one_joined_batch() {
+    let temp = TempDir::new().expect("temp dir");
+    write_jsonl_file(
+        temp.path(),
+        "issues.jsonl",
+        &[
+            issue_row("First", "withcoral", "coral", 123),
+            issue_row("Duplicate tuple", "withcoral", "coral", 123),
+        ],
+    );
+
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/repos/withcoral/coral/pulls/123"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{
+                "owner": "withcoral",
+                "repo": "coral",
+                "number": 123,
+                "state": "open"
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let execution = CoralQuery::execute_sql(
+        &[
+            build_source(issues_manifest(temp.path())),
+            build_source(github_manifest(&server.uri())),
+        ],
+        test_runtime(),
+        "
+        SELECT i.title AS issue_title, pr.state AS pr_state
+        FROM issues.items AS i
+        JOIN github.pull_requests AS pr
+          ON pr.owner = i.github_owner
+         AND pr.repo = i.github_repo
+         AND pr.number = i.github_pr_number
+        ",
+    )
+    .await
+    .expect("query should succeed");
+
+    assert_eq!(execution.batches().len(), 1);
+    assert_eq!(
+        execution_to_rows(&execution),
+        vec![
+            json!({ "issue_title": "First", "pr_state": "open" }),
+            json!({ "issue_title": "Duplicate tuple", "pr_state": "open" }),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn sql_join_reads_all_resolver_partitions() {
     let temp = TempDir::new().expect("temp dir");
     write_jsonl_file(
@@ -84,7 +139,7 @@ async fn sql_join_reads_all_resolver_partitions() {
             "data": [{
                 "owner": "withcoral",
                 "repo": "coral",
-                "number": 123,
+                "number": 1,
                 "state": "open"
             }]
         })))
@@ -282,7 +337,7 @@ async fn literal_filters_and_join_bindings_together_satisfy_required_dependent_f
             "data": [{
                 "owner": "withcoral",
                 "repo": "coral",
-                "number": 123,
+                "number": 1,
                 "state": "open"
             }]
         })))
@@ -422,23 +477,16 @@ async fn null_binding_rows_do_not_fetch_and_do_not_emit() {
 #[tokio::test]
 async fn too_many_distinct_bindings_returns_cap_error() {
     let temp = TempDir::new().expect("temp dir");
-    write_jsonl_file(
-        temp.path(),
-        "issues.jsonl",
-        &[
-            issue_row("First", "withcoral", "coral", 123),
-            issue_row("Second", "apache", "arrow-datafusion", 42),
-        ],
-    );
+    let issues = (1..=501)
+        .map(|number| issue_row(&format!("Issue {number}"), "withcoral", "coral", number))
+        .collect::<Vec<_>>();
+    write_jsonl_file(temp.path(), "issues.jsonl", &issues);
 
     let server = MockServer::start().await;
     let error = CoralQuery::execute_sql(
         &[
             build_source(issues_manifest(temp.path())),
-            build_source(github_manifest_with_dependent_join(
-                &server.uri(),
-                Some(json!({ "max_bindings": 1 })),
-            )),
+            build_source(github_manifest(&server.uri())),
         ],
         test_runtime(),
         dependent_join_sql(),
@@ -448,7 +496,41 @@ async fn too_many_distinct_bindings_returns_cap_error() {
 
     assert_error_contains(
         &error,
-        "dependent join into 'github.pull_requests' produced 2 binding tuples, which exceeds cap 1",
+        "dependent join into 'github.pull_requests' produced 501 binding tuples, which exceeds cap 500",
+    );
+    assert_eq!(error.status_code(), StatusCode::FailedPrecondition);
+}
+
+#[tokio::test]
+async fn too_many_resolver_rows_for_one_binding_returns_cap_error() {
+    let temp = TempDir::new().expect("temp dir");
+    let issues = (1..=1001)
+        .map(|idx| issue_row(&format!("Issue {idx}"), "withcoral", "coral", 123))
+        .collect::<Vec<_>>();
+    write_jsonl_file(temp.path(), "issues.jsonl", &issues);
+
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/repos/withcoral/coral/pulls/123"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": [] })))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let error = CoralQuery::execute_sql(
+        &[
+            build_source(issues_manifest(temp.path())),
+            build_source(github_manifest(&server.uri())),
+        ],
+        test_runtime(),
+        dependent_join_sql(),
+    )
+    .await
+    .expect_err("query should fail when one binding has too many resolver rows");
+
+    assert_error_contains(
+        &error,
+        "dependent join resolver for 'github.pull_requests' produced 1001 rows for one binding, which exceeds max_resolver_rows_per_binding=1000",
     );
     assert_eq!(error.status_code(), StatusCode::FailedPrecondition);
 }
@@ -463,14 +545,20 @@ async fn single_fetch_too_many_rows_returns_cap_error() {
     );
 
     let server = MockServer::start().await;
+    let rows = (1..=1001)
+        .map(|number| {
+            json!({
+                "owner": "withcoral",
+                "repo": "coral",
+                "number": 123,
+                "state": format!("state-{number}")
+            })
+        })
+        .collect::<Vec<_>>();
+
     Mock::given(method("GET"))
         .and(path("/repos/withcoral/coral/pulls/123"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "data": [
-                { "owner": "withcoral", "repo": "coral", "number": 123, "state": "open" },
-                { "owner": "withcoral", "repo": "coral", "number": 123, "state": "closed" }
-            ]
-        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": rows })))
         .expect(1)
         .mount(&server)
         .await;
@@ -478,10 +566,7 @@ async fn single_fetch_too_many_rows_returns_cap_error() {
     let error = CoralQuery::execute_sql(
         &[
             build_source(issues_manifest(temp.path())),
-            build_source(github_manifest_with_dependent_join(
-                &server.uri(),
-                Some(json!({ "max_rows_per_binding": 1 })),
-            )),
+            build_source(github_manifest(&server.uri())),
         ],
         test_runtime(),
         dependent_join_sql(),
@@ -491,80 +576,174 @@ async fn single_fetch_too_many_rows_returns_cap_error() {
 
     assert_error_contains(
         &error,
-        "dependent join fetch for 'github.pull_requests' returned 2 rows for one binding, which exceeds max_rows_per_binding=1",
+        "dependent join fetch for 'github.pull_requests' returned 1001 rows for one binding, which exceeds max_rows_per_binding=1000",
     );
     assert_eq!(error.status_code(), StatusCode::FailedPrecondition);
 }
 
 #[tokio::test]
-async fn too_many_resolver_rows_retries_without_dependent_pushdown() {
+async fn rows_per_binding_cap_stops_paginated_fetch_after_overflow_is_known() {
     let temp = TempDir::new().expect("temp dir");
     write_jsonl_file(
         temp.path(),
         "issues.jsonl",
-        &[
-            issue_row("First", "withcoral", "coral", 123),
-            issue_row("Duplicate", "withcoral", "coral", 123),
-        ],
+        &[issue_row("First", "withcoral", "coral", 123)],
     );
+
+    let server = MockServer::start().await;
+    let first_page = (1..=1000)
+        .map(|number| {
+            json!({
+                "owner": "withcoral",
+                "repo": "coral",
+                "number": 123,
+                "state": format!("state-{number}")
+            })
+        })
+        .collect::<Vec<_>>();
+
+    Mock::given(method("GET"))
+        .and(path("/repos/withcoral/coral/pulls/123"))
+        .and(query_param("page", "1"))
+        .and(query_param("per_page", "1000"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": first_page })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/withcoral/coral/pulls/123"))
+        .and(query_param("page", "2"))
+        .and(query_param("per_page", "1000"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{
+                "owner": "withcoral",
+                "repo": "coral",
+                "number": 123,
+                "state": "closed"
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/withcoral/coral/pulls/123"))
+        .and(query_param("page", "3"))
+        .and(query_param("per_page", "1000"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": [] })))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let mut github = github_paginated_manifest(&server.uri());
+    first_table_object_mut(&mut github).insert(
+        "pagination".to_string(),
+        json!({
+            "mode": "page",
+            "page_param": "page",
+            "page_start": 1,
+            "page_size": {
+                "default": 1000,
+                "max": 1000,
+                "query_param": "per_page"
+            }
+        }),
+    );
+
+    let error = CoralQuery::execute_sql(
+        &[
+            build_source(issues_manifest(temp.path())),
+            build_source(github),
+        ],
+        test_runtime(),
+        "
+        SELECT i.title AS issue_title, pr.state AS pr_state
+        FROM issues.items AS i
+        JOIN github.pull_requests AS pr
+          ON pr.owner = i.github_owner
+         AND pr.repo = i.github_repo
+         AND pr.number = i.github_pr_number
+        ",
+    )
+    .await
+    .expect_err("query should fail once the dependent fetch exceeds its row cap");
+
+    assert_error_contains(
+        &error,
+        "dependent join fetch for 'github.pull_requests' returned 1001 rows for one binding, which exceeds max_rows_per_binding=1000",
+    );
+    assert_eq!(error.status_code(), StatusCode::FailedPrecondition);
+}
+
+#[tokio::test]
+async fn resolver_rows_cap_retries_original_query_without_dependent_join_rewrite() {
+    let temp = TempDir::new().expect("temp dir");
+    let issues = (1..=10_001)
+        .map(|idx| {
+            let number = ((idx - 1) % 11) + 1;
+            issue_row(&format!("Issue {idx}"), "withcoral", "coral", number)
+        })
+        .collect::<Vec<_>>();
+    write_jsonl_file(temp.path(), "issues.jsonl", &issues);
 
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/pulls"))
         .and(query_param("owner", "withcoral"))
         .and(query_param("repo", "coral"))
-        .and(query_param("number", "123"))
+        .and(query_param("number", "1"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "data": [{
                 "owner": "withcoral",
                 "repo": "coral",
-                "number": 123,
+                "number": 1,
                 "state": "open"
             }]
         })))
         .expect(0)
         .mount(&server)
         .await;
+    let fallback_rows = (1..=11)
+        .map(|number| {
+            json!({
+                "owner": "withcoral",
+                "repo": "coral",
+                "number": number,
+                "state": "open"
+            })
+        })
+        .collect::<Vec<_>>();
+
     Mock::given(method("GET"))
         .and(path("/pulls"))
         .and(query_param_is_missing("owner"))
         .and(query_param_is_missing("repo"))
         .and(query_param_is_missing("number"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "data": [{
-                "owner": "withcoral",
-                "repo": "coral",
-                "number": 123,
-                "state": "open"
-            }]
-        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": fallback_rows })))
         .expect(1)
         .mount(&server)
         .await;
 
-    let mut github = github_broad_query_manifest(&server.uri());
-    first_table_object_mut(&mut github).insert(
-        "dependent_join".to_string(),
-        json!({ "max_resolver_rows": 1 }),
-    );
-
     let execution = CoralQuery::execute_sql(
         &[
             build_source(issues_manifest(temp.path())),
-            build_source(github),
+            build_source(github_broad_query_manifest(&server.uri())),
         ],
         test_runtime(),
-        dependent_join_sql(),
+        "
+        SELECT COUNT(*) AS row_count
+        FROM issues.items AS i
+        JOIN github.pull_requests AS pr
+          ON pr.owner = i.github_owner
+         AND pr.repo = i.github_repo
+         AND pr.number = i.github_pr_number
+        ",
     )
     .await
-    .expect("resolver-row overflow should retry without dependent pushdown");
+    .expect("resolver-row overflow should retry the original query without dependent join rewrite");
 
     assert_eq!(
         execution_to_rows(&execution),
-        vec![
-            json!({ "issue_title": "Duplicate", "pr_state": "open" }),
-            json!({ "issue_title": "First", "pr_state": "open" }),
-        ]
+        vec![json!({ "row_count": 10001 })]
     );
 }
 
@@ -950,9 +1129,108 @@ async fn explain_shows_dependent_join_bindings_and_caps() {
     );
     assert!(explain.contains("max_bindings=500"), "{explain}");
     assert!(explain.contains("max_resolver_rows=10000"), "{explain}");
-    assert!(explain.contains("max_rows_per_binding=50000"), "{explain}");
+    assert!(explain.contains("max_rows_per_binding=1000"), "{explain}");
+    assert!(
+        explain.contains("max_resolver_rows_per_binding=1000"),
+        "{explain}"
+    );
     assert!(explain.contains("max_concurrency=8"), "{explain}");
     assert!(explain.contains("page_hint=None"), "{explain}");
+}
+
+#[tokio::test]
+async fn dependent_join_falls_back_when_route_does_not_consume_literal_filter() {
+    let temp = TempDir::new().expect("temp dir");
+    write_jsonl_file(
+        temp.path(),
+        "issues.jsonl",
+        &[issue_row("First", "withcoral", "coral", 123)],
+    );
+
+    let mut manifest = github_manifest("http://127.0.0.1:9");
+    first_table_object_mut(&mut manifest).insert(
+        "request".to_string(),
+        json!({
+            "method": "GET",
+            "path": "/repos/{{filter.owner}}/{{filter.repo}}/pulls",
+            "query": [
+                { "name": "state", "from": "filter", "key": "state" }
+            ]
+        }),
+    );
+    first_table_object_mut(&mut manifest).insert(
+        "requests".to_string(),
+        json!([{
+            "when_filters": ["owner", "repo", "number"],
+            "method": "GET",
+            "path": "/repos/{{filter.owner}}/{{filter.repo}}/pulls/{{filter.number}}"
+        }]),
+    );
+
+    let execution = CoralQuery::execute_sql(
+        &[
+            build_source(issues_manifest(temp.path())),
+            build_source(manifest),
+        ],
+        test_runtime(),
+        "
+        EXPLAIN
+        SELECT i.title AS issue_title, pr.state AS pr_state
+        FROM issues.items AS i
+        JOIN github.pull_requests AS pr
+          ON pr.owner = i.github_owner
+         AND pr.repo = i.github_repo
+         AND pr.number = i.github_pr_number
+        WHERE pr.state = 'open'
+        ",
+    )
+    .await
+    .expect("explain should succeed");
+
+    let explain = execution_text(&execution);
+    assert!(!explain.contains("DependentJoinExec"), "{explain}");
+}
+
+#[tokio::test]
+async fn dependent_join_falls_back_when_route_does_not_consume_binding_filter() {
+    let temp = TempDir::new().expect("temp dir");
+    write_jsonl_file(
+        temp.path(),
+        "issues.jsonl",
+        &[issue_row("First", "withcoral", "coral", 123)],
+    );
+
+    let mut manifest = github_manifest("http://127.0.0.1:9");
+    first_table_object_mut(&mut manifest).insert(
+        "requests".to_string(),
+        json!([{
+            "when_filters": ["owner", "repo", "number"],
+            "method": "GET",
+            "path": "/repos/{{filter.owner}}/pulls/{{filter.number}}"
+        }]),
+    );
+
+    let execution = CoralQuery::execute_sql(
+        &[
+            build_source(issues_manifest(temp.path())),
+            build_source(manifest),
+        ],
+        test_runtime(),
+        "
+        EXPLAIN
+        SELECT i.title AS issue_title, pr.state AS pr_state
+        FROM issues.items AS i
+        JOIN github.pull_requests AS pr
+          ON pr.owner = i.github_owner
+         AND pr.repo = i.github_repo
+         AND pr.number = i.github_pr_number
+        ",
+    )
+    .await
+    .expect("explain should succeed");
+
+    let explain = execution_text(&execution);
+    assert!(!explain.contains("DependentJoinExec"), "{explain}");
 }
 
 #[tokio::test]
@@ -1112,6 +1390,73 @@ async fn duplicate_join_binding_for_same_filter_falls_back_to_regular_join_execu
     assert_eq!(
         execution_to_rows(&execution),
         vec![json!({ "issue_title": "Same", "pr_state": "open" })]
+    );
+}
+
+#[tokio::test]
+async fn null_equal_join_falls_back_to_regular_join_execution() {
+    let temp = TempDir::new().expect("temp dir");
+    write_jsonl_file(
+        temp.path(),
+        "issues.jsonl",
+        &[json!({
+            "title": "Null owner",
+            "github_owner": null,
+            "github_repo": "coral",
+            "github_pr_number": 123
+        })],
+    );
+
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/pulls"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{
+                "owner": null,
+                "repo": "coral",
+                "number": 123,
+                "state": "open"
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let sql = "
+        SELECT i.title AS issue_title, pr.state AS pr_state
+        FROM issues.items AS i
+        JOIN github.pull_requests AS pr
+          ON pr.owner IS NOT DISTINCT FROM i.github_owner
+        ";
+
+    let explain = execution_text(
+        &CoralQuery::execute_sql(
+            &[
+                build_source(issues_manifest(temp.path())),
+                build_source(github_broad_manifest(&server.uri())),
+            ],
+            test_runtime(),
+            &format!("EXPLAIN {sql}"),
+        )
+        .await
+        .expect("explain should succeed"),
+    );
+    assert!(!explain.contains("DependentJoinExec"), "{explain}");
+
+    let execution = CoralQuery::execute_sql(
+        &[
+            build_source(issues_manifest(temp.path())),
+            build_source(github_broad_manifest(&server.uri())),
+        ],
+        test_runtime(),
+        sql,
+    )
+    .await
+    .expect("null-equality join should fall back to normal execution");
+
+    assert_eq!(
+        execution_to_rows(&execution),
+        vec![json!({ "issue_title": "Null owner", "pr_state": "open" })]
     );
 }
 
@@ -1574,13 +1919,21 @@ fn slack_messages_manifest(base_url: &str) -> Value {
 }
 
 fn github_manifest(base_url: &str) -> Value {
-    github_manifest_with_dependent_join(base_url, None)
+    github_manifest_with_filters(
+        base_url,
+        None,
+        vec![
+            json!({ "name": "owner", "bindable": true }),
+            json!({ "name": "repo", "bindable": true }),
+            json!({ "name": "number", "bindable": true }),
+            json!({ "name": "state" }),
+        ],
+    )
 }
 
 fn github_required_manifest(base_url: &str) -> Value {
     github_manifest_with_filters(
         base_url,
-        None,
         None,
         vec![
             json!({ "name": "owner", "required": true, "bindable": true }),
@@ -1620,22 +1973,7 @@ fn github_filter_backed_columns_manifest(base_url: &str) -> Value {
 fn github_manifest_with_max_concurrency(base_url: &str, max_concurrency: usize) -> Value {
     github_manifest_with_filters(
         base_url,
-        None,
         Some(json!({ "max_concurrency": max_concurrency })),
-        vec![
-            json!({ "name": "owner", "bindable": true }),
-            json!({ "name": "repo", "bindable": true }),
-            json!({ "name": "number", "bindable": true }),
-            json!({ "name": "state" }),
-        ],
-    )
-}
-
-fn github_manifest_with_dependent_join(base_url: &str, dependent_join: Option<Value>) -> Value {
-    github_manifest_with_filters(
-        base_url,
-        dependent_join,
-        None,
         vec![
             json!({ "name": "owner", "bindable": true }),
             json!({ "name": "repo", "bindable": true }),
@@ -1683,7 +2021,6 @@ fn first_table_object_mut(manifest: &mut Value) -> &mut serde_json::Map<String, 
 
 fn github_manifest_with_filters(
     base_url: &str,
-    dependent_join: Option<Value>,
     rate_limit: Option<Value>,
     filters: Vec<Value>,
 ) -> Value {
@@ -1699,7 +2036,6 @@ fn github_manifest_with_filters(
         "tables": [{
             "name": "pull_requests",
             "description": "Pull requests",
-            "dependent_join": dependent_join.unwrap_or_else(|| json!({})),
             "filters": filters,
             "request": {
                 "method": "GET",
@@ -1722,13 +2058,6 @@ fn github_manifest_with_filters(
 }
 
 fn github_broad_manifest(base_url: &str) -> Value {
-    github_broad_manifest_with_dependent_join(base_url, None)
-}
-
-fn github_broad_manifest_with_dependent_join(
-    base_url: &str,
-    dependent_join: Option<Value>,
-) -> Value {
     json!({
         "name": "github",
         "version": "0.1.0",
@@ -1738,7 +2067,6 @@ fn github_broad_manifest_with_dependent_join(
         "tables": [{
             "name": "pull_requests",
             "description": "Pull requests",
-            "dependent_join": dependent_join.unwrap_or_else(|| json!({})),
             "filters": [
                 { "name": "owner", "bindable": true },
                 { "name": "repo", "bindable": true },

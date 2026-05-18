@@ -13,6 +13,7 @@ pub(crate) struct ResolverCaps {
     pub(crate) table: String,
     pub(crate) max_bindings: usize,
     pub(crate) max_resolver_rows: usize,
+    pub(crate) max_resolver_rows_per_binding: usize,
     pub(crate) binding_filters: Vec<String>,
 }
 
@@ -55,6 +56,16 @@ impl DependentJoinRuntimeState {
             let Some(tuple) = projector.project(batch, row_idx)? else {
                 continue;
             };
+
+            let rows_for_tuple = self
+                .bindings_by_tuple
+                .entry(tuple.clone())
+                .or_default()
+                .len()
+                .saturating_add(1);
+            if rows_for_tuple > caps.max_resolver_rows_per_binding {
+                return Err(resolver_rows_per_binding_exceeded(caps, rows_for_tuple));
+            }
 
             self.bindings_by_tuple
                 .entry(tuple.clone())
@@ -132,6 +143,16 @@ fn resolver_rows_exceeded(caps: &ResolverCaps, observed: usize) -> DataFusionErr
     .into_datafusion()
 }
 
+fn resolver_rows_per_binding_exceeded(caps: &ResolverCaps, observed: usize) -> DataFusionError {
+    DependentJoinError::ResolverRowsPerBinding {
+        source_schema: caps.source_schema.clone(),
+        table: caps.table.clone(),
+        observed,
+        cap: caps.max_resolver_rows_per_binding,
+    }
+    .into_datafusion()
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -156,6 +177,7 @@ mod tests {
             table: "pull_requests".to_string(),
             max_bindings: 10,
             max_resolver_rows: 1,
+            max_resolver_rows_per_binding: 10,
             binding_filters: vec!["id".to_string()],
         };
         let projector = BindingProjector::new(Arc::from(Vec::<BindingKey>::new()));

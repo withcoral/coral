@@ -20,6 +20,7 @@ use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec};
 pub(crate) mod auth;
 pub(crate) mod client;
 pub(crate) mod error;
+pub(crate) mod filter_usage;
 pub(crate) mod function;
 pub(crate) mod provider;
 mod rate_limit;

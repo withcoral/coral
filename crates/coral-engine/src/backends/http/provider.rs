@@ -6,19 +6,25 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::common::project_schema;
 use datafusion::datasource::TableProvider;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::logical_expr::{Expr, Operator, TableProviderFilterPushDown, TableType};
 use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_plan::empty::EmptyExec;
 use serde_json::Value;
 
 use crate::backends::http::HttpSourceClient;
 use crate::backends::http::ProviderQueryError;
+use crate::backends::http::filter_usage::request_filter_names;
 use crate::backends::http::target::HttpFetchTarget;
 use crate::backends::schema_from_columns;
-use crate::backends::shared::filter_expr::{extract_filter_values, literal_to_string};
+use crate::backends::shared::filter_expr::{
+    FilterExtraction, extract_exact_filter_values_checked, extract_filter_values,
+    extract_filter_values_checked, literal_to_string,
+};
 use crate::backends::shared::json_exec::{JsonExec, RowFetcher};
-use crate::backends::shared::mapping::convert_items;
+use crate::backends::shared::mapping::{convert_items, filter_items_by_column_values};
 use coral_spec::FilterMode;
 use coral_spec::backends::http::HttpTableSpec;
 
@@ -80,9 +86,10 @@ impl HttpSourceTableProvider {
 struct HttpFetchPlan {
     backend: HttpSourceClient,
     target: Arc<HttpFetchTarget>,
-    filter_values: Arc<HashMap<String, String>>,
+    request_filter_values: Arc<HashMap<String, String>>,
     arg_values: Arc<HashMap<String, String>>,
     limit: Option<usize>,
+    has_residual_filters: bool,
 }
 
 pub(crate) struct HttpJsonExecRequest<'a> {
@@ -90,7 +97,9 @@ pub(crate) struct HttpJsonExecRequest<'a> {
     pub(crate) source_schema: &'a str,
     pub(crate) target: HttpFetchTarget,
     pub(crate) schema: SchemaRef,
-    pub(crate) filter_values: HashMap<String, String>,
+    pub(crate) request_filter_values: HashMap<String, String>,
+    pub(crate) local_filter_values: HashMap<String, String>,
+    pub(crate) has_residual_filters: bool,
     pub(crate) arg_values: HashMap<String, String>,
     pub(crate) projection: Option<&'a Vec<usize>>,
     pub(crate) limit: Option<usize>,
@@ -99,10 +108,23 @@ pub(crate) struct HttpJsonExecRequest<'a> {
 #[async_trait]
 impl RowFetcher for HttpFetchPlan {
     async fn fetch(&self) -> Result<Vec<Value>> {
+        if self.has_residual_filters {
+            return self
+                .backend
+                .fetch_complete(
+                    self.target.as_ref(),
+                    &self.request_filter_values,
+                    &self.arg_values,
+                    None,
+                    None,
+                )
+                .await;
+        }
+
         self.backend
             .fetch(
                 self.target.as_ref(),
-                &self.filter_values,
+                &self.request_filter_values,
                 &self.arg_values,
                 self.limit,
             )
@@ -116,28 +138,54 @@ pub(crate) fn http_json_exec(request: HttpJsonExecRequest<'_>) -> Result<Arc<dyn
         source_schema,
         target,
         schema,
-        filter_values,
+        request_filter_values,
+        local_filter_values,
+        has_residual_filters,
         arg_values,
         projection,
         limit,
     } = request;
     let target = Arc::new(target);
-    let filter_values = Arc::new(filter_values);
+    let request_filter_values = Arc::new(request_filter_values);
+    let local_filter_values = Arc::new(local_filter_values);
     let arg_values = Arc::new(arg_values);
+    let post_filter_limit = if local_filter_values.is_empty() {
+        None
+    } else {
+        limit.or(target.fetch_limit_default())
+    };
     let fetcher = Arc::new(HttpFetchPlan {
         backend,
         target: target.clone(),
-        filter_values: filter_values.clone(),
+        request_filter_values: request_filter_values.clone(),
         arg_values,
         limit,
+        has_residual_filters,
     });
 
     let converter = {
         let target = target.clone();
         let schema = schema.clone();
-        let filter_values = filter_values.clone();
+        let request_filter_values = request_filter_values.clone();
+        let local_filter_values = local_filter_values.clone();
         Arc::new(move |items: &[Value]| {
-            convert_items(target.columns(), schema.clone(), &filter_values, items)
+            let mut filtered_items;
+            let items = if local_filter_values.is_empty() {
+                items
+            } else {
+                filtered_items =
+                    filter_items_by_column_values(target.columns(), &local_filter_values, items);
+                if let Some(limit) = post_filter_limit {
+                    filtered_items.truncate(limit);
+                }
+                &filtered_items
+            };
+            convert_items(
+                target.columns(),
+                schema.clone(),
+                &request_filter_values,
+                items,
+            )
         })
     };
 
@@ -183,10 +231,18 @@ impl TableProvider for HttpSourceTableProvider {
             .iter()
             .map(|f| (f.name.as_str(), f.mode))
             .collect();
+        let filter_exprs = filters
+            .iter()
+            .map(|expr| (*expr).clone())
+            .collect::<Vec<_>>();
+        let filter_values = extract_filter_values(&filter_exprs, self.table.filters());
+        let filter_value_keys: HashSet<String> = filter_values.keys().cloned().collect();
+        let active_request = self.table.resolve_request(&filter_value_keys);
+        let consumed_filters = request_filter_names(active_request);
 
         Ok(filters
             .iter()
-            .map(|expr| classify_filter(expr, &allowed, &filter_modes))
+            .map(|expr| classify_filter(expr, &allowed, &filter_modes, &consumed_filters))
             .collect())
     }
 
@@ -197,7 +253,13 @@ impl TableProvider for HttpSourceTableProvider {
         filters: &[Expr],
         limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        let filter_values = extract_filter_values(filters, self.table.filters());
+        let filter_values = match extract_filter_values_checked(filters, self.table.filters()) {
+            FilterExtraction::Values(values) => values,
+            FilterExtraction::Contradiction => {
+                let projected_schema = project_schema(&self.schema, projection)?;
+                return Ok(Arc::new(EmptyExec::new(projected_schema)));
+            }
+        };
 
         for required in self.table.filters().iter().filter(|f| f.required) {
             if !filter_values.contains_key(&required.name) {
@@ -213,6 +275,23 @@ impl TableProvider for HttpSourceTableProvider {
 
         let filter_value_keys: HashSet<String> = filter_values.keys().cloned().collect();
         let active_request = self.table.resolve_request(&filter_value_keys).clone();
+        let consumed_filters = request_filter_names(&active_request);
+        let request_filter_values = filter_values
+            .iter()
+            .filter(|(filter, _)| consumed_filters.contains(*filter))
+            .map(|(filter, value)| (filter.clone(), value.clone()))
+            .collect();
+        let has_residual_filters = filter_values
+            .keys()
+            .any(|filter| !consumed_filters.contains(filter));
+        let local_filter_values =
+            match extract_exact_filter_values_checked(filters, self.table.filters()) {
+                FilterExtraction::Values(values) => values
+                    .into_iter()
+                    .filter(|(filter, _)| !consumed_filters.contains(filter))
+                    .collect(),
+                FilterExtraction::Contradiction => HashMap::new(),
+            };
         let target = self.target.with_resolved_request(active_request);
 
         http_json_exec(HttpJsonExecRequest {
@@ -220,7 +299,9 @@ impl TableProvider for HttpSourceTableProvider {
             source_schema: &self.source_schema,
             target,
             schema: self.schema.clone(),
-            filter_values,
+            request_filter_values,
+            local_filter_values,
+            has_residual_filters,
             arg_values: HashMap::new(),
             projection,
             limit,
@@ -232,23 +313,24 @@ fn classify_filter(
     expr: &Expr,
     allowed: &HashSet<&str>,
     filter_modes: &HashMap<&str, FilterMode>,
+    consumed_filters: &HashSet<String>,
 ) -> TableProviderFilterPushDown {
     if let Expr::Column(col) = expr
         && allowed.contains(col.name())
     {
-        return TableProviderFilterPushDown::Exact;
+        return exact_if_consumed(col.name(), consumed_filters);
     }
     if let Expr::Not(inner) = expr
         && let Expr::Column(col) = inner.as_ref()
         && allowed.contains(col.name())
     {
-        return TableProviderFilterPushDown::Exact;
+        return exact_if_consumed(col.name(), consumed_filters);
     }
     if let Expr::IsTrue(inner) | Expr::IsFalse(inner) = expr
         && let Expr::Column(col) = inner.as_ref()
         && allowed.contains(col.name())
     {
-        return TableProviderFilterPushDown::Exact;
+        return exact_if_consumed(col.name(), consumed_filters);
     }
     if let Expr::BinaryExpr(binary) = expr
         && binary.op == Operator::Eq
@@ -256,7 +338,7 @@ fn classify_filter(
         && allowed.contains(col.name())
         && literal_to_string(binary.right.as_ref()).is_some()
     {
-        return TableProviderFilterPushDown::Exact;
+        return exact_if_consumed(col.name(), consumed_filters);
     }
     if let Expr::Like(like) = expr
         && !like.negated
@@ -265,7 +347,9 @@ fn classify_filter(
         && literal_to_string(like.pattern.as_ref()).is_some()
     {
         let mode = filter_modes.get(col.name()).copied().unwrap_or_default();
-        if matches!(mode, FilterMode::Search | FilterMode::Contains) {
+        if matches!(mode, FilterMode::Search | FilterMode::Contains)
+            && consumed_filters.contains(col.name())
+        {
             // Inexact: the API receives the stripped search term (performance
             // win) but DataFusion keeps a residual filter to enforce exact
             // LIKE/ILIKE semantics client-side (correctness win).
@@ -273,6 +357,17 @@ fn classify_filter(
         }
     }
     TableProviderFilterPushDown::Unsupported
+}
+
+fn exact_if_consumed(
+    col_name: &str,
+    consumed_filters: &HashSet<String>,
+) -> TableProviderFilterPushDown {
+    if consumed_filters.contains(col_name) {
+        TableProviderFilterPushDown::Exact
+    } else {
+        TableProviderFilterPushDown::Unsupported
+    }
 }
 
 #[cfg(test)]
@@ -292,6 +387,10 @@ mod tests {
 
     fn modes<'a>(entries: &'a [(&'a str, FilterMode)]) -> HashMap<&'a str, FilterMode> {
         entries.iter().copied().collect()
+    }
+
+    fn consumed(names: &[&str]) -> HashSet<String> {
+        names.iter().map(|name| (*name).to_string()).collect()
     }
 
     fn like_expr(col_name: &str, pattern: &str) -> Expr {
@@ -314,6 +413,7 @@ mod tests {
             &like_expr("status", "%open%"),
             &allowed(&["status"]),
             &modes(&[("status", FilterMode::Equality)]),
+            &consumed(&["status"]),
         );
         assert_eq!(pushdown, TableProviderFilterPushDown::Unsupported);
     }
@@ -324,6 +424,7 @@ mod tests {
             &like_expr("q", "%deploy runbook%"),
             &allowed(&["q"]),
             &modes(&[("q", FilterMode::Search)]),
+            &consumed(&["q"]),
         );
         assert_eq!(pushdown, TableProviderFilterPushDown::Inexact);
     }
@@ -334,8 +435,20 @@ mod tests {
             &binary_expr(col("query"), Operator::Eq, lit("deploy")),
             &allowed(&["query"]),
             &modes(&[("query", FilterMode::Search)]),
+            &consumed(&["query"]),
         );
         assert_eq!(pushdown, TableProviderFilterPushDown::Exact);
+    }
+
+    #[test]
+    fn equality_filter_is_unsupported_when_active_request_does_not_consume_it() {
+        let pushdown = classify_filter(
+            &binary_expr(col("state"), Operator::Eq, lit("open")),
+            &allowed(&["state"]),
+            &modes(&[]),
+            &consumed(&[]),
+        );
+        assert_eq!(pushdown, TableProviderFilterPushDown::Unsupported);
     }
 
     #[test]
@@ -344,13 +457,30 @@ mod tests {
             &like_expr("query", "%deploy%"),
             &allowed(&["query"]),
             &modes(&[("query", FilterMode::Search)]),
+            &consumed(&["query"]),
         );
         assert_eq!(pushdown, TableProviderFilterPushDown::Inexact);
     }
 
     #[test]
+    fn search_like_filter_is_unsupported_when_active_request_does_not_consume_it() {
+        let pushdown = classify_filter(
+            &like_expr("query", "%deploy%"),
+            &allowed(&["query"]),
+            &modes(&[("query", FilterMode::Search)]),
+            &consumed(&[]),
+        );
+        assert_eq!(pushdown, TableProviderFilterPushDown::Unsupported);
+    }
+
+    #[test]
     fn boolean_column_filter_pushes_down_exactly() {
-        let pushdown = classify_filter(&col("descending"), &allowed(&["descending"]), &modes(&[]));
+        let pushdown = classify_filter(
+            &col("descending"),
+            &allowed(&["descending"]),
+            &modes(&[]),
+            &consumed(&["descending"]),
+        );
         assert_eq!(pushdown, TableProviderFilterPushDown::Exact);
     }
 
@@ -360,6 +490,7 @@ mod tests {
             &col("descending").not(),
             &allowed(&["descending"]),
             &modes(&[]),
+            &consumed(&["descending"]),
         );
         assert_eq!(pushdown, TableProviderFilterPushDown::Exact);
     }
@@ -370,7 +501,12 @@ mod tests {
             Expr::IsTrue(Box::new(col("descending"))),
             Expr::IsFalse(Box::new(col("descending"))),
         ] {
-            let pushdown = classify_filter(&expr, &allowed(&["descending"]), &modes(&[]));
+            let pushdown = classify_filter(
+                &expr,
+                &allowed(&["descending"]),
+                &modes(&[]),
+                &consumed(&["descending"]),
+            );
             assert_eq!(pushdown, TableProviderFilterPushDown::Exact);
         }
     }
@@ -381,7 +517,12 @@ mod tests {
             Expr::IsNotTrue(Box::new(col("descending"))),
             Expr::IsNotFalse(Box::new(col("descending"))),
         ] {
-            let pushdown = classify_filter(&expr, &allowed(&["descending"]), &modes(&[]));
+            let pushdown = classify_filter(
+                &expr,
+                &allowed(&["descending"]),
+                &modes(&[]),
+                &consumed(&["descending"]),
+            );
             assert_eq!(pushdown, TableProviderFilterPushDown::Unsupported);
         }
     }

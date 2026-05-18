@@ -6,7 +6,7 @@ use arrow::datatypes::DataType;
 use coral_spec::WireType;
 use coral_spec::backends::http::HttpTableSpec;
 use datafusion::common::tree_node::Transformed;
-use datafusion::common::{Column, DFSchemaRef, ExprSchema, Result, TableReference};
+use datafusion::common::{Column, DFSchemaRef, ExprSchema, NullEquality, Result, TableReference};
 use datafusion::datasource::source_as_provider;
 use datafusion::logical_expr::{
     Expr, Extension, FetchType, Join, JoinType, Limit, LogicalPlan, Projection, SkipType,
@@ -14,12 +14,14 @@ use datafusion::logical_expr::{
 use datafusion::optimizer::{ApplyOrder, OptimizerConfig, OptimizerRule};
 
 use crate::backends::http::HttpSourceTableProvider;
+use crate::backends::http::filter_usage::request_filter_names;
 use crate::backends::shared::filter_expr::literal_to_string;
 use crate::runtime::dependent_join::logical::{BindingKey, DependentJoinNode};
 
 const DEFAULT_MAX_BINDINGS: usize = 500;
 const DEFAULT_MAX_RESOLVER_ROWS: usize = 10_000;
-const DEFAULT_MAX_ROWS_PER_BINDING: usize = 50_000;
+const DEFAULT_MAX_ROWS_PER_BINDING: usize = 1_000;
+const DEFAULT_MAX_RESOLVER_ROWS_PER_BINDING: usize = 1_000;
 const DEFAULT_BINDING_CONCURRENCY: usize = 8;
 const BINDING_COLUMN_PREFIX: &str = "__coral_dj_bind_";
 
@@ -42,6 +44,7 @@ pub(crate) enum DependentJoinFallbackReason {
     OverConstrained,
     NonCoercible,
     CostUnfavourable,
+    UnconsumedFilter,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -123,6 +126,10 @@ pub(crate) fn rule() -> DependentJoinOptimizerRule {
 fn analyze_join(join: &Join) -> DependentJoinAnalysis {
     if join.join_type != JoinType::Inner {
         return DependentJoinAnalysis::Fallback(DependentJoinFallbackReason::NonInner);
+    }
+
+    if join.null_equality == NullEquality::NullEqualsNull {
+        return DependentJoinAnalysis::Fallback(DependentJoinFallbackReason::NonEqui);
     }
 
     if join.on.is_empty() || join.filter.is_some() {
@@ -246,6 +253,21 @@ fn analyze_dependent_bindings(
         return DependentJoinAnalysis::Fallback(DependentJoinFallbackReason::OverConstrained);
     }
 
+    let provided_filters = dependent
+        .literal_filters
+        .keys()
+        .chain(binding_filters.iter())
+        .cloned()
+        .collect::<std::collections::HashSet<_>>();
+    let active_request = dependent.table.resolve_request(&provided_filters);
+    let consumed_filters = request_filter_names(active_request);
+    if provided_filters
+        .iter()
+        .any(|filter| !consumed_filters.contains(filter))
+    {
+        return DependentJoinAnalysis::Fallback(DependentJoinFallbackReason::UnconsumedFilter);
+    }
+
     DependentJoinAnalysis::Candidate(DependentJoinCandidate {
         dependent_side,
         source_name: dependent.source_name.clone(),
@@ -282,7 +304,6 @@ fn rewrite_join(join: &Join) -> Option<LogicalPlan> {
     let (resolver, binding_keys, resolver_projection_len) =
         resolver_with_binding_columns(resolver_plan, &dependent, resolver_schema, &join.on)?;
 
-    let max_bindings = resolve_max_bindings(&dependent, &binding_keys);
     let node = DependentJoinNode {
         resolver,
         dependent_table: dependent.table_ref,
@@ -292,17 +313,10 @@ fn rewrite_join(join: &Join) -> Option<LogicalPlan> {
         resolver_projection_len,
         dependent_first,
         schema: join.schema.clone(),
-        max_bindings,
-        max_resolver_rows: dependent
-            .table
-            .dependent_join
-            .max_resolver_rows
-            .unwrap_or(DEFAULT_MAX_RESOLVER_ROWS),
-        max_rows_per_binding: dependent
-            .table
-            .dependent_join
-            .max_rows_per_binding
-            .unwrap_or(DEFAULT_MAX_ROWS_PER_BINDING),
+        max_bindings: DEFAULT_MAX_BINDINGS,
+        max_resolver_rows: DEFAULT_MAX_RESOLVER_ROWS,
+        max_rows_per_binding: DEFAULT_MAX_ROWS_PER_BINDING,
+        max_resolver_rows_per_binding: DEFAULT_MAX_RESOLVER_ROWS_PER_BINDING,
         max_concurrency: dependent
             .max_concurrency
             .unwrap_or(DEFAULT_BINDING_CONCURRENCY),
@@ -457,25 +471,6 @@ fn split_dependent_resolver_columns<'a>(
 
 fn dependent_has_column(dependent: &PeeledDependentScan, column: &Column) -> bool {
     dependent.table_schema.field_from_column(column).is_ok()
-}
-
-fn resolve_max_bindings(dependent: &PeeledDependentScan, binding_keys: &[BindingKey]) -> usize {
-    if let [binding_key] = binding_keys
-        && let Some(filter_cap) = dependent
-            .table
-            .filters()
-            .iter()
-            .find(|filter| filter.name == binding_key.dependent_filter)
-            .and_then(|filter| filter.max_bindings)
-    {
-        return filter_cap;
-    }
-
-    dependent
-        .table
-        .dependent_join
-        .max_bindings
-        .unwrap_or(DEFAULT_MAX_BINDINGS)
 }
 
 fn peel_dependent_side(plan: &LogicalPlan) -> PeelOutcome {

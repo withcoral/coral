@@ -188,6 +188,7 @@ impl HttpSourceClient {
         target: &HttpFetchTarget,
         filter_values: &HashMap<String, String>,
         arg_values: &HashMap<String, String>,
+        row_limit: Option<usize>,
         page_hint: Option<usize>,
     ) -> Result<Vec<Value>> {
         self.fetch_with_options(
@@ -195,7 +196,7 @@ impl HttpSourceClient {
             filter_values,
             arg_values,
             FetchOptions {
-                row_limit: None,
+                row_limit,
                 page_hint,
             },
         )

@@ -7,6 +7,12 @@ use datafusion::scalar::ScalarValue;
 
 use coral_spec::{FilterMode, FilterSpec};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum FilterExtraction {
+    Values(HashMap<String, String>),
+    Contradiction,
+}
+
 /// Extracts manifest-defined filter values from pushed-down logical expressions.
 pub(crate) fn extract_filter_values(
     exprs: &[Expr],
@@ -20,10 +26,56 @@ pub(crate) fn extract_filter_values(
     let mut filters = HashMap::new();
 
     for expr in exprs {
-        collect_filter_values(expr, &allowed, &filter_modes, &mut filters);
+        let _ = collect_filter_values(expr, &allowed, &filter_modes, &mut filters, false, true);
     }
 
     filters
+}
+
+/// Extracts manifest-defined filter values and reports impossible filters.
+pub(crate) fn extract_filter_values_checked(
+    exprs: &[Expr],
+    defined_filters: &[FilterSpec],
+) -> FilterExtraction {
+    extract_filter_values_checked_with_mode(exprs, defined_filters, true)
+}
+
+/// Extracts exact manifest-defined filter values and reports impossible filters.
+pub(crate) fn extract_exact_filter_values_checked(
+    exprs: &[Expr],
+    defined_filters: &[FilterSpec],
+) -> FilterExtraction {
+    extract_filter_values_checked_with_mode(exprs, defined_filters, false)
+}
+
+fn extract_filter_values_checked_with_mode(
+    exprs: &[Expr],
+    defined_filters: &[FilterSpec],
+    include_inexact_filters: bool,
+) -> FilterExtraction {
+    let allowed: HashSet<&str> = defined_filters.iter().map(|f| f.name.as_str()).collect();
+    let filter_modes: HashMap<&str, FilterMode> = defined_filters
+        .iter()
+        .map(|f| (f.name.as_str(), f.mode))
+        .collect();
+    let mut filters = HashMap::new();
+
+    for expr in exprs {
+        if collect_filter_values(
+            expr,
+            &allowed,
+            &filter_modes,
+            &mut filters,
+            true,
+            include_inexact_filters,
+        )
+        .is_none()
+        {
+            return FilterExtraction::Contradiction;
+        }
+    }
+
+    FilterExtraction::Values(filters)
 }
 
 fn collect_filter_values(
@@ -31,40 +83,56 @@ fn collect_filter_values(
     allowed: &HashSet<&str>,
     filter_modes: &HashMap<&str, FilterMode>,
     filters: &mut HashMap<String, String>,
-) {
+    detect_contradictions: bool,
+    include_inexact_filters: bool,
+) -> Option<()> {
     match expr {
         Expr::BinaryExpr(binary) if binary.op == Operator::And => {
-            collect_filter_values(binary.left.as_ref(), allowed, filter_modes, filters);
-            collect_filter_values(binary.right.as_ref(), allowed, filter_modes, filters);
+            collect_filter_values(
+                binary.left.as_ref(),
+                allowed,
+                filter_modes,
+                filters,
+                detect_contradictions,
+                include_inexact_filters,
+            )?;
+            collect_filter_values(
+                binary.right.as_ref(),
+                allowed,
+                filter_modes,
+                filters,
+                detect_contradictions,
+                include_inexact_filters,
+            )?;
         }
         Expr::Column(col) => {
-            insert_bool_filter(col.name(), true, allowed, filters);
+            insert_bool_filter(col.name(), true, allowed, filters, detect_contradictions)?;
         }
         Expr::Not(inner) | Expr::IsFalse(inner) => {
             if let Expr::Column(col) = inner.as_ref() {
-                insert_bool_filter(col.name(), false, allowed, filters);
+                insert_bool_filter(col.name(), false, allowed, filters, detect_contradictions)?;
             }
         }
         Expr::IsTrue(inner) => {
             if let Expr::Column(col) = inner.as_ref() {
-                insert_bool_filter(col.name(), true, allowed, filters);
+                insert_bool_filter(col.name(), true, allowed, filters, detect_contradictions)?;
             }
         }
         Expr::BinaryExpr(binary) if binary.op == Operator::Eq => {
             if let Some((col, val)) =
                 extract_column_equality(binary.left.as_ref(), binary.right.as_ref(), allowed)
             {
-                filters.insert(col, val);
-                return;
+                insert_exact_filter_value(col, val, filters, detect_contradictions)?;
+                return Some(());
             }
 
             if let Some((col, val)) =
                 extract_column_equality(binary.right.as_ref(), binary.left.as_ref(), allowed)
             {
-                filters.insert(col, val);
+                insert_exact_filter_value(col, val, filters, detect_contradictions)?;
             }
         }
-        Expr::Like(like) if !like.negated => {
+        Expr::Like(like) if include_inexact_filters && !like.negated => {
             if let Some((col, val)) = extract_column_like(
                 like.expr.as_ref(),
                 like.pattern.as_ref(),
@@ -76,21 +144,22 @@ fn collect_filter_values(
         }
         Expr::InList(in_list) if !in_list.negated && in_list.list.len() == 1 => {
             let Expr::Column(col) = in_list.expr.as_ref() else {
-                return;
+                return Some(());
             };
             let col_name = col.name().to_string();
             if !allowed.contains(col_name.as_str()) {
-                return;
+                return Some(());
             }
             let Some(literal) = in_list.list.first() else {
-                return;
+                return Some(());
             };
             if let Some(value) = literal_to_string(literal) {
-                filters.insert(col_name, value);
+                insert_exact_filter_value(col_name, value, filters, detect_contradictions)?;
             }
         }
         _ => {}
     }
+    Some(())
 }
 
 fn insert_bool_filter(
@@ -98,10 +167,34 @@ fn insert_bool_filter(
     value: bool,
     allowed: &HashSet<&str>,
     filters: &mut HashMap<String, String>,
-) {
+    detect_contradictions: bool,
+) -> Option<()> {
     if allowed.contains(col_name) {
-        filters.insert(col_name.to_string(), value.to_string());
+        insert_exact_filter_value(
+            col_name.to_string(),
+            value.to_string(),
+            filters,
+            detect_contradictions,
+        )?;
     }
+    Some(())
+}
+
+fn insert_exact_filter_value(
+    col_name: String,
+    value: String,
+    filters: &mut HashMap<String, String>,
+    detect_contradictions: bool,
+) -> Option<()> {
+    if detect_contradictions
+        && let Some(existing) = filters.get(&col_name)
+        && existing != &value
+    {
+        return None;
+    }
+
+    filters.insert(col_name, value);
+    Some(())
 }
 
 fn extract_column_like(
@@ -164,9 +257,13 @@ pub(crate) fn literal_to_string(expr: &Expr) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::extract_filter_values;
+    use super::{
+        FilterExtraction, extract_exact_filter_values_checked, extract_filter_values,
+        extract_filter_values_checked,
+    };
     use coral_spec::{FilterMode, FilterSpec};
     use datafusion::logical_expr::{Expr, col, lit};
+    use std::collections::HashMap;
     use std::ops::Not;
 
     fn equality_expr(filter: &str, value: &str) -> Expr {
@@ -190,7 +287,6 @@ mod tests {
             mode,
             bindable: false,
             wire_type: coral_spec::WireType::String,
-            max_bindings: None,
         }
     }
 
@@ -206,6 +302,59 @@ mod tests {
 
         assert_eq!(values.get("owner").map(String::as_str), Some("alice"));
         assert_eq!(values.get("status").map(String::as_str), Some("open"));
+    }
+
+    #[test]
+    fn detects_contradictory_filter_values() {
+        let filters = vec![filter("owner", true, FilterMode::default())];
+        let expr = equality_expr("owner", "withcoral").and(equality_expr("owner", "apache"));
+
+        assert_eq!(
+            extract_filter_values_checked(&[expr], &filters),
+            FilterExtraction::Contradiction
+        );
+    }
+
+    #[test]
+    fn unchecked_extraction_preserves_best_effort_filter_values() {
+        let filters = vec![filter("owner", true, FilterMode::default())];
+        let expr = equality_expr("owner", "withcoral").and(equality_expr("owner", "apache"));
+        let values = extract_filter_values(&[expr], &filters);
+
+        assert!(values.contains_key("owner"));
+    }
+
+    #[test]
+    fn detects_contradictory_boolean_filter_values() {
+        let filters = vec![filter("descending", false, FilterMode::default())];
+        let expr = col("descending").and(col("descending").not());
+
+        assert_eq!(
+            extract_filter_values_checked(&[expr], &filters),
+            FilterExtraction::Contradiction
+        );
+    }
+
+    #[test]
+    fn repeated_search_filters_are_not_contradictions() {
+        let filters = vec![filter("q", false, FilterMode::Search)];
+        let expr = like_expr("q", "%deploy%").and(like_expr("q", "%runbook%"));
+
+        assert!(matches!(
+            extract_filter_values_checked(&[expr], &filters),
+            FilterExtraction::Values(_)
+        ));
+    }
+
+    #[test]
+    fn exact_extraction_ignores_search_like_filters() {
+        let filters = vec![filter("q", false, FilterMode::Search)];
+        let expr = like_expr("q", "%deploy%");
+
+        assert_eq!(
+            extract_exact_filter_values_checked(&[expr], &filters),
+            FilterExtraction::Values(HashMap::new())
+        );
     }
 
     #[test]

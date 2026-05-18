@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use arrow::array::{RecordBatch, UInt32Array};
-use arrow::compute::take;
+use arrow::compute::{concat_batches, take};
 use arrow::datatypes::{Schema, SchemaRef};
 use coral_spec::backends::http::HttpTableSpec;
 use datafusion::common::{DataFusionError, Result};
@@ -64,8 +64,9 @@ pub(crate) fn build_joined_batches(
         )?;
         let dependent_batch = project_dependent_batch(&dependent_batch, dependent_projection)?;
 
+        let mut tuple_batches = Vec::new();
         for resolver_row in state.resolver_rows_for_tuple(tuple) {
-            batches.push(join_for_resolver_row(
+            tuple_batches.push(join_for_resolver_row(
                 state,
                 *resolver_row,
                 &dependent_batch,
@@ -74,9 +75,26 @@ pub(crate) fn build_joined_batches(
                 Arc::clone(output_schema),
             )?);
         }
+
+        if !tuple_batches.is_empty() {
+            batches.push(coalesce_joined_batches(output_schema, tuple_batches)?);
+        }
     }
 
     Ok(batches)
+}
+
+fn coalesce_joined_batches(
+    output_schema: &SchemaRef,
+    batches: Vec<RecordBatch>,
+) -> Result<RecordBatch> {
+    match batches.as_slice() {
+        [] => Err(DataFusionError::Internal(
+            "dependent join cannot coalesce empty output batches".into(),
+        )),
+        [batch] => Ok(batch.clone()),
+        _ => concat_batches(output_schema, &batches).map_err(arrow_error),
+    }
 }
 
 fn join_for_resolver_row(

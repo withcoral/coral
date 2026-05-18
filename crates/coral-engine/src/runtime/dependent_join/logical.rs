@@ -20,6 +20,7 @@ pub(crate) struct DependentJoinNode {
     pub(crate) max_bindings: usize,
     pub(crate) max_resolver_rows: usize,
     pub(crate) max_rows_per_binding: usize,
+    pub(crate) max_resolver_rows_per_binding: usize,
     pub(crate) max_concurrency: usize,
     pub(crate) page_hint: Option<usize>,
 }
@@ -91,6 +92,7 @@ impl UserDefinedLogicalNodeCore for DependentJoinNode {
             max_bindings: self.max_bindings,
             max_resolver_rows: self.max_resolver_rows,
             max_rows_per_binding: self.max_rows_per_binding,
+            max_resolver_rows_per_binding: self.max_resolver_rows_per_binding,
             max_concurrency: self.max_concurrency,
             page_hint: self.page_hint,
         })

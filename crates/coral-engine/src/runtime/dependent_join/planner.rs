@@ -46,6 +46,7 @@ impl ExtensionPlanner for DependentJoinExtensionPlanner {
             max_bindings: node.max_bindings,
             max_resolver_rows: node.max_resolver_rows,
             max_rows_per_binding: node.max_rows_per_binding,
+            max_resolver_rows_per_binding: node.max_resolver_rows_per_binding,
             max_concurrency: node.max_concurrency,
             page_hint: node.page_hint,
             output_schema: Arc::new(node.schema.as_arrow().clone()),
