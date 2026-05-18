@@ -1,0 +1,545 @@
+name: postman
+version: '1.0'
+dsl_version: 3
+backend: http
+description: >-
+  Query workspaces, collections, requests, environments, and monitors from
+  Postman. Access API collections, test configurations, and monitoring data
+  for API inventory analysis and governance workflows.
+base_url: https://api.postman.com
+inputs:
+  POSTMAN_API_KEY:
+    kind: secret
+    hint: |
+      API key from your Postman account settings. Required for authentication.
+      Generate or retrieve from: https://web.postman.co/settings/me/api-keys
+      Required scopes: workspaces.read, collections.read, environments.read,
+      monitors.read
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: X-API-Key
+      from: input
+      key: POSTMAN_API_KEY
+
+test_queries:
+  - SELECT * FROM postman.me LIMIT 1
+  - SELECT COUNT(*) as workspace_count FROM postman.workspaces
+  - SELECT COUNT(*) as collection_count FROM postman.collections
+  - SELECT COUNT(*) as environment_count FROM postman.environments
+  - SELECT COUNT(*) as monitor_count FROM postman.monitors
+
+tables:
+  - name: me
+    description: Current authenticated user information. Validates API key and returns user identity metadata.
+    fetch_limit_default: 1
+    request:
+      method: GET
+      path: /me
+    response:
+      rows_path: [user]
+    columns:
+      - name: user_id
+        type: Int64
+        nullable: false
+        description: User ID
+        expr:
+          kind: path
+          path: [id]
+      - name: username
+        type: Utf8
+        nullable: false
+        description: Username
+        expr:
+          kind: path
+          path: [username]
+      - name: email
+        type: Utf8
+        nullable: true
+        description: User email address
+        expr:
+          kind: path
+          path: [email]
+      - name: full_name
+        type: Utf8
+        nullable: true
+        description: Full name
+        expr:
+          kind: path
+          path: [fullName]
+      - name: avatar_url
+        type: Utf8
+        nullable: true
+        description: Avatar URL
+        expr:
+          kind: path
+          path: [avatar]
+      - name: team_id
+        type: Int64
+        nullable: true
+        description: Team ID
+        expr:
+          kind: path
+          path: [teamId]
+      - name: is_public
+        type: Boolean
+        nullable: true
+        description: Whether the user is public
+        expr:
+          kind: path
+          path: [isPublic]
+
+  - name: workspaces
+    description: >-
+      Postman workspaces accessible to the authenticated user. Workspaces are
+      top-level organizational entities containing collections, environments,
+      and monitors.
+    fetch_limit_default: 25
+    request:
+      method: GET
+      path: /workspaces
+    response:
+      rows_path: [workspaces]
+    pagination:
+      mode: cursor_query
+      page_size:
+        default: 25
+        max: 100
+        query_param: limit
+      cursor_param: cursor
+      response_cursor_path: [meta, nextCursor]
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Workspace unique identifier
+        expr:
+          kind: path
+          path: [id]
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Workspace name
+        expr:
+          kind: path
+          path: [name]
+      - name: type
+        type: Utf8
+        nullable: false
+        description: Workspace type (personal, team, private)
+        expr:
+          kind: path
+          path: [type]
+      - name: visibility
+        type: Utf8
+        nullable: true
+        description: Workspace visibility level
+        expr:
+          kind: path
+          path: [visibility]
+      - name: created_by
+        type: Int64
+        nullable: true
+        description: User ID who created the workspace
+        expr:
+          kind: path
+          path: [createdBy]
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Workspace creation timestamp (ISO 8601)
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [createdAt]
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Workspace last updated timestamp (ISO 8601)
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [updatedAt]
+      - name: is_personal_workspace
+        type: Boolean
+        nullable: true
+        description: Whether this is a personal workspace
+        expr:
+          kind: path
+          path: [isPersonal]
+
+  - name: collections
+    description: >-
+      Collections from Postman workspaces. Contains API requests, tests, and
+      documentation grouped by workflow. High-value table for API inventory
+      analysis.
+    fetch_limit_default: 25
+    request:
+      method: GET
+      path: /collections
+    response:
+      rows_path: [collections]
+    pagination:
+      mode: offset
+      offset_param: offset
+      page_size:
+        default: 25
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Collection unique identifier
+        expr:
+          kind: path
+          path: [id]
+      - name: uid
+        type: Utf8
+        nullable: false
+        description: Collection UID (stable identifier)
+        expr:
+          kind: path
+          path: [uid]
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Collection name
+        expr:
+          kind: path
+          path: [name]
+      - name: owner_id
+        type: Int64
+        nullable: true
+        description: Owner user ID
+        expr:
+          kind: path
+          path: [owner]
+      - name: workspace_id
+        type: Utf8
+        nullable: true
+        description: Parent workspace ID
+        expr:
+          kind: path
+          path: [workspace]
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Collection creation timestamp (ISO 8601)
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [createdAt]
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Collection last updated timestamp (ISO 8601)
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [updatedAt]
+      - name: is_public
+        type: Boolean
+        nullable: true
+        description: Whether collection is public
+        expr:
+          kind: path
+          path: [isPublic]
+      - name: fork_label
+        type: Utf8
+        nullable: true
+        description: Fork label if collection is forked
+        expr:
+          kind: path
+          path: [fork]
+
+  - name: collection_requests
+    description: >-
+      Top-level request metadata extracted from a single collection. Exposes
+      endpoints, HTTP methods, headers, and body configuration. Requires
+      collection_uid filter. Note: v1 only returns top-level items; requests
+      nested inside folders are not flattened.
+    fetch_limit_default: 25
+    filters:
+      - name: collection_uid
+        required: true
+    request:
+      method: GET
+      path: /collections/{{filter.collection_uid}}
+    response:
+      rows_path: [collection, item]
+      allow_404_empty: true
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: true
+        description: Request unique identifier
+        expr:
+          kind: path
+          path: [id]
+      - name: collection_uid
+        type: Utf8
+        nullable: false
+        description: Parent collection UID
+        expr:
+          kind: from_filter
+          key: collection_uid
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Request or folder name
+        expr:
+          kind: path
+          path: [name]
+      - name: method
+        type: Utf8
+        nullable: true
+        description: HTTP method (GET, POST, PUT, DELETE, PATCH, etc.)
+        expr:
+          kind: path
+          path: [request, method]
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Request URL string or raw URL
+        expr:
+          kind: path
+          path: [request, url, raw]
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Request description
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path: [request, description, content]
+            - kind: path
+              path: [request, description]
+      - name: protocol
+        type: Utf8
+        nullable: true
+        description: Protocol (http, https, etc.)
+        expr:
+          kind: path
+          path: [request, url, protocol]
+      - name: headers
+        type: Json
+        nullable: true
+        description: Request headers (JSON array)
+        expr:
+          kind: path
+          path: [request, header]
+      - name: body
+        type: Json
+        nullable: true
+        description: Request body configuration (JSON)
+        expr:
+          kind: path
+          path: [request, body]
+      - name: auth
+        type: Json
+        nullable: true
+        description: Request-level authentication (JSON)
+        expr:
+          kind: path
+          path: [request, auth]
+      - name: scripts
+        type: Json
+        nullable: true
+        description: Pre-request and test scripts (JSON array)
+        expr:
+          kind: path
+          path: [event]
+      - name: responses
+        type: Json
+        nullable: true
+        description: Example responses (JSON array)
+        expr:
+          kind: path
+          path: [response]
+
+  - name: environments
+    description: >-
+      Postman environments containing variable groups for testing and
+      deployment workflows. Allows parameterization of requests across
+      different deployment targets.
+    fetch_limit_default: 25
+    request:
+      method: GET
+      path: /environments
+    response:
+      rows_path: [environments]
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Environment unique identifier
+        expr:
+          kind: path
+          path: [id]
+      - name: uid
+        type: Utf8
+        nullable: false
+        description: Environment UID (stable identifier)
+        expr:
+          kind: path
+          path: [uid]
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Environment name
+        expr:
+          kind: path
+          path: [name]
+      - name: owner_id
+        type: Int64
+        nullable: true
+        description: Owner user ID
+        expr:
+          kind: path
+          path: [owner]
+      - name: workspace_id
+        type: Utf8
+        nullable: true
+        description: Parent workspace ID
+        expr:
+          kind: path
+          path: [workspace]
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Environment creation timestamp (ISO 8601)
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [createdAt]
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Environment last updated timestamp (ISO 8601)
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [updatedAt]
+
+  - name: monitors
+    description: >-
+      API monitors configured for continuous testing and health checking.
+      Enables API reliability analytics and incident summarization. Important
+      for API governance workflows.
+    fetch_limit_default: 25
+    request:
+      method: GET
+      path: /monitors
+    response:
+      rows_path: [monitors]
+    pagination:
+      mode: cursor_query
+      page_size:
+        default: 25
+        max: 25
+        query_param: limit
+      cursor_param: cursor
+      response_cursor_path: [meta, nextCursor]
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Monitor unique identifier
+        expr:
+          kind: path
+          path: [id]
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Monitor name
+        expr:
+          kind: path
+          path: [name]
+      - name: collection_uid
+        type: Utf8
+        nullable: true
+        description: Associated collection UID
+        expr:
+          kind: path
+          path: [collectionUid]
+      - name: environment_uid
+        type: Utf8
+        nullable: true
+        description: Associated environment UID
+        expr:
+          kind: path
+          path: [environmentUid]
+      - name: schedule
+        type: Json
+        nullable: true
+        description: Monitor execution schedule configuration (JSON)
+        expr:
+          kind: path
+          path: [schedule]
+      - name: created_by
+        type: Int64
+        nullable: true
+        description: User ID who created the monitor
+        expr:
+          kind: path
+          path: [createdBy]
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Monitor creation timestamp (ISO 8601)
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [createdAt]
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Monitor last updated timestamp (ISO 8601)
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [updatedAt]
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Monitor status (running, paused, etc.)
+        expr:
+          kind: path
+          path: [status]
+      - name: failure_count
+        type: Int64
+        nullable: true
+        description: Number of recent failures
+        expr:
+          kind: path
+          path: [failureCount]
+      - name: webhook
+        type: Utf8
+        nullable: true
+        description: Webhook URL for notifications
+        expr:
+          kind: path
+          path: [webhookUrl]

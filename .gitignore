@@ -27,3 +27,6 @@ target
 # Local task files
 tasks/
 /.github/scripts/__pycache__
+
+# Playwright CLI validation artifacts
+.playwright-cli/
