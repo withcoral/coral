@@ -51,6 +51,7 @@ jobs:
               - 'rust-toolchain.toml'
               - 'rust-toolchain'
               - 'crates/**'
+              - 'xtask/**'
             ui-build:
               - '.github/workflows/validate.yml'
               - 'crates/coral-api/proto/**'
@@ -75,6 +76,7 @@ jobs:
               - 'crates/coral-spec/**'
               - 'sources/**'
               - 'docs/**'
+              - 'CHANGELOG.md'
             license-check:
               - '.github/workflows/validate.yml'
               - 'Makefile'
@@ -161,8 +163,9 @@ jobs:
           persist-credentials: false
 
       - name: Run zizmor
-        uses: zizmorcore/zizmor-action@71321a20a9ded102f6e9ce5718a2fcec2c4f70d8 # v0.5.2
+        uses: zizmorcore/zizmor-action@5f14fd08f7cf1cb1609c1e344975f152c7ee938d # v0.5.6
         with:
+          version: v1.25.2
           annotations: ${{ github.event_name == 'pull_request' }}
           advanced-security: ${{ github.event_name != 'pull_request' }}
           min-severity: low

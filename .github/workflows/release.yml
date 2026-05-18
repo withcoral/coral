@@ -39,8 +39,7 @@ jobs:
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: ui/package-lock.json
+          package-manager-cache: false
       - name: Install UI dependencies
         if: steps.detect-ui.outputs.has-ui == 'true'
         run: npm ci --prefix ui
@@ -95,21 +94,27 @@ jobs:
           cargo install cargo-binstall --locked
           cargo binstall --no-confirm --force --disable-strategies compile cross@0.2.5
       - name: Build
+        env:
+          CROSS: ${{ matrix.cross }}
+          HAS_UI: ${{ needs.build-ui.outputs.has-ui }}
+          TARGET: ${{ matrix.target }}
         run: |
-          feature_args=""
-          if [ "${{ needs.build-ui.outputs.has-ui }}" = "true" ]; then
-            feature_args="--features embedded-ui"
+          feature_args=()
+          if [ "$HAS_UI" = "true" ]; then
+            feature_args=(--features embedded-ui)
           fi
 
-          if [ "${{ matrix.cross }}" = "true" ]; then
-            cross build --locked --release --target ${{ matrix.target }} $feature_args
+          if [ "$CROSS" = "true" ]; then
+            cross build --locked --release --target "$TARGET" "${feature_args[@]}"
           else
-            cargo build --locked --release --target ${{ matrix.target }} $feature_args
+            cargo build --locked --release --target "$TARGET" "${feature_args[@]}"
           fi
       - name: Package
+        env:
+          TARGET: ${{ matrix.target }}
         run: |
-          archive="coral-${{ matrix.target }}.tar.gz"
-          cd "target/${{ matrix.target }}/release"
+          archive="coral-${TARGET}.tar.gz"
+          cd "target/${TARGET}/release"
           tar czf "../../../${archive}" coral
           cd ../../../
       - name: Upload artifact
@@ -160,6 +165,7 @@ jobs:
         with:
           app-id: ${{ vars.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
           repositories: |
             coral
             homebrew-tap

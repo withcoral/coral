@@ -1,0 +1,1142 @@
+dsl_version: 3
+name: clickhouse
+version: 1.0.0
+description: >-
+  Query ClickHouse databases, tables, columns, query history, running
+  processes, server metrics, storage parts, and replication health via
+  the ClickHouse HTTP interface.
+backend: http
+base_url: "{{input.CLICKHOUSE_HOST}}"
+inputs:
+  CLICKHOUSE_HOST:
+    kind: variable
+    default: http://localhost:8123
+    hint: |
+      Base URL of your ClickHouse HTTP interface, including scheme and port.
+      Default is `http://localhost:8123` for a local instance.
+      For ClickHouse Cloud use `https://<host>.clickhouse.cloud:8443`.
+      Do not include a trailing slash.
+  CLICKHOUSE_USER:
+    kind: variable
+    default: default
+    hint: |
+      ClickHouse username. Defaults to `default` for single-node setups.
+      The user needs SELECT access to the `system` database.
+  CLICKHOUSE_PASSWORD:
+    kind: secret
+    hint: |
+      Password for the ClickHouse user. A non-empty password is required —
+      Coral cannot install a source with a blank secret. If your default
+      user has no password, set one first:
+      `ALTER USER default IDENTIFIED BY 'your_password'`.
+      In ClickHouse Cloud this is the service password shown at cluster
+      creation time.
+auth:
+  type: BasicAuth
+  username: "{{input.CLICKHOUSE_USER}}"
+  password: "{{input.CLICKHOUSE_PASSWORD}}"
+request_headers:
+  - name: X-ClickHouse-Format
+    from: literal
+    value: JSON
+test_queries:
+  - SELECT * FROM clickhouse.databases LIMIT 1
+  - SELECT * FROM clickhouse.metrics LIMIT 1
+tables:
+  - name: databases
+    description: ClickHouse databases visible to the configured user
+    guide: |
+      Returns all databases the configured user can see. No filter required.
+      Use `name` values from this table in SQL WHERE clauses when filtering
+      `clickhouse.tables` or `clickhouse.columns` by database.
+    request:
+      method: GET
+      path: /
+      query:
+        - name: query
+          from: literal
+          value: >-
+            SELECT
+              name,
+              engine,
+              data_path,
+              uuid,
+              comment
+            FROM system.databases
+            ORDER BY name
+    response:
+      rows_path:
+        - data
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Database name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: engine
+        type: Utf8
+        nullable: true
+        description: "Database engine (e.g. Atomic, Memory, Lazy)"
+        expr:
+          kind: path
+          path:
+            - engine
+      - name: data_path
+        type: Utf8
+        nullable: true
+        description: Path to the database directory on disk
+        expr:
+          kind: path
+          path:
+            - data_path
+      - name: uuid
+        type: Utf8
+        nullable: true
+        description: Database UUID
+        expr:
+          kind: path
+          path:
+            - uuid
+      - name: comment
+        type: Utf8
+        nullable: true
+        description: Database comment
+        expr:
+          kind: path
+          path:
+            - comment
+
+  - name: tables
+    description: All tables across ClickHouse databases with storage statistics
+    guide: |
+      Returns all tables visible to the configured user. Filter on `database`,
+      `engine`, or `name` using SQL WHERE clauses after the data is fetched.
+      `total_rows` and `total_bytes` may be NULL for non-MergeTree engines or
+      when ClickHouse cannot determine size cheaply. Join with
+      `clickhouse.columns` on `database` and `name` to inspect column schemas.
+    request:
+      method: GET
+      path: /
+      query:
+        - name: query
+          from: literal
+          value: >-
+            SELECT
+              database,
+              name,
+              engine,
+              total_rows,
+              total_bytes,
+              formatDateTime(toTimeZone(metadata_modification_time, 'UTC'), '%Y-%m-%dT%H:%i:%SZ') AS metadata_modification_time,
+              partition_key,
+              sorting_key,
+              primary_key,
+              comment
+            FROM system.tables
+            ORDER BY database, name
+    response:
+      rows_path:
+        - data
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: database
+        type: Utf8
+        nullable: false
+        description: Database the table belongs to
+        expr:
+          kind: path
+          path:
+            - database
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Table name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: engine
+        type: Utf8
+        nullable: true
+        description: "Table engine (e.g. MergeTree, ReplicatedMergeTree, Distributed)"
+        expr:
+          kind: path
+          path:
+            - engine
+      - name: total_rows
+        type: Int64
+        nullable: true
+        description: Approximate row count; NULL when not cheaply available
+        expr:
+          kind: path
+          path:
+            - total_rows
+      - name: total_bytes
+        type: Int64
+        nullable: true
+        description: Approximate on-disk size in bytes; NULL for some engines
+        expr:
+          kind: path
+          path:
+            - total_bytes
+      - name: metadata_modification_time
+        type: Timestamp
+        nullable: true
+        description: Time the table metadata was last modified
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - metadata_modification_time
+      - name: partition_key
+        type: Utf8
+        nullable: true
+        description: Partition key expression
+        expr:
+          kind: path
+          path:
+            - partition_key
+      - name: sorting_key
+        type: Utf8
+        nullable: true
+        description: Sorting key expression
+        expr:
+          kind: path
+          path:
+            - sorting_key
+      - name: primary_key
+        type: Utf8
+        nullable: true
+        description: Primary key expression
+        expr:
+          kind: path
+          path:
+            - primary_key
+      - name: comment
+        type: Utf8
+        nullable: true
+        description: Table comment
+        expr:
+          kind: path
+          path:
+            - comment
+
+  - name: columns
+    description: Column definitions across all ClickHouse tables
+    guide: |
+      Returns schema information for every column in every visible table.
+      Filter on `database`, `table`, or `name` using SQL WHERE clauses.
+      Use `is_in_primary_key`, `is_in_sorting_key`, and `is_in_partition_key`
+      (1 = yes, 0 = no) to understand table key structure. Check
+      `data_compressed_bytes` vs `data_uncompressed_bytes` to evaluate
+      compression ratios per column.
+    request:
+      method: GET
+      path: /
+      query:
+        - name: query
+          from: literal
+          value: >-
+            SELECT
+              database,
+              table,
+              name,
+              type,
+              position,
+              default_kind,
+              default_expression,
+              comment,
+              is_in_partition_key,
+              is_in_sorting_key,
+              is_in_primary_key,
+              data_compressed_bytes,
+              data_uncompressed_bytes
+            FROM system.columns
+            ORDER BY database, table, position
+    response:
+      rows_path:
+        - data
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: database
+        type: Utf8
+        nullable: false
+        description: Database the column belongs to
+        expr:
+          kind: path
+          path:
+            - database
+      - name: table
+        type: Utf8
+        nullable: false
+        description: Table the column belongs to
+        expr:
+          kind: path
+          path:
+            - table
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Column name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: type
+        type: Utf8
+        nullable: false
+        description: "ClickHouse data type (e.g. UInt64, String, Nullable(DateTime))"
+        expr:
+          kind: path
+          path:
+            - type
+      - name: position
+        type: Int64
+        nullable: false
+        description: One-based ordinal position of the column in the table
+        expr:
+          kind: path
+          path:
+            - position
+      - name: default_kind
+        type: Utf8
+        nullable: true
+        description: "Default expression kind: DEFAULT, MATERIALIZED, or ALIAS; empty if none"
+        expr:
+          kind: path
+          path:
+            - default_kind
+      - name: default_expression
+        type: Utf8
+        nullable: true
+        description: Default value expression, if any
+        expr:
+          kind: path
+          path:
+            - default_expression
+      - name: comment
+        type: Utf8
+        nullable: true
+        description: Column comment
+        expr:
+          kind: path
+          path:
+            - comment
+      - name: is_in_partition_key
+        type: Int64
+        nullable: false
+        description: "1 if the column is part of the partition key, 0 otherwise"
+        expr:
+          kind: path
+          path:
+            - is_in_partition_key
+      - name: is_in_sorting_key
+        type: Int64
+        nullable: false
+        description: "1 if the column is part of the sorting key, 0 otherwise"
+        expr:
+          kind: path
+          path:
+            - is_in_sorting_key
+      - name: is_in_primary_key
+        type: Int64
+        nullable: false
+        description: "1 if the column is part of the primary key, 0 otherwise"
+        expr:
+          kind: path
+          path:
+            - is_in_primary_key
+      - name: data_compressed_bytes
+        type: Int64
+        nullable: true
+        description: Compressed size of column data in bytes
+        expr:
+          kind: path
+          path:
+            - data_compressed_bytes
+      - name: data_uncompressed_bytes
+        type: Int64
+        nullable: true
+        description: Uncompressed size of column data in bytes
+        expr:
+          kind: path
+          path:
+            - data_uncompressed_bytes
+
+  - name: query_log
+    description: Recent query history from system.query_log including failures
+    guide: |
+      Returns the 1000 most recent query log entries across all event types,
+      newest first. Filter on `type` to narrow results:
+      - `QueryFinish` — queries that completed successfully
+      - `ExceptionWhileProcessing` — queries that failed during execution
+      - `ExceptionBeforeStart` — queries that failed before starting
+      - `QueryStart` — query start events (paired with a finish or exception row)
+
+      Check `exception` for non-empty values to find failures. Filter on
+      `user`, `current_database`, or `query_kind` using SQL WHERE clauses.
+
+      Note: query_log is only populated when `log_queries = 1` is set in the
+      ClickHouse server configuration. An empty result may mean logging is
+      disabled rather than that no queries ran.
+
+      The table returns the 1000 most recent entries. On a high-traffic server
+      this may cover only seconds of history. Use a WHERE clause on `event_time`
+      to narrow results after the data is fetched (e.g.
+      `WHERE event_time > '2026-05-14 00:00:00'`).
+
+      `query_kind` values include Select, Insert, Create, Drop, Alter, and
+      System. `read_rows`, `read_bytes`, `result_rows`, and `memory_usage`
+      are useful for identifying expensive queries.
+    request:
+      method: GET
+      path: /
+      query:
+        - name: query
+          from: literal
+          value: >-
+            SELECT
+              type,
+              query_id,
+              initial_query_id,
+              formatDateTime(toTimeZone(event_time, 'UTC'), '%Y-%m-%dT%H:%i:%SZ') AS event_time,
+              query_duration_ms,
+              query,
+              exception,
+              read_rows,
+              read_bytes,
+              result_rows,
+              result_bytes,
+              memory_usage,
+              user,
+              initial_user,
+              query_kind,
+              current_database,
+              is_initial_query
+            FROM system.query_log
+            ORDER BY event_time DESC
+            LIMIT 1000
+    response:
+      rows_path:
+        - data
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: type
+        type: Utf8
+        nullable: true
+        description: "Query lifecycle event type: QueryFinish, ExceptionWhileProcessing, ExceptionBeforeStart, or QueryStart"
+        expr:
+          kind: path
+          path:
+            - type
+      - name: query_id
+        type: Utf8
+        nullable: true
+        description: Unique query identifier — use to correlate paired QueryStart/QueryFinish rows and join with clickhouse.processes
+        expr:
+          kind: path
+          path:
+            - query_id
+      - name: initial_query_id
+        type: Utf8
+        nullable: true
+        description: query_id of the initial query that triggered this one; same as query_id for non-distributed queries
+        expr:
+          kind: path
+          path:
+            - initial_query_id
+      - name: event_time
+        type: Timestamp
+        nullable: true
+        description: Time this log event was recorded; for QueryFinish rows this is the completion time, for QueryStart rows this is the start time
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - event_time
+      - name: query_duration_ms
+        type: Int64
+        nullable: true
+        description: Total query wall-clock duration in milliseconds
+        expr:
+          kind: path
+          path:
+            - query_duration_ms
+      - name: query
+        type: Utf8
+        nullable: true
+        description: Query text as submitted
+        expr:
+          kind: path
+          path:
+            - query
+      - name: exception
+        type: Utf8
+        nullable: true
+        description: Exception message if the query failed; empty string if successful
+        expr:
+          kind: path
+          path:
+            - exception
+      - name: read_rows
+        type: Int64
+        nullable: true
+        description: Number of rows read from source tables
+        expr:
+          kind: path
+          path:
+            - read_rows
+      - name: read_bytes
+        type: Int64
+        nullable: true
+        description: Number of bytes read from source tables
+        expr:
+          kind: path
+          path:
+            - read_bytes
+      - name: result_rows
+        type: Int64
+        nullable: true
+        description: Number of rows in the query result
+        expr:
+          kind: path
+          path:
+            - result_rows
+      - name: result_bytes
+        type: Int64
+        nullable: true
+        description: Number of bytes in the query result
+        expr:
+          kind: path
+          path:
+            - result_bytes
+      - name: memory_usage
+        type: Int64
+        nullable: true
+        description: Peak memory usage in bytes during query execution
+        expr:
+          kind: path
+          path:
+            - memory_usage
+      - name: user
+        type: Utf8
+        nullable: true
+        description: ClickHouse user who submitted the query
+        expr:
+          kind: path
+          path:
+            - user
+      - name: initial_user
+        type: Utf8
+        nullable: true
+        description: User who initiated the query (differs from user in distributed queries)
+        expr:
+          kind: path
+          path:
+            - initial_user
+      - name: query_kind
+        type: Utf8
+        nullable: true
+        description: "Query kind: Select, Insert, Create, Drop, Alter, System, etc."
+        expr:
+          kind: path
+          path:
+            - query_kind
+      - name: current_database
+        type: Utf8
+        nullable: true
+        description: Database context active when the query ran
+        expr:
+          kind: path
+          path:
+            - current_database
+      - name: is_initial_query
+        type: Int64
+        nullable: true
+        description: "1 for a top-level query, 0 for a sub-query in distributed execution"
+        expr:
+          kind: path
+          path:
+            - is_initial_query
+
+  - name: processes
+    description: Currently running queries (live snapshot of system.processes)
+    guide: |
+      Returns a real-time snapshot of all queries executing at the moment
+      the request is made — equivalent to SHOW PROCESSLIST. Results change
+      on every query. Use `elapsed` (seconds since the query started) to
+      identify long-running queries. `total_rows_approx` is an estimate;
+      0 means ClickHouse has not yet calculated it.
+
+      Note: the Coral query fetching this table will appear as one of the
+      returned rows. To cancel a running query, use the ClickHouse KILL QUERY
+      statement with the `query_id` value from this table.
+    request:
+      method: GET
+      path: /
+      query:
+        - name: query
+          from: literal
+          value: >-
+            SELECT
+              query_id,
+              user,
+              current_database,
+              query,
+              elapsed,
+              read_rows,
+              read_bytes,
+              written_rows,
+              written_bytes,
+              total_rows_approx,
+              memory_usage,
+              peak_memory_usage
+            FROM system.processes
+            ORDER BY elapsed DESC
+    response:
+      rows_path:
+        - data
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: query_id
+        type: Utf8
+        nullable: false
+        description: Unique query identifier; use with KILL QUERY to cancel
+        expr:
+          kind: path
+          path:
+            - query_id
+      - name: user
+        type: Utf8
+        nullable: true
+        description: ClickHouse user running the query
+        expr:
+          kind: path
+          path:
+            - user
+      - name: current_database
+        type: Utf8
+        nullable: true
+        description: Database context for the query
+        expr:
+          kind: path
+          path:
+            - current_database
+      - name: query
+        type: Utf8
+        nullable: true
+        description: Query text
+        expr:
+          kind: path
+          path:
+            - query
+      - name: elapsed
+        type: Float64
+        nullable: true
+        description: Seconds elapsed since the query started
+        expr:
+          kind: path
+          path:
+            - elapsed
+      - name: read_rows
+        type: Int64
+        nullable: true
+        description: Number of rows read so far
+        expr:
+          kind: path
+          path:
+            - read_rows
+      - name: read_bytes
+        type: Int64
+        nullable: true
+        description: Number of bytes read so far
+        expr:
+          kind: path
+          path:
+            - read_bytes
+      - name: written_rows
+        type: Int64
+        nullable: true
+        description: Number of rows written so far (for INSERT queries)
+        expr:
+          kind: path
+          path:
+            - written_rows
+      - name: written_bytes
+        type: Int64
+        nullable: true
+        description: Number of bytes written so far (for INSERT queries)
+        expr:
+          kind: path
+          path:
+            - written_bytes
+      - name: total_rows_approx
+        type: Int64
+        nullable: true
+        description: Estimated total rows to process; 0 if not yet calculated
+        expr:
+          kind: path
+          path:
+            - total_rows_approx
+      - name: memory_usage
+        type: Int64
+        nullable: true
+        description: Current memory usage in bytes
+        expr:
+          kind: path
+          path:
+            - memory_usage
+      - name: peak_memory_usage
+        type: Int64
+        nullable: true
+        description: Peak memory usage in bytes since the query started
+        expr:
+          kind: path
+          path:
+            - peak_memory_usage
+
+  - name: metrics
+    description: Live ClickHouse server metric counters from system.metrics
+    guide: |
+      Returns instantaneous server metric counters. Each row is one named
+      counter with its current value and a description. No filter required.
+      Useful metrics include: Query (active queries), Merge (active merges),
+      ReplicatedChecks, BackgroundPoolTask, MemoryTracking,
+      ZooKeeperRequest, TCPConnection, HTTPConnection.
+
+      These are point-in-time snapshots — query repeatedly to observe trends.
+      For time-series history, see system.metric_log (not exposed here).
+    request:
+      method: GET
+      path: /
+      query:
+        - name: query
+          from: literal
+          value: >-
+            SELECT
+              metric,
+              value,
+              description
+            FROM system.metrics
+            ORDER BY metric
+    response:
+      rows_path:
+        - data
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: metric
+        type: Utf8
+        nullable: false
+        description: Metric name
+        expr:
+          kind: path
+          path:
+            - metric
+      - name: value
+        type: Int64
+        nullable: false
+        description: Current value of the metric counter
+        expr:
+          kind: path
+          path:
+            - value
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Human-readable description of what the metric measures
+        expr:
+          kind: path
+          path:
+            - description
+
+  - name: parts
+    description: Active MergeTree data parts with storage and partition statistics
+    guide: |
+      Returns all active data parts (WHERE active = 1) for MergeTree family
+      tables. Parts are the physical storage units ClickHouse merges in the
+      background. Filter on `database` or `table` using SQL WHERE clauses.
+
+      WARNING: on production clusters with many tables, system.parts can
+      return hundreds of thousands of rows before local WHERE filtering
+      applies. Always add a WHERE clause on `database` or `table` when
+      querying specific tables, and use LIMIT for exploratory queries.
+
+      Use `bytes_on_disk` and `rows` to understand partition size distribution.
+      A high part count for a table (thousands) usually means merges are
+      falling behind inserts. `min_date`/`max_date` show the date range
+      covered by each part (only meaningful when the partition key is a Date).
+    fetch_limit_default: 1000
+    request:
+      method: GET
+      path: /
+      query:
+        - name: query
+          from: literal
+          value: >-
+            SELECT
+              database,
+              table,
+              partition,
+              name,
+              rows,
+              bytes_on_disk,
+              data_compressed_bytes,
+              data_uncompressed_bytes,
+              marks,
+              formatDateTime(toTimeZone(modification_time, 'UTC'), '%Y-%m-%dT%H:%i:%SZ') AS modification_time,
+              min_date,
+              max_date,
+              primary_key_bytes_in_memory
+            FROM system.parts
+            WHERE active = 1
+            ORDER BY database, table, partition, name
+    response:
+      rows_path:
+        - data
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: database
+        type: Utf8
+        nullable: false
+        description: Database the part belongs to
+        expr:
+          kind: path
+          path:
+            - database
+      - name: table
+        type: Utf8
+        nullable: false
+        description: Table the part belongs to
+        expr:
+          kind: path
+          path:
+            - table
+      - name: partition
+        type: Utf8
+        nullable: true
+        description: Partition ID
+        expr:
+          kind: path
+          path:
+            - partition
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Part name (encodes min/max block numbers and level)
+        expr:
+          kind: path
+          path:
+            - name
+      - name: rows
+        type: Int64
+        nullable: true
+        description: Number of rows stored in this part
+        expr:
+          kind: path
+          path:
+            - rows
+      - name: bytes_on_disk
+        type: Int64
+        nullable: true
+        description: Total size on disk in bytes including marks and index files
+        expr:
+          kind: path
+          path:
+            - bytes_on_disk
+      - name: data_compressed_bytes
+        type: Int64
+        nullable: true
+        description: Compressed size of the data columns in bytes
+        expr:
+          kind: path
+          path:
+            - data_compressed_bytes
+      - name: data_uncompressed_bytes
+        type: Int64
+        nullable: true
+        description: Uncompressed size of the data columns in bytes
+        expr:
+          kind: path
+          path:
+            - data_uncompressed_bytes
+      - name: marks
+        type: Int64
+        nullable: true
+        description: Number of marks (index granules) in the part
+        expr:
+          kind: path
+          path:
+            - marks
+      - name: modification_time
+        type: Timestamp
+        nullable: true
+        description: Time the part was created or last modified
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - modification_time
+      - name: min_date
+        type: Utf8
+        nullable: true
+        description: Minimum Date value in the part (meaningful for Date partition keys)
+        expr:
+          kind: path
+          path:
+            - min_date
+      - name: max_date
+        type: Utf8
+        nullable: true
+        description: Maximum Date value in the part (meaningful for Date partition keys)
+        expr:
+          kind: path
+          path:
+            - max_date
+      - name: primary_key_bytes_in_memory
+        type: Int64
+        nullable: true
+        description: Size of the primary key index loaded in memory in bytes
+        expr:
+          kind: path
+          path:
+            - primary_key_bytes_in_memory
+
+  - name: replicas
+    description: Replication health and queue depth per ReplicatedMergeTree table
+    guide: |
+      Returns one row per replicated table on this server. Only populated
+      when using ReplicatedMergeTree family engines with ZooKeeper or
+      ClickHouse Keeper. Returns 0 rows on standalone (non-replicated)
+      instances — this is expected, not an error.
+
+      Key health indicators:
+      - `absolute_delay`: seconds behind the most up-to-date replica; 0 is healthy
+      - `queue_size`: total pending replication tasks; high values mean the
+        replica is falling behind
+      - `active_replicas` vs `total_replicas`: low active count signals
+        replicas are down
+      - `is_readonly`: 1 means the replica cannot accept writes (usually a
+        ZooKeeper connectivity problem)
+    request:
+      method: GET
+      path: /
+      query:
+        - name: query
+          from: literal
+          value: >-
+            SELECT
+              database,
+              table,
+              engine,
+              is_leader,
+              can_become_leader,
+              is_readonly,
+              is_session_expired,
+              future_parts,
+              parts_to_check,
+              queue_size,
+              inserts_in_queue,
+              merges_in_queue,
+              part_mutations_in_queue,
+              absolute_delay,
+              total_replicas,
+              active_replicas,
+              formatDateTime(toTimeZone(last_queue_update, 'UTC'), '%Y-%m-%dT%H:%i:%SZ') AS last_queue_update,
+              replica_name,
+              zookeeper_path
+            FROM system.replicas
+            ORDER BY database, table
+    response:
+      rows_path:
+        - data
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: database
+        type: Utf8
+        nullable: false
+        description: Database the replicated table belongs to
+        expr:
+          kind: path
+          path:
+            - database
+      - name: table
+        type: Utf8
+        nullable: false
+        description: Table name
+        expr:
+          kind: path
+          path:
+            - table
+      - name: engine
+        type: Utf8
+        nullable: true
+        description: Table engine name
+        expr:
+          kind: path
+          path:
+            - engine
+      - name: is_leader
+        type: Int64
+        nullable: true
+        description: "1 if this replica is the current leader for merge scheduling"
+        expr:
+          kind: path
+          path:
+            - is_leader
+      - name: can_become_leader
+        type: Int64
+        nullable: true
+        description: "1 if this replica is eligible to become the leader"
+        expr:
+          kind: path
+          path:
+            - can_become_leader
+      - name: is_readonly
+        type: Int64
+        nullable: true
+        description: "1 if the replica is in read-only mode (usually a ZooKeeper issue)"
+        expr:
+          kind: path
+          path:
+            - is_readonly
+      - name: is_session_expired
+        type: Int64
+        nullable: true
+        description: "1 if the ZooKeeper session has expired"
+        expr:
+          kind: path
+          path:
+            - is_session_expired
+      - name: future_parts
+        type: Int64
+        nullable: true
+        description: Number of data parts that will appear after pending INSERTs and merges
+        expr:
+          kind: path
+          path:
+            - future_parts
+      - name: parts_to_check
+        type: Int64
+        nullable: true
+        description: Number of data parts in the verification queue
+        expr:
+          kind: path
+          path:
+            - parts_to_check
+      - name: queue_size
+        type: Int64
+        nullable: true
+        description: Total number of pending replication queue tasks
+        expr:
+          kind: path
+          path:
+            - queue_size
+      - name: inserts_in_queue
+        type: Int64
+        nullable: true
+        description: Number of pending INSERT operations in the replication queue
+        expr:
+          kind: path
+          path:
+            - inserts_in_queue
+      - name: merges_in_queue
+        type: Int64
+        nullable: true
+        description: Number of pending merge operations in the replication queue
+        expr:
+          kind: path
+          path:
+            - merges_in_queue
+      - name: part_mutations_in_queue
+        type: Int64
+        nullable: true
+        description: Number of pending part mutation tasks in the replication queue
+        expr:
+          kind: path
+          path:
+            - part_mutations_in_queue
+      - name: absolute_delay
+        type: Int64
+        nullable: true
+        description: Replication lag in seconds behind the most up-to-date replica; 0 is healthy
+        expr:
+          kind: path
+          path:
+            - absolute_delay
+      - name: total_replicas
+        type: Int64
+        nullable: true
+        description: Total number of known replicas for this table
+        expr:
+          kind: path
+          path:
+            - total_replicas
+      - name: active_replicas
+        type: Int64
+        nullable: true
+        description: Number of replicas currently active in ZooKeeper
+        expr:
+          kind: path
+          path:
+            - active_replicas
+      - name: last_queue_update
+        type: Timestamp
+        nullable: true
+        description: Time the replication queue was last updated
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - last_queue_update
+      - name: replica_name
+        type: Utf8
+        nullable: true
+        description: Name of this replica in ZooKeeper
+        expr:
+          kind: path
+          path:
+            - replica_name
+      - name: zookeeper_path
+        type: Utf8
+        nullable: true
+        description: Path to the table's ZooKeeper node
+        expr:
+          kind: path
+          path:
+            - zookeeper_path
