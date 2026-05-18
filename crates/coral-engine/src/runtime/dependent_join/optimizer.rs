@@ -219,6 +219,9 @@ fn analyze_dependent_bindings(
             return DependentJoinAnalysis::Fallback(DependentJoinFallbackReason::NonCoercible);
         }
 
+        if binding_filters.contains(&filter.name) {
+            return DependentJoinAnalysis::Fallback(DependentJoinFallbackReason::OverConstrained);
+        }
         binding_filters.push(filter.name.clone());
     }
 
@@ -328,6 +331,7 @@ fn resolver_with_binding_columns(
         .map(Expr::Column)
         .collect::<Vec<_>>();
     let mut binding_keys = Vec::with_capacity(join_on.len());
+    let mut binding_filter_names = BTreeSet::new();
 
     for (binding_index, (left_expr, right_expr)) in join_on.iter().enumerate() {
         let (dependent_column, resolver_column) =
@@ -350,6 +354,9 @@ fn resolver_with_binding_columns(
             .find(|filter| filter.name == dependent_column.name)?;
 
         if !filter.bindable || filter.wire_type != WireType::String {
+            return None;
+        }
+        if !binding_filter_names.insert(filter.name.as_str()) {
             return None;
         }
 

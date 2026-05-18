@@ -1003,6 +1003,72 @@ async fn literal_and_join_binding_for_same_filter_falls_back_to_regular_join_exe
 }
 
 #[tokio::test]
+async fn duplicate_join_binding_for_same_filter_falls_back_to_regular_join_execution() {
+    let temp = TempDir::new().expect("temp dir");
+    write_jsonl_file(
+        temp.path(),
+        "issues.jsonl",
+        &[
+            json!({
+                "title": "Same",
+                "github_owner": "withcoral",
+                "github_org": "withcoral",
+                "github_repo": "coral",
+                "github_pr_number": 123
+            }),
+            json!({
+                "title": "Different",
+                "github_owner": "withcoral",
+                "github_org": "apache",
+                "github_repo": "coral",
+                "github_pr_number": 123
+            }),
+        ],
+    );
+
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/pulls"))
+        .and(query_param_is_missing("owner"))
+        .and(query_param_is_missing("repo"))
+        .and(query_param_is_missing("number"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [
+                { "owner": "withcoral", "repo": "coral", "number": 123, "state": "open" },
+                { "owner": "apache", "repo": "arrow-datafusion", "number": 42, "state": "closed" }
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let execution = CoralQuery::execute_sql(
+        &[
+            build_source(issues_with_org_manifest(temp.path())),
+            build_source(github_broad_query_manifest(&server.uri())),
+        ],
+        test_runtime(),
+        "
+        SELECT i.title AS issue_title, pr.state AS pr_state
+        FROM issues.items AS i
+        JOIN github.pull_requests AS pr
+          ON pr.owner = i.github_owner
+         AND pr.owner = i.github_org
+         AND pr.repo = i.github_repo
+         AND pr.number = i.github_pr_number
+        ORDER BY i.title
+        ",
+    )
+    .await
+    .expect("duplicate binding for one dependent filter should fall back to normal execution");
+
+    assert_eq!(
+        execution_to_rows(&execution),
+        vec![json!({ "issue_title": "Same", "pr_state": "open" })]
+    );
+}
+
+#[tokio::test]
 async fn unsupported_resolver_binding_type_falls_back_to_regular_join_execution() {
     let temp = TempDir::new().expect("temp dir");
     write_jsonl_file(
@@ -1320,6 +1386,30 @@ fn issues_float_binding_manifest(dir: &Path) -> Value {
                 { "name": "github_owner", "type": "Utf8" },
                 { "name": "github_repo", "type": "Utf8" },
                 { "name": "github_pr_number", "type": "Float64" }
+            ]
+        }]
+    })
+}
+
+fn issues_with_org_manifest(dir: &Path) -> Value {
+    json!({
+        "name": "issues",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "jsonl",
+        "tables": [{
+            "name": "items",
+            "description": "Issue fixture with an extra owner-like column",
+            "source": {
+                "location": dir_url(dir),
+                "glob": "**/*.jsonl"
+            },
+            "columns": [
+                { "name": "title", "type": "Utf8" },
+                { "name": "github_owner", "type": "Utf8" },
+                { "name": "github_org", "type": "Utf8" },
+                { "name": "github_repo", "type": "Utf8" },
+                { "name": "github_pr_number", "type": "Int64" }
             ]
         }]
     })
