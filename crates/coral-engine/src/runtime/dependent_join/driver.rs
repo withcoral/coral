@@ -24,7 +24,7 @@ pub(crate) async fn run_binding_phase(
     }
 
     while let Some(result) = tasks.join_next().await {
-        let (tuple, rows) = result.map_err(join_error)??;
+        let (tuple, rows) = result.map_err(|error| join_error(&error))??;
         state.buffer_fetch_result(tuple, rows);
 
         if let Some(tuple) = tuples.next() {
@@ -43,6 +43,6 @@ fn spawn_fetch(
     tasks.spawn(async move { fetcher.fetch_one(tuple).await }.instrument(tracing::Span::current()));
 }
 
-fn join_error(error: tokio::task::JoinError) -> DataFusionError {
+fn join_error(error: &tokio::task::JoinError) -> DataFusionError {
     DataFusionError::Execution(format!("dependent join fetch task failed: {error}"))
 }

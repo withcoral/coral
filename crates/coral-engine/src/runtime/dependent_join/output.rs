@@ -77,7 +77,7 @@ pub(crate) fn build_joined_batches(
         }
 
         if !tuple_batches.is_empty() {
-            batches.push(coalesce_joined_batches(output_schema, tuple_batches)?);
+            batches.push(coalesce_joined_batches(output_schema, &tuple_batches)?);
         }
     }
 
@@ -86,14 +86,14 @@ pub(crate) fn build_joined_batches(
 
 fn coalesce_joined_batches(
     output_schema: &SchemaRef,
-    batches: Vec<RecordBatch>,
+    batches: &[RecordBatch],
 ) -> Result<RecordBatch> {
-    match batches.as_slice() {
+    match batches {
         [] => Err(DataFusionError::Internal(
             "dependent join cannot coalesce empty output batches".into(),
         )),
         [batch] => Ok(batch.clone()),
-        _ => concat_batches(output_schema, &batches).map_err(arrow_error),
+        _ => concat_batches(output_schema, batches).map_err(arrow_error),
     }
 }
 

@@ -976,7 +976,7 @@ tables:
         let query_manager = QueryManager::new(
             ConfigStore::new(layout.clone()),
             SecretStore::new(layout.clone()),
-            QueryRuntimeContext { home_dir: None },
+            QueryRuntimeContext::default(),
             layout,
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
@@ -1070,7 +1070,7 @@ tables:
         let query_manager = QueryManager::new(
             ConfigStore::new(layout.clone()),
             SecretStore::new(layout.clone()),
-            QueryRuntimeContext { home_dir: None },
+            QueryRuntimeContext::default(),
             layout,
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
