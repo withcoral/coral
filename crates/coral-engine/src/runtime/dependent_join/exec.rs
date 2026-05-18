@@ -71,7 +71,7 @@ impl DependentJoinExec {
         let props = Arc::new(PlanProperties::new(
             EquivalenceProperties::new(Arc::clone(&config.output_schema)),
             Partitioning::UnknownPartitioning(1),
-            EmissionType::Incremental,
+            EmissionType::Final,
             Boundedness::Bounded,
         ));
 
@@ -369,7 +369,7 @@ async fn execute_dependent_join(
         max_rows_per_binding,
         page_hint,
     });
-    let state = run_binding_phase(state, tuples, &fetcher, &caps).await?;
+    let state = run_binding_phase(state, tuples, &fetcher).await?;
     metrics.record(&state);
 
     build_joined_batches(BuildJoinedBatchesConfig {

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Review Coral Source"
+  short_description: "Review Coral source PRs for content and style"
+  default_prompt: "Use $review-coral-source to review sources/community/foo for Coral source quality."

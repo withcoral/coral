@@ -533,6 +533,11 @@ Bindable filters must use `mode: equality`. Search-index-backed tables cannot
 declare bindable filters because their filtered result sets are not complete
 enough to preserve SQL join correctness.
 
+In V1, dependent join execution buffers resolver rows and dependent fetch
+results before producing joined output. The caps above bound the number of
+distinct binding tuples, resolver rows, and rows returned by each dependent
+fetch; they do not cap total joined output rows.
+
 Example:
 
 ```yaml
