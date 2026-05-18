@@ -176,7 +176,10 @@ impl CatalogDiscovery {
             .await?;
         let mut items = Vec::with_capacity(catalog.tables.len() + catalog.table_functions.len());
         if kind.is_none_or(|kind| kind == CatalogItemKind::Table) {
-            items.extend(catalog.tables.into_iter().map(CatalogItem::Table));
+            items.extend(catalog.tables.into_iter().map(|mut table| {
+                table.columns.clear();
+                CatalogItem::Table(table)
+            }));
         }
         if kind.is_none_or(|kind| kind == CatalogItemKind::TableFunction) {
             items.extend(

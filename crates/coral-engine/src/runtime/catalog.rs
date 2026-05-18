@@ -194,7 +194,7 @@ pub(crate) fn collect_table_functions(
                 .table_functions
                 .iter()
                 .map(move |function| TableFunctionInfo {
-                    schema_name: source.schema_name.clone(),
+                    schema_name: function.schema_name.clone(),
                     function_name: function.function_name.clone(),
                     description: function.description.clone(),
                     arguments: function
@@ -482,4 +482,37 @@ fn build_columns_table(active_sources: &[RegisteredSource]) -> Result<MemTable> 
     .map_err(|error| DataFusionError::ArrowError(Box::new(error), None))?;
 
     MemTable::try_new(schema, vec![vec![batch]])
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::backends::{RegisteredSource, RegisteredTableFunction};
+
+    use super::collect_table_functions;
+
+    #[test]
+    fn collect_table_functions_preserves_registered_function_schema() {
+        let functions = collect_table_functions(&[RegisteredSource {
+            schema_name: "source_schema".to_string(),
+            tables: Vec::new(),
+            table_functions: vec![RegisteredTableFunction {
+                schema_name: "function_schema".to_string(),
+                function_name: "search".to_string(),
+                internal_name: "internal_search".to_string(),
+                description: String::new(),
+                arguments: Vec::new(),
+                result_columns: Vec::new(),
+                arg_names: Vec::new(),
+            }],
+            inputs: Vec::new(),
+        }]);
+
+        assert_eq!(functions.len(), 1);
+        assert_eq!(
+            functions
+                .first()
+                .map(|function| function.schema_name.as_str()),
+            Some("function_schema")
+        );
+    }
 }

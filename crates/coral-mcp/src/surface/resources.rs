@@ -8,7 +8,7 @@ use serde_json::Value;
 
 use super::values::queryable_table_summary_values;
 
-static INITIAL_INSTRUCTIONS: &str = "You are connected to Coral. Read `coral://guide` for query patterns, use `list_catalog`, `search_catalog`, `describe_table`, and `list_columns` to inspect queryable tables and source-scoped table functions, and use `sql` for final queries.";
+static INITIAL_INSTRUCTIONS: &str = "You are connected to Coral. Read `coral://guide` for query patterns, use `list_catalog` and `search_catalog` to inspect queryable tables and source-scoped table functions, use `describe_table` and `list_columns` for table-specific metadata, and use `sql` for final queries.";
 static GUIDE_TEMPLATE: &str = include_str!("../guide_template.md");
 
 pub(crate) fn initial_instructions() -> &'static str {

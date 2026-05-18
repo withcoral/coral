@@ -131,7 +131,7 @@ enum CatalogItemKind {
 message CatalogItem {
   // Queryable catalog item payload.
   oneof item {
-    // Ordinary query-visible table metadata.
+    // Ordinary query-visible table summary. Use ListColumns for column metadata.
     TableSummary table = 1;
     // Query-visible table function metadata.
     TableFunction table_function = 2;
