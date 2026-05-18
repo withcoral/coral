@@ -1,0 +1,174 @@
+name: todoist
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query tasks, projects, sections, labels, and comments from Todoist.
+inputs:
+  TODOIST_API_TOKEN:
+    kind: secret
+    hint: |
+      Go to Todoist Settings -> Integrations -> Developer
+      and copy your personal API token.
+base_url: https://api.todoist.com
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.TODOIST_API_TOKEN}}
+request_headers:
+  - name: Content-Type
+    from: literal
+    value: application/json
+test_queries:
+  - SELECT * FROM todoist.projects LIMIT 1
+tables:
+  - name: projects
+    description: All projects in the Todoist account
+    request:
+      method: GET
+      path: /rest/v2/projects
+    response:
+      rows_path: []
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Project ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Project name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: color
+        type: Utf8
+        nullable: true
+        description: Project color
+        expr:
+          kind: path
+          path:
+            - color
+      - name: is_favorite
+        type: Boolean
+        nullable: true
+        description: Whether the project is marked as favorite
+        expr:
+          kind: path
+          path:
+            - is_favorite
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Project URL
+        expr:
+          kind: path
+          path:
+            - url
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw project object
+        expr:
+          kind: current_row
+  - name: tasks
+    description: Active tasks in Todoist
+    filters:
+      - name: project_id
+        required: false
+      - name: label
+        required: false
+    request:
+      method: GET
+      path: /rest/v2/tasks
+      query:
+        - name: project_id
+          from: filter
+          key: project_id
+        - name: label
+          from: filter
+          key: label
+    response:
+      rows_path: []
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Task ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: project_id
+        type: Utf8
+        nullable: true
+        description: Project ID
+        expr:
+          kind: path
+          path:
+            - project_id
+      - name: content
+        type: Utf8
+        nullable: false
+        description: Task title
+        expr:
+          kind: path
+          path:
+            - content
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Task description
+        expr:
+          kind: path
+          path:
+            - description
+      - name: is_completed
+        type: Boolean
+        nullable: true
+        description: Whether the task is completed
+        expr:
+          kind: path
+          path:
+            - is_completed
+      - name: priority
+        type: Int64
+        nullable: true
+        description: Task priority (1-4)
+        expr:
+          kind: path
+          path:
+            - priority
+      - name: due
+        type: Json
+        nullable: true
+        description: Due date object
+        expr:
+          kind: path
+          path:
+            - due
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Task URL
+        expr:
+          kind: path
+          path:
+            - url
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw task object
+        expr:
+          kind: current_row
