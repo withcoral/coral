@@ -611,6 +611,12 @@ struct TraceSpanIdentityRecord {
     trace_id: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct StoredHttpBodyIdentityRecord {
+    trace_id: String,
+    span_id: String,
+}
+
 impl TraceStore {
     #[cfg(test)]
     pub(crate) fn new(dir: PathBuf) -> Self {
@@ -711,7 +717,7 @@ impl TraceStore {
             return Err(TraceStoreError::NotFound(trace_id.to_string()));
         }
 
-        self.apply_http_body_records(trace_id, &mut spans)?;
+        self.apply_http_body_records(trace_id, &mut spans);
 
         spans.sort_by(|left, right| {
             left.start_time_unix_nanos
@@ -723,38 +729,23 @@ impl TraceStore {
         Ok(TraceDetailRecord { summary, spans })
     }
 
-    fn apply_http_body_records(
-        &self,
-        trace_id: &str,
-        spans: &mut [TraceSpanRecord],
-    ) -> Result<(), TraceStoreError> {
+    fn apply_http_body_records(&self, trace_id: &str, spans: &mut [TraceSpanRecord]) {
         let span_indexes = spans
             .iter()
             .enumerate()
             .map(|(index, span)| (span.span_id.clone(), index))
             .collect::<HashMap<_, _>>();
 
-        for record in self.read_http_body_records()? {
-            if record.trace_id != trace_id {
-                continue;
+        let paths = match self.body_jsonl_files() {
+            Ok(paths) => paths,
+            Err(error) => {
+                tracing::warn!(detail = %error, "failed to list local HTTP body records");
+                return;
             }
-            let Some(index) = span_indexes.get(&record.span_id).copied() else {
-                continue;
-            };
-            if let Some(span) = spans.get_mut(index) {
-                merge_http_body_record(span, &record);
-            }
+        };
+        for path in paths {
+            apply_http_body_file(&path, trace_id, &span_indexes, spans);
         }
-        Ok(())
-    }
-
-    fn read_http_body_records(&self) -> Result<Vec<StoredHttpBodyRecord>, TraceStoreError> {
-        self.prune_expired()?;
-        let mut records = Vec::new();
-        for path in self.body_jsonl_files()? {
-            records.extend(read_http_body_file(&path)?);
-        }
-        Ok(records)
     }
 
     fn prune_expired(&self) -> Result<(), TraceStoreError> {
@@ -1031,25 +1022,40 @@ fn read_trace_spans_file(
     Ok(spans)
 }
 
-fn read_http_body_file(path: &Path) -> Result<Vec<StoredHttpBodyRecord>, TraceStoreError> {
-    let file = File::open(path).map_err(|source| TraceStoreError::OpenFile {
-        path: path.to_path_buf(),
-        source,
-    })?;
+fn apply_http_body_file(
+    path: &Path,
+    trace_id: &str,
+    span_indexes: &HashMap<String, usize>,
+    spans: &mut [TraceSpanRecord],
+) {
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(source) => {
+            let error = TraceStoreError::OpenFile {
+                path: path.to_path_buf(),
+                source,
+            };
+            tracing::warn!(detail = %error, path = %path.display(), "failed to read local HTTP body records");
+            return;
+        }
+    };
     let mut reader = BufReader::new(file);
-    let mut records = Vec::new();
     let mut line = String::new();
     let mut line_number = 0;
 
     loop {
         line.clear();
-        let bytes_read =
-            reader
-                .read_line(&mut line)
-                .map_err(|source| TraceStoreError::ReadFile {
+        let bytes_read = match reader.read_line(&mut line) {
+            Ok(bytes_read) => bytes_read,
+            Err(source) => {
+                let error = TraceStoreError::ReadFile {
                     path: path.to_path_buf(),
                     source,
-                })?;
+                };
+                tracing::warn!(detail = %error, path = %path.display(), "failed to read local HTTP body records");
+                return;
+            }
+        };
         if bytes_read == 0 {
             break;
         }
@@ -1061,20 +1067,43 @@ fn read_http_body_file(path: &Path) -> Result<Vec<StoredHttpBodyRecord>, TraceSt
             continue;
         }
 
-        match serde_json::from_str::<StoredHttpBodyRecord>(trimmed) {
-            Ok(record) => records.push(record),
+        match serde_json::from_str::<StoredHttpBodyIdentityRecord>(trimmed) {
+            Ok(identity)
+                if identity.trace_id == trace_id
+                    && span_indexes.contains_key(&identity.span_id) =>
+            {
+                match serde_json::from_str::<StoredHttpBodyRecord>(trimmed) {
+                    Ok(record) => {
+                        let Some(index) = span_indexes.get(&record.span_id).copied() else {
+                            continue;
+                        };
+                        if let Some(span) = spans.get_mut(index) {
+                            merge_http_body_record(span, &record);
+                        }
+                    }
+                    Err(_) if !complete_line => break,
+                    Err(source) => {
+                        tracing::warn!(
+                            detail = %source,
+                            path = %path.display(),
+                            line = line_number,
+                            "failed to decode local HTTP body record"
+                        );
+                    }
+                }
+            }
+            Ok(_identity) => {}
             Err(_) if !complete_line => break,
             Err(source) => {
-                return Err(TraceStoreError::DecodeLine {
-                    path: path.to_path_buf(),
-                    line: line_number,
-                    source,
-                });
+                tracing::warn!(
+                    detail = %source,
+                    path = %path.display(),
+                    line = line_number,
+                    "failed to decode local HTTP body record"
+                );
             }
         }
     }
-
-    Ok(records)
 }
 
 fn merge_http_body_record(span: &mut TraceSpanRecord, record: &StoredHttpBodyRecord) {
@@ -1568,7 +1597,7 @@ mod tests {
 
     use super::{
         JSONL_MAX_FILE_AGE, JsonlSpanExporter, LocalHttpBodyRecorder, RollingJsonlWriter,
-        StoredTraceStatus, TraceSpanRecord, TraceStore, unix_nanos,
+        StoredHttpBodyRecord, StoredTraceStatus, TraceSpanRecord, TraceStore, unix_nanos,
     };
 
     const TRACE_RETENTION: Duration = Duration::from_hours(7 * 24);
@@ -1680,6 +1709,61 @@ mod tests {
             span.attributes_json
                 .contains(r#""coral.http.request.body.truncated":false"#)
         );
+    }
+
+    #[test]
+    fn trace_detail_filters_and_skips_bad_http_body_records() {
+        let temp = TempDir::new().expect("temp dir");
+        let dir = temp.path().join("telemetry").join("traces");
+        fs::create_dir_all(&dir).expect("trace dir");
+        write_record_file(
+            &dir.join(timestamped_jsonl_path(SystemTime::now())),
+            &trace_record("trace-1", "span-1"),
+        );
+        let matching_record = StoredHttpBodyRecord {
+            trace_id: "trace-1".to_string(),
+            span_id: "span-1".to_string(),
+            request_id: 7,
+            direction: HttpBodyDirection::Request,
+            body: "selected body".to_string(),
+            truncated: false,
+        };
+        let malformed_unrelated = json!({
+            "trace_id": "trace-2",
+            "span_id": "span-2",
+            "request_id": 8,
+            "direction": "request",
+            "body": { "not": "a string" },
+            "truncated": false,
+        });
+        let malformed_orphan = json!({
+            "trace_id": "trace-1",
+            "span_id": "missing-span",
+            "request_id": 9,
+            "direction": "request",
+            "body": { "not": "a string" },
+            "truncated": false,
+        });
+        fs::write(
+            dir.join("http-bodies-00000000000000000001-test-0000000000000000.jsonl"),
+            format!(
+                "{malformed_unrelated}\nnot json\n{malformed_orphan}\n{}\n",
+                serde_json::to_string(&matching_record).expect("serialize body record")
+            ),
+        )
+        .expect("write body records");
+
+        let detail = TraceStore::new(dir)
+            .get_trace_sync("trace-1")
+            .expect("trace detail");
+        let span = detail.spans.first().expect("trace span");
+
+        assert!(
+            span.attributes_json
+                .contains(r#""coral.http.request.body":"selected body""#)
+        );
+        assert!(!span.attributes_json.contains("trace-2"));
+        assert!(!span.attributes_json.contains("missing-span"));
     }
 
     #[cfg(unix)]

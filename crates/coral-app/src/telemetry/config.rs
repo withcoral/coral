@@ -101,7 +101,8 @@ impl TelemetryConfig {
 impl TraceHistoryConfig {
     #[must_use]
     pub(crate) fn http_body_recording_max_bytes(&self) -> Option<usize> {
-        (self.enabled && self.record_http_bodies).then_some(self.http_body_max_bytes)
+        (self.enabled && self.record_http_bodies && self.http_body_max_bytes > 0)
+            .then_some(self.http_body_max_bytes)
     }
 
     #[must_use]
@@ -196,6 +197,18 @@ http_body_max_bytes = 42
             enabled: false,
             record_http_bodies: true,
             http_body_max_bytes: 8,
+            ..TraceHistoryConfig::default()
+        };
+
+        assert_eq!(config.http_body_recording_max_bytes(), None);
+    }
+
+    #[test]
+    fn http_body_recording_requires_positive_max_bytes() {
+        let config = TraceHistoryConfig {
+            enabled: true,
+            record_http_bodies: true,
+            http_body_max_bytes: 0,
             ..TraceHistoryConfig::default()
         };
 
