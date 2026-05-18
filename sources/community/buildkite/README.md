@@ -24,8 +24,9 @@ coral source add --file sources/community/buildkite/manifest.yaml
 coral source test buildkite
 ```
 
-The default test query reads `buildkite.current_user`, which validates that the
-token is accepted by the API.
+The default test queries read `buildkite.current_user` and a small page from
+`buildkite.organizations`, which validates that the token is accepted by the API
+and exercises Link-header pagination.
 
 ## Tables
 
@@ -74,6 +75,7 @@ Lists pipelines in an organization.
 | `steps` | Json | Pipeline steps |
 | `created_at` | Timestamp | Creation time |
 | `archived_at` | Timestamp | Archive time |
+| `archived` | Boolean | Whether the pipeline is archived |
 | `url` | Utf8 | API URL |
 | `web_url` | Utf8 | Browser URL |
 | `org_slug` | Utf8 | Organization slug used for the request |
@@ -99,7 +101,6 @@ Lists builds across an organization.
 | `creator__id` | Utf8 | Creator user ID |
 | `creator__email` | Utf8 | Creator email |
 | `pipeline__slug` | Utf8 | Pipeline slug |
-| `pipeline__name` | Utf8 | Pipeline name |
 | `jobs` | Json | Build jobs |
 | `created_at` | Timestamp | Creation time |
 | `scheduled_at` | Timestamp | Scheduled time |
@@ -119,17 +120,24 @@ Lists builds for a single pipeline.
 | Column | Type | Description |
 |---|---|---|
 | `id` | Utf8 | Build ID |
+| `graphql_id` | Utf8 | GraphQL node ID |
 | `number` | Int64 | Build number |
 | `state` | Utf8 | Build state |
 | `blocked` | Boolean | Whether the build is blocked |
 | `message` | Utf8 | Build message |
 | `commit` | Utf8 | Git commit SHA |
 | `branch` | Utf8 | Git branch |
+| `tag` | Utf8 | Git tag |
+| `source` | Utf8 | Build source |
+| `creator__id` | Utf8 | Creator user ID |
 | `creator__email` | Utf8 | Creator email |
+| `pipeline__slug` | Utf8 | Pipeline slug |
 | `jobs` | Json | Build jobs |
 | `created_at` | Timestamp | Creation time |
+| `scheduled_at` | Timestamp | Scheduled time |
 | `started_at` | Timestamp | Start time |
 | `finished_at` | Timestamp | Finish time |
+| `url` | Utf8 | API URL |
 | `web_url` | Utf8 | Browser URL |
 | `org_slug` | Utf8 | Organization slug used for the request |
 | `pipeline_slug` | Utf8 | Pipeline slug used for the request |

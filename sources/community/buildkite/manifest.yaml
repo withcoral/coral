@@ -28,6 +28,7 @@ request_headers:
 
 test_queries:
   - SELECT id, email, name FROM buildkite.current_user LIMIT 1
+  - SELECT name, slug FROM buildkite.organizations LIMIT 5
 
 tables:
   - name: current_user
@@ -208,6 +209,11 @@ tables:
           kind: format_timestamp
           input: iso8601
           expr: {kind: path, path: [archived_at]}
+      - name: archived
+        type: Boolean
+        nullable: true
+        description: Whether the pipeline is archived.
+        expr: {kind: path, path: [archived]}
       - name: url
         type: Utf8
         nullable: true
@@ -325,11 +331,6 @@ tables:
         nullable: true
         description: Pipeline slug for the build.
         expr: {kind: path, path: [pipeline, slug]}
-      - name: pipeline__name
-        type: Utf8
-        nullable: true
-        description: Pipeline name for the build.
-        expr: {kind: path, path: [pipeline, name]}
       - name: jobs
         type: Json
         nullable: true
@@ -426,6 +427,11 @@ tables:
         nullable: false
         description: Build ID.
         expr: {kind: path, path: [id]}
+      - name: graphql_id
+        type: Utf8
+        nullable: true
+        description: GraphQL node ID for the build.
+        expr: {kind: path, path: [graphql_id]}
       - name: number
         type: Int64
         nullable: true
@@ -456,11 +462,31 @@ tables:
         nullable: true
         description: Git branch.
         expr: {kind: path, path: [branch]}
+      - name: tag
+        type: Utf8
+        nullable: true
+        description: Git tag.
+        expr: {kind: path, path: [tag]}
+      - name: source
+        type: Utf8
+        nullable: true
+        description: Build source.
+        expr: {kind: path, path: [source]}
+      - name: creator__id
+        type: Utf8
+        nullable: true
+        description: Build creator user ID.
+        expr: {kind: path, path: [creator, id]}
       - name: creator__email
         type: Utf8
         nullable: true
         description: Build creator email address.
         expr: {kind: path, path: [creator, email]}
+      - name: pipeline__slug
+        type: Utf8
+        nullable: true
+        description: Pipeline slug for the build.
+        expr: {kind: path, path: [pipeline, slug]}
       - name: jobs
         type: Json
         nullable: true
@@ -474,6 +500,14 @@ tables:
           kind: format_timestamp
           input: iso8601
           expr: {kind: path, path: [created_at]}
+      - name: scheduled_at
+        type: Timestamp
+        nullable: true
+        description: Build scheduled time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [scheduled_at]}
       - name: started_at
         type: Timestamp
         nullable: true
@@ -490,6 +524,11 @@ tables:
           kind: format_timestamp
           input: iso8601
           expr: {kind: path, path: [finished_at]}
+      - name: url
+        type: Utf8
+        nullable: true
+        description: API URL for the build.
+        expr: {kind: path, path: [url]}
       - name: web_url
         type: Utf8
         nullable: true
