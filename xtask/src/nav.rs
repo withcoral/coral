@@ -68,9 +68,7 @@ fn reconcile_reference_group(groups: &mut [Value]) -> Result<()> {
 }
 
 fn restore_reference_entry(pages: &mut Vec<Value>, entry: &str) {
-    if pages.iter().any(|e| e.as_str() == Some(entry)) {
-        return;
-    }
+    pages.retain(|e| e.as_str() != Some(entry));
 
     let insert_at = pages
         .iter()
@@ -190,6 +188,61 @@ mod tests {
         assert!(
             updated.contains("\"reference/community-sources\""),
             "expected community-sources to be restored: {updated}",
+        );
+    }
+
+    #[test]
+    fn update_docs_json_normalizes_duplicate_or_misordered_source_catalog_entries() {
+        let input = r#"{
+  "name": "Coral Docs",
+  "navigation": {
+    "groups": [
+      {
+        "group": "Reference",
+        "pages": [
+          "reference/community-sources",
+          "reference/cli-reference",
+          "reference/source-spec-reference",
+          "reference/bundled-sources",
+          "reference/community-sources"
+        ]
+      },
+      {
+        "group": "Project",
+        "pages": []
+      }
+    ]
+  }
+}
+"#;
+
+        let updated = update_docs_json(input).expect("normalize source catalog entries");
+        let root: serde_json::Value = serde_json::from_str(&updated).expect("updated docs json");
+        let groups = root
+            .get("navigation")
+            .and_then(|navigation| navigation.get("groups"))
+            .and_then(serde_json::Value::as_array)
+            .expect("navigation groups");
+        let reference_pages = groups
+            .iter()
+            .find(|group| {
+                group.get("group").and_then(serde_json::Value::as_str) == Some("Reference")
+            })
+            .and_then(|group| group.get("pages"))
+            .and_then(serde_json::Value::as_array)
+            .expect("reference pages")
+            .iter()
+            .map(|page| page.as_str().expect("page string"))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            reference_pages,
+            vec![
+                "reference/cli-reference",
+                "reference/bundled-sources",
+                "reference/community-sources",
+                "reference/source-spec-reference",
+            ]
         );
     }
 

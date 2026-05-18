@@ -221,9 +221,18 @@ fn input_summary(manifest: &ValidatedSourceManifest) -> String {
     }
     inputs
         .iter()
-        .map(|input| format!("`{}`", input.key))
+        .map(|input| format_input_key_for_table_cell(&input.key))
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+fn format_input_key_for_table_cell(key: &str) -> String {
+    let sanitized = escape_mdx(&flatten_for_table_cell(key));
+    if sanitized.contains('`') {
+        sanitized.replace('`', "&#96;")
+    } else {
+        format!("`{sanitized}`")
+    }
 }
 
 /// Collapse internal whitespace for safe rendering inside a markdown table
@@ -416,14 +425,13 @@ const INDEX_OUTRO: &str = concat!(
 );
 
 const COMMUNITY_INTRO: &str = concat!(
-    "Community sources are source specs kept in the Coral repository under\n",
+    "Community sources are source specs built and maintained by our community. These are kept in the Coral repository under\n",
     "[sources/community](https://github.com/withcoral/coral/tree/main/sources/community).\n",
-    "They are useful when a source is not bundled into the Coral binary yet, but a\n",
-    "reviewable source spec already exists.\n",
     "\n",
     "<Note>\n",
     "  Community sources are not included in `coral source discover`, and `coral\n",
-    "  source add <name>` only installs bundled sources. Import community sources\n",
+    "  source add <name>` only installs [bundled sources](/reference/bundled-sources).\n",
+    "  Import community sources\n",
     "  with `coral source add --file`.\n",
     "</Note>\n",
 );
@@ -438,7 +446,10 @@ const COMMUNITY_OUTRO: &str = concat!(
 
 #[cfg(test)]
 mod tests {
-    use super::{changelog_page, community_sources_page, escape_mdx, index_page};
+    use super::{
+        changelog_page, community_sources_page, escape_mdx, format_input_key_for_table_cell,
+        index_page,
+    };
     use coral_spec::parse_source_manifest_yaml;
 
     const SAMPLE_MANIFEST: &str = r#"
@@ -640,6 +651,18 @@ tables:
         let demo = parse_source_manifest_yaml(SAMPLE_MANIFEST).expect("parse demo");
         let minimal = parse_source_manifest_yaml(NO_INPUTS_MANIFEST).expect("parse minimal");
         insta::assert_snapshot!("index_page_renders_rows", index_page(&[demo, minimal]));
+    }
+
+    #[test]
+    fn input_key_table_cell_escapes_table_breaking_characters() {
+        assert_eq!(
+            format_input_key_for_table_cell("API|TOKEN\nWITH\tSPACE"),
+            "`API\\|TOKEN WITH SPACE`"
+        );
+        assert_eq!(
+            format_input_key_for_table_cell("API`TOKEN"),
+            "API&#96;TOKEN"
+        );
     }
 
     #[test]
