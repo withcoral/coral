@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import classNames from 'classnames'
 
 import * as Button from '@/wax/components/button'
@@ -32,7 +32,16 @@ export type DetailTab = 'timeline' | 'api'
 type WaterfallTone = 'query' | 'http' | 'span' | 'error'
 
 const INDENT_PX = 14
+const DETAIL_PANEL_DEFAULT_RATIO = 0.4
+const DETAIL_PANEL_MIN_RATIO = 0.28
+const DETAIL_PANEL_MAX_RATIO = 0.6
+const DETAIL_PANEL_KEYBOARD_STEP = 0.05
+const DETAIL_PANEL_ANIMATION_MS = 180
 const NOISY_INTERNAL_SPAN_MAX_MS = 1
+
+function clampDetailPanelRatio(ratio: number) {
+  return Math.max(DETAIL_PANEL_MIN_RATIO, Math.min(DETAIL_PANEL_MAX_RATIO, ratio))
+}
 
 export interface ExtraDetailTab {
   id: string
@@ -108,6 +117,26 @@ function WaterfallBar({ left, tone, width, label }: { left: number; tone: Waterf
       </div>
       {narrow && <span className={s.waterfallBarLabelOutside} data-align={outsideLabelLeft > 86 ? 'end' : 'start'} style={outsideLabelStyle}>{label}</span>}
     </div>
+  )
+}
+
+function spanTiming(span: TraceSpan, traceStart: bigint, durationMs: number) {
+  const offsetMs = Number((BigInt(span.startTimeUnixNanos || 0) - traceStart) / 1_000_000n)
+  return {
+    left: (Math.max(0, offsetMs) / durationMs) * 100,
+    width: (nanosToMs(span.durationNanos) / durationMs) * 100,
+  }
+}
+
+function SpanTimingBar({ durationMs, span, traceStart }: { durationMs: number; span: TraceSpan; traceStart: bigint }) {
+  const timing = spanTiming(span, traceStart, durationMs)
+  return (
+    <WaterfallBar
+      left={timing.left}
+      tone={spanTone(span)}
+      width={timing.width}
+      label={formatDurationFromNanos(span.durationNanos)}
+    />
   )
 }
 
@@ -205,10 +234,6 @@ function WaterfallBarSlot({
   traceStart: bigint
 }) {
   const { span } = row
-  const offsetMs = Number((BigInt(span.startTimeUnixNanos || 0) - traceStart) / 1_000_000n)
-  const left = (Math.max(0, offsetMs) / durationMs) * 100
-  const width = (nanosToMs(span.durationNanos) / durationMs) * 100
-  const tone = spanTone(span)
   const canExpandHttp = isHttpSpan(span)
 
   return (
@@ -225,7 +250,7 @@ function WaterfallBarSlot({
       role={canExpandHttp ? 'button' : undefined}
       tabIndex={canExpandHttp ? 0 : undefined}
     >
-      <WaterfallBar left={left} tone={tone} width={width} label={formatDurationFromNanos(span.durationNanos)} />
+      <SpanTimingBar durationMs={durationMs} span={span} traceStart={traceStart} />
     </div>
   )
 }
@@ -259,6 +284,7 @@ function WaterfallRow({
       aria-expanded={childCount > 0 ? !collapsed : undefined}
       aria-level={depth + 1}
       className={s.waterfallRowShell}
+      data-span-row-id={span.spanId}
       role="treeitem"
     >
       <div
@@ -302,12 +328,135 @@ function TimelineWaterfall({ expandedHttpSpanId, onExpandedHttpSpanIdChange, onN
   const proMode = useProMode()
   const timelineSpans = useMemo(() => proMode ? spans : spans.filter(isHttpSpan), [proMode, spans])
   const { collapsedSpanIds, rows, toggleSpan } = useTimelineTree(timelineSpans, summary?.rootSpanId, summary?.traceId)
+  const hasRenderedDetailPanel = useRef(false)
+  const panelAnimationFrame = useRef<number | null>(null)
+  const rootRef = useRef<HTMLDivElement>(null)
   const [hoveredSpanId, setHoveredSpanId] = useState<string | null>(null)
+  const [detailPanelRatio, setDetailPanelRatio] = useState(DETAIL_PANEL_DEFAULT_RATIO)
+  const [animatedDetailPanelRatio, setAnimatedDetailPanelRatio] = useState(expandedHttpSpanId ? DETAIL_PANEL_DEFAULT_RATIO : 0)
+  const [isResizingDetailPanel, setIsResizingDetailPanel] = useState(false)
+  const [renderedHttpSpanId, setRenderedHttpSpanId] = useState<string | null>(expandedHttpSpanId)
+  const [detailPanelVisible, setDetailPanelVisible] = useState(Boolean(expandedHttpSpanId))
+  const [detailPanelSettled, setDetailPanelSettled] = useState(Boolean(expandedHttpSpanId))
   useEffect(() => onExpandedHttpSpanIdChange(null), [onExpandedHttpSpanIdChange, summary?.traceId])
   useEffect(() => setHoveredSpanId(null), [summary?.traceId])
+  useEffect(() => setDetailPanelRatio(DETAIL_PANEL_DEFAULT_RATIO), [summary?.traceId])
+  useEffect(() => {
+    if (panelAnimationFrame.current !== null) {
+      window.cancelAnimationFrame(panelAnimationFrame.current)
+      panelAnimationFrame.current = null
+    }
+
+    const animatePanelRatio = (from: number, to: number, onDone?: () => void) => {
+      const start = performance.now()
+      const step = (now: number) => {
+        const progress = Math.min(1, (now - start) / DETAIL_PANEL_ANIMATION_MS)
+        const eased = 1 - Math.pow(1 - progress, 3)
+        setAnimatedDetailPanelRatio(from + (to - from) * eased)
+        if (progress < 1) {
+          panelAnimationFrame.current = window.requestAnimationFrame(step)
+        } else {
+          panelAnimationFrame.current = null
+          onDone?.()
+        }
+      }
+      setAnimatedDetailPanelRatio(from)
+      panelAnimationFrame.current = window.requestAnimationFrame(step)
+    }
+
+    if (expandedHttpSpanId) {
+      const shouldAnimateOpen = !hasRenderedDetailPanel.current
+      hasRenderedDetailPanel.current = true
+      setRenderedHttpSpanId(expandedHttpSpanId)
+      if (!shouldAnimateOpen) {
+        setDetailPanelVisible(true)
+        setDetailPanelSettled(true)
+        setAnimatedDetailPanelRatio(detailPanelRatio)
+        return
+      }
+
+      setDetailPanelVisible(true)
+      setDetailPanelSettled(false)
+      animatePanelRatio(0, detailPanelRatio, () => setDetailPanelSettled(true))
+      return () => {
+        if (panelAnimationFrame.current !== null) window.cancelAnimationFrame(panelAnimationFrame.current)
+      }
+    }
+
+    hasRenderedDetailPanel.current = false
+    setDetailPanelVisible(false)
+    setDetailPanelSettled(false)
+    animatePanelRatio(animatedDetailPanelRatio, 0, () => setRenderedHttpSpanId(null))
+    return () => {
+      if (panelAnimationFrame.current !== null) window.cancelAnimationFrame(panelAnimationFrame.current)
+    }
+    // Keep the animation target stable during a single open/close transition.
+    // Drag resizing updates both detailPanelRatio and animatedDetailPanelRatio directly.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [expandedHttpSpanId])
   useEffect(() => {
     onNavigableSpanIdsChange(rows.filter((row) => isHttpSpan(row.span)).map((row) => row.span.spanId))
   }, [onNavigableSpanIdsChange, rows])
+  const traceStart = BigInt(summary?.startTimeUnixNanos || rows[0]?.span.startTimeUnixNanos || 0)
+  const durationMs = Math.max(nanosToMs(summary?.durationNanos || '0'), 1)
+  const navigableSpanIds = useMemo(() => rows.filter((row) => isHttpSpan(row.span)).map((row) => row.span.spanId), [rows])
+  const renderedHttpSpanIndex = renderedHttpSpanId ? navigableSpanIds.indexOf(renderedHttpSpanId) : -1
+  const renderedHttpRow = rows.find((row) => row.span.spanId === renderedHttpSpanId)
+  const renderedHttpSpan = renderedHttpRow?.span
+
+  const selectAdjacentSpan = useCallback((direction: -1 | 1) => {
+    if (renderedHttpSpanIndex < 0) return
+    const nextSpanId = navigableSpanIds[renderedHttpSpanIndex + direction]
+    if (!nextSpanId) return
+    onExpandedHttpSpanIdChange(nextSpanId)
+    window.requestAnimationFrame(() => {
+      const escapedSpanId = nextSpanId.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+      document.querySelector(`[data-span-row-id="${escapedSpanId}"]`)?.scrollIntoView({ block: 'nearest' })
+    })
+  }, [renderedHttpSpanIndex, navigableSpanIds, onExpandedHttpSpanIdChange])
+
+  const resizeDetailPanel = useCallback((clientX: number) => {
+    const root = rootRef.current
+    if (!root) return
+    const rect = root.getBoundingClientRect()
+    const distanceFromRight = rect.right - clientX
+    const nextRatio = clampDetailPanelRatio(distanceFromRight / rect.width)
+    setDetailPanelRatio(nextRatio)
+    setAnimatedDetailPanelRatio(nextRatio)
+  }, [])
+
+  const handleResizePointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    setIsResizingDetailPanel(true)
+    event.currentTarget.setPointerCapture(event.pointerId)
+    resizeDetailPanel(event.clientX)
+  }, [resizeDetailPanel])
+
+  const handleResizePointerEnd = useCallback(() => {
+    setIsResizingDetailPanel(false)
+  }, [])
+
+  const handleResizePointerMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (!event.currentTarget.hasPointerCapture(event.pointerId)) return
+    resizeDetailPanel(event.clientX)
+  }, [resizeDetailPanel])
+
+  const handleResizeKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === 'ArrowLeft') {
+      event.preventDefault()
+      setDetailPanelRatio((ratio) => clampDetailPanelRatio(ratio + DETAIL_PANEL_KEYBOARD_STEP))
+    } else if (event.key === 'ArrowRight') {
+      event.preventDefault()
+      setDetailPanelRatio((ratio) => clampDetailPanelRatio(ratio - DETAIL_PANEL_KEYBOARD_STEP))
+    } else if (event.key === 'Home') {
+      event.preventDefault()
+      setDetailPanelRatio(DETAIL_PANEL_MIN_RATIO)
+    } else if (event.key === 'End') {
+      event.preventDefault()
+      setDetailPanelRatio(DETAIL_PANEL_MAX_RATIO)
+    }
+  }, [])
+
   if (rows.length === 0) {
     return (
       <EmptyState
@@ -316,57 +465,84 @@ function TimelineWaterfall({ expandedHttpSpanId, onExpandedHttpSpanIdChange, onN
       />
     )
   }
-  const traceStart = BigInt(summary?.startTimeUnixNanos || rows[0]?.span.startTimeUnixNanos || 0)
-  const durationMs = Math.max(nanosToMs(summary?.durationNanos || '0'), 1)
-  const expandedHttpRow = rows.find((row) => row.span.spanId === expandedHttpSpanId)
-  const expandedHttpSpan = expandedHttpRow?.span
 
   return (
-    <div className={s.waterfallRoot} role="tree">
-      <WaterfallTickRow durationMs={durationMs} />
-      <div className={s.waterfallLabelsColumn}>
-        {rows.map((row) => (
-          <WaterfallRow
-            collapsed={collapsedSpanIds.has(row.span.spanId)}
-            expanded={expandedHttpSpanId === row.span.spanId}
-            hovered={hoveredSpanId === row.span.spanId}
-            key={row.span.spanId}
-            onHover={setHoveredSpanId}
-            onToggle={toggleSpan}
-            onToggleExpanded={(spanId) => onExpandedHttpSpanIdChange((current) => current === spanId ? null : spanId)}
-            row={row}
+    <div className={s.waterfallRoot} ref={rootRef}>
+      <div className={s.waterfallTimelinePane}>
+        <WaterfallTickRow durationMs={durationMs} />
+        <div className={s.waterfallRowsViewport} role="tree">
+          <div className={s.waterfallRowsGrid}>
+            <div className={s.waterfallLabelsColumn}>
+              {rows.map((row) => (
+                <WaterfallRow
+                  collapsed={collapsedSpanIds.has(row.span.spanId)}
+                  expanded={expandedHttpSpanId === row.span.spanId}
+                  hovered={hoveredSpanId === row.span.spanId}
+                  key={row.span.spanId}
+                  onHover={setHoveredSpanId}
+                  onToggle={toggleSpan}
+                  onToggleExpanded={(spanId) => onExpandedHttpSpanIdChange((current) => current === spanId ? null : spanId)}
+                  row={row}
+                />
+              ))}
+            </div>
+            <div className={s.waterfallTimelineBody}>
+              {rows.map((row) => (
+                <WaterfallBarSlot
+                  active={expandedHttpSpanId === row.span.spanId}
+                  durationMs={durationMs}
+                  hovered={hoveredSpanId === row.span.spanId}
+                  key={row.span.spanId}
+                  onHover={setHoveredSpanId}
+                  onToggleExpanded={(spanId) => onExpandedHttpSpanIdChange((current) => current === spanId ? null : spanId)}
+                  row={row}
+                  traceStart={traceStart}
+                />
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+      {renderedHttpSpan && (
+        <>
+          <div
+            aria-label="Resize span detail panel"
+            aria-orientation="vertical"
+            aria-valuemax={Math.round(DETAIL_PANEL_MAX_RATIO * 100)}
+            aria-valuemin={Math.round(DETAIL_PANEL_MIN_RATIO * 100)}
+            aria-valuenow={Math.round(detailPanelRatio * 100)}
+            className={s.waterfallResizeHandle}
+            data-open={detailPanelVisible || undefined}
+            data-resizing={isResizingDetailPanel || undefined}
+            onKeyDown={handleResizeKeyDown}
+            onLostPointerCapture={handleResizePointerEnd}
+            onPointerDown={handleResizePointerDown}
+            onPointerMove={handleResizePointerMove}
+            onPointerUp={handleResizePointerEnd}
+            role="separator"
+            tabIndex={0}
           />
-        ))}
-      </div>
-      <div className={s.waterfallTimelineBody}>
-        {expandedHttpRow && expandedHttpSpan ? (
-          <>
-            <WaterfallBarSlot
-              active
-              durationMs={durationMs}
-              hovered
-              key={`${expandedHttpSpan.spanId}-selected-bar`}
-              onHover={setHoveredSpanId}
-              onToggleExpanded={(spanId) => onExpandedHttpSpanIdChange((current) => current === spanId ? null : spanId)}
-              row={expandedHttpRow}
+          <aside
+            className={s.waterfallSidePanel}
+            data-open={detailPanelVisible || undefined}
+            data-resizing={isResizingDetailPanel || undefined}
+            style={{
+              flexBasis: `${animatedDetailPanelRatio * 100}%`,
+              minWidth: detailPanelSettled ? 320 : 0,
+            }}
+          >
+            <HttpSpanDetail
+              canSelectNextSpan={renderedHttpSpanIndex < navigableSpanIds.length - 1}
+              canSelectPreviousSpan={renderedHttpSpanIndex > 0}
+              onClose={() => onExpandedHttpSpanIdChange(null)}
+              onSelectNextSpan={() => selectAdjacentSpan(1)}
+              onSelectPreviousSpan={() => selectAdjacentSpan(-1)}
+              span={renderedHttpSpan}
               traceStart={traceStart}
             />
-            <HttpSpanDetail span={expandedHttpSpan} traceStart={traceStart} />
-          </>
-        ) : (
-          rows.map((row) => (
-            <WaterfallBarSlot
-              durationMs={durationMs}
-              hovered={hoveredSpanId === row.span.spanId}
-              key={row.span.spanId}
-              onHover={setHoveredSpanId}
-              onToggleExpanded={(spanId) => onExpandedHttpSpanIdChange((current) => current === spanId ? null : spanId)}
-              row={row}
-              traceStart={traceStart}
-            />
-          ))
-        )}
-      </div>
+          </aside>
+        </>
+      )}
     </div>
   )
 }
@@ -412,7 +588,12 @@ export function TraceDetail({
     if (!expandedHttpSpanId) return
     const currentIndex = navigableSpanIds.indexOf(expandedHttpSpanId)
     const nextSpanId = currentIndex >= 0 ? navigableSpanIds[currentIndex + direction] : null
-    if (nextSpanId) setExpandedHttpSpanId(nextSpanId)
+    if (!nextSpanId) return
+    setExpandedHttpSpanId(nextSpanId)
+    window.requestAnimationFrame(() => {
+      const escapedSpanId = nextSpanId.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+      document.querySelector(`[data-span-row-id="${escapedSpanId}"]`)?.scrollIntoView({ block: 'nearest' })
+    })
   }, [expandedHttpSpanId, navigableSpanIds])
 
   const handleEscapeShortcut = useCallback((event: KeyboardEvent) => {
@@ -426,12 +607,14 @@ export function TraceDetail({
 
   const handlePreviousSpanShortcut = useCallback((event: KeyboardEvent) => {
     if (!expandedHttpSpanId) return
+    if (event.target instanceof HTMLElement && event.target.closest('[data-span-inspector="true"]')) return
     event.preventDefault()
     selectAdjacentSpan(-1)
   }, [expandedHttpSpanId, selectAdjacentSpan])
 
   const handleNextSpanShortcut = useCallback((event: KeyboardEvent) => {
     if (!expandedHttpSpanId) return
+    if (event.target instanceof HTMLElement && event.target.closest('[data-span-inspector="true"]')) return
     event.preventDefault()
     selectAdjacentSpan(1)
   }, [expandedHttpSpanId, selectAdjacentSpan])

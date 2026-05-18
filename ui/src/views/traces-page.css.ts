@@ -136,40 +136,93 @@ export const spinner = style({ animation: `${spin} 1s linear infinite` })
 export const detailRoot = style({ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 })
 export const detailEmpty = style({ alignItems: 'center', display: 'flex', flex: 1, flexDirection: 'column', gap: 8, justifyContent: 'center', padding: 32, textAlign: 'center' })
 export const detailHeaderActions = style({ alignItems: 'center', display: 'flex', flexShrink: 0, gap: 4 })
-export const scrollBody = style({ flex: 1, minHeight: 0, overflow: 'auto' })
-export const content = style({ display: 'flex', flexDirection: 'column', gap: 16, padding: 16 })
+export const scrollBody = style({ display: 'flex', flex: 1, minHeight: 0, overflow: 'auto' })
+export const content = style({ display: 'flex', flex: 1, flexDirection: 'column', gap: 16, minHeight: '100%', padding: 16 })
 export const sqlBlock = style({ backgroundColor: theme.surface.main, border: `1px solid ${theme.stroke.primary}`, borderRadius: 8, overflow: 'hidden', position: 'relative' })
 export const statGrid = style({ display: 'flex', flexWrap: 'wrap', gap: 12 })
 export const statCard = style({ backgroundColor: theme.surface.onMainContent, border: `1px solid ${theme.stroke.secondary}`, borderRadius: 12, display: 'flex', flexDirection: 'column', flexShrink: 0, minWidth: 100, paddingBlock: 12, paddingInline: 16 })
 export const tabList = style({ borderBlockEnd: `1px solid ${theme.stroke.primary}`, display: 'flex', gap: 4 })
 export const tabTrigger = style({ background: 'none', border: 'none', borderBlockEnd: '2px solid transparent', color: theme.content.tertiary, cursor: 'pointer', fontSize: 14, fontWeight: 500, lineHeight: 1.65, marginBlockEnd: -1, paddingBlock: 8, paddingInline: 12 })
 export const tabTriggerActive = style({ borderBlockEndColor: theme.pill.green.color, color: theme.content.primary })
-export const tabContent = style({ paddingBlockStart: 16 })
+export const tabContent = style({ display: 'flex', flex: '1 1 280px', flexDirection: 'column', minHeight: 280, overflow: 'hidden', paddingBlockStart: 16 })
 
 export const waterfallRoot = style({
   alignItems: 'stretch',
-  display: 'grid',
-  gridTemplateAreas: '"labelAxis timelineAxis" "labels timelineBody"',
-  gridTemplateColumns: '220px minmax(0, 1fr)',
-  gridTemplateRows: 'auto minmax(0, 1fr)',
-  minHeight: 'min(620px, calc(100vh - 360px))',
+  display: 'flex',
+  flex: 1,
+  gap: 8,
+  height: '100%',
+  minHeight: 280,
+  overflow: 'hidden',
   paddingBlock: 8,
   paddingInline: 12,
+})
+export const waterfallTimelinePane = style({
+  display: 'flex',
+  flex: '1 1 auto',
+  flexDirection: 'column',
+  minHeight: 0,
+  minWidth: 360,
+  overflow: 'hidden',
   rowGap: 10,
 })
 export const waterfallTickRow = style({
-  display: 'contents',
+  display: 'grid',
+  flexShrink: 0,
+  gridTemplateColumns: '220px minmax(0, 1fr)',
 })
-export const waterfallLabel = style({ borderBlockEnd: `1px solid ${theme.stroke.primary}`, gridArea: 'labelAxis', height: 24, minWidth: 0, paddingBlockEnd: 4 })
-export const waterfallTimeline = style({ borderBlockEnd: `1px solid ${theme.stroke.primary}`, gridArea: 'timelineAxis', height: 24, minWidth: 0, overflow: 'hidden', paddingBlockEnd: 4, position: 'relative' })
+export const waterfallLabel = style({ borderBlockEnd: `1px solid ${theme.stroke.primary}`, height: 24, minWidth: 0, paddingBlockEnd: 4 })
+export const waterfallTimeline = style({ borderBlockEnd: `1px solid ${theme.stroke.primary}`, height: 24, minWidth: 0, overflow: 'hidden', paddingBlockEnd: 4, position: 'relative' })
 export const waterfallTick = style({ color: theme.content.tertiary, fontFamily: codeFontFamily, fontSize: 12, lineHeight: '16px', position: 'absolute', whiteSpace: 'nowrap' })
-export const waterfallLabelsColumn = style({ display: 'flex', flexDirection: 'column', gap: 10, gridArea: 'labels', minWidth: 0 })
+export const waterfallResizeHandle = style({
+  alignSelf: 'stretch',
+  backgroundColor: theme.stroke.primary,
+  borderRadius: 999,
+  cursor: 'col-resize',
+  flex: '0 0 6px',
+  minHeight: 0,
+  outline: 'none',
+  opacity: 0,
+  transform: 'scaleX(0.5)',
+  transition: 'opacity 180ms ease, transform 180ms ease, background-color 120ms ease',
+  selectors: {
+    '&:hover, &:focus-visible': { backgroundColor: theme.pill.blue.color },
+    '&[data-open="true"]': { opacity: 1, transform: 'scaleX(1)' },
+    '&[data-resizing="true"]': { transition: 'none' },
+  },
+})
+export const waterfallSidePanel = style({
+  display: 'flex',
+  flex: '0 0 auto',
+  minHeight: 0,
+  minWidth: 320,
+  opacity: 0,
+  overflow: 'hidden',
+  transform: 'translateX(12px)',
+  transition: 'opacity 140ms ease, transform 180ms ease',
+  selectors: {
+    '&[data-open="true"]': { opacity: 1, transform: 'translateX(0)' },
+    '&[data-resizing="true"]': { transition: 'none' },
+  },
+})
+export const waterfallRowsViewport = style({
+  flex: 1,
+  minHeight: 0,
+  minWidth: 0,
+  overflow: 'auto',
+})
+export const waterfallRowsGrid = style({
+  alignItems: 'start',
+  display: 'grid',
+  gridTemplateColumns: '220px minmax(0, 1fr)',
+  minWidth: 0,
+})
+export const waterfallLabelsColumn = style({ display: 'flex', flexDirection: 'column', gap: 10, minWidth: 0 })
 export const waterfallTimelineBody = style({
   alignSelf: 'stretch',
   display: 'flex',
   flexDirection: 'column',
   gap: 10,
-  gridArea: 'timelineBody',
   minHeight: 0,
   minWidth: 0,
 })
@@ -295,9 +348,31 @@ export const waterfallHttpDetail = style({
   minHeight: 0,
   minWidth: 0,
   overflow: 'hidden',
-  paddingBlock: 10,
+})
+export const waterfallHttpDetailHeader = style({
+  alignItems: 'center',
+  borderBlockEnd: `1px solid ${theme.stroke.primary}`,
+  display: 'flex',
+  flexShrink: 0,
+  gap: 8,
+  justifyContent: 'space-between',
+  minWidth: 0,
+  paddingBlock: 6,
   paddingInline: 12,
 })
+export const waterfallHttpDetailTitle = style({
+  display: 'flex',
+  flexDirection: 'column',
+  minWidth: 0,
+})
+export const waterfallHttpDetailHeaderActions = style({
+  alignItems: 'center',
+  display: 'flex',
+  flexShrink: 0,
+  gap: 2,
+})
+export const waterfallHttpDetailScroll = style({ flex: 1, minHeight: 0, minWidth: 0, overflow: 'hidden' })
+export const waterfallHttpDetailContent = style({ display: 'flex', flexDirection: 'column', gap: 10, minHeight: 0, minWidth: 0, paddingBlockEnd: 10, paddingInline: 12 })
 export const waterfallHttpTabRow = style({ alignItems: 'center', display: 'flex', gap: 12, justifyContent: 'space-between', minWidth: 0 })
 export const httpMetaRow = style({ display: 'flex', flexWrap: 'wrap', gap: 6 })
 export const httpMetaChip = style({
