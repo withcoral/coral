@@ -116,11 +116,11 @@ Tracing events are bridged into OTLP logs via `opentelemetry-appender-tracing`. 
 
 Three query instruments are exported on a 5-second periodic reader:
 
-| Metric                   | Kind      | Unit        | Attributes        | Description                               |
-| ------------------------ | --------- | ----------- | ----------------- | ----------------------------------------- |
-| `coral.query.count`      | Counter   | `{queries}` | `status=ok\|error` | Total queries executed.                   |
-| `coral.query.duration`   | Histogram | `s`         | `status=ok\|error` | Query execution latency in seconds.       |
-| `coral.query.rows`       | Histogram | `{rows}`    | `status=ok`       | Rows returned per successful query.       |
+| Metric                   | Kind      | Unit        | Attributes                                      | Description                                            |
+| ------------------------ | --------- | ----------- | ----------------------------------------------- | ------------------------------------------------------ |
+| `coral.query.count`      | Counter   | `{queries}` | `status=ok\|error`, `operation=execute_sql\|explain_sql` | Total SQL execution and explain operations requested.  |
+| `coral.query.duration`   | Histogram | `s`         | `status=ok\|error`, `operation=execute_sql\|explain_sql` | SQL execution and explain latency in seconds.          |
+| `coral.query.rows`       | Histogram | `{rows}`    | `status=ok`, `operation=execute_sql`            | Rows returned per successful SQL execution.            |
 
 ## Distributed tracing
 
