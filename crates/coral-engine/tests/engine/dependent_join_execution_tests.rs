@@ -316,6 +316,53 @@ async fn literal_filters_and_join_bindings_together_satisfy_required_dependent_f
 }
 
 #[tokio::test]
+async fn literal_filter_values_are_available_to_dependent_output_mapping() {
+    let temp = TempDir::new().expect("temp dir");
+    write_jsonl_file(
+        temp.path(),
+        "issues.jsonl",
+        &[issue_row("First", "withcoral", "coral", 123)],
+    );
+
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/repos/withcoral/coral/pulls/123"))
+        .and(query_param("state", "open"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{
+                "number": 123
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let execution = CoralQuery::execute_sql(
+        &[
+            build_source(issues_manifest(temp.path())),
+            build_source(github_filter_backed_columns_manifest(&server.uri())),
+        ],
+        test_runtime(),
+        "
+        SELECT pr.state
+        FROM issues.items i
+        JOIN github.pull_requests pr
+          ON pr.number = i.github_pr_number
+        WHERE pr.owner = 'withcoral'
+          AND pr.repo = 'coral'
+          AND pr.state = 'open'
+        ",
+    )
+    .await
+    .expect("literal filters should be available to from_filter output columns");
+
+    assert_eq!(
+        execution_to_rows(&execution),
+        vec![json!({ "state": "open" })]
+    );
+}
+
+#[tokio::test]
 async fn null_binding_rows_do_not_fetch_and_do_not_emit() {
     let temp = TempDir::new().expect("temp dir");
     write_jsonl_file(
@@ -1542,6 +1589,32 @@ fn github_required_manifest(base_url: &str) -> Value {
             json!({ "name": "state" }),
         ],
     )
+}
+
+fn github_filter_backed_columns_manifest(base_url: &str) -> Value {
+    let mut manifest = github_required_manifest(base_url);
+    first_table_object_mut(&mut manifest).insert(
+        "columns".to_string(),
+        json!([
+            {
+                "name": "owner",
+                "type": "Utf8",
+                "expr": { "kind": "from_filter", "key": "owner" }
+            },
+            {
+                "name": "repo",
+                "type": "Utf8",
+                "expr": { "kind": "from_filter", "key": "repo" }
+            },
+            { "name": "number", "type": "Int64" },
+            {
+                "name": "state",
+                "type": "Utf8",
+                "expr": { "kind": "from_filter", "key": "state" }
+            }
+        ]),
+    );
+    manifest
 }
 
 fn github_manifest_with_max_concurrency(base_url: &str, max_concurrency: usize) -> Value {

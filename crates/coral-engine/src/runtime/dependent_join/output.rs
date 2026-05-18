@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use arrow::array::{RecordBatch, UInt32Array};
@@ -18,6 +18,7 @@ pub(crate) struct BuildJoinedBatchesConfig<'a> {
     pub(crate) dependent_source_schema: &'a str,
     pub(crate) dependent_table: &'a HttpTableSpec,
     pub(crate) binding_filters: &'a [String],
+    pub(crate) literal_filters: &'a BTreeMap<String, String>,
     pub(crate) dependent_projection: &'a [usize],
     pub(crate) resolver_projection_len: usize,
     pub(crate) dependent_first: bool,
@@ -32,6 +33,7 @@ pub(crate) fn build_joined_batches(
         dependent_source_schema,
         dependent_table,
         binding_filters,
+        literal_filters,
         dependent_projection,
         resolver_projection_len,
         dependent_first,
@@ -53,7 +55,7 @@ pub(crate) fn build_joined_batches(
             continue;
         }
 
-        let filter_values = filter_values_for_tuple(binding_filters, tuple)?;
+        let filter_values = filter_values_for_tuple(literal_filters, binding_filters, tuple)?;
         let dependent_batch = convert_items(
             dependent_table.columns(),
             Arc::clone(&dependent_schema),
@@ -149,6 +151,7 @@ fn project_dependent_batch(batch: &RecordBatch, projection: &[usize]) -> Result<
 }
 
 fn filter_values_for_tuple(
+    literal_filters: &BTreeMap<String, String>,
     binding_filters: &[String],
     tuple: &Tuple,
 ) -> Result<HashMap<String, String>> {
@@ -160,11 +163,23 @@ fn filter_values_for_tuple(
         )));
     }
 
-    Ok(binding_filters
+    let mut filters = literal_filters
         .iter()
-        .zip(tuple.values())
-        .map(|(filter, value)| (filter.clone(), value.to_wire_string()))
-        .collect())
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect::<HashMap<_, _>>();
+
+    for (filter, value) in binding_filters.iter().zip(tuple.values()) {
+        if filters
+            .insert(filter.clone(), value.to_wire_string())
+            .is_some()
+        {
+            return Err(DataFusionError::Internal(format!(
+                "dependent join over-constrained filter '{filter}'"
+            )));
+        }
+    }
+
+    Ok(filters)
 }
 
 fn arrow_error(error: arrow::error::ArrowError) -> DataFusionError {
