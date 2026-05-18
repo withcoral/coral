@@ -1,10 +1,10 @@
 name: jenkins
-version: 0.1.0
+version: 0.1.1
 dsl_version: 3
 backend: http
 description: >-
   Query Jenkins jobs, last-build results, and Git revision metadata from Jenkins
-  (self-hosted). Supports local controllers via the JSON REST API.
+  (self-hosted). Read-only; uses the JSON REST API.
 inputs:
   JENKINS_BASE_URL:
     kind: variable
@@ -192,26 +192,3 @@ tables:
             - "1"
             - lastBuiltRevision
             - SHA1
-
-  - name: trigger_build
-    description: Queue a build for a job via POST (mutating).
-    guide: |
-      Required filter: `job_name`. Needs build permission; may return 403 when CSRF is enabled.
-    filters:
-      - name: job_name
-        required: true
-    request:
-      method: POST
-      path: "/job/{{filter.job_name}}/build"
-    response:
-      row_strategy: direct
-      allow_404_empty: true
-    pagination:
-      mode: none
-    columns:
-      - name: action
-        type: Utf8
-        description: Static marker when the POST is accepted.
-        expr:
-          kind: literal
-          value: trigger_build_posted

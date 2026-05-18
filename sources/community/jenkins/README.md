@@ -1,8 +1,8 @@
 # Jenkins Connector (Community)
 
-**Version:** 0.1.0
+**Version:** 0.1.1
 **Backend:** HTTP (Jenkins REST JSON API)
-**Tables:** 5
+**Tables:** 4
 **Default base URL:** `http://127.0.0.1:8081` (override with `JENKINS_BASE_URL`)
 
 Query Jenkins jobs, last-build results, and Git revision metadata from Jenkins
@@ -38,7 +38,7 @@ coral source add --file sources/community/jenkins/manifest.yaml
 ```
 
 Create an API token under **User** → **Configure** → **API Token**. Use a user
-that can read jobs (and queue builds if you use `trigger_build`).
+that can read jobs and builds.
 
 On macOS, build the header with `base64 | tr -d '\n'` instead of `base64 -w0`.
 
@@ -68,12 +68,6 @@ Register one Coral source per Jenkins instance (for example `jenkins_ci`,
 | `builds` | Last build number, result, URL, and `commit_hash` when present |
 | `job_last_revision` | Git `SHA1` rows from job `actions` |
 | `job_git_sha_by_action_index` | Git SHA via indexed `actions` path |
-
-### Mutating
-
-| Table | Description |
-|---|---|
-| `trigger_build` | Queue a build via `POST /job/{job_name}/build` |
 
 ## Filters and pagination
 
@@ -134,14 +128,6 @@ FROM jenkins.job_last_revision
 WHERE job_name = 'my-pipeline';
 ```
 
-### Trigger a build
-
-```sql
-SELECT action
-FROM jenkins.trigger_build
-WHERE job_name = 'my-pipeline';
-```
-
 ## Validation
 
 ```bash
@@ -158,11 +144,10 @@ coral source test jenkins
 
 ## Limitations
 
+- Read-only v1 (no build triggers).
 - v1 focuses on last build per job, not full build history.
 - `JENKINS_AUTHORIZATION` must be the full `Basic ...` header; a bare token returns `403`.
-- `trigger_build` may fail with `403` when Jenkins CSRF protection is enabled.
 - `commit_hash` and Git SHA columns depend on job type and installed plugins.
-- `trigger_build` responses may be empty or non-JSON.
 - Community sources are maintained separately from bundled core sources.
 
 ## Contributing
