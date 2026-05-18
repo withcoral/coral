@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use coral_auth_aws::AwsSigV4Authenticator;
-use coral_engine::{EngineExtensions, QuerySource, RequestAuthenticator};
+use coral_engine::{EngineExtensions, HttpBodyRecorder, QuerySource, RequestAuthenticator};
 
 /// App-layer provider that selects engine extensions for one runtime build.
 pub trait EngineExtensionsProvider: Send + Sync {
@@ -40,6 +40,27 @@ impl EngineExtensionsProvider for AwsEngineExtensionsProvider {
     }
 }
 
+/// Provider that installs the app-owned local HTTP body recorder.
+#[derive(Debug, Clone)]
+pub(crate) struct HttpBodyRecorderEngineExtensionsProvider {
+    recorder: Arc<dyn HttpBodyRecorder>,
+}
+
+impl HttpBodyRecorderEngineExtensionsProvider {
+    pub(crate) fn new(recorder: Arc<dyn HttpBodyRecorder>) -> Self {
+        Self { recorder }
+    }
+}
+
+impl EngineExtensionsProvider for HttpBodyRecorderEngineExtensionsProvider {
+    fn extensions_for(&self, _selected_sources: &[QuerySource]) -> EngineExtensions {
+        EngineExtensions {
+            http_body_recorder: Some(self.recorder.clone()),
+            ..EngineExtensions::default()
+        }
+    }
+}
+
 pub(crate) fn engine_extensions_for_providers(
     providers: &[Arc<dyn EngineExtensionsProvider>],
     selected_sources: &[QuerySource],
@@ -47,13 +68,18 @@ pub(crate) fn engine_extensions_for_providers(
     let mut merged = EngineExtensions::default();
     for provider in providers {
         let extra = provider.extensions_for(selected_sources);
-        merged.source_decorators.extend(extra.source_decorators);
-        merged
-            .query_result_observers
-            .extend(extra.query_result_observers);
-        merged
-            .request_authenticators
-            .extend(extra.request_authenticators);
+        let EngineExtensions {
+            source_decorators,
+            query_result_observers,
+            request_authenticators,
+            http_body_recorder,
+        } = extra;
+        merged.source_decorators.extend(source_decorators);
+        merged.query_result_observers.extend(query_result_observers);
+        merged.request_authenticators.extend(request_authenticators);
+        if http_body_recorder.is_some() {
+            merged.http_body_recorder = http_body_recorder;
+        }
     }
     merged
 }
@@ -65,8 +91,8 @@ mod tests {
     use arrow::datatypes::Schema;
     use arrow::record_batch::RecordBatch;
     use coral_engine::{
-        QueryResultObserver, QueryResultObserverError, RequestAuthenticator,
-        RequestAuthenticatorError,
+        HttpBodyRecord, HttpBodyRecorder, QueryResultObserver, QueryResultObserverError,
+        RequestAuthenticator, RequestAuthenticatorError,
     };
     use reqwest::header::{HeaderName, HeaderValue};
 
@@ -111,6 +137,17 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct TestHttpBodyRecorder;
+
+    impl HttpBodyRecorder for TestHttpBodyRecorder {
+        fn max_body_bytes(&self) -> usize {
+            42
+        }
+
+        fn record_http_body(&self, _record: HttpBodyRecord) {}
+    }
+
     struct TestEngineExtensionsProvider {
         key: &'static str,
         name: &'static str,
@@ -148,6 +185,7 @@ mod tests {
         assert!(extensions.source_decorators.is_empty());
         assert!(extensions.query_result_observers.is_empty());
         assert!(extensions.request_authenticators.is_empty());
+        assert!(extensions.http_body_recorder.is_none());
     }
 
     #[test]
@@ -204,5 +242,18 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(observer_names, ["base", "extra"]);
+    }
+
+    #[test]
+    fn http_body_recorder_provider_installs_recorder() {
+        let provider =
+            HttpBodyRecorderEngineExtensionsProvider::new(Arc::new(TestHttpBodyRecorder));
+
+        let extensions = provider.extensions_for(&[]);
+
+        let recorder = extensions
+            .http_body_recorder
+            .expect("provider should install HTTP body recorder");
+        assert_eq!(recorder.max_body_bytes(), 42);
     }
 }

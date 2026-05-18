@@ -44,6 +44,7 @@ use crate::feedback::publisher::{
     FeedbackPublisher, HostedFeedbackPublisher, NoopFeedbackPublisher,
 };
 use crate::feedback::service::FeedbackService;
+use crate::query::extensions::HttpBodyRecorderEngineExtensionsProvider;
 use crate::query::manager::QueryManager;
 use crate::query::service::QueryService;
 use crate::sources::manager::SourceManager;
@@ -270,24 +271,30 @@ impl ServerBuilder {
         );
         let feedback_manager =
             FeedbackManager::with_publisher(layout.clone(), self.config.feedback_publisher);
-        let mut query_runtime_context = env.query_runtime_context();
-        query_runtime_context.http_body_preview_max_bytes = telemetry_config
-            .trace_history
-            .http_body_recording_max_bytes();
-        query_runtime_context.http_body_preview_recorder = installed_trace_store
-            .as_ref()
-            .filter(|_| query_runtime_context.http_body_preview_max_bytes.is_some())
-            .map(|store| {
-                crate::telemetry::http_body_preview_recorder(store.dir.clone(), store.retention)
-            })
-            .transpose()?;
+        let query_runtime_context = env.query_runtime_context();
+        let mut engine_extensions_providers = self.config.engine_extensions_providers;
+        if let (Some(store), Some(max_bytes)) = (
+            installed_trace_store.as_ref(),
+            telemetry_config
+                .trace_history
+                .http_body_recording_max_bytes(),
+        ) {
+            let recorder = crate::telemetry::http_body_recorder(
+                store.dir.clone(),
+                store.retention,
+                max_bytes,
+            )?;
+            engine_extensions_providers.push(Arc::new(
+                HttpBodyRecorderEngineExtensionsProvider::new(recorder),
+            ));
+        }
 
         let query_manager = QueryManager::new(
             config_store,
             credential_manager,
             query_runtime_context,
             layout,
-            self.config.engine_extensions_providers,
+            engine_extensions_providers,
         );
         let trace_service = if telemetry_config.trace_history.enabled {
             installed_trace_store.map(|store| TraceService::new(store.dir, store.retention))
@@ -1097,7 +1104,6 @@ tables:
             credential_manager,
             QueryRuntimeContext {
                 home_dir: Some(fake_home.clone()),
-                ..QueryRuntimeContext::default()
             },
             layout,
             vec![Arc::new(NoopEngineExtensionsProvider)],

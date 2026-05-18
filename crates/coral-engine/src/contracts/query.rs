@@ -187,29 +187,20 @@ impl SourceValidationReport {
 pub struct QueryRuntimeContext {
     /// Current user's home directory for local path resolution.
     pub home_dir: Option<PathBuf>,
-    /// Max UTF-8 bytes to capture for local HTTP request/response body previews.
-    ///
-    /// `None` disables body preview capture.
-    pub http_body_preview_max_bytes: Option<usize>,
-    /// App-owned sink for local HTTP request/response body previews.
-    ///
-    /// Body previews are intentionally not recorded on global tracing spans so
-    /// host-owned subscribers cannot accidentally observe local-only payloads.
-    pub http_body_preview_recorder: Option<Arc<dyn HttpBodyPreviewRecorder>>,
 }
 
-/// Direction for one local HTTP body preview.
+/// Direction for one local HTTP body record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HttpBodyPreviewDirection {
-    /// Preview of an outbound request body.
+pub enum HttpBodyDirection {
+    /// Outbound request body.
     Request,
-    /// Preview of an inbound response body.
+    /// Inbound response body.
     Response,
 }
 
-/// Local-only HTTP body preview captured for a finished trace span.
+/// Local-only HTTP body record captured for a finished trace span.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HttpBodyPreview {
+pub struct HttpBodyRecord {
     /// W3C trace identifier for the HTTP span.
     pub trace_id: String,
     /// W3C span identifier for the HTTP span.
@@ -217,17 +208,11 @@ pub struct HttpBodyPreview {
     /// Monotonic Coral HTTP request identifier recorded on the HTTP span.
     pub request_id: u64,
     /// Request or response body direction.
-    pub direction: HttpBodyPreviewDirection,
-    /// UTF-8 body preview.
+    pub direction: HttpBodyDirection,
+    /// UTF-8 body content.
     pub body: String,
-    /// Whether the body preview was truncated to the configured byte cap.
+    /// Whether the body content was truncated to the configured byte cap.
     pub truncated: bool,
-}
-
-/// App-owned sink for local-only HTTP body previews.
-pub trait HttpBodyPreviewRecorder: std::fmt::Debug + Send + Sync {
-    /// Records one local-only body preview.
-    fn record_http_body_preview(&self, preview: HttpBodyPreview);
 }
 
 /// Owned runtime-build inputs needed while compiling and registering sources.

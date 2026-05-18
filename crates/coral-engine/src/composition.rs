@@ -8,7 +8,8 @@ use arrow::record_batch::RecordBatch;
 use datafusion::datasource::TableProvider;
 use reqwest::header::{HeaderName, HeaderValue};
 
-use crate::{CoreError, contracts::QuerySource};
+use crate::CoreError;
+use crate::contracts::{HttpBodyRecord, QuerySource};
 
 /// One source's table providers keyed by manifest table name.
 pub type SourceTables = HashMap<String, Arc<dyn TableProvider>>;
@@ -22,6 +23,8 @@ pub struct EngineExtensions {
     pub query_result_observers: Vec<Arc<dyn QueryResultObserver>>,
     /// Request-time custom authenticators keyed by `auth.authenticator`.
     pub request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>>,
+    /// Local-only HTTP body recorder for HTTP-backed source requests.
+    pub http_body_recorder: Option<Arc<dyn HttpBodyRecorder>>,
 }
 
 /// Neutral policy decision for one source registration failure.
@@ -106,6 +109,15 @@ impl RequestAuthenticatorError {
     pub fn failed_precondition(detail: impl Into<String>) -> Self {
         Self::FailedPrecondition(detail.into())
     }
+}
+
+/// Request-time sink for local-only HTTP body records.
+pub trait HttpBodyRecorder: Send + Sync + std::fmt::Debug {
+    /// Max UTF-8 bytes to capture for local HTTP request/response bodies.
+    fn max_body_bytes(&self) -> usize;
+
+    /// Records one local-only HTTP body.
+    fn record_http_body(&self, record: HttpBodyRecord);
 }
 
 /// Request-time HTTP authenticator registered through engine extensions.

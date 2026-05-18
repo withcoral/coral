@@ -73,7 +73,12 @@ pub(crate) async fn build_runtime(
     } = runtime;
     let mut source_candidates = Vec::new();
     for source in sources {
-        match compile_query_source(source, &runtime_context, &extensions.request_authenticators) {
+        match compile_query_source(
+            source,
+            &runtime_context,
+            &extensions.request_authenticators,
+            extensions.http_body_recorder.clone(),
+        ) {
             Ok(compiled) => {
                 source_candidates.push(SourceRegistrationCandidate::Compiled(
                     CompiledQuerySource {

@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use coral_engine::HttpBodyPreviewRecorder;
+use coral_engine::HttpBodyRecorder;
 use opentelemetry::Value as OtelValue;
 use opentelemetry::metrics::MeterProvider as _;
 use opentelemetry::propagation::Extractor;
@@ -351,12 +351,13 @@ pub(crate) fn init_tracing(
     Ok(state.local_trace_store.clone())
 }
 
-pub(crate) fn http_body_preview_recorder(
+pub(crate) fn http_body_recorder(
     local_trace_store_dir: PathBuf,
     retention: Duration,
-) -> Result<Arc<dyn HttpBodyPreviewRecorder>, AppError> {
-    local_store::LocalHttpBodyPreviewRecorder::new(local_trace_store_dir, retention)
-        .map(|recorder| Arc::new(recorder) as Arc<dyn HttpBodyPreviewRecorder>)
+    max_bytes: usize,
+) -> Result<Arc<dyn HttpBodyRecorder>, AppError> {
+    local_store::LocalHttpBodyRecorder::new(local_trace_store_dir, retention, max_bytes)
+        .map(|recorder| Arc::new(recorder) as Arc<dyn HttpBodyRecorder>)
         .map_err(|error| AppError::InvalidInput(error.to_string()))
 }
 
