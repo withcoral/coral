@@ -13,6 +13,8 @@
 - `crates/coral-mcp`: MCP stdio adapter over `coral-client`.
 - `crates/coral-spec`: declarative source-spec parsing, validation,
   input discovery, and normalized source-definition models.
+- `plugins/coral`: Agent plugin packaging. `plugins/coral/skills` is the
+  canonical in-repo home for maintained Coral agent skills.
 
 ## Rules
 
@@ -32,6 +34,11 @@
   ambient process environment directly.
 - Changes to CLI or MCP surfaces must include corresponding documentation
   updates under `docs/` in the same change.
+- Keep maintained Coral agent skills in `plugins/coral/skills`. External
+  distribution repos or packages should mirror from that directory rather than
+  becoming a separate source of truth. Use
+  `cargo run --locked -p xtask -- export-skills --dest <path>` for local
+  export checks and distribution syncs.
 - When proposing or updating a PR title, use Conventional Commits:
   `type(scope): summary`.
 - When using a scope, prefer one that matches the primary area changed,

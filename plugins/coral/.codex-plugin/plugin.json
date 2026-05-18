@@ -1,6 +1,6 @@
 {
   "name": "coral",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Query GitHub, Jira, Slack, Datadog, Linear, and other sources with Coral SQL from Codex.",
   "author": {
     "name": "Coral",
