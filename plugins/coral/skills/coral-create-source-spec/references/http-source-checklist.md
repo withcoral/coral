@@ -88,8 +88,9 @@ Use this loop while iterating:
 # default. Export them first, or pass `--interactive` to be prompted.
 coral source lint ./my-source.yaml
 coral source add --file ./my-source.yaml
-coral sql "SELECT table_name FROM coral.tables WHERE schema_name = 'my_source'"
-coral sql "SELECT table_name, column_name, is_required_filter FROM coral.columns WHERE schema_name = 'my_source' ORDER BY table_name, column_name"
+coral source test my_source
+coral sql "SELECT table_name, description, required_filters FROM coral.tables WHERE schema_name = 'my_source' ORDER BY table_name LIMIT 50 OFFSET 0"
+coral sql "SELECT table_name, column_name, data_type, is_virtual, is_required_filter, description FROM coral.columns WHERE schema_name = 'my_source' ORDER BY table_name, ordinal_position LIMIT 100 OFFSET 0"
 ```
 
 If the source is named or lives in the Coral repo, add representative `test_queries` for a basic smoke/connection check and run:

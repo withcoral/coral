@@ -66,8 +66,8 @@ Only switch to Coral repo layout when the user is explicitly editing the Coral r
    - `coral source add` is non-interactive by default: each input `key` is read from the matching environment variable. Export required variables and secrets before running, or pass `--interactive` to be prompted.
    - repo sources or already-named sources: `coral source test <name>`
 6. Inspect the exposed shape:
-   - inspect `coral.tables`
-   - inspect `coral.columns`
+   - inspect `coral.tables` for visible tables, descriptions, guides, and required filters; keep metadata queries bounded with `LIMIT`/`OFFSET`
+   - inspect `coral.columns` for canonical column metadata, including `is_virtual` and `is_required_filter`; filter by one table or page large column sets
    - inspect `coral.inputs` to verify variables, secrets, defaults, hints, and required flags
 7. Query representative tables with `coral sql`.
 8. If you are relying on `coral source test`, make sure `test_queries` gives you a basic smoke/connection check for the source.
@@ -138,8 +138,9 @@ Use this loop during authoring:
 # or pass --interactive to be prompted.
 coral source lint ./my-source.yaml
 coral source add --file ./my-source.yaml
-coral sql "SELECT * FROM coral.tables WHERE schema_name = 'my_source'"
-coral sql "SELECT * FROM coral.columns WHERE schema_name = 'my_source'"
+coral source test my_source
+coral sql "SELECT schema_name, table_name, description, required_filters FROM coral.tables WHERE schema_name = 'my_source' ORDER BY schema_name, table_name LIMIT 50 OFFSET 0"
+coral sql "SELECT table_name, column_name, data_type, is_virtual, is_required_filter, description FROM coral.columns WHERE schema_name = 'my_source' ORDER BY table_name, ordinal_position LIMIT 100 OFFSET 0"
 coral sql "SELECT key, kind, value, default_value, hint, required, is_set FROM coral.inputs WHERE schema_name = 'my_source' ORDER BY key"
 ```
 

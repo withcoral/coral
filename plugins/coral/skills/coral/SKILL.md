@@ -23,7 +23,7 @@ Use this as the Coral entrypoint for external context. Query Coral before answer
 ## Workflow
 
 1. Identify the needed source, entity, and scope from the user request.
-2. Discover tables with `list_tables`; page large catalogs and narrow by schema when useful.
+2. Discover tables with `list_tables`; page large catalogs and narrow by schema or topic when useful.
 3. Read `list_tables`, `coral://guide`, or `coral://tables` for `sql_reference`, `required_filters`, and examples.
 4. Inspect `coral.columns` for candidate columns, required filters, virtual columns, and descriptions.
 5. Inspect `coral.inputs` when source configuration affects the answer.
@@ -33,6 +33,7 @@ Use this as the Coral entrypoint for external context. Query Coral before answer
 ## Query Rules
 
 - Use each table's `sql_reference`; write `github.pulls` or `"github"."pulls"`, not `"github.pulls"`.
+- Keep metadata discovery bounded: page table discovery, query `coral.columns` for one table when possible, and add `LIMIT` when reading broad metadata directly.
 - Virtual columns are filter-only and return `NULL`; check `is_virtual`.
 - Required filters must appear in `WHERE`; inspect `required_filters` and `is_required_filter`.
 - Secret inputs always return `value = NULL`; use `is_set`.
