@@ -100,6 +100,14 @@ struct HttpRequestSite<'a> {
     request: &'a ManifestRequestSpec,
 }
 
+struct ResponseDecodeContext<'a> {
+    source_schema: &'a str,
+    table_name: &'a str,
+    method_label: &'a str,
+    logged_url: &'a str,
+    response_span: &'a tracing::Span,
+}
+
 impl HttpSourceClient {
     /// Build a backend client from a validated source spec.
     ///
@@ -784,10 +792,13 @@ async fn execute_request(
             let payload = decode_response_body(
                 response,
                 response_format,
-                source_schema,
-                table_name,
-                method_label,
-                &logged_url,
+                ResponseDecodeContext {
+                    source_schema,
+                    table_name,
+                    method_label,
+                    logged_url: &logged_url,
+                    response_span: &request_span,
+                },
             )
             .instrument(request_span.clone())
             .await
@@ -811,19 +822,30 @@ async fn execute_request(
 async fn decode_response_body(
     response: reqwest::Response,
     format: ResponseBodyFormat,
-    source_schema: &str,
-    table_name: &str,
-    method_label: &str,
-    logged_url: &str,
+    context: ResponseDecodeContext<'_>,
 ) -> Result<Value> {
+    let ResponseDecodeContext {
+        source_schema,
+        table_name,
+        method_label,
+        logged_url,
+        response_span,
+    } = context;
     match format {
-        ResponseBodyFormat::Json => response.json().await.map_err(|error| {
-            decode_error(source_schema, table_name, method_label, logged_url, &error)
-        }),
+        ResponseBodyFormat::Json => {
+            let bytes = response.bytes().await.map_err(|error| {
+                decode_error(source_schema, table_name, method_label, logged_url, &error)
+            })?;
+            response_span.record("http.response.body.size", bytes.len());
+            serde_json::from_slice(&bytes).map_err(|error| {
+                json_decode_error(source_schema, table_name, method_label, logged_url, &error)
+            })
+        }
         ResponseBodyFormat::JsonEachRow => {
             let text = response.text().await.map_err(|error| {
                 decode_error(source_schema, table_name, method_label, logged_url, &error)
             })?;
+            response_span.record("http.response.body.size", text.len());
             let mut rows = Vec::new();
             for (index, line) in text.lines().enumerate() {
                 let trimmed = line.trim();
@@ -938,6 +960,22 @@ fn decode_error(
     method_label: &str,
     logged_url: &str,
     error: &reqwest::Error,
+) -> DataFusionError {
+    provider_error(ProviderQueryError::Decode {
+        source_schema: source_schema.to_string(),
+        table: table_name.to_string(),
+        method: Some(method_label.to_string()),
+        url: Some(logged_url.to_string()),
+        detail: format!("source API response decoding failed: {error}"),
+    })
+}
+
+fn json_decode_error(
+    source_schema: &str,
+    table_name: &str,
+    method_label: &str,
+    logged_url: &str,
+    error: &serde_json::Error,
 ) -> DataFusionError {
     provider_error(ProviderQueryError::Decode {
         source_schema: source_schema.to_string(),

@@ -17,15 +17,16 @@ use axum::response::Response as AxumResponse;
 use coral_api::v1::feedback_service_server::FeedbackServiceServer;
 use coral_api::v1::query_service_server::QueryServiceServer;
 use coral_api::v1::source_service_server::SourceServiceServer;
-use coral_api::{HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE};
+use coral_api::v1::trace_service_server::TraceServiceServer;
+use coral_api::{
+    HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE, TRACE_RESPONSE_MAX_MESSAGE_SIZE,
+};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tokio_stream::wrappers::TcpListenerStream;
-use tonic::body::Body;
 use tonic::codegen::http::header::CONTENT_TYPE;
 use tonic::codegen::http::{HeaderValue, Method, Request, Response, StatusCode};
-use tonic::server::NamedService;
 use tonic::service::Routes;
 use tonic::transport::Server;
 use tonic_web::GrpcWebLayer;
@@ -45,6 +46,7 @@ use crate::sources::manager::SourceManager;
 use crate::sources::service::SourceService;
 use crate::state::{AppStateLayout, ConfigStore, SecretStore};
 use crate::telemetry::TelemetryConfig;
+use crate::telemetry::service::TraceService;
 use crate::transport::GrpcMethodAnnotatedService;
 
 /// A static asset (e.g., a built SPA file) served on the same port as
@@ -245,7 +247,15 @@ impl ServerBuilder {
         )?;
         layout.ensure()?;
         let telemetry_config = TelemetryConfig::load(&layout)?;
-        crate::telemetry::init_tracing(&telemetry_config, self.config.enable_stderr_logs)?;
+        let internal_trace_store_dir = telemetry_config
+            .trace_history
+            .enabled
+            .then(|| layout.local_trace_store_dir());
+        let installed_trace_store = crate::telemetry::init_tracing(
+            &telemetry_config,
+            self.config.enable_stderr_logs,
+            internal_trace_store_dir.clone(),
+        )?;
         let config_store = ConfigStore::new(layout.clone());
         let secret_store = SecretStore::new(layout.clone());
         let source_manager =
@@ -259,10 +269,16 @@ impl ServerBuilder {
             layout,
             self.config.engine_extensions_providers,
         );
+        let trace_service = if telemetry_config.trace_history.enabled {
+            installed_trace_store.map(|store| TraceService::new(store.dir, store.retention))
+        } else {
+            None
+        };
         start_server(
             source_manager,
             query_manager,
             feedback_manager,
+            trace_service,
             self.config.mode,
         )
         .await
@@ -343,39 +359,39 @@ async fn start_server(
     source_manager: SourceManager,
     query_manager: QueryManager,
     feedback_manager: FeedbackManager,
+    trace_service: Option<TraceService>,
     mode: ServerMode,
 ) -> Result<RunningServer, AppError> {
     let source_service = SourceService::new(source_manager, query_manager.clone());
     let query_service = QueryService::new(query_manager);
     let feedback_service = FeedbackService::new(feedback_manager);
+    let mut routes = Routes::default()
+        .add_service(GrpcMethodAnnotatedService::new(SourceServiceServer::new(
+            source_service,
+        )))
+        .add_service(GrpcMethodAnnotatedService::new(FeedbackServiceServer::new(
+            feedback_service,
+        )))
+        .add_service(GrpcMethodAnnotatedService::new(
+            QueryServiceServer::new(query_service)
+                .max_encoding_message_size(QUERY_RESPONSE_MAX_MESSAGE_SIZE),
+        ));
+    if let Some(trace_service) = trace_service {
+        routes = routes.add_service(GrpcMethodAnnotatedService::new(
+            TraceServiceServer::new(trace_service)
+                .max_encoding_message_size(TRACE_RESPONSE_MAX_MESSAGE_SIZE),
+        ));
+    }
+
     let listener = TcpListener::bind(mode.bind_addr()).await?;
     let endpoint_uri = format!("http://{}", listener.local_addr()?);
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
-    let source_service = GrpcMethodAnnotatedService::new(SourceServiceServer::new(source_service));
-    let feedback_service =
-        GrpcMethodAnnotatedService::new(FeedbackServiceServer::new(feedback_service));
-    let query_service = GrpcMethodAnnotatedService::new(
-        QueryServiceServer::new(query_service)
-            .max_encoding_message_size(QUERY_RESPONSE_MAX_MESSAGE_SIZE),
-    );
-
     let task = match mode {
-        ServerMode::NativeGrpc => start_grpc_server(
-            listener,
-            shutdown_rx,
-            source_service,
-            feedback_service,
-            query_service,
-        ),
-        ServerMode::EmbeddedUi { assets, .. } => start_grpc_web_server(
-            listener,
-            shutdown_rx,
-            source_service,
-            feedback_service,
-            query_service,
-            assets,
-        ),
+        ServerMode::NativeGrpc => start_grpc_server(listener, shutdown_rx, routes),
+        ServerMode::EmbeddedUi { assets, .. } => {
+            start_grpc_web_server(listener, shutdown_rx, routes, assets)
+        }
     };
 
     Ok(RunningServer {
@@ -385,42 +401,15 @@ async fn start_server(
     })
 }
 
-fn start_grpc_server<S, F, Q>(
+fn start_grpc_server(
     listener: TcpListener,
     shutdown_rx: oneshot::Receiver<()>,
-    source_service: S,
-    feedback_service: F,
-    query_service: Q,
-) -> JoinHandle<Result<(), tonic::transport::Error>>
-where
-    S: Service<Request<Body>, Response = Response<Body>, Error = Infallible>
-        + NamedService
-        + Clone
-        + Send
-        + Sync
-        + 'static,
-    S::Future: Send + 'static,
-    F: Service<Request<Body>, Response = Response<Body>, Error = Infallible>
-        + NamedService
-        + Clone
-        + Send
-        + Sync
-        + 'static,
-    F::Future: Send + 'static,
-    Q: Service<Request<Body>, Response = Response<Body>, Error = Infallible>
-        + NamedService
-        + Clone
-        + Send
-        + Sync
-        + 'static,
-    Q::Future: Send + 'static,
-{
+    routes: Routes,
+) -> JoinHandle<Result<(), tonic::transport::Error>> {
     tokio::spawn(async move {
         Server::builder()
             .http2_max_header_list_size(HTTP2_MAX_HEADER_LIST_SIZE)
-            .add_service(source_service)
-            .add_service(feedback_service)
-            .add_service(query_service)
+            .add_routes(routes)
             .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
                 drop(shutdown_rx.await);
             })
@@ -428,41 +417,13 @@ where
     })
 }
 
-fn start_grpc_web_server<S, F, Q>(
+fn start_grpc_web_server(
     listener: TcpListener,
     shutdown_rx: oneshot::Receiver<()>,
-    source_service: S,
-    feedback_service: F,
-    query_service: Q,
+    routes: Routes,
     static_assets: Arc<dyn StaticAssetsProvider>,
-) -> JoinHandle<Result<(), tonic::transport::Error>>
-where
-    S: Service<Request<Body>, Response = Response<Body>, Error = Infallible>
-        + NamedService
-        + Clone
-        + Send
-        + Sync
-        + 'static,
-    S::Future: Send + 'static,
-    F: Service<Request<Body>, Response = Response<Body>, Error = Infallible>
-        + NamedService
-        + Clone
-        + Send
-        + Sync
-        + 'static,
-    F::Future: Send + 'static,
-    Q: Service<Request<Body>, Response = Response<Body>, Error = Infallible>
-        + NamedService
-        + Clone
-        + Send
-        + Sync
-        + 'static,
-    Q::Future: Send + 'static,
-{
-    let grpc = Routes::default()
-        .add_service(source_service)
-        .add_service(feedback_service)
-        .add_service(query_service)
+) -> JoinHandle<Result<(), tonic::transport::Error>> {
+    let grpc = routes
         .into_axum_router()
         .layer(GrpcWebLayer::new())
         .layer(GrpcWebOnlyLayer);
@@ -635,16 +596,21 @@ mod tests {
 
     use std::borrow::Cow;
     use std::net::{Ipv4Addr, TcpListener};
+    use std::path::Path;
     use std::sync::Arc;
+    use std::time::Duration;
 
     use coral_api::v1::query_service_client::QueryServiceClient;
     use coral_api::v1::source_service_client::SourceServiceClient;
-    use coral_api::v1::{ExecuteSqlRequest, ImportSourceRequest, ListSourcesRequest, Workspace};
+    use coral_api::v1::trace_service_client::TraceServiceClient;
+    use coral_api::v1::{
+        ExecuteSqlRequest, ImportSourceRequest, ListSourcesRequest, ListTracesRequest, Workspace,
+    };
     use coral_api::{HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE};
     use coral_engine::QueryRuntimeContext;
     use tempfile::TempDir;
-    use tonic::Request;
     use tonic::transport::Endpoint;
+    use tonic::{Code, Request};
 
     use super::{
         ServerBuilder, ServerMode, StaticAsset, StaticAssetsProvider, is_grpc_web_content_type,
@@ -654,12 +620,106 @@ mod tests {
     use crate::query::manager::QueryManager;
     use crate::sources::manager::SourceManager;
     use crate::state::{AppStateLayout, ConfigStore, SecretStore};
+    use crate::telemetry::service::TraceService;
     use crate::transport::workspace_to_proto;
     use crate::workspaces::WorkspaceName;
     use crate::{AwsEngineExtensionsProvider, NoopEngineExtensionsProvider};
 
     fn default_workspace() -> Workspace {
         workspace_to_proto(&WorkspaceName::default())
+    }
+
+    fn disable_internal_tracing(config_dir: &Path) {
+        std::fs::create_dir_all(config_dir).expect("create config dir");
+        std::fs::write(
+            config_dir.join("config.toml"),
+            r"
+version = 1
+
+[trace_history]
+enabled = false
+",
+        )
+        .expect("write telemetry config");
+    }
+
+    #[tokio::test]
+    async fn trace_service_is_unregistered_when_local_store_is_disabled() {
+        let temp = TempDir::new().expect("temp dir");
+        let config_dir = temp.path().join("coral-config");
+        disable_internal_tracing(&config_dir);
+        let server = ServerBuilder::new()
+            .with_config_dir(config_dir)
+            .start()
+            .await
+            .expect("start server");
+        let channel = Endpoint::from_shared(server.endpoint_uri().to_string())
+            .expect("endpoint")
+            .connect()
+            .await
+            .expect("connect");
+        let mut trace_client = TraceServiceClient::new(channel);
+
+        let status = trace_client
+            .list_traces(Request::new(ListTracesRequest {
+                page_size: 10,
+                page_token: String::new(),
+            }))
+            .await
+            .expect_err("trace service should be disabled");
+
+        assert_eq!(status.code(), Code::Unimplemented);
+        server.shutdown().await.expect("shutdown");
+    }
+
+    #[tokio::test]
+    async fn trace_service_lists_empty_store() {
+        let temp = TempDir::new().expect("temp dir");
+        let config_dir = temp.path().join("coral-config");
+        let layout = AppStateLayout::discover(Some(config_dir)).expect("layout");
+        layout.ensure().expect("layout dirs");
+        let config_store = ConfigStore::new(layout.clone());
+        let secret_store = SecretStore::new(layout.clone());
+        let source_manager =
+            SourceManager::new(config_store.clone(), secret_store.clone(), layout.clone());
+        let feedback_manager = FeedbackManager::new(layout.clone());
+        let query_manager = QueryManager::new(
+            config_store,
+            secret_store,
+            QueryRuntimeContext::default(),
+            layout,
+            vec![Arc::new(NoopEngineExtensionsProvider)],
+        );
+        let trace_service =
+            TraceService::new(temp.path().join("trace-store"), Duration::from_mins(1));
+        let server = start_server(
+            source_manager,
+            query_manager,
+            feedback_manager,
+            Some(trace_service),
+            ServerMode::NativeGrpc,
+        )
+        .await
+        .expect("start server");
+        let channel = Endpoint::from_shared(server.endpoint_uri().to_string())
+            .expect("endpoint")
+            .connect()
+            .await
+            .expect("connect");
+        let mut trace_client = TraceServiceClient::new(channel);
+
+        let response = trace_client
+            .list_traces(Request::new(ListTracesRequest {
+                page_size: 10,
+                page_token: String::new(),
+            }))
+            .await
+            .expect("list traces")
+            .into_inner();
+
+        assert!(response.traces.is_empty());
+        assert!(response.next_page_token.is_empty());
+        server.shutdown().await.expect("shutdown");
     }
 
     fn grpc_web_body(message: &impl prost::Message) -> Vec<u8> {
@@ -915,6 +975,7 @@ mod tests {
             source_manager,
             query_manager,
             feedback_manager,
+            None,
             ServerMode::NativeGrpc,
         )
         .await
@@ -989,7 +1050,7 @@ tables:
         let query_manager = QueryManager::new(
             ConfigStore::new(layout.clone()),
             SecretStore::new(layout.clone()),
-            QueryRuntimeContext { home_dir: None },
+            QueryRuntimeContext::default(),
             layout,
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
@@ -997,6 +1058,7 @@ tables:
             source_manager,
             query_manager,
             feedback_manager,
+            None,
             ServerMode::NativeGrpc,
         )
         .await
@@ -1083,7 +1145,7 @@ tables:
         let query_manager = QueryManager::new(
             ConfigStore::new(layout.clone()),
             SecretStore::new(layout.clone()),
-            QueryRuntimeContext { home_dir: None },
+            QueryRuntimeContext::default(),
             layout,
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
@@ -1091,6 +1153,7 @@ tables:
             source_manager,
             query_manager,
             feedback_manager,
+            None,
             ServerMode::NativeGrpc,
         )
         .await

@@ -1,0 +1,24 @@
+---
+source: xtask/src/render.rs
+assertion_line: 492
+expression: changelog_page(raw)
+---
+---
+title: "Changelog"
+description: "Release notes for the Coral CLI, generated from [CHANGELOG.md](https://github.com/withcoral/coral/blob/main/CHANGELOG.md)."
+---
+
+{/* AUTO-GENERATED — DO NOT EDIT. Run `make docs-generate` to update. */}
+
+## [0.1.5](https://github.com/withcoral/coral/compare/v0.1.4...v0.1.5) (2026-04-27)
+
+
+### Features
+
+* **cli:** add `coral completion` for shell completions ([#205](https://github.com/withcoral/coral/issues/205))
+* custom authenticators ([#173](https://github.com/withcoral/coral/issues/173))
+
+
+### Bug Fixes
+
+* **engine:** retry github 403 reset-based rate limits ([#110](https://github.com/withcoral/coral/issues/110))
