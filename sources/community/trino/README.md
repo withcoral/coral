@@ -15,11 +15,16 @@ through the Trino cluster REST API.
 
 ### Add the Source
 
+Set the inputs as environment variables, then add the source from this
+manifest:
+
 ```bash
-coral source add trino
+export TRINO_URL=http://localhost:8080
+export TRINO_USER=coral
+coral source add --file sources/community/trino/manifest.yaml
 ```
 
-Provide:
+Inputs:
 
 - `TRINO_URL` — coordinator base URL including scheme and port, e.g.
   `http://localhost:8080` or `https://coordinator.example.com:8443`.

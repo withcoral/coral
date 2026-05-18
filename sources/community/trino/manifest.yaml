@@ -1,11 +1,11 @@
-dsl_version: 3
 name: trino
-version: 1.0.0
+version: 0.1.0
+dsl_version: 3
+backend: http
 description: >-
   Query Trino coordinator information and the cluster's active and recently
   completed query history, including state, errors, timings, driver counts,
   and memory usage, from a self-hosted Trino coordinator.
-backend: http
 base_url: "{{input.TRINO_URL}}"
 inputs:
   TRINO_URL:
@@ -127,7 +127,10 @@ tables:
       Returns the queries the coordinator still retains in memory: queries
       in flight plus a bounded history of recently finished ones. Older
       queries are evicted, so this is a live operational view, not a
-      complete audit log. Filter on `state` with a SQL WHERE clause:
+      complete audit log. Filter on `state` with a SQL WHERE clause; an
+      equality predicate such as `WHERE state = 'FAILED'` is pushed down to
+      the coordinator's `/v1/query?state=` parameter, so only matching
+      queries are fetched:
 
       - `RUNNING`, `QUEUED`, `PLANNING`, `STARTING`, `FINISHING` — in flight
       - `FINISHED` — completed successfully
@@ -140,9 +143,15 @@ tables:
       numbers. `create_time` and `end_time` are real timestamps;
       `end_time` is null while a query is still running. `error_type` and
       `error_code_name` are null unless the query state is `FAILED`.
+    filters:
+      - name: state
     request:
       method: GET
       path: /v1/query
+      query:
+        - name: state
+          from: filter
+          key: state
     response:
       row_strategy: direct
     pagination:
