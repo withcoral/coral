@@ -66,6 +66,82 @@ async fn sql_join_fetches_when_http_dependent_table_is_projected() {
 }
 
 #[tokio::test]
+async fn sql_join_reads_all_resolver_partitions() {
+    let temp = TempDir::new().expect("temp dir");
+    write_jsonl_file(
+        temp.path(),
+        "issues.jsonl",
+        &[
+            issue_row("First", "withcoral", "coral", 123),
+            issue_row("Second", "apache", "arrow-datafusion", 42),
+        ],
+    );
+
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/repos/withcoral/coral/pulls/123"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{
+                "owner": "withcoral",
+                "repo": "coral",
+                "number": 123,
+                "state": "open"
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/apache/arrow-datafusion/pulls/42"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{
+                "owner": "apache",
+                "repo": "arrow-datafusion",
+                "number": 42,
+                "state": "closed"
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let execution = CoralQuery::execute_sql(
+        &[
+            build_source(issues_manifest(temp.path())),
+            build_source(github_manifest(&server.uri())),
+        ],
+        test_runtime(),
+        "
+        SELECT i.title AS issue_title, pr.state AS pr_state
+        FROM (
+          SELECT title, github_owner, github_repo, github_pr_number
+          FROM issues.items
+          WHERE title = 'First'
+          UNION ALL
+          SELECT title, github_owner, github_repo, github_pr_number
+          FROM issues.items
+          WHERE title = 'Second'
+        ) AS i
+        JOIN github.pull_requests AS pr
+          ON pr.owner = i.github_owner
+         AND pr.repo = i.github_repo
+         AND pr.number = i.github_pr_number
+        ORDER BY i.title
+        ",
+    )
+    .await
+    .expect("dependent join should consume every resolver partition");
+
+    assert_eq!(
+        execution_to_rows(&execution),
+        vec![
+            json!({ "issue_title": "First", "pr_state": "open" }),
+            json!({ "issue_title": "Second", "pr_state": "closed" }),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn literal_filters_and_join_bindings_together_satisfy_required_dependent_filters() {
     let temp = TempDir::new().expect("temp dir");
     write_jsonl_file(

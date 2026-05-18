@@ -246,7 +246,15 @@ impl ExecutionPlan for DependentJoinExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
+        if partition != 0 {
+            return plan_err!("DependentJoinExec has one output partition, got {partition}");
+        }
+
         let resolver = Arc::clone(&self.resolver);
+        let resolver_partition_count = resolver
+            .properties()
+            .output_partitioning()
+            .partition_count();
         let dependent = self.dependent.clone();
         let dependent_source_schema = self.dependent_source_schema.clone();
         let table = Arc::clone(&self.table);
@@ -275,7 +283,7 @@ impl ExecutionPlan for DependentJoinExec {
         let output = stream::once(async move {
             execute_dependent_join(
                 resolver,
-                partition,
+                resolver_partition_count,
                 context,
                 dependent,
                 dependent_source_schema,
@@ -316,7 +324,7 @@ impl ExecutionPlan for DependentJoinExec {
 )]
 async fn execute_dependent_join(
     resolver: Arc<dyn ExecutionPlan>,
-    partition: usize,
+    resolver_partition_count: usize,
     context: Arc<TaskContext>,
     dependent: HttpSourceClient,
     dependent_source_schema: String,
@@ -333,11 +341,13 @@ async fn execute_dependent_join(
     metrics: DependentJoinMetrics,
     output_schema: SchemaRef,
 ) -> Result<Vec<RecordBatch>> {
-    let mut resolver_stream = resolver.execute(partition, context)?;
     let mut resolver_batches = Vec::new();
 
-    while let Some(batch) = resolver_stream.next().await.transpose()? {
-        resolver_batches.push(batch);
+    for resolver_partition in 0..resolver_partition_count {
+        let mut resolver_stream = resolver.execute(resolver_partition, Arc::clone(&context))?;
+        while let Some(batch) = resolver_stream.next().await.transpose()? {
+            resolver_batches.push(batch);
+        }
     }
 
     let projector = BindingProjector::new(binding_keys);
