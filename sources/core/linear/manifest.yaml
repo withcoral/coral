@@ -1104,6 +1104,8 @@ tables:
       readiness checks with `parent_identifier`, `state_type`, `due_date`,
       and SLA timestamp columns.
     filters:
+      - name: team_id
+        bindable: true
       - name: project_id
       - name: project_milestone_id
       - name: project_milestone_name
@@ -1183,6 +1185,14 @@ tables:
                 }
               }
             }
+        - path:
+            - variables
+            - filter
+            - team
+            - id
+            - eq
+          from: filter
+          key: team_id
         - path:
             - variables
             - filter

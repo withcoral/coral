@@ -65,6 +65,11 @@ pub(crate) async fn build_runtime(
         mut extensions,
     } = runtime;
     let request_authenticators = extensions.request_authenticators.clone();
+    // Resolver-row overflow can retry without the dependent-join optimizer only
+    // when runtime registration is replayable. Source decorators are mutable
+    // one-shot registration hooks today, so decorated runtimes keep resolver-row
+    // overflow as a hard error instead of applying decorators a second time with
+    // potentially different side effects.
     let fallback_without_dependent_join = extensions.source_decorators.is_empty();
     let fallback_runtime = fallback_without_dependent_join.then(|| FallbackRuntimeConfig {
         sources: sources.to_vec(),
@@ -227,6 +232,10 @@ impl QueryRuntimeAdapter {
         match self.execute_sql_once(&self.ctx, sql).await {
             Ok(execution) => Ok(execution),
             Err(SqlExecutionFailure::Collection(error)) => {
+                // Resolver-row overflow is a dependent-join buffering limit, not
+                // a SQL correctness boundary. Retry the original query with only
+                // the dependent-join rewrite disabled; binding fanout and
+                // per-binding fetch caps remain hard execution errors.
                 let Some(cap_error) = resolver_rows_exceeded(&error) else {
                     return Err(datafusion_to_core(&error, &self.tables));
                 };

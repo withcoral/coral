@@ -44,6 +44,16 @@ pub(crate) enum DependentJoinError {
         observed: usize,
         cap: usize,
     },
+
+    #[error(
+        "dependent join resolver for '{source_schema}.{table}' produced {observed} rows for one binding, which exceeds max_resolver_rows_per_binding={cap}"
+    )]
+    ResolverRowsPerBinding {
+        source_schema: String,
+        table: String,
+        observed: usize,
+        cap: usize,
+    },
 }
 
 impl DependentJoinError {
@@ -73,6 +83,8 @@ pub(crate) fn resolver_rows_exceeded(error: &DataFusionError) -> Option<Resolver
             observed: *observed,
             cap: *cap,
         }),
-        DependentJoinError::Cardinality { .. } | DependentJoinError::RowsPerBinding { .. } => None,
+        DependentJoinError::Cardinality { .. }
+        | DependentJoinError::RowsPerBinding { .. }
+        | DependentJoinError::ResolverRowsPerBinding { .. } => None,
     }
 }

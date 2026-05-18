@@ -523,15 +523,15 @@ V1 capability metadata is deliberately narrow:
 | ----- | ----- | ---- | ------- | ----------- |
 | `filters[].bindable` | filter | boolean | `false` | Allows the filter to be supplied from a runtime join key |
 | `filters[].wire_type` | filter | string | `string` | Runtime binding serialization; V1 supports only `string` |
-| `filters[].max_bindings` | filter | integer | — | Cap for distinct values when this single filter is used alone |
 | `search_index` | table | boolean | `false` | Marks filtered results as ranked, capped, fuzzy, or otherwise incomplete |
-| `dependent_join.max_bindings` | table | integer | — | Cap for composite binding tuple fanout, and fallback single-filter cap |
-| `dependent_join.max_resolver_rows` | table | integer | — | Cap for resolver-side rows buffered by dependent join execution |
-| `dependent_join.max_rows_per_binding` | table | integer | — | Cap for rows returned by one dependent fetch |
 
 Bindable filters must use `mode: equality`. Search-index-backed tables cannot
 declare bindable filters because their filtered result sets are not complete
 enough to preserve SQL join correctness.
+
+In V1, dependent join execution buffers resolver rows and dependent fetch
+results before producing joined output. Row, binding, and fanout limits are
+engine runtime policy, not manifest metadata.
 
 Example:
 
@@ -541,10 +541,6 @@ tables:
     description: Pull requests
     request:
       path: /repos/{{filter.owner}}/{{filter.repo}}/pulls/{{filter.number}}
-    dependent_join:
-      max_bindings: 500
-      max_resolver_rows: 10000
-      max_rows_per_binding: 50000
     filters:
       - name: owner
         bindable: true

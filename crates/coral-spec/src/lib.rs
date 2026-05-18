@@ -85,9 +85,7 @@ mod schema;
 mod template;
 mod validate;
 
-pub use backends::http::{
-    AuthSpec, BasicAuthSpec, CustomAuthSpec, DependentJoinTableConfig, HeaderAuthSpec,
-};
+pub use backends::http::{AuthSpec, BasicAuthSpec, CustomAuthSpec, HeaderAuthSpec};
 pub(crate) use common::validate_test_queries;
 pub use common::{
     BodyFieldSpec, BodySpec, ColumnSpec, ExprSpec, FilterMode, FilterSpec, FunctionArgBinding,

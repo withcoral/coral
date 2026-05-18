@@ -1,11 +1,9 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use coral_spec::backends::http::HttpTableSpec;
 use datafusion::common::{DataFusionError, Result};
 use serde_json::Value;
-use tokio::sync::{Semaphore, mpsc};
 
 use crate::backends::http::HttpSourceClient;
 use crate::backends::http::target::HttpFetchTarget;
@@ -19,8 +17,7 @@ pub(crate) struct BindingFetcher {
     table: Arc<HttpTableSpec>,
     binding_filters: Arc<[String]>,
     literal_filters: Arc<BTreeMap<String, String>>,
-    semaphore: Arc<Semaphore>,
-    result_channel_capacity: usize,
+    max_concurrency: usize,
     max_rows_per_binding: usize,
     page_hint: Option<usize>,
 }
@@ -46,67 +43,17 @@ impl BindingFetcher {
             table: config.table,
             binding_filters: config.binding_filters,
             literal_filters: config.literal_filters,
-            semaphore: Arc::new(Semaphore::new(max_concurrency)),
-            result_channel_capacity: max_concurrency,
+            max_concurrency,
             max_rows_per_binding: config.max_rows_per_binding,
             page_hint: config.page_hint,
         }
     }
 
-    pub(crate) fn dispatch(
-        &self,
-        tuples_rx: mpsc::Receiver<Tuple>,
-    ) -> mpsc::Receiver<Result<(Tuple, Vec<Value>)>> {
-        let (results_tx, results_rx) = mpsc::channel(self.result_channel_capacity);
-        let fetcher = self.clone();
-        let cancellation = Arc::new(AtomicBool::new(false));
-
-        tokio::spawn(async move {
-            fetcher
-                .run_dispatch_loop(tuples_rx, results_tx, cancellation)
-                .await;
-        });
-
-        results_rx
+    pub(crate) fn max_concurrency(&self) -> usize {
+        self.max_concurrency
     }
 
-    async fn run_dispatch_loop(
-        self,
-        mut tuples_rx: mpsc::Receiver<Tuple>,
-        results_tx: mpsc::Sender<Result<(Tuple, Vec<Value>)>>,
-        cancellation: Arc<AtomicBool>,
-    ) {
-        while let Some(tuple) = tuples_rx.recv().await {
-            if cancellation.load(Ordering::Acquire) {
-                break;
-            }
-
-            let Ok(permit) = self.semaphore.clone().acquire_owned().await else {
-                break;
-            };
-
-            if cancellation.load(Ordering::Acquire) {
-                break;
-            }
-
-            let worker = self.clone();
-            let tx = results_tx.clone();
-            let token = Arc::clone(&cancellation);
-
-            tokio::spawn(async move {
-                let _permit = permit;
-                let result = worker.fetch_one(tuple).await;
-                if result.is_err() {
-                    token.store(true, Ordering::Release);
-                }
-                if tx.send(result).await.is_err() {
-                    // Receiver dropped: query execution no longer needs this result.
-                }
-            });
-        }
-    }
-
-    async fn fetch_one(&self, tuple: Tuple) -> Result<(Tuple, Vec<Value>)> {
+    pub(crate) async fn fetch_one(&self, tuple: Tuple) -> Result<(Tuple, Vec<Value>)> {
         let filters = build_filters(
             self.literal_filters.as_ref(),
             self.binding_filters.as_ref(),
@@ -117,9 +64,16 @@ impl BindingFetcher {
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
         let target = http_target_for_filters(&self.table, &filter_values);
+        let row_limit = self.max_rows_per_binding.checked_add(1);
         let rows = self
             .client
-            .fetch(&target, &filter_values, &HashMap::new(), self.page_hint)
+            .fetch_complete(
+                &target,
+                &filter_values,
+                &HashMap::new(),
+                row_limit,
+                self.page_hint,
+            )
             .await?;
 
         if rows.len() > self.max_rows_per_binding {

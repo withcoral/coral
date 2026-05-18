@@ -147,20 +147,6 @@ struct RawHttpTableSpec {
     columns: Vec<ColumnSpec>,
     #[serde(default)]
     search_index: bool,
-    #[serde(default)]
-    dependent_join: DependentJoinTableConfig,
-}
-
-/// Table-local caps for dependent predicate pushdown.
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct DependentJoinTableConfig {
-    #[serde(default)]
-    pub max_bindings: Option<usize>,
-    #[serde(default)]
-    pub max_resolver_rows: Option<usize>,
-    #[serde(default)]
-    pub max_rows_per_binding: Option<usize>,
 }
 
 /// One validated HTTP table declaration.
@@ -172,7 +158,6 @@ pub struct HttpTableSpec {
     pub response: ResponseSpec,
     pub pagination: PaginationSpec,
     pub search_index: bool,
-    pub dependent_join: DependentJoinTableConfig,
 }
 
 impl HttpTableSpec {
@@ -259,7 +244,6 @@ impl RawHttpTableSpec {
             requests: &self.requests,
             pagination: &self.pagination,
             search_index: self.search_index,
-            dependent_join: &self.dependent_join,
         })?;
 
         Ok(HttpTableSpec {
@@ -276,7 +260,6 @@ impl RawHttpTableSpec {
             response: self.response,
             pagination: self.pagination,
             search_index: self.search_index,
-            dependent_join: self.dependent_join,
         })
     }
 }
@@ -373,6 +356,5 @@ pub(crate) fn test_http_table_spec(
         response: ResponseSpec::default(),
         pagination: PaginationSpec::default(),
         search_index: false,
-        dependent_join: DependentJoinTableConfig::default(),
     }
 }

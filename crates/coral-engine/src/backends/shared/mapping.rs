@@ -90,6 +90,41 @@ pub(crate) fn convert_items(
     RecordBatch::try_new(schema, arrays).map_err(|e| DataFusionError::ArrowError(Box::new(e), None))
 }
 
+pub(crate) fn filter_items_by_column_values(
+    columns: &[ColumnSpec],
+    filter_values: &HashMap<String, String>,
+    items: &[Value],
+) -> Vec<Value> {
+    if filter_values.is_empty() {
+        return items.to_vec();
+    }
+
+    let filter_columns = filter_values
+        .iter()
+        .filter_map(|(filter_name, expected)| {
+            columns
+                .iter()
+                .find(|column| column.name == *filter_name)
+                .map(|column| (column.resolved_expr(), expected.as_str()))
+        })
+        .collect::<Vec<_>>();
+
+    if filter_columns.len() != filter_values.len() {
+        return Vec::new();
+    }
+
+    let empty_filters = HashMap::new();
+    items
+        .iter()
+        .filter(|row| {
+            filter_columns.iter().all(|(expr, expected)| {
+                to_utf8(eval_expr(expr, row, &empty_filters)).as_deref() == Some(*expected)
+            })
+        })
+        .cloned()
+        .collect()
+}
+
 fn eval_expr(expr: &ExprSpec, row: &Value, filters: &HashMap<String, String>) -> Option<Value> {
     match expr {
         ExprSpec::Path { path } => get_path_value(row, path).cloned(),
