@@ -108,7 +108,9 @@ mod tests {
     use tonic::{Code, Status};
     use tonic_types::{ErrorDetail, StatusExt as _};
 
-    use super::{CORAL_ERROR_DOMAIN, DecodedStatusError, decode_status_error};
+    use coral_api::CORAL_ERROR_DOMAIN;
+
+    use super::{DecodedStatusError, decode_status_error};
 
     fn build_coral_status(reason: &str, metadata: Vec<(&str, &str)>, retryable: bool) -> Status {
         let meta: std::collections::HashMap<String, String> = metadata
