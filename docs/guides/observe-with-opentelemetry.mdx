@@ -43,7 +43,7 @@ HTTP request and response bodies are recorded in local traces by default, up to 
 record_http_bodies = false
 ```
 
-HTTP bodies are captured through Coral's local trace store, not as global span attributes. They are kept out of OTLP export and are not exposed to host-owned tracing subscribers even when local body recording is enabled.
+Recorded HTTP bodies are visible in local trace history only. They are not exported to external OTLP collectors.
 
 ## Configuration reference
 
