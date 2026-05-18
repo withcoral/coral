@@ -25,8 +25,8 @@ use crate::runtime::dependent_join::bindings::BindingProjector;
 use crate::runtime::dependent_join::driver::run_binding_phase;
 use crate::runtime::dependent_join::fetcher::{BindingFetcher, BindingFetcherConfig};
 use crate::runtime::dependent_join::logical::BindingKey;
-use crate::runtime::dependent_join::output::build_joined_batches;
-use crate::runtime::dependent_join::state::ResolverCaps;
+use crate::runtime::dependent_join::output::{BuildJoinedBatchesConfig, build_joined_batches};
+use crate::runtime::dependent_join::state::{DependentJoinRuntimeState, ResolverCaps};
 
 pub(crate) struct DependentJoinExec {
     resolver: Arc<dyn ExecutionPlan>,
@@ -36,6 +36,7 @@ pub(crate) struct DependentJoinExec {
     binding_keys: Arc<[BindingKey]>,
     literal_filters: Arc<BTreeMap<String, String>>,
     dependent_projection: Arc<[usize]>,
+    resolver_projection_len: usize,
     dependent_first: bool,
     max_bindings: usize,
     max_resolver_rows: usize,
@@ -55,6 +56,7 @@ pub(crate) struct DependentJoinExecConfig {
     pub(crate) binding_keys: Arc<[BindingKey]>,
     pub(crate) literal_filters: Arc<BTreeMap<String, String>>,
     pub(crate) dependent_projection: Arc<[usize]>,
+    pub(crate) resolver_projection_len: usize,
     pub(crate) dependent_first: bool,
     pub(crate) max_bindings: usize,
     pub(crate) max_resolver_rows: usize,
@@ -81,6 +83,7 @@ impl DependentJoinExec {
             binding_keys: config.binding_keys,
             literal_filters: config.literal_filters,
             dependent_projection: config.dependent_projection,
+            resolver_projection_len: config.resolver_projection_len,
             dependent_first: config.dependent_first,
             max_bindings: config.max_bindings,
             max_resolver_rows: config.max_resolver_rows,
@@ -102,6 +105,7 @@ impl DependentJoinExec {
             binding_keys: Arc::clone(&self.binding_keys),
             literal_filters: Arc::clone(&self.literal_filters),
             dependent_projection: Arc::clone(&self.dependent_projection),
+            resolver_projection_len: self.resolver_projection_len,
             dependent_first: self.dependent_first,
             max_bindings: self.max_bindings,
             max_resolver_rows: self.max_resolver_rows,
@@ -260,6 +264,7 @@ impl ExecutionPlan for DependentJoinExec {
         let table = Arc::clone(&self.table);
         let binding_keys = Arc::clone(&self.binding_keys);
         let dependent_projection = Arc::clone(&self.dependent_projection);
+        let resolver_projection_len = self.resolver_projection_len;
         let binding_filters = binding_keys
             .iter()
             .map(|key| key.dependent_filter.clone())
@@ -292,6 +297,7 @@ impl ExecutionPlan for DependentJoinExec {
                 binding_filters,
                 literal_filters,
                 dependent_projection,
+                resolver_projection_len,
                 dependent_first,
                 caps,
                 max_concurrency,
@@ -333,6 +339,7 @@ async fn execute_dependent_join(
     binding_filters: Vec<String>,
     literal_filters: Arc<BTreeMap<String, String>>,
     dependent_projection: Arc<[usize]>,
+    resolver_projection_len: usize,
     dependent_first: bool,
     caps: ResolverCaps,
     max_concurrency: usize,
@@ -341,16 +348,17 @@ async fn execute_dependent_join(
     metrics: DependentJoinMetrics,
     output_schema: SchemaRef,
 ) -> Result<Vec<RecordBatch>> {
-    let mut resolver_batches = Vec::new();
+    let projector = BindingProjector::new(binding_keys);
+    let mut state = DependentJoinRuntimeState::default();
+    let mut tuples = Vec::new();
 
     for resolver_partition in 0..resolver_partition_count {
         let mut resolver_stream = resolver.execute(resolver_partition, Arc::clone(&context))?;
         while let Some(batch) = resolver_stream.next().await.transpose()? {
-            resolver_batches.push(batch);
+            tuples.extend(state.ingest_resolver_batch(&batch, &projector, &caps)?);
         }
     }
 
-    let projector = BindingProjector::new(binding_keys);
     let fetcher = BindingFetcher::new(BindingFetcherConfig {
         client: dependent,
         source_schema: dependent_source_schema.clone(),
@@ -361,16 +369,17 @@ async fn execute_dependent_join(
         max_rows_per_binding,
         page_hint,
     });
-    let state = run_binding_phase(resolver_batches, &projector, &fetcher, &caps).await?;
+    let state = run_binding_phase(state, tuples, &fetcher, &caps).await?;
     metrics.record(&state);
 
-    build_joined_batches(
-        &state,
-        &dependent_source_schema,
-        &table,
-        &binding_filters,
-        &dependent_projection,
+    build_joined_batches(BuildJoinedBatchesConfig {
+        state: &state,
+        dependent_source_schema: &dependent_source_schema,
+        dependent_table: &table,
+        binding_filters: &binding_filters,
+        dependent_projection: &dependent_projection,
+        resolver_projection_len,
         dependent_first,
-        &output_schema,
-    )
+        output_schema: &output_schema,
+    })
 }

@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
 
@@ -9,7 +9,7 @@ use datafusion::common::tree_node::Transformed;
 use datafusion::common::{Column, DFSchemaRef, ExprSchema, Result, TableReference};
 use datafusion::datasource::source_as_provider;
 use datafusion::logical_expr::{
-    Expr, Extension, FetchType, Join, JoinType, Limit, LogicalPlan, SkipType,
+    Expr, Extension, FetchType, Join, JoinType, Limit, LogicalPlan, Projection, SkipType,
 };
 use datafusion::optimizer::{ApplyOrder, OptimizerConfig, OptimizerRule};
 
@@ -21,6 +21,7 @@ const DEFAULT_MAX_BINDINGS: usize = 500;
 const DEFAULT_MAX_RESOLVER_ROWS: usize = 10_000;
 const DEFAULT_MAX_ROWS_PER_BINDING: usize = 50_000;
 const DEFAULT_BINDING_CONCURRENCY: usize = 8;
+const BINDING_COLUMN_PREFIX: &str = "__coral_dj_bind_";
 
 /// Optimizer rule for dependent predicate pushdown.
 #[derive(Default)]
@@ -275,15 +276,17 @@ fn rewrite_join(join: &Join) -> Option<LogicalPlan> {
         return None;
     };
 
-    let binding_keys = binding_keys_for_join(&dependent, resolver_schema, &join.on)?;
+    let (resolver, binding_keys, resolver_projection_len) =
+        resolver_with_binding_columns(resolver_plan, &dependent, resolver_schema, &join.on)?;
 
     let max_bindings = resolve_max_bindings(&dependent, &binding_keys);
     let node = DependentJoinNode {
-        resolver: resolver_plan.clone(),
+        resolver,
         dependent_table: dependent.table_ref,
         binding_keys,
         literal_filters: dependent.literal_filters,
         dependent_projection: dependent.dependent_projection,
+        resolver_projection_len,
         dependent_first,
         schema: join.schema.clone(),
         max_bindings,
@@ -306,6 +309,82 @@ fn rewrite_join(join: &Join) -> Option<LogicalPlan> {
     Some(LogicalPlan::Extension(Extension {
         node: Arc::new(node),
     }))
+}
+
+fn resolver_with_binding_columns(
+    resolver_plan: &LogicalPlan,
+    dependent: &PeeledDependentScan,
+    resolver_schema: &DFSchemaRef,
+    join_on: &[(Expr, Expr)],
+) -> Option<(LogicalPlan, Vec<BindingKey>, usize)> {
+    let resolver_columns = resolver_schema.columns();
+    let resolver_projection_len = resolver_columns.len();
+    let mut used_names = resolver_columns
+        .iter()
+        .map(|column| column.name.clone())
+        .collect::<BTreeSet<_>>();
+    let mut expr = resolver_columns
+        .into_iter()
+        .map(Expr::Column)
+        .collect::<Vec<_>>();
+    let mut binding_keys = Vec::with_capacity(join_on.len());
+
+    for (binding_index, (left_expr, right_expr)) in join_on.iter().enumerate() {
+        let (dependent_column, resolver_column) =
+            split_dependent_resolver_columns(dependent, resolver_schema, left_expr, right_expr)?;
+
+        if !matches!(
+            resolver_schema
+                .field_from_column(resolver_column)
+                .ok()?
+                .data_type(),
+            DataType::Utf8 | DataType::Int64 | DataType::Boolean
+        ) {
+            return None;
+        }
+
+        let filter = dependent
+            .table
+            .filters()
+            .iter()
+            .find(|filter| filter.name == dependent_column.name)?;
+
+        if !filter.bindable || filter.wire_type != WireType::String {
+            return None;
+        }
+
+        let resolver_binding_name = unique_binding_column_name(&mut used_names, binding_index);
+        expr.push(
+            Expr::Column(Column::new(
+                resolver_column.relation.clone(),
+                &resolver_column.name,
+            ))
+            .alias(&resolver_binding_name),
+        );
+        binding_keys.push(BindingKey {
+            resolver_column: Column::new(resolver_column.relation.clone(), &resolver_column.name),
+            resolver_binding_name,
+            dependent_filter: filter.name.clone(),
+            wire_type: filter.wire_type,
+        });
+    }
+
+    let projection = Projection::try_new(expr, Arc::new(resolver_plan.clone())).ok()?;
+    Some((
+        LogicalPlan::Projection(projection),
+        binding_keys,
+        resolver_projection_len,
+    ))
+}
+
+fn unique_binding_column_name(used_names: &mut BTreeSet<String>, binding_index: usize) -> String {
+    let mut candidate = format!("{BINDING_COLUMN_PREFIX}{binding_index}");
+    let mut suffix = 0usize;
+    while !used_names.insert(candidate.clone()) {
+        suffix += 1;
+        candidate = format!("{BINDING_COLUMN_PREFIX}{binding_index}_{suffix}");
+    }
+    candidate
 }
 
 fn rewrite_limit_page_hint(limit: &Limit) -> Result<Option<LogicalPlan>> {
@@ -340,47 +419,6 @@ fn rewrite_limit_page_hint(limit: &Limit) -> Result<Option<LogicalPlan>> {
             node: Arc::new(hinted),
         })),
     })))
-}
-
-fn binding_keys_for_join(
-    dependent: &PeeledDependentScan,
-    resolver_schema: &DFSchemaRef,
-    join_on: &[(Expr, Expr)],
-) -> Option<Vec<BindingKey>> {
-    let mut binding_keys = Vec::with_capacity(join_on.len());
-
-    for (left_expr, right_expr) in join_on {
-        let (dependent_column, resolver_column) =
-            split_dependent_resolver_columns(dependent, resolver_schema, left_expr, right_expr)?;
-
-        if !matches!(
-            resolver_schema
-                .field_from_column(resolver_column)
-                .ok()?
-                .data_type(),
-            DataType::Utf8 | DataType::Int64 | DataType::Boolean
-        ) {
-            return None;
-        }
-
-        let filter = dependent
-            .table
-            .filters()
-            .iter()
-            .find(|filter| filter.name == dependent_column.name)?;
-
-        if !filter.bindable || filter.wire_type != WireType::String {
-            return None;
-        }
-
-        binding_keys.push(BindingKey {
-            resolver_column: Column::new(resolver_column.relation.clone(), &resolver_column.name),
-            dependent_filter: filter.name.clone(),
-            wire_type: filter.wire_type,
-        });
-    }
-
-    Some(binding_keys)
 }
 
 fn split_dependent_resolver_columns<'a>(

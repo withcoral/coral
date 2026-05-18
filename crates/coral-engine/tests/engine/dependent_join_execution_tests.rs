@@ -200,6 +200,73 @@ async fn sql_join_rewrites_when_resolver_side_is_also_http() {
 }
 
 #[tokio::test]
+async fn sql_join_uses_qualified_resolver_binding_when_column_names_collide() {
+    let temp = TempDir::new().expect("temp dir");
+    write_jsonl_file(
+        temp.path(),
+        "channels.jsonl",
+        &[json!({ "name": "general", "id": "C-general" })],
+    );
+    write_jsonl_file(
+        temp.path(),
+        "resolver_ids.jsonl",
+        &[json!({ "id": "wrong-channel", "channel_name": "general" })],
+    );
+
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/conversations.history"))
+        .and(query_param("channel", "wrong-channel"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "messages": [
+                { "channel": "wrong-channel", "user": "U-bad", "text": "wrong" }
+            ]
+        })))
+        .expect(0)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/conversations.history"))
+        .and(query_param("channel", "C-general"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "messages": [
+                { "channel": "C-general", "user": "U1", "text": "hello" }
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let execution = CoralQuery::execute_sql(
+        &[
+            build_source(slack_channels_manifest(temp.path())),
+            build_source(resolver_ids_manifest(temp.path())),
+            build_source(slack_messages_manifest(&server.uri())),
+        ],
+        test_runtime(),
+        "
+        SELECT r.id AS resolver_id, c.id AS channel_id, m.text
+        FROM resolver_ids.items AS r
+        JOIN slack_channels.channels AS c
+          ON c.name = r.channel_name
+        JOIN slack.messages AS m
+          ON m.channel = c.id
+        ",
+    )
+    .await
+    .expect("dependent join should bind c.id, not the earlier r.id column");
+
+    assert_eq!(
+        execution_to_rows(&execution),
+        vec![json!({
+            "resolver_id": "wrong-channel",
+            "channel_id": "C-general",
+            "text": "hello"
+        })]
+    );
+}
+
+#[tokio::test]
 async fn literal_filters_and_join_bindings_together_satisfy_required_dependent_filters() {
     let temp = TempDir::new().expect("temp dir");
     write_jsonl_file(
@@ -397,6 +464,22 @@ async fn too_many_resolver_rows_retries_without_dependent_pushdown() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/pulls"))
+        .and(query_param("owner", "withcoral"))
+        .and(query_param("repo", "coral"))
+        .and(query_param("number", "123"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{
+                "owner": "withcoral",
+                "repo": "coral",
+                "number": 123,
+                "state": "open"
+            }]
+        })))
+        .expect(0)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/pulls"))
         .and(query_param_is_missing("owner"))
         .and(query_param_is_missing("repo"))
         .and(query_param_is_missing("number"))
@@ -412,13 +495,16 @@ async fn too_many_resolver_rows_retries_without_dependent_pushdown() {
         .mount(&server)
         .await;
 
+    let mut github = github_broad_query_manifest(&server.uri());
+    first_table_object_mut(&mut github).insert(
+        "dependent_join".to_string(),
+        json!({ "max_resolver_rows": 1 }),
+    );
+
     let execution = CoralQuery::execute_sql(
         &[
             build_source(issues_manifest(temp.path())),
-            build_source(github_broad_manifest_with_dependent_join(
-                &server.uri(),
-                Some(json!({ "max_resolver_rows": 1 })),
-            )),
+            build_source(github),
         ],
         test_runtime(),
         dependent_join_sql(),
@@ -1255,6 +1341,27 @@ fn slack_channels_manifest(dir: &Path) -> Value {
             "columns": [
                 { "name": "name", "type": "Utf8" },
                 { "name": "id", "type": "Utf8" }
+            ]
+        }]
+    })
+}
+
+fn resolver_ids_manifest(dir: &Path) -> Value {
+    json!({
+        "name": "resolver_ids",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "jsonl",
+        "tables": [{
+            "name": "items",
+            "description": "Resolver table with an id column that can collide with joined resolver columns",
+            "source": {
+                "location": dir_url(dir),
+                "glob": "**/resolver_ids.jsonl"
+            },
+            "columns": [
+                { "name": "id", "type": "Utf8" },
+                { "name": "channel_name", "type": "Utf8" }
             ]
         }]
     })

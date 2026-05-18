@@ -14,6 +14,7 @@ pub(crate) struct DependentJoinNode {
     pub(crate) binding_keys: Vec<BindingKey>,
     pub(crate) literal_filters: BTreeMap<String, String>,
     pub(crate) dependent_projection: Vec<usize>,
+    pub(crate) resolver_projection_len: usize,
     pub(crate) dependent_first: bool,
     pub(crate) schema: DFSchemaRef,
     pub(crate) max_bindings: usize,
@@ -26,6 +27,7 @@ pub(crate) struct DependentJoinNode {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BindingKey {
     pub(crate) resolver_column: Column,
+    pub(crate) resolver_binding_name: String,
     pub(crate) dependent_filter: String,
     pub(crate) wire_type: WireType,
 }
@@ -33,6 +35,7 @@ pub(crate) struct BindingKey {
 impl Hash for BindingKey {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.resolver_column.hash(state);
+        self.resolver_binding_name.hash(state);
         self.dependent_filter.hash(state);
         match self.wire_type {
             WireType::String => "string".hash(state),
@@ -82,6 +85,7 @@ impl UserDefinedLogicalNodeCore for DependentJoinNode {
             binding_keys: self.binding_keys.clone(),
             literal_filters: self.literal_filters.clone(),
             dependent_projection: self.dependent_projection.clone(),
+            resolver_projection_len: self.resolver_projection_len,
             dependent_first: self.dependent_first,
             schema: self.schema.clone(),
             max_bindings: self.max_bindings,

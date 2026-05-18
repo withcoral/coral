@@ -41,6 +41,7 @@ impl ExtensionPlanner for DependentJoinExtensionPlanner {
             binding_keys: Arc::from(node.binding_keys.clone()),
             literal_filters: Arc::new(node.literal_filters.clone()),
             dependent_projection: Arc::from(node.dependent_projection.clone()),
+            resolver_projection_len: node.resolver_projection_len,
             dependent_first: node.dependent_first,
             max_bindings: node.max_bindings,
             max_resolver_rows: node.max_resolver_rows,
