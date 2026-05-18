@@ -159,9 +159,12 @@ fn credential_like_input_key(key: &str) -> bool {
     ];
 
     let key = key.to_ascii_uppercase();
-    MARKERS
-        .iter()
-        .any(|marker| key == *marker || key.ends_with(&format!("_{marker}")))
+    MARKERS.iter().any(|marker| {
+        key == *marker
+            || key.contains(&format!("_{marker}_"))
+            || key.ends_with(&format!("_{marker}"))
+            || key.starts_with(&format!("{marker}_"))
+    })
 }
 
 fn validate_input_references(root: &Value, inputs: &[ManifestInputSpec]) -> Result<()> {
@@ -413,21 +416,44 @@ tables: []
 
     #[test]
     fn credential_like_variables_are_rejected() {
+        for key in [
+            "SERVICE_API_KEY",
+            "STRIPE_SECRET_KEY",
+            "WEAVIATE_API_KEY_STAGING",
+        ] {
+            let manifest = format!(
+                r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+inputs:
+  {key}:
+    kind: variable
+tables: []
+"
+            );
+            let error = collect(&manifest).expect_err("credential variable");
+            assert!(error.to_string().contains("looks credential-like"));
+        }
+    }
+
+    #[test]
+    fn credential_like_check_respects_underscore_boundaries() {
         let manifest = r"
 name: demo
 version: 1.0.0
 dsl_version: 3
 backend: http
 inputs:
-  SERVICE_API_KEY:
+  SERVICE_SECRETARIAT_URL:
     kind: variable
 tables: []
 ";
-        let error = collect(manifest).expect_err("credential variable");
-        assert!(
-            error
-                .to_string()
-                .contains("SERVICE_API_KEY' looks credential-like")
-        );
+        let inputs = collect(manifest).expect("non-credential variable");
+        let [input] = inputs.as_slice() else {
+            panic!("expected one input, got {inputs:?}");
+        };
+        assert_eq!(input.key, "SERVICE_SECRETARIAT_URL");
     }
 }
