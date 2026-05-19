@@ -230,19 +230,19 @@ function WaterfallBarSlot({
   traceStart: bigint
 }) {
   const { span } = row
-  const canExpandHttp = isHttpSpan(span)
+  const isExpandableHttpSpan = isHttpSpan(span)
 
   return (
     <div
       className={classNames(s.waterfallBarSlot, { [s.waterfallBarSlotActive]: active })}
-      onClick={() => canExpandHttp && onToggleExpanded(span.spanId)}
+      onClick={() => isExpandableHttpSpan && onToggleExpanded(span.spanId)}
       onKeyDown={(event) => {
-        if (!canExpandHttp || (event.key !== 'Enter' && event.key !== ' ')) return
+        if (!isExpandableHttpSpan || (event.key !== 'Enter' && event.key !== ' ')) return
         event.preventDefault()
         onToggleExpanded(span.spanId)
       }}
-      role={canExpandHttp ? 'button' : undefined}
-      tabIndex={canExpandHttp ? 0 : undefined}
+      role={isExpandableHttpSpan ? 'button' : undefined}
+      tabIndex={isExpandableHttpSpan ? 0 : undefined}
     >
       <SpanTimingBar durationMs={durationMs} span={span} traceStart={traceStart} />
     </div>
@@ -271,7 +271,7 @@ function WaterfallRow({
   const label = spanDisplayLabel(span)
   const meta = spanDisplayMeta(span, label)
   const isNoisyInternalSpan = tone === 'span' && span.kind === 'internal' && nanosToMs(span.durationNanos) <= NOISY_INTERNAL_SPAN_MAX_MS
-  const canExpandHttp = isHttpSpan(span)
+  const isExpandableHttpSpan = isHttpSpan(span)
 
   return (
     <div
@@ -283,17 +283,17 @@ function WaterfallRow({
       role="treeitem"
     >
       <div
-        aria-expanded={canExpandHttp ? expanded : undefined}
+        aria-expanded={isExpandableHttpSpan ? expanded : undefined}
         className={s.waterfallRowButton}
         data-noisy={isNoisyInternalSpan || undefined}
-        onClick={() => canExpandHttp && onToggleExpanded(span.spanId)}
+        onClick={() => isExpandableHttpSpan && onToggleExpanded(span.spanId)}
         onKeyDown={(event) => {
-          if (!canExpandHttp || (event.key !== 'Enter' && event.key !== ' ')) return
+          if (!isExpandableHttpSpan || (event.key !== 'Enter' && event.key !== ' ')) return
           event.preventDefault()
           onToggleExpanded(span.spanId)
         }}
-        role={canExpandHttp ? 'button' : undefined}
-        tabIndex={canExpandHttp ? 0 : undefined}
+        role={isExpandableHttpSpan ? 'button' : undefined}
+        tabIndex={isExpandableHttpSpan ? 0 : undefined}
       >
         <WaterfallSpanLabel
           childCount={childCount}

@@ -6,7 +6,7 @@ import { theme } from '@/wax/theme/theme.css'
 
 const spin = keyframes({ to: { transform: 'rotate(360deg)' } })
 const codeFontFamily = '"Gustan Mono", "Roboto Mono", "SFMono-Regular", "SF Mono", Consolas, "Liberation Mono", Menlo, monospace'
-const waterfallGridColumns = 'minmax(380px, 0.46fr) minmax(0, 1fr)'
+const traceWaterfallGridColumns = 'minmax(380px, 0.46fr) minmax(0, 1fr)'
 export const root = style({ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 })
 
 export const header = style({
@@ -170,7 +170,7 @@ export const waterfallTimelinePane = style({
 export const waterfallTickRow = style({
   display: 'grid',
   flexShrink: 0,
-  gridTemplateColumns: waterfallGridColumns,
+  gridTemplateColumns: traceWaterfallGridColumns,
 })
 export const waterfallLabel = style({ borderBlockEnd: `1px solid ${theme.stroke.primary}`, height: 24, minWidth: 0, paddingBlockEnd: 4 })
 export const waterfallTimeline = style({ borderBlockEnd: `1px solid ${theme.stroke.primary}`, height: 24, minWidth: 0, overflow: 'hidden', paddingBlockEnd: 4, position: 'relative' })
@@ -216,7 +216,7 @@ export const waterfallRowsGrid = style({ display: 'flex', flexDirection: 'column
 export const waterfallRowShell = style({
   borderRadius: 8,
   display: 'grid',
-  gridTemplateColumns: waterfallGridColumns,
+  gridTemplateColumns: traceWaterfallGridColumns,
   minWidth: 0,
   overflow: 'hidden',
   position: 'relative',
