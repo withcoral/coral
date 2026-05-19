@@ -39,10 +39,11 @@ pub(super) async fn fetch_rows(
     target: &HttpFetchTarget,
     filter_values: &HashMap<String, String>,
     arg_values: &HashMap<String, String>,
-    sql_limit: Option<usize>,
+    row_limit: Option<usize>,
+    page_hint: Option<usize>,
 ) -> Result<Vec<Value>> {
     let mut all_rows = Vec::new();
-    let limits = resolve_fetch_limits(target, sql_limit);
+    let limits = resolve_fetch_limits(target, row_limit, page_hint);
     let pagination = target
         .pagination()
         .validated(&client.source_schema, target.name())
@@ -152,6 +153,7 @@ pub(super) async fn fetch_rows(
                 auth: &client.auth,
                 request_headers: &client.request_headers,
                 request_authenticators: &client.request_authenticators,
+                trace_context: client.trace_context.as_ref(),
                 table_headers: &active_request.headers,
                 table_name: target.name(),
                 method: active_request.method,
@@ -266,22 +268,28 @@ pub(super) async fn fetch_rows(
     Ok(all_rows)
 }
 
-fn resolve_fetch_limits(target: &HttpFetchTarget, sql_limit: Option<usize>) -> FetchLimits {
+fn resolve_fetch_limits(
+    target: &HttpFetchTarget,
+    row_limit: Option<usize>,
+    page_hint: Option<usize>,
+) -> FetchLimits {
     let Some(search_limits) = target.search_limits() else {
         return FetchLimits {
-            effective_limit: sql_limit.or(target.fetch_limit_default()),
-            page_size_limit: sql_limit,
+            effective_limit: row_limit,
+            page_size_limit: page_hint,
             max_search_calls: None,
         };
     };
 
-    let requested_top_k = sql_limit.unwrap_or(search_limits.default_top_k);
+    let requested_top_k = page_hint.unwrap_or(search_limits.default_top_k);
     let max_candidates = search_limits
         .max_top_k
         .saturating_mul(search_limits.max_calls_per_query);
 
     FetchLimits {
-        effective_limit: Some(requested_top_k.min(max_candidates)),
+        effective_limit: row_limit
+            .or(Some(requested_top_k))
+            .map(|limit| limit.min(max_candidates)),
         page_size_limit: Some(requested_top_k.min(search_limits.max_top_k)),
         max_search_calls: Some(search_limits.max_calls_per_query),
     }

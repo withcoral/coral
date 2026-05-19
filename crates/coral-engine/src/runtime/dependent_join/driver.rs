@@ -1,35 +1,48 @@
-use arrow::array::RecordBatch;
 use datafusion::common::{DataFusionError, Result};
-use tokio::sync::mpsc;
+use serde_json::Value;
+use tokio::task::JoinSet;
+use tracing::Instrument as _;
 
-use crate::runtime::dependent_join::bindings::BindingProjector;
+use crate::runtime::dependent_join::bindings::Tuple;
 use crate::runtime::dependent_join::fetcher::BindingFetcher;
-use crate::runtime::dependent_join::state::{DependentJoinRuntimeState, ResolverCaps};
+use crate::runtime::dependent_join::state::DependentJoinRuntimeState;
 
 pub(crate) async fn run_binding_phase(
-    resolver_batches: Vec<RecordBatch>,
-    projector: &BindingProjector,
+    mut state: DependentJoinRuntimeState,
+    tuples: Vec<Tuple>,
     fetcher: &BindingFetcher,
-    caps: &ResolverCaps,
 ) -> Result<DependentJoinRuntimeState> {
-    let (tuples_tx, tuples_rx) = mpsc::channel(caps.max_bindings.max(1));
-    let mut results_rx = fetcher.dispatch(tuples_rx);
-    let mut state = DependentJoinRuntimeState::default();
+    let mut tuples = tuples.into_iter();
+    let mut tasks = JoinSet::new();
+    let max_concurrency = fetcher.max_concurrency();
 
-    for batch in resolver_batches {
-        for tuple in state.ingest_resolver_batch(&batch, projector, caps)? {
-            tuples_tx.send(tuple).await.map_err(|_error| {
-                DataFusionError::Execution("dependent join tuple channel closed".to_string())
-            })?;
+    while tasks.len() < max_concurrency {
+        let Some(tuple) = tuples.next() else {
+            break;
+        };
+        spawn_fetch(&mut tasks, fetcher.clone(), tuple);
+    }
+
+    while let Some(result) = tasks.join_next().await {
+        let (tuple, rows) = result.map_err(|error| join_error(&error))??;
+        state.buffer_fetch_result(tuple, rows);
+
+        if let Some(tuple) = tuples.next() {
+            spawn_fetch(&mut tasks, fetcher.clone(), tuple);
         }
     }
 
-    drop(tuples_tx);
-
-    while let Some(result) = results_rx.recv().await {
-        let (tuple, rows) = result?;
-        state.buffer_fetch_result(tuple, rows);
-    }
-
     Ok(state)
+}
+
+fn spawn_fetch(
+    tasks: &mut JoinSet<Result<(Tuple, Vec<Value>)>>,
+    fetcher: BindingFetcher,
+    tuple: Tuple,
+) {
+    tasks.spawn(async move { fetcher.fetch_one(tuple).await }.instrument(tracing::Span::current()));
+}
+
+fn join_error(error: &tokio::task::JoinError) -> DataFusionError {
+    DataFusionError::Execution(format!("dependent join fetch task failed: {error}"))
 }

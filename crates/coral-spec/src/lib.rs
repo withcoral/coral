@@ -86,9 +86,7 @@ mod schema;
 mod template;
 mod validate;
 
-pub use backends::http::{
-    AuthSpec, BasicAuthSpec, CustomAuthSpec, DependentJoinTableConfig, HeaderAuthSpec,
-};
+pub use backends::http::{AuthSpec, BasicAuthSpec, CustomAuthSpec, HeaderAuthSpec};
 pub use backends::mcp::{
     McpEnvSpec, McpHttpAuthSpec, McpLimitBinding, McpServerSpec, McpSourceManifest,
     McpTableFilterBinding, McpTableFilterSpec, McpTableFunctionSpec, McpTableSpec,

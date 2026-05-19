@@ -21,6 +21,7 @@ pub(crate) mod auth;
 pub(crate) mod client;
 pub(crate) mod error;
 mod fetch;
+pub(crate) mod filter_usage;
 pub(crate) mod function;
 mod pagination;
 pub(crate) mod provider;
@@ -45,6 +46,7 @@ struct HttpCompiledSource {
     source_input_resolution: SourceInputResolutionContext,
     request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>>,
     body_capture_max_bytes: Option<usize>,
+    trace_context: Option<opentelemetry::Context>,
     source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
 }
 
@@ -53,6 +55,7 @@ pub(crate) fn compile_source(
     source_input_resolution: SourceInputResolutionContext,
     request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>>,
     body_capture_max_bytes: Option<usize>,
+    trace_context: Option<opentelemetry::Context>,
     source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
 ) -> Box<dyn CompiledBackendSource> {
     Box::new(HttpCompiledSource {
@@ -60,6 +63,7 @@ pub(crate) fn compile_source(
         source_input_resolution,
         request_authenticators,
         body_capture_max_bytes,
+        trace_context,
         source_input_resolver,
     })
 }
@@ -73,6 +77,7 @@ pub(crate) fn compile_manifest(
         SourceInputResolutionContext::from_query_source(request.source),
         request.request_authenticators.clone(),
         request.runtime_context.body_capture_max_bytes,
+        request.runtime_context.trace_context.clone(),
         request.source_input_resolver.clone(),
     )
 }
@@ -109,6 +114,7 @@ impl CompiledBackendSource for HttpCompiledSource {
             self.source_input_resolution.clone(),
             self.source_input_resolver.clone(),
             self.body_capture_max_bytes,
+            self.trace_context.clone(),
             http,
         );
         let backend = HttpSourceClient::from_manifest_with_source_input_resolver(
