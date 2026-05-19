@@ -1,0 +1,326 @@
+name: dbt_cloud
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query dbt Cloud metadata including models, jobs, runs, tests, sources,
+  environments, and exposures through SQL.
+inputs:
+  DBT_CLOUD_ACCOUNT_ID:
+    kind: secret
+    hint: |
+      Your dbt Cloud account ID. Found in the URL when logged in:
+      https://cloud.getdbt.com/#/accounts/<account_id>/
+  DBT_CLOUD_API_TOKEN:
+    kind: secret
+    hint: |
+      Create a service token in dbt Cloud under
+      Account Settings -> Service Tokens with Metadata Only permissions.
+      See https://docs.getdbt.com/docs/dbt-apis/service-tokens
+  DBT_CLOUD_BASE_URL:
+    kind: optional
+    hint: |
+      Base URL for your dbt Cloud deployment.
+      Defaults to https://cloud.getdbt.com
+      Use https://emea.dbt.com for EMEA or https://au.dbt.com for APAC.
+base_url: https://cloud.getdbt.com
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.DBT_CLOUD_API_TOKEN}}
+request_headers:
+  - name: Content-Type
+    from: literal
+    value: application/json
+test_queries:
+  - SELECT * FROM dbt_cloud.jobs LIMIT 1
+  - SELECT * FROM dbt_cloud.environments LIMIT 1
+tables:
+  - name: jobs
+    description: dbt jobs, schedules, execution state, triggers, and orchestration metadata
+    request:
+      method: GET
+      path: /api/v2/accounts/{{input.DBT_CLOUD_ACCOUNT_ID}}/jobs/
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Job ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: account_id
+        type: Int64
+        nullable: true
+        description: Account ID
+        expr:
+          kind: path
+          path:
+            - account_id
+      - name: project_id
+        type: Int64
+        nullable: true
+        description: Project ID
+        expr:
+          kind: path
+          path:
+            - project_id
+      - name: environment_id
+        type: Int64
+        nullable: true
+        description: Environment ID
+        expr:
+          kind: path
+          path:
+            - environment_id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Job name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: execute_steps
+        type: Json
+        nullable: true
+        description: Steps to execute
+        expr:
+          kind: path
+          path:
+            - execute_steps
+      - name: state
+        type: Int64
+        nullable: true
+        description: Job state
+        expr:
+          kind: path
+          path:
+            - state
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Creation timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Last update timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw job object
+        expr:
+          kind: current_row
+
+  - name: environments
+    description: dbt environments, deployment metadata, and execution configuration
+    request:
+      method: GET
+      path: /api/v2/accounts/{{input.DBT_CLOUD_ACCOUNT_ID}}/environments/
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Environment ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: account_id
+        type: Int64
+        nullable: true
+        description: Account ID
+        expr:
+          kind: path
+          path:
+            - account_id
+      - name: project_id
+        type: Int64
+        nullable: true
+        description: Project ID
+        expr:
+          kind: path
+          path:
+            - project_id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Environment name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: dbt_version
+        type: Utf8
+        nullable: true
+        description: dbt version used
+        expr:
+          kind: path
+          path:
+            - dbt_version
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Environment type (development/production)
+        expr:
+          kind: path
+          path:
+            - type
+      - name: state
+        type: Int64
+        nullable: true
+        description: Environment state
+        expr:
+          kind: path
+          path:
+            - state
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Creation timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Last update timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw environment object
+        expr:
+          kind: current_row
+
+  - name: runs
+    description: dbt job runs with execution state and duration metadata
+    filters:
+      - name: job_id
+        required: false
+    request:
+      method: GET
+      path: /api/v2/accounts/{{input.DBT_CLOUD_ACCOUNT_ID}}/runs/
+      query:
+        - name: job_definition_id
+          from: filter
+          key: job_id
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Run ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: job_id
+        type: Int64
+        nullable: true
+        description: Job ID
+        expr:
+          kind: path
+          path:
+            - job_id
+      - name: account_id
+        type: Int64
+        nullable: true
+        description: Account ID
+        expr:
+          kind: path
+          path:
+            - account_id
+      - name: status
+        type: Int64
+        nullable: true
+        description: Run status
+        expr:
+          kind: path
+          path:
+            - status
+      - name: status_message
+        type: Utf8
+        nullable: true
+        description: Status message
+        expr:
+          kind: path
+          path:
+            - status_message
+      - name: duration
+        type: Utf8
+        nullable: true
+        description: Run duration
+        expr:
+          kind: path
+          path:
+            - duration
+      - name: started_at
+        type: Timestamp
+        nullable: true
+        description: Run start timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - started_at
+      - name: finished_at
+        type: Timestamp
+        nullable: true
+        description: Run finish timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - finished_at
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw run object
+        expr:
+          kind: current_row
