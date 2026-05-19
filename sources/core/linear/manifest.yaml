@@ -22,6 +22,646 @@ auth:
       template: "{{input.LINEAR_API_KEY}}"
 test_queries:
   - SELECT * FROM linear.users LIMIT 1
+functions:
+  - name: project_milestones
+    description: Milestones for a specific Linear project
+    args:
+      - name: project_id
+        required: true
+        bind:
+          arg: project_id
+    request:
+      method: POST
+      path: /graphql
+      query: []
+      body:
+        - path:
+            - query
+          from: literal
+          value: |
+            query ProjectMilestones($projectId: String!, $first: Int!, $after: String) {
+              project(id: $projectId) {
+                id
+                projectMilestones(first: $first, after: $after) {
+                  nodes {
+                    id
+                    name
+                    description
+                    progress
+                    sortOrder
+                    status
+                    targetDate
+                    createdAt
+                    updatedAt
+                    archivedAt
+                  }
+                  pageInfo {
+                    endCursor
+                  }
+                }
+              }
+            }
+        - path:
+            - variables
+            - projectId
+          from: arg
+          key: project_id
+        - path:
+            - variables
+            - first
+          from: literal
+          value: 100
+    response:
+      rows_path:
+        - data
+        - project
+        - projectMilestones
+        - nodes
+    pagination:
+      mode: cursor_body
+      cursor_body_path:
+        - variables
+        - after
+      response_cursor_path:
+        - data
+        - project
+        - projectMilestones
+        - pageInfo
+        - endCursor
+      page_size:
+        default: 100
+        max: 250
+        body_path:
+          - variables
+          - first
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Project milestone ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Project milestone name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Project milestone description
+        expr:
+          kind: path
+          path:
+            - description
+      - name: progress
+        type: Float64
+        nullable: false
+        description: Project milestone progress fraction
+        expr:
+          kind: path
+          path:
+            - progress
+      - name: sort_order
+        type: Float64
+        nullable: false
+        description: Project milestone sort order
+        expr:
+          kind: path
+          path:
+            - sortOrder
+      - name: status
+        type: Utf8
+        nullable: false
+        description: Project milestone status
+        expr:
+          kind: path
+          path:
+            - status
+      - name: target_date
+        type: Utf8
+        nullable: true
+        description: Planned milestone completion date
+        expr:
+          kind: path
+          path:
+            - targetDate
+      - name: created_at
+        type: Utf8
+        nullable: false
+        description: Creation timestamp
+        expr:
+          kind: path
+          path:
+            - createdAt
+      - name: updated_at
+        type: Utf8
+        nullable: false
+        description: Updated timestamp
+        expr:
+          kind: path
+          path:
+            - updatedAt
+      - name: archived_at
+        type: Utf8
+        nullable: true
+        description: Archive timestamp
+        expr:
+          kind: path
+          path:
+            - archivedAt
+  - name: project_updates
+    description: Updates for a specific Linear project
+    args:
+      - name: project_id
+        required: true
+        bind:
+          arg: project_id
+    request:
+      method: POST
+      path: /graphql
+      query: []
+      body:
+        - path:
+            - query
+          from: literal
+          value: |
+            query ProjectUpdates($projectId: String!, $first: Int!, $after: String) {
+              project(id: $projectId) {
+                id
+                projectUpdates(first: $first, after: $after) {
+                  nodes {
+                    id
+                    slugId
+                    body
+                    health
+                    url
+                    createdAt
+                    updatedAt
+                    user {
+                      id
+                      name
+                      displayName
+                      email
+                    }
+                  }
+                  pageInfo {
+                    endCursor
+                  }
+                }
+              }
+            }
+        - path:
+            - variables
+            - projectId
+          from: arg
+          key: project_id
+        - path:
+            - variables
+            - first
+          from: literal
+          value: 100
+    response:
+      rows_path:
+        - data
+        - project
+        - projectUpdates
+        - nodes
+    pagination:
+      mode: cursor_body
+      cursor_body_path:
+        - variables
+        - after
+      response_cursor_path:
+        - data
+        - project
+        - projectUpdates
+        - pageInfo
+        - endCursor
+      page_size:
+        default: 100
+        max: 250
+        body_path:
+          - variables
+          - first
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Project update ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: body
+        type: Utf8
+        nullable: true
+        description: Project update body
+        expr:
+          kind: path
+          path:
+            - body
+      - name: slug_id
+        type: Utf8
+        nullable: true
+        description: Project update short slug identifier
+        expr:
+          kind: path
+          path:
+            - slugId
+      - name: health
+        type: Utf8
+        nullable: true
+        description: "Project update health: onTrack, atRisk, or offTrack"
+        expr:
+          kind: path
+          path:
+            - health
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Project update URL
+        expr:
+          kind: path
+          path:
+            - url
+      - name: author_id
+        type: Utf8
+        nullable: true
+        description: Project update author user ID
+        expr:
+          kind: path
+          path:
+            - user
+            - id
+      - name: author_name
+        type: Utf8
+        nullable: true
+        description: Project update author name
+        expr:
+          kind: path
+          path:
+            - user
+            - name
+      - name: author_display_name
+        type: Utf8
+        nullable: true
+        description: Project update author display name
+        expr:
+          kind: path
+          path:
+            - user
+            - displayName
+      - name: author_email
+        type: Utf8
+        nullable: true
+        description: Project update author email
+        expr:
+          kind: path
+          path:
+            - user
+            - email
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Creation timestamp
+        expr:
+          kind: path
+          path:
+            - createdAt
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: Updated timestamp
+        expr:
+          kind: path
+          path:
+            - updatedAt
+  - name: issue_comments
+    description: Comments for a specific Linear issue identifier, for example SOURCE-496.
+    args:
+      - name: issue
+        required: true
+        bind:
+          arg: issue
+    request:
+      method: POST
+      path: /graphql
+      query: []
+      body:
+        - path:
+            - query
+          from: literal
+          value: |
+            query IssueCommentsByIdentifier($teamKey: String!, $issueNumber: Float!, $first: Int!, $after: String) {
+              issues(filter: { team: { key: { eq: $teamKey } }, number: { eq: $issueNumber } }, first: 1) {
+                nodes {
+                  id
+                  identifier
+                  comments(first: $first, after: $after) {
+                    nodes {
+                      id
+                      body
+                      createdAt
+                      updatedAt
+                      user {
+                        id
+                        name
+                        displayName
+                        email
+                      }
+                    }
+                    pageInfo {
+                      endCursor
+                    }
+                  }
+                }
+              }
+            }
+        - path:
+            - variables
+            - teamKey
+          from: arg_split
+          key: issue
+          separator: "-"
+          part: 0
+        - path:
+            - variables
+            - issueNumber
+          from: arg_split_int
+          key: issue
+          separator: "-"
+          part: 1
+        - path:
+            - variables
+            - first
+          from: literal
+          value: 100
+    response:
+      rows_path:
+        - data
+        - issues
+        - nodes
+        - "0"
+        - comments
+        - nodes
+    pagination:
+      mode: cursor_body
+      cursor_body_path:
+        - variables
+        - after
+      response_cursor_path:
+        - data
+        - issues
+        - nodes
+        - "0"
+        - comments
+        - pageInfo
+        - endCursor
+      page_size:
+        default: 100
+        max: 250
+        body_path:
+          - variables
+          - first
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Comment ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: body
+        type: Utf8
+        nullable: true
+        description: Comment body
+        expr:
+          kind: path
+          path:
+            - body
+      - name: author_id
+        type: Utf8
+        nullable: true
+        description: Comment author user ID
+        expr:
+          kind: path
+          path:
+            - user
+            - id
+      - name: author_name
+        type: Utf8
+        nullable: true
+        description: Comment author name
+        expr:
+          kind: path
+          path:
+            - user
+            - name
+      - name: author_display_name
+        type: Utf8
+        nullable: true
+        description: Comment author display name
+        expr:
+          kind: path
+          path:
+            - user
+            - displayName
+      - name: author_email
+        type: Utf8
+        nullable: true
+        description: Comment author email
+        expr:
+          kind: path
+          path:
+            - user
+            - email
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Creation timestamp
+        expr:
+          kind: path
+          path:
+            - createdAt
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: Updated timestamp
+        expr:
+          kind: path
+          path:
+            - updatedAt
+  - name: team_issues
+    description: Issues for a specific Linear team
+    args:
+      - name: team_id
+        required: true
+        bind:
+          arg: team_id
+    request:
+      method: POST
+      path: /graphql
+      query: []
+      body:
+        - path:
+            - query
+          from: literal
+          value: |
+            query TeamIssues($teamId: String!, $first: Int!, $after: String) {
+              team(id: $teamId) {
+                id
+                issues(first: $first, after: $after) {
+                  nodes {
+                    id
+                    identifier
+                    title
+                    priority
+                    createdAt
+                    updatedAt
+                    state {
+                      id
+                      name
+                    }
+                    assignee {
+                      id
+                      name
+                      email
+                    }
+                    project {
+                      id
+                    }
+                  }
+                  pageInfo {
+                    endCursor
+                  }
+                }
+              }
+            }
+        - path:
+            - variables
+            - teamId
+          from: arg
+          key: team_id
+        - path:
+            - variables
+            - first
+          from: literal
+          value: 100
+    response:
+      rows_path:
+        - data
+        - team
+        - issues
+        - nodes
+    pagination:
+      mode: cursor_body
+      cursor_body_path:
+        - variables
+        - after
+      response_cursor_path:
+        - data
+        - team
+        - issues
+        - pageInfo
+        - endCursor
+      page_size:
+        default: 100
+        max: 250
+        body_path:
+          - variables
+          - first
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Issue ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: identifier
+        type: Utf8
+        nullable: false
+        description: Issue identifier
+        expr:
+          kind: path
+          path:
+            - identifier
+      - name: title
+        type: Utf8
+        nullable: false
+        description: Issue title
+        expr:
+          kind: path
+          path:
+            - title
+      - name: priority
+        type: Int64
+        nullable: true
+        description: Issue priority
+        expr:
+          kind: path
+          path:
+            - priority
+      - name: state_name
+        type: Utf8
+        nullable: true
+        description: Workflow state name
+        expr:
+          kind: path
+          path:
+            - state
+            - name
+      - name: assignee_name
+        type: Utf8
+        nullable: true
+        description: Assignee name
+        expr:
+          kind: path
+          path:
+            - assignee
+            - name
+      - name: assignee_email
+        type: Utf8
+        nullable: true
+        description: Assignee email
+        expr:
+          kind: path
+          path:
+            - assignee
+            - email
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Creation timestamp
+        expr:
+          kind: path
+          path:
+            - createdAt
+      - name: project_id
+        type: Utf8
+        nullable: true
+        description: Project ID
+        expr:
+          kind: path
+          path:
+            - project
+            - id
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: Updated timestamp
+        expr:
+          kind: path
+          path:
+            - updatedAt
 tables:
   - name: teams
     description: Teams in the Linear workspace
@@ -432,167 +1072,6 @@ tables:
             - nodes
           item_path:
             - name
-  - name: project_milestones
-    description: Milestones for a specific Linear project
-    guide: |
-      Requires `project_id` from `linear.projects`. Use `status`, `progress`,
-      and `archived_at` to separate active roadmap items from completed
-      ones.
-    request:
-      method: POST
-      path: /graphql
-      query: []
-      body:
-        - path:
-            - query
-          from: literal
-          value: |
-            query ProjectMilestones($projectId: String!, $first: Int!, $after: String) {
-              project(id: $projectId) {
-                id
-                projectMilestones(first: $first, after: $after) {
-                  nodes {
-                    id
-                    name
-                    description
-                    progress
-                    sortOrder
-                    status
-                    targetDate
-                    createdAt
-                    updatedAt
-                    archivedAt
-                  }
-                  pageInfo {
-                    endCursor
-                  }
-                }
-              }
-            }
-        - path:
-            - variables
-            - projectId
-          from: filter
-          key: project_id
-        - path:
-            - variables
-            - first
-          from: literal
-          value: 100
-    response:
-      rows_path:
-        - data
-        - project
-        - projectMilestones
-        - nodes
-    pagination:
-      mode: cursor_body
-      cursor_body_path:
-        - variables
-        - after
-      response_cursor_path:
-        - data
-        - project
-        - projectMilestones
-        - pageInfo
-        - endCursor
-      page_size:
-        default: 100
-        max: 250
-        body_path:
-          - variables
-          - first
-    columns:
-      - name: project_id
-        type: Utf8
-        nullable: false
-        description: Project ID filter
-        expr:
-          kind: from_filter
-          key: project_id
-      - name: id
-        type: Utf8
-        nullable: false
-        description: Project milestone ID
-        expr:
-          kind: path
-          path:
-            - id
-      - name: name
-        type: Utf8
-        nullable: false
-        description: Project milestone name
-        expr:
-          kind: path
-          path:
-            - name
-      - name: description
-        type: Utf8
-        nullable: true
-        description: Project milestone description
-        expr:
-          kind: path
-          path:
-            - description
-      - name: progress
-        type: Float64
-        nullable: false
-        description: Project milestone progress fraction
-        expr:
-          kind: path
-          path:
-            - progress
-      - name: sort_order
-        type: Float64
-        nullable: false
-        description: Project milestone sort order
-        expr:
-          kind: path
-          path:
-            - sortOrder
-      - name: status
-        type: Utf8
-        nullable: false
-        description: Project milestone status
-        expr:
-          kind: path
-          path:
-            - status
-      - name: target_date
-        type: Utf8
-        nullable: true
-        description: Planned milestone completion date
-        expr:
-          kind: path
-          path:
-            - targetDate
-      - name: created_at
-        type: Utf8
-        nullable: false
-        description: Creation timestamp
-        expr:
-          kind: path
-          path:
-            - createdAt
-      - name: updated_at
-        type: Utf8
-        nullable: false
-        description: Updated timestamp
-        expr:
-          kind: path
-          path:
-            - updatedAt
-      - name: archived_at
-        type: Utf8
-        nullable: true
-        description: Archive timestamp
-        expr:
-          kind: path
-          path:
-            - archivedAt
-    filters:
-      - name: project_id
-        required: true
   - name: cycles
     description: Cycles in the Linear workspace
     guide: |
@@ -819,182 +1298,6 @@ tables:
           kind: path
           path:
             - updatedAt
-  - name: project_updates
-    description: Updates for a specific Linear project
-    guide: |
-      Requires `project_id` from `linear.projects`. Use `health`, `url`,
-      author fields, and timestamps for project status reporting. Join
-      `project_id` back to `linear.projects` when you need project names.
-    request:
-      method: POST
-      path: /graphql
-      query: []
-      body:
-        - path:
-            - query
-          from: literal
-          value: |
-            query ProjectUpdates($projectId: String!, $first: Int!, $after: String) {
-              project(id: $projectId) {
-                id
-                projectUpdates(first: $first, after: $after) {
-                  nodes {
-                    id
-                    slugId
-                    body
-                    health
-                    url
-                    createdAt
-                    updatedAt
-                    user {
-                      id
-                      name
-                      displayName
-                      email
-                    }
-                  }
-                  pageInfo {
-                    endCursor
-                  }
-                }
-              }
-            }
-        - path:
-            - variables
-            - projectId
-          from: filter
-          key: project_id
-        - path:
-            - variables
-            - first
-          from: literal
-          value: 100
-    response:
-      rows_path:
-        - data
-        - project
-        - projectUpdates
-        - nodes
-    pagination:
-      mode: cursor_body
-      cursor_body_path:
-        - variables
-        - after
-      response_cursor_path:
-        - data
-        - project
-        - projectUpdates
-        - pageInfo
-        - endCursor
-      page_size:
-        default: 100
-        max: 250
-        body_path:
-          - variables
-          - first
-    columns:
-      - name: project_id
-        type: Utf8
-        nullable: false
-        description: Project ID filter
-        expr:
-          kind: from_filter
-          key: project_id
-      - name: id
-        type: Utf8
-        nullable: false
-        description: Project update ID
-        expr:
-          kind: path
-          path:
-            - id
-      - name: body
-        type: Utf8
-        nullable: true
-        description: Project update body
-        expr:
-          kind: path
-          path:
-            - body
-      - name: slug_id
-        type: Utf8
-        nullable: true
-        description: Project update short slug identifier
-        expr:
-          kind: path
-          path:
-            - slugId
-      - name: health
-        type: Utf8
-        nullable: true
-        description: "Project update health: onTrack, atRisk, or offTrack"
-        expr:
-          kind: path
-          path:
-            - health
-      - name: url
-        type: Utf8
-        nullable: true
-        description: Project update URL
-        expr:
-          kind: path
-          path:
-            - url
-      - name: author_id
-        type: Utf8
-        nullable: true
-        description: Project update author user ID
-        expr:
-          kind: path
-          path:
-            - user
-            - id
-      - name: author_name
-        type: Utf8
-        nullable: true
-        description: Project update author name
-        expr:
-          kind: path
-          path:
-            - user
-            - name
-      - name: author_display_name
-        type: Utf8
-        nullable: true
-        description: Project update author display name
-        expr:
-          kind: path
-          path:
-            - user
-            - displayName
-      - name: author_email
-        type: Utf8
-        nullable: true
-        description: Project update author email
-        expr:
-          kind: path
-          path:
-            - user
-            - email
-      - name: created_at
-        type: Utf8
-        nullable: true
-        description: Creation timestamp
-        expr:
-          kind: path
-          path:
-            - createdAt
-      - name: updated_at
-        type: Utf8
-        nullable: true
-        description: Updated timestamp
-        expr:
-          kind: path
-          path:
-            - updatedAt
-    filters:
-      - name: project_id
-        required: true
   - name: issue_labels
     description: Issue labels in the Linear workspace
     guide: |
@@ -1576,492 +1879,6 @@ tables:
             - nodes
           item_path:
             - name
-  - name: issue_comments
-    description: Comments for a specific Linear issue
-    guide: |
-      Requires `issue_id` from `linear.issues` or `linear.team_issues`. Use
-      it when you need the discussion trail for a specific issue.
-    request:
-      method: POST
-      path: /graphql
-      query: []
-      body:
-        - path:
-            - query
-          from: literal
-          value: |
-            query IssueComments($issueId: String!, $first: Int!, $after: String) {
-              issue(id: $issueId) {
-                id
-                comments(first: $first, after: $after) {
-                  nodes {
-                    id
-                    body
-                    createdAt
-                    updatedAt
-                    user {
-                      id
-                      name
-                      displayName
-                      email
-                    }
-                  }
-                  pageInfo {
-                    endCursor
-                  }
-                }
-              }
-            }
-        - path:
-            - variables
-            - issueId
-          from: filter
-          key: issue_id
-        - path:
-            - variables
-            - first
-          from: literal
-          value: 100
-    response:
-      rows_path:
-        - data
-        - issue
-        - comments
-        - nodes
-    pagination:
-      mode: cursor_body
-      cursor_body_path:
-        - variables
-        - after
-      response_cursor_path:
-        - data
-        - issue
-        - comments
-        - pageInfo
-        - endCursor
-      page_size:
-        default: 100
-        max: 250
-        body_path:
-          - variables
-          - first
-    columns:
-      - name: issue_id
-        type: Utf8
-        nullable: false
-        description: Issue ID filter
-        expr:
-          kind: from_filter
-          key: issue_id
-      - name: id
-        type: Utf8
-        nullable: false
-        description: Comment ID
-        expr:
-          kind: path
-          path:
-            - id
-      - name: body
-        type: Utf8
-        nullable: true
-        description: Comment body
-        expr:
-          kind: path
-          path:
-            - body
-      - name: author_id
-        type: Utf8
-        nullable: true
-        description: Comment author user ID
-        expr:
-          kind: path
-          path:
-            - user
-            - id
-      - name: author_name
-        type: Utf8
-        nullable: true
-        description: Comment author name
-        expr:
-          kind: path
-          path:
-            - user
-            - name
-      - name: author_display_name
-        type: Utf8
-        nullable: true
-        description: Comment author display name
-        expr:
-          kind: path
-          path:
-            - user
-            - displayName
-      - name: author_email
-        type: Utf8
-        nullable: true
-        description: Comment author email
-        expr:
-          kind: path
-          path:
-            - user
-            - email
-      - name: created_at
-        type: Utf8
-        nullable: true
-        description: Creation timestamp
-        expr:
-          kind: path
-          path:
-            - createdAt
-      - name: updated_at
-        type: Utf8
-        nullable: true
-        description: Updated timestamp
-        expr:
-          kind: path
-          path:
-            - updatedAt
-    filters:
-      - name: issue_id
-        required: true
-  - name: issue_comments_by_identifier
-    description: Comments for a specific Linear issue identifier
-    guide: |
-      Requires a human issue identifier such as `SOURCE-496`. Use this table
-      when you have an issue key from Linear UI, Slack, or another tool and
-      need the discussion trail without first looking up the internal issue
-      UUID.
-    request:
-      method: POST
-      path: /graphql
-      query: []
-      body:
-        - path:
-            - query
-          from: literal
-          value: |
-            query IssueCommentsByIdentifier($teamKey: String!, $issueNumber: Float!, $first: Int!, $after: String) {
-              issues(filter: { team: { key: { eq: $teamKey } }, number: { eq: $issueNumber } }, first: 1) {
-                nodes {
-                  id
-                  identifier
-                  comments(first: $first, after: $after) {
-                    nodes {
-                      id
-                      body
-                      createdAt
-                      updatedAt
-                      user {
-                        id
-                        name
-                        displayName
-                        email
-                      }
-                    }
-                    pageInfo {
-                      endCursor
-                    }
-                  }
-                }
-              }
-            }
-        - path:
-            - variables
-            - teamKey
-          from: filter_split
-          key: issue_identifier
-          separator: "-"
-          part: 0
-        - path:
-            - variables
-            - issueNumber
-          from: filter_split_int
-          key: issue_identifier
-          separator: "-"
-          part: 1
-        - path:
-            - variables
-            - first
-          from: literal
-          value: 100
-    response:
-      rows_path:
-        - data
-        - issues
-        - nodes
-        - "0"
-        - comments
-        - nodes
-    pagination:
-      mode: cursor_body
-      cursor_body_path:
-        - variables
-        - after
-      response_cursor_path:
-        - data
-        - issues
-        - nodes
-        - "0"
-        - comments
-        - pageInfo
-        - endCursor
-      page_size:
-        default: 100
-        max: 250
-        body_path:
-          - variables
-          - first
-    columns:
-      - name: issue_identifier
-        type: Utf8
-        nullable: false
-        description: Issue identifier filter, for example SOURCE-496
-        expr:
-          kind: from_filter
-          key: issue_identifier
-      - name: id
-        type: Utf8
-        nullable: false
-        description: Comment ID
-        expr:
-          kind: path
-          path:
-            - id
-      - name: body
-        type: Utf8
-        nullable: true
-        description: Comment body
-        expr:
-          kind: path
-          path:
-            - body
-      - name: author_id
-        type: Utf8
-        nullable: true
-        description: Comment author user ID
-        expr:
-          kind: path
-          path:
-            - user
-            - id
-      - name: author_name
-        type: Utf8
-        nullable: true
-        description: Comment author name
-        expr:
-          kind: path
-          path:
-            - user
-            - name
-      - name: author_display_name
-        type: Utf8
-        nullable: true
-        description: Comment author display name
-        expr:
-          kind: path
-          path:
-            - user
-            - displayName
-      - name: author_email
-        type: Utf8
-        nullable: true
-        description: Comment author email
-        expr:
-          kind: path
-          path:
-            - user
-            - email
-      - name: created_at
-        type: Utf8
-        nullable: true
-        description: Creation timestamp
-        expr:
-          kind: path
-          path:
-            - createdAt
-      - name: updated_at
-        type: Utf8
-        nullable: true
-        description: Updated timestamp
-        expr:
-          kind: path
-          path:
-            - updatedAt
-    filters:
-      - name: issue_identifier
-        required: true
-  - name: team_issues
-    description: Issues for a specific Linear team
-    guide: |
-      Requires `team_id` from `linear.teams`. Prefer this table over
-      `linear.issues` when you want a complete backlog for one team.
-    request:
-      method: POST
-      path: /graphql
-      query: []
-      body:
-        - path:
-            - query
-          from: literal
-          value: |
-            query TeamIssues($teamId: String!, $first: Int!, $after: String) {
-              team(id: $teamId) {
-                id
-                issues(first: $first, after: $after) {
-                  nodes {
-                    id
-                    identifier
-                    title
-                    priority
-                    createdAt
-                    updatedAt
-                    state {
-                      id
-                      name
-                    }
-                    assignee {
-                      id
-                      name
-                      email
-                    }
-                    project {
-                      id
-                    }
-                  }
-                  pageInfo {
-                    endCursor
-                  }
-                }
-              }
-            }
-        - path:
-            - variables
-            - teamId
-          from: filter
-          key: team_id
-        - path:
-            - variables
-            - first
-          from: literal
-          value: 100
-    response:
-      rows_path:
-        - data
-        - team
-        - issues
-        - nodes
-    pagination:
-      mode: cursor_body
-      cursor_body_path:
-        - variables
-        - after
-      response_cursor_path:
-        - data
-        - team
-        - issues
-        - pageInfo
-        - endCursor
-      page_size:
-        default: 100
-        max: 250
-        body_path:
-          - variables
-          - first
-    columns:
-      - name: team_id
-        type: Utf8
-        nullable: false
-        description: Team ID filter
-        expr:
-          kind: from_filter
-          key: team_id
-      - name: id
-        type: Utf8
-        nullable: false
-        description: Issue ID
-        expr:
-          kind: path
-          path:
-            - id
-      - name: identifier
-        type: Utf8
-        nullable: false
-        description: Issue identifier
-        expr:
-          kind: path
-          path:
-            - identifier
-      - name: title
-        type: Utf8
-        nullable: false
-        description: Issue title
-        expr:
-          kind: path
-          path:
-            - title
-      - name: priority
-        type: Int64
-        nullable: true
-        description: Issue priority
-        expr:
-          kind: path
-          path:
-            - priority
-      - name: state_name
-        type: Utf8
-        nullable: true
-        description: Workflow state name
-        expr:
-          kind: path
-          path:
-            - state
-            - name
-      - name: assignee_name
-        type: Utf8
-        nullable: true
-        description: Assignee name
-        expr:
-          kind: path
-          path:
-            - assignee
-            - name
-      - name: assignee_email
-        type: Utf8
-        nullable: true
-        description: Assignee email
-        expr:
-          kind: path
-          path:
-            - assignee
-            - email
-      - name: created_at
-        type: Utf8
-        nullable: true
-        description: Creation timestamp
-        expr:
-          kind: path
-          path:
-            - createdAt
-      - name: project_id
-        type: Utf8
-        nullable: true
-        description: Project ID
-        expr:
-          kind: path
-          path:
-            - project
-            - id
-      - name: updated_at
-        type: Utf8
-        nullable: true
-        description: Updated timestamp
-        expr:
-          kind: path
-          path:
-            - updatedAt
-    filters:
-      - name: team_id
-        required: true
   - name: attachments
     description: Attachments (including pull requests) linked to Linear issues
     guide: |
