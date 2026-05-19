@@ -1,0 +1,1306 @@
+name: postmark
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query server metadata, message streams, messages, bounces, templates, and
+  outbound delivery statistics from Postmark.
+inputs:
+  POSTMARK_SERVER_TOKEN:
+    kind: secret
+    hint: |
+      Postmark server API token. Find it in the API Tokens tab for the
+      Postmark server you want to query. This source uses server-level
+      read endpoints with the X-Postmark-Server-Token header.
+base_url: https://api.postmarkapp.com
+auth:
+  type: HeaderAuth
+  headers:
+    - name: X-Postmark-Server-Token
+      from: input
+      key: POSTMARK_SERVER_TOKEN
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+test_queries:
+  - SELECT id, name, delivery_type FROM postmark.server LIMIT 1
+  - SELECT id, name, message_stream_type FROM postmark.message_streams LIMIT 1
+tables:
+  - name: server
+    description: Postmark server metadata for the authenticated server token
+    guide: |
+      Use this table first to verify the server token and identify the
+      Postmark server Coral is querying. API token values returned by the
+      provider are intentionally not exposed as columns.
+    fetch_limit_default: 1
+    request:
+      method: GET
+      path: /server
+    response: {}
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Postmark server ID
+        expr:
+          kind: path
+          path: [ID]
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Server name
+        expr:
+          kind: path
+          path: [Name]
+      - name: color
+        type: Utf8
+        nullable: true
+        description: Server color in Postmark
+        expr:
+          kind: path
+          path: [Color]
+      - name: smtp_api_activated
+        type: Boolean
+        nullable: true
+        description: Whether SMTP API sending is enabled
+        expr:
+          kind: path
+          path: [SmtpApiActivated]
+      - name: raw_email_enabled
+        type: Boolean
+        nullable: true
+        description: Whether raw email content is included with inbound webhooks
+        expr:
+          kind: path
+          path: [RawEmailEnabled]
+      - name: delivery_type
+        type: Utf8
+        nullable: true
+        description: Server delivery type such as Live or Sandbox
+        expr:
+          kind: path
+          path: [DeliveryType]
+      - name: server_link
+        type: Utf8
+        nullable: true
+        description: URL for this server in Postmark
+        expr:
+          kind: path
+          path: [ServerLink]
+      - name: inbound_address
+        type: Utf8
+        nullable: true
+        description: Inbound email address for this server
+        expr:
+          kind: path
+          path: [InboundAddress]
+      - name: inbound_hook_url
+        type: Utf8
+        nullable: true
+        description: Inbound webhook URL
+        expr:
+          kind: path
+          path: [InboundHookUrl]
+      - name: bounce_hook_url
+        type: Utf8
+        nullable: true
+        description: Bounce webhook URL
+        expr:
+          kind: path
+          path: [BounceHookUrl]
+      - name: open_hook_url
+        type: Utf8
+        nullable: true
+        description: Open tracking webhook URL
+        expr:
+          kind: path
+          path: [OpenHookUrl]
+      - name: delivery_hook_url
+        type: Utf8
+        nullable: true
+        description: Delivery webhook URL
+        expr:
+          kind: path
+          path: [DeliveryHookUrl]
+      - name: click_hook_url
+        type: Utf8
+        nullable: true
+        description: Click tracking webhook URL
+        expr:
+          kind: path
+          path: [ClickHookUrl]
+      - name: inbound_domain
+        type: Utf8
+        nullable: true
+        description: Inbound domain for MX setup
+        expr:
+          kind: path
+          path: [InboundDomain]
+      - name: inbound_hash
+        type: Utf8
+        nullable: true
+        description: Inbound hash for the server inbound address
+        expr:
+          kind: path
+          path: [InboundHash]
+      - name: inbound_spam_threshold
+        type: Int64
+        nullable: true
+        description: Maximum spam score before inbound messages are blocked
+        expr:
+          kind: path
+          path: [InboundSpamThreshold]
+      - name: post_first_open_only
+        type: Boolean
+        nullable: true
+        description: Whether only first opens trigger open webhooks
+        expr:
+          kind: path
+          path: [PostFirstOpenOnly]
+      - name: track_opens
+        type: Boolean
+        nullable: true
+        description: Whether open tracking is enabled for outgoing email
+        expr:
+          kind: path
+          path: [TrackOpens]
+      - name: track_links
+        type: Utf8
+        nullable: true
+        description: Link tracking mode for outgoing email
+        expr:
+          kind: path
+          path: [TrackLinks]
+      - name: include_bounce_content_in_hook
+        type: Boolean
+        nullable: true
+        description: Whether bounce content is included in bounce webhooks
+        expr:
+          kind: path
+          path: [IncludeBounceContentInHook]
+      - name: enable_smtp_api_error_hooks
+        type: Boolean
+        nullable: true
+        description: Whether SMTP API errors are included with bounce webhooks
+        expr:
+          kind: path
+          path: [EnableSmtpApiErrorHooks]
+
+  - name: message_streams
+    description: Message streams configured for the authenticated Postmark server
+    guide: |
+      Use this table to list transactional, broadcast, and inbound streams.
+      Filter by `message_stream_type` or set `include_archived_streams = true`
+      to include archived streams.
+    request:
+      method: GET
+      path: /message-streams
+      query:
+        - name: MessageStreamType
+          from: filter
+          key: message_stream_type
+        - name: IncludeArchivedStreams
+          from: filter_bool
+          key: include_archived_streams
+    response:
+      rows_path: [MessageStreams]
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Message stream ID
+        expr:
+          kind: path
+          path: [ID]
+      - name: server_id
+        type: Int64
+        nullable: true
+        description: Postmark server ID
+        expr:
+          kind: path
+          path: [ServerID]
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Message stream name
+        expr:
+          kind: path
+          path: [Name]
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Message stream description
+        expr:
+          kind: path
+          path: [Description]
+      - name: message_stream_type
+        type: Utf8
+        nullable: true
+        description: Stream type such as Transactional, Broadcasts, or Inbound
+        expr:
+          kind: path
+          path: [MessageStreamType]
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Stream creation timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [CreatedAt]
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Stream last updated timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [UpdatedAt]
+      - name: archived_at
+        type: Timestamp
+        nullable: true
+        description: Stream archived timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [ArchivedAt]
+      - name: expected_purge_date
+        type: Timestamp
+        nullable: true
+        description: Expected purge time for archived streams
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [ExpectedPurgeDate]
+      - name: subscription_management_configuration
+        type: Json
+        nullable: true
+        description: Subscription management configuration
+        expr:
+          kind: path
+          path: [SubscriptionManagementConfiguration]
+      - name: message_stream_type_filter
+        type: Utf8
+        nullable: true
+        description: Message stream type filter used for the request (virtual)
+        expr:
+          kind: from_filter
+          key: message_stream_type
+        virtual: true
+      - name: include_archived_streams
+        type: Boolean
+        nullable: true
+        description: Whether archived streams were requested (virtual)
+        expr:
+          kind: from_filter
+          key: include_archived_streams
+        virtual: true
+    filters:
+      - name: message_stream_type
+      - name: include_archived_streams
+
+  - name: outbound_messages
+    description: Outbound Postmark message search results for the authenticated server
+    guide: |
+      Use this table to inspect outbound message activity. Postmark search
+      uses `count` and `offset` pagination and caps each search at 10,000
+      messages; narrow with `from_date`, `to_date`, status, recipient, tag, or
+      message stream for larger investigations.
+    fetch_limit_default: 10000
+    request:
+      method: GET
+      path: /messages/outbound
+      query:
+        - name: recipient
+          from: filter
+          key: recipient
+        - name: fromemail
+          from: filter
+          key: from_email
+        - name: tag
+          from: filter
+          key: tag
+        - name: status
+          from: filter
+          key: status
+        - name: todate
+          from: filter
+          key: to_date
+        - name: fromdate
+          from: filter
+          key: from_date
+        - name: subject
+          from: filter
+          key: subject
+        - name: messagestream
+          from: filter
+          key: message_stream
+    response:
+      rows_path: [Messages]
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      offset_step: 500
+      max_pages: 20
+      page_size:
+        default: 500
+        max: 500
+        query_param: count
+    columns:
+      - name: message_id
+        type: Utf8
+        nullable: false
+        description: Unique Postmark message ID
+        expr:
+          kind: path
+          path: [MessageID]
+      - name: tag
+        type: Utf8
+        nullable: true
+        description: Message tag
+        expr:
+          kind: path
+          path: [Tag]
+      - name: message_stream
+        type: Utf8
+        nullable: true
+        description: Message stream used for sending
+        expr:
+          kind: path
+          path: [MessageStream]
+      - name: from_email
+        type: Utf8
+        nullable: true
+        description: Sender email address or formatted sender value
+        expr:
+          kind: path
+          path: [From]
+      - name: subject
+        type: Utf8
+        nullable: true
+        description: Email subject
+        expr:
+          kind: path
+          path: [Subject]
+      - name: received_at
+        type: Timestamp
+        nullable: true
+        description: Time when Postmark received or processed the message
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [ReceivedAt]
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Message status such as Sent, Processed, or Queued
+        expr:
+          kind: path
+          path: [Status]
+      - name: track_opens
+        type: Boolean
+        nullable: true
+        description: Whether open tracking was enabled
+        expr:
+          kind: path
+          path: [TrackOpens]
+      - name: track_links
+        type: Utf8
+        nullable: true
+        description: Link tracking mode
+        expr:
+          kind: path
+          path: [TrackLinks]
+      - name: sandboxed
+        type: Boolean
+        nullable: true
+        description: Whether the message was sandboxed
+        expr:
+          kind: path
+          path: [Sandboxed]
+      - name: to
+        type: Json
+        nullable: true
+        description: To recipients
+        expr:
+          kind: path
+          path: [To]
+      - name: cc
+        type: Json
+        nullable: true
+        description: Cc recipients
+        expr:
+          kind: path
+          path: [Cc]
+      - name: bcc
+        type: Json
+        nullable: true
+        description: Bcc recipients
+        expr:
+          kind: path
+          path: [Bcc]
+      - name: recipients
+        type: Json
+        nullable: true
+        description: Recipient email addresses
+        expr:
+          kind: path
+          path: [Recipients]
+      - name: attachments
+        type: Json
+        nullable: true
+        description: Message attachments
+        expr:
+          kind: path
+          path: [Attachments]
+      - name: metadata
+        type: Json
+        nullable: true
+        description: Message metadata object
+        expr:
+          kind: path
+          path: [Metadata]
+      - name: recipient
+        type: Utf8
+        nullable: true
+        description: Recipient filter used for the request (virtual)
+        expr:
+          kind: from_filter
+          key: recipient
+        virtual: true
+      - name: from_email_filter
+        type: Utf8
+        nullable: true
+        description: Sender filter used for the request (virtual)
+        expr:
+          kind: from_filter
+          key: from_email
+        virtual: true
+      - name: tag_filter
+        type: Utf8
+        nullable: true
+        description: Tag filter used for the request (virtual)
+        expr:
+          kind: from_filter
+          key: tag
+        virtual: true
+      - name: status_filter
+        type: Utf8
+        nullable: true
+        description: Status filter used for the request (virtual)
+        expr:
+          kind: from_filter
+          key: status
+        virtual: true
+      - name: to_date
+        type: Utf8
+        nullable: true
+        description: Upper date/time filter used for the request (virtual)
+        expr:
+          kind: from_filter
+          key: to_date
+        virtual: true
+      - name: from_date
+        type: Utf8
+        nullable: true
+        description: Lower date/time filter used for the request (virtual)
+        expr:
+          kind: from_filter
+          key: from_date
+        virtual: true
+      - name: subject_filter
+        type: Utf8
+        nullable: true
+        description: Subject filter used for the request (virtual)
+        expr:
+          kind: from_filter
+          key: subject
+        virtual: true
+      - name: message_stream_filter
+        type: Utf8
+        nullable: true
+        description: Message stream filter used for the request (virtual)
+        expr:
+          kind: from_filter
+          key: message_stream
+        virtual: true
+    filters:
+      - name: recipient
+      - name: from_email
+      - name: tag
+      - name: status
+      - name: to_date
+      - name: from_date
+      - name: subject
+      - name: message_stream
+
+  - name: inbound_messages
+    description: Inbound Postmark message search results for the authenticated server
+    guide: |
+      Use this table to inspect inbound message processing. Postmark search
+      uses `count` and `offset` pagination and caps each search at 10,000
+      messages; narrow with dates, status, recipient, sender, tag, subject, or
+      mailbox hash for larger investigations.
+    fetch_limit_default: 10000
+    request:
+      method: GET
+      path: /messages/inbound
+      query:
+        - name: recipient
+          from: filter
+          key: recipient
+        - name: fromemail
+          from: filter
+          key: from_email
+        - name: tag
+          from: filter
+          key: tag
+        - name: subject
+          from: filter
+          key: subject
+        - name: mailboxhash
+          from: filter
+          key: mailbox_hash
+        - name: status
+          from: filter
+          key: status
+        - name: todate
+          from: filter
+          key: to_date
+        - name: fromdate
+          from: filter
+          key: from_date
+    response:
+      rows_path: [InboundMessages]
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      offset_step: 500
+      max_pages: 20
+      page_size:
+        default: 500
+        max: 500
+        query_param: count
+    columns:
+      - name: message_id
+        type: Utf8
+        nullable: false
+        description: Unique Postmark inbound message ID
+        expr:
+          kind: path
+          path: [MessageID]
+      - name: from_email
+        type: Utf8
+        nullable: true
+        description: Sender email address
+        expr:
+          kind: path
+          path: [From]
+      - name: from_name
+        type: Utf8
+        nullable: true
+        description: Sender display name
+        expr:
+          kind: path
+          path: [FromName]
+      - name: from_full
+        type: Json
+        nullable: true
+        description: Structured sender object
+        expr:
+          kind: path
+          path: [FromFull]
+      - name: to_email
+        type: Utf8
+        nullable: true
+        description: Primary recipient value
+        expr:
+          kind: path
+          path: [To]
+      - name: to_full
+        type: Json
+        nullable: true
+        description: Structured To recipients
+        expr:
+          kind: path
+          path: [ToFull]
+      - name: cc
+        type: Utf8
+        nullable: true
+        description: Cc recipient string
+        expr:
+          kind: path
+          path: [Cc]
+      - name: cc_full
+        type: Json
+        nullable: true
+        description: Structured Cc recipients
+        expr:
+          kind: path
+          path: [CcFull]
+      - name: reply_to
+        type: Utf8
+        nullable: true
+        description: Reply-To value
+        expr:
+          kind: path
+          path: [ReplyTo]
+      - name: original_recipient
+        type: Utf8
+        nullable: true
+        description: Original inbound recipient address
+        expr:
+          kind: path
+          path: [OriginalRecipient]
+      - name: subject
+        type: Utf8
+        nullable: true
+        description: Email subject
+        expr:
+          kind: path
+          path: [Subject]
+      - name: date
+        type: Utf8
+        nullable: true
+        description: Inbound email Date header value
+        expr:
+          kind: path
+          path: [Date]
+      - name: mailbox_hash
+        type: Utf8
+        nullable: true
+        description: Mailbox hash
+        expr:
+          kind: path
+          path: [MailboxHash]
+      - name: tag
+        type: Utf8
+        nullable: true
+        description: Message tag
+        expr:
+          kind: path
+          path: [Tag]
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Inbound processing status
+        expr:
+          kind: path
+          path: [Status]
+      - name: attachments
+        type: Json
+        nullable: true
+        description: Inbound message attachments
+        expr:
+          kind: path
+          path: [Attachments]
+      - name: recipient
+        type: Utf8
+        nullable: true
+        description: Recipient filter used for the request (virtual)
+        expr:
+          kind: from_filter
+          key: recipient
+        virtual: true
+      - name: from_email_filter
+        type: Utf8
+        nullable: true
+        description: Sender filter used for the request (virtual)
+        expr:
+          kind: from_filter
+          key: from_email
+        virtual: true
+      - name: tag_filter
+        type: Utf8
+        nullable: true
+        description: Tag filter used for the request (virtual)
+        expr:
+          kind: from_filter
+          key: tag
+        virtual: true
+      - name: subject_filter
+        type: Utf8
+        nullable: true
+        description: Subject filter used for the request (virtual)
+        expr:
+          kind: from_filter
+          key: subject
+        virtual: true
+      - name: mailbox_hash_filter
+        type: Utf8
+        nullable: true
+        description: Mailbox hash filter used for the request (virtual)
+        expr:
+          kind: from_filter
+          key: mailbox_hash
+        virtual: true
+      - name: status_filter
+        type: Utf8
+        nullable: true
+        description: Status filter used for the request (virtual)
+        expr:
+          kind: from_filter
+          key: status
+        virtual: true
+      - name: to_date
+        type: Utf8
+        nullable: true
+        description: Upper date/time filter used for the request (virtual)
+        expr:
+          kind: from_filter
+          key: to_date
+        virtual: true
+      - name: from_date
+        type: Utf8
+        nullable: true
+        description: Lower date/time filter used for the request (virtual)
+        expr:
+          kind: from_filter
+          key: from_date
+        virtual: true
+    filters:
+      - name: recipient
+      - name: from_email
+      - name: tag
+      - name: subject
+      - name: mailbox_hash
+      - name: status
+      - name: to_date
+      - name: from_date
+
+  - name: bounces
+    description: Bounce records returned by Postmark bounce search
+    guide: |
+      Use this table to investigate bounced recipients, inactive addresses,
+      bounce types, and related outbound messages. Postmark bounce search uses
+      `count` and `offset` pagination and caps each search at 10,000 bounces.
+    fetch_limit_default: 10000
+    request:
+      method: GET
+      path: /bounces
+      query:
+        - name: type
+          from: filter
+          key: type
+        - name: inactive
+          from: filter_bool
+          key: inactive
+        - name: emailFilter
+          from: filter
+          key: email_filter
+        - name: tag
+          from: filter
+          key: tag
+        - name: messageID
+          from: filter
+          key: message_id
+        - name: fromdate
+          from: filter
+          key: from_date
+        - name: todate
+          from: filter
+          key: to_date
+        - name: messagestream
+          from: filter
+          key: message_stream
+    response:
+      rows_path: [Bounces]
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      offset_step: 500
+      max_pages: 20
+      page_size:
+        default: 500
+        max: 500
+        query_param: count
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Bounce ID
+        expr:
+          kind: path
+          path: [ID]
+      - name: record_type
+        type: Utf8
+        nullable: true
+        description: Record type
+        expr:
+          kind: path
+          path: [RecordType]
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Bounce type
+        expr:
+          kind: path
+          path: [Type]
+      - name: type_code
+        type: Int64
+        nullable: true
+        description: Bounce type code
+        expr:
+          kind: path
+          path: [TypeCode]
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Bounce type name
+        expr:
+          kind: path
+          path: [Name]
+      - name: tag
+        type: Utf8
+        nullable: true
+        description: Message tag
+        expr:
+          kind: path
+          path: [Tag]
+      - name: message_id
+        type: Utf8
+        nullable: true
+        description: Related message ID
+        expr:
+          kind: path
+          path: [MessageID]
+      - name: server_id
+        type: Int64
+        nullable: true
+        description: Postmark server ID
+        expr:
+          kind: path
+          path: [ServerID]
+      - name: message_stream
+        type: Utf8
+        nullable: true
+        description: Outbound message stream
+        expr:
+          kind: path
+          path: [MessageStream]
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Bounce description
+        expr:
+          kind: path
+          path: [Description]
+      - name: details
+        type: Utf8
+        nullable: true
+        description: Bounce details
+        expr:
+          kind: path
+          path: [Details]
+      - name: email
+        type: Utf8
+        nullable: true
+        description: Email address that bounced
+        expr:
+          kind: path
+          path: [Email]
+      - name: from_email
+        type: Utf8
+        nullable: true
+        description: Original sender address when available
+        expr:
+          kind: path
+          path: [From]
+      - name: bounced_at
+        type: Timestamp
+        nullable: true
+        description: Bounce timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [BouncedAt]
+      - name: dump_available
+        type: Boolean
+        nullable: true
+        description: Whether a raw bounce dump is available
+        expr:
+          kind: path
+          path: [DumpAvailable]
+      - name: inactive
+        type: Boolean
+        nullable: true
+        description: Whether Postmark deactivated the recipient
+        expr:
+          kind: path
+          path: [Inactive]
+      - name: can_activate
+        type: Boolean
+        nullable: true
+        description: Whether the recipient can be reactivated
+        expr:
+          kind: path
+          path: [CanActivate]
+      - name: subject
+        type: Utf8
+        nullable: true
+        description: Original message subject
+        expr:
+          kind: path
+          path: [Subject]
+      - name: content
+        type: Utf8
+        nullable: true
+        description: Bounce content when returned
+        expr:
+          kind: path
+          path: [Content]
+      - name: type_filter
+        type: Utf8
+        nullable: true
+        description: Bounce type filter used for the request (virtual)
+        expr:
+          kind: from_filter
+          key: type
+        virtual: true
+      - name: inactive_filter
+        type: Boolean
+        nullable: true
+        description: Inactive filter used for the request (virtual)
+        expr:
+          kind: from_filter
+          key: inactive
+        virtual: true
+      - name: email_filter
+        type: Utf8
+        nullable: true
+        description: Email filter used for the request (virtual)
+        expr:
+          kind: from_filter
+          key: email_filter
+        virtual: true
+      - name: tag_filter
+        type: Utf8
+        nullable: true
+        description: Tag filter used for the request (virtual)
+        expr:
+          kind: from_filter
+          key: tag
+        virtual: true
+      - name: message_id_filter
+        type: Utf8
+        nullable: true
+        description: Message ID filter used for the request (virtual)
+        expr:
+          kind: from_filter
+          key: message_id
+        virtual: true
+      - name: from_date
+        type: Utf8
+        nullable: true
+        description: Lower date/time filter used for the request (virtual)
+        expr:
+          kind: from_filter
+          key: from_date
+        virtual: true
+      - name: to_date
+        type: Utf8
+        nullable: true
+        description: Upper date/time filter used for the request (virtual)
+        expr:
+          kind: from_filter
+          key: to_date
+        virtual: true
+      - name: message_stream_filter
+        type: Utf8
+        nullable: true
+        description: Message stream filter used for the request (virtual)
+        expr:
+          kind: from_filter
+          key: message_stream
+        virtual: true
+    filters:
+      - name: type
+      - name: inactive
+      - name: email_filter
+      - name: tag
+      - name: message_id
+      - name: from_date
+      - name: to_date
+      - name: message_stream
+
+  - name: templates
+    description: Templates associated with the authenticated Postmark server
+    guide: |
+      Use this table to inventory active standard and layout templates. Filter
+      by `template_type` or `layout_template` when narrowing template lists.
+    fetch_limit_default: 1000
+    request:
+      method: GET
+      path: /templates
+      query:
+        - name: TemplateType
+          from: filter
+          key: template_type
+        - name: LayoutTemplate
+          from: filter
+          key: layout_template
+    response:
+      rows_path: [Templates]
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      offset_step: 100
+      max_pages: 10
+      page_size:
+        default: 100
+        max: 100
+        query_param: count
+    columns:
+      - name: template_id
+        type: Int64
+        nullable: false
+        description: Template ID
+        expr:
+          kind: path
+          path: [TemplateId]
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Template name
+        expr:
+          kind: path
+          path: [Name]
+      - name: active
+        type: Boolean
+        nullable: true
+        description: Whether this template can be used for sending email
+        expr:
+          kind: path
+          path: [Active]
+      - name: alias
+        type: Utf8
+        nullable: true
+        description: Template alias
+        expr:
+          kind: path
+          path: [Alias]
+      - name: template_type
+        type: Utf8
+        nullable: true
+        description: Template type such as Standard or Layout
+        expr:
+          kind: path
+          path: [TemplateType]
+      - name: layout_template
+        type: Utf8
+        nullable: true
+        description: Layout template alias for standard templates
+        expr:
+          kind: path
+          path: [LayoutTemplate]
+      - name: template_type_filter
+        type: Utf8
+        nullable: true
+        description: Template type filter used for the request (virtual)
+        expr:
+          kind: from_filter
+          key: template_type
+        virtual: true
+      - name: layout_template_filter
+        type: Utf8
+        nullable: true
+        description: Layout template filter used for the request (virtual)
+        expr:
+          kind: from_filter
+          key: layout_template
+        virtual: true
+    filters:
+      - name: template_type
+      - name: layout_template
+
+  - name: outbound_stats
+    description: Aggregate outbound email statistics for the authenticated server
+    guide: |
+      Use this table for high-level sent, bounce, complaint, open, and click
+      counts. Postmark stats use EST timezone and return all-time stats when no
+      date filters are supplied.
+    fetch_limit_default: 1
+    request:
+      method: GET
+      path: /stats/outbound
+      query:
+        - name: tag
+          from: filter
+          key: tag
+        - name: fromdate
+          from: filter
+          key: from_date
+        - name: todate
+          from: filter
+          key: to_date
+        - name: messagestream
+          from: filter
+          key: message_stream
+    response: {}
+    columns:
+      - name: sent
+        type: Int64
+        nullable: true
+        description: Number of sent emails
+        expr:
+          kind: path
+          path: [Sent]
+      - name: bounced
+        type: Int64
+        nullable: true
+        description: Number of bounced emails
+        expr:
+          kind: path
+          path: [Bounced]
+      - name: smtp_api_errors
+        type: Int64
+        nullable: true
+        description: Number of SMTP API errors
+        expr:
+          kind: path
+          path: [SMTPApiErrors]
+      - name: bounce_rate
+        type: Float64
+        nullable: true
+        description: Bounce rate percentage calculated by total sent
+        expr:
+          kind: path
+          path: [BounceRate]
+      - name: spam_complaints
+        type: Int64
+        nullable: true
+        description: Number of spam complaints
+        expr:
+          kind: path
+          path: [SpamComplaints]
+      - name: spam_complaints_rate
+        type: Float64
+        nullable: true
+        description: Spam complaint percentage calculated by total sent
+        expr:
+          kind: path
+          path: [SpamComplaintsRate]
+      - name: opens
+        type: Int64
+        nullable: true
+        description: Number of opens
+        expr:
+          kind: path
+          path: [Opens]
+      - name: unique_opens
+        type: Int64
+        nullable: true
+        description: Number of unique opens
+        expr:
+          kind: path
+          path: [UniqueOpens]
+      - name: tracked
+        type: Int64
+        nullable: true
+        description: Emails sent with link or open tracking enabled
+        expr:
+          kind: path
+          path: [Tracked]
+      - name: with_link_tracking
+        type: Int64
+        nullable: true
+        description: Emails sent with link tracking enabled
+        expr:
+          kind: path
+          path: [WithLinkTracking]
+      - name: with_open_tracking
+        type: Int64
+        nullable: true
+        description: Emails sent with open tracking enabled
+        expr:
+          kind: path
+          path: [WithOpenTracking]
+      - name: total_tracked_links_sent
+        type: Int64
+        nullable: true
+        description: Total tracked links sent in emails
+        expr:
+          kind: path
+          path: [TotalTrackedLinksSent]
+      - name: unique_links_clicked
+        type: Int64
+        nullable: true
+        description: Number of unique tracked links clicked
+        expr:
+          kind: path
+          path: [UniqueLinksClicked]
+      - name: total_clicks
+        type: Int64
+        nullable: true
+        description: Total clicks from tracked links
+        expr:
+          kind: path
+          path: [TotalClicks]
+      - name: with_client_recorded
+        type: Int64
+        nullable: true
+        description: Emails where client was tracked
+        expr:
+          kind: path
+          path: [WithClientRecorded]
+      - name: with_platform_recorded
+        type: Int64
+        nullable: true
+        description: Emails where platform was tracked
+        expr:
+          kind: path
+          path: [WithPlatformRecorded]
+      - name: tag
+        type: Utf8
+        nullable: true
+        description: Tag filter used for the request (virtual)
+        expr:
+          kind: from_filter
+          key: tag
+        virtual: true
+      - name: from_date
+        type: Utf8
+        nullable: true
+        description: Lower date filter used for the request (virtual)
+        expr:
+          kind: from_filter
+          key: from_date
+        virtual: true
+      - name: to_date
+        type: Utf8
+        nullable: true
+        description: Upper date filter used for the request (virtual)
+        expr:
+          kind: from_filter
+          key: to_date
+        virtual: true
+      - name: message_stream
+        type: Utf8
+        nullable: true
+        description: Message stream filter used for the request (virtual)
+        expr:
+          kind: from_filter
+          key: message_stream
+        virtual: true
+    filters:
+      - name: tag
+      - name: from_date
+      - name: to_date
+      - name: message_stream

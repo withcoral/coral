@@ -401,16 +401,17 @@ async fn assert_search_tables_tool(
             .iter()
             .any(|field| field == "description")
     );
-    let search_requests = server.list_tables_requests();
-    let search_request = search_requests.last().expect("search list tables request");
+    let search_requests = server.search_tables_requests();
+    let search_request = search_requests.last().expect("search tables request");
+    assert_eq!(search_request.pattern, "fixture.*messages");
     assert_eq!(search_request.schema_name, "local_messages");
     let search_pagination = search_request
         .pagination
         .as_ref()
         .expect("search pagination");
-    assert_eq!(search_pagination.limit, 0);
+    assert_eq!(search_pagination.limit, 20);
     assert_eq!(search_pagination.offset, 0);
-    assert!(search_request.omit_columns);
+    assert!(search_request.ignore_case);
 
     let guide_search = structured_tool_content(
         client,
@@ -435,7 +436,7 @@ async fn assert_describe_table_tool(
     client: &RunningService<RoleClient, ()>,
     server: &MockServer,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let list_tables_before = server.list_tables_requests().len();
+    let describe_before = server.describe_table_requests().len();
     let execute_sql_before = server.execute_sql_requests().len();
     let described = structured_tool_content(
         client,
@@ -449,18 +450,11 @@ async fn assert_describe_table_tool(
     assert_eq!(described["name"], "local_messages.messages");
     assert_eq!(described["column_count"], 3);
 
-    let list_tables_requests = server.list_tables_requests();
-    assert_eq!(list_tables_requests.len(), list_tables_before + 1);
-    let describe_request = &list_tables_requests[list_tables_before];
+    let describe_requests = server.describe_table_requests();
+    assert_eq!(describe_requests.len(), describe_before + 1);
+    let describe_request = &describe_requests[describe_before];
     assert_eq!(describe_request.schema_name, "local_messages");
     assert_eq!(describe_request.table_name, "messages");
-    let pagination = describe_request
-        .pagination
-        .as_ref()
-        .expect("describe table pagination");
-    assert_eq!(pagination.limit, 1);
-    assert_eq!(pagination.offset, 0);
-    assert!(!describe_request.omit_columns);
     assert_eq!(server.execute_sql_requests().len(), execute_sql_before);
     Ok(())
 }

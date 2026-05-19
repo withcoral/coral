@@ -501,7 +501,7 @@ fn list_columns_page_output_schema() -> Value {
 fn missing_table_output_schema() -> Value {
     json!({
         "type": "object",
-        "required": ["found", "requested", "available_schemas", "same_schema_tables", "suggested_calls"],
+        "required": ["found", "requested", "available_schemas", "same_schema_tables", "suggestions", "suggested_calls"],
         "additionalProperties": false,
         "properties": {
             "found": { "enum": [false] },
@@ -519,6 +519,10 @@ fn missing_table_output_schema() -> Value {
                 "items": { "type": "string" }
             },
             "same_schema_tables": {
+                "type": "array",
+                "items": missing_table_summary_output_schema()
+            },
+            "suggestions": {
                 "type": "array",
                 "items": missing_table_summary_output_schema()
             },

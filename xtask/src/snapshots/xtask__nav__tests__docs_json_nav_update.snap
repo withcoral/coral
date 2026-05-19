@@ -1,6 +1,5 @@
 ---
 source: xtask/src/nav.rs
-assertion_line: 87
 expression: updated
 ---
 {
@@ -20,6 +19,13 @@ expression: updated
           "reference/cli-reference",
           "reference/bundled-sources",
           "reference/source-spec-reference"
+        ]
+      },
+      {
+        "group": "Project",
+        "pages": [
+          "project/roadmap",
+          "project/changelog"
         ]
       }
     ]

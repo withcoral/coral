@@ -501,6 +501,10 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
         missing_table["same_schema_tables"][0]["name"],
         "local_messages.events"
     );
+    assert_eq!(
+        missing_table["suggestions"][0]["name"],
+        "local_messages.events"
+    );
     assert_eq!(missing_table["suggested_calls"][0]["tool"], "search_tables");
     assert_eq!(
         missing_table["suggested_calls"][0]["arguments"]["pattern"],
@@ -652,10 +656,30 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
         "local_messages.events"
     );
     assert_eq!(
+        missing_columns["suggestions"][0]["name"],
+        "local_messages.events"
+    );
+    assert_eq!(
         missing_columns["suggested_calls"][0]["arguments"]["schema"],
         "local_messages"
     );
     assert_matches_output_schema(list_columns_tool, &missing_columns);
+
+    let missing_columns_with_bad_pattern = client
+        .call_tool(
+            CallToolRequestParams::new("list_columns").with_arguments(json_object(&json!({
+                "schema": "local_messages",
+                "table": "missing",
+                "pattern": "["
+            }))),
+        )
+        .await
+        .expect("list columns for missing table with bad pattern");
+    let missing_columns_with_bad_pattern = missing_columns_with_bad_pattern
+        .structured_content
+        .expect("structured content");
+    assert_eq!(missing_columns_with_bad_pattern["found"], false);
+    assert_matches_output_schema(list_columns_tool, &missing_columns_with_bad_pattern);
 
     client
         .call_tool(

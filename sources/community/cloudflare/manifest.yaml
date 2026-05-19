@@ -1,0 +1,896 @@
+name: cloudflare
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query zones, DNS records, accounts, members, Workers scripts, R2 buckets,
+  and audit logs from Cloudflare.
+inputs:
+  CLOUDFLARE_API_TOKEN:
+    kind: secret
+    hint: |
+      Create an API token at dash.cloudflare.com/profile/api-tokens.
+      Use the "Read all resources" template or create a custom token with
+      Zone:Read, DNS:Read, Account:Read, Account Settings:Read,
+      Workers Scripts:Read, Workers R2 Storage:Read, and Audit Logs:Read
+      permissions.
+      See [Cloudflare API token docs](https://developers.cloudflare.com/fundamentals/api/get-started/create-token/).
+  CLOUDFLARE_ACCOUNT_ID:
+    kind: variable
+    default: ""
+    hint: |
+      Your Cloudflare account ID. Required for account-scoped tables
+      (members, workers_scripts, r2_buckets, audit_logs). Leave blank to
+      install the source first, then discover your account ID by querying
+      cloudflare.accounts, and update with:
+        coral source add --file sources/community/cloudflare/manifest.yaml
+base_url: https://api.cloudflare.com/client/v4
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.CLOUDFLARE_API_TOKEN}}
+test_queries:
+  - SELECT * FROM cloudflare.zones LIMIT 1
+  - SELECT * FROM cloudflare.accounts LIMIT 1
+tables:
+  - name: zones
+    description: Cloudflare zones (domains) on the account
+    guide: |
+      Start here to discover zone IDs and names. The `id` column is
+      required by `dns_records`. Use `status` to filter active zones and
+      `plan__name` to see which plan each zone is on.
+    request:
+      method: GET
+      path: /zones
+      query:
+        - name: account.id
+          from: input
+          key: CLOUDFLARE_ACCOUNT_ID
+    response:
+      rows_path:
+        - result
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      offset_start: 0
+      page_size:
+        default: 50
+        max: 50
+        query_param: per_page
+      link_header_require_results: false
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        virtual: false
+        description: Zone ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        virtual: false
+        description: Zone name (domain)
+        expr:
+          kind: path
+          path:
+            - name
+      - name: status
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Zone status (active, pending, initializing, moved, deleted, deactivated)
+        expr:
+          kind: path
+          path:
+            - status
+      - name: paused
+        type: Boolean
+        nullable: true
+        virtual: false
+        description: Whether Cloudflare is paused on this zone
+        expr:
+          kind: path
+          path:
+            - paused
+      - name: type
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Zone type (full or partial)
+        expr:
+          kind: path
+          path:
+            - type
+      - name: plan__name
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Subscription plan name
+        expr:
+          kind: path
+          path:
+            - plan
+            - name
+      - name: plan__price
+        type: Float64
+        nullable: true
+        virtual: false
+        description: Subscription plan price
+        expr:
+          kind: path
+          path:
+            - plan
+            - price
+      - name: account__id
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Account ID that owns this zone
+        expr:
+          kind: path
+          path:
+            - account
+            - id
+      - name: account__name
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Account name that owns this zone
+        expr:
+          kind: path
+          path:
+            - account
+            - name
+      - name: owner__id
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Owner ID
+        expr:
+          kind: path
+          path:
+            - owner
+            - id
+      - name: owner__name
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Owner name
+        expr:
+          kind: path
+          path:
+            - owner
+            - name
+      - name: owner__type
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Owner type (user or organization)
+        expr:
+          kind: path
+          path:
+            - owner
+            - type
+      - name: activated_on
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Timestamp when the zone was last activated
+        expr:
+          kind: path
+          path:
+            - activated_on
+      - name: created_on
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Timestamp when the zone was created
+        expr:
+          kind: path
+          path:
+            - created_on
+      - name: modified_on
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Timestamp when the zone was last modified
+        expr:
+          kind: path
+          path:
+            - modified_on
+      - name: name_servers
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Cloudflare-assigned name servers (JSON array)
+        expr:
+          kind: path
+          path:
+            - name_servers
+  - name: dns_records
+    description: DNS records for a specific zone
+    guide: |
+      Requires `zone_id` from `cloudflare.zones`. Returns all DNS record
+      types (A, AAAA, CNAME, MX, TXT, etc.) for the zone. Use `type` and
+      `name` filters to narrow results. `proxied = true` means traffic
+      flows through Cloudflare.
+    filters:
+      - name: zone_id
+        required: true
+    request:
+      method: GET
+      path: /zones/{{filter.zone_id}}/dns_records
+    response:
+      rows_path:
+        - result
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 100
+        query_param: per_page
+      link_header_require_results: false
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        virtual: false
+        description: DNS record ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: zone_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Zone ID filter
+        expr:
+          kind: from_filter
+          key: zone_id
+      - name: zone_name
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Zone name
+        expr:
+          kind: path
+          path:
+            - zone_name
+      - name: type
+        type: Utf8
+        nullable: false
+        virtual: false
+        description: DNS record type (A, AAAA, CNAME, MX, TXT, NS, SRV, etc.)
+        expr:
+          kind: path
+          path:
+            - type
+      - name: name
+        type: Utf8
+        nullable: false
+        virtual: false
+        description: DNS record name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: content
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: DNS record content (IP address, hostname, or value)
+        expr:
+          kind: path
+          path:
+            - content
+      - name: proxied
+        type: Boolean
+        nullable: true
+        virtual: false
+        description: Whether the record is proxied through Cloudflare
+        expr:
+          kind: path
+          path:
+            - proxied
+      - name: proxiable
+        type: Boolean
+        nullable: true
+        virtual: false
+        description: Whether the record can be proxied
+        expr:
+          kind: path
+          path:
+            - proxiable
+      - name: ttl
+        type: Int64
+        nullable: true
+        virtual: false
+        description: Time to live in seconds (1 = automatic)
+        expr:
+          kind: path
+          path:
+            - ttl
+      - name: priority
+        type: Int64
+        nullable: true
+        virtual: false
+        description: Record priority (MX and SRV records)
+        expr:
+          kind: path
+          path:
+            - priority
+      - name: comment
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Optional comment on the record
+        expr:
+          kind: path
+          path:
+            - comment
+      - name: created_on
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Timestamp when the record was created
+        expr:
+          kind: path
+          path:
+            - created_on
+      - name: modified_on
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Timestamp when the record was last modified
+        expr:
+          kind: path
+          path:
+            - modified_on
+  - name: accounts
+    description: Cloudflare accounts accessible with the API token
+    guide: |
+      Lists all accounts the token has access to. Use `id` as
+      `CLOUDFLARE_ACCOUNT_ID` for account-scoped tables such as
+      `members`, `workers_scripts`, and `r2_buckets`.
+    request:
+      method: GET
+      path: /accounts
+    response:
+      rows_path:
+        - result
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      offset_start: 0
+      page_size:
+        default: 50
+        max: 50
+        query_param: per_page
+      link_header_require_results: false
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        virtual: false
+        description: Account ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        virtual: false
+        description: Account name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: type
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Account type (standard or enterprise)
+        expr:
+          kind: path
+          path:
+            - type
+      - name: created_on
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Timestamp when the account was created
+        expr:
+          kind: path
+          path:
+            - created_on
+      - name: settings__enforce_twofactor
+        type: Boolean
+        nullable: true
+        virtual: false
+        description: Whether two-factor authentication is enforced for all members
+        expr:
+          kind: path
+          path:
+            - settings
+            - enforce_twofactor
+  - name: members
+    description: Members of the Cloudflare account
+    guide: |
+      Lists all members of the account configured via `CLOUDFLARE_ACCOUNT_ID`.
+      Use `status` to find pending invitations. Join `id` to audit log
+      entries to trace actions back to specific users.
+    request:
+      method: GET
+      path: /accounts/{{input.CLOUDFLARE_ACCOUNT_ID}}/members
+    response:
+      rows_path:
+        - result
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      offset_start: 0
+      page_size:
+        default: 50
+        max: 50
+        query_param: per_page
+      link_header_require_results: false
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        virtual: false
+        description: Membership ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: status
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Membership status (accepted or pending)
+        expr:
+          kind: path
+          path:
+            - status
+      - name: user__id
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: User ID
+        expr:
+          kind: path
+          path:
+            - user
+            - id
+      - name: user__email
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: User email address
+        expr:
+          kind: path
+          path:
+            - user
+            - email
+      - name: user__first_name
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: User first name
+        expr:
+          kind: path
+          path:
+            - user
+            - first_name
+      - name: user__last_name
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: User last name
+        expr:
+          kind: path
+          path:
+            - user
+            - last_name
+      - name: user__two_factor_authentication_enabled
+        type: Boolean
+        nullable: true
+        virtual: false
+        description: Whether the user has two-factor authentication enabled
+        expr:
+          kind: path
+          path:
+            - user
+            - two_factor_authentication_enabled
+      - name: roles
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Roles assigned to this member (JSON array)
+        expr:
+          kind: path
+          path:
+            - roles
+  - name: workers_scripts
+    description: Workers scripts deployed to the account
+    guide: |
+      Lists all Workers scripts in the account. Use `id` (the script name)
+      to identify deployments. `modified_on` shows the last deploy time.
+      `handlers` lists the event types the script responds to (fetch,
+      scheduled, queue, etc.).
+    request:
+      method: GET
+      path: /accounts/{{input.CLOUDFLARE_ACCOUNT_ID}}/workers/scripts
+    response:
+      rows_path:
+        - result
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        virtual: false
+        description: Script name (unique identifier within the account)
+        expr:
+          kind: path
+          path:
+            - id
+      - name: created_on
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Timestamp when the script was first deployed
+        expr:
+          kind: path
+          path:
+            - created_on
+      - name: modified_on
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Timestamp when the script was last deployed
+        expr:
+          kind: path
+          path:
+            - modified_on
+      - name: etag
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: ETag of the current script version
+        expr:
+          kind: path
+          path:
+            - etag
+      - name: handlers
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Event handler types the script exports (JSON array, e.g. fetch, scheduled)
+        expr:
+          kind: path
+          path:
+            - handlers
+      - name: usage_model
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Billing usage model (standard or unbound)
+        expr:
+          kind: path
+          path:
+            - usage_model
+      - name: compatibility_date
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Workers compatibility date for this script
+        expr:
+          kind: path
+          path:
+            - compatibility_date
+      - name: logpush
+        type: Boolean
+        nullable: true
+        virtual: false
+        description: Whether Logpush is enabled for this script
+        expr:
+          kind: path
+          path:
+            - logpush
+      - name: last_deployed_from
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Tool used for the last deployment (wrangler, dash, api, etc.)
+        expr:
+          kind: path
+          path:
+            - last_deployed_from
+  - name: r2_buckets
+    description: R2 object storage buckets in the account
+    guide: |
+      Lists all R2 buckets in the account. Use `name` to identify buckets
+      for downstream operations. `location` shows the storage region and
+      `storage_class` shows Standard or InfrequentAccess. Requires R2 to
+      be enabled on the account; returns a 403 error otherwise.
+    request:
+      method: GET
+      path: /accounts/{{input.CLOUDFLARE_ACCOUNT_ID}}/r2/buckets
+    response:
+      rows_path:
+        - result
+        - buckets
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      response_cursor_path:
+        - result_info
+        - cursor
+      page_size:
+        default: 1000
+        max: 1000
+        query_param: per_page
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        virtual: false
+        description: Bucket name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: creation_date
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Timestamp when the bucket was created
+        expr:
+          kind: path
+          path:
+            - creation_date
+      - name: location
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Storage region (apac, eeur, enam, wnam, etc.)
+        expr:
+          kind: path
+          path:
+            - location
+      - name: storage_class
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Default storage class for new objects (Standard or InfrequentAccess)
+        expr:
+          kind: path
+          path:
+            - storage_class
+      - name: jurisdiction
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Data jurisdiction (default, eu, or fedramp)
+        expr:
+          kind: path
+          path:
+            - jurisdiction
+  - name: audit_logs
+    description: Account audit log entries
+    guide: |
+      Lists audit log entries for the account. Each row is one action
+      taken by a user or API token. Requires `since` and `before` filters
+      as ISO 8601 timestamps (e.g. WHERE since = '2026-05-01T00:00:00Z'
+      AND before = '2026-05-10T00:00:00Z'). Use `actor__email` to filter
+      by user, `action__type` to filter by operation type, and `when` to
+      sort by time. Sorted newest-first by default.
+    filters:
+      - name: since
+        required: true
+      - name: before
+        required: true
+    request:
+      method: GET
+      path: /accounts/{{input.CLOUDFLARE_ACCOUNT_ID}}/logs/audit
+      query:
+        - name: since
+          from: filter
+          key: since
+        - name: before
+          from: filter
+          key: before
+    response:
+      rows_path:
+        - result
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      response_cursor_path:
+        - result_info
+        - cursor
+      page_size:
+        default: 25
+        max: 1000
+        query_param: limit
+      link_header_require_results: false
+    columns:
+      - name: id
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Audit log entry ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: action__type
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Action type (e.g. create, update, delete)
+        expr:
+          kind: path
+          path:
+            - action
+            - type
+      - name: action__result
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Whether the action succeeded (success or failure)
+        expr:
+          kind: path
+          path:
+            - action
+            - result
+      - name: action__time
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Timestamp when the action occurred
+        expr:
+          kind: path
+          path:
+            - action
+            - time
+      - name: action__description
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Human-readable description of the action
+        expr:
+          kind: path
+          path:
+            - action
+            - description
+      - name: actor__id
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Actor user or token ID
+        expr:
+          kind: path
+          path:
+            - actor
+            - id
+      - name: actor__email
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Actor email address
+        expr:
+          kind: path
+          path:
+            - actor
+            - email
+      - name: actor__type
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Actor type (user, cloudflare_admin, or api_token)
+        expr:
+          kind: path
+          path:
+            - actor
+            - type
+      - name: actor__ip
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: IP address of the actor
+        expr:
+          kind: path
+          path:
+            - actor
+            - ip_address
+      - name: actor__context
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Context of the action (dash, api, etc.)
+        expr:
+          kind: path
+          path:
+            - actor
+            - context
+      - name: resource__id
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: ID of the resource that was acted on
+        expr:
+          kind: path
+          path:
+            - resource
+            - id
+      - name: resource__type
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Type of the resource that was acted on
+        expr:
+          kind: path
+          path:
+            - resource
+            - type
+      - name: when
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Alias for action__time (timestamp of the audit log entry)
+        expr:
+          kind: path
+          path:
+            - action
+            - time
+      - name: since
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Required start timestamp filter (ISO 8601, e.g. 2026-01-01T00:00:00Z)
+        expr:
+          kind: from_filter
+          key: since
+      - name: before
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Required end timestamp filter (ISO 8601, e.g. 2026-05-10T00:00:00Z)
+        expr:
+          kind: from_filter
+          key: before

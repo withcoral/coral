@@ -1,0 +1,1109 @@
+name: figma
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query projects, files, file versions, comments, published
+  components, component sets, styles, webhooks, dev resources,
+  and library analytics from Figma.
+base_url: https://api.figma.com
+
+inputs:
+  FIGMA_TEAM_ID:
+    kind: variable
+    hint: >-
+      Your Figma team ID. Find it in the URL when viewing your
+      team page: https://www.figma.com/files/team/<TEAM_ID>/...
+  FIGMA_ACCESS_TOKEN:
+    kind: secret
+    hint: >-
+      Figma personal access token. Generate one at
+      https://www.figma.com/developers/api#access-tokens
+      (Settings > Account > Personal access tokens). Some endpoints
+      require specific scopes.
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: X-Figma-Token
+      from: input
+      key: FIGMA_ACCESS_TOKEN
+
+test_queries:
+  - >-
+    SELECT id, name
+    FROM figma.team_projects
+    LIMIT 1
+
+tables:
+  # ──────────────────────────────────────────────────────────────────────
+  # team_projects
+  # ──────────────────────────────────────────────────────────────────────
+  - name: team_projects
+    description: >
+      Lists all projects in the configured team. Returns project
+      ID and name.
+    guide: >
+      `SELECT id, name FROM figma.team_projects`.
+      Start here to discover project IDs for the project_files table.
+    request:
+      method: GET
+      path: /v1/teams/{{input.FIGMA_TEAM_ID}}/projects
+    response:
+      rows_path:
+        - projects
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique project ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Project name.
+        expr:
+          kind: path
+          path:
+            - name
+
+  # ──────────────────────────────────────────────────────────────────────
+  # project_files
+  # ──────────────────────────────────────────────────────────────────────
+  - name: project_files
+    description: >
+      Lists all files in a project. Returns file key, name,
+      last modified time, and thumbnail URL.
+    guide: >
+      Requires `project_id` filter. Get project IDs from
+      `figma.team_projects` first.
+      `SELECT key, name, last_modified FROM figma.project_files
+      WHERE project_id = '<id>'`.
+    request:
+      method: GET
+      path: /v1/projects/{{filter.project_id}}/files
+    response:
+      rows_path:
+        - files
+    pagination:
+      mode: none
+    columns:
+      - name: project_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Project ID from required filter.
+        expr:
+          kind: from_filter
+          key: project_id
+      - name: key
+        type: Utf8
+        nullable: false
+        description: Unique file key.
+        expr:
+          kind: path
+          path:
+            - key
+      - name: name
+        type: Utf8
+        nullable: true
+        description: File name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: last_modified
+        type: Utf8
+        nullable: true
+        description: Last modification timestamp (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - last_modified
+      - name: thumbnail_url
+        type: Utf8
+        nullable: true
+        description: URL of the file thumbnail.
+        expr:
+          kind: path
+          path:
+            - thumbnail_url
+      - name: branches
+        type: Json
+        nullable: true
+        description: Array of branch metadata objects.
+        expr:
+          kind: path
+          path:
+            - branches
+    filters:
+      - name: project_id
+        required: true
+
+  # ──────────────────────────────────────────────────────────────────────
+  # file_versions
+  # ──────────────────────────────────────────────────────────────────────
+  - name: file_versions
+    description: >
+      Lists version history for a file. Returns version ID,
+      label, description, creator, and creation time.
+    guide: >
+      Requires `file_key` filter. Get file keys from
+      `figma.project_files`.
+      `SELECT id, label, created_at FROM figma.file_versions
+      WHERE file_key = '<key>'`.
+    request:
+      method: GET
+      path: /v1/files/{{filter.file_key}}/versions
+    response:
+      rows_path:
+        - versions
+    pagination:
+      mode: none
+    columns:
+      - name: file_key
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: File key from required filter.
+        expr:
+          kind: from_filter
+          key: file_key
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique version ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: label
+        type: Utf8
+        nullable: true
+        description: Version label.
+        expr:
+          kind: path
+          path:
+            - label
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Version description.
+        expr:
+          kind: path
+          path:
+            - description
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Creation timestamp (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - created_at
+      - name: user_id
+        type: Utf8
+        nullable: true
+        description: ID of the user who created the version.
+        expr:
+          kind: path
+          path:
+            - user
+            - id
+      - name: user_handle
+        type: Utf8
+        nullable: true
+        description: Handle of the user who created the version.
+        expr:
+          kind: path
+          path:
+            - user
+            - handle
+      - name: user_img_url
+        type: Utf8
+        nullable: true
+        description: Profile image URL of the creator.
+        expr:
+          kind: path
+          path:
+            - user
+            - img_url
+    filters:
+      - name: file_key
+        required: true
+
+  # ──────────────────────────────────────────────────────────────────────
+  # file_comments
+  # ──────────────────────────────────────────────────────────────────────
+  - name: file_comments
+    description: >
+      Lists all comments on a file. Returns comment ID, message,
+      author, creation time, resolution status, and thread info.
+    guide: >
+      Requires `file_key` filter.
+      `SELECT id, message, user_handle, created_at, resolved_at
+      FROM figma.file_comments WHERE file_key = '<key>'`.
+    request:
+      method: GET
+      path: /v1/files/{{filter.file_key}}/comments
+    response:
+      rows_path:
+        - comments
+    pagination:
+      mode: none
+    columns:
+      - name: file_key
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: File key from required filter.
+        expr:
+          kind: from_filter
+          key: file_key
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique comment ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: message
+        type: Utf8
+        nullable: true
+        description: Comment text.
+        expr:
+          kind: path
+          path:
+            - message
+      - name: parent_id
+        type: Utf8
+        nullable: true
+        description: Parent comment ID (for replies).
+        expr:
+          kind: path
+          path:
+            - parent_id
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Creation timestamp (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - created_at
+      - name: resolved_at
+        type: Utf8
+        nullable: true
+        description: Resolution timestamp (ISO 8601), null if unresolved.
+        expr:
+          kind: path
+          path:
+            - resolved_at
+      - name: order_id
+        type: Float64
+        nullable: true
+        description: Ordering position for top-level comments.
+        expr:
+          kind: path
+          path:
+            - order_id
+      - name: user_id
+        type: Utf8
+        nullable: true
+        description: Author user ID.
+        expr:
+          kind: path
+          path:
+            - user
+            - id
+      - name: user_handle
+        type: Utf8
+        nullable: true
+        description: Author handle.
+        expr:
+          kind: path
+          path:
+            - user
+            - handle
+      - name: user_img_url
+        type: Utf8
+        nullable: true
+        description: Author profile image URL.
+        expr:
+          kind: path
+          path:
+            - user
+            - img_url
+      - name: client_meta
+        type: Json
+        nullable: true
+        description: >
+          Comment positioning metadata (node_id, coordinates,
+          region). Structure varies by comment type.
+        expr:
+          kind: path
+          path:
+            - client_meta
+      - name: reactions
+        type: Json
+        nullable: true
+        description: Array of reaction objects on this comment.
+        expr:
+          kind: path
+          path:
+            - reactions
+    filters:
+      - name: file_key
+        required: true
+
+  # ──────────────────────────────────────────────────────────────────────
+  # team_components
+  # ──────────────────────────────────────────────────────────────────────
+  - name: team_components
+    description: >
+      Lists all published components in the team library.
+      Returns component key, name, description, containing
+      frame, file key, and creator.
+    guide: >
+      `SELECT key, name, description, file_key, created_at
+      FROM figma.team_components LIMIT 20`.
+      Cursor-paginated with up to 1000 per page.
+    request:
+      method: GET
+      path: /v1/teams/{{input.FIGMA_TEAM_ID}}/components
+    response:
+      rows_path:
+        - meta
+        - components
+    pagination:
+      mode: cursor_query
+      cursor_param: after
+      response_cursor_path:
+        - meta
+        - cursor
+        - after
+      page_size:
+        default: 30
+        max: 1000
+        query_param: page_size
+    columns:
+      - name: key
+        type: Utf8
+        nullable: false
+        description: Unique component key.
+        expr:
+          kind: path
+          path:
+            - key
+      - name: file_key
+        type: Utf8
+        nullable: true
+        description: Key of the file containing this component.
+        expr:
+          kind: path
+          path:
+            - file_key
+      - name: node_id
+        type: Utf8
+        nullable: true
+        description: Node ID within the file.
+        expr:
+          kind: path
+          path:
+            - node_id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Component name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Component description.
+        expr:
+          kind: path
+          path:
+            - description
+      - name: thumbnail_url
+        type: Utf8
+        nullable: true
+        description: Thumbnail image URL.
+        expr:
+          kind: path
+          path:
+            - thumbnail_url
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Creation timestamp (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - created_at
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: Last update timestamp (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - updated_at
+      - name: user_id
+        type: Utf8
+        nullable: true
+        description: Creator user ID.
+        expr:
+          kind: path
+          path:
+            - user
+            - id
+      - name: user_handle
+        type: Utf8
+        nullable: true
+        description: Creator handle.
+        expr:
+          kind: path
+          path:
+            - user
+            - handle
+      - name: containing_frame
+        type: Json
+        nullable: true
+        description: >
+          Metadata about the frame containing this component
+          (name, node_id, page_id, page_name, etc.).
+        expr:
+          kind: path
+          path:
+            - containing_frame
+
+  # ──────────────────────────────────────────────────────────────────────
+  # team_component_sets
+  # ──────────────────────────────────────────────────────────────────────
+  - name: team_component_sets
+    description: >
+      Lists all published component sets (variant groups) in the
+      team library. Returns set key, name, description, file key,
+      and creator.
+    guide: >
+      `SELECT key, name, description, file_key
+      FROM figma.team_component_sets LIMIT 20`.
+    request:
+      method: GET
+      path: /v1/teams/{{input.FIGMA_TEAM_ID}}/component_sets
+    response:
+      rows_path:
+        - meta
+        - component_sets
+    pagination:
+      mode: cursor_query
+      cursor_param: after
+      response_cursor_path:
+        - meta
+        - cursor
+        - after
+      page_size:
+        default: 30
+        max: 1000
+        query_param: page_size
+    columns:
+      - name: key
+        type: Utf8
+        nullable: false
+        description: Unique component set key.
+        expr:
+          kind: path
+          path:
+            - key
+      - name: file_key
+        type: Utf8
+        nullable: true
+        description: Key of the file containing this component set.
+        expr:
+          kind: path
+          path:
+            - file_key
+      - name: node_id
+        type: Utf8
+        nullable: true
+        description: Node ID within the file.
+        expr:
+          kind: path
+          path:
+            - node_id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Component set name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Component set description.
+        expr:
+          kind: path
+          path:
+            - description
+      - name: thumbnail_url
+        type: Utf8
+        nullable: true
+        description: Thumbnail image URL.
+        expr:
+          kind: path
+          path:
+            - thumbnail_url
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Creation timestamp (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - created_at
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: Last update timestamp (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - updated_at
+      - name: user_id
+        type: Utf8
+        nullable: true
+        description: Creator user ID.
+        expr:
+          kind: path
+          path:
+            - user
+            - id
+      - name: user_handle
+        type: Utf8
+        nullable: true
+        description: Creator handle.
+        expr:
+          kind: path
+          path:
+            - user
+            - handle
+      - name: containing_frame
+        type: Json
+        nullable: true
+        description: Metadata about the containing frame.
+        expr:
+          kind: path
+          path:
+            - containing_frame
+
+  # ──────────────────────────────────────────────────────────────────────
+  # team_styles
+  # ──────────────────────────────────────────────────────────────────────
+  - name: team_styles
+    description: >
+      Lists all published styles in the team library. Returns
+      style key, name, type (PAINT, TEXT, EFFECT, GRID),
+      file key, and creator.
+    guide: >
+      `SELECT key, name, style_type, file_key
+      FROM figma.team_styles LIMIT 20`.
+    request:
+      method: GET
+      path: /v1/teams/{{input.FIGMA_TEAM_ID}}/styles
+    response:
+      rows_path:
+        - meta
+        - styles
+    pagination:
+      mode: cursor_query
+      cursor_param: after
+      response_cursor_path:
+        - meta
+        - cursor
+        - after
+      page_size:
+        default: 30
+        max: 1000
+        query_param: page_size
+    columns:
+      - name: key
+        type: Utf8
+        nullable: false
+        description: Unique style key.
+        expr:
+          kind: path
+          path:
+            - key
+      - name: file_key
+        type: Utf8
+        nullable: true
+        description: Key of the file containing this style.
+        expr:
+          kind: path
+          path:
+            - file_key
+      - name: node_id
+        type: Utf8
+        nullable: true
+        description: Node ID within the file.
+        expr:
+          kind: path
+          path:
+            - node_id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Style name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Style description.
+        expr:
+          kind: path
+          path:
+            - description
+      - name: style_type
+        type: Utf8
+        nullable: true
+        description: Style type (PAINT, TEXT, EFFECT, or GRID).
+        expr:
+          kind: path
+          path:
+            - style_type
+      - name: sort_position
+        type: Utf8
+        nullable: true
+        description: Sort position within the library.
+        expr:
+          kind: path
+          path:
+            - sort_position
+      - name: thumbnail_url
+        type: Utf8
+        nullable: true
+        description: Thumbnail image URL.
+        expr:
+          kind: path
+          path:
+            - thumbnail_url
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Creation timestamp (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - created_at
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: Last update timestamp (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - updated_at
+      - name: user_id
+        type: Utf8
+        nullable: true
+        description: Creator user ID.
+        expr:
+          kind: path
+          path:
+            - user
+            - id
+      - name: user_handle
+        type: Utf8
+        nullable: true
+        description: Creator handle.
+        expr:
+          kind: path
+          path:
+            - user
+            - handle
+
+  # ──────────────────────────────────────────────────────────────────────
+  # webhooks
+  # ──────────────────────────────────────────────────────────────────────
+  - name: webhooks
+    description: >
+      Lists all webhooks for the configured team. Returns webhook
+      ID, event type, endpoint, status, and description.
+    guide: >
+      `SELECT id, event_type, endpoint, status
+      FROM figma.webhooks`.
+    request:
+      method: GET
+      path: /v2/webhooks
+      query:
+        - name: context
+          from: literal
+          value: team
+        - name: context_id
+          from: input
+          key: FIGMA_TEAM_ID
+    response:
+      rows_path:
+        - webhooks
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique webhook ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: event_type
+        type: Utf8
+        nullable: true
+        description: Event type that triggers this webhook.
+        expr:
+          kind: path
+          path:
+            - event_type
+      - name: team_id
+        type: Utf8
+        nullable: true
+        description: Team ID the webhook is scoped to.
+        expr:
+          kind: path
+          path:
+            - team_id
+      - name: context
+        type: Utf8
+        nullable: true
+        description: Context type this webhook is attached to.
+        expr:
+          kind: path
+          path:
+            - context
+      - name: context_id
+        type: Utf8
+        nullable: true
+        description: Context ID this webhook is attached to.
+        expr:
+          kind: path
+          path:
+            - context_id
+      - name: plan_api_id
+        type: Utf8
+        nullable: true
+        description: Plan API ID where this webhook was created.
+        expr:
+          kind: path
+          path:
+            - plan_api_id
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Webhook status (ACTIVE, PAUSED).
+        expr:
+          kind: path
+          path:
+            - status
+      - name: endpoint
+        type: Utf8
+        nullable: true
+        description: Webhook endpoint URL.
+        expr:
+          kind: path
+          path:
+            - endpoint
+      - name: passcode
+        type: Utf8
+        nullable: true
+        description: Webhook passcode.
+        expr:
+          kind: path
+          path:
+            - passcode
+      - name: client_id
+        type: Utf8
+        nullable: true
+        description: OAuth client ID that registered the webhook, if any.
+        expr:
+          kind: path
+          path:
+            - client_id
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Webhook description.
+        expr:
+          kind: path
+          path:
+            - description
+  # ──────────────────────────────────────────────────────────────────────
+  # file_dev_resources
+  # ──────────────────────────────────────────────────────────────────────
+  - name: file_dev_resources
+    description: >
+      Lists all dev resources attached to nodes in a file.
+      Returns resource ID, name, URL, node ID, and file key.
+    guide: >
+      Requires `file_key` filter.
+      `SELECT id, name, url, node_id FROM figma.file_dev_resources
+      WHERE file_key = '<key>'`.
+    request:
+      method: GET
+      path: /v1/files/{{filter.file_key}}/dev_resources
+    response:
+      rows_path:
+        - dev_resources
+    pagination:
+      mode: none
+    columns:
+      - name: file_key
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: File key from required filter.
+        expr:
+          kind: from_filter
+          key: file_key
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique dev resource ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Dev resource name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Dev resource URL.
+        expr:
+          kind: path
+          path:
+            - url
+      - name: node_id
+        type: Utf8
+        nullable: true
+        description: ID of the node this resource is attached to.
+        expr:
+          kind: path
+          path:
+            - node_id
+    filters:
+      - name: file_key
+        required: true
+
+  # ──────────────────────────────────────────────────────────────────────
+  # library_component_actions
+  # ──────────────────────────────────────────────────────────────────────
+  - name: library_component_actions
+    description: >
+      Lists library analytics for component actions (inserts,
+      detaches) in a library file. Returns component name,
+      action counts, team, and file info. Enterprise plan only.
+    guide: >
+      Requires `library_file_key` filter.
+      `SELECT component_name, week, insertions, detachments
+      FROM figma.library_component_actions
+      WHERE library_file_key = '<key>'`.
+    request:
+      method: GET
+      path: /v1/analytics/libraries/{{filter.library_file_key}}/component/actions
+      query:
+        - name: group_by
+          from: literal
+          value: component
+    response:
+      rows_path:
+        - rows
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      response_cursor_path:
+        - cursor
+    columns:
+      - name: library_file_key
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Library file key from required filter.
+        expr:
+          kind: from_filter
+          key: library_file_key
+      - name: component_name
+        type: Utf8
+        nullable: true
+        description: Name of the component.
+        expr:
+          kind: path
+          path:
+            - component_name
+      - name: component_key
+        type: Utf8
+        nullable: true
+        description: Component key.
+        expr:
+          kind: path
+          path:
+            - component_key
+      - name: component_set_key
+        type: Utf8
+        nullable: true
+        description: Component set key.
+        expr:
+          kind: path
+          path:
+            - component_set_key
+      - name: component_set_name
+        type: Utf8
+        nullable: true
+        description: Component set name.
+        expr:
+          kind: path
+          path:
+            - component_set_name
+      - name: week
+        type: Utf8
+        nullable: true
+        description: Week represented by this analytics row.
+        expr:
+          kind: path
+          path:
+            - week
+      - name: insertions
+        type: Int64
+        nullable: true
+        description: Number of component insertions.
+        expr:
+          kind: path
+          path:
+            - insertions
+      - name: detachments
+        type: Int64
+        nullable: true
+        description: Number of component detachments.
+        expr:
+          kind: path
+          path:
+            - detachments
+    filters:
+      - name: library_file_key
+        required: true
+
+  # ──────────────────────────────────────────────────────────────────────
+  # library_component_usages
+  # ──────────────────────────────────────────────────────────────────────
+  - name: library_component_usages
+    description: >
+      Lists library analytics for component usages in a library
+      file. Returns component name, usage counts, team, and
+      file info. Enterprise plan only.
+    guide: >
+      Requires `library_file_key` filter.
+      `SELECT component_name, usages, teams_using, files_using
+      FROM figma.library_component_usages
+      WHERE library_file_key = '<key>'`.
+    request:
+      method: GET
+      path: /v1/analytics/libraries/{{filter.library_file_key}}/component/usages
+      query:
+        - name: group_by
+          from: literal
+          value: component
+    response:
+      rows_path:
+        - rows
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      response_cursor_path:
+        - cursor
+    columns:
+      - name: library_file_key
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Library file key from required filter.
+        expr:
+          kind: from_filter
+          key: library_file_key
+      - name: component_name
+        type: Utf8
+        nullable: true
+        description: Name of the component.
+        expr:
+          kind: path
+          path:
+            - component_name
+      - name: component_key
+        type: Utf8
+        nullable: true
+        description: Component key.
+        expr:
+          kind: path
+          path:
+            - component_key
+      - name: component_set_key
+        type: Utf8
+        nullable: true
+        description: Component set key.
+        expr:
+          kind: path
+          path:
+            - component_set_key
+      - name: component_set_name
+        type: Utf8
+        nullable: true
+        description: Component set name.
+        expr:
+          kind: path
+          path:
+            - component_set_name
+      - name: usages
+        type: Int64
+        nullable: true
+        description: Number of usages of this component.
+        expr:
+          kind: path
+          path:
+            - usages
+      - name: teams_using
+        type: Int64
+        nullable: true
+        description: Number of teams using this component.
+        expr:
+          kind: path
+          path:
+            - teams_using
+      - name: files_using
+        type: Int64
+        nullable: true
+        description: Number of files using this component.
+        expr:
+          kind: path
+          path:
+            - files_using
+    filters:
+      - name: library_file_key
+        required: true

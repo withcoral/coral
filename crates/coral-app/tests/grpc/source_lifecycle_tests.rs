@@ -232,7 +232,7 @@ async fn list_tables_supports_legacy_full_response_and_paginated_summaries() {
         .await;
 
     let legacy = harness
-        .query_client()
+        .catalog_client()
         .list_tables(Request::new(ListTablesRequest {
             workspace: Some(default_workspace()),
             schema_name: String::new(),
@@ -254,7 +254,7 @@ async fn list_tables_supports_legacy_full_response_and_paginated_summaries() {
     assert!(!legacy.tables[0].columns.is_empty());
 
     let page = harness
-        .query_client()
+        .catalog_client()
         .list_tables(Request::new(ListTablesRequest {
             workspace: Some(default_workspace()),
             schema_name: "local_messages".to_string(),
@@ -286,7 +286,7 @@ async fn list_tables_supports_legacy_full_response_and_paginated_summaries() {
     assert_exact_table_filter(&harness).await;
 
     let unknown_schema = harness
-        .query_client()
+        .catalog_client()
         .list_tables(Request::new(ListTablesRequest {
             workspace: Some(default_workspace()),
             schema_name: "missing".to_string(),
@@ -312,7 +312,7 @@ async fn list_tables_supports_legacy_full_response_and_paginated_summaries() {
 
 async fn assert_exact_table_filter(harness: &GrpcHarness) {
     let exact_table = harness
-        .query_client()
+        .catalog_client()
         .list_tables(Request::new(ListTablesRequest {
             workspace: Some(default_workspace()),
             schema_name: "local_messages".to_string(),
@@ -1347,7 +1347,7 @@ async fn rejects_invalid_workspace_and_source_names() {
     let harness = GrpcHarness::new().await;
 
     let invalid_workspace = harness
-        .query_client()
+        .catalog_client()
         .list_tables(Request::new(ListTablesRequest {
             workspace: Some(Workspace {
                 name: r"bad\workspace".to_string(),

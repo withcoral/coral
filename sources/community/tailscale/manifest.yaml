@@ -1,0 +1,483 @@
+name: tailscale
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Tailscale devices, users, keys, device routes, and DNS configuration
+  from a tailnet.
+base_url: "{{input.TAILSCALE_API_BASE}}"
+
+inputs:
+  TAILSCALE_API_BASE:
+    kind: variable
+    default: https://api.tailscale.com/api/v2
+    hint: |
+      Base URL for the Tailscale API. Keep the default for Tailscale Cloud.
+  TAILSCALE_TAILNET:
+    kind: variable
+    default: "-"
+    hint: |
+      Tailnet identifier to query. Use "-" for the default tailnet associated
+      with the token, or provide the tailnet name/ID shown in Tailscale.
+  TAILSCALE_API_TOKEN:
+    kind: secret
+    hint: |
+      Tailscale API access token or trust-credential access token. Create one
+      from the Tailscale admin console under Settings > Keys, or use a scoped
+      trust credential token. Read-only queries require scopes such as
+      devices:core:read, users:read, auth_keys:read, api_access_tokens:read,
+      oauth_keys:read, federated_keys:read, devices:routes:read, and dns:read
+      depending on the tables you query.
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.TAILSCALE_API_TOKEN}}
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT node_id, hostname, os FROM tailscale.devices LIMIT 1
+
+tables:
+  - name: devices
+    description: |
+      Devices in the configured tailnet. Optional filters map to common
+      top-level Tailscale device fields supported by the API.
+    filters:
+      - name: hostname
+      - name: name
+      - name: user
+      - name: os
+      - name: tags
+      - name: authorized
+      - name: is_external
+      - name: is_ephemeral
+      - name: key_expiry_disabled
+    request:
+      method: GET
+      path: /tailnet/{{input.TAILSCALE_TAILNET}}/devices
+      query:
+        - name: hostname
+          from: filter
+          key: hostname
+        - name: name
+          from: filter
+          key: name
+        - name: user
+          from: filter
+          key: user
+        - name: os
+          from: filter
+          key: os
+        - name: tags
+          from: filter
+          key: tags
+        - name: authorized
+          from: filter_bool
+          key: authorized
+        - name: isExternal
+          from: filter_bool
+          key: is_external
+        - name: isEphemeral
+          from: filter_bool
+          key: is_ephemeral
+        - name: keyExpiryDisabled
+          from: filter_bool
+          key: key_expiry_disabled
+    response:
+      rows_path: [devices]
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: true
+        description: Legacy device identifier.
+        expr: {kind: path, path: [id]}
+      - name: node_id
+        type: Utf8
+        nullable: false
+        description: Preferred device identifier for device-scoped API calls.
+        expr: {kind: path, path: [nodeId]}
+      - name: user
+        type: Utf8
+        nullable: true
+        description: User who registered the device, or device owner for untagged devices.
+        expr: {kind: path, path: [user]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: MagicDNS name for the device.
+        expr: {kind: path, path: [name]}
+      - name: hostname
+        type: Utf8
+        nullable: true
+        description: Machine name in the Tailscale admin console.
+        expr: {kind: path, path: [hostname]}
+      - name: client_version
+        type: Utf8
+        nullable: true
+        description: Tailscale client version.
+        expr: {kind: path, path: [clientVersion]}
+      - name: os
+        type: Utf8
+        nullable: true
+        description: Device operating system.
+        expr: {kind: path, path: [os]}
+      - name: addresses
+        type: Json
+        nullable: true
+        description: Tailscale IPv4 and IPv6 addresses assigned to the device.
+        expr: {kind: path, path: [addresses]}
+      - name: tags
+        type: Json
+        nullable: true
+        description: Tags applied to the device.
+        expr: {kind: path, path: [tags]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Time the device was added to the tailnet.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created]}
+      - name: connected_to_control
+        type: Boolean
+        nullable: true
+        description: Whether the device recently maintained a connection to the control server.
+        expr: {kind: path, path: [connectedToControl]}
+      - name: last_seen_at
+        type: Timestamp
+        nullable: true
+        description: Last time the device was connected to the control server.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [lastSeen]}
+      - name: expires_at
+        type: Timestamp
+        nullable: true
+        description: Device key expiration time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [expires]}
+      - name: authorized
+        type: Boolean
+        nullable: true
+        description: Whether the device is authorized to join the tailnet.
+        expr: {kind: path, path: [authorized]}
+      - name: key_expiry_disabled
+        type: Boolean
+        nullable: true
+        description: Whether device key expiry is disabled.
+        expr: {kind: path, path: [keyExpiryDisabled]}
+      - name: is_external
+        type: Boolean
+        nullable: true
+        description: Whether the device is shared in from another tailnet.
+        expr: {kind: path, path: [isExternal]}
+      - name: is_ephemeral
+        type: Boolean
+        nullable: true
+        description: Whether the device is ephemeral.
+        expr: {kind: path, path: [isEphemeral]}
+      - name: update_available
+        type: Boolean
+        nullable: true
+        description: Whether a Tailscale client update is available.
+        expr: {kind: path, path: [updateAvailable]}
+      - name: blocks_incoming_connections
+        type: Boolean
+        nullable: true
+        description: Whether the device blocks incoming Tailscale connections.
+        expr: {kind: path, path: [blocksIncomingConnections]}
+      - name: enabled_routes
+        type: Json
+        nullable: true
+        description: Approved subnet routes for the device.
+        expr: {kind: path, path: [enabledRoutes]}
+      - name: advertised_routes
+        type: Json
+        nullable: true
+        description: Subnet routes advertised by the device.
+        expr: {kind: path, path: [advertisedRoutes]}
+      - name: client_connectivity
+        type: Json
+        nullable: true
+        description: Current physical network connectivity details for the device.
+        expr: {kind: path, path: [clientConnectivity]}
+      - name: machine_key
+        type: Utf8
+        nullable: true
+        description: Device machine key.
+        expr: {kind: path, path: [machineKey]}
+      - name: node_key
+        type: Utf8
+        nullable: true
+        description: Device node key.
+        expr: {kind: path, path: [nodeKey]}
+
+  - name: users
+    description: Users in the configured tailnet.
+    filters:
+      - name: type
+      - name: role
+    request:
+      method: GET
+      path: /tailnet/{{input.TAILSCALE_TAILNET}}/users
+      query:
+        - name: type
+          from: filter
+          key: type
+        - name: role
+          from: filter
+          key: role
+    response:
+      rows_path: [users]
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique Tailscale user identifier.
+        expr: {kind: path, path: [id]}
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: User display name.
+        expr: {kind: path, path: [displayName]}
+      - name: login_name
+        type: Utf8
+        nullable: true
+        description: User login name.
+        expr: {kind: path, path: [loginName]}
+      - name: profile_pic_url
+        type: Utf8
+        nullable: true
+        description: User profile picture URL.
+        expr: {kind: path, path: [profilePicUrl]}
+      - name: tailnet_id
+        type: Utf8
+        nullable: true
+        description: Tailnet that owns the user.
+        expr: {kind: path, path: [tailnetId]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Time the user joined the tailnet.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created]}
+      - name: type
+        type: Utf8
+        nullable: true
+        description: User relation to the tailnet, such as member or shared.
+        expr: {kind: path, path: [type]}
+      - name: role
+        type: Utf8
+        nullable: true
+        description: User role in the tailnet.
+        expr: {kind: path, path: [role]}
+      - name: status
+        type: Utf8
+        nullable: true
+        description: User status.
+        expr: {kind: path, path: [status]}
+      - name: device_count
+        type: Int64
+        nullable: true
+        description: Number of devices owned by the user.
+        expr: {kind: path, path: [deviceCount]}
+      - name: last_seen_at
+        type: Timestamp
+        nullable: true
+        description: Most recent user authentication or owned-device connection time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [lastSeen]}
+      - name: currently_connected
+        type: Boolean
+        nullable: true
+        description: Whether the user currently has a device connected to the control server.
+        expr: {kind: path, path: [currentlyConnected]}
+
+  - name: keys
+    description: Active auth keys, API access tokens, OAuth clients, and federated identities.
+    filters:
+      - name: all
+    request:
+      method: GET
+      path: /tailnet/{{input.TAILSCALE_TAILNET}}/keys
+      query:
+        - name: all
+          from: filter_bool
+          key: all
+    response:
+      rows_path: [keys]
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Key identifier.
+        expr: {kind: path, path: [id]}
+      - name: key_type
+        type: Utf8
+        nullable: true
+        description: "Key type: auth, client, api, or federated."
+        expr: {kind: path, path: [keyType]}
+      - name: expiry_seconds
+        type: Int64
+        nullable: true
+        description: Duration in seconds until the key expires.
+        expr: {kind: path, path: [expirySeconds]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Key creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Key update time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [updated]}
+      - name: expires_at
+        type: Timestamp
+        nullable: true
+        description: Key expiration time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [expires]}
+      - name: revoked_at
+        type: Timestamp
+        nullable: true
+        description: Key revocation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [revoked]}
+      - name: scopes
+        type: Json
+        nullable: true
+        description: Scopes granted to the key.
+        expr: {kind: path, path: [scopes]}
+      - name: tags
+        type: Json
+        nullable: true
+        description: Tags associated with a trust credential.
+        expr: {kind: path, path: [tags]}
+      - name: capabilities
+        type: Json
+        nullable: true
+        description: Auth-key capabilities.
+        expr: {kind: path, path: [capabilities]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Key description.
+        expr: {kind: path, path: [description]}
+      - name: invalid
+        type: Boolean
+        nullable: true
+        description: Whether the key is revoked or expired.
+        expr: {kind: path, path: [invalid]}
+      - name: user_id
+        type: Utf8
+        nullable: true
+        description: User who created the key, empty for trust credentials.
+        expr: {kind: path, path: [userId]}
+      - name: audience
+        type: Utf8
+        nullable: true
+        description: OIDC audience for federated identities.
+        expr: {kind: path, path: [audience]}
+      - name: issuer
+        type: Utf8
+        nullable: true
+        description: OIDC issuer for federated identities.
+        expr: {kind: path, path: [issuer]}
+
+  - name: device_routes
+    description: Advertised and enabled subnet routes for a device.
+    filters:
+      - name: device_id
+        required: true
+    request:
+      method: GET
+      path: /device/{{filter.device_id}}/routes
+    response: {}
+    pagination:
+      mode: none
+    columns:
+      - name: device_id
+        type: Utf8
+        nullable: false
+        description: Device identifier used for the request.
+        expr:
+          kind: from_filter
+          key: device_id
+      - name: advertised_routes
+        type: Json
+        nullable: true
+        description: Subnets this device requests to expose.
+        expr: {kind: path, path: [advertisedRoutes]}
+      - name: enabled_routes
+        type: Json
+        nullable: true
+        description: Approved subnet routes for this device.
+        expr: {kind: path, path: [enabledRoutes]}
+
+  - name: dns_configuration
+    description: Full DNS configuration for the configured tailnet.
+    fetch_limit_default: 1
+    request:
+      method: GET
+      path: /tailnet/{{input.TAILSCALE_TAILNET}}/dns/configuration
+    response: {}
+    pagination:
+      mode: none
+    columns:
+      - name: nameservers
+        type: Json
+        nullable: true
+        description: Global DNS resolvers configured for the tailnet.
+        expr: {kind: path, path: [nameservers]}
+      - name: split_dns
+        type: Json
+        nullable: true
+        description: Split DNS suffix-to-resolver mappings.
+        expr: {kind: path, path: [splitDNS]}
+      - name: search_paths
+        type: Json
+        nullable: true
+        description: DNS search domains applied to the tailnet.
+        expr: {kind: path, path: [searchPaths]}
+      - name: preferences__override_local_dns
+        type: Boolean
+        nullable: true
+        description: Whether configured resolvers override local OS DNS.
+        expr: {kind: path, path: [preferences, overrideLocalDNS]}
+      - name: preferences__magic_dns
+        type: Boolean
+        nullable: true
+        description: Whether MagicDNS is enabled for the tailnet.
+        expr: {kind: path, path: [preferences, magicDNS]}

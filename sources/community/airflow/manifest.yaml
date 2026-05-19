@@ -1,0 +1,1108 @@
+name: airflow
+version: 0.2.0
+dsl_version: 3
+backend: http
+description: >-
+  Query DAGs, DAG runs, task instances, tasks, connections, pools, and
+  providers from Apache Airflow (self-hosted). Covers pipeline inventory,
+  execution history, task-level telemetry, infrastructure configuration, and
+  installed provider packages via the Airflow REST API v2.
+inputs:
+  AIRFLOW_BASE_URL:
+    kind: variable
+    default: http://localhost:8080
+    hint: >-
+      Base URL of your Airflow webserver. For a local Docker deployment use
+      http://localhost:8080 (or whichever port you mapped). For a remote
+      instance use its full base URL (e.g. https://airflow.example.com).
+      Do not include /api/v2 -- that path is appended automatically.
+      See https://airflow.apache.org/docs/apache-airflow/stable/installation/index.html.
+  AIRFLOW_API_TOKEN:
+    kind: secret
+    hint: >-
+      Airflow API token (JWT) for Bearer authentication. Generate one in the
+      Airflow UI under Admin > API Tokens (Airflow 3.x). The token is a
+      signed JWT -- copy the full string including header, payload, and
+      signature. Requires at least the Viewer role for read-only access.
+      See https://airflow.apache.org/docs/apache-airflow/stable/security/api.html.
+base_url: "{{input.AIRFLOW_BASE_URL}}"
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.AIRFLOW_API_TOKEN}}
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+test_queries:
+  - SELECT * FROM airflow.dags LIMIT 5
+  - SELECT * FROM airflow.pools LIMIT 5
+  - SELECT * FROM airflow.task_instances LIMIT 5
+tables:
+  - name: dags
+    description: >-
+      DAG definitions registered in Airflow -- pipeline inventory with
+      schedule, owner, pause state, and tag metadata.
+    guide: |
+      Each row is one DAG. `dag_id` is the stable identifier used in all
+      other tables. `is_paused` shows whether the DAG is currently paused.
+      `timetable_description` describes the schedule (e.g. "Every day",
+      "Never, external triggers only"). `tags` is a comma-joined list of
+      tag names. Use `dag_id` to join to `airflow.dag_runs`,
+      `airflow.tasks`, and `airflow.task_instances`.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /api/v2/dags
+      query:
+        - name: limit
+          from: literal
+          value: 100
+        - name: offset
+          from: state
+          key: offset
+    response:
+      rows_path:
+        - dags
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: dag_id
+        type: Utf8
+        nullable: false
+        description: Unique DAG identifier.
+        expr:
+          kind: path
+          path:
+            - dag_id
+      - name: dag_display_name
+        type: Utf8
+        nullable: true
+        description: Human-readable DAG display name.
+        expr:
+          kind: path
+          path:
+            - dag_display_name
+      - name: description
+        type: Utf8
+        nullable: true
+        description: DAG description from the Python file.
+        expr:
+          kind: path
+          path:
+            - description
+      - name: is_paused
+        type: Boolean
+        nullable: true
+        description: Whether the DAG is currently paused.
+        expr:
+          kind: path
+          path:
+            - is_paused
+      - name: is_stale
+        type: Boolean
+        nullable: true
+        description: Whether the DAG file has been removed or is no longer parsed.
+        expr:
+          kind: path
+          path:
+            - is_stale
+      - name: timetable_summary
+        type: Utf8
+        nullable: true
+        description: Cron expression or timetable summary string.
+        expr:
+          kind: path
+          path:
+            - timetable_summary
+      - name: timetable_description
+        type: Utf8
+        nullable: true
+        description: Human-readable schedule description.
+        expr:
+          kind: path
+          path:
+            - timetable_description
+      - name: owners
+        type: Utf8
+        nullable: true
+        description: Comma-joined list of DAG owner names.
+        expr:
+          kind: join_array
+          path:
+            - owners
+      - name: tags
+        type: Utf8
+        nullable: true
+        description: Comma-joined list of tag names applied to this DAG.
+        expr:
+          kind: join_array_path
+          path:
+            - tags
+          item_path:
+            - name
+          separator: ","
+      - name: has_import_errors
+        type: Boolean
+        nullable: true
+        description: Whether the DAG file has import errors.
+        expr:
+          kind: path
+          path:
+            - has_import_errors
+      - name: last_parsed_time
+        type: Timestamp
+        nullable: true
+        description: When the DAG file was last successfully parsed (UTC).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - last_parsed_time
+      - name: next_dagrun_run_after
+        type: Timestamp
+        nullable: true
+        description: When the next DAG run is scheduled to start (UTC).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - next_dagrun_run_after
+      - name: max_active_runs
+        type: Int64
+        nullable: true
+        description: Maximum number of active runs allowed concurrently.
+        expr:
+          kind: path
+          path:
+            - max_active_runs
+      - name: max_active_tasks
+        type: Int64
+        nullable: true
+        description: Maximum number of active tasks allowed concurrently.
+        expr:
+          kind: path
+          path:
+            - max_active_tasks
+      - name: file_location
+        type: Utf8
+        nullable: true
+        description: Absolute path to the DAG file on the Airflow server.
+        expr:
+          kind: path
+          path:
+            - fileloc
+      - name: relative_fileloc
+        type: Utf8
+        nullable: true
+        description: Relative path to the DAG file within its bundle.
+        expr:
+          kind: path
+          path:
+            - relative_fileloc
+      - name: bundle_name
+        type: Utf8
+        nullable: true
+        description: Name of the DAG bundle this file belongs to.
+        expr:
+          kind: path
+          path:
+            - bundle_name
+
+  - name: dag_runs
+    description: >-
+      DAG run execution history across all DAGs -- run state, timing,
+      trigger source, and duration.
+    guide: |
+      Each row is one execution run of a DAG. `state` is one of: success,
+      failed, running, queued. `run_type` is one of: manual, scheduled,
+      backfill, dataset_triggered. `triggered_by` shows what initiated the
+      run (e.g. "ui", "cli", "timetable"). `duration` is in seconds.
+      Filter by `dag_id` to scope to a specific pipeline. `logical_date`
+      is the data interval anchor date, not the wall-clock start time --
+      use `start_date` for actual execution start. `run_after` is the
+      earliest wall-clock time the scheduler will consider this run.
+    filters:
+      - name: dag_id
+        required: false
+      - name: state
+        required: false
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /api/v2/dags/~/dagRuns
+      query:
+        - name: dag_id
+          from: filter
+          key: dag_id
+        - name: state
+          from: filter
+          key: state
+        - name: limit
+          from: literal
+          value: 100
+        - name: offset
+          from: state
+          key: offset
+    response:
+      rows_path:
+        - dag_runs
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: dag_run_id
+        type: Utf8
+        nullable: false
+        description: Unique run identifier (e.g. manual__2026-01-01T00:00:00+00:00).
+        expr:
+          kind: path
+          path:
+            - dag_run_id
+      - name: dag_id
+        type: Utf8
+        nullable: false
+        description: DAG this run belongs to. Join to airflow.dags.dag_id.
+        expr:
+          kind: path
+          path:
+            - dag_id
+      - name: dag_display_name
+        type: Utf8
+        nullable: true
+        description: Human-readable DAG display name.
+        expr:
+          kind: path
+          path:
+            - dag_display_name
+      - name: state
+        type: Utf8
+        nullable: true
+        description: Run state -- one of success, failed, running, queued.
+        expr:
+          kind: path
+          path:
+            - state
+      - name: run_type
+        type: Utf8
+        nullable: true
+        description: How the run was created -- manual, scheduled, backfill, dataset_triggered.
+        expr:
+          kind: path
+          path:
+            - run_type
+      - name: triggered_by
+        type: Utf8
+        nullable: true
+        description: What initiated the run (e.g. ui, cli, timetable).
+        expr:
+          kind: path
+          path:
+            - triggered_by
+      - name: triggering_user_name
+        type: Utf8
+        nullable: true
+        description: Username of the person who triggered the run, if manually triggered.
+        expr:
+          kind: path
+          path:
+            - triggering_user_name
+      - name: logical_date
+        type: Timestamp
+        nullable: true
+        description: Data interval anchor date (UTC). Not the wall-clock start time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - logical_date
+      - name: run_after
+        type: Timestamp
+        nullable: true
+        description: Earliest wall-clock time the scheduler will consider this run (UTC).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - run_after
+      - name: queued_at
+        type: Timestamp
+        nullable: true
+        description: When the run was queued (UTC).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - queued_at
+      - name: start_date
+        type: Timestamp
+        nullable: true
+        description: When the run actually started executing (UTC).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - start_date
+      - name: end_date
+        type: Timestamp
+        nullable: true
+        description: When the run finished (UTC). NULL if still running.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - end_date
+      - name: last_scheduling_decision
+        type: Timestamp
+        nullable: true
+        description: When the scheduler last evaluated this run (UTC).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - last_scheduling_decision
+      - name: duration
+        type: Float64
+        nullable: true
+        description: Run duration in seconds. NULL if still running.
+        expr:
+          kind: path
+          path:
+            - duration
+      - name: data_interval_start
+        type: Timestamp
+        nullable: true
+        description: Start of the data interval this run covers (UTC).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - data_interval_start
+      - name: data_interval_end
+        type: Timestamp
+        nullable: true
+        description: End of the data interval this run covers (UTC).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - data_interval_end
+      - name: note
+        type: Utf8
+        nullable: true
+        description: Optional user note attached to this run.
+        expr:
+          kind: path
+          path:
+            - note
+
+  - name: task_instances
+    description: >-
+      Task instance execution records across all DAGs and runs -- operator,
+      state, timing, pool, queue, and retry details for every task attempt.
+    guide: |
+      Each row is one task instance -- a single execution of a task within
+      a specific DAG run. `state` is one of: success, failed, running,
+      queued, up_for_retry, skipped, deferred, removed. `try_number` starts
+      at 1. `duration` is in seconds. `map_index` is -1 for non-mapped tasks
+      and >= 0 for dynamically mapped task instances.
+      Filter by `dag_id` or `dag_run_id` to scope results. Join to
+      `airflow.dags` on `dag_id`. When joining to `airflow.dag_runs`, always
+      include both `dag_id` and `dag_run_id` -- `dag_run_id` alone is not
+      globally unique across DAGs and can produce false matches.
+    filters:
+      - name: dag_id
+        required: false
+      - name: dag_run_id
+        required: false
+      - name: state
+        required: false
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /api/v2/dags/~/dagRuns/~/taskInstances
+      query:
+        - name: dag_id
+          from: filter
+          key: dag_id
+        - name: dag_run_id
+          from: filter
+          key: dag_run_id
+        - name: state
+          from: filter
+          key: state
+        - name: limit
+          from: literal
+          value: 100
+        - name: offset
+          from: state
+          key: offset
+    response:
+      rows_path:
+        - task_instances
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: true
+        description: Unique task instance UUID (Airflow 3.x).
+        expr:
+          kind: path
+          path:
+            - id
+      - name: task_id
+        type: Utf8
+        nullable: false
+        description: Task identifier within the DAG.
+        expr:
+          kind: path
+          path:
+            - task_id
+      - name: task_display_name
+        type: Utf8
+        nullable: true
+        description: Human-readable task display name.
+        expr:
+          kind: path
+          path:
+            - task_display_name
+      - name: dag_id
+        type: Utf8
+        nullable: false
+        description: DAG this task instance belongs to. Join to airflow.dags.dag_id.
+        expr:
+          kind: path
+          path:
+            - dag_id
+      - name: dag_run_id
+        type: Utf8
+        nullable: false
+        description: Run this task instance belongs to. Join to airflow.dag_runs.dag_run_id.
+        expr:
+          kind: path
+          path:
+            - dag_run_id
+      - name: dag_display_name
+        type: Utf8
+        nullable: true
+        description: Human-readable DAG display name.
+        expr:
+          kind: path
+          path:
+            - dag_display_name
+      - name: state
+        type: Utf8
+        nullable: true
+        description: Task instance state -- success, failed, running, queued, up_for_retry, skipped, deferred, removed.
+        expr:
+          kind: path
+          path:
+            - state
+      - name: operator_name
+        type: Utf8
+        nullable: true
+        description: Airflow operator class name (e.g. PythonOperator, BashOperator).
+        expr:
+          kind: path
+          path:
+            - operator_name
+      - name: try_number
+        type: Int64
+        nullable: true
+        description: Attempt number for this task instance, starting at 1.
+        expr:
+          kind: path
+          path:
+            - try_number
+      - name: max_tries
+        type: Int64
+        nullable: true
+        description: Maximum number of attempts configured for this task.
+        expr:
+          kind: path
+          path:
+            - max_tries
+      - name: map_index
+        type: Int64
+        nullable: true
+        description: Map index for dynamically mapped tasks. -1 for non-mapped tasks.
+        expr:
+          kind: path
+          path:
+            - map_index
+      - name: logical_date
+        type: Timestamp
+        nullable: true
+        description: Data interval anchor date for this run (UTC).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - logical_date
+      - name: start_date
+        type: Timestamp
+        nullable: true
+        description: When this task instance started executing (UTC).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - start_date
+      - name: end_date
+        type: Timestamp
+        nullable: true
+        description: When this task instance finished (UTC). NULL if still running.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - end_date
+      - name: duration
+        type: Float64
+        nullable: true
+        description: Task instance duration in seconds. NULL if still running.
+        expr:
+          kind: path
+          path:
+            - duration
+      - name: pool
+        type: Utf8
+        nullable: true
+        description: Pool this task instance draws slots from.
+        expr:
+          kind: path
+          path:
+            - pool
+      - name: pool_slots
+        type: Int64
+        nullable: true
+        description: Number of pool slots this task instance occupies.
+        expr:
+          kind: path
+          path:
+            - pool_slots
+      - name: queue
+        type: Utf8
+        nullable: true
+        description: Queue this task instance was submitted to.
+        expr:
+          kind: path
+          path:
+            - queue
+      - name: priority_weight
+        type: Int64
+        nullable: true
+        description: Scheduling priority weight.
+        expr:
+          kind: path
+          path:
+            - priority_weight
+      - name: hostname
+        type: Utf8
+        nullable: true
+        description: Hostname of the worker that executed this task instance.
+        expr:
+          kind: path
+          path:
+            - hostname
+      - name: pid
+        type: Int64
+        nullable: true
+        description: Process ID of the worker process. NULL if not running.
+        expr:
+          kind: path
+          path:
+            - pid
+      - name: queued_when
+        type: Timestamp
+        nullable: true
+        description: When this task instance was queued (UTC).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - queued_when
+      - name: note
+        type: Utf8
+        nullable: true
+        description: Optional user note attached to this task instance.
+        expr:
+          kind: path
+          path:
+            - note
+
+  - name: tasks
+    description: >-
+      Task definitions for a specific DAG -- operator type, retry config,
+      queue, pool, and dependency metadata.
+    guide: |
+      Each row is one task within a DAG. `dag_id` is required -- pass it
+      in a WHERE clause (e.g. WHERE dag_id = 'my_dag'). `operator_name`
+      is the Airflow operator class (e.g. PythonOperator, BashOperator).
+      `downstream_task_ids` is a comma-joined list of task IDs that depend
+      on this task. Use `dag_id` to join back to `airflow.dags`.
+    filters:
+      - name: dag_id
+        required: true
+    request:
+      method: GET
+      path: /api/v2/dags/{{filter.dag_id}}/tasks
+      query: []
+    response:
+      rows_path:
+        - tasks
+      allow_404_empty: true
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: task_id
+        type: Utf8
+        nullable: false
+        description: Unique task identifier within the DAG.
+        expr:
+          kind: path
+          path:
+            - task_id
+      - name: task_display_name
+        type: Utf8
+        nullable: true
+        description: Human-readable task display name.
+        expr:
+          kind: path
+          path:
+            - task_display_name
+      - name: dag_id
+        type: Utf8
+        nullable: true
+        description: DAG this task belongs to. Echoes the dag_id filter.
+        expr:
+          kind: from_filter
+          key: dag_id
+      - name: operator_name
+        type: Utf8
+        nullable: true
+        description: Airflow operator class name (e.g. PythonOperator, BashOperator).
+        expr:
+          kind: path
+          path:
+            - operator_name
+      - name: owner
+        type: Utf8
+        nullable: true
+        description: Task owner.
+        expr:
+          kind: path
+          path:
+            - owner
+      - name: trigger_rule
+        type: Utf8
+        nullable: true
+        description: Trigger rule (e.g. all_success, one_failed, all_done).
+        expr:
+          kind: path
+          path:
+            - trigger_rule
+      - name: retries
+        type: Int64
+        nullable: true
+        description: Number of retries configured for this task.
+        expr:
+          kind: path
+          path:
+            - retries
+      - name: pool
+        type: Utf8
+        nullable: true
+        description: Pool this task draws slots from.
+        expr:
+          kind: path
+          path:
+            - pool
+      - name: pool_slots
+        type: Int64
+        nullable: true
+        description: Number of pool slots this task occupies when running.
+        expr:
+          kind: path
+          path:
+            - pool_slots
+      - name: queue
+        type: Utf8
+        nullable: true
+        description: Queue this task is submitted to.
+        expr:
+          kind: path
+          path:
+            - queue
+      - name: priority_weight
+        type: Int64
+        nullable: true
+        description: Task priority weight for scheduling.
+        expr:
+          kind: path
+          path:
+            - priority_weight
+      - name: depends_on_past
+        type: Boolean
+        nullable: true
+        description: Whether this task requires the previous run's instance to succeed.
+        expr:
+          kind: path
+          path:
+            - depends_on_past
+      - name: is_mapped
+        type: Boolean
+        nullable: true
+        description: Whether this is a dynamically mapped task.
+        expr:
+          kind: path
+          path:
+            - is_mapped
+      - name: downstream_task_ids
+        type: Utf8
+        nullable: true
+        description: Comma-joined list of downstream task IDs that depend on this task.
+        expr:
+          kind: join_array
+          path:
+            - downstream_task_ids
+      - name: start_date
+        type: Timestamp
+        nullable: true
+        description: Earliest date this task can be scheduled (UTC).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - start_date
+
+  - name: connections
+    description: >-
+      Airflow connections -- external system credentials and endpoints
+      configured in the Airflow metadata database.
+    guide: |
+      Each row is one connection. `conn_type` is the connection type
+      (e.g. postgres, http, aws, gcp). `host`, `schema`, and `port` are
+      the connection target. Passwords are never returned by the Airflow
+      API and are not exposed as a column. Use connections to audit what
+      external systems Airflow is configured to reach.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /api/v2/connections
+      query:
+        - name: limit
+          from: literal
+          value: 100
+        - name: offset
+          from: state
+          key: offset
+    response:
+      rows_path:
+        - connections
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: connection_id
+        type: Utf8
+        nullable: false
+        description: Unique connection identifier (conn_id).
+        expr:
+          kind: path
+          path:
+            - connection_id
+      - name: conn_type
+        type: Utf8
+        nullable: true
+        description: Connection type (e.g. postgres, http, aws, gcp, s3).
+        expr:
+          kind: path
+          path:
+            - conn_type
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Connection description.
+        expr:
+          kind: path
+          path:
+            - description
+      - name: host
+        type: Utf8
+        nullable: true
+        description: Connection host or endpoint.
+        expr:
+          kind: path
+          path:
+            - host
+      - name: schema
+        type: Utf8
+        nullable: true
+        description: Database schema or bucket name.
+        expr:
+          kind: path
+          path:
+            - schema
+      - name: port
+        type: Int64
+        nullable: true
+        description: Connection port number.
+        expr:
+          kind: path
+          path:
+            - port
+      - name: login
+        type: Utf8
+        nullable: true
+        description: Login username for the connection.
+        expr:
+          kind: path
+          path:
+            - login
+
+  - name: pools
+    description: >-
+      Airflow worker pools -- slot capacity and current usage for
+      concurrency management.
+    guide: |
+      Each row is one pool. `slots` is the total capacity. `open_slots`
+      is currently available. `running_slots`, `queued_slots`, and
+      `scheduled_slots` show current utilization. Use pools to audit
+      concurrency limits and identify bottlenecks.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /api/v2/pools
+      query:
+        - name: limit
+          from: literal
+          value: 100
+        - name: offset
+          from: state
+          key: offset
+    response:
+      rows_path:
+        - pools
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Pool name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: slots
+        type: Int64
+        nullable: true
+        description: Total slot capacity of the pool.
+        expr:
+          kind: path
+          path:
+            - slots
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Pool description.
+        expr:
+          kind: path
+          path:
+            - description
+      - name: occupied_slots
+        type: Int64
+        nullable: true
+        description: Total slots currently in use (running + queued + scheduled + deferred).
+        expr:
+          kind: path
+          path:
+            - occupied_slots
+      - name: running_slots
+        type: Int64
+        nullable: true
+        description: Slots occupied by currently running tasks.
+        expr:
+          kind: path
+          path:
+            - running_slots
+      - name: queued_slots
+        type: Int64
+        nullable: true
+        description: Slots reserved by queued tasks.
+        expr:
+          kind: path
+          path:
+            - queued_slots
+      - name: scheduled_slots
+        type: Int64
+        nullable: true
+        description: Slots reserved by scheduled tasks.
+        expr:
+          kind: path
+          path:
+            - scheduled_slots
+      - name: open_slots
+        type: Int64
+        nullable: true
+        description: Slots currently available for new tasks.
+        expr:
+          kind: path
+          path:
+            - open_slots
+      - name: deferred_slots
+        type: Int64
+        nullable: true
+        description: Slots occupied by deferred tasks.
+        expr:
+          kind: path
+          path:
+            - deferred_slots
+      - name: include_deferred
+        type: Boolean
+        nullable: true
+        description: Whether deferred tasks count against this pool's capacity.
+        expr:
+          kind: path
+          path:
+            - include_deferred
+
+  - name: providers
+    description: >-
+      Installed Airflow provider packages -- package name, version, and
+      documentation URL for each provider installed in this Airflow environment.
+    guide: |
+      Each row is one installed provider package. `package_name` is the
+      PyPI package name (e.g. apache-airflow-providers-amazon). `version`
+      is the installed version. Use this table to audit which integrations
+      are available and their versions.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /api/v2/providers
+      query:
+        - name: limit
+          from: literal
+          value: 100
+        - name: offset
+          from: state
+          key: offset
+    response:
+      rows_path:
+        - providers
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: package_name
+        type: Utf8
+        nullable: false
+        description: PyPI package name (e.g. apache-airflow-providers-amazon).
+        expr:
+          kind: path
+          path:
+            - package_name
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Provider description.
+        expr:
+          kind: path
+          path:
+            - description
+      - name: version
+        type: Utf8
+        nullable: true
+        description: Installed provider version.
+        expr:
+          kind: path
+          path:
+            - version
+      - name: documentation_url
+        type: Utf8
+        nullable: true
+        description: URL to the provider's official documentation.
+        expr:
+          kind: path
+          path:
+            - documentation_url

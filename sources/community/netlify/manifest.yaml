@@ -1,0 +1,824 @@
+name: netlify
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query sites, deploys, forms, submissions, env vars, DNS zones, and accounts
+  from Netlify.
+inputs:
+  NETLIFY_ACCESS_TOKEN:
+    kind: secret
+    hint: |
+      Generate a personal access token from app.netlify.com/user/applications
+      under Personal access tokens. Grant it access to the teams you want
+      to query.
+      See [Netlify API auth docs](https://docs.netlify.com/api/get-started/#authentication).
+base_url: https://api.netlify.com/api/v1
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.NETLIFY_ACCESS_TOKEN}}
+test_queries:
+  - SELECT * FROM netlify.sites LIMIT 1
+tables:
+  - name: sites
+    description: Netlify sites in your account
+    guide: |
+      Start here to inventory sites. Use `id` values from here in
+      `deploys` and `forms` queries.
+    request:
+      method: GET
+      path: /sites
+    response: {}
+    pagination:
+      mode: link_header
+      page_size:
+        default: 100
+        max: 100
+        query_param: per_page
+      link_header_require_results: false
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Site ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Site subdomain name (e.g. "mysite" for mysite.netlify.app)
+        expr:
+          kind: path
+          path:
+            - name
+      - name: custom_domain
+        type: Utf8
+        nullable: true
+        description: Custom domain configured for the site
+        expr:
+          kind: path
+          path:
+            - custom_domain
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Primary URL of the site
+        expr:
+          kind: path
+          path:
+            - url
+      - name: ssl_url
+        type: Utf8
+        nullable: true
+        description: HTTPS URL of the site
+        expr:
+          kind: path
+          path:
+            - ssl_url
+      - name: admin_url
+        type: Utf8
+        nullable: true
+        description: Netlify admin URL for the site
+        expr:
+          kind: path
+          path:
+            - admin_url
+      - name: deploy_url
+        type: Utf8
+        nullable: true
+        description: URL of the currently published deploy
+        expr:
+          kind: path
+          path:
+            - deploy_url
+      - name: state
+        type: Utf8
+        nullable: true
+        description: Site state (e.g. "current")
+        expr:
+          kind: path
+          path:
+            - state
+      - name: plan
+        type: Utf8
+        nullable: true
+        description: Billing plan the site is on
+        expr:
+          kind: path
+          path:
+            - plan
+      - name: account_id
+        type: Utf8
+        nullable: true
+        description: ID of the team account that owns the site
+        expr:
+          kind: path
+          path:
+            - account_id
+      - name: account_name
+        type: Utf8
+        nullable: true
+        description: Name of the team account that owns the site
+        expr:
+          kind: path
+          path:
+            - account_name
+      - name: account_slug
+        type: Utf8
+        nullable: true
+        description: Slug of the team account that owns the site
+        expr:
+          kind: path
+          path:
+            - account_slug
+      - name: git_provider
+        type: Utf8
+        nullable: true
+        description: Git provider linked to the site (e.g. "github")
+        expr:
+          kind: path
+          path:
+            - git_provider
+      - name: user_id
+        type: Utf8
+        nullable: true
+        description: ID of the user who created the site
+        expr:
+          kind: path
+          path:
+            - user_id
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: ISO 8601 timestamp of when the site was created
+        expr:
+          kind: path
+          path:
+            - created_at
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: ISO 8601 timestamp of when the site was last updated
+        expr:
+          kind: path
+          path:
+            - updated_at
+
+  - name: deploys
+    description: Deploy history for a specific Netlify site
+    guide: |
+      Use this table to query the deploy history for a site. Requires
+      `site_id`, available from `netlify.sites`. Optionally filter by
+      `branch` or `state` to narrow results.
+    filters:
+      - name: site_id
+        required: true
+      - name: branch
+        required: false
+      - name: state
+        required: false
+    request:
+      method: GET
+      path: /sites/{{filter.site_id}}/deploys
+      query:
+        - name: branch
+          from: filter
+          key: branch
+        - name: state
+          from: filter
+          key: state
+    response: {}
+    pagination:
+      mode: link_header
+      page_size:
+        default: 100
+        max: 100
+        query_param: per_page
+      link_header_require_results: false
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Deploy ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: site_id
+        type: Utf8
+        nullable: true
+        description: Site ID this deploy belongs to
+        expr:
+          kind: path
+          path:
+            - site_id
+      - name: build_id
+        type: Utf8
+        nullable: true
+        description: Build ID associated with this deploy
+        expr:
+          kind: path
+          path:
+            - build_id
+      - name: user_id
+        type: Utf8
+        nullable: true
+        description: ID of the user who triggered the deploy
+        expr:
+          kind: path
+          path:
+            - user_id
+      - name: state
+        type: Utf8
+        nullable: true
+        description: Deploy state (e.g. "ready", "building", "error")
+        expr:
+          kind: path
+          path:
+            - state
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Site name at the time of deploy
+        expr:
+          kind: path
+          path:
+            - name
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Primary URL for this deploy
+        expr:
+          kind: path
+          path:
+            - url
+      - name: deploy_url
+        type: Utf8
+        nullable: true
+        description: Unique preview URL for this deploy
+        expr:
+          kind: path
+          path:
+            - deploy_url
+      - name: deploy_ssl_url
+        type: Utf8
+        nullable: true
+        description: HTTPS preview URL for this deploy
+        expr:
+          kind: path
+          path:
+            - deploy_ssl_url
+      - name: branch
+        type: Utf8
+        nullable: true
+        description: Git branch that triggered this deploy
+        expr:
+          kind: path
+          path:
+            - branch
+      - name: commit_ref
+        type: Utf8
+        nullable: true
+        description: Git commit SHA that triggered this deploy
+        expr:
+          kind: path
+          path:
+            - commit_ref
+      - name: commit_url
+        type: Utf8
+        nullable: true
+        description: URL to the commit in the git provider
+        expr:
+          kind: path
+          path:
+            - commit_url
+      - name: context
+        type: Utf8
+        nullable: true
+        description: Deploy context (e.g. "production", "deploy-preview", "branch-deploy")
+        expr:
+          kind: path
+          path:
+            - context
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Deploy title, typically the commit message
+        expr:
+          kind: path
+          path:
+            - title
+      - name: error_message
+        type: Utf8
+        nullable: true
+        description: Error message if the deploy failed
+        expr:
+          kind: path
+          path:
+            - error_message
+      - name: framework
+        type: Utf8
+        nullable: true
+        description: Framework detected for this deploy (e.g. "next")
+        expr:
+          kind: path
+          path:
+            - framework
+      - name: draft
+        type: Boolean
+        nullable: true
+        description: Whether this is a draft deploy
+        expr:
+          kind: path
+          path:
+            - draft
+      - name: locked
+        type: Boolean
+        nullable: true
+        description: Whether this deploy is locked as the published version
+        expr:
+          kind: path
+          path:
+            - locked
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: ISO 8601 timestamp of when the deploy was created
+        expr:
+          kind: path
+          path:
+            - created_at
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: ISO 8601 timestamp of when the deploy was last updated
+        expr:
+          kind: path
+          path:
+            - updated_at
+      - name: published_at
+        type: Utf8
+        nullable: true
+        description: ISO 8601 timestamp of when the deploy was published
+        expr:
+          kind: path
+          path:
+            - published_at
+
+  - name: forms
+    description: Forms for a specific Netlify site
+    guide: |
+      Use this table to inspect form definitions and submission counts
+      for a site. Requires `site_id`, available from `netlify.sites`.
+    filters:
+      - name: site_id
+        required: true
+    request:
+      method: GET
+      path: /sites/{{filter.site_id}}/forms
+    response: {}
+    pagination:
+      mode: link_header
+      page_size:
+        default: 100
+        max: 100
+        query_param: per_page
+      link_header_require_results: false
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Form ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: site_id
+        type: Utf8
+        nullable: true
+        description: Site ID this form belongs to
+        expr:
+          kind: path
+          path:
+            - site_id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Form name as defined in the HTML
+        expr:
+          kind: path
+          path:
+            - name
+      - name: submission_count
+        type: Int64
+        nullable: true
+        description: Total number of verified form submissions
+        expr:
+          kind: path
+          path:
+            - submission_count
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: ISO 8601 timestamp of when the form was first detected
+        expr:
+          kind: path
+          path:
+            - created_at
+
+  - name: dns_zones
+    description: DNS zones managed by Netlify
+    guide: |
+      Use this table to inventory DNS zones. Optionally filter by
+      `account_slug` to scope to a specific team.
+    filters:
+      - name: account_slug
+        required: false
+    request:
+      method: GET
+      path: /dns_zones
+      query:
+        - name: account_slug
+          from: filter
+          key: account_slug
+    response: {}
+    pagination:
+      mode: link_header
+      link_header_require_results: false
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: DNS zone ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Zone name (the domain, e.g. "example.com")
+        expr:
+          kind: path
+          path:
+            - name
+      - name: domain
+        type: Utf8
+        nullable: true
+        description: Domain associated with this zone
+        expr:
+          kind: path
+          path:
+            - domain
+      - name: site_id
+        type: Utf8
+        nullable: true
+        description: Site ID this zone is associated with, if any
+        expr:
+          kind: path
+          path:
+            - site_id
+      - name: account_id
+        type: Utf8
+        nullable: true
+        description: ID of the team account that owns the zone
+        expr:
+          kind: path
+          path:
+            - account_id
+      - name: account_name
+        type: Utf8
+        nullable: true
+        description: Name of the team account that owns the zone
+        expr:
+          kind: path
+          path:
+            - account_name
+      - name: account_slug
+        type: Utf8
+        nullable: true
+        description: Slug of the team account that owns the zone
+        expr:
+          kind: path
+          path:
+            - account_slug
+      - name: user_id
+        type: Utf8
+        nullable: true
+        description: ID of the user who owns the zone
+        expr:
+          kind: path
+          path:
+            - user_id
+      - name: dedicated
+        type: Boolean
+        nullable: true
+        description: Whether this is a dedicated (non-shared) DNS zone
+        expr:
+          kind: path
+          path:
+            - dedicated
+      - name: ipv6_enabled
+        type: Boolean
+        nullable: true
+        description: Whether IPv6 is enabled for this zone
+        expr:
+          kind: path
+          path:
+            - ipv6_enabled
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: ISO 8601 timestamp of when the zone was created
+        expr:
+          kind: path
+          path:
+            - created_at
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: ISO 8601 timestamp of when the zone was last updated
+        expr:
+          kind: path
+          path:
+            - updated_at
+
+  - name: env_vars
+    description: Environment variables for a specific Netlify site
+    guide: |
+      Use this table to audit environment variables configured for a site.
+      Requires `site_id`, available from `netlify.sites`. Optionally filter
+      by `context_name` (e.g. "production", "deploy-preview") or `scope`
+      (e.g. "builds", "functions") to narrow results.
+    filters:
+      - name: site_id
+        required: true
+      - name: context_name
+        required: false
+      - name: scope
+        required: false
+    request:
+      method: GET
+      path: /sites/{{filter.site_id}}/env
+      query:
+        - name: context_name
+          from: filter
+          key: context_name
+        - name: scope
+          from: filter
+          key: scope
+    response: {}
+    pagination:
+      mode: link_header
+      page_size:
+        default: 100
+        max: 100
+        query_param: per_page
+      link_header_require_results: false
+    columns:
+      - name: site_id
+        type: Utf8
+        nullable: false
+        description: Site ID this environment variable belongs to
+        virtual: true
+        expr:
+          kind: from_filter
+          key: site_id
+      - name: key
+        type: Utf8
+        nullable: false
+        description: Environment variable key name
+        expr:
+          kind: path
+          path:
+            - key
+      - name: is_secret
+        type: Boolean
+        nullable: true
+        description: Whether the variable is marked as a secret
+        expr:
+          kind: path
+          path:
+            - is_secret
+      - name: scopes
+        type: Utf8
+        nullable: true
+        description: JSON-encoded list of scopes (e.g. ["builds","functions"])
+        expr:
+          kind: path
+          path:
+            - scopes
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: ISO 8601 timestamp of when the variable was last updated
+        expr:
+          kind: path
+          path:
+            - updated_at
+
+  - name: submissions
+    description: Form submissions for a specific Netlify site
+    guide: |
+      Use this table to query raw form submission data for a site. Requires
+      `site_id`, available from `netlify.sites`. Each row is one submission.
+      Cross-reference `netlify.forms` to get submission counts by form.
+    filters:
+      - name: site_id
+        required: true
+    request:
+      method: GET
+      path: /sites/{{filter.site_id}}/submissions
+    response: {}
+    pagination:
+      mode: link_header
+      page_size:
+        default: 100
+        max: 100
+        query_param: per_page
+      link_header_require_results: false
+    columns:
+      - name: site_id
+        type: Utf8
+        nullable: false
+        description: Site ID this submission belongs to
+        virtual: true
+        expr:
+          kind: from_filter
+          key: site_id
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Submission ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: number
+        type: Int64
+        nullable: true
+        description: Sequential submission number within the form
+        expr:
+          kind: path
+          path:
+            - number
+      - name: email
+        type: Utf8
+        nullable: true
+        description: Email address provided in the submission
+        expr:
+          kind: path
+          path:
+            - email
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Full name provided in the submission
+        expr:
+          kind: path
+          path:
+            - name
+      - name: first_name
+        type: Utf8
+        nullable: true
+        description: First name provided in the submission
+        expr:
+          kind: path
+          path:
+            - first_name
+      - name: last_name
+        type: Utf8
+        nullable: true
+        description: Last name provided in the submission
+        expr:
+          kind: path
+          path:
+            - last_name
+      - name: company
+        type: Utf8
+        nullable: true
+        description: Company name provided in the submission
+        expr:
+          kind: path
+          path:
+            - company
+      - name: summary
+        type: Utf8
+        nullable: true
+        description: Short summary of the submission body
+        expr:
+          kind: path
+          path:
+            - summary
+      - name: body
+        type: Utf8
+        nullable: true
+        description: Full submission body text
+        expr:
+          kind: path
+          path:
+            - body
+      - name: site_url
+        type: Utf8
+        nullable: true
+        description: URL of the site page where the form was submitted
+        expr:
+          kind: path
+          path:
+            - site_url
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: ISO 8601 timestamp of when the submission was received
+        expr:
+          kind: path
+          path:
+            - created_at
+
+  - name: accounts
+    description: Netlify team accounts accessible to the authenticated user
+    guide: |
+      Use this table to discover team accounts and their slugs. The
+      `slug` value can be used in `dns_zones` queries via the
+      `account_slug` filter.
+    request:
+      method: GET
+      path: /accounts
+    response: {}
+    pagination:
+      mode: link_header
+      page_size:
+        default: 100
+        max: 100
+        query_param: per_page
+      link_header_require_results: false
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Account ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Display name of the team account
+        expr:
+          kind: path
+          path:
+            - name
+      - name: slug
+        type: Utf8
+        nullable: true
+        description: URL slug for the team account
+        expr:
+          kind: path
+          path:
+            - slug
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Account type (e.g. "team")
+        expr:
+          kind: path
+          path:
+            - type
+      - name: type_name
+        type: Utf8
+        nullable: true
+        description: Human-readable account type name (e.g. "Starter")
+        expr:
+          kind: path
+          path:
+            - type_name
+      - name: billing_period
+        type: Utf8
+        nullable: true
+        description: Billing period (e.g. "monthly", "yearly")
+        expr:
+          kind: path
+          path:
+            - billing_period
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: ISO 8601 timestamp of when the account was created
+        expr:
+          kind: path
+          path:
+            - created_at
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: ISO 8601 timestamp of when the account was last updated
+        expr:
+          kind: path
+          path:
+            - updated_at

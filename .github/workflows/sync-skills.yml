@@ -1,0 +1,72 @@
+name: Sync skills distribution
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/sync-skills.yml"
+      - "plugins/coral/skills/**"
+      - "xtask/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-skills-distribution
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Publish skills distribution
+    runs-on: ubuntu-latest
+    environment: skills-sync
+    steps:
+      - name: Check out Coral
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        run: rustup show
+
+      - name: Check out skills distribution
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          repository: withcoral/skills
+          ref: main
+          path: skills-dist
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Export skills
+        run: |
+          set -euo pipefail
+          cargo run --locked -p xtask -- export-skills --dest skills-dist
+
+      - name: Create GitHub App token
+        id: github-app-token
+        uses: actions/create-github-app-token@f8d387b68d61c58ab83c6c016672934102569859 # v3.0.0
+        with:
+          app-id: ${{ vars.SKILLS_SYNC_APP_ID }}
+          private-key: ${{ secrets.SKILLS_SYNC_APP_PRIVATE_KEY }}
+          permission-contents: write
+          repositories: |
+            skills
+
+      - name: Commit and publish changes
+        run: |
+          set -euo pipefail
+          cd skills-dist
+          if [ -z "$(git status --short)" ]; then
+            echo "Skills distribution already up to date."
+            exit 0
+          fi
+
+          git config user.name "coral-skills-sync[bot]"
+          git config user.email "coral-skills-sync[bot]@users.noreply.github.com"
+          git add -A
+          git commit \
+            -m "chore: sync skills from coral" \
+            -m "Source: withcoral/coral@${GITHUB_SHA}"
+          git push "https://x-access-token:${{ steps.github-app-token.outputs.token }}@github.com/withcoral/skills.git" HEAD:main
