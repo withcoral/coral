@@ -60,7 +60,7 @@ test('lists 10 traces, searches one, opens its details, and opens a span inspect
   await expect(longSpanButton).toBeFocused()
   await expect(longSpanButton).toHaveCSS('outline-style', 'solid')
   await expect(longSpanButton).toHaveCSS('outline-offset', '-1px')
-  await page.screenshot({ path: 'ui/test-results/AOL-2-review.png', fullPage: true })
+  await page.screenshot({ path: 'test-results/AOL-2-review.png', fullPage: true })
   await review.pause()
 
   await review.chapter('Open a span inspector', 'Expand one HTTP span and inspect the captured response body')
