@@ -208,8 +208,8 @@ function WaterfallSpanLabel({
       <span className={s.waterfallPluginPill}>
         <span className={s.waterfallPluginDot} data-tone={tone} />
         <span className={s.waterfallLabelText}>
-          <Typography.BodySmallStrong as="span" truncate>{label}</Typography.BodySmallStrong>
-          {meta && <Typography.BodySmall as="span" variant="tertiary" truncate>{meta}</Typography.BodySmall>}
+          <Typography.BodySmallStrong as="span">{label}</Typography.BodySmallStrong>
+          {meta && <Typography.BodySmall as="span" variant="tertiary">{meta}</Typography.BodySmall>}
         </span>
       </span>
     </div>

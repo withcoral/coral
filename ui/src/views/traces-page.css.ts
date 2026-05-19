@@ -6,7 +6,7 @@ import { theme } from '@/wax/theme/theme.css'
 
 const spin = keyframes({ to: { transform: 'rotate(360deg)' } })
 const codeFontFamily = '"Gustan Mono", "Roboto Mono", "SFMono-Regular", "SF Mono", Consolas, "Liberation Mono", Menlo, monospace'
-const waterfallGridColumns = 'minmax(280px, 0.38fr) minmax(0, 1fr)'
+const waterfallGridColumns = 'minmax(340px, 0.42fr) minmax(0, 1fr)'
 const waterfallFocusRing = {
   '&:focus, &:focus-visible': {
     backgroundColor: theme.surface.onMainContentSubtle,
@@ -254,7 +254,7 @@ export const waterfallRowButton = style({
 })
 export const waterfallRowHover = style({ backgroundColor: theme.surface.onMainContentSubtle })
 export const waterfallSpanLabel = style({
-  alignItems: 'center',
+  alignItems: 'flex-start',
   alignSelf: 'stretch',
   flex: '1 1 auto',
   display: 'flex',
@@ -283,7 +283,14 @@ export const waterfallTreeToggle = style({
   marginInlineEnd: 3,
   padding: 0,
   paddingInlineEnd: 2,
-  selectors: { '&:hover': { backgroundColor: theme.button.bare.hover, color: theme.content.primary } },
+  outline: 'none',
+  selectors: {
+    '&:hover, &:focus-visible': {
+      backgroundColor: theme.button.bare.hover,
+      boxShadow: `inset 0 0 0 1px ${theme.pill.blue.color}`,
+      color: theme.content.primary,
+    },
+  },
 })
 export const waterfallTreeTogglePlaceholder = style({ flexShrink: 0, marginInlineEnd: 3, width: 38 })
 export const waterfallChildCountChip = style({
@@ -308,7 +315,13 @@ export const waterfallPluginDot = style({ borderRadius: '50%', flexShrink: 0, he
   '&[data-tone="span"]': { backgroundColor: theme.pill.green.color },
   '&[data-tone="error"]': { backgroundColor: theme.pill.red.color },
 }})
-export const waterfallLabelText = style({ display: 'flex', flexDirection: 'column', minWidth: 0, overflowWrap: 'anywhere' })
+export const waterfallLabelText = style({
+  display: 'flex',
+  flexDirection: 'column',
+  minWidth: 0,
+  overflowWrap: 'anywhere',
+  whiteSpace: 'normal',
+})
 export const waterfallBarSlot = style({
   alignItems: 'center',
   borderRadius: 8,
