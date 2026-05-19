@@ -44,6 +44,22 @@ test('lists 10 traces, searches one, opens its details, and opens a span inspect
   await expect(page.getByRole('treeitem')).toHaveCount(10)
   await review.pause()
 
+  await review.chapter('Wrap a long span label', 'Open the long Linear span and verify the focus treatment stays contained')
+  const longSpanLabel = 'POST linear.issues_with_an_exceptionally_long_label_that_should_wrap_across_multiple_lines'
+  const longSpanRow = page.getByRole('treeitem').filter({ hasText: longSpanLabel })
+  const longSpanButton = longSpanRow.getByRole('button')
+
+  await expect(longSpanRow).toBeVisible()
+  const rowBox = await longSpanRow.boundingBox()
+  expect(rowBox?.height ?? 0).toBeGreaterThan(38)
+
+  await longSpanButton.focus()
+  await expect(longSpanButton).toBeFocused()
+  await expect(longSpanButton).toHaveCSS('outline-style', 'none')
+  const boxShadow = await longSpanButton.evaluate((element) => getComputedStyle(element).boxShadow)
+  expect(boxShadow).toContain('inset')
+  await review.pause()
+
   await review.chapter('Open a span inspector', 'Expand one HTTP span and inspect the captured response body')
   await page.getByRole('button', { name: /GET github\.pull_requests/ }).click()
 

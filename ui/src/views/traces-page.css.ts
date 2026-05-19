@@ -169,7 +169,7 @@ export const waterfallTimelinePane = style({
 export const waterfallTickRow = style({
   display: 'grid',
   flexShrink: 0,
-  gridTemplateColumns: '220px minmax(0, 1fr)',
+  gridTemplateColumns: 'minmax(280px, 0.38fr) minmax(0, 1fr)',
 })
 export const waterfallLabel = style({ borderBlockEnd: `1px solid ${theme.stroke.primary}`, height: 24, minWidth: 0, paddingBlockEnd: 4 })
 export const waterfallTimeline = style({ borderBlockEnd: `1px solid ${theme.stroke.primary}`, height: 24, minWidth: 0, overflow: 'hidden', paddingBlockEnd: 4, position: 'relative' })
@@ -214,7 +214,7 @@ export const waterfallRowsViewport = style({
 export const waterfallRowsGrid = style({
   alignItems: 'start',
   display: 'grid',
-  gridTemplateColumns: '220px minmax(0, 1fr)',
+  gridTemplateColumns: 'minmax(280px, 0.38fr) minmax(0, 1fr)',
   minWidth: 0,
 })
 export const waterfallLabelsColumn = style({ display: 'flex', flexDirection: 'column', gap: 10, minWidth: 0 })
@@ -231,7 +231,7 @@ export const waterfallRowButton = style({
   alignItems: 'center',
   background: 'none',
   border: 'none',
-  borderRadius: 4,
+  borderRadius: 8,
   color: theme.content.primary,
   display: 'flex',
   minHeight: 38,
@@ -241,12 +241,18 @@ export const waterfallRowButton = style({
   width: '100%',
   selectors: {
     '&[role="button"]': { cursor: 'pointer' },
+    '&:focus, &:focus-visible': {
+      backgroundColor: theme.surface.onMainContentSubtle,
+      boxShadow: `inset 0 0 0 1px ${theme.pill.blue.color}`,
+      outline: 'none',
+    },
   },
 })
 export const waterfallRowHover = style({ backgroundColor: theme.surface.onMainContentSubtle })
 export const waterfallSpanLabel = style({
   alignItems: 'center',
   alignSelf: 'stretch',
+  flex: '1 1 auto',
   display: 'flex',
   justifyContent: 'flex-start',
   minHeight: 38,
@@ -291,23 +297,28 @@ export const waterfallChildCountChip = style({
   minWidth: 16,
   paddingInline: 4,
 })
-export const waterfallPluginPill = style({ alignItems: 'center', display: 'inline-flex', gap: 6, maxWidth: '100%', minWidth: 0, overflow: 'hidden', whiteSpace: 'nowrap' })
+export const waterfallPluginPill = style({ alignItems: 'flex-start', display: 'inline-flex', gap: 6, maxWidth: '100%', minWidth: 0, overflow: 'hidden', whiteSpace: 'normal' })
 export const waterfallPluginDot = style({ borderRadius: '50%', flexShrink: 0, height: 8, width: 8, selectors: {
   '&[data-tone="query"]': { backgroundColor: theme.pill.purple.color },
   '&[data-tone="http"]': { backgroundColor: theme.pill.blue.color },
   '&[data-tone="span"]': { backgroundColor: theme.pill.green.color },
   '&[data-tone="error"]': { backgroundColor: theme.pill.red.color },
 }})
-export const waterfallLabelText = style({ display: 'flex', flexDirection: 'column', minWidth: 0 })
+export const waterfallLabelText = style({ display: 'flex', flexDirection: 'column', minWidth: 0, overflowWrap: 'anywhere' })
 export const waterfallBarSlot = style({
   alignItems: 'center',
-  borderRadius: 4,
+  borderRadius: 8,
   display: 'flex',
   flexShrink: 0,
   minHeight: 38,
   minWidth: 0,
   selectors: {
     '&[role="button"]': { cursor: 'pointer' },
+    '&:focus, &:focus-visible': {
+      backgroundColor: theme.surface.onMainContentSubtle,
+      boxShadow: `inset 0 0 0 1px ${theme.pill.blue.color}`,
+      outline: 'none',
+    },
   },
 })
 export const waterfallBarSlotActive = style({

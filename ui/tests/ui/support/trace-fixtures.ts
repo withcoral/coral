@@ -103,7 +103,7 @@ const selectedTraceIndex = 6
 const detailSpans: SpanFixture[] = [
   {
     source: 'linear',
-    table: 'issues',
+    table: 'issues_with_an_exceptionally_long_label_that_should_wrap_across_multiple_lines',
     method: 'POST',
     path: '/graphql',
     durationMs: 84,
