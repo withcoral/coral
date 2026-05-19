@@ -98,10 +98,49 @@ jobs:
           else
             cargo build --locked --release --target "$TARGET" --features embedded-ui
           fi
-      - name: Smoke test embedded UI command
+      - name: Smoke test embedded UI command and server
         env:
           TARGET: ${{ matrix.target }}
-        run: target/${TARGET}/release/coral ui --help >/dev/null
+        run: |
+          set -euo pipefail
+          binary="target/${TARGET}/release/coral"
+          log="$(mktemp)"
+
+          "$binary" ui --help >/dev/null
+
+          "$binary" ui --no-open --port 0 >"$log" 2>&1 &
+          ui_pid=$!
+          cleanup() {
+            kill "$ui_pid" >/dev/null 2>&1 || true
+            wait "$ui_pid" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          endpoint=""
+          for _ in $(seq 1 60); do
+            if ! kill -0 "$ui_pid" >/dev/null 2>&1; then
+              cat "$log" >&2
+              exit 1
+            fi
+
+            endpoint="$(sed -n 's/^Coral UI listening on \(http:\/\/[^ ]*\)$/\1/p' "$log" | tail -n1)"
+            if [ -n "$endpoint" ]; then
+              break
+            fi
+
+            sleep 1
+          done
+
+          test -n "$endpoint"
+          root_headers="$(mktemp)"
+          asset_headers="$(mktemp)"
+          curl --fail --silent --show-error --dump-header "$root_headers" --output /dev/null "$endpoint/"
+          grep -qi '^content-type: text/html' "$root_headers"
+
+          asset_path="$(find ui/dist/assets -type f -print -quit | sed 's#^ui/dist/##')"
+          test -n "$asset_path"
+          curl --fail --silent --show-error --dump-header "$asset_headers" --output /dev/null "$endpoint/$asset_path"
+          rm -f "$root_headers" "$asset_headers"
       - name: Package
         env:
           TARGET: ${{ matrix.target }}
