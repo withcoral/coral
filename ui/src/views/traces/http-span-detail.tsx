@@ -98,6 +98,7 @@ interface GraphqlBodyPreview {
 interface BodyPreview {
   formattedText: string
   graphql?: GraphqlBodyPreview
+  rawText: string
 }
 
 function inferGraphqlOperationType(query: string | undefined): string | undefined {
@@ -106,16 +107,7 @@ function inferGraphqlOperationType(query: string | undefined): string | undefine
   return match?.[1]?.toLowerCase() ?? 'query'
 }
 
-function urlPathname(url: string): string {
-  if (!url) return ''
-  try {
-    return new URL(url, 'http://coral.local').pathname
-  } catch {
-    return ''
-  }
-}
-
-function detectGraphqlBody(bodyKind: BodyKind, value: JsonValue, pathname: string): GraphqlBodyPreview | undefined {
+function detectGraphqlBody(bodyKind: BodyKind, value: JsonValue): GraphqlBodyPreview | undefined {
   if (!isPlainObject(value)) return undefined
 
   const query = typeof value.query === 'string' ? value.query : undefined
@@ -126,7 +118,6 @@ function detectGraphqlBody(bodyKind: BodyKind, value: JsonValue, pathname: strin
   const hasRequestShape = Boolean(query || operationName || variables !== undefined)
   const hasResponseShape = Boolean(data !== undefined || errors !== undefined)
 
-  if (pathname !== '/graphql') return undefined
   if (bodyKind === 'request' && !hasRequestShape) return undefined
   if (bodyKind === 'response' && !hasResponseShape) return undefined
 
@@ -141,7 +132,7 @@ function detectGraphqlBody(bodyKind: BodyKind, value: JsonValue, pathname: strin
   }
 }
 
-function bodyPreview(kind: BodyKind, value: unknown, pathname: string): BodyPreview | undefined {
+function bodyPreview(kind: BodyKind, value: unknown, rawValue: unknown): BodyPreview | undefined {
   if (value === undefined || value === null || value === '') return undefined
 
   if (typeof value === 'string') {
@@ -149,17 +140,22 @@ function bodyPreview(kind: BodyKind, value: unknown, pathname: string): BodyPrev
     if (typeof parsedValue === 'string') {
       return {
         formattedText: value,
+        rawText: typeof rawValue === 'string' ? rawValue : value,
       }
     }
+    const formattedText = formatJsonValue(parsedValue)
     return {
-      formattedText: formatJsonValue(parsedValue),
-      graphql: detectGraphqlBody(kind, parsedValue, pathname),
+      formattedText,
+      graphql: detectGraphqlBody(kind, parsedValue),
+      rawText: typeof rawValue === 'string' ? rawValue : formattedText,
     }
   }
 
+  const formattedText = formatJsonValue(value as JsonValue)
   return {
-    formattedText: formatJsonValue(value as JsonValue),
-    graphql: detectGraphqlBody(kind, value as JsonValue, pathname),
+    formattedText,
+    graphql: detectGraphqlBody(kind, value as JsonValue),
+    rawText: typeof rawValue === 'string' ? rawValue : formattedText,
   }
 }
 
@@ -175,22 +171,34 @@ function BodySection({ children, label }: { children: React.ReactNode; label: st
 function BodyViewer({
   emptyText,
   kind,
-  pathname,
+  rawValue,
   value,
 }: {
   emptyText: string
   kind: BodyKind
-  pathname: string
+  rawValue: unknown
   value: unknown
 }) {
-  const preview = bodyPreview(kind, value, pathname)
+  const preview = bodyPreview(kind, value, rawValue)
 
   if (!preview) {
     return <Typography.BodySmall variant="tertiary">{emptyText}</Typography.BodySmall>
   }
 
+  const rawBodyDetails = preview.rawText !== preview.formattedText ? (
+    <details className={s.bodyViewerRawDetails}>
+      <summary className={s.detailsSummary}><Typography.Body as="span" variant="tertiary">Raw body</Typography.Body></summary>
+      <pre className={s.detailsPre}>{preview.rawText}</pre>
+    </details>
+  ) : null
+
   if (!preview.graphql) {
-    return <pre className={s.detailsPre}>{preview.formattedText}</pre>
+    return (
+      <div className={s.bodyViewer}>
+        <pre className={s.detailsPre}>{preview.formattedText}</pre>
+        {rawBodyDetails}
+      </div>
+    )
   }
 
   const { bodyKind, data, errors, operationName, operationType, query, variables } = preview.graphql
@@ -211,10 +219,7 @@ function BodyViewer({
       {variables !== undefined && <BodySection label="Variables"><pre className={s.detailsPre}>{formatDetailValue(variables)}</pre></BodySection>}
       {data !== undefined && <BodySection label="Data"><pre className={s.detailsPre}>{formatDetailValue(data)}</pre></BodySection>}
       {errors !== undefined && <BodySection label="Errors"><pre className={s.detailsPre}>{formatDetailValue(errors)}</pre></BodySection>}
-      {preview.formattedText && <details className={s.bodyViewerRawDetails}>
-        <summary className={s.detailsSummary}><Typography.Body as="span" variant="tertiary">Full body JSON</Typography.Body></summary>
-        <pre className={s.detailsPre}>{preview.formattedText}</pre>
-      </details>}
+      {rawBodyDetails}
     </div>
   )
 }
@@ -351,7 +356,6 @@ export function HttpSpanDetail({
   const copyValue = formatDetailValue(activeBody.value)
   const rawCopyValue = formatRawValue(activeBody.rawValue, copyValue)
   const hasSeparateRawCopy = Boolean(rawCopyValue && rawCopyValue !== copyValue)
-  const pathname = urlPathname(url)
   const visibleAttrs = Object.fromEntries(Object.entries(attrs).filter(([key]) => !BODY_ATTRIBUTE_KEYS.has(key)))
   const offsetMs = Math.max(0, Number((BigInt(span.startTimeUnixNanos || 0) - traceStart) / 1_000_000n))
   const statusCode = attrText(attrs['http.response.status_code'])
@@ -459,7 +463,7 @@ export function HttpSpanDetail({
             id={`http-detail-${span.spanId}-${activeTab}`}
             role="tabpanel"
           >
-            <BodyViewer emptyText={activeBody.emptyText} kind={activeBody.kind} pathname={pathname} value={activeBody.value} />
+            <BodyViewer emptyText={activeBody.emptyText} kind={activeBody.kind} rawValue={activeBody.rawValue} value={activeBody.value} />
           </section>
           <details>
             <summary className={s.detailsSummary}><Typography.Body as="span" variant="tertiary">Span attributes</Typography.Body></summary>
