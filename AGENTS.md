@@ -35,9 +35,7 @@
 - Changes to CLI or MCP surfaces must include corresponding documentation
   updates under `docs/` in the same change.
 - Source-only changes under `sources/community/**` do not need to update the
-  aggregate community source catalog page. The `community-docs-refresh`
-  workflow regenerates `docs/reference/community-sources.mdx` from `main` and
-  opens or updates a rolling refresh PR; keep docs freshness strict for
+  aggregate community source catalog page; keep docs freshness strict for
   generator changes, docs changes, and bundled sources under `sources/core/**`.
 - Source inputs that carry credentials must be `kind: secret`, never
   `kind: variable`. This includes API keys, bearer tokens, access tokens,

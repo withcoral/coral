@@ -25,8 +25,7 @@
   `make docs-generate`; update source manifests or the xtask renderer rather
   than editing those pages by hand
 - Source-only `sources/community/**` PRs are allowed to leave
-  `docs/reference/community-sources.mdx` stale. The `community-docs-refresh`
-  workflow regenerates that aggregate page from `main` in a rolling PR.
+  `docs/reference/community-sources.mdx` stale.
 
 ## Maintaining these instructions
 - Keep docs-specific agent rules here; keep repo-wide agent and contributor
