@@ -339,6 +339,9 @@ function TimelineWaterfall({ expandedHttpSpanId, onExpandedHttpSpanIdChange, onN
   const [detailPanelSettled, setDetailPanelSettled] = useState(Boolean(expandedHttpSpanId))
   useEffect(() => onExpandedHttpSpanIdChange(null), [onExpandedHttpSpanIdChange, summary?.traceId])
   useEffect(() => setDetailPanelRatio(DETAIL_PANEL_DEFAULT_RATIO), [summary?.traceId])
+  const handleToggleExpanded = useCallback((spanId: string) => {
+    onExpandedHttpSpanIdChange((current) => current === spanId ? null : spanId)
+  }, [onExpandedHttpSpanIdChange])
   useEffect(() => {
     if (panelAnimationFrame.current !== null) {
       window.cancelAnimationFrame(panelAnimationFrame.current)
@@ -477,7 +480,7 @@ function TimelineWaterfall({ expandedHttpSpanId, onExpandedHttpSpanIdChange, onN
                 expanded={expandedHttpSpanId === row.span.spanId}
                 key={row.span.spanId}
                 onToggle={toggleSpan}
-                onToggleExpanded={(spanId) => onExpandedHttpSpanIdChange((current) => current === spanId ? null : spanId)}
+                onToggleExpanded={handleToggleExpanded}
                 row={row}
                 traceStart={traceStart}
               />
