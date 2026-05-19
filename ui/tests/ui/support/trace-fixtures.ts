@@ -279,6 +279,34 @@ const detailSpans: SpanFixture[] = [
   },
   {
     source: 'github',
+    table: 'repository_search',
+    method: 'POST',
+    path: '/api/v1/search',
+    durationMs: 66,
+    requestBody: {
+      operationName: 'RepositorySearch',
+      query: `query RepositorySearch($name: String!) {
+  repository(name: $name) {
+    id
+    name
+    isPrivate
+  }
+}`,
+      variables: { name: 'coral' },
+    },
+    responseBody: {
+      data: {
+        repository: {
+          id: 'R_kgDOExample',
+          name: 'coral',
+          isPrivate: false,
+        },
+      },
+      errors: [{ message: 'GraphQL warnings should still be visible', path: ['repository'] }],
+    },
+  },
+  {
+    source: 'github',
     table: 'pull_request_archive',
     method: 'GET',
     path: '/repos/oxide/coral/pulls?state=closed&per_page=20',
