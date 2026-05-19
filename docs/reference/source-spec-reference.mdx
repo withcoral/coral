@@ -395,6 +395,23 @@ FROM github.search_issues(q => 'repo:withcoral/coral source functions')
 LIMIT 10;
 ```
 
+`mode: contains` remains available for ordinary table filters whose provider
+API supports substring matching. It is not a retrieval marker and should not be
+used as a replacement for `kind: search`:
+
+```yaml
+filters:
+  - name: title
+    type: Utf8
+    description: Provider-side title substring.
+    mode: contains
+```
+
+`mode: search` is still accepted as a legacy compatibility marker for existing
+virtual-filter tables and is exposed through `coral.filters.filter_mode` and
+`coral.columns.filter_mode`. Do not use it for new provider-native retrieval
+surfaces; declare those as `kind: search` functions instead.
+
 `search_limits` values must be positive. `default_top_k` and `max_top_k` are
 capped at 1000, `max_calls_per_query` is capped at 100, and
 `max_top_k * max_calls_per_query` cannot exceed 10000 candidates.

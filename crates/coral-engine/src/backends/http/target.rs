@@ -83,7 +83,11 @@ impl HttpFetchTarget {
     }
 
     pub(crate) fn fetch_limit_default(&self) -> Option<usize> {
-        self.fetch_limit_default
+        self.fetch_limit_default.or_else(|| {
+            self.search_limits
+                .as_ref()
+                .map(|limits| limits.default_top_k)
+        })
     }
 
     pub(crate) fn search_limits(&self) -> Option<&SearchLimitsSpec> {

@@ -51,8 +51,8 @@ pub(crate) fn validate_http_table(
 
     validate_columns(columns, schema, table_name)?;
     let known_filters = validate_filters_and_column_exprs(filters, columns, schema, table_name)?;
-    // Deprecated compatibility tables already use mode: search; new metadata is
-    // validated when present, but not forced onto every existing manifest here.
+    // Table-level search metadata is optional for legacy table surfaces; new
+    // provider-native retrieval surfaces should use search table functions.
     validate_search_metadata(
         schema,
         table_name,
@@ -916,7 +916,7 @@ mod tests {
                 {
                     "name": "search",
                     "description": "Search candidates",
-                    "filters": [{ "name": "query", "mode": "search" }],
+                    "filters": [{ "name": "query", "mode": "contains" }],
                     "search_limits": {
                         "default_top_k": 10,
                         "max_top_k": 100,
@@ -1342,12 +1342,12 @@ mod tests {
     }
 
     #[test]
-    fn validate_http_table_allows_deprecated_search_filters_without_search_limits() {
+    fn validate_http_table_allows_contains_filters_without_search_limits() {
         let filters = vec![FilterSpec {
             name: "query".to_string(),
             data_type: "Utf8".to_string(),
             required: false,
-            mode: FilterMode::Search,
+            mode: FilterMode::Contains,
             description: String::new(),
         }];
 
@@ -1362,7 +1362,7 @@ mod tests {
             None,
             &[],
         )
-        .expect("deprecated compatibility search filters should not force new metadata");
+        .expect("contains filters should not force search metadata");
     }
 
     #[test]
@@ -1400,7 +1400,7 @@ mod tests {
             name: "query".to_string(),
             data_type: "Utf8".to_string(),
             required: false,
-            mode: FilterMode::Search,
+            mode: FilterMode::Contains,
             description: String::new(),
         }];
 

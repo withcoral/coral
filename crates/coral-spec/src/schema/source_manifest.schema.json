@@ -403,11 +403,7 @@
         "mode": {
           "oneOf": [
             { "const": "equality" },
-            {
-              "const": "search",
-              "deprecated": true,
-              "description": "Compatibility-only virtual-filter marker. New provider-native search surfaces should use kind: search table functions."
-            },
+            { "const": "search" },
             { "const": "contains" }
           ]
         },

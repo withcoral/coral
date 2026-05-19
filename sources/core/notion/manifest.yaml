@@ -173,6 +173,73 @@ functions:
         description: Full raw Notion search result
         expr:
           kind: current_row
+  - name: search_data_source_templates
+    kind: search
+    description: Provider-native search for Notion data source templates using the name parameter.
+    fetch_limit_default: 10
+    search_limits:
+      default_top_k: 10
+      max_top_k: 100
+      max_calls_per_query: 1
+    args:
+      - name: name
+        required: true
+        bind:
+          arg: name
+      - name: data_source_id
+        required: true
+        bind:
+          arg: data_source_id
+    request:
+      method: GET
+      path: /v1/data_sources/{{arg.data_source_id}}/templates
+      query:
+        - name: name
+          from: arg
+          key: name
+    response:
+      rows_path:
+        - templates
+    pagination:
+      mode: cursor_query
+      cursor_param: start_cursor
+      response_cursor_path:
+        - next_cursor
+      page_size:
+        default: 100
+        max: 100
+        query_param: page_size
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Template page ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Template name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: is_default
+        type: Boolean
+        nullable: false
+        description: Whether this template is the data source default
+        expr:
+          kind: path
+          path:
+            - is_default
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw data source templates search result.
+        expr:
+          kind: current_row
 tables:
   - name: search
     description: Pages and data sources shared with the integration

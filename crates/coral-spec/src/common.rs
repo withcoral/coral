@@ -1133,16 +1133,6 @@ mod tests {
     }
 
     #[test]
-    fn filter_mode_deserializes_search() {
-        let spec: FilterSpec = serde_json::from_value(serde_json::json!({
-            "name": "q",
-            "mode": "search"
-        }))
-        .unwrap();
-        assert_eq!(spec.mode, FilterMode::Search);
-    }
-
-    #[test]
     fn filter_mode_deserializes_contains() {
         let spec: FilterSpec = serde_json::from_value(serde_json::json!({
             "name": "q",
@@ -1160,6 +1150,16 @@ mod tests {
         }));
         let error = result.expect_err("unknown filter mode should fail");
         assert!(error.to_string().contains("unknown variant"));
+    }
+
+    #[test]
+    fn filter_mode_deserializes_legacy_search_value() {
+        let spec: FilterSpec = serde_json::from_value(serde_json::json!({
+            "name": "q",
+            "mode": "search"
+        }))
+        .unwrap();
+        assert_eq!(spec.mode, FilterMode::Search);
     }
 
     #[test]

@@ -680,6 +680,61 @@ async fn source_scoped_table_function_conditionally_emits_arg_body_fields() {
 }
 
 #[tokio::test]
+async fn search_function_limit_is_capped_by_search_limits() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/search/issues"))
+        .and(query_param("q", "flaky"))
+        .and(query_param("limit", "2"))
+        .and(query_param("offset", "0"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [
+                { "title": "First", "score": 3.0 },
+                { "title": "Second", "score": 2.0 },
+                { "title": "Third", "score": 1.0 }
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut manifest = search_function_manifest("capped_search", &server.uri());
+    manifest["functions"][0]["search_limits"] = json!({
+        "default_top_k": 1,
+        "max_top_k": 2,
+        "max_calls_per_query": 1
+    });
+    manifest["functions"][0]["pagination"] = json!({
+        "mode": "offset",
+        "offset_param": "offset",
+        "page_size": {
+            "default": 50,
+            "max": 500,
+            "query_param": "limit"
+        }
+    });
+
+    let source = build_source(manifest);
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT title, score FROM capped_search.search_issues(q => 'flaky') LIMIT 3",
+        )
+        .await
+        .expect("search function query should succeed"),
+    );
+
+    assert_eq!(
+        rows,
+        vec![
+            json!({ "title": "First", "score": 3.0 }),
+            json!({ "title": "Second", "score": 2.0 })
+        ]
+    );
+}
+
+#[tokio::test]
 async fn source_scoped_table_function_preserves_table_alias() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
