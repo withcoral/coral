@@ -58,7 +58,8 @@ test('lists 10 traces, searches one, opens its details, and opens a span inspect
 
   await longSpanButton.focus()
   await expect(longSpanButton).toBeFocused()
-  await expect(longSpanButton).toHaveCSS('outline-style', 'none')
+  await expect(longSpanButton).toHaveCSS('outline-style', 'solid')
+  await expect(longSpanButton).toHaveCSS('outline-offset', '-1px')
   const boxShadow = await longSpanRow.evaluate((element) => getComputedStyle(element).boxShadow)
   expect(boxShadow).toContain('inset')
   await page.screenshot({ path: 'ui/test-results/AOL-2-review.png', fullPage: true })

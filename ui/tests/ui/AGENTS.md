@@ -95,6 +95,9 @@ Guidelines:
 - Use concise chapter titles; explain intent in the optional description.
 - Use `review.pause()` after major assertions or visual states so the recording
   is readable.
+- When a trace detail flow includes a wrapped long span label or a focused row,
+  pause on the final focused state so the recording captures the readable label
+  and the contained focus treatment together.
 - Do not make normal tests depend on review mode; `review.chapter()` and
   `review.pause()` are no-ops unless `PW_UI_SCREENCAST=1`.
 

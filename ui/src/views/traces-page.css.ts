@@ -6,7 +6,7 @@ import { theme } from '@/wax/theme/theme.css'
 
 const spin = keyframes({ to: { transform: 'rotate(360deg)' } })
 const codeFontFamily = '"Gustan Mono", "Roboto Mono", "SFMono-Regular", "SF Mono", Consolas, "Liberation Mono", Menlo, monospace'
-const waterfallGridColumns = 'minmax(340px, 0.42fr) minmax(0, 1fr)'
+const waterfallGridColumns = 'minmax(380px, 0.46fr) minmax(0, 1fr)'
 export const root = style({ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 })
 
 export const header = style({
@@ -224,9 +224,6 @@ export const waterfallRowShell = style({
     '&:hover, &:focus-within': {
       backgroundColor: theme.surface.onMainContentSubtle,
     },
-    '&:focus-within': {
-      boxShadow: `inset 0 0 0 1px ${theme.pill.blue.color}`,
-    },
     '&[data-active="true"]': {
       backgroundColor: theme.surface.onMainContentSubtle,
       boxShadow: `inset 0 0 0 1px ${theme.pill.blue.color}`,
@@ -237,6 +234,7 @@ export const waterfallRowButton = style({
   alignItems: 'center',
   background: 'none',
   border: 'none',
+  borderRadius: 8,
   color: theme.content.primary,
   display: 'flex',
   alignSelf: 'stretch',
@@ -250,6 +248,11 @@ export const waterfallRowButton = style({
   width: '100%',
   selectors: {
     '&[role="button"]': { cursor: 'pointer' },
+    '&:focus, &:focus-visible': {
+      backgroundColor: theme.surface.onMainContentSubtle,
+      outline: `1px solid ${theme.button.primary.focus}`,
+      outlineOffset: '-1px',
+    },
   },
 })
 export const waterfallSpanLabel = style({
@@ -307,7 +310,14 @@ export const waterfallChildCountChip = style({
   minWidth: 16,
   paddingInline: 4,
 })
-export const waterfallPluginPill = style({ alignItems: 'flex-start', display: 'inline-flex', gap: 6, maxWidth: '100%', minWidth: 0, overflow: 'hidden', whiteSpace: 'normal' })
+export const waterfallPluginPill = style({
+  alignItems: 'flex-start',
+  display: 'inline-flex',
+  gap: 6,
+  maxWidth: '100%',
+  minWidth: 0,
+  whiteSpace: 'normal',
+})
 export const waterfallPluginDot = style({ borderRadius: '50%', flexShrink: 0, height: 8, width: 8, selectors: {
   '&[data-tone="query"]': { backgroundColor: theme.pill.purple.color },
   '&[data-tone="http"]': { backgroundColor: theme.pill.blue.color },
@@ -330,7 +340,14 @@ export const waterfallBarSlot = style({
   outline: 'none',
   minHeight: 38,
   minWidth: 0,
-  selectors: { '&[role="button"]': { cursor: 'pointer' } },
+  selectors: {
+    '&[role="button"]': { cursor: 'pointer' },
+    '&:focus, &:focus-visible': {
+      backgroundColor: theme.surface.onMainContentSubtle,
+      outline: `1px solid ${theme.button.primary.focus}`,
+      outlineOffset: '-1px',
+    },
+  },
 })
 export const waterfallBarSlotActive = style({
   boxShadow: `inset 0 0 0 1px ${theme.pill.blue.stroke}`,
