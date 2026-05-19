@@ -486,8 +486,8 @@ impl ServerHandler for CoralMcpServer {
                 .map_err(|status| status_to_error_data(&status))?;
             let mut tools = vec![
                 sql_tool(&sources, visible_table_count),
-                list_catalog_tool(visible_table_count, visible_function_count),
-                search_catalog_tool(visible_table_count, visible_function_count),
+                list_catalog_tool(&sources, visible_table_count, visible_function_count),
+                search_catalog_tool(&sources, visible_table_count, visible_function_count),
                 describe_table_tool(),
                 list_columns_tool(),
             ];

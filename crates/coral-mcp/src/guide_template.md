@@ -61,7 +61,7 @@ WHERE json_get_str(rules, 0, 'clauses', 0, 'values', 0) = 'phoebe-org';
 - Use each table function's `sql_call_example` from `list_catalog` or `search_catalog`, filling in the required arguments before querying it.
 - Do not quote the whole `schema.table` string. Write `github.pulls` or `"github"."pulls"`, not `"github.pulls"`.
 - Check `coral.tables.required_filters` and `coral.columns.is_required_filter` before querying tables that depend on filter-only inputs.
-- Cross-source joins work with standard SQL after source scans complete.
+- Coral aggregates every configured source into one SQL endpoint. Cross-source JOINs are the preferred pattern — write one query that joins `source_a.table` with `source_b.table` instead of running separate per-source queries and reconciling the results yourself. Joins execute locally after source scans complete.
 - Use `LIKE` or `ILIKE` for SQL wildcard matching with `%` and `_`. `SIMILAR TO` uses regex-shaped patterns, so write `.*` instead of `%`, `.` instead of `_`, or escape literal percent/underscore characters as `\%` and `\_`.
 - Regex operators such as `~` and `~*` treat `%` and `_` as ordinary literal characters.
 - `list_catalog` shows queryable tables and source-scoped table functions in pages; pass `schema`, `kind`, `limit`, and `offset` to narrow large catalogs. Omit `kind` or pass `null` to list all item kinds.

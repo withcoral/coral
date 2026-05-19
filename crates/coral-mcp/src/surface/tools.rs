@@ -67,18 +67,20 @@ pub(crate) fn sql_tool(sources: &[Source], visible_table_count: usize) -> Tool {
     )
 }
 
-pub(crate) fn list_catalog_tool(visible_table_count: usize, visible_function_count: usize) -> Tool {
+pub(crate) fn list_catalog_tool(
+    sources: &[Source],
+    visible_table_count: usize,
+    visible_function_count: usize,
+) -> Tool {
     Tool::new(
         "list_catalog",
-        format!(
-            "List queryable catalog items. {visible_table_count} table(s) and {visible_function_count} table function(s) are currently visible."
-        ),
+        list_catalog_description(sources, visible_table_count, visible_function_count),
         json_object_schema(&json!({
             "type": "object",
             "properties": {
                 "schema": {
                     "type": "string",
-                    "description": "Optional exact schema/source name to list."
+                    "description": "Optional exact schema/source name. Omit (recommended) to list items from every configured source — Coral can JOIN across them in one `sql` query."
                 },
                 "kind": {
                     "description": "Optional item kind to list. Omit or pass null to list all catalog items.",
@@ -120,12 +122,13 @@ pub(crate) fn list_catalog_tool(visible_table_count: usize, visible_function_cou
 }
 
 pub(crate) fn search_catalog_tool(
+    sources: &[Source],
     visible_table_count: usize,
     visible_function_count: usize,
 ) -> Tool {
     Tool::new(
         "search_catalog",
-        search_catalog_description(visible_table_count, visible_function_count),
+        search_catalog_description(sources, visible_table_count, visible_function_count),
         json_object_schema(&json!({
             "type": "object",
             "required": ["pattern"],
@@ -136,7 +139,7 @@ pub(crate) fn search_catalog_tool(
                 },
                 "schema": {
                     "type": "string",
-                    "description": "Optional exact schema/source name to search."
+                    "description": "Optional exact schema/source name. Omit (recommended) to search every configured source at once — Coral can JOIN across them in one `sql` query."
                 },
                 "kind": {
                     "description": "Optional item kind to search. Omit or pass null to search all catalog items.",
@@ -380,21 +383,37 @@ pub(crate) fn build_tool_result(value: Value) -> Result<CallToolResult, ErrorDat
 }
 
 fn sql_tool_description(sources: &[Source], visible_table_count: usize) -> String {
+    let source_count = sources.len();
     if visible_table_count == 0 {
         format!(
-            "Run a SQL query against local Coral sources. {} configured source(s), but no visible SQL tables are currently available.",
-            sources.len()
+            "Run a SQL query against all configured Coral sources in one statement. Coral exposes each source as a SQL schema (e.g. `github.pulls`, `slack.messages`) so you can JOIN across sources in a single query — prefer one cross-source JOIN over separate per-source calls. {source_count} configured source(s), but no visible SQL tables are currently available."
         )
     } else {
         format!(
-            "Run a SQL query against local Coral sources. {visible_table_count} table(s) are currently visible."
+            "Run a SQL query against all configured Coral sources in one statement. Coral exposes each source as a SQL schema (e.g. `github.pulls`, `slack.messages`) so you can JOIN across sources in a single query — prefer one cross-source JOIN over separate per-source calls. {visible_table_count} table(s) are currently visible across {source_count} source(s)."
         )
     }
 }
 
-fn search_catalog_description(visible_table_count: usize, visible_function_count: usize) -> String {
+fn list_catalog_description(
+    sources: &[Source],
+    visible_table_count: usize,
+    visible_function_count: usize,
+) -> String {
+    let source_count = sources.len();
     format!(
-        "Search queryable catalog metadata with a Rust regex. {visible_table_count} table(s) and {visible_function_count} table function(s) are currently visible."
+        "List queryable catalog items across all configured Coral sources. Each source is exposed as its own SQL schema, and the `sql` tool can JOIN across them — omit `schema` to see items from every source together. {visible_table_count} table(s) and {visible_function_count} table function(s) are currently visible across {source_count} source(s)."
+    )
+}
+
+fn search_catalog_description(
+    sources: &[Source],
+    visible_table_count: usize,
+    visible_function_count: usize,
+) -> String {
+    let source_count = sources.len();
+    format!(
+        "Search queryable catalog metadata across all configured Coral sources with a Rust regex. Each source is exposed as its own SQL schema, and the `sql` tool can JOIN across them — omit `schema` to search every source at once. {visible_table_count} table(s) and {visible_function_count} table function(s) are currently visible across {source_count} source(s)."
     )
 }
 
