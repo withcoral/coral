@@ -4,6 +4,29 @@ package coral.v1;
 
 import "coral/v1/resources.proto";
 
+// Page request parameters for list-style APIs.
+message PaginationRequest {
+  // Maximum number of items to return. Zero means API-specific default or
+  // unbounded behavior.
+  uint32 limit = 1;
+  // Number of matching items to skip before returning results.
+  uint32 offset = 2;
+}
+
+// Page metadata returned by list-style APIs.
+message PaginationResponse {
+  // Matching item count before pagination.
+  uint32 total_count = 1;
+  // Applied result limit. Zero means unbounded.
+  uint32 limit = 2;
+  // Applied result offset.
+  uint32 offset = 3;
+  // Whether another page is available.
+  bool has_more = 4;
+  // Offset to request for the next page when `has_more` is true.
+  uint32 next_offset = 5;
+}
+
 // A column exposed by a discoverable query table.
 message Column {
   // The column name as exposed by the query engine.
@@ -12,6 +35,14 @@ message Column {
   string data_type = 2;
   // Whether the column can contain null values.
   bool nullable = 3;
+  // Whether the column is provider-derived metadata, such as a filter or computed column.
+  bool is_virtual = 4;
+  // Whether the column must be constrained before querying the table.
+  bool is_required_filter = 5;
+  // Human-readable column description.
+  string description = 6;
+  // Zero-based position of the column within the table.
+  uint32 ordinal_position = 7;
 }
 
 // A query-visible table in one workspace.
@@ -46,4 +77,126 @@ message TableSummary {
   repeated string required_filters = 5;
   // User-facing query guidance.
   string guide = 6;
+}
+
+// Lists all query-visible tables in one workspace.
+message ListTablesRequest {
+  // Workspace whose current query-visible tables should be listed.
+  Workspace workspace = 1;
+  // Optional exact schema/source name.
+  string schema_name = 2;
+  // Optional page request. Missing or zero limit keeps the legacy unbounded behavior.
+  PaginationRequest pagination = 3;
+  // Whether table columns should be omitted from the response.
+  bool omit_columns = 4;
+  // Optional exact table name. If set without `schema_name`, matches across all schemas.
+  string table_name = 5;
+}
+
+// Returns the query-visible tables in one workspace.
+message ListTablesResponse {
+  // Full query-visible tables for legacy callers.
+  repeated Table tables = 1;
+  // Page metadata for the table list.
+  PaginationResponse pagination = 2;
+  // Query-visible table summaries for callers that do not need columns.
+  repeated TableSummary table_summaries = 3;
+}
+
+// Searches table-level catalog metadata.
+message SearchTablesRequest {
+  // Workspace whose current query-visible tables should be searched.
+  Workspace workspace = 1;
+  // Rust regex pattern matched over table metadata.
+  string pattern = 2;
+  // Whether regex matching should ignore case.
+  bool ignore_case = 3;
+  // Optional exact schema/source name.
+  string schema_name = 4;
+  // Optional page request. Missing or zero limit applies the search default.
+  PaginationRequest pagination = 5;
+}
+
+// One table search match.
+message TableSearchResult {
+  // Matched table metadata.
+  TableSummary table = 1;
+  // Metadata fields matched by the pattern.
+  repeated string matched_fields = 2;
+}
+
+// Returns table metadata matches.
+message SearchTablesResponse {
+  // Matching tables for the requested page.
+  repeated TableSearchResult tables = 1;
+  // Page metadata for the table search.
+  PaginationResponse pagination = 2;
+}
+
+// Fetches one query-visible table.
+message DescribeTableRequest {
+  // Workspace whose current query-visible tables should be inspected.
+  Workspace workspace = 1;
+  // Exact schema/source name.
+  string schema_name = 2;
+  // Exact table name.
+  string table_name = 3;
+}
+
+// Returns one table, or app-owned missing-table discovery context.
+message DescribeTableResponse {
+  // The exact table when found.
+  Table table = 1;
+  // Suggested nearby tables when the exact table is missing.
+  repeated TableSummary suggestions = 2;
+  // Query-visible schemas available in this workspace.
+  repeated string available_schemas = 3;
+  // Tables in the requested schema, capped for user-facing missing-table help.
+  repeated TableSummary same_schema_tables = 4;
+}
+
+// Lists and filters columns for one query-visible table.
+message ListColumnsRequest {
+  // Workspace whose current query-visible tables should be inspected.
+  Workspace workspace = 1;
+  // Exact schema/source name.
+  string schema_name = 2;
+  // Exact table name.
+  string table_name = 3;
+  // Optional Rust regex pattern matched over column metadata.
+  optional string pattern = 4;
+  // Whether regex matching should ignore case.
+  bool ignore_case = 5;
+  // Whether only required filter columns should be returned.
+  bool required_only = 6;
+  // Optional page request. Missing or zero limit applies the column-list default.
+  PaginationRequest pagination = 7;
+}
+
+// One column search match.
+message ColumnSearchResult {
+  // Matched column metadata.
+  Column column = 1;
+  // Metadata fields matched by the pattern.
+  repeated string matched_fields = 2;
+}
+
+// Returns column metadata matches.
+message ListColumnsResponse {
+  // Matching columns for the requested page.
+  repeated ColumnSearchResult columns = 1;
+  // Page metadata for the column list.
+  PaginationResponse pagination = 2;
+}
+
+// Catalog discovery APIs.
+service CatalogService {
+  // Lists query-visible tables for one workspace.
+  rpc ListTables(ListTablesRequest) returns (ListTablesResponse);
+  // Searches query-visible table metadata.
+  rpc SearchTables(SearchTablesRequest) returns (SearchTablesResponse);
+  // Fetches one query-visible table.
+  rpc DescribeTable(DescribeTableRequest) returns (DescribeTableResponse);
+  // Lists and filters columns for one query-visible table.
+  rpc ListColumns(ListColumnsRequest) returns (ListColumnsResponse);
 }

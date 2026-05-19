@@ -165,7 +165,7 @@ async fn coral_columns_default_row_order_matches_ordinal_position() {
 async fn list_tables_matches_catalog() {
     let (_temp, sources) = build_catalog_sources();
 
-    let listed = CoralQuery::list_tables(&sources, test_runtime(), None)
+    let listed = CoralQuery::list_tables(&sources, test_runtime(), None, None)
         .await
         .expect("list_tables should succeed");
     let catalog_rows = execution_to_rows(
@@ -198,7 +198,7 @@ async fn list_tables_matches_catalog() {
 
 #[tokio::test]
 async fn list_tables_empty_when_no_sources() {
-    let tables = CoralQuery::list_tables(&[], test_runtime(), None)
+    let tables = CoralQuery::list_tables(&[], test_runtime(), None, None)
         .await
         .expect("empty source list should succeed");
 

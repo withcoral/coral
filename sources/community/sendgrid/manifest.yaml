@@ -1,0 +1,1081 @@
+name: sendgrid
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query email templates, suppression lists (bounces, blocks, spam
+  reports, invalid emails), marketing lists, single sends,
+  suppression groups, sender identities, verified senders,
+  API keys, and teammates from Twilio SendGrid.
+
+inputs:
+  SENDGRID_BASE_URL:
+    kind: variable
+    default: https://api.sendgrid.com/v3
+    hint: >-
+      Base URL for the SendGrid API. The default works for US-hosted
+      accounts. For EU-hosted accounts use https://api.eu.sendgrid.com/v3.
+  SENDGRID_API_KEY:
+    kind: secret
+    hint: >-
+      SendGrid API key. Create one at https://app.sendgrid.com/settings/api_keys
+      with at least read-only access to the resources you want to query.
+
+base_url: "{{input.SENDGRID_BASE_URL}}"
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "Bearer {{input.SENDGRID_API_KEY}}"
+
+test_queries:
+  - SELECT api_key_id, name FROM sendgrid.api_keys LIMIT 1
+  - SELECT id, nickname FROM sendgrid.verified_senders LIMIT 1
+  - SELECT email FROM sendgrid.bounces LIMIT 1
+
+tables:
+  # ──────────────────────────────────────────────────────────────────────
+  # api_keys
+  # ──────────────────────────────────────────────────────────────────────
+  - name: api_keys
+    description: >
+      Lists all API keys on the account. Returns key ID, name,
+      and creation/last-used metadata.
+    guide: >
+      `SELECT api_key_id, name FROM sendgrid.api_keys`.
+      SendGrid documents `limit` for this endpoint, but no offset or cursor;
+      this table requests the first 100 API keys.
+    request:
+      method: GET
+      path: /api_keys
+      query:
+        - name: limit
+          from: literal
+          value: 100
+    response:
+      rows_path:
+        - result
+    pagination:
+      mode: none
+    columns:
+      - name: api_key_id
+        type: Utf8
+        nullable: false
+        description: Unique API key identifier.
+        expr:
+          kind: path
+          path:
+            - api_key_id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Human-readable key name.
+        expr:
+          kind: path
+          path:
+            - name
+
+  # ──────────────────────────────────────────────────────────────────────
+  # teammates
+  # ──────────────────────────────────────────────────────────────────────
+  - name: teammates
+    description: >
+      Lists all teammates on the account. Returns username, email,
+      name, admin status, and user type.
+    guide: >
+      `SELECT username, email, is_admin, user_type
+      FROM sendgrid.teammates`.
+    request:
+      method: GET
+      path: /teammates
+    response:
+      rows_path:
+        - result
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 50
+        max: 500
+        query_param: limit
+    columns:
+      - name: username
+        type: Utf8
+        nullable: false
+        description: Teammate username.
+        expr:
+          kind: path
+          path:
+            - username
+      - name: email
+        type: Utf8
+        nullable: true
+        description: Teammate email address.
+        expr:
+          kind: path
+          path:
+            - email
+      - name: first_name
+        type: Utf8
+        nullable: true
+        description: First name.
+        expr:
+          kind: path
+          path:
+            - first_name
+      - name: last_name
+        type: Utf8
+        nullable: true
+        description: Last name.
+        expr:
+          kind: path
+          path:
+            - last_name
+      - name: is_admin
+        type: Boolean
+        nullable: true
+        description: Whether the teammate is an admin.
+        expr:
+          kind: path
+          path:
+            - is_admin
+      - name: user_type
+        type: Utf8
+        nullable: true
+        description: User type (admin, teammate, etc.).
+        expr:
+          kind: path
+          path:
+            - user_type
+      - name: scopes
+        type: Json
+        nullable: true
+        description: Array of permission scopes.
+        expr:
+          kind: path
+          path:
+            - scopes
+
+  # ──────────────────────────────────────────────────────────────────────
+  # verified_senders
+  # ──────────────────────────────────────────────────────────────────────
+  - name: verified_senders
+    description: >
+      Lists all verified sender identities. Returns sender email,
+      name, reply-to, company address, and verification status.
+    guide: >
+      `SELECT id, nickname, from_email, from_name, verified
+      FROM sendgrid.verified_senders`.
+    request:
+      method: GET
+      path: /verified_senders
+    response:
+      rows_path:
+        - results
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Unique sender identity ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: nickname
+        type: Utf8
+        nullable: true
+        description: Sender nickname.
+        expr:
+          kind: path
+          path:
+            - nickname
+      - name: from_email
+        type: Utf8
+        nullable: true
+        description: Sender email address.
+        expr:
+          kind: path
+          path:
+            - from_email
+      - name: from_name
+        type: Utf8
+        nullable: true
+        description: Sender display name.
+        expr:
+          kind: path
+          path:
+            - from_name
+      - name: reply_to
+        type: Utf8
+        nullable: true
+        description: Reply-to email address.
+        expr:
+          kind: path
+          path:
+            - reply_to
+      - name: reply_to_name
+        type: Utf8
+        nullable: true
+        description: Reply-to display name.
+        expr:
+          kind: path
+          path:
+            - reply_to_name
+      - name: address
+        type: Utf8
+        nullable: true
+        description: Company street address.
+        expr:
+          kind: path
+          path:
+            - address
+      - name: city
+        type: Utf8
+        nullable: true
+        description: Company city.
+        expr:
+          kind: path
+          path:
+            - city
+      - name: country
+        type: Utf8
+        nullable: true
+        description: Company country.
+        expr:
+          kind: path
+          path:
+            - country
+      - name: verified
+        type: Boolean
+        nullable: true
+        description: Whether the sender identity is verified.
+        expr:
+          kind: path
+          path:
+            - verified
+      - name: locked
+        type: Boolean
+        nullable: true
+        description: Whether the sender identity is locked.
+        expr:
+          kind: path
+          path:
+            - locked
+
+  # ──────────────────────────────────────────────────────────────────────
+  # templates
+  # ──────────────────────────────────────────────────────────────────────
+  - name: templates
+    description: >
+      Lists all transactional email templates. Returns template ID,
+      name, generation (legacy/dynamic), and last update time.
+    guide: >
+      `SELECT id, name, generation, updated_at
+      FROM sendgrid.templates LIMIT 20`.
+      This endpoint returns `_metadata.next` as a full URL, which Coral
+      cannot follow as a cursor yet, so the table requests the largest
+      documented first page.
+    request:
+      method: GET
+      path: /templates
+      query:
+        - name: generations
+          from: literal
+          value: legacy,dynamic
+        - name: page_size
+          from: literal
+          value: 200
+    response:
+      rows_path:
+        - result
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique template ID (UUID).
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Template name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: generation
+        type: Utf8
+        nullable: true
+        description: Template generation (legacy or dynamic).
+        expr:
+          kind: path
+          path:
+            - generation
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: Last update timestamp in `YYYY-MM-DD HH:MM:SS` format.
+        expr:
+          kind: path
+          path:
+            - updated_at
+      - name: versions
+        type: Json
+        nullable: true
+        description: Array of template version objects.
+        expr:
+          kind: path
+          path:
+            - versions
+
+  # ──────────────────────────────────────────────────────────────────────
+  # suppression_groups
+  # ──────────────────────────────────────────────────────────────────────
+  - name: suppression_groups
+    description: >
+      Lists all suppression (unsubscribe) groups. Returns group name,
+      description, default status, and unsubscribe count.
+    guide: >
+      `SELECT id, name, description, is_default, unsubscribes
+      FROM sendgrid.suppression_groups`.
+    request:
+      method: GET
+      path: /asm/groups
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Unique suppression group ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Suppression group name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Group description.
+        expr:
+          kind: path
+          path:
+            - description
+      - name: is_default
+        type: Boolean
+        nullable: true
+        description: Whether this is the default suppression group.
+        expr:
+          kind: path
+          path:
+            - is_default
+      - name: unsubscribes
+        type: Int64
+        nullable: true
+        description: Number of unsubscribes in this group.
+        expr:
+          kind: path
+          path:
+            - unsubscribes
+
+  # ──────────────────────────────────────────────────────────────────────
+  # bounces
+  # ──────────────────────────────────────────────────────────────────────
+  - name: bounces
+    description: >
+      Lists all bounced email addresses. Returns email, bounce reason,
+      enhanced status code, and creation timestamp.
+    guide: >
+      `SELECT email, reason, status, created
+      FROM sendgrid.bounces LIMIT 50`.
+      Optional filters: `start_time`, `end_time`, and `email`.
+    filters:
+      - name: start_time
+        required: false
+      - name: end_time
+        required: false
+      - name: email
+        required: false
+    request:
+      method: GET
+      path: /suppression/bounces
+      query:
+        - name: start_time
+          from: filter
+          key: start_time
+        - name: end_time
+          from: filter
+          key: end_time
+        - name: email
+          from: filter
+          key: email
+    response:
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 500
+        query_param: limit
+    columns:
+      - name: start_time
+        type: Int64
+        nullable: true
+        virtual: true
+        description: Optional start time filter as Unix epoch seconds.
+        expr:
+          kind: from_filter
+          key: start_time
+      - name: end_time
+        type: Int64
+        nullable: true
+        virtual: true
+        description: Optional end time filter as Unix epoch seconds.
+        expr:
+          kind: from_filter
+          key: end_time
+      - name: email
+        type: Utf8
+        nullable: false
+        description: Bounced email address.
+        expr:
+          kind: path
+          path:
+            - email
+      - name: reason
+        type: Utf8
+        nullable: true
+        description: Bounce reason message.
+        expr:
+          kind: path
+          path:
+            - reason
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Enhanced SMTP bounce status code.
+        expr:
+          kind: path
+          path:
+            - status
+      - name: created_i
+        type: Int64
+        nullable: true
+        description: Unix timestamp when the bounce was recorded.
+        expr:
+          kind: path
+          path:
+            - created
+      - name: created
+        type: Timestamp
+        nullable: true
+        description: When the bounce was recorded.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr:
+            kind: path
+            path:
+              - created
+
+  # ──────────────────────────────────────────────────────────────────────
+  # blocks
+  # ──────────────────────────────────────────────────────────────────────
+  - name: blocks
+    description: >
+      Lists all blocked email addresses. Returns email, block reason,
+      status code, and creation timestamp.
+    guide: >
+      `SELECT email, reason, status, created
+      FROM sendgrid.blocks LIMIT 50`.
+      Optional filters: `start_time`, `end_time`, and `email`.
+    filters:
+      - name: start_time
+        required: false
+      - name: end_time
+        required: false
+      - name: email
+        required: false
+    request:
+      method: GET
+      path: /suppression/blocks
+      query:
+        - name: start_time
+          from: filter
+          key: start_time
+        - name: end_time
+          from: filter
+          key: end_time
+        - name: email
+          from: filter
+          key: email
+    response:
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 500
+        query_param: limit
+    columns:
+      - name: start_time
+        type: Int64
+        nullable: true
+        virtual: true
+        description: Optional start time filter as Unix epoch seconds.
+        expr:
+          kind: from_filter
+          key: start_time
+      - name: end_time
+        type: Int64
+        nullable: true
+        virtual: true
+        description: Optional end time filter as Unix epoch seconds.
+        expr:
+          kind: from_filter
+          key: end_time
+      - name: email
+        type: Utf8
+        nullable: false
+        description: Blocked email address.
+        expr:
+          kind: path
+          path:
+            - email
+      - name: reason
+        type: Utf8
+        nullable: true
+        description: Block reason message.
+        expr:
+          kind: path
+          path:
+            - reason
+      - name: status
+        type: Utf8
+        nullable: true
+        description: SMTP status code.
+        expr:
+          kind: path
+          path:
+            - status
+      - name: created_i
+        type: Int64
+        nullable: true
+        description: Unix timestamp when the block was recorded.
+        expr:
+          kind: path
+          path:
+            - created
+      - name: created
+        type: Timestamp
+        nullable: true
+        description: When the block was recorded.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr:
+            kind: path
+            path:
+              - created
+
+  # ──────────────────────────────────────────────────────────────────────
+  # spam_reports
+  # ──────────────────────────────────────────────────────────────────────
+  - name: spam_reports
+    description: >
+      Lists all spam report email addresses. Returns email, IP
+      address that sent the email, and creation timestamp.
+    guide: >
+      `SELECT email, ip, created
+      FROM sendgrid.spam_reports LIMIT 50`.
+      Optional filters: `start_time`, `end_time`, and `email`.
+    filters:
+      - name: start_time
+        required: false
+      - name: end_time
+        required: false
+      - name: email
+        required: false
+    request:
+      method: GET
+      path: /suppression/spam_reports
+      query:
+        - name: start_time
+          from: filter
+          key: start_time
+        - name: end_time
+          from: filter
+          key: end_time
+        - name: email
+          from: filter
+          key: email
+    response:
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 500
+        query_param: limit
+    columns:
+      - name: start_time
+        type: Int64
+        nullable: true
+        virtual: true
+        description: Optional start time filter as Unix epoch seconds.
+        expr:
+          kind: from_filter
+          key: start_time
+      - name: end_time
+        type: Int64
+        nullable: true
+        virtual: true
+        description: Optional end time filter as Unix epoch seconds.
+        expr:
+          kind: from_filter
+          key: end_time
+      - name: email
+        type: Utf8
+        nullable: false
+        description: Email address that filed spam report.
+        expr:
+          kind: path
+          path:
+            - email
+      - name: ip
+        type: Utf8
+        nullable: true
+        description: IP address that sent the reported email.
+        expr:
+          kind: path
+          path:
+            - ip
+      - name: created_i
+        type: Int64
+        nullable: true
+        description: Unix timestamp when the spam report was recorded.
+        expr:
+          kind: path
+          path:
+            - created
+      - name: created
+        type: Timestamp
+        nullable: true
+        description: When the spam report was recorded.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr:
+            kind: path
+            path:
+              - created
+
+  # ──────────────────────────────────────────────────────────────────────
+  # invalid_emails
+  # ──────────────────────────────────────────────────────────────────────
+  - name: invalid_emails
+    description: >
+      Lists all invalid email addresses. Returns email, reason
+      for invalidity, and creation timestamp.
+    guide: >
+      `SELECT email, reason, created
+      FROM sendgrid.invalid_emails LIMIT 50`.
+      Optional filters: `start_time`, `end_time`, and `email`.
+    filters:
+      - name: start_time
+        required: false
+      - name: end_time
+        required: false
+      - name: email
+        required: false
+    request:
+      method: GET
+      path: /suppression/invalid_emails
+      query:
+        - name: start_time
+          from: filter
+          key: start_time
+        - name: end_time
+          from: filter
+          key: end_time
+        - name: email
+          from: filter
+          key: email
+    response:
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 500
+        query_param: limit
+    columns:
+      - name: start_time
+        type: Int64
+        nullable: true
+        virtual: true
+        description: Optional start time filter as Unix epoch seconds.
+        expr:
+          kind: from_filter
+          key: start_time
+      - name: end_time
+        type: Int64
+        nullable: true
+        virtual: true
+        description: Optional end time filter as Unix epoch seconds.
+        expr:
+          kind: from_filter
+          key: end_time
+      - name: email
+        type: Utf8
+        nullable: false
+        description: Invalid email address.
+        expr:
+          kind: path
+          path:
+            - email
+      - name: reason
+        type: Utf8
+        nullable: true
+        description: Reason the email is invalid.
+        expr:
+          kind: path
+          path:
+            - reason
+      - name: created_i
+        type: Int64
+        nullable: true
+        description: Unix timestamp when recorded.
+        expr:
+          kind: path
+          path:
+            - created
+      - name: created
+        type: Timestamp
+        nullable: true
+        description: When the invalid email was recorded.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr:
+            kind: path
+            path:
+              - created
+
+  # ──────────────────────────────────────────────────────────────────────
+  # marketing_lists
+  # ──────────────────────────────────────────────────────────────────────
+  - name: marketing_lists
+    description: >
+      Lists all marketing contact lists. Returns list name,
+      contact count, and metadata.
+    guide: >
+      `SELECT id, name, contact_count
+      FROM sendgrid.marketing_lists`.
+      This endpoint returns `_metadata.next` as a full URL, which Coral
+      cannot follow as a cursor yet, so the table requests the largest
+      documented first page.
+    request:
+      method: GET
+      path: /marketing/lists
+      query:
+        - name: page_size
+          from: literal
+          value: 1000
+    response:
+      rows_path:
+        - result
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique list ID (UUID).
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: List name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: contact_count
+        type: Int64
+        nullable: true
+        description: Number of contacts in the list.
+        expr:
+          kind: path
+          path:
+            - contact_count
+
+  # ──────────────────────────────────────────────────────────────────────
+  # marketing_senders
+  # ──────────────────────────────────────────────────────────────────────
+  - name: marketing_senders
+    description: >
+      Lists all marketing sender identities. Returns sender
+      nickname, from/reply-to addresses, and verification status.
+    guide: >
+      `SELECT id, nickname, from_email, from_name, verified
+      FROM sendgrid.marketing_senders`.
+    request:
+      method: GET
+      path: /marketing/senders
+    response:
+      rows_path:
+        - results
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Unique sender identity ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: nickname
+        type: Utf8
+        nullable: true
+        description: Sender nickname.
+        expr:
+          kind: path
+          path:
+            - nickname
+      - name: from_email
+        type: Utf8
+        nullable: true
+        description: From email address.
+        expr:
+          kind: path
+          path:
+            - from
+            - email
+      - name: from_name
+        type: Utf8
+        nullable: true
+        description: From display name.
+        expr:
+          kind: path
+          path:
+            - from
+            - name
+      - name: reply_to_email
+        type: Utf8
+        nullable: true
+        description: Reply-to email address.
+        expr:
+          kind: path
+          path:
+            - reply_to
+            - email
+      - name: reply_to_name
+        type: Utf8
+        nullable: true
+        description: Reply-to display name.
+        expr:
+          kind: path
+          path:
+            - reply_to
+            - name
+      - name: address
+        type: Utf8
+        nullable: true
+        description: Physical address line 1.
+        expr:
+          kind: path
+          path:
+            - address
+      - name: city
+        type: Utf8
+        nullable: true
+        description: City.
+        expr:
+          kind: path
+          path:
+            - city
+      - name: country
+        type: Utf8
+        nullable: true
+        description: Country.
+        expr:
+          kind: path
+          path:
+            - country
+      - name: verified
+        type: Boolean
+        nullable: true
+        description: Whether the sender identity is verified.
+        expr:
+          kind: path
+          path:
+            - verified
+      - name: locked
+        type: Boolean
+        nullable: true
+        description: Whether the sender is locked.
+        expr:
+          kind: path
+          path:
+            - locked
+      - name: created_at_i
+        type: Int64
+        nullable: true
+        description: Unix timestamp of creation.
+        expr:
+          kind: path
+          path:
+            - created_at
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the sender identity was created.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at_i
+        type: Int64
+        nullable: true
+        description: Unix timestamp of last update.
+        expr:
+          kind: path
+          path:
+            - updated_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the sender identity was last updated.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr:
+            kind: path
+            path:
+              - updated_at
+
+  # ──────────────────────────────────────────────────────────────────────
+  # singlesends
+  # ──────────────────────────────────────────────────────────────────────
+  - name: singlesends
+    description: >
+      Lists all marketing single sends. Returns send name, status,
+      scheduled send time, and categories.
+    guide: >
+      `SELECT id, name, status, send_at
+      FROM sendgrid.singlesends LIMIT 20`.
+      This endpoint returns `_metadata.next` as a full URL, which Coral
+      cannot follow as a cursor yet, so the table requests the largest
+      documented first page.
+    request:
+      method: GET
+      path: /marketing/singlesends
+      query:
+        - name: page_size
+          from: literal
+          value: 100
+    response:
+      rows_path:
+        - result
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique single send ID (UUID).
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Single send name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Status (draft, scheduled, triggered).
+        expr:
+          kind: path
+          path:
+            - status
+      - name: send_at
+        type: Utf8
+        nullable: true
+        description: Scheduled send time (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - send_at
+      - name: categories
+        type: Json
+        nullable: true
+        description: Array of category strings.
+        expr:
+          kind: path
+          path:
+            - categories
+      - name: is_abtest
+        type: Boolean
+        nullable: true
+        description: Whether this is an A/B test.
+        expr:
+          kind: path
+          path:
+            - is_abtest
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Creation timestamp (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - created_at
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: Last update timestamp (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - updated_at

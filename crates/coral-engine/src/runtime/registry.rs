@@ -5,7 +5,9 @@ use std::sync::Arc;
 use datafusion::error::{DataFusionError, Result as DataFusionResult};
 use datafusion::prelude::SessionContext;
 
-use crate::backends::{BackendRegistration, CompiledBackendSource, RegisteredSource};
+use crate::backends::{
+    BackendRegistration, CompiledBackendSource, RegisteredSource, SourceTableFunctions,
+};
 use crate::runtime::error::{datafusion_to_core, source_decorator_error_to_core};
 use crate::runtime::schema_provider::StaticSchemaProvider;
 use crate::{CoreError, QuerySource, SourceDecorator, SourceFailurePolicy};
@@ -102,6 +104,7 @@ pub(crate) async fn register_sources(
                     Ok(registration) => {
                         let BackendRegistration {
                             tables,
+                            table_functions,
                             source: registered_source,
                         } = registration;
                         let decorated_tables =
@@ -110,7 +113,10 @@ pub(crate) async fn register_sources(
                             compiled_source.schema_name(),
                             Arc::new(StaticSchemaProvider::new(decorated_tables)),
                         ) {
-                            Ok(_) => result.active_sources.push(registered_source),
+                            Ok(_) => {
+                                register_table_functions(ctx, table_functions);
+                                result.active_sources.push(registered_source);
+                            }
                             Err(error) => {
                                 let core_error = datafusion_to_core(&error, &[]);
                                 if handle_source_registration_failure(
@@ -120,17 +126,12 @@ pub(crate) async fn register_sources(
                                 )? {
                                     return Err(core_error);
                                 }
-                                let failure = SourceRegistrationFailure {
-                                    schema_name,
-                                    detail: core_error.to_string(),
-                                };
-                                tracing::warn!(
-                                    source = %source_name,
-                                    schema_name = %failure.schema_name,
-                                    detail = %failure.detail,
-                                    "skipping source"
+                                push_source_failure(
+                                    &mut result,
+                                    &source_name,
+                                    &schema_name,
+                                    core_error.to_string(),
                                 );
-                                result.failures.push(failure);
                             }
                         }
                     }
@@ -143,17 +144,12 @@ pub(crate) async fn register_sources(
                         )? {
                             return Err(core_error);
                         }
-                        let failure = SourceRegistrationFailure {
-                            schema_name,
-                            detail: core_error.to_string(),
-                        };
-                        tracing::warn!(
-                            source = %source_name,
-                            schema_name = %failure.schema_name,
-                            detail = %failure.detail,
-                            "skipping source"
+                        push_source_failure(
+                            &mut result,
+                            &source_name,
+                            &schema_name,
+                            core_error.to_string(),
                         );
-                        result.failures.push(failure);
                     }
                 }
             }
@@ -161,17 +157,12 @@ pub(crate) async fn register_sources(
                 if handle_source_registration_failure(source_decorators, &source, &error)? {
                     return Err(error);
                 }
-                let failure = SourceRegistrationFailure {
-                    schema_name: source.source_name().to_string(),
-                    detail: error.to_string(),
-                };
-                tracing::warn!(
-                    source = %source.source_name(),
-                    schema_name = %failure.schema_name,
-                    detail = %failure.detail,
-                    "skipping source"
+                push_source_failure(
+                    &mut result,
+                    source.source_name(),
+                    source.source_name(),
+                    error.to_string(),
                 );
-                result.failures.push(failure);
             }
         }
     }
@@ -212,6 +203,31 @@ async fn register_source(
     }
 
     source.register(ctx).await
+}
+
+fn push_source_failure(
+    result: &mut SourceRegistrationResult,
+    source_name: &str,
+    schema_name: &str,
+    detail: String,
+) {
+    let failure = SourceRegistrationFailure {
+        schema_name: schema_name.to_string(),
+        detail,
+    };
+    tracing::warn!(
+        source = %source_name,
+        schema_name = %failure.schema_name,
+        detail = %failure.detail,
+        "skipping source"
+    );
+    result.failures.push(failure);
+}
+
+fn register_table_functions(ctx: &SessionContext, table_functions: SourceTableFunctions) {
+    for (internal_name, function) in table_functions {
+        ctx.register_udtf(&internal_name, function);
+    }
 }
 
 fn prepare_source_decorators(

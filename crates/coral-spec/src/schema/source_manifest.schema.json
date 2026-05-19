@@ -15,7 +15,12 @@
         "anyOf": [
           { "required": ["tables"] },
           { "required": ["functions"] }
-        ]
+        ],
+        "properties": {
+          "tables": {
+            "items": { "$ref": "#/$defs/http_table" }
+          }
+        }
       }
     },
     {
@@ -23,7 +28,14 @@
         "properties": { "backend": { "enum": ["jsonl", "parquet"] } },
         "required": ["backend"]
       },
-      "then": { "required": ["tables"] }
+      "then": {
+        "required": ["tables"],
+        "properties": {
+          "tables": {
+            "items": { "$ref": "#/$defs/file_table" }
+          }
+        }
+      }
     }
   ],
   "properties": {
@@ -47,7 +59,7 @@
     "tables": {
       "type": "array",
       "minItems": 1,
-      "items": { "$ref": "#/$defs/table" }
+      "items": { "type": "object" }
     },
     "functions": {
       "type": "array",
@@ -146,7 +158,7 @@
         "reset_header": { "type": "string", "minLength": 1 }
       }
     },
-    "table": {
+    "http_table": {
       "type": "object",
       "additionalProperties": false,
       "required": ["name", "description"],
@@ -159,6 +171,11 @@
           "items": { "$ref": "#/$defs/filter" }
         },
         "fetch_limit_default": { "type": "integer", "minimum": 1 },
+        "search_limits": { "$ref": "#/$defs/search_limits" },
+        "detail_hints": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/detail_hint" }
+        },
         "request": { "$ref": "#/$defs/request" },
         "requests": {
           "type": "array",
@@ -195,6 +212,26 @@
         }
       }
     },
+    "file_table": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "description", "source"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "description": { "type": "string", "minLength": 1 },
+        "guide": { "type": "string" },
+        "filters": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/filter" }
+        },
+        "fetch_limit_default": { "type": "integer", "minimum": 1 },
+        "source": { "$ref": "#/$defs/source" },
+        "columns": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/column" }
+        }
+      }
+    },
     "source": {
       "type": "object",
       "additionalProperties": false,
@@ -217,24 +254,76 @@
         "type": { "type": "string", "minLength": 1 }
       }
     },
+    "manifest_data_type": {
+      "type": "string",
+      "enum": ["Utf8", "Int64", "Boolean", "Float64", "Timestamp", "Json"]
+    },
     "filter": {
       "type": "object",
       "additionalProperties": false,
       "required": ["name"],
       "properties": {
         "name": { "type": "string", "minLength": 1 },
+        "type": { "$ref": "#/$defs/manifest_data_type" },
         "required": { "type": "boolean" },
-        "mode": { "type": "string", "enum": ["equality", "search", "contains"] }
+        "mode": {
+          "oneOf": [
+            { "const": "equality" },
+            {
+              "const": "search",
+              "deprecated": true,
+              "description": "Compatibility-only virtual-filter marker. New provider-native search surfaces should use kind: search table functions."
+            },
+            { "const": "contains" }
+          ]
+        },
+        "description": { "type": "string" }
+      }
+    },
+    "search_limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["default_top_k", "max_top_k", "max_calls_per_query"],
+      "properties": {
+        "default_top_k": { "type": "integer", "minimum": 1 },
+        "max_top_k": { "type": "integer", "minimum": 1 },
+        "max_calls_per_query": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "detail_hint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["table", "search_result_column", "detail_filter", "purpose"],
+      "properties": {
+        "table": { "type": "string", "minLength": 1 },
+        "search_result_column": { "type": "string", "minLength": 1 },
+        "detail_filter": { "type": "string", "minLength": 1 },
+        "purpose": { "type": "string", "minLength": 1 }
       }
     },
     "table_function": {
       "type": "object",
       "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": { "kind": { "const": "search" } },
+            "required": ["kind"]
+          },
+          "then": { "required": ["search_limits"] }
+        }
+      ],
       "required": ["name", "request"],
       "properties": {
         "name": { "type": "string", "minLength": 1 },
+        "kind": { "type": "string", "enum": ["table", "search"] },
         "description": { "type": "string" },
         "fetch_limit_default": { "type": "integer", "minimum": 1 },
+        "search_limits": { "$ref": "#/$defs/search_limits" },
+        "detail_hints": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/detail_hint" }
+        },
         "args": {
           "type": "array",
           "items": { "$ref": "#/$defs/table_function_arg" }
@@ -596,10 +685,7 @@
       "required": ["name", "type"],
       "properties": {
         "name": { "type": "string", "minLength": 1 },
-        "type": {
-          "type": "string",
-          "enum": ["Utf8", "Int64", "Boolean", "Float64", "Timestamp", "Json"]
-        },
+        "type": { "$ref": "#/$defs/manifest_data_type" },
         "nullable": { "type": "boolean" },
         "virtual": { "type": "boolean" },
         "description": { "type": "string" },

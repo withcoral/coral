@@ -968,7 +968,7 @@ checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
 
 [[package]]
 name = "coral-api"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "prost",
  "protoc-bin-vendored",
@@ -980,7 +980,7 @@ dependencies = [
 
 [[package]]
 name = "coral-app"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "arrow",
  "axum",
@@ -997,6 +997,7 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry_sdk",
  "prost",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",
@@ -1019,7 +1020,7 @@ dependencies = [
 
 [[package]]
 name = "coral-auth-aws"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "aws-credential-types",
  "aws-sigv4",
@@ -1032,7 +1033,7 @@ dependencies = [
 
 [[package]]
 name = "coral-cli"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "arrow",
@@ -1045,6 +1046,8 @@ dependencies = [
  "coral-mcp",
  "coral-spec",
  "dialoguer",
+ "jsonschema",
+ "regex",
  "rmcp",
  "rust-embed",
  "serde_json",
@@ -1058,11 +1061,12 @@ dependencies = [
 
 [[package]]
 name = "coral-client"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "arrow",
  "coral-api",
  "coral-app",
+ "http-body 1.0.1",
  "opentelemetry",
  "opentelemetry_sdk",
  "serde_json",
@@ -1071,11 +1075,12 @@ dependencies = [
  "tonic-types",
  "tracing",
  "tracing-opentelemetry",
+ "tracing-subscriber",
 ]
 
 [[package]]
 name = "coral-engine"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "arrow",
  "async-trait",
@@ -1106,11 +1111,13 @@ dependencies = [
 
 [[package]]
 name = "coral-mcp"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "coral-api",
  "coral-app",
  "coral-client",
+ "jsonschema",
+ "opentelemetry",
  "regex",
  "rmcp",
  "serde_json",
@@ -1119,11 +1126,13 @@ dependencies = [
  "tokio",
  "tonic",
  "tonic-types",
+ "tracing",
+ "tracing-opentelemetry",
 ]
 
 [[package]]
 name = "coral-spec"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "jsonschema",
  "serde",
@@ -5967,7 +5976,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -5975,6 +5984,7 @@ dependencies = [
  "insta",
  "pulldown-cmark",
  "serde_json",
+ "walkdir",
 ]
 
 [[package]]

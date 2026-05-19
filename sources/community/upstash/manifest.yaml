@@ -1,0 +1,918 @@
+name: upstash
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Upstash platform metadata — Redis databases, database statistics,
+  and Vector indexes — via the Upstash Developer API v2 with Basic
+  authentication.
+base_url: https://api.upstash.com/v2
+
+inputs:
+  UPSTASH_API_KEY:
+    kind: secret
+    hint: >-
+      Upstash Management API key. Create one at
+      https://console.upstash.com → Account → Management API →
+      Create API Key. Used together with UPSTASH_EMAIL for Basic auth.
+  UPSTASH_EMAIL:
+    kind: variable
+    hint: >-
+      Email address associated with your Upstash account, used as the
+      Basic auth username. Example: you@example.com
+
+auth:
+  type: BasicAuth
+  username: "{{input.UPSTASH_EMAIL}}"
+  password: "{{input.UPSTASH_API_KEY}}"
+
+test_queries:
+  - SELECT database_id, database_name, region, state FROM upstash.redis_databases LIMIT 1
+  - SELECT name, region, dimension_count, similarity_function FROM upstash.vector_indexes LIMIT 1
+
+tables:
+  # ──────────────────────────────────────────────────────────────────────
+  # redis_databases — list all Redis databases
+  # ──────────────────────────────────────────────────────────────────────
+  - name: redis_databases
+    description: >
+      Lists all Redis databases for the authenticated Upstash account.
+      Returns configuration, resource limits, region topology, and plan
+      details for every database. Use this as the discovery table —
+      the database_id column is the required filter for the
+      redis_database_stats table.
+    guide: >
+      Start with `SELECT database_id, database_name, region, state,
+      type FROM upstash.redis_databases`. Use the database_id value
+      to query stats via upstash.redis_database_stats.
+    request:
+      method: GET
+      path: /redis/databases
+    response:
+      rows_path: []
+    pagination:
+      mode: none
+    columns:
+      - name: database_id
+        type: Utf8
+        nullable: false
+        description: Unique database identifier (UUID).
+        expr:
+          kind: path
+          path:
+            - database_id
+      - name: database_name
+        type: Utf8
+        nullable: false
+        description: Human-readable database name.
+        expr:
+          kind: path
+          path:
+            - database_name
+      - name: region
+        type: Utf8
+        nullable: true
+        description: >-
+          Region or deployment mode (e.g. us-east-1, global).
+        expr:
+          kind: path
+          path:
+            - region
+      - name: port
+        type: Int64
+        nullable: true
+        description: Database port for client connections.
+        expr:
+          kind: path
+          path:
+            - port
+      - name: creation_time
+        type: Timestamp
+        nullable: true
+        description: Database creation time (Unix epoch seconds).
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr:
+            kind: path
+            path:
+              - creation_time
+      - name: state
+        type: Utf8
+        nullable: true
+        description: >-
+          Current database state: active, suspended, or passive.
+        expr:
+          kind: path
+          path:
+            - state
+      - name: endpoint
+        type: Utf8
+        nullable: true
+        description: >-
+          Endpoint hostname or slug for the database.
+        expr:
+          kind: path
+          path:
+            - endpoint
+      - name: tls
+        type: Boolean
+        nullable: true
+        description: Whether TLS/SSL is enabled.
+        expr:
+          kind: path
+          path:
+            - tls
+      - name: db_max_clients
+        type: Int64
+        nullable: true
+        description: Maximum concurrent client connections allowed.
+        expr:
+          kind: path
+          path:
+            - db_max_clients
+      - name: db_max_request_size
+        type: Int64
+        nullable: true
+        description: Maximum request size in bytes.
+        expr:
+          kind: path
+          path:
+            - db_max_request_size
+      - name: db_disk_threshold
+        type: Int64
+        nullable: true
+        description: Total disk size limit in bytes.
+        expr:
+          kind: path
+          path:
+            - db_disk_threshold
+      - name: db_max_entry_size
+        type: Int64
+        nullable: true
+        description: Maximum entry size in bytes.
+        expr:
+          kind: path
+          path:
+            - db_max_entry_size
+      - name: db_memory_threshold
+        type: Int64
+        nullable: true
+        description: Maximum memory usage in bytes.
+        expr:
+          kind: path
+          path:
+            - db_memory_threshold
+      - name: db_max_commands_per_second
+        type: Int64
+        nullable: true
+        description: Maximum commands per second.
+        expr:
+          kind: path
+          path:
+            - db_max_commands_per_second
+      - name: db_request_limit
+        type: Int64
+        nullable: true
+        description: Total number of commands allowed.
+        expr:
+          kind: path
+          path:
+            - db_request_limit
+      - name: type
+        type: Utf8
+        nullable: true
+        description: >-
+          Payment plan: free, payg, pro, or paid.
+        expr:
+          kind: path
+          path:
+            - type
+      - name: budget
+        type: Float64
+        nullable: true
+        description: Allocated monthly budget.
+        expr:
+          kind: path
+          path:
+            - budget
+      - name: primary_region
+        type: Utf8
+        nullable: true
+        description: Primary region of the database cluster.
+        expr:
+          kind: path
+          path:
+            - primary_region
+      - name: primary_members
+        type: Json
+        nullable: true
+        description: List of primary cluster regions.
+        expr:
+          kind: path
+          path:
+            - primary_members
+      - name: all_members
+        type: Json
+        nullable: true
+        description: List of all cluster regions.
+        expr:
+          kind: path
+          path:
+            - all_members
+      - name: eviction
+        type: Boolean
+        nullable: true
+        description: Whether entry eviction is enabled.
+        expr:
+          kind: path
+          path:
+            - eviction
+      - name: auto_upgrade
+        type: Boolean
+        nullable: true
+        description: Whether automatic upgrade is enabled.
+        expr:
+          kind: path
+          path:
+            - auto_upgrade
+      - name: consistent
+        type: Boolean
+        nullable: true
+        description: Whether strong consistency mode is enabled.
+        expr:
+          kind: path
+          path:
+            - consistent
+      - name: db_resource_size
+        type: Utf8
+        nullable: true
+        description: >-
+          Resource allocation tier: S, M, L, XL, XXL, or 3XL.
+        expr:
+          kind: path
+          path:
+            - db_resource_size
+      - name: db_type
+        type: Utf8
+        nullable: true
+        description: >-
+          Database storage engine type: bolt, badger, or pebble.
+        expr:
+          kind: path
+          path:
+            - db_type
+      - name: replicas
+        type: Int64
+        nullable: true
+        description: Replica factor of the database.
+        expr:
+          kind: path
+          path:
+            - replicas
+      - name: customer_id
+        type: Utf8
+        nullable: true
+        description: >-
+          Owner identifier (email or marketplace-scoped email).
+        expr:
+          kind: path
+          path:
+            - customer_id
+      - name: daily_backup_enabled
+        type: Boolean
+        nullable: true
+        description: Whether daily backup is enabled.
+        expr:
+          kind: path
+          path:
+            - daily_backup_enabled
+      - name: read_regions
+        type: Json
+        nullable: true
+        description: Array of read replica regions.
+        expr:
+          kind: path
+          path:
+            - read_regions
+      - name: security_addons
+        type: Json
+        nullable: true
+        description: >-
+          Security add-ons and their enablement status (ipWhitelisting,
+          vpcPeering, privateLink, tlsMutualAuth, encryptionAtRest).
+        expr:
+          kind: path
+          path:
+            - securityAddons
+      - name: prometheus_enabled
+        type: Utf8
+        nullable: true
+        description: Whether Prometheus integration is enabled.
+        expr:
+          kind: path
+          path:
+            - prometheus_enabled
+      - name: prod_pack_enabled
+        type: Boolean
+        nullable: true
+        description: Whether production pack is enabled.
+        expr:
+          kind: path
+          path:
+            - prod_pack_enabled
+      - name: modifying_state
+        type: Utf8
+        nullable: true
+        description: Current modifying state of the database.
+        expr:
+          kind: path
+          path:
+            - modifying_state
+      - name: db_conn_idle_timeout
+        type: Int64
+        nullable: true
+        description: Connection idle timeout in nanoseconds.
+        expr:
+          kind: path
+          path:
+            - db_conn_idle_timeout
+      - name: db_lua_timeout
+        type: Int64
+        nullable: true
+        description: Lua script execution timeout in nanoseconds.
+        expr:
+          kind: path
+          path:
+            - db_lua_timeout
+      - name: db_lua_credits_per_min
+        type: Int64
+        nullable: true
+        description: Lua script execution credits per minute.
+        expr:
+          kind: path
+          path:
+            - db_lua_credits_per_min
+      - name: db_store_max_idle
+        type: Int64
+        nullable: true
+        description: Store connection idle timeout in nanoseconds.
+        expr:
+          kind: path
+          path:
+            - db_store_max_idle
+      - name: db_max_loads_per_sec
+        type: Int64
+        nullable: true
+        description: Maximum load operations per second.
+        expr:
+          kind: path
+          path:
+            - db_max_loads_per_sec
+      - name: db_acl_enabled
+        type: Utf8
+        nullable: true
+        description: Access Control List enabled status.
+        expr:
+          kind: path
+          path:
+            - db_acl_enabled
+      - name: db_acl_default_user_status
+        type: Utf8
+        nullable: true
+        description: Default user access status in ACL.
+        expr:
+          kind: path
+          path:
+            - db_acl_default_user_status
+      - name: db_eviction
+        type: Boolean
+        nullable: true
+        description: Database-level eviction policy status.
+        expr:
+          kind: path
+          path:
+            - db_eviction
+      - name: last_plan_upgrade_time
+        type: Timestamp
+        nullable: true
+        description: Unix timestamp of the last plan upgrade.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr:
+            kind: path
+            path:
+              - last_plan_upgrade_time
+
+  # ──────────────────────────────────────────────────────────────────────
+  # redis_database_stats — detailed stats for a specific database
+  # ──────────────────────────────────────────────────────────────────────
+  - name: redis_database_stats
+    description: >
+      Returns detailed usage statistics for a specific Redis database.
+      Includes daily command counts, monthly request and bandwidth
+      totals, storage usage, and billing information. Requires the
+      database_id filter obtained from the redis_databases table.
+    guide: >
+      Always filter by database_id: `SELECT daily_net_commands,
+      total_monthly_requests, total_monthly_billing,
+      current_storage FROM upstash.redis_database_stats
+      WHERE database_id = '<id>'`. Time-series fields
+      (connection_count, keyspace, throughput, etc.) are returned as
+      Json arrays.
+    filters:
+      - name: database_id
+        required: true
+    request:
+      method: GET
+      path: /redis/stats/{{filter.database_id}}
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: database_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Echoes the database_id filter for traceability.
+        expr:
+          kind: from_filter
+          key: database_id
+      - name: daily_net_commands
+        type: Int64
+        nullable: true
+        description: Total commands executed today.
+        expr:
+          kind: path
+          path:
+            - daily_net_commands
+      - name: daily_read_requests
+        type: Int64
+        nullable: true
+        description: Total read requests executed today.
+        expr:
+          kind: path
+          path:
+            - daily_read_requests
+      - name: daily_write_requests
+        type: Int64
+        nullable: true
+        description: Total write requests executed today.
+        expr:
+          kind: path
+          path:
+            - daily_write_requests
+      - name: daily_bandwidth
+        type: Int64
+        nullable: true
+        description: Total daily bandwidth usage in bytes.
+        expr:
+          kind: path
+          path:
+            - dailybandwidth
+      - name: total_monthly_bandwidth
+        type: Int64
+        nullable: true
+        description: Total bandwidth used in current month (bytes).
+        expr:
+          kind: path
+          path:
+            - total_monthly_bandwidth
+      - name: total_monthly_requests
+        type: Int64
+        nullable: true
+        description: Total requests in current month.
+        expr:
+          kind: path
+          path:
+            - total_monthly_requests
+      - name: total_monthly_read_requests
+        type: Int64
+        nullable: true
+        description: Total read requests in current month.
+        expr:
+          kind: path
+          path:
+            - total_monthly_read_requests
+      - name: total_monthly_write_requests
+        type: Int64
+        nullable: true
+        description: Total write requests in current month.
+        expr:
+          kind: path
+          path:
+            - total_monthly_write_requests
+      - name: total_monthly_script_requests
+        type: Int64
+        nullable: true
+        description: Total Lua script requests in current month.
+        expr:
+          kind: path
+          path:
+            - total_monthly_script_requests
+      - name: total_monthly_storage
+        type: Int64
+        nullable: true
+        description: Total storage used in current month (bytes).
+        expr:
+          kind: path
+          path:
+            - total_monthly_storage
+      - name: current_storage
+        type: Int64
+        nullable: true
+        description: Current storage usage (bytes).
+        expr:
+          kind: path
+          path:
+            - current_storage
+      - name: total_monthly_billing
+        type: Float64
+        nullable: true
+        description: Total cost in current billing month.
+        expr:
+          kind: path
+          path:
+            - total_monthly_billing
+      - name: queue_optimized
+        type: Boolean
+        nullable: true
+        description: Whether queue optimization is enabled.
+        expr:
+          kind: path
+          path:
+            - queue_optimized
+      - name: connection_count
+        type: Json
+        nullable: true
+        description: Connection count time series (array of {x, y} points).
+        expr:
+          kind: path
+          path:
+            - connection_count
+      - name: keyspace
+        type: Json
+        nullable: true
+        description: Total keys in database over time (array of {x, y} points).
+        expr:
+          kind: path
+          path:
+            - keyspace
+      - name: throughput
+        type: Json
+        nullable: true
+        description: Throughput over time (array of {x, y} points).
+        expr:
+          kind: path
+          path:
+            - throughput
+      - name: disk_usage
+        type: Json
+        nullable: true
+        description: Disk usage over time (array of {x, y} points).
+        expr:
+          kind: path
+          path:
+            - diskusage
+      - name: latency_mean
+        type: Json
+        nullable: true
+        description: Average latency over time (array of {x, y} points).
+        expr:
+          kind: path
+          path:
+            - latencymean
+      - name: latency_99
+        type: Json
+        nullable: true
+        description: P99 latency over time (array of {x, y} points).
+        expr:
+          kind: path
+          path:
+            - latency_99
+      - name: daily_requests
+        type: Json
+        nullable: true
+        description: Daily requests over time (array of {x, y} points).
+        expr:
+          kind: path
+          path:
+            - dailyrequests
+      - name: daily_billing
+        type: Json
+        nullable: true
+        description: Daily billing amounts over time (array of {x, y} points).
+        expr:
+          kind: path
+          path:
+            - dailybilling
+      - name: command_counts
+        type: Json
+        nullable: true
+        description: >-
+          Per-command count time series (array of objects with
+          metric_identifier and data_points).
+        expr:
+          kind: path
+          path:
+            - command_counts
+      - name: monitor_count
+        type: Json
+        nullable: true
+        description: Monitor count.
+        expr:
+          kind: path
+          path:
+            - monitor_count
+      - name: read_latency_mean
+        type: Json
+        nullable: true
+        description: Average read latency over time (array of {x, y} points).
+        expr:
+          kind: path
+          path:
+            - read_latency_mean
+      - name: read_latency_99
+        type: Json
+        nullable: true
+        description: 99th percentile read latency over time (array of {x, y} points).
+        expr:
+          kind: path
+          path:
+            - read_latency_99
+      - name: write_latency_mean
+        type: Json
+        nullable: true
+        description: Average write latency over time (array of {x, y} points).
+        expr:
+          kind: path
+          path:
+            - write_latency_mean
+      - name: write_latency_99
+        type: Json
+        nullable: true
+        description: 99th percentile write latency over time (array of {x, y} points).
+        expr:
+          kind: path
+          path:
+            - write_latency_99
+      - name: hits
+        type: Json
+        nullable: true
+        description: Cache hits over time (array of {x, y} points).
+        expr:
+          kind: path
+          path:
+            - hits
+      - name: misses
+        type: Json
+        nullable: true
+        description: Cache misses over time (array of {x, y} points).
+        expr:
+          kind: path
+          path:
+            - misses
+      - name: read
+        type: Json
+        nullable: true
+        description: Read requests over time (array of {x, y} points).
+        expr:
+          kind: path
+          path:
+            - read
+      - name: write
+        type: Json
+        nullable: true
+        description: Write requests over time (array of {x, y} points).
+        expr:
+          kind: path
+          path:
+            - write
+      - name: days
+        type: Json
+        nullable: true
+        description: Days of the week for measurement.
+        expr:
+          kind: path
+          path:
+            - days
+      - name: bandwidths
+        type: Json
+        nullable: true
+        description: Bandwidth usage over time (array of {x, y} points).
+        expr:
+          kind: path
+          path:
+            - bandwidths
+
+  # ──────────────────────────────────────────────────────────────────────
+  # vector_indexes — list all Vector indexes
+  # ──────────────────────────────────────────────────────────────────────
+  - name: vector_indexes
+    description: >
+      Lists all Upstash Vector indexes for the authenticated account.
+      Returns index configuration including name, region, dimension,
+      similarity function, and plan details.
+    guide: >
+      Start with `SELECT name, region, dimension_count, similarity_function,
+      type FROM upstash.vector_indexes`. No filters required — this
+      endpoint returns all indexes in a single response.
+    request:
+      method: GET
+      path: /vector/index
+    response:
+      rows_path: []
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique Vector index identifier (UUID).
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Index name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: region
+        type: Utf8
+        nullable: true
+        description: Region where the index is hosted.
+        expr:
+          kind: path
+          path:
+            - region
+      - name: endpoint
+        type: Utf8
+        nullable: true
+        description: Index endpoint URL.
+        expr:
+          kind: path
+          path:
+            - endpoint
+      - name: dimension_count
+        type: Int64
+        nullable: true
+        description: Vector dimension size.
+        expr:
+          kind: path
+          path:
+            - dimension_count
+      - name: similarity_function
+        type: Utf8
+        nullable: true
+        description: >-
+          Similarity function used: COSINE, EUCLIDEAN, or DOT_PRODUCT.
+        expr:
+          kind: path
+          path:
+            - similarity_function
+      - name: type
+        type: Utf8
+        nullable: true
+        description: >-
+          Payment plan type: free, payg, fixed, or pro.
+        expr:
+          kind: path
+          path:
+            - type
+      - name: index_type
+        type: Utf8
+        nullable: true
+        description: Type of the vector index.
+        expr:
+          kind: path
+          path:
+            - index_type
+      - name: embedding_model
+        type: Utf8
+        nullable: true
+        description: Embedding model used by the index.
+        expr:
+          kind: path
+          path:
+            - embedding_model
+      - name: sparse_embedding_model
+        type: Utf8
+        nullable: true
+        description: Sparse embedding model used by the index.
+        expr:
+          kind: path
+          path:
+            - sparse_embedding_model
+      - name: max_total_metadata_size
+        type: Int64
+        nullable: true
+        description: Maximum total metadata size.
+        expr:
+          kind: path
+          path:
+            - max_total_metadata_size
+      - name: reserved_price
+        type: Float64
+        nullable: true
+        description: Reserved price.
+        expr:
+          kind: path
+          path:
+            - reserved_price
+      - name: throughput_vector
+        type: Json
+        nullable: true
+        description: Throughput over time (array of {x, y} points).
+        expr:
+          kind: path
+          path:
+            - throughput_vector
+      - name: creation_time
+        type: Timestamp
+        nullable: true
+        description: Index creation time (Unix epoch seconds).
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr:
+            kind: path
+            path:
+              - creation_time
+      - name: max_vector_count
+        type: Int64
+        nullable: true
+        description: Maximum number of vectors allowed.
+        expr:
+          kind: path
+          path:
+            - max_vector_count
+      - name: max_daily_updates
+        type: Int64
+        nullable: true
+        description: Maximum daily update operations allowed.
+        expr:
+          kind: path
+          path:
+            - max_daily_updates
+      - name: max_daily_queries
+        type: Int64
+        nullable: true
+        description: Maximum daily query operations allowed.
+        expr:
+          kind: path
+          path:
+            - max_daily_queries
+      - name: max_monthly_bandwidth
+        type: Int64
+        nullable: true
+        description: Maximum monthly bandwidth in bytes.
+        expr:
+          kind: path
+          path:
+            - max_monthly_bandwidth
+      - name: max_writes_per_second
+        type: Int64
+        nullable: true
+        description: Maximum write operations per second.
+        expr:
+          kind: path
+          path:
+            - max_writes_per_second
+      - name: max_query_per_second
+        type: Int64
+        nullable: true
+        description: Maximum queries per second.
+        expr:
+          kind: path
+          path:
+            - max_query_per_second
+      - name: max_reads_per_request
+        type: Int64
+        nullable: true
+        description: Maximum reads per request.
+        expr:
+          kind: path
+          path:
+            - max_reads_per_request
+      - name: max_writes_per_request
+        type: Int64
+        nullable: true
+        description: Maximum writes per request.
+        expr:
+          kind: path
+          path:
+            - max_writes_per_request
+      - name: customer_id
+        type: Utf8
+        nullable: true
+        description: Owner identifier (email).
+        expr:
+          kind: path
+          path:
+            - customer_id

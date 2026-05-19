@@ -21,6 +21,8 @@
 //!   source-secret persistence.
 //! - `query/` owns query-time source loading and `coral-engine`
 //!   orchestration.
+//! - `catalog/` owns workspace-scoped discovery semantics over query-visible
+//!   table metadata.
 //!
 //! # Crate Relationships
 //!
@@ -32,6 +34,7 @@
 //!
 /// Bootstrap entrypoints and local server assembly.
 pub mod bootstrap;
+mod catalog;
 mod feedback;
 mod identity;
 mod query;
@@ -49,5 +52,5 @@ pub use coral_engine::{EngineExtensions, QuerySource};
 pub use query::extensions::{
     AwsEngineExtensionsProvider, EngineExtensionsProvider, NoopEngineExtensionsProvider,
 };
-pub use telemetry::{RunContext, run_with_context, shutdown_tracing};
+pub use telemetry::{RunContext, RunErrorTelemetry, run_with_context, shutdown_tracing};
 pub use workspaces::DEFAULT_WORKSPACE_ID;

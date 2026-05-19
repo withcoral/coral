@@ -41,7 +41,7 @@
 //! # async fn demo(
 //! #     sources: &[QuerySource],
 //! # ) -> Result<(), Box<dyn std::error::Error>> {
-//! let _ = CoralQuery::list_tables(sources, QueryRuntimeConfig::default(), None).await?;
+//! let _ = CoralQuery::list_tables(sources, QueryRuntimeConfig::default(), None, None).await?;
 //! # Ok(())
 //! # }
 //! # Ok(())
@@ -66,9 +66,9 @@ pub use composition::{
     SourceTables,
 };
 pub use contracts::{
-    ColumnInfo, CoreError, QueryExecution, QueryRuntimeConfig, QueryRuntimeContext, QuerySource,
-    QueryTestFailure, QueryTestResult, QueryTestSuccess, SourceValidationReport, StatusCode,
-    StructuredQueryError, TableInfo,
+    ColumnInfo, CoreError, QueryExecution, QueryPlan, QueryRuntimeConfig, QueryRuntimeContext,
+    QuerySource, QueryTestFailure, QueryTestResult, QueryTestSuccess, SourceValidationReport,
+    StatusCode, StructuredQueryError, TableInfo,
 };
 
 /// High-level query operations for the local query engine.
@@ -89,10 +89,11 @@ impl CoralQuery {
         sources: &[QuerySource],
         runtime: QueryRuntimeConfig,
         schema_filter: Option<&str>,
+        table_filter: Option<&str>,
     ) -> Result<Vec<TableInfo>, CoreError> {
         Ok(runtime::query::build_runtime(sources, runtime)
             .await?
-            .list_tables(schema_filter))
+            .list_tables(schema_filter, table_filter))
     }
 
     /// Executes one `SQL` statement over the provided source set.
@@ -113,6 +114,30 @@ impl CoralQuery {
         runtime::query::build_runtime(sources, runtime)
             .await?
             .execute_sql(sql)
+            .await
+    }
+
+    /// Explains one `SQL` statement with logical and physical plan renderings.
+    ///
+    /// The explanation is built against the provided source set and current
+    /// runtime state. It does not execute the SQL statement.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if the SQL is empty, if source compilation fails,
+    /// or if the query engine cannot explain the statement.
+    pub async fn explain_sql(
+        sources: &[QuerySource],
+        runtime: QueryRuntimeConfig,
+        sql: &str,
+    ) -> Result<QueryPlan, CoreError> {
+        if sql.trim().is_empty() {
+            return Err(CoreError::InvalidInput("SQL must not be empty".to_string()));
+        }
+
+        runtime::query::build_runtime(sources, runtime)
+            .await?
+            .explain_sql(sql)
             .await
     }
 
@@ -143,7 +168,7 @@ impl CoralQuery {
     ) -> Result<SourceValidationReport, CoreError> {
         let query_runtime =
             runtime::query::build_runtime(std::slice::from_ref(source), runtime).await?;
-        let tables = query_runtime.list_tables(Some(source.source_name()));
+        let tables = query_runtime.list_tables(Some(source.source_name()), None);
         if tables.is_empty() {
             if let Some(failure) = query_runtime.registration_failure(source.source_name()) {
                 return Err(CoreError::FailedPrecondition(failure.detail.clone()));

@@ -1,0 +1,126 @@
+syntax = "proto3";
+
+package coral.v1;
+
+// Query status derived from locally captured spans.
+enum TraceStatus {
+  // Status was not recorded or could not be inferred.
+  TRACE_STATUS_UNSPECIFIED = 0;
+  // The traced operation completed successfully.
+  TRACE_STATUS_OK = 1;
+  // The traced operation recorded an error.
+  TRACE_STATUS_ERROR = 2;
+}
+
+// Compact trace row for list views.
+message TraceSummary {
+  // W3C trace identifier.
+  string trace_id = 1;
+  // Span used as the display root for this trace.
+  string root_span_id = 2;
+  // Display name, usually `coral.query` for query traces.
+  string name = 3;
+  // SQL text when the trace includes a Coral query span.
+  string query = 4;
+  // Derived trace status.
+  TraceStatus status = 5;
+  // Earliest span start time in Unix nanoseconds.
+  int64 start_time_unix_nanos = 6 [jstype = JS_STRING];
+  // Latest span end time in Unix nanoseconds.
+  int64 end_time_unix_nanos = 7 [jstype = JS_STRING];
+  // Wall-clock duration between the first span start and last span end.
+  int64 duration_nanos = 8 [jstype = JS_STRING];
+  // Number of spans captured for this trace.
+  uint32 span_count = 9;
+  // Query row count when the trace includes a completed Coral query span.
+  uint64 row_count = 10 [jstype = JS_STRING];
+  // Whether `row_count` was recorded. This distinguishes an unknown count from
+  // a valid zero-row query.
+  bool row_count_recorded = 11;
+}
+
+// Lists locally captured traces.
+message ListTracesRequest {
+  // Maximum number of traces to return. The server applies a default and cap.
+  int32 page_size = 1;
+  // Opaque token returned by a previous list response.
+  string page_token = 2;
+}
+
+// Page of locally captured traces.
+message ListTracesResponse {
+  // Trace summaries ordered by latest activity descending.
+  repeated TraceSummary traces = 1;
+  // Token for the next page, or empty when there are no more results.
+  string next_page_token = 2;
+}
+
+// Fetches one locally captured trace.
+message GetTraceRequest {
+  // W3C trace identifier.
+  string trace_id = 1;
+}
+
+// One stored trace span.
+message TraceSpan {
+  // W3C trace identifier.
+  string trace_id = 1;
+  // W3C span identifier.
+  string span_id = 2;
+  // Parent span identifier, when known.
+  string parent_span_id = 3;
+  // Whether the parent span came from a remote context.
+  bool parent_span_is_remote = 4;
+  // Span display name.
+  string name = 5;
+  // Span kind, rendered as lowercase text.
+  string kind = 6;
+  // Span status.
+  TraceStatus status = 7;
+  // Optional status message for error spans.
+  string status_message = 8;
+  // Span start time in Unix nanoseconds.
+  int64 start_time_unix_nanos = 9 [jstype = JS_STRING];
+  // Span end time in Unix nanoseconds.
+  int64 end_time_unix_nanos = 10 [jstype = JS_STRING];
+  // Span duration in nanoseconds.
+  int64 duration_nanos = 11 [jstype = JS_STRING];
+  // JSON object of span attributes.
+  string attributes_json = 12;
+  // JSON payload of span events.
+  string events_json = 13;
+  // JSON payload of span links.
+  string links_json = 14;
+  // JSON object of process resource attributes.
+  string resource_json = 15;
+  // Instrumentation scope name.
+  string scope_name = 16;
+  // Instrumentation scope version.
+  string scope_version = 17;
+  // Instrumentation scope schema URL.
+  string scope_schema_url = 18;
+  // JSON object of instrumentation scope attributes.
+  string scope_attributes_json = 19;
+  // W3C trace flags.
+  int32 trace_flags = 20;
+  // W3C trace state header value.
+  string trace_state = 21;
+  // Whether this span context was remote.
+  bool is_remote = 22;
+}
+
+// Trace detail for timeline and diagnostic views.
+message GetTraceResponse {
+  // Summary for the trace.
+  TraceSummary summary = 1;
+  // Spans ordered by start time.
+  repeated TraceSpan spans = 2;
+}
+
+// Local trace inspection APIs.
+service TraceService {
+  // Lists locally captured traces for the trace stream.
+  rpc ListTraces(ListTracesRequest) returns (ListTracesResponse);
+  // Fetches one trace and its spans for timeline/detail views.
+  rpc GetTrace(GetTraceRequest) returns (GetTraceResponse);
+}

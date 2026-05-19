@@ -1,0 +1,755 @@
+name: neondb
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Neon organizations, projects, branches, databases, roles, compute
+  endpoints, operations, and user identity.
+base_url: https://console.neon.tech/api/v2
+inputs:
+  NEON_API_KEY:
+    kind: secret
+    hint: |
+      Neon API key for the Developer API. Create one in the Neon Console
+      under Account settings > API keys. Use a personal, organization, or
+      project-scoped key with read access to the projects you want to inspect.
+      The token is sent as `Authorization: Bearer <NEON_API_KEY>`.
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.NEON_API_KEY}}
+test_queries:
+  - SELECT * FROM neondb.current_user LIMIT 1
+  - SELECT * FROM neondb.organizations LIMIT 1
+tables:
+  - name: current_user
+    description: Current authenticated Neon user information for credential validation.
+    fetch_limit_default: 1
+    request:
+      method: GET
+      path: /users/me
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: user_id
+        type: Utf8
+        nullable: false
+        description: Neon user ID.
+        expr:
+          kind: path
+          path: [id]
+      - name: email
+        type: Utf8
+        nullable: false
+        description: User email address.
+        expr:
+          kind: path
+          path: [email]
+      - name: name
+        type: Utf8
+        nullable: true
+        description: User display name.
+        expr:
+          kind: path
+          path: [name]
+      - name: plan
+        type: Utf8
+        nullable: true
+        description: Neon plan name for the authenticated account.
+        expr:
+          kind: path
+          path: [plan]
+      - name: projects_limit
+        type: Int64
+        nullable: true
+        description: Maximum number of projects allowed for the account.
+        expr:
+          kind: path
+          path: [projects_limit]
+      - name: branches_limit
+        type: Int64
+        nullable: true
+        description: Maximum number of branches allowed for the account.
+        expr:
+          kind: path
+          path: [branches_limit]
+
+  - name: organizations
+    description: Neon organizations available to the authenticated user.
+    guide: |
+      Use `org_id` from this table when querying `projects` with an
+      organization-scoped API key. Personal API keys may not need this filter.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /users/me/organizations
+    response:
+      rows_path: [organizations]
+    pagination:
+      mode: none
+    columns:
+      - name: org_id
+        type: Utf8
+        nullable: false
+        description: Neon organization ID.
+        expr:
+          kind: path
+          path: [id]
+      - name: org_name
+        type: Utf8
+        nullable: false
+        description: Organization name.
+        expr:
+          kind: path
+          path: [name]
+      - name: handle
+        type: Utf8
+        nullable: true
+        description: Organization handle.
+        expr:
+          kind: path
+          path: [handle]
+      - name: plan
+        type: Utf8
+        nullable: true
+        description: Organization plan.
+        expr:
+          kind: path
+          path: [plan]
+      - name: managed_by
+        type: Utf8
+        nullable: true
+        description: System that manages this organization.
+        expr:
+          kind: path
+          path: [managed_by]
+      - name: require_mfa
+        type: Boolean
+        nullable: true
+        description: Whether the organization requires multi-factor authentication.
+        expr:
+          kind: path
+          path: [require_mfa]
+      - name: created_at
+        type: Timestamp
+        nullable: false
+        description: Organization creation timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [created_at]
+      - name: updated_at
+        type: Timestamp
+        nullable: false
+        description: Organization last updated timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [updated_at]
+
+  - name: projects
+    description: Top-level Neon projects visible to the API key.
+    guide: |
+      Use `project_id` from this table to query `branches` and `operations`.
+      Organization API keys may require the optional `org_id` filter. Query
+      `organizations` first if Neon returns an org_id-required error. The optional
+      `search` filter performs a substring match on project name or ID.
+    fetch_limit_default: 100
+    filters:
+      - name: org_id
+      - name: search
+    request:
+      method: GET
+      path: /projects
+      query:
+        - name: limit
+          from: literal
+          value: "400"
+        - name: org_id
+          from: filter
+          key: org_id
+        - name: search
+          from: filter
+          key: search
+    response:
+      rows_path: [projects]
+    pagination:
+      mode: none
+    columns:
+      - name: project_id
+        type: Utf8
+        nullable: false
+        description: Neon project ID.
+        expr:
+          kind: path
+          path: [id]
+      - name: project_name
+        type: Utf8
+        nullable: false
+        description: Project name.
+        expr:
+          kind: path
+          path: [name]
+      - name: org_id
+        type: Utf8
+        nullable: true
+        description: Organization ID when the project belongs to an organization.
+        expr:
+          kind: path
+          path: [org_id]
+      - name: platform_id
+        type: Utf8
+        nullable: true
+        description: Cloud platform identifier.
+        expr:
+          kind: path
+          path: [platform_id]
+      - name: region_id
+        type: Utf8
+        nullable: false
+        description: Region identifier.
+        expr:
+          kind: path
+          path: [region_id]
+      - name: pg_version
+        type: Int64
+        nullable: false
+        description: PostgreSQL major version.
+        expr:
+          kind: path
+          path: [pg_version]
+      - name: creation_source
+        type: Utf8
+        nullable: true
+        description: Source that created the project.
+        expr:
+          kind: path
+          path: [creation_source]
+      - name: created_at
+        type: Timestamp
+        nullable: false
+        description: Project creation timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [created_at]
+      - name: updated_at
+        type: Timestamp
+        nullable: false
+        description: Project last updated timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [updated_at]
+
+  - name: branches
+    description: Branches within a Neon project.
+    guide: |
+      Requires `project_id`. Branches are Neon's isolated database timelines
+      for production, development, previews, testing, and agent workflows.
+      Use `branch_id` from this table to inspect databases, roles, and
+      compute endpoints. The optional `search` filter performs a substring match
+      on branch name or ID.
+    fetch_limit_default: 100
+    filters:
+      - name: project_id
+        required: true
+      - name: search
+    request:
+      method: GET
+      path: /projects/{{filter.project_id}}/branches
+      query:
+        - name: search
+          from: filter
+          key: search
+    response:
+      rows_path: [branches]
+    pagination:
+      mode: cursor_query
+      page_size:
+        default: 100
+        max: 10000
+        query_param: limit
+      cursor_param: cursor
+      response_cursor_path: [pagination, next]
+    columns:
+      - name: branch_id
+        type: Utf8
+        nullable: false
+        description: Branch ID.
+        expr:
+          kind: path
+          path: [id]
+      - name: project_id
+        type: Utf8
+        nullable: false
+        description: Parent project ID.
+        expr:
+          kind: path
+          path: [project_id]
+      - name: branch_name
+        type: Utf8
+        nullable: false
+        description: Branch name.
+        expr:
+          kind: path
+          path: [name]
+      - name: parent_id
+        type: Utf8
+        nullable: true
+        description: Parent branch ID.
+        expr:
+          kind: path
+          path: [parent_id]
+      - name: default_branch
+        type: Boolean
+        nullable: false
+        description: Whether this is the project's default branch.
+        expr:
+          kind: path
+          path: [default]
+      - name: protected
+        type: Boolean
+        nullable: false
+        description: Whether this branch is protected.
+        expr:
+          kind: path
+          path: [protected]
+      - name: current_state
+        type: Utf8
+        nullable: true
+        description: Current branch state.
+        expr:
+          kind: path
+          path: [current_state]
+      - name: logical_size
+        type: Int64
+        nullable: true
+        description: Logical branch size in bytes.
+        expr:
+          kind: path
+          path: [logical_size]
+      - name: created_at
+        type: Timestamp
+        nullable: false
+        description: Branch creation timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [created_at]
+      - name: updated_at
+        type: Timestamp
+        nullable: false
+        description: Branch last updated timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [updated_at]
+
+  - name: databases
+    description: Databases within a Neon branch.
+    guide: |
+      Requires `project_id` and `branch_id`. This table exposes database
+      topology only; it does not connect to Postgres or inspect table data.
+    fetch_limit_default: 100
+    filters:
+      - name: project_id
+        required: true
+      - name: branch_id
+        required: true
+    request:
+      method: GET
+      path: /projects/{{filter.project_id}}/branches/{{filter.branch_id}}/databases
+    response:
+      rows_path: [databases]
+    pagination:
+      mode: none
+    columns:
+      - name: database_id
+        type: Int64
+        nullable: false
+        description: Neon database ID.
+        expr:
+          kind: path
+          path: [id]
+      - name: database_name
+        type: Utf8
+        nullable: false
+        description: Database name.
+        expr:
+          kind: path
+          path: [name]
+      - name: owner_name
+        type: Utf8
+        nullable: false
+        description: Role that owns the database.
+        expr:
+          kind: path
+          path: [owner_name]
+      - name: branch_id
+        type: Utf8
+        nullable: false
+        description: Parent branch ID.
+        expr:
+          kind: path
+          path: [branch_id]
+      - name: project_id
+        type: Utf8
+        nullable: false
+        description: Parent project ID from the required filter.
+        expr:
+          kind: from_filter
+          key: project_id
+      - name: created_at
+        type: Timestamp
+        nullable: false
+        description: Database creation timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [created_at]
+      - name: updated_at
+        type: Timestamp
+        nullable: false
+        description: Database last updated timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [updated_at]
+
+  - name: roles
+    description: Postgres roles within a Neon branch, excluding passwords.
+    guide: |
+      Requires `project_id` and `branch_id`. Neon role responses may include a
+      password field in some contexts; this source intentionally does not
+      expose passwords, connection strings, or other credentials.
+    fetch_limit_default: 100
+    filters:
+      - name: project_id
+        required: true
+      - name: branch_id
+        required: true
+    request:
+      method: GET
+      path: /projects/{{filter.project_id}}/branches/{{filter.branch_id}}/roles
+    response:
+      rows_path: [roles]
+    pagination:
+      mode: none
+    columns:
+      - name: role_name
+        type: Utf8
+        nullable: false
+        description: Role name.
+        expr:
+          kind: path
+          path: [name]
+      - name: branch_id
+        type: Utf8
+        nullable: false
+        description: Parent branch ID.
+        expr:
+          kind: path
+          path: [branch_id]
+      - name: project_id
+        type: Utf8
+        nullable: false
+        description: Parent project ID from the required filter.
+        expr:
+          kind: from_filter
+          key: project_id
+      - name: protected
+        type: Boolean
+        nullable: true
+        description: Whether this role is system-protected.
+        expr:
+          kind: path
+          path: [protected]
+      - name: authentication_method
+        type: Utf8
+        nullable: true
+        description: Authentication method configured for the role.
+        expr:
+          kind: path
+          path: [authentication_method]
+      - name: created_at
+        type: Timestamp
+        nullable: false
+        description: Role creation timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [created_at]
+      - name: updated_at
+        type: Timestamp
+        nullable: false
+        description: Role last updated timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [updated_at]
+
+  - name: compute_endpoints
+    description: Compute endpoints attached to a Neon branch.
+    guide: |
+      Requires `project_id` and `branch_id`. This table exposes compute
+      topology and state, not connection URIs or credentials. Use it to inspect
+      read-write/read-only endpoints, autoscaling limits, and suspension state.
+    fetch_limit_default: 100
+    filters:
+      - name: project_id
+        required: true
+      - name: branch_id
+        required: true
+    request:
+      method: GET
+      path: /projects/{{filter.project_id}}/branches/{{filter.branch_id}}/endpoints
+    response:
+      rows_path: [endpoints]
+    pagination:
+      mode: none
+    columns:
+      - name: endpoint_id
+        type: Utf8
+        nullable: false
+        description: Compute endpoint ID.
+        expr:
+          kind: path
+          path: [id]
+      - name: endpoint_name
+        type: Utf8
+        nullable: true
+        description: Optional compute endpoint name.
+        expr:
+          kind: path
+          path: [name]
+      - name: project_id
+        type: Utf8
+        nullable: false
+        description: Parent project ID.
+        expr:
+          kind: path
+          path: [project_id]
+      - name: branch_id
+        type: Utf8
+        nullable: false
+        description: Parent branch ID.
+        expr:
+          kind: path
+          path: [branch_id]
+      - name: endpoint_type
+        type: Utf8
+        nullable: false
+        description: Endpoint type, such as read_write or read_only.
+        expr:
+          kind: path
+          path: [type]
+      - name: current_state
+        type: Utf8
+        nullable: false
+        description: Current compute endpoint state.
+        expr:
+          kind: path
+          path: [current_state]
+      - name: region_id
+        type: Utf8
+        nullable: false
+        description: Region identifier.
+        expr:
+          kind: path
+          path: [region_id]
+      - name: autoscaling_limit_min_cu
+        type: Float64
+        nullable: true
+        description: Minimum autoscaling compute units.
+        expr:
+          kind: path
+          path: [autoscaling_limit_min_cu]
+      - name: autoscaling_limit_max_cu
+        type: Float64
+        nullable: true
+        description: Maximum autoscaling compute units.
+        expr:
+          kind: path
+          path: [autoscaling_limit_max_cu]
+      - name: disabled
+        type: Boolean
+        nullable: false
+        description: Whether connections to the compute endpoint are disabled.
+        expr:
+          kind: path
+          path: [disabled]
+      - name: pooler_enabled
+        type: Boolean
+        nullable: false
+        description: Whether connection pooling is enabled.
+        expr:
+          kind: path
+          path: [pooler_enabled]
+      - name: suspend_timeout_seconds
+        type: Int64
+        nullable: true
+        description: Idle timeout before the compute endpoint suspends.
+        expr:
+          kind: path
+          path: [suspend_timeout_seconds]
+      - name: settings
+        type: Json
+        nullable: true
+        description: Nested endpoint settings.
+        expr:
+          kind: path
+          path: [settings]
+      - name: created_at
+        type: Timestamp
+        nullable: false
+        description: Endpoint creation timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [created_at]
+      - name: updated_at
+        type: Timestamp
+        nullable: false
+        description: Endpoint last updated timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [updated_at]
+
+  - name: operations
+    description: Operation history for a Neon project.
+    guide: |
+      Requires `project_id`. Operations record infrastructure changes and
+      background work for a project. Neon may delete operations older than six
+      months, so this table is best for recent change history and debugging.
+    fetch_limit_default: 100
+    filters:
+      - name: project_id
+        required: true
+    request:
+      method: GET
+      path: /projects/{{filter.project_id}}/operations
+    response:
+      rows_path: [operations]
+    pagination:
+      mode: cursor_query
+      page_size:
+        default: 100
+        max: 1000
+        query_param: limit
+      cursor_param: cursor
+      response_cursor_path: [pagination, cursor]
+      max_pages: 25
+    columns:
+      - name: operation_id
+        type: Utf8
+        nullable: false
+        description: Operation ID.
+        expr:
+          kind: path
+          path: [id]
+      - name: project_id
+        type: Utf8
+        nullable: false
+        description: Parent project ID.
+        expr:
+          kind: path
+          path: [project_id]
+      - name: branch_id
+        type: Utf8
+        nullable: true
+        description: Branch ID associated with the operation, when present.
+        expr:
+          kind: path
+          path: [branch_id]
+      - name: endpoint_id
+        type: Utf8
+        nullable: true
+        description: Endpoint ID associated with the operation, when present.
+        expr:
+          kind: path
+          path: [endpoint_id]
+      - name: action
+        type: Utf8
+        nullable: false
+        description: Operation action.
+        expr:
+          kind: path
+          path: [action]
+      - name: status
+        type: Utf8
+        nullable: false
+        description: Operation status.
+        expr:
+          kind: path
+          path: [status]
+      - name: error
+        type: Utf8
+        nullable: true
+        description: Error message when the operation failed.
+        expr:
+          kind: path
+          path: [error]
+      - name: failures_count
+        type: Int64
+        nullable: true
+        description: Number of operation failures.
+        expr:
+          kind: path
+          path: [failures_count]
+      - name: created_at
+        type: Timestamp
+        nullable: false
+        description: Operation creation timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [created_at]
+      - name: updated_at
+        type: Timestamp
+        nullable: false
+        description: Operation last updated timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [updated_at]
+      - name: total_duration_ms
+        type: Int64
+        nullable: true
+        description: Total operation duration in milliseconds.
+        expr:
+          kind: path
+          path: [total_duration_ms]

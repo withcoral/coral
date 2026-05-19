@@ -17,10 +17,12 @@
     reason = "Integration tests inherit the library crate's dependency set and intentionally exercise only a subset of it."
 )]
 
-use coral_api::v1::ListSourcesRequest;
+use coral_api::v1::trace_service_client::TraceServiceClient;
+use coral_api::v1::{ListSourcesRequest, ListTracesRequest};
 use coral_client::{AppClient, default_workspace, local::ServerBuilder};
 use tempfile::TempDir;
-use tonic::Request;
+use tonic::transport::Endpoint;
+use tonic::{Code, Request};
 use tracing_subscriber::util::SubscriberInitExt as _;
 
 #[tokio::test]
@@ -51,6 +53,20 @@ async fn host_subscriber_does_not_block_server_startup() {
         .into_inner()
         .sources;
     assert!(sources.is_empty());
+
+    let channel = Endpoint::from_shared(server.endpoint_uri().to_string())
+        .expect("endpoint")
+        .connect()
+        .await
+        .expect("connect trace client");
+    let trace_status = TraceServiceClient::new(channel)
+        .list_traces(Request::new(ListTracesRequest {
+            page_size: 10,
+            page_token: String::new(),
+        }))
+        .await
+        .expect_err("host-owned subscriber should leave trace service disabled");
+    assert_eq!(trace_status.code(), Code::Unimplemented);
 
     server.shutdown().await.expect("shutdown server");
 }

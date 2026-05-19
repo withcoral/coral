@@ -99,16 +99,24 @@ pub struct TableCommon {
     pub guide: String,
     pub filters: Vec<FilterSpec>,
     pub fetch_limit_default: Option<usize>,
+    pub search_limits: Option<SearchLimitsSpec>,
+    pub detail_hints: Vec<DetailHintSpec>,
     pub columns: Vec<ColumnSpec>,
 }
 
 impl TableCommon {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Field-heavy source-spec table metadata stays explicit at construction sites."
+    )]
     pub(crate) fn new(
         name: String,
         description: String,
         guide: String,
         filters: Vec<FilterSpec>,
         fetch_limit_default: Option<usize>,
+        search_limits: Option<SearchLimitsSpec>,
+        detail_hints: Vec<DetailHintSpec>,
         columns: Vec<ColumnSpec>,
     ) -> Self {
         Self {
@@ -117,6 +125,8 @@ impl TableCommon {
             guide,
             filters,
             fetch_limit_default,
+            search_limits,
+            detail_hints,
             columns,
         }
     }
@@ -129,7 +139,9 @@ pub enum FilterMode {
     /// Pushes down `=` only (current behaviour for all existing providers).
     #[default]
     Equality,
-    /// Pushes down `LIKE` as a search API call; results may be relevance-ordered.
+    /// Compatibility-only virtual-filter search mode for existing table
+    /// manifests. New provider-native search surfaces should use
+    /// [`SourceTableFunctionKind::Search`] functions instead.
     Search,
     /// Pushes down `LIKE` as a substring/contains filter.
     Contains,
@@ -139,10 +151,81 @@ pub enum FilterMode {
 #[derive(Debug, Clone, Deserialize)]
 pub struct FilterSpec {
     pub name: String,
+    #[serde(rename = "type", default = "default_filter_data_type")]
+    pub data_type: String,
     #[serde(default)]
     pub required: bool,
     #[serde(default)]
     pub mode: FilterMode,
+    #[serde(default)]
+    pub description: String,
+}
+
+impl FilterSpec {
+    /// Convert this filter's declared type into a normalized manifest data type.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`ManifestError`] if the manifest references an unsupported
+    /// data type.
+    pub fn manifest_data_type(&self) -> Result<ManifestDataType> {
+        parse_manifest_data_type(&self.data_type)
+    }
+}
+
+fn default_filter_data_type() -> String {
+    "Utf8".to_string()
+}
+
+/// Source-scoped table-function semantic class.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceTableFunctionKind {
+    /// Generic row-returning provider operation.
+    #[default]
+    Table,
+    /// Provider-native retrieval/search operation that returns ranked candidates.
+    Search,
+}
+
+impl SourceTableFunctionKind {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Table => "table",
+            Self::Search => "search",
+        }
+    }
+}
+
+impl FilterMode {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Equality => "equality",
+            Self::Search => "search",
+            Self::Contains => "contains",
+        }
+    }
+}
+
+/// Bounded retrieval settings for search-like provider surfaces.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SearchLimitsSpec {
+    pub default_top_k: usize,
+    pub max_top_k: usize,
+    pub max_calls_per_query: usize,
+}
+
+/// Machine-readable path from a search candidate row to a detail table.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct DetailHintSpec {
+    pub table: String,
+    pub search_result_column: String,
+    pub detail_filter: String,
+    pub purpose: String,
 }
 
 /// Declarative source-scoped table-valued function.
@@ -150,9 +233,15 @@ pub struct FilterSpec {
 pub struct SourceTableFunctionSpec {
     pub name: String,
     #[serde(default)]
+    pub kind: SourceTableFunctionKind,
+    #[serde(default)]
     pub description: String,
     #[serde(default)]
     pub fetch_limit_default: Option<usize>,
+    #[serde(default)]
+    pub search_limits: Option<SearchLimitsSpec>,
+    #[serde(default)]
+    pub detail_hints: Vec<DetailHintSpec>,
     #[serde(default)]
     pub args: Vec<TableFunctionArgSpec>,
     #[serde(default)]
@@ -868,8 +957,10 @@ mod tests {
             vec![],
             vec![FilterSpec {
                 name: "id".into(),
+                data_type: "Utf8".into(),
                 required: false,
                 mode: FilterMode::default(),
+                description: String::new(),
             }],
             RequestSpec {
                 method: HttpMethod::GET,
@@ -903,13 +994,17 @@ mod tests {
             vec![
                 FilterSpec {
                     name: "id".into(),
+                    data_type: "Utf8".into(),
                     required: false,
                     mode: FilterMode::default(),
+                    description: String::new(),
                 },
                 FilterSpec {
                     name: "org".into(),
+                    data_type: "Utf8".into(),
                     required: false,
                     mode: FilterMode::default(),
+                    description: String::new(),
                 },
             ],
             RequestSpec {
@@ -1043,6 +1138,43 @@ mod tests {
         }));
         let error = result.expect_err("unknown filter mode should fail");
         assert!(error.to_string().contains("unknown variant"));
+    }
+
+    #[test]
+    fn filter_metadata_defaults_to_utf8_with_empty_description() {
+        let spec: FilterSpec = serde_json::from_value(serde_json::json!({
+            "name": "q"
+        }))
+        .unwrap();
+        assert_eq!(spec.data_type, "Utf8");
+        assert_eq!(spec.description, "");
+    }
+
+    #[test]
+    fn table_function_kind_defaults_to_table() {
+        let spec: SourceTableFunctionSpec = serde_json::from_value(serde_json::json!({
+            "name": "issues",
+            "request": { "path": "/issues" }
+        }))
+        .unwrap();
+        assert_eq!(spec.kind, SourceTableFunctionKind::Table);
+    }
+
+    #[test]
+    fn table_function_kind_deserializes_search() {
+        let spec: SourceTableFunctionSpec = serde_json::from_value(serde_json::json!({
+            "name": "search_issues",
+            "kind": "search",
+            "request": { "path": "/search/issues" },
+            "search_limits": {
+                "default_top_k": 10,
+                "max_top_k": 100,
+                "max_calls_per_query": 1
+            }
+        }))
+        .unwrap();
+        assert_eq!(spec.kind, SourceTableFunctionKind::Search);
+        assert_eq!(spec.search_limits.unwrap().default_top_k, 10);
     }
 
     #[test]

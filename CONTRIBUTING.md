@@ -13,6 +13,7 @@ review changes.
 - ergonomics improvements to core workflows
 - narrowly scoped source improvements
 - examples that help new users reach first success quickly
+- community sources (in sources/community)
 
 ## Please discuss first
 
@@ -21,7 +22,7 @@ Open an issue or discussion before starting work on:
 - new public CLI commands or flags
 - new public config formats
 - large architectural changes
-- new maintained sources shipped with the repo
+- new core sources shipped with the binary (in sources/core)
 - major source-spec or source-authoring changes
 - major scope expansions beyond the current product surface
 
@@ -82,7 +83,7 @@ locked checks.
 
 ### Source manifest linting
 
-Source manifests under `sources/*/manifest.yaml` are checked with
+Source manifests under `sources/**/manifest.yaml` are checked with
 [`ryl`](https://github.com/owenlamont/ryl), a Rust-native yamllint port.
 Config lives in `.yamllint.yaml` at the repo root.
 
@@ -106,7 +107,8 @@ The internal crate layout may change over time as the project evolves.
 - `crates/coral-spec`: source-spec parsing, validation, and input discovery
 - `crates/coral-mcp`: MCP adapter
 - `crates/coral-api`: protobuf and gRPC contract
-- `sources/`: bundled source specs shipped with the repo
+- `sources/core/`: bundled source specs shipped with the repo
+- `sources/community/`: community source specs kept out of the binary bundle
 
 ## Testing expectations
 
@@ -212,9 +214,11 @@ This project follows the rules in [`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md).
 By contributing to Coral, you agree that your contributions will be licensed
 under the project licence.
 
-If you are contributing to Coral for the first time, please email
-[legal@withcoral.com](mailto:legal@withcoral.com), including your Github
-username and confirming that you agree to our
-[Individual Contributor Licensing Agreement](https://withcoral.com/docs/legal/cla-individual). To agree to
-the CLA on behalf of a corporation, please see the
-[Corporate CLA](https://withcoral.com/docs/legal/cla-corporate).
+When you open your first pull request, an automated CLA check will comment on
+the PR with a link to sign the Contributor Licence Agreement. Follow the link
+to accept; the check will pass once you have signed, and subsequent PRs will
+not need to sign again.
+
+To agree to the CLA on behalf of a corporation, please see the
+[Corporate CLA](https://withcoral.com/docs/legal/cla-corporate) and email
+[legal@withcoral.com](mailto:legal@withcoral.com).

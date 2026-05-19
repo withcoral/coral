@@ -16,6 +16,7 @@
 
 mod client;
 mod error;
+mod grpc;
 pub mod local;
 mod propagation;
 mod status_error;
@@ -31,7 +32,8 @@ use coral_api::v1::ExecuteSqlResponse;
 use serde_json::Value;
 
 pub use client::{
-    AppClient, DEFAULT_WORKSPACE_ID, FeedbackClient, QueryClient, SourceClient, default_workspace,
+    AppClient, CatalogClient, DEFAULT_WORKSPACE_ID, FeedbackClient, QueryClient, SourceClient,
+    default_workspace,
 };
 pub use error::{ClientError, QueryResultError};
 pub use status_error::{

@@ -1,14 +1,18 @@
 //! Client-side bootstrap for local Coral clients.
 
 use coral_api::v1::Workspace;
+use coral_api::v1::catalog_service_client::CatalogServiceClient;
 use coral_api::v1::feedback_service_client::FeedbackServiceClient;
 use coral_api::v1::query_service_client::QueryServiceClient;
 use coral_api::v1::source_service_client::SourceServiceClient;
-use coral_api::{HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE};
+use coral_api::{
+    CATALOG_RESPONSE_MAX_MESSAGE_SIZE, HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE,
+};
 use tonic::service::interceptor::InterceptedService;
 use tonic::transport::{Channel, Endpoint};
 
 use crate::error::ClientError;
+use crate::grpc::{GrpcClientEndpoint, InstrumentedGrpcService};
 use crate::propagation::TraceContextInterceptor;
 
 /// Default workspace used by local Coral clients.
@@ -22,19 +26,20 @@ pub fn default_workspace() -> Workspace {
     }
 }
 
+type RawGrpcService = InterceptedService<Channel, TraceContextInterceptor>;
+type GrpcService = InstrumentedGrpcService<RawGrpcService>;
+
 /// Public source-management gRPC client.
-pub type SourceClient = SourceServiceClient<InterceptedService<Channel, TraceContextInterceptor>>;
+pub type SourceClient = SourceServiceClient<GrpcService>;
+
+/// Public catalog-discovery gRPC client.
+pub type CatalogClient = CatalogServiceClient<GrpcService>;
 
 /// Public SQL query gRPC client.
-pub type QueryClient = QueryServiceClient<InterceptedService<Channel, TraceContextInterceptor>>;
+pub type QueryClient = QueryServiceClient<GrpcService>;
 
 /// Public feedback-submission gRPC client.
-///
-/// This stays intentionally thin for now: `coral-client` is a local transport
-/// bootstrap, so it exposes the generated typed client directly rather than
-/// wrapping it in a higher-level SDK surface.
-pub type FeedbackClient =
-    FeedbackServiceClient<InterceptedService<Channel, TraceContextInterceptor>>;
+pub type FeedbackClient = FeedbackServiceClient<GrpcService>;
 
 /// Public Coral client handle.
 ///
@@ -42,6 +47,7 @@ pub type FeedbackClient =
 #[derive(Clone)]
 pub struct AppClient {
     source: SourceClient,
+    catalog: CatalogClient,
     query: QueryClient,
     feedback: FeedbackClient,
 }
@@ -59,16 +65,17 @@ impl AppClient {
         crate::propagation::ensure_global_propagator();
         let endpoint = Endpoint::from_shared(endpoint_uri.to_string())?
             .http2_max_header_list_size(HTTP2_MAX_HEADER_LIST_SIZE);
+        let grpc_endpoint = GrpcClientEndpoint::from_endpoint_uri(endpoint_uri);
         let channel = endpoint.connect().await?;
-        let source_client =
-            SourceServiceClient::with_interceptor(channel.clone(), TraceContextInterceptor);
-        let query_client =
-            QueryServiceClient::with_interceptor(channel.clone(), TraceContextInterceptor)
-                .max_decoding_message_size(QUERY_RESPONSE_MAX_MESSAGE_SIZE);
-        let feedback_client =
-            FeedbackServiceClient::with_interceptor(channel, TraceContextInterceptor);
+        let source_client = SourceClient::new(grpc_service(channel.clone(), &grpc_endpoint));
+        let catalog_client = CatalogClient::new(grpc_service(channel.clone(), &grpc_endpoint))
+            .max_decoding_message_size(CATALOG_RESPONSE_MAX_MESSAGE_SIZE);
+        let query_client = QueryClient::new(grpc_service(channel.clone(), &grpc_endpoint))
+            .max_decoding_message_size(QUERY_RESPONSE_MAX_MESSAGE_SIZE);
+        let feedback_client = FeedbackClient::new(grpc_service(channel, &grpc_endpoint));
         Ok(Self {
             source: source_client,
+            catalog: catalog_client,
             query: query_client,
             feedback: feedback_client,
         })
@@ -78,6 +85,12 @@ impl AppClient {
     /// Returns a cloned source-management client.
     pub fn source_client(&self) -> SourceClient {
         self.source.clone()
+    }
+
+    #[must_use]
+    /// Returns a cloned catalog-discovery client.
+    pub fn catalog_client(&self) -> CatalogClient {
+        self.catalog.clone()
     }
 
     #[must_use]
@@ -91,4 +104,11 @@ impl AppClient {
     pub fn feedback_client(&self) -> FeedbackClient {
         self.feedback.clone()
     }
+}
+
+fn grpc_service(channel: Channel, endpoint: &GrpcClientEndpoint) -> GrpcService {
+    InstrumentedGrpcService::new(
+        InterceptedService::new(channel, TraceContextInterceptor),
+        endpoint.clone(),
+    )
 }

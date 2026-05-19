@@ -1,13 +1,52 @@
-//! MDX rendering for the bundled-sources index.
+//! MDX rendering for generator-owned docs pages.
 //!
-//! Produces the exact byte-for-byte contents written to
-//! `docs/reference/bundled-sources.mdx`. The single page contains the
-//! at-a-glance source table followed by one deep-linkable sub-section per
-//! source surfacing its declared inputs and hints.
+//! Produces the exact byte-for-byte contents written to generated Mintlify
+//! pages, including the bundled-sources reference and changelog.
 
 use std::fmt::Write as _;
 
 use coral_spec::{ManifestInputSpec, ValidatedSourceManifest};
+
+/// Render the `changelog.mdx` page from a raw `CHANGELOG.md`.
+///
+/// release-please writes `CHANGELOG.md` from conventional commits, so the
+/// body already has structured `## [version](url) (date)` headers and
+/// `### Features` / `### Bug Fixes` subsections that Mintlify renders
+/// cleanly. The only transformation needed is to:
+///
+/// - drop the leading `# Changelog` H1 (it would collide with the
+///   frontmatter title), and
+/// - run the rest through [`escape_mdx`] so future commit subjects that
+///   legally contain `<T>` or `{value}` in prose don't get parsed as JSX
+///   by Mintlify.
+pub(crate) fn changelog_page(raw: &str) -> String {
+    let body = strip_leading_changelog_heading(raw);
+    let escaped = escape_mdx(body.trim_start_matches('\n'));
+
+    let mut out = String::with_capacity(escaped.len() + 256);
+    out.push_str(CHANGELOG_FRONTMATTER);
+    out.push_str("{/* AUTO-GENERATED — DO NOT EDIT. Run `make docs-generate` to update. */}\n\n");
+    out.push_str(&escaped);
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out
+}
+
+/// Strip a leading `# Changelog` H1 if present. Tolerates surrounding
+/// blank lines and trailing whitespace on the heading line.
+fn strip_leading_changelog_heading(raw: &str) -> &str {
+    let trimmed = raw.trim_start_matches('\n');
+    let mut lines = trimmed.splitn(2, '\n');
+    let Some(first) = lines.next() else {
+        return raw;
+    };
+    if first.trim_end() == "# Changelog" {
+        lines.next().unwrap_or("")
+    } else {
+        trimmed
+    }
+}
 
 /// Render the `bundled-sources.mdx` index page.
 pub(crate) fn index_page(manifests: &[ValidatedSourceManifest]) -> String {
@@ -265,8 +304,15 @@ fn escape_prose_into(slice: &str, out: &mut String) {
 const INDEX_FRONTMATTER: &str =
     "---\ntitle: \"Bundled sources\"\ndescription: \"Data sources that ship with Coral.\"\n---\n\n";
 
+const CHANGELOG_FRONTMATTER: &str = concat!(
+    "---\n",
+    "title: \"Changelog\"\n",
+    "description: \"Release notes for the Coral CLI, generated from [CHANGELOG.md](https://github.com/withcoral/coral/blob/main/CHANGELOG.md).\"\n",
+    "---\n\n",
+);
+
 const INDEX_INTRO: &str = concat!(
-    "Coral supports connecting to some data sources out of the box.<br />\n",
+    "Coral supports connecting to some data sources out of the box. These bundled specs live in [sources/core](https://github.com/withcoral/coral/tree/main/sources/core).<br />\n",
     "If the source you need is not available, you can extend Coral by [writing a custom source spec](/guides/write-a-custom-source).\n",
     "\n",
     "<Tip>\n",
@@ -299,7 +345,7 @@ const INDEX_OUTRO: &str = concat!(
 
 #[cfg(test)]
 mod tests {
-    use super::{escape_mdx, index_page};
+    use super::{changelog_page, escape_mdx, index_page};
     use coral_spec::parse_source_manifest_yaml;
 
     const SAMPLE_MANIFEST: &str = r#"
@@ -448,6 +494,52 @@ tables:
         let input = "Example:\n\n    token: <secret>\n    key: {var}\n\nAfter <host>.";
         let expected = "Example:\n\n    token: <secret>\n    key: {var}\n\nAfter \\<host\\>.";
         assert_eq!(escape_mdx(input), expected);
+    }
+
+    #[test]
+    fn changelog_page_renders_release_please_format() {
+        let raw = "# Changelog\n\n\
+                   ## [0.1.5](https://github.com/withcoral/coral/compare/v0.1.4...v0.1.5) (2026-04-27)\n\n\n\
+                   ### Features\n\n\
+                   * **cli:** add `coral completion` for shell completions ([#205](https://github.com/withcoral/coral/issues/205))\n\
+                   * custom authenticators ([#173](https://github.com/withcoral/coral/issues/173))\n\n\n\
+                   ### Bug Fixes\n\n\
+                   * **engine:** retry github 403 reset-based rate limits ([#110](https://github.com/withcoral/coral/issues/110))\n";
+        insta::assert_snapshot!("changelog_page_release_please_format", changelog_page(raw));
+    }
+
+    #[test]
+    fn changelog_page_escapes_mdx_hostile_commit_subjects() {
+        // A future commit subject could legally contain `<T>` or `{value}`
+        // in prose. Mintlify/MDX would otherwise parse `<T>` as a JSX tag
+        // and `{value}` as an expression. `escape_mdx` neutralizes both.
+        let raw = "# Changelog\n\n\
+                   ## [9.9.9](https://example.com) (2099-01-01)\n\n\
+                   ### Bug Fixes\n\n\
+                   * fix: handle <T> in queries when {value} is unset\n";
+        let rendered = changelog_page(raw);
+        assert!(
+            rendered.contains("\\<T\\>"),
+            "expected <T> to be escaped: {rendered}"
+        );
+        assert!(
+            rendered.contains("\\{value\\}"),
+            "expected {{value}} to be escaped: {rendered}"
+        );
+        assert!(
+            !rendered.contains("handle <T> in queries"),
+            "raw <T> still present: {rendered}"
+        );
+    }
+
+    #[test]
+    fn changelog_page_handles_missing_h1_heading() {
+        let raw =
+            "## [0.1.0](https://example.com) (2026-01-01)\n\n### Features\n\n* initial release\n";
+        let rendered = changelog_page(raw);
+        assert!(rendered.contains("title: \"Changelog\""));
+        assert!(rendered.contains("## [0.1.0]"));
+        assert!(rendered.ends_with('\n'));
     }
 
     #[test]

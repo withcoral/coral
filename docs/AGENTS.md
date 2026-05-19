@@ -21,6 +21,14 @@
   flags, output contracts, tools, resources, prompts, or workflows change
   elsewhere in the repo, update the relevant docs in the same change
 
+## Maintaining these instructions
+- Keep docs-specific agent rules here; keep repo-wide agent and contributor
+  rules in the root `AGENTS.md`
+- If human feedback exposes a repeated docs workflow failure, update this file,
+  the nearest docs source, or docs tooling in the same change
+- Do not add public MDX pages for internal agent process unless the process is
+  itself useful to Coral docs readers
+
 ## Frontmatter requirements for pages
 - title: Clear, descriptive page title
 - description: Concise summary for SEO/navigation

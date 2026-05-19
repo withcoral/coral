@@ -1,0 +1,1662 @@
+name: betterstack
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query monitors, incidents, heartbeats, status pages, on-call
+  schedules, monitor groups, heartbeat groups, email integrations,
+  and incoming webhooks from Better Stack Uptime.
+base_url: https://uptime.betterstack.com/api
+
+inputs:
+  BETTERSTACK_API_TOKEN:
+    kind: secret
+    hint: >-
+      Better Stack API token. Generate one at
+      https://betterstack.com/docs/uptime/api/getting-started-with-uptime-api/
+      Use a team-scoped Uptime API token or a global API token.
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "Bearer {{input.BETTERSTACK_API_TOKEN}}"
+
+test_queries:
+  - SELECT id, pronounceable_name, url, status FROM betterstack.monitors LIMIT 1
+
+tables:
+  # ──────────────────────────────────────────────────────────────────────
+  # monitors
+  # ──────────────────────────────────────────────────────────────────────
+  - name: monitors
+    description: >
+      Lists all uptime monitors. Returns URL, monitor type, status,
+      check frequency, team, and configuration details.
+    guide: >
+      Start with `SELECT id, pronounceable_name, url, monitor_type,
+      status, check_frequency, last_checked_at
+      FROM betterstack.monitors LIMIT 20`.
+    request:
+      method: GET
+      path: /v2/monitors
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_size:
+        default: 50
+        max: 250
+        query_param: per_page
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique monitor identifier.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: pronounceable_name
+        type: Utf8
+        nullable: true
+        description: Human-readable monitor name.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - pronounceable_name
+      - name: url
+        type: Utf8
+        nullable: true
+        description: URL or host being monitored.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - url
+      - name: monitor_type
+        type: Utf8
+        nullable: true
+        description: >-
+          Check type (status, ping, keyword, tcp, dns, playwright, etc.).
+        expr:
+          kind: path
+          path:
+            - attributes
+            - monitor_type
+      - name: status
+        type: Utf8
+        nullable: true
+        description: >-
+          Current state (up, down, paused, pending, maintenance, validating).
+        expr:
+          kind: path
+          path:
+            - attributes
+            - status
+      - name: check_frequency
+        type: Int64
+        nullable: true
+        description: Check interval in seconds.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - check_frequency
+      - name: last_checked_at
+        type: Utf8
+        nullable: true
+        description: Last check timestamp (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - attributes
+            - last_checked_at
+      - name: required_keyword
+        type: Utf8
+        nullable: true
+        description: Keyword to look for (keyword monitor types).
+        expr:
+          kind: path
+          path:
+            - attributes
+            - required_keyword
+      - name: confirmation_period
+        type: Int64
+        nullable: true
+        description: Seconds to wait before triggering incident.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - confirmation_period
+      - name: recovery_period
+        type: Int64
+        nullable: true
+        description: Seconds monitor must be up before resolving.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - recovery_period
+      - name: call
+        type: Boolean
+        nullable: true
+        description: Whether to call on-call person.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - call
+      - name: sms
+        type: Boolean
+        nullable: true
+        description: Whether to send SMS to on-call person.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - sms
+      - name: email
+        type: Boolean
+        nullable: true
+        description: Whether to email on-call person.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - email
+      - name: push
+        type: Boolean
+        nullable: true
+        description: Whether to send push notification.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - push
+      - name: team_name
+        type: Utf8
+        nullable: true
+        description: Team this monitor belongs to.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - team_name
+      - name: monitor_group_id
+        type: Utf8
+        nullable: true
+        description: ID of the monitor group.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - monitor_group_id
+      - name: paused_at
+        type: Utf8
+        nullable: true
+        description: When the monitor was paused (null if active).
+        expr:
+          kind: path
+          path:
+            - attributes
+            - paused_at
+      - name: maintenance_from
+        type: Utf8
+        nullable: true
+        description: Maintenance window start time.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - maintenance_from
+      - name: maintenance_to
+        type: Utf8
+        nullable: true
+        description: Maintenance window end time.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - maintenance_to
+      - name: http_method
+        type: Utf8
+        nullable: true
+        description: HTTP method used for requests (GET, HEAD, POST, etc.).
+        expr:
+          kind: path
+          path:
+            - attributes
+            - http_method
+      - name: port
+        type: Utf8
+        nullable: true
+        description: Port number for tcp/udp/smtp/pop/imap monitors.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - port
+      - name: expected_status_codes
+        type: Json
+        nullable: true
+        description: Array of HTTP status codes considered successful.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - expected_status_codes
+      - name: regions
+        type: Json
+        nullable: true
+        description: Array of check regions (us, eu, as, au).
+        expr:
+          kind: path
+          path:
+            - attributes
+            - regions
+      - name: follow_redirects
+        type: Boolean
+        nullable: true
+        description: Whether the monitor follows HTTP redirects.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - follow_redirects
+      - name: ssl_expiration
+        type: Int64
+        nullable: true
+        description: Days before SSL certificate expiration to alert.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - ssl_expiration
+      - name: domain_expiration
+        type: Int64
+        nullable: true
+        description: Days before domain expiration to alert.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - domain_expiration
+      - name: request_timeout
+        type: Int64
+        nullable: true
+        description: Request timeout in seconds.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - request_timeout
+      - name: policy_id
+        type: Utf8
+        nullable: true
+        description: Escalation policy ID for this monitor.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - policy_id
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: When the monitor was created (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - attributes
+            - created_at
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: When the monitor was last updated (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - attributes
+            - updated_at
+
+  # ──────────────────────────────────────────────────────────────────────
+  # monitor_groups
+  # ──────────────────────────────────────────────────────────────────────
+  - name: monitor_groups
+    description: >
+      Lists all monitor groups. Groups organize monitors into logical
+      collections for easier management.
+    guide: >
+      `SELECT id, name, sort_index, created_at
+      FROM betterstack.monitor_groups`.
+    request:
+      method: GET
+      path: /v2/monitor-groups
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_size:
+        default: 50
+        max: 250
+        query_param: per_page
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique monitor group identifier.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Monitor group name.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - name
+      - name: sort_index
+        type: Int64
+        nullable: true
+        description: Display sort order.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - sort_index
+      - name: team_name
+        type: Utf8
+        nullable: true
+        description: Team this group belongs to.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - team_name
+      - name: paused
+        type: Boolean
+        nullable: true
+        description: Whether the group is paused.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - paused
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Creation time (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - attributes
+            - created_at
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: Last update time (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - attributes
+            - updated_at
+
+  # ──────────────────────────────────────────────────────────────────────
+  # incidents
+  # ──────────────────────────────────────────────────────────────────────
+  - name: incidents
+    description: >
+      Lists all incidents. Returns incident cause, status, timeline
+      (started/acknowledged/resolved), notification settings, and
+      associated monitor details.
+    guide: >
+      `SELECT id, name, cause, status, started_at, resolved_at
+      FROM betterstack.incidents LIMIT 20`.
+    request:
+      method: GET
+      path: /v3/incidents
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_size:
+        default: 50
+        max: 50
+        query_param: per_page
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique incident identifier.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Incident name (usually the monitor name).
+        expr:
+          kind: path
+          path:
+            - attributes
+            - name
+      - name: url
+        type: Utf8
+        nullable: true
+        description: URL that triggered the incident.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - url
+      - name: http_method
+        type: Utf8
+        nullable: true
+        description: HTTP method used for the check.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - http_method
+      - name: cause
+        type: Utf8
+        nullable: true
+        description: What caused the incident (e.g. Status 404).
+        expr:
+          kind: path
+          path:
+            - attributes
+            - cause
+      - name: status
+        type: Utf8
+        nullable: true
+        description: >-
+          Incident status (Started, Acknowledged, Resolved, etc.).
+        expr:
+          kind: path
+          path:
+            - attributes
+            - status
+      - name: started_at
+        type: Utf8
+        nullable: true
+        description: When the incident started (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - attributes
+            - started_at
+      - name: acknowledged_at
+        type: Utf8
+        nullable: true
+        description: When the incident was acknowledged.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - acknowledged_at
+      - name: acknowledged_by
+        type: Utf8
+        nullable: true
+        description: Who acknowledged the incident.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - acknowledged_by
+      - name: resolved_at
+        type: Utf8
+        nullable: true
+        description: When the incident was resolved.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - resolved_at
+      - name: resolved_by
+        type: Utf8
+        nullable: true
+        description: Who resolved the incident.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - resolved_by
+      - name: call
+        type: Boolean
+        nullable: true
+        description: Whether calls were sent.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - call
+      - name: sms
+        type: Boolean
+        nullable: true
+        description: Whether SMS was sent.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - sms
+      - name: email_notify
+        type: Boolean
+        nullable: true
+        description: Whether email was sent.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - email
+      - name: push
+        type: Boolean
+        nullable: true
+        description: Whether push notification was sent.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - push
+      - name: team_name
+        type: Utf8
+        nullable: true
+        description: Team associated with the incident.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - team_name
+      - name: screenshot_url
+        type: Utf8
+        nullable: true
+        description: Screenshot taken at time of incident.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - screenshot_url
+      - name: escalation_policy_id
+        type: Utf8
+        nullable: true
+        description: Escalation policy ID for this incident.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - escalation_policy_id
+      - name: regions
+        type: Json
+        nullable: true
+        description: Regions where the check was performed.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - regions
+      - name: incident_group_id
+        type: Int64
+        nullable: true
+        description: ID of the incident group.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - incident_group_id
+      - name: response_content
+        type: Utf8
+        nullable: true
+        description: Response body that triggered the incident (if < 500 bytes).
+        expr:
+          kind: path
+          path:
+            - attributes
+            - response_content
+      - name: response_url
+        type: Utf8
+        nullable: true
+        description: Link to the response body (if >= 500 bytes).
+        expr:
+          kind: path
+          path:
+            - attributes
+            - response_url
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Creation time (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - attributes
+            - created_at
+
+  # ──────────────────────────────────────────────────────────────────────
+  # heartbeats
+  # ──────────────────────────────────────────────────────────────────────
+  - name: heartbeats
+    description: >
+      Lists all heartbeat monitors. Heartbeats track cron jobs,
+      background workers, and scheduled tasks by expecting periodic
+      pings within a configured interval.
+    guide: >
+      `SELECT id, name, status, period, grace, created_at
+      FROM betterstack.heartbeats LIMIT 20`.
+    request:
+      method: GET
+      path: /v2/heartbeats
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_size:
+        default: 50
+        max: 250
+        query_param: per_page
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique heartbeat identifier.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Heartbeat service name.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - name
+      - name: url
+        type: Utf8
+        nullable: true
+        description: URL to ping for this heartbeat.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - url
+      - name: status
+        type: Utf8
+        nullable: true
+        description: >-
+          Current state (up, down, paused, pending).
+        expr:
+          kind: path
+          path:
+            - attributes
+            - status
+      - name: period
+        type: Int64
+        nullable: true
+        description: Expected ping interval in seconds (min 30).
+        expr:
+          kind: path
+          path:
+            - attributes
+            - period
+      - name: grace
+        type: Int64
+        nullable: true
+        description: Grace period in seconds before alerting.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - grace
+      - name: call
+        type: Boolean
+        nullable: true
+        description: Whether to call on-call person.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - call
+      - name: sms
+        type: Boolean
+        nullable: true
+        description: Whether to send SMS.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - sms
+      - name: email_notify
+        type: Boolean
+        nullable: true
+        description: Whether to send email.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - email
+      - name: push
+        type: Boolean
+        nullable: true
+        description: Whether to send push notification.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - push
+      - name: team_name
+        type: Utf8
+        nullable: true
+        description: Team this heartbeat belongs to.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - team_name
+      - name: heartbeat_group_id
+        type: Int64
+        nullable: true
+        description: ID of the heartbeat group.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - heartbeat_group_id
+      - name: sort_index
+        type: Int64
+        nullable: true
+        description: Display sort order.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - sort_index
+      - name: paused_at
+        type: Utf8
+        nullable: true
+        description: When the heartbeat was paused.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - paused_at
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Creation time (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - attributes
+            - created_at
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: Last update time (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - attributes
+            - updated_at
+
+  # ──────────────────────────────────────────────────────────────────────
+  # heartbeat_groups
+  # ──────────────────────────────────────────────────────────────────────
+  - name: heartbeat_groups
+    description: >
+      Lists all heartbeat groups. Groups organize heartbeats into
+      logical collections.
+    guide: >
+      `SELECT id, name, sort_index, created_at
+      FROM betterstack.heartbeat_groups`.
+    request:
+      method: GET
+      path: /v2/heartbeat-groups
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_size:
+        default: 50
+        max: 250
+        query_param: per_page
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique heartbeat group identifier.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Heartbeat group name.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - name
+      - name: sort_index
+        type: Int64
+        nullable: true
+        description: Display sort order.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - sort_index
+      - name: team_name
+        type: Utf8
+        nullable: true
+        description: Team this group belongs to.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - team_name
+      - name: paused
+        type: Boolean
+        nullable: true
+        description: Whether the group is paused.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - paused
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Creation time (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - attributes
+            - created_at
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: Last update time (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - attributes
+            - updated_at
+
+  # ──────────────────────────────────────────────────────────────────────
+  # status_pages
+  # ──────────────────────────────────────────────────────────────────────
+  - name: status_pages
+    description: >
+      Lists all status pages. Returns company name, subdomain,
+      custom domain, timezone, and design settings.
+    guide: >
+      `SELECT id, company_name, subdomain, custom_domain,
+      timezone FROM betterstack.status_pages`.
+    request:
+      method: GET
+      path: /v2/status-pages
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_size:
+        default: 50
+        max: 250
+        query_param: per_page
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique status page identifier.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: company_name
+        type: Utf8
+        nullable: true
+        description: Company name displayed on the page.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - company_name
+      - name: company_url
+        type: Utf8
+        nullable: true
+        description: Company website URL.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - company_url
+      - name: subdomain
+        type: Utf8
+        nullable: true
+        description: Subdomain for the status page.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - subdomain
+      - name: custom_domain
+        type: Utf8
+        nullable: true
+        description: Custom domain for the status page.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - custom_domain
+      - name: timezone
+        type: Utf8
+        nullable: true
+        description: Timezone for the status page display.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - timezone
+      - name: team_name
+        type: Utf8
+        nullable: true
+        description: Team this status page belongs to.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - team_name
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Creation time (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - attributes
+            - created_at
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: Last update time (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - attributes
+            - updated_at
+
+  # ──────────────────────────────────────────────────────────────────────
+  # on_call_schedules
+  # ──────────────────────────────────────────────────────────────────────
+  - name: on_call_schedules
+    description: >
+      Lists all on-call schedules. Returns schedule name, default
+      calendar flag, and team association.
+    guide: >
+      `SELECT id, name, default_calendar, team_name
+      FROM betterstack.on_call_schedules`.
+    request:
+      method: GET
+      path: /v2/on-calls
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_size:
+        default: 50
+        max: 250
+        query_param: per_page
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique on-call schedule identifier.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Schedule name.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - name
+      - name: default_calendar
+        type: Boolean
+        nullable: true
+        description: Whether this is the default calendar for the team.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - default_calendar
+      - name: team_name
+        type: Utf8
+        nullable: true
+        description: Team this schedule belongs to.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - team_name
+      - name: on_call_users
+        type: Json
+        nullable: true
+        description: Current on-call users for this schedule.
+        expr:
+          kind: path
+          path:
+            - relationships
+            - on_call_users
+            - data
+
+  # ──────────────────────────────────────────────────────────────────────
+  # email_integrations
+  # ──────────────────────────────────────────────────────────────────────
+  - name: email_integrations
+    description: >
+      Lists all email integrations configured for incident reporting.
+      Returns integration name, email address, and team.
+    guide: >
+      `SELECT id, name, email_address, team_name, paused
+      FROM betterstack.email_integrations`.
+    request:
+      method: GET
+      path: /v2/email-integrations
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_size:
+        default: 50
+        max: 250
+        query_param: per_page
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique email integration identifier.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Integration name.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - name
+      - name: email_address
+        type: Utf8
+        nullable: true
+        description: Email address that receives incident reports.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - email_address
+      - name: team_name
+        type: Utf8
+        nullable: true
+        description: Team this integration belongs to.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - team_name
+      - name: policy_id
+        type: Utf8
+        nullable: true
+        description: Escalation policy ID for this integration.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - policy_id
+      - name: call
+        type: Boolean
+        nullable: true
+        description: Whether calls are sent.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - call
+      - name: sms
+        type: Boolean
+        nullable: true
+        description: Whether SMS messages are sent.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - sms
+      - name: email_notify
+        type: Boolean
+        nullable: true
+        description: Whether email notifications are sent.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - email
+      - name: push
+        type: Boolean
+        nullable: true
+        description: Whether push notifications are sent.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - push
+      - name: paused
+        type: Boolean
+        nullable: true
+        description: Whether the integration is paused.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - paused
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Creation time (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - attributes
+            - created_at
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: Last update time (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - attributes
+            - updated_at
+
+  # ──────────────────────────────────────────────────────────────────────
+  # incoming_webhooks
+  # ──────────────────────────────────────────────────────────────────────
+  - name: incoming_webhooks
+    description: >
+      Lists all incoming webhook integrations. External tools can
+      trigger incidents via these webhooks.
+    guide: >
+      `SELECT id, name, url, team_name, paused
+      FROM betterstack.incoming_webhooks`.
+    request:
+      method: GET
+      path: /v2/incoming-webhooks
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_size:
+        default: 50
+        max: 250
+        query_param: per_page
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique incoming webhook identifier.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Webhook integration name.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - name
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Incoming webhook URL.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - url
+      - name: team_name
+        type: Utf8
+        nullable: true
+        description: Team this webhook belongs to.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - team_name
+      - name: policy_id
+        type: Utf8
+        nullable: true
+        description: Escalation policy ID for this webhook.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - policy_id
+      - name: call
+        type: Boolean
+        nullable: true
+        description: Whether calls are sent.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - call
+      - name: sms
+        type: Boolean
+        nullable: true
+        description: Whether SMS messages are sent.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - sms
+      - name: email_notify
+        type: Boolean
+        nullable: true
+        description: Whether email notifications are sent.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - email
+      - name: push
+        type: Boolean
+        nullable: true
+        description: Whether push notifications are sent.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - push
+      - name: paused
+        type: Boolean
+        nullable: true
+        description: Whether the webhook is paused.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - paused
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Creation time (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - attributes
+            - created_at
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: Last update time (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - attributes
+            - updated_at
+
+  # ──────────────────────────────────────────────────────────────────────
+  # status_page_resources — resources on a status page
+  # ──────────────────────────────────────────────────────────────────────
+  - name: status_page_resources
+    description: >
+      Lists all resources (monitors/heartbeats) attached to a
+      specific status page. Shows which services appear on each
+      status page.
+    guide: >
+      Filter by status_page_id: `SELECT id, resource_id,
+      resource_type, public_name, status, availability
+      FROM betterstack.status_page_resources
+      WHERE status_page_id = '12345'`.
+    filters:
+      - name: status_page_id
+        required: true
+    request:
+      method: GET
+      path: /v2/status-pages/{{filter.status_page_id}}/resources
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_size:
+        default: 50
+        max: 250
+        query_param: per_page
+    columns:
+      - name: status_page_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Status page ID (from filter).
+        expr:
+          kind: from_filter
+          key: status_page_id
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique resource identifier.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: resource_id
+        type: Utf8
+        nullable: true
+        description: ID of the linked monitor or heartbeat.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - resource_id
+      - name: resource_type
+        type: Utf8
+        nullable: true
+        description: >-
+          Type of linked resource (Monitor, Heartbeat, etc.).
+        expr:
+          kind: path
+          path:
+            - attributes
+            - resource_type
+      - name: public_name
+        type: Utf8
+        nullable: true
+        description: Display name shown on the status page.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - public_name
+      - name: status_page_section_id
+        type: Utf8
+        nullable: true
+        description: ID of the section containing this resource.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - status_page_section_id
+      - name: history
+        type: Boolean
+        nullable: true
+        description: Whether status history is shown on the page.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - history
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Current status shown on the status page.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - status
+      - name: availability
+        type: Float64
+        nullable: true
+        description: Resource availability ratio.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - availability
+      - name: position
+        type: Int64
+        nullable: true
+        description: Display position on the status page.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - position
+      - name: widget_type
+        type: Utf8
+        nullable: true
+        description: Display widget type on the status page.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - widget_type
+      - name: explanation
+        type: Utf8
+        nullable: true
+        description: Public explanation shown for this resource.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - explanation
+      - name: status_history
+        type: Json
+        nullable: true
+        description: Status history entries for the resource.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - status_history
+
+  # ──────────────────────────────────────────────────────────────────────
+  # status_page_sections — sections on a status page
+  # ──────────────────────────────────────────────────────────────────────
+  - name: status_page_sections
+    description: >
+      Lists all sections on a specific status page. Sections group
+      resources into named categories on the page.
+    guide: >
+      Filter by status_page_id: `SELECT id, name, position
+      FROM betterstack.status_page_sections
+      WHERE status_page_id = '12345'`.
+    filters:
+      - name: status_page_id
+        required: true
+    request:
+      method: GET
+      path: /v2/status-pages/{{filter.status_page_id}}/sections
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_size:
+        default: 50
+        max: 250
+        query_param: per_page
+    columns:
+      - name: status_page_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Status page ID (from filter).
+        expr:
+          kind: from_filter
+          key: status_page_id
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique section identifier.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Section name.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - name
+      - name: position
+        type: Int64
+        nullable: true
+        description: Display position on the page.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - position
+
+  # ──────────────────────────────────────────────────────────────────────
+  # status_page_reports — status reports on a status page
+  # ──────────────────────────────────────────────────────────────────────
+  - name: status_page_reports
+    description: >
+      Lists all status reports (incident updates) on a specific
+      status page. Returns report title, body, status, and timeline.
+    guide: >
+      Filter by status_page_id: `SELECT id, title, report_type,
+      starts_at, ends_at FROM betterstack.status_page_reports
+      WHERE status_page_id = '12345'`.
+    filters:
+      - name: status_page_id
+        required: true
+    request:
+      method: GET
+      path: /v2/status-pages/{{filter.status_page_id}}/status-reports
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_size:
+        default: 50
+        max: 250
+        query_param: per_page
+    columns:
+      - name: status_page_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Status page ID (from filter).
+        expr:
+          kind: from_filter
+          key: status_page_id
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique status report identifier.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Report title.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - title
+      - name: report_type
+        type: Utf8
+        nullable: true
+        description: Report type (e.g. maintenance, incident).
+        expr:
+          kind: path
+          path:
+            - attributes
+            - report_type
+      - name: starts_at
+        type: Utf8
+        nullable: true
+        description: Report start time (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - attributes
+            - starts_at
+      - name: ends_at
+        type: Utf8
+        nullable: true
+        description: Report end time (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - attributes
+            - ends_at
+      - name: aggregate_state
+        type: Utf8
+        nullable: true
+        description: Aggregate state for the status report.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - aggregate_state
+      - name: affected_resources
+        type: Json
+        nullable: true
+        description: Resources affected by the report.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - affected_resources

@@ -12,7 +12,7 @@ use coral_spec::{AuthSpec, BasicAuthSpec, HeaderAuthSpec};
 
 use crate::RequestAuthenticator;
 use crate::backends::shared::template::{
-    EMPTY_MAP, render_template, resolve_value_source, value_to_string,
+    RenderContext, render_template, resolve_value_source, value_to_string,
 };
 
 /// Built-in auth variants resolve their headers from resolved inputs only;
@@ -31,8 +31,9 @@ impl BuiltinAuth for BasicAuthSpec {
         &self,
         resolved_inputs: &BTreeMap<String, String>,
     ) -> Result<Vec<(HeaderName, HeaderValue)>> {
-        let username = render_template(&self.username, &EMPTY_MAP, &EMPTY_MAP, resolved_inputs)?;
-        let password = render_template(&self.password, &EMPTY_MAP, &EMPTY_MAP, resolved_inputs)?;
+        let context = RenderContext::source_scoped(resolved_inputs);
+        let username = render_template(&self.username, &context)?;
+        let password = render_template(&self.password, &context)?;
         let encoded = BASE64_STANDARD.encode(format!("{username}:{password}"));
         let value =
             HeaderValue::try_from(format!("Basic {encoded}").as_str()).map_err(|error| {
@@ -42,8 +43,9 @@ impl BuiltinAuth for BasicAuthSpec {
     }
 
     fn validate(&self, resolved_inputs: &BTreeMap<String, String>) -> Result<()> {
-        render_template(&self.username, &EMPTY_MAP, &EMPTY_MAP, resolved_inputs)?;
-        render_template(&self.password, &EMPTY_MAP, &EMPTY_MAP, resolved_inputs)?;
+        let context = RenderContext::source_scoped(resolved_inputs);
+        render_template(&self.username, &context)?;
+        render_template(&self.password, &context)?;
         Ok(())
     }
 }
@@ -54,15 +56,14 @@ impl BuiltinAuth for HeaderAuthSpec {
         resolved_inputs: &BTreeMap<String, String>,
     ) -> Result<Vec<(HeaderName, HeaderValue)>> {
         let mut out = Vec::with_capacity(self.headers.len());
+        let context = RenderContext::source_scoped(resolved_inputs);
         for header in &self.headers {
-            let resolved =
-                resolve_value_source(&header.value, &EMPTY_MAP, &EMPTY_MAP, resolved_inputs)?
-                    .ok_or_else(|| {
-                        DataFusionError::Execution(format!(
-                            "missing value for auth header '{}'",
-                            header.name
-                        ))
-                    })?;
+            let resolved = resolve_value_source(&header.value, &context)?.ok_or_else(|| {
+                DataFusionError::Execution(format!(
+                    "missing value for auth header '{}'",
+                    header.name
+                ))
+            })?;
             let name = HeaderName::try_from(header.name.as_str()).map_err(|error| {
                 DataFusionError::Execution(format!(
                     "invalid auth header name '{}': {error}",

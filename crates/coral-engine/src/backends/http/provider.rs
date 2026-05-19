@@ -68,43 +68,64 @@ impl HttpSourceTableProvider {
 struct HttpFetchPlan {
     backend: HttpSourceClient,
     target: Arc<HttpFetchTarget>,
-    request_values: Arc<HashMap<String, String>>,
+    filter_values: Arc<HashMap<String, String>>,
+    arg_values: Arc<HashMap<String, String>>,
     limit: Option<usize>,
+}
+
+pub(crate) struct HttpJsonExecRequest<'a> {
+    pub(crate) backend: HttpSourceClient,
+    pub(crate) source_schema: &'a str,
+    pub(crate) target: HttpFetchTarget,
+    pub(crate) schema: SchemaRef,
+    pub(crate) filter_values: HashMap<String, String>,
+    pub(crate) arg_values: HashMap<String, String>,
+    pub(crate) projection: Option<&'a Vec<usize>>,
+    pub(crate) limit: Option<usize>,
 }
 
 #[async_trait]
 impl RowFetcher for HttpFetchPlan {
     async fn fetch(&self) -> Result<Vec<Value>> {
         self.backend
-            .fetch(self.target.as_ref(), &self.request_values, self.limit)
+            .fetch(
+                self.target.as_ref(),
+                &self.filter_values,
+                &self.arg_values,
+                self.limit,
+            )
             .await
     }
 }
 
-fn http_json_exec(
-    backend: HttpSourceClient,
-    source_schema: &str,
-    target: HttpFetchTarget,
-    schema: SchemaRef,
-    request_values: HashMap<String, String>,
-    projection: Option<&Vec<usize>>,
-    limit: Option<usize>,
-) -> Result<Arc<dyn ExecutionPlan>> {
+pub(crate) fn http_json_exec(request: HttpJsonExecRequest<'_>) -> Result<Arc<dyn ExecutionPlan>> {
+    let HttpJsonExecRequest {
+        backend,
+        source_schema,
+        target,
+        schema,
+        filter_values,
+        arg_values,
+        projection,
+        limit,
+    } = request;
     let target = Arc::new(target);
-    let request_values = Arc::new(request_values);
+    let filter_values = Arc::new(filter_values);
+    let arg_values = Arc::new(arg_values);
     let fetcher = Arc::new(HttpFetchPlan {
         backend,
         target: target.clone(),
-        request_values: request_values.clone(),
+        filter_values: filter_values.clone(),
+        arg_values,
         limit,
     });
 
     let converter = {
         let target = target.clone();
         let schema = schema.clone();
-        let request_values = request_values.clone();
+        let filter_values = filter_values.clone();
         Arc::new(move |items: &[Value]| {
-            convert_items(target.columns(), schema.clone(), &request_values, items)
+            convert_items(target.columns(), schema.clone(), &filter_values, items)
         })
     };
 
@@ -164,10 +185,10 @@ impl TableProvider for HttpSourceTableProvider {
         filters: &[Expr],
         limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        let request_values = extract_filter_values(filters, self.table.filters());
+        let filter_values = extract_filter_values(filters, self.table.filters());
 
         for required in self.table.filters().iter().filter(|f| f.required) {
-            if !request_values.contains_key(&required.name) {
+            if !filter_values.contains_key(&required.name) {
                 return Err(DataFusionError::External(Box::new(
                     ProviderQueryError::MissingRequiredFilter {
                         schema: self.source_schema.clone(),
@@ -178,19 +199,20 @@ impl TableProvider for HttpSourceTableProvider {
             }
         }
 
-        let request_value_keys: HashSet<String> = request_values.keys().cloned().collect();
-        let active_request = self.table.resolve_request(&request_value_keys).clone();
+        let filter_value_keys: HashSet<String> = filter_values.keys().cloned().collect();
+        let active_request = self.table.resolve_request(&filter_value_keys).clone();
         let target = self.target.with_resolved_request(active_request);
 
-        http_json_exec(
-            self.backend.clone(),
-            &self.source_schema,
+        http_json_exec(HttpJsonExecRequest {
+            backend: self.backend.clone(),
+            source_schema: &self.source_schema,
             target,
-            self.schema.clone(),
-            request_values,
+            schema: self.schema.clone(),
+            filter_values,
+            arg_values: HashMap::new(),
             projection,
             limit,
-        )
+        })
     }
 }
 

@@ -1,0 +1,858 @@
+name: zulip
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query users, channels, topics, and bounded message windows from Zulip.
+inputs:
+  ZULIP_SITE:
+    kind: variable
+    hint: |
+      Base URL for your Zulip organization, without a trailing slash. Use a
+      Zulip Cloud URL such as `https://example.zulipchat.com`, or the base URL
+      of a self-hosted Zulip server.
+  ZULIP_EMAIL:
+    kind: variable
+    hint: |
+      Zulip API email address for the user or bot account. Find this together
+      with the API key in Zulip personal settings, or use the email address of
+      a bot account.
+  ZULIP_API_KEY:
+    kind: secret
+    hint: |
+      Zulip API key for the same user or bot account as `ZULIP_EMAIL`. Zulip
+      API requests use HTTP Basic authentication with the email as username and
+      this API key as password. See https://zulip.com/api/api-keys.
+base_url: "{{input.ZULIP_SITE}}"
+auth:
+  type: BasicAuth
+  username: "{{input.ZULIP_EMAIL}}"
+  password: "{{input.ZULIP_API_KEY}}"
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+rate_limit:
+  remaining_header: X-RateLimit-Remaining
+  reset_header: X-RateLimit-Reset
+test_queries:
+  - SELECT user_id, email, full_name FROM zulip.me LIMIT 1
+  - SELECT stream_id, name FROM zulip.channels LIMIT 1
+tables:
+  - name: me
+    description: Authenticated Zulip user or bot account metadata
+    guide: |
+      Use this table first to verify credentials and identify the Zulip
+      account used by Coral. It returns one row for the authenticated user or
+      bot.
+    fetch_limit_default: 1
+    request:
+      method: GET
+      path: /api/v1/users/me
+    response: {}
+    columns:
+      - name: user_id
+        type: Int64
+        nullable: false
+        description: Zulip user ID of the authenticated account
+        expr:
+          kind: path
+          path: [user_id]
+      - name: email
+        type: Utf8
+        nullable: false
+        description: Zulip API email address
+        expr:
+          kind: path
+          path: [email]
+      - name: delivery_email
+        type: Utf8
+        nullable: true
+        description: Real delivery email address when visible
+        expr:
+          kind: path
+          path: [delivery_email]
+      - name: full_name
+        type: Utf8
+        nullable: false
+        description: Full display name
+        expr:
+          kind: path
+          path: [full_name]
+      - name: role
+        type: Int64
+        nullable: true
+        description: Zulip role value for the account
+        expr:
+          kind: path
+          path: [role]
+      - name: timezone
+        type: Utf8
+        nullable: true
+        description: IANA timezone identifier
+        expr:
+          kind: path
+          path: [timezone]
+      - name: date_joined
+        type: Timestamp
+        nullable: true
+        description: Time when the account joined the organization
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [date_joined]
+      - name: avatar_url
+        type: Utf8
+        nullable: true
+        description: Avatar URL for the account
+        expr:
+          kind: path
+          path: [avatar_url]
+      - name: is_admin
+        type: Boolean
+        nullable: true
+        description: Whether the account is an organization administrator
+        expr:
+          kind: path
+          path: [is_admin]
+      - name: is_owner
+        type: Boolean
+        nullable: true
+        description: Whether the account is an organization owner
+        expr:
+          kind: path
+          path: [is_owner]
+      - name: is_bot
+        type: Boolean
+        nullable: true
+        description: Whether the account is a bot
+        expr:
+          kind: path
+          path: [is_bot]
+      - name: is_active
+        type: Boolean
+        nullable: true
+        description: Whether the account is active
+        expr:
+          kind: path
+          path: [is_active]
+
+  - name: users
+    description: Zulip organization users visible to the authenticated account
+    guide: |
+      Use this table to inventory users and bots. Email visibility, custom
+      profile fields, and guest access depend on Zulip organization settings
+      and the authenticated account's permissions.
+    request:
+      method: GET
+      path: /api/v1/users
+      query:
+        - name: client_gravatar
+          from: filter_bool
+          key: client_gravatar
+        - name: include_custom_profile_fields
+          from: filter_bool
+          key: include_custom_profile_fields
+        - name: user_ids
+          from: filter
+          key: user_ids
+    response:
+      rows_path: [members]
+    columns:
+      - name: user_id
+        type: Int64
+        nullable: false
+        description: Zulip user ID
+        expr:
+          kind: path
+          path: [user_id]
+      - name: email
+        type: Utf8
+        nullable: false
+        description: Zulip API email address
+        expr:
+          kind: path
+          path: [email]
+      - name: delivery_email
+        type: Utf8
+        nullable: true
+        description: Real delivery email address when visible
+        expr:
+          kind: path
+          path: [delivery_email]
+      - name: full_name
+        type: Utf8
+        nullable: false
+        description: Full display name
+        expr:
+          kind: path
+          path: [full_name]
+      - name: role
+        type: Int64
+        nullable: true
+        description: Zulip role value
+        expr:
+          kind: path
+          path: [role]
+      - name: timezone
+        type: Utf8
+        nullable: true
+        description: IANA timezone identifier
+        expr:
+          kind: path
+          path: [timezone]
+      - name: date_joined
+        type: Timestamp
+        nullable: true
+        description: Time when the user joined the organization
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [date_joined]
+      - name: avatar_url
+        type: Utf8
+        nullable: true
+        description: Avatar URL for the user
+        expr:
+          kind: path
+          path: [avatar_url]
+      - name: is_admin
+        type: Boolean
+        nullable: true
+        description: Whether the user is an organization administrator
+        expr:
+          kind: path
+          path: [is_admin]
+      - name: is_owner
+        type: Boolean
+        nullable: true
+        description: Whether the user is an organization owner
+        expr:
+          kind: path
+          path: [is_owner]
+      - name: is_guest
+        type: Boolean
+        nullable: true
+        description: Whether the user is a guest
+        expr:
+          kind: path
+          path: [is_guest]
+      - name: is_bot
+        type: Boolean
+        nullable: true
+        description: Whether the user is a bot
+        expr:
+          kind: path
+          path: [is_bot]
+      - name: is_active
+        type: Boolean
+        nullable: true
+        description: Whether the user account is active
+        expr:
+          kind: path
+          path: [is_active]
+      - name: is_billing_admin
+        type: Boolean
+        nullable: true
+        description: Whether the user is a billing administrator on older Zulip servers
+        expr:
+          kind: path
+          path: [is_billing_admin]
+      - name: bot_type
+        type: Int64
+        nullable: true
+        description: Bot type value when the row represents a bot
+        expr:
+          kind: path
+          path: [bot_type]
+      - name: profile_data
+        type: Json
+        nullable: true
+        description: Custom profile fields when requested and visible
+        expr:
+          kind: path
+          path: [profile_data]
+      - name: client_gravatar
+        type: Boolean
+        nullable: true
+        description: >-
+          Whether Zulip should omit gravatar URLs and let the client compute
+          them (virtual)
+        expr:
+          kind: from_filter
+          key: client_gravatar
+        virtual: true
+      - name: include_custom_profile_fields
+        type: Boolean
+        nullable: true
+        description: Whether to request custom profile field data (virtual)
+        expr:
+          kind: from_filter
+          key: include_custom_profile_fields
+        virtual: true
+      - name: user_ids
+        type: Utf8
+        nullable: true
+        description: JSON array of user IDs to request, such as [1,2,3] (virtual)
+        expr:
+          kind: from_filter
+          key: user_ids
+        virtual: true
+    filters:
+      - name: client_gravatar
+      - name: include_custom_profile_fields
+      - name: user_ids
+
+  - name: channels
+    description: Zulip channels visible to the authenticated account
+    guide: |
+      Zulip's API path still uses the older term `streams`; this table uses
+      the current product term `channels`. Use `stream_id` values from this
+      table when querying `zulip.topics`.
+    request:
+      method: GET
+      path: /api/v1/streams
+      query:
+        - name: include_public
+          from: filter_bool
+          key: include_public
+        - name: include_subscribed
+          from: filter_bool
+          key: include_subscribed
+        - name: exclude_archived
+          from: filter_bool
+          key: exclude_archived
+        - name: include_all
+          from: filter_bool
+          key: include_all
+        - name: include_all_active
+          from: filter_bool
+          key: include_all_active
+        - name: include_default
+          from: filter_bool
+          key: include_default
+        - name: include_web_public
+          from: filter_bool
+          key: include_web_public
+        - name: include_owner_subscribed
+          from: filter_bool
+          key: include_owner_subscribed
+        - name: include_can_access_content
+          from: filter_bool
+          key: include_can_access_content
+    response:
+      rows_path: [streams]
+    columns:
+      - name: stream_id
+        type: Int64
+        nullable: false
+        description: Zulip channel ID
+        expr:
+          kind: path
+          path: [stream_id]
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Channel name
+        expr:
+          kind: path
+          path: [name]
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Channel description
+        expr:
+          kind: path
+          path: [description]
+      - name: date_created
+        type: Timestamp
+        nullable: true
+        description: Channel creation time
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr:
+            kind: path
+            path: [date_created]
+      - name: creator_id
+        type: Int64
+        nullable: true
+        description: User ID of the channel creator
+        expr:
+          kind: path
+          path: [creator_id]
+      - name: first_message_id
+        type: Int64
+        nullable: true
+        description: First message ID in the channel when available
+        expr:
+          kind: path
+          path: [first_message_id]
+      - name: is_archived
+        type: Boolean
+        nullable: true
+        description: Whether the channel is archived
+        expr:
+          kind: path
+          path: [is_archived]
+      - name: invite_only
+        type: Boolean
+        nullable: true
+        description: Whether the channel is private/invite-only
+        expr:
+          kind: path
+          path: [invite_only]
+      - name: is_web_public
+        type: Boolean
+        nullable: true
+        description: Whether the channel is web-public
+        expr:
+          kind: path
+          path: [is_web_public]
+      - name: stream_post_policy
+        type: Int64
+        nullable: true
+        description: Zulip stream post policy value
+        expr:
+          kind: path
+          path: [stream_post_policy]
+      - name: message_retention_days
+        type: Int64
+        nullable: true
+        description: Message retention period in days when configured
+        expr:
+          kind: path
+          path: [message_retention_days]
+      - name: stream_weekly_traffic
+        type: Int64
+        nullable: true
+        description: Estimated average weekly message traffic when returned
+        expr:
+          kind: path
+          path: [stream_weekly_traffic]
+      - name: is_default
+        type: Boolean
+        nullable: true
+        description: Whether the channel is a default channel when include_default is true
+        expr:
+          kind: path
+          path: [is_default]
+      - name: include_public
+        type: Boolean
+        nullable: true
+        description: Include public channels (virtual)
+        expr:
+          kind: from_filter
+          key: include_public
+        virtual: true
+      - name: include_subscribed
+        type: Boolean
+        nullable: true
+        description: Include subscribed channels (virtual)
+        expr:
+          kind: from_filter
+          key: include_subscribed
+        virtual: true
+      - name: exclude_archived
+        type: Boolean
+        nullable: true
+        description: Exclude archived channels from results (virtual)
+        expr:
+          kind: from_filter
+          key: exclude_archived
+        virtual: true
+      - name: include_all
+        type: Boolean
+        nullable: true
+        description: Include all channels the user has metadata access to (virtual)
+        expr:
+          kind: from_filter
+          key: include_all
+        virtual: true
+      - name: include_all_active
+        type: Boolean
+        nullable: true
+        description: >-
+          Deprecated Zulip filter to include all active channels visible to the
+          account (virtual)
+        expr:
+          kind: from_filter
+          key: include_all_active
+        virtual: true
+      - name: include_default
+        type: Boolean
+        nullable: true
+        description: Include default channel metadata (virtual)
+        expr:
+          kind: from_filter
+          key: include_default
+        virtual: true
+      - name: include_web_public
+        type: Boolean
+        nullable: true
+        description: Include web-public channels (virtual)
+        expr:
+          kind: from_filter
+          key: include_web_public
+        virtual: true
+      - name: include_owner_subscribed
+        type: Boolean
+        nullable: true
+        description: For bots, include channels the bot owner is subscribed to (virtual)
+        expr:
+          kind: from_filter
+          key: include_owner_subscribed
+        virtual: true
+      - name: include_can_access_content
+        type: Boolean
+        nullable: true
+        description: Include channels the user has content access to (virtual)
+        expr:
+          kind: from_filter
+          key: include_can_access_content
+        virtual: true
+    filters:
+      - name: include_public
+      - name: include_subscribed
+      - name: exclude_archived
+      - name: include_all
+      - name: include_all_active
+      - name: include_default
+      - name: include_web_public
+      - name: include_owner_subscribed
+      - name: include_can_access_content
+
+  - name: topics
+    description: Topics in a Zulip channel visible to the authenticated account
+    guide: |
+      Requires a `stream_id` from `zulip.channels`. Private channels and
+      protected history can limit which topics are visible to the authenticated
+      user or bot.
+    request:
+      method: GET
+      path: /api/v1/users/me/{{filter.stream_id}}/topics
+      query:
+        - name: allow_empty_topic_name
+          from: filter_bool
+          key: allow_empty_topic_name
+    response:
+      rows_path: [topics]
+    columns:
+      - name: stream_id
+        type: Int64
+        nullable: false
+        description: Channel ID used for the request
+        expr:
+          kind: from_filter
+          key: stream_id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Topic name
+        expr:
+          kind: path
+          path: [name]
+      - name: max_id
+        type: Int64
+        nullable: true
+        description: Message ID of the most recent message in the topic
+        expr:
+          kind: path
+          path: [max_id]
+      - name: allow_empty_topic_name
+        type: Boolean
+        nullable: true
+        description: Whether to return empty topic names as empty strings (virtual)
+        expr:
+          kind: from_filter
+          key: allow_empty_topic_name
+        virtual: true
+    filters:
+      - name: stream_id
+        required: true
+      - name: allow_empty_topic_name
+
+  - name: messages
+    description: Bounded Zulip message windows matching an anchor and optional narrow
+    guide: |
+      Requires `anchor`, `num_before`, and `num_after` because Zulip fetches
+      messages by a bounded range around an anchor rather than by cursor
+      pagination. Use `anchor = 'newest'`, `num_before = 100`, and
+      `num_after = 0` for the latest visible messages. Use `narrow` for Zulip
+      JSON narrow filters such as channel, topic, sender, or search terms.
+    request:
+      method: GET
+      path: /api/v1/messages
+      query:
+        - name: anchor
+          from: filter
+          key: anchor
+        - name: num_before
+          from: filter_int
+          key: num_before
+        - name: num_after
+          from: filter_int
+          key: num_after
+        - name: narrow
+          from: filter
+          key: narrow
+        - name: include_anchor
+          from: filter_bool
+          key: include_anchor
+        - name: apply_markdown
+          from: filter_bool
+          key: apply_markdown
+        - name: client_gravatar
+          from: filter_bool
+          key: client_gravatar
+        - name: allow_empty_topic_name
+          from: filter_bool
+          key: allow_empty_topic_name
+    response:
+      rows_path: [messages]
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Unique Zulip message ID
+        expr:
+          kind: path
+          path: [id]
+      - name: sender_id
+        type: Int64
+        nullable: true
+        description: User ID of the message sender
+        expr:
+          kind: path
+          path: [sender_id]
+      - name: sender_email
+        type: Utf8
+        nullable: true
+        description: Zulip API email address of the sender
+        expr:
+          kind: path
+          path: [sender_email]
+      - name: sender_full_name
+        type: Utf8
+        nullable: true
+        description: Full display name of the sender
+        expr:
+          kind: path
+          path: [sender_full_name]
+      - name: sender_realm_str
+        type: Utf8
+        nullable: true
+        description: Realm string for the sender
+        expr:
+          kind: path
+          path: [sender_realm_str]
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Message type such as stream or private
+        expr:
+          kind: path
+          path: [type]
+      - name: stream_id
+        type: Int64
+        nullable: true
+        description: Channel ID for channel messages
+        expr:
+          kind: path
+          path: [stream_id]
+      - name: subject
+        type: Utf8
+        nullable: true
+        description: Topic name for channel messages
+        expr:
+          kind: path
+          path: [subject]
+      - name: content
+        type: Utf8
+        nullable: true
+        description: Message content, rendered or raw depending on apply_markdown
+        expr:
+          kind: path
+          path: [content]
+      - name: content_type
+        type: Utf8
+        nullable: true
+        description: Content type returned by Zulip
+        expr:
+          kind: path
+          path: [content_type]
+      - name: timestamp
+        type: Timestamp
+        nullable: true
+        description: Time when the message was sent
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr:
+            kind: path
+            path: [timestamp]
+      - name: last_edit_timestamp
+        type: Timestamp
+        nullable: true
+        description: Time when the message content was last edited
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr:
+            kind: path
+            path: [last_edit_timestamp]
+      - name: last_moved_timestamp
+        type: Timestamp
+        nullable: true
+        description: Time when the message was last moved
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr:
+            kind: path
+            path: [last_moved_timestamp]
+      - name: recipient_id
+        type: Int64
+        nullable: true
+        description: Recipient/conversation ID
+        expr:
+          kind: path
+          path: [recipient_id]
+      - name: is_me_message
+        type: Boolean
+        nullable: true
+        description: Whether the message is a /me status message
+        expr:
+          kind: path
+          path: [is_me_message]
+      - name: client
+        type: Utf8
+        nullable: true
+        description: Zulip client that sent the message
+        expr:
+          kind: path
+          path: [client]
+      - name: flags
+        type: Json
+        nullable: true
+        description: Message flags for the authenticated user
+        expr:
+          kind: path
+          path: [flags]
+      - name: reactions
+        type: Json
+        nullable: true
+        description: Message reactions
+        expr:
+          kind: path
+          path: [reactions]
+      - name: display_recipient
+        type: Json
+        nullable: true
+        description: Channel name or direct-message recipient objects
+        expr:
+          kind: path
+          path: [display_recipient]
+      - name: edit_history
+        type: Json
+        nullable: true
+        description: Message edit history when visible
+        expr:
+          kind: path
+          path: [edit_history]
+      - name: submessages
+        type: Json
+        nullable: true
+        description: Experimental submessage data
+        expr:
+          kind: path
+          path: [submessages]
+      - name: topic_links
+        type: Json
+        nullable: true
+        description: Linkification data for the topic
+        expr:
+          kind: path
+          path: [topic_links]
+      - name: anchor
+        type: Utf8
+        nullable: false
+        description: Message anchor such as newest, oldest, first_unread, or a message ID (virtual)
+        expr:
+          kind: from_filter
+          key: anchor
+        virtual: true
+      - name: num_before
+        type: Int64
+        nullable: false
+        description: Number of messages before the anchor to request (virtual)
+        expr:
+          kind: from_filter
+          key: num_before
+        virtual: true
+      - name: num_after
+        type: Int64
+        nullable: false
+        description: Number of messages after the anchor to request (virtual)
+        expr:
+          kind: from_filter
+          key: num_after
+        virtual: true
+      - name: narrow
+        type: Utf8
+        nullable: true
+        description: Zulip JSON narrow filter string (virtual)
+        expr:
+          kind: from_filter
+          key: narrow
+        virtual: true
+      - name: include_anchor
+        type: Boolean
+        nullable: true
+        description: Whether to include the anchor message when it matches (virtual)
+        expr:
+          kind: from_filter
+          key: include_anchor
+        virtual: true
+      - name: apply_markdown
+        type: Boolean
+        nullable: true
+        description: Whether Zulip should return rendered HTML content (virtual)
+        expr:
+          kind: from_filter
+          key: apply_markdown
+        virtual: true
+      - name: client_gravatar
+        type: Boolean
+        nullable: true
+        description: >-
+          Whether Zulip should omit gravatar URLs and let the client compute
+          them (virtual)
+        expr:
+          kind: from_filter
+          key: client_gravatar
+        virtual: true
+      - name: allow_empty_topic_name
+        type: Boolean
+        nullable: true
+        description: Whether to return empty topic names as empty strings (virtual)
+        expr:
+          kind: from_filter
+          key: allow_empty_topic_name
+        virtual: true
+    filters:
+      - name: anchor
+        required: true
+      - name: num_before
+        required: true
+      - name: num_after
+        required: true
+      - name: narrow
+      - name: include_anchor
+      - name: apply_markdown
+      - name: client_gravatar
+      - name: allow_empty_topic_name

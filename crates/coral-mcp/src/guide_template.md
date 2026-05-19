@@ -4,11 +4,14 @@
 
 ## Discovery Workflow
 
-Always inspect queryable tables and table metadata before writing queries:
+Always inspect queryable tables, source-scoped table functions, and table metadata before writing queries. Call table functions from `FROM` with named arguments, for example `github.search_issues(q => 'repo:withcoral/coral deploy failure')`.
 
 ```sql
 -- List visible tables, descriptions, and required filters
 SELECT schema_name, table_name, description, required_filters FROM coral.tables ORDER BY schema_name, table_name;
+
+-- List source-scoped table functions, such as provider-native search
+SELECT schema_name, function_name, description, arguments_json, result_columns_json FROM coral.table_functions ORDER BY schema_name, function_name;
 
 -- Inspect columns for one visible table, including nullability and filter-only virtual columns
 {{COLUMNS_EXAMPLE}}
@@ -62,4 +65,6 @@ WHERE json_get_str(rules, 0, 'clauses', 0, 'values', 0) = 'phoebe-org';
 - Regex operators such as `~` and `~*` treat `%` and `_` as ordinary literal characters.
 - `list_tables` shows queryable fully qualified tables in pages; pass `schema`, `limit`, and `offset` to narrow large catalogs.
 - `search_tables` searches table names, descriptions, guides, and required filters with a Rust regex; use it before broad SQL metadata scans when you know part of the table name or required filters.
+- `describe_table` returns one compact table detail with guide text, required filters, and column count; use `coral.columns` when you need full column details.
+- `list_columns` lists columns for one table; pass `pattern`, `required_only`, `limit`, and `offset` to inspect large schemas progressively. Existing tables return paginated `columns` plus `total`, `has_more`, and optional `next_offset`; regex matches add `matched_fields` per column. Missing tables return `found: false` with suggested recovery calls instead of an empty page.
 - `coral://tables` shows table summaries for all installed sources; `coral.tables`, `coral.columns`, and `coral.inputs` provide richer SQL metadata.

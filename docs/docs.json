@@ -95,7 +95,8 @@
         "pages": [
           "project/roadmap",
           "project/security",
-          "project/architecture"
+          "project/architecture",
+          "project/changelog"
         ]
       }
     ]
