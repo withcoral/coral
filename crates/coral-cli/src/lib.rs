@@ -717,4 +717,20 @@ mod tests {
     fn non_mcp_invocation_disables_stderr_logs() {
         assert!(!command_enables_stderr_logs(["coral", "sql", "SELECT 1"]));
     }
+
+    #[cfg(feature = "embedded-ui")]
+    #[test]
+    fn embedded_ui_assets_are_present_when_release_guard_is_enabled() {
+        if std::env::var_os("CORAL_REQUIRE_UI_DIST").is_none() {
+            return;
+        }
+
+        let index = super::embedded_ui_assets()
+            .get("index.html")
+            .expect("embedded ui index");
+        assert!(
+            !index.bytes.is_empty(),
+            "expected non-empty embedded ui index.html"
+        );
+    }
 }
