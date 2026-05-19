@@ -14,6 +14,7 @@ import {
 
 const BASE_TIME_NANOS = 1_764_000_000_000_000_000n
 const LONG_LINEAR_ISSUES_TABLE = 'issues_with_an_exceptionally_long_label_that_should_wrap_across_multiple_lines'
+export const LONG_LINEAR_ISSUES_SPAN_LABEL = `POST linear.${LONG_LINEAR_ISSUES_TABLE}`
 
 type SourceName = 'github' | 'linear' | 'slack'
 
