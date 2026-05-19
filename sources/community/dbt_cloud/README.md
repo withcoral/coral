@@ -1,46 +1,117 @@
-# dbt Cloud Source
+# dbt Cloud community source
 
-Query dbt Cloud metadata including models, jobs, runs, environments, and exposures using SQL.
+The `dbt_cloud` community source exposes read-only dbt Cloud job, run, and
+environment data through Coral SQL.
 
-## Authentication
+## Setup
 
-1. Go to [dbt Cloud](https://cloud.getdbt.com) → Account Settings → Service Tokens
-2. Create a token with **Metadata Only** permissions
-3. Find your Account ID in the URL: `https://cloud.getdbt.com/#/accounts/<account_id>/`
+Create a service token in dbt Cloud:
 
-```bash
-coral source add --file sources/community/dbt_cloud/manifest.yaml
-```
+- Open dbt Cloud and go to **Account Settings** > **Service Tokens**
+- Click **+ New Token** and give it a name
+- Add **Member** permission for your account
+- Copy the generated token
 
-## Example Queries
+Find your account ID in the dbt Cloud URL:
+`https://cloud.getdbt.com/#/accounts/<account_id>/`
 
-Most frequently failing jobs:
-```sql
-SELECT job_id, count(*) AS failures
-FROM dbt_cloud.runs
-WHERE status = 'error'
-GROUP BY job_id
-ORDER BY failures DESC
-```
+Then install the source:
 
-Longest-running jobs:
-```sql
-SELECT id, duration, status
-FROM dbt_cloud.runs
-ORDER BY duration DESC
-LIMIT 20
-```
-
-All environments:
-```sql
-SELECT id, name, type, dbt_version
-FROM dbt_cloud.environments
+```sh
+export DBT_CLOUD_ACCOUNT_ID="<account_id>"
+export DBT_CLOUD_API_TOKEN="<token>"
+cargo run -p coral-cli -- source add --file sources/community/dbt_cloud/manifest.yaml
 ```
 
 ## Tables
 
-| Table | Description |
-|-------|-------------|
-| `dbt_cloud.jobs` | Jobs, schedules, and orchestration metadata |
-| `dbt_cloud.environments` | Environments and deployment configuration |
-| `dbt_cloud.runs` | Job runs with execution state and duration |
+| Table | Purpose |
+| --- | --- |
+| `dbt_cloud.jobs` | dbt Cloud jobs with schedules, execution state, and orchestration metadata. |
+| `dbt_cloud.runs` | Job runs with execution state, duration, and status metadata. |
+| `dbt_cloud.environments` | Environments with deployment metadata and execution configuration. |
+
+All tables are read-only. This source does not create, trigger, or modify
+dbt Cloud resources.
+
+## Example queries
+
+List all jobs:
+
+```sql
+SELECT id, name, project_id, environment_id, state
+FROM dbt_cloud.jobs
+ORDER BY name;
+```
+
+Most frequently failing runs:
+
+```sql
+SELECT job_id, count(*) AS failures
+FROM dbt_cloud.runs
+WHERE status = 20
+GROUP BY job_id
+ORDER BY failures DESC;
+```
+
+Longest-running jobs:
+
+```sql
+SELECT id, duration, status, started_at
+FROM dbt_cloud.runs
+ORDER BY duration DESC
+LIMIT 20;
+```
+
+Runs for a specific job:
+
+```sql
+SELECT id, status, duration, started_at, finished_at
+FROM dbt_cloud.runs
+WHERE job_id = '<job_id>'
+ORDER BY started_at DESC
+LIMIT 50;
+```
+
+List all environments:
+
+```sql
+SELECT id, name, type, dbt_version, project_id
+FROM dbt_cloud.environments
+ORDER BY name;
+```
+
+## Validation
+
+Lint the manifest:
+
+```sh
+cargo run -p coral-cli -- source lint sources/community/dbt_cloud/manifest.yaml
+```
+
+Install and test with real credentials:
+
+```sh
+export DBT_CLOUD_ACCOUNT_ID="<account_id>"
+export DBT_CLOUD_API_TOKEN="<token>"
+cargo run -p coral-cli -- source add --file sources/community/dbt_cloud/manifest.yaml
+cargo run -p coral-cli -- source test dbt_cloud
+```
+
+Inspect the registered source:
+
+```sh
+cargo run -p coral-cli -- sql "SELECT table_name, description FROM coral.tables WHERE schema_name = 'dbt_cloud'"
+cargo run -p coral-cli -- sql "SELECT table_name, column_name FROM coral.columns WHERE schema_name = 'dbt_cloud' ORDER BY table_name, ordinal_position"
+```
+
+## Notes
+
+- Uses the dbt Cloud Administrative API v2.
+- The base URL is `https://cloud.getdbt.com`. Enterprise or single-tenant
+  deployments may use a different base URL.
+- Run status codes: 1 = Queued, 3 = Running, 10 = Success, 20 = Error,
+  30 = Cancelled.
+- Nested fields are preserved as JSON in the `raw` column for each table.
+- The Discovery API (GraphQL) is not used in this source. Models, tests,
+  and sources metadata require the Discovery API and are out of scope for v1.
