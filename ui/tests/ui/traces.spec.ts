@@ -2,6 +2,8 @@ import { traceHandlers } from './support/trace-handlers'
 import { LONG_LINEAR_ISSUES_SPAN_LABEL } from './support/trace-fixtures'
 import { expect, test } from './playwright.setup'
 
+const screencastTestTimeoutMs = 45_000
+
 test('shows an empty trace stream without contacting a Coral server', async ({ network, page, review }) => {
   network.use(...traceHandlers.empty)
 
@@ -15,7 +17,11 @@ test('shows an empty trace stream without contacting a Coral server', async ({ n
   await review.pause()
 })
 
-test('lists 10 traces, searches one, opens its details, and opens a span inspector', async ({ network, page, review }) => {
+test('lists 10 traces, searches one, opens its details, and opens a span inspector', async ({ network, page, review }, testInfo) => {
+  if (process.env.PW_UI_SCREENCAST === '1') {
+    testInfo.setTimeout(screencastTestTimeoutMs)
+  }
+
   network.use(...traceHandlers.tenTraceDetailFlow)
 
   await review.chapter('Test 2: ten traces and span details', 'Mock list and detail gRPC-Web responses')
