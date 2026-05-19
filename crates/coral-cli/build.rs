@@ -81,14 +81,24 @@ fn validate_embedded_ui_dist() {
     );
 
     let assets_dir = Path::new("../../ui/dist/assets");
-    let has_assets = std::fs::read_dir(assets_dir).is_ok_and(|entries| {
-        entries
-            .flatten()
-            .any(|entry| entry.file_type().is_ok_and(|file_type| file_type.is_file()))
-    });
+    let has_assets = directory_contains_file(assets_dir);
     assert!(
         has_assets,
         "CORAL_REQUIRE_UI_DIST=1 requires embedded UI assets, but {} has no built files",
         assets_dir.display()
     );
+}
+
+fn directory_contains_file(path: &std::path::Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return false;
+    };
+
+    for entry in entries.flatten() {
+        if entry.file_type().is_ok_and(|file_type| file_type.is_file()) {
+            return true;
+        }
+    }
+
+    false
 }
