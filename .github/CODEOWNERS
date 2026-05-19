@@ -34,3 +34,6 @@ AGENTS.md @withcoral/core-maintainers
 
 # Bundled sources.
 /sources/ @withcoral/sources
+
+# UI
+/ui/ @withcoral/ui
