@@ -221,7 +221,11 @@ impl CoralQuery {
             }
         }
 
-        Ok(SourceValidationReport::new(catalog.tables, query_tests))
+        Ok(SourceValidationReport::new(
+            catalog.tables,
+            catalog.table_functions,
+            query_tests,
+        ))
     }
 }
 

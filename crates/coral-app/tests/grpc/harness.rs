@@ -366,6 +366,38 @@ pub(crate) fn fixture_manifest_with_functions_yaml() -> String {
     }))
 }
 
+pub(crate) fn fixture_function_only_manifest_yaml() -> String {
+    manifest_yaml(&json!({
+        "name": "searchy",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": "https://example.com",
+        "functions": [{
+            "name": "search_issues",
+            "description": "Search issues",
+            "args": [{
+                "name": "q",
+                "required": true,
+                "bind": { "arg": "q" },
+            }],
+            "request": {
+                "method": "GET",
+                "path": "/search/issues",
+                "query": [
+                    { "name": "q", "from": "arg", "key": "q" },
+                ],
+            },
+            "response": {
+                "rows_path": ["items"],
+            },
+            "columns": [
+                { "name": "title", "type": "Utf8", "description": "Issue title" },
+            ],
+        }],
+    }))
+}
+
 pub(crate) fn fixture_manifest_with_test_queries_yaml(
     root: &Path,
     test_queries: &[&str],

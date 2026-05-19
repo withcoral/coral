@@ -232,6 +232,8 @@ message ValidateSourceResponse {
   repeated Table tables = 2;
   // Validation-query results declared by the source spec.
   repeated QueryTestResult query_tests = 3;
+  // Table functions exposed by the validated source.
+  repeated TableFunction table_functions = 4;
 }
 
 // Source registration and validation APIs.

@@ -447,6 +447,7 @@ pub(crate) fn validate_source_response_to_proto(
 ) -> ValidateSourceResponse {
     let coral_engine::SourceValidationReport {
         tables,
+        table_functions,
         query_tests,
     } = report;
     ValidateSourceResponse {
@@ -456,6 +457,10 @@ pub(crate) fn validate_source_response_to_proto(
             .map(|table| table_to_proto(workspace_name, table))
             .collect(),
         query_tests: query_tests.iter().map(query_test_result_to_proto).collect(),
+        table_functions: table_functions
+            .into_iter()
+            .map(|function| table_function_to_proto(workspace_name, function))
+            .collect(),
     }
 }
 

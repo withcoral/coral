@@ -812,6 +812,7 @@ mod tests {
         let response = ValidateSourceResponse {
             source: None,
             tables: Vec::new(),
+            table_functions: Vec::new(),
             query_tests: vec![coral_api::v1::QueryTestResult {
                 sql: "SELECT 1".to_string(),
                 outcome: Some(coral_api::v1::query_test_result::Outcome::Success(
@@ -831,6 +832,7 @@ mod tests {
         let response = ValidateSourceResponse {
             source: None,
             tables: Vec::new(),
+            table_functions: Vec::new(),
             query_tests: vec![
                 coral_api::v1::QueryTestResult {
                     sql: "SELECT 1".to_string(),
@@ -860,6 +862,7 @@ mod tests {
         let response = ValidateSourceResponse {
             source: None,
             tables: Vec::new(),
+            table_functions: Vec::new(),
             query_tests: vec![coral_api::v1::QueryTestResult {
                 sql: "SELECT missing".to_string(),
                 outcome: Some(coral_api::v1::query_test_result::Outcome::Failure(

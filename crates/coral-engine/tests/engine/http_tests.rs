@@ -370,6 +370,9 @@ async fn validate_source_accepts_function_only_http_source_and_runs_queries() {
         .expect("function-only source should validate");
 
     assert!(report.tables.is_empty());
+    assert_eq!(report.table_functions.len(), 1);
+    assert_eq!(report.table_functions[0].schema_name, "search");
+    assert_eq!(report.table_functions[0].function_name, "search_issues");
     assert_eq!(report.query_tests.len(), 1);
     assert!(report.query_tests[0].passed());
     assert_eq!(report.query_tests[0].row_count(), Some(1));

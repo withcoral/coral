@@ -297,6 +297,7 @@ fn mock_validate_response() -> ValidateSourceResponse {
             mock_table("github", "issues"),
             mock_table("github", "pull_requests"),
         ],
+        table_functions: Vec::new(),
         query_tests: Vec::new(),
     }
 }

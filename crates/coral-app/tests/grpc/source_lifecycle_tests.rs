@@ -18,10 +18,10 @@ use tempfile::TempDir;
 use tonic::Request;
 
 use crate::harness::{
-    FailingHttpFixture, GrpcHarness, fixture_manifest_with_inputs_yaml,
-    fixture_manifest_with_multiple_tables_yaml, fixture_manifest_with_required_inputs_yaml,
-    fixture_manifest_with_test_queries_yaml, fixture_manifest_yaml, invalid_manifest_yaml,
-    source_dir,
+    FailingHttpFixture, GrpcHarness, fixture_function_only_manifest_yaml,
+    fixture_manifest_with_inputs_yaml, fixture_manifest_with_multiple_tables_yaml,
+    fixture_manifest_with_required_inputs_yaml, fixture_manifest_with_test_queries_yaml,
+    fixture_manifest_yaml, invalid_manifest_yaml, source_dir,
 };
 
 #[tokio::test]
@@ -219,6 +219,31 @@ async fn validate_source_returns_tables() {
         .await;
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0]["text"], "hello");
+}
+
+#[tokio::test]
+async fn validate_source_returns_table_functions() {
+    let harness = GrpcHarness::new().await;
+    harness
+        .import_source(
+            fixture_function_only_manifest_yaml(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .await;
+
+    let validated = harness.validate_source("searchy").await;
+    assert!(validated.tables.is_empty());
+    assert_eq!(validated.table_functions.len(), 1);
+    let function = &validated.table_functions[0];
+    assert_eq!(function.schema_name, "searchy");
+    assert_eq!(function.name, "search_issues");
+    assert_eq!(function.arguments.len(), 1);
+    assert_eq!(function.arguments[0].name, "q");
+    assert!(function.arguments[0].required);
+    assert_eq!(function.result_columns.len(), 1);
+    assert_eq!(function.result_columns[0].name, "title");
+    assert!(validated.query_tests.is_empty());
 }
 
 #[tokio::test]
