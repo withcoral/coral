@@ -119,6 +119,11 @@ fn collect_declared_inputs(root: &Value) -> Result<Vec<ManifestInputSpec>> {
                 "manifest secret input '{key}' must not declare a default"
             )));
         }
+        if kind == ManifestInputKind::Variable && credential_like_input_key(key) {
+            return Err(ManifestError::validation(format!(
+                "manifest input '{key}' looks credential-like and must use kind: secret"
+            )));
+        }
         let hint = input
             .get("hint")
             .and_then(Value::as_str)
@@ -133,6 +138,33 @@ fn collect_declared_inputs(root: &Value) -> Result<Vec<ManifestInputSpec>> {
     }
 
     Ok(ordered)
+}
+
+fn credential_like_input_key(key: &str) -> bool {
+    const MARKERS: &[&str] = &[
+        "API_KEY",
+        "APPLICATION_KEY",
+        "ACCESS_KEY",
+        "ACCESS_KEY_ID",
+        "ACCESS_TOKEN",
+        "ADMIN_KEY",
+        "AUTHORIZATION",
+        "BEARER_TOKEN",
+        "CLIENT_SECRET",
+        "PASSWORD",
+        "PRIVATE_KEY",
+        "READ_KEY",
+        "SECRET",
+        "TOKEN",
+    ];
+
+    let key = key.to_ascii_uppercase();
+    MARKERS.iter().any(|marker| {
+        key == *marker
+            || key.contains(&format!("_{marker}_"))
+            || key.ends_with(&format!("_{marker}"))
+            || key.starts_with(&format!("{marker}_"))
+    })
 }
 
 fn validate_input_references(root: &Value, inputs: &[ManifestInputSpec]) -> Result<()> {
@@ -380,5 +412,48 @@ tables: []
 ";
         let error = collect(manifest).expect_err("secret default");
         assert!(error.to_string().contains("must not declare a default"));
+    }
+
+    #[test]
+    fn credential_like_variables_are_rejected() {
+        for key in [
+            "SERVICE_API_KEY",
+            "STRIPE_SECRET_KEY",
+            "WEAVIATE_API_KEY_STAGING",
+        ] {
+            let manifest = format!(
+                r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+inputs:
+  {key}:
+    kind: variable
+tables: []
+"
+            );
+            let error = collect(&manifest).expect_err("credential variable");
+            assert!(error.to_string().contains("looks credential-like"));
+        }
+    }
+
+    #[test]
+    fn credential_like_check_respects_underscore_boundaries() {
+        let manifest = r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+inputs:
+  SERVICE_SECRETARIAT_URL:
+    kind: variable
+tables: []
+";
+        let inputs = collect(manifest).expect("non-credential variable");
+        let [input] = inputs.as_slice() else {
+            panic!("expected one input, got {inputs:?}");
+        };
+        assert_eq!(input.key, "SERVICE_SECRETARIAT_URL");
     }
 }

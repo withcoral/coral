@@ -1,0 +1,318 @@
+name: signoz
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query services, logs, traces, dashboards, and alerts from SigNoz
+  (Cloud or self-hosted).
+inputs:
+  SIGNOZ_URL:
+    kind: variable
+    hint: |
+      Base URL of your SigNoz instance, for example `https://signoz.example.com`
+      or `http://localhost:3301`.
+      For SigNoz Cloud, use your cloud instance URL.
+  SIGNOZ_API_KEY:
+    kind: secret
+    hint: |
+      Service account API key for SigNoz. Generate one in
+      Settings > Service Accounts: create a service account, assign it the
+      SigNoz-Viewer role, then open its Keys tab and click Add Key.
+      The key is shown only once at creation time.
+      See https://signoz.io/docs/manage/administrator-guide/iam/service-accounts/
+base_url: "{{input.SIGNOZ_URL}}"
+auth:
+  type: HeaderAuth
+  headers:
+    - name: SIGNOZ-API-KEY
+      from: input
+      key: SIGNOZ_API_KEY
+
+test_queries:
+  - SELECT * FROM signoz.services LIMIT 1
+
+tables:
+  - name: services
+    description: APM services instrumented and reporting to SigNoz.
+    guide: >
+      Start here to get a list of all services sending traces to SigNoz.
+      Returns an empty list when no instrumented services have reported data.
+    request:
+      method: GET
+      path: /api/v1/services/list
+      query:
+        - name: start
+          from: now_epoch_minus_seconds
+          seconds: 3600
+        - name: end
+          from: now_epoch_minus_seconds
+          seconds: 0
+    response: {}
+    pagination:
+      mode: none
+    columns:
+      - name: service_name
+        type: Utf8
+        nullable: true
+        description: Name of the service
+        expr: {kind: path, path: [serviceName]}
+      - name: p99
+        type: Float64
+        nullable: true
+        description: P99 latency in milliseconds
+        expr: {kind: path, path: [p99]}
+      - name: avg_duration
+        type: Float64
+        nullable: true
+        description: Average request duration in milliseconds
+        expr: {kind: path, path: [avgDuration]}
+      - name: num_calls
+        type: Int64
+        nullable: true
+        description: Total number of calls in the time window
+        expr: {kind: path, path: [numCalls]}
+      - name: call_rate
+        type: Float64
+        nullable: true
+        description: Calls per second
+        expr: {kind: path, path: [callRate]}
+      - name: num_errors
+        type: Int64
+        nullable: true
+        description: Number of errors in the time window
+        expr: {kind: path, path: [numErrors]}
+      - name: error_rate
+        type: Float64
+        nullable: true
+        description: Error rate as a fraction of total calls
+        expr: {kind: path, path: [errorRate]}
+
+  - name: logs
+    description: >-
+      Search logs stored in SigNoz via the query_range API. Returns one result
+      envelope per query; individual log fields are in the rows JSON column.
+    guide: >
+      Requires start_time and end_time filters (epoch milliseconds).
+      Each query returns a single result envelope row. The rows column is a
+      JSON array of up to 1000 log objects -- use JSON extraction to access
+      individual fields. Narrow the time range to stay within this cap.
+      If rows is null the time range has no log data.
+    fetch_limit_default: 1000
+    request:
+      method: POST
+      path: /api/v5/query_range
+      headers:
+        - name: Content-Type
+          from: literal
+          value: application/json
+      body:
+        format: text
+        content:
+          from: template
+          template: >-
+            {"start":{{filter.start_time}},"end":{{filter.end_time}},"requestType":"raw","compositeQuery":{"queries":[{"type":"builder_query","spec":{"name":"A","signal":"logs","filter":{"expression":""},"order":[{"key":{"name":"timestamp"},"direction":"desc"},{"key":{"name":"id"},"direction":"desc"}],"offset":0,"limit":1000}}]}}
+    response:
+      rows_path: [data, data, results]
+    pagination:
+      mode: none
+    columns:
+      - name: query_name
+        type: Utf8
+        nullable: true
+        description: Query name
+        expr: {kind: path, path: [queryName]}
+      - name: next_cursor
+        type: Utf8
+        nullable: true
+        description: Cursor for the next page of results
+        expr: {kind: path, path: [nextCursor]}
+      - name: rows
+        type: Json
+        nullable: true
+        description: Array of log row objects returned by this query
+        expr: {kind: path, path: [rows]}
+      - name: start_time
+        type: Int64
+        nullable: true
+        description: Query start time in epoch milliseconds (virtual filter, required)
+        expr: {kind: 'null'}
+        virtual: true
+      - name: end_time
+        type: Int64
+        nullable: true
+        description: Query end time in epoch milliseconds (virtual filter, required)
+        expr: {kind: 'null'}
+        virtual: true
+    filters:
+      - name: start_time
+        required: true
+      - name: end_time
+        required: true
+
+  - name: traces
+    description: >-
+      Search trace spans stored in SigNoz via the query_range API. Returns one
+      result envelope per query; individual span fields are in the rows JSON column.
+    guide: >
+      Requires start_time and end_time filters (epoch milliseconds).
+      Each query returns a single result envelope row. The rows column is a
+      JSON array of up to 1000 span objects -- use JSON extraction to access
+      individual fields. Narrow the time range to stay within this cap.
+      If rows is null the time range has no trace data.
+    fetch_limit_default: 1000
+    request:
+      method: POST
+      path: /api/v5/query_range
+      headers:
+        - name: Content-Type
+          from: literal
+          value: application/json
+      body:
+        format: text
+        content:
+          from: template
+          template: >-
+            {"start":{{filter.start_time}},"end":{{filter.end_time}},"requestType":"raw","compositeQuery":{"queries":[{"type":"builder_query","spec":{"name":"A","signal":"traces","filter":{"expression":""},"order":[{"key":{"name":"timestamp"},"direction":"desc"}],"offset":0,"limit":1000}}]}}
+    response:
+      rows_path: [data, data, results]
+    pagination:
+      mode: none
+    columns:
+      - name: query_name
+        type: Utf8
+        nullable: true
+        description: Query name
+        expr: {kind: path, path: [queryName]}
+      - name: next_cursor
+        type: Utf8
+        nullable: true
+        description: Cursor for the next page of results
+        expr: {kind: path, path: [nextCursor]}
+      - name: rows
+        type: Json
+        nullable: true
+        description: Array of trace span objects returned by this query
+        expr: {kind: path, path: [rows]}
+      - name: start_time
+        type: Int64
+        nullable: true
+        description: Query start time in epoch milliseconds (virtual filter, required)
+        expr: {kind: 'null'}
+        virtual: true
+      - name: end_time
+        type: Int64
+        nullable: true
+        description: Query end time in epoch milliseconds (virtual filter, required)
+        expr: {kind: 'null'}
+        virtual: true
+    filters:
+      - name: start_time
+        required: true
+      - name: end_time
+        required: true
+
+  - name: dashboards
+    description: Dashboards configured in SigNoz.
+    guide: >
+      Returns all dashboards. No filters required.
+    request:
+      method: GET
+      path: /api/v1/dashboards
+    response:
+      rows_path: [data]
+    pagination:
+      mode: none
+    columns:
+      - name: uuid
+        type: Utf8
+        nullable: true
+        description: Dashboard UUID
+        expr: {kind: path, path: [uuid]}
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Dashboard title
+        expr: {kind: path, path: [data, title]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Dashboard description
+        expr: {kind: path, path: [data, description]}
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Creation timestamp
+        expr: {kind: path, path: [created_at]}
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: Last updated timestamp
+        expr: {kind: path, path: [updated_at]}
+      - name: created_by
+        type: Utf8
+        nullable: true
+        description: Email of the user who created the dashboard
+        expr: {kind: path, path: [created_by]}
+      - name: updated_by
+        type: Utf8
+        nullable: true
+        description: Email of the user who last updated the dashboard
+        expr: {kind: path, path: [updated_by]}
+
+  - name: alerts
+    description: Alert rules configured in SigNoz.
+    guide: >
+      Returns all alert rules. No filters required.
+    request:
+      method: GET
+      path: /api/v1/rules
+    response:
+      rows_path: [data, rules]
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Int64
+        nullable: true
+        description: Alert rule ID
+        expr: {kind: path, path: [id]}
+      - name: alert
+        type: Utf8
+        nullable: true
+        description: Alert rule name
+        expr: {kind: path, path: [alert]}
+      - name: alert_type
+        type: Utf8
+        nullable: true
+        description: Alert type (METRIC_BASED_ALERT, LOG_BASED_ALERT, TRACES_BASED_ALERT, etc.)
+        expr: {kind: path, path: [alertType]}
+      - name: state
+        type: Utf8
+        nullable: true
+        description: Current alert state (firing, inactive, etc.)
+        expr: {kind: path, path: [state]}
+      - name: severity
+        type: Utf8
+        nullable: true
+        description: Alert severity label
+        expr: {kind: path, path: [labels, severity]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Alert description annotation
+        expr: {kind: path, path: [annotations, description]}
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Creation timestamp
+        expr: {kind: path, path: [createAt]}
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: Last updated timestamp
+        expr: {kind: path, path: [updateAt]}
+      - name: disabled
+        type: Boolean
+        nullable: true
+        description: Whether the alert rule is disabled
+        expr: {kind: path, path: [disabled]}

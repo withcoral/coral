@@ -1,0 +1,428 @@
+name: loops
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query mailing lists, contact properties, contacts, transactional emails,
+  and campaigns from Loops via the Loops REST API v1.
+base_url: https://app.loops.so/api/v1
+inputs:
+  LOOPS_API_KEY:
+    kind: secret
+    hint: |
+      Generate an API key from your Loops dashboard:
+      Settings → API → Create API Key
+
+      Test your key validity with:
+        coral source add --file sources/community/loops/manifest.yaml --interactive
+
+      See https://loops.so/docs/api-reference/intro
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.LOOPS_API_KEY}}
+test_queries:
+  - SELECT * FROM loops.mailing_lists LIMIT 1
+  - SELECT * FROM loops.contact_properties LIMIT 5
+  - SELECT * FROM loops.transactional_emails LIMIT 1
+  - SELECT * FROM loops.campaigns LIMIT 1
+  - SELECT * FROM loops.contacts WHERE email = 'test@example.com' LIMIT 1
+tables:
+  - name: mailing_lists
+    description: >-
+      All mailing lists configured in the Loops account. Each row is one list.
+      Use the `id` column when constructing event payloads or filtering
+      subscriptions.
+    guide: |
+      Start here to discover all mailing list IDs in your account.
+      `is_public = true` means the list is shown to subscribers on the
+      preference page. `id` values (e.g. list_123) can be used as keys
+      when looking up contact mailing list membership via `loops.contacts`.
+    request:
+      method: GET
+      path: /lists
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Mailing list ID (e.g. list_123).
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Display name of the mailing list.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: description
+        type: Utf8
+        nullable: false
+        description: Description of the mailing list shown to subscribers.
+        expr:
+          kind: path
+          path:
+            - description
+      - name: is_public
+        type: Boolean
+        nullable: false
+        description: >-
+          Whether the list is publicly visible on the subscriber
+          preference page. True means subscribers can opt in or out of
+          this list themselves.
+        expr:
+          kind: path
+          path:
+            - isPublic
+
+  - name: contact_properties
+    description: >-
+      All contact properties defined in the Loops account. Each row is one
+      property definition. Use this to discover custom property keys before
+      querying or creating contacts.
+    guide: |
+      Use this table to inspect the full schema of contact properties
+      available in your account. `key` is the camelCase identifier used
+      in the Loops API and in contact objects. `type` is one of:
+      string, number, boolean, date.
+
+      Pass `list = 'custom'` to filter to only user-defined properties;
+      omit the filter (or pass `list = 'all'`) to see all properties
+      including Loops built-in fields.
+    filters:
+      - name: list
+        required: false
+    request:
+      method: GET
+      path: /contacts/properties
+      query:
+        - name: list
+          from: filter
+          key: list
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: key
+        type: Utf8
+        nullable: false
+        description: >-
+          camelCase property key used in the Loops API and contact objects
+          (e.g. firstName, planName).
+        expr:
+          kind: path
+          path:
+            - key
+      - name: label
+        type: Utf8
+        nullable: false
+        description: Human-readable label for the property (e.g. "First name").
+        expr:
+          kind: path
+          path:
+            - label
+      - name: type
+        type: Utf8
+        nullable: false
+        description: >-
+          Data type of the property. One of: string, number, boolean, date.
+        expr:
+          kind: path
+          path:
+            - type
+
+  - name: contacts
+    description: >-
+      Look up a single Loops contact by email address. Returns one row if the
+      contact is found, zero rows if not. This is a lookup table — the Loops
+      API does not support bulk listing of all contacts.
+    guide: |
+      This table performs a point lookup by email address. You must provide
+      the `email` filter. Returns one row if found, zero rows if not.
+
+      `mailing_lists` is a JSON object where each key is a mailing list ID
+      (e.g. list_123) and the value is a boolean subscription status.
+      Use `loops.mailing_lists` to look up list names from IDs.
+
+      `opt_in_status` reflects double opt-in state: accepted, pending,
+      rejected, or null (if double opt-in is not enabled).
+    filters:
+      - name: email
+        required: true
+    request:
+      method: GET
+      path: /contacts/find
+      query:
+        - name: email
+          from: filter
+          key: email
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: email
+        type: Utf8
+        nullable: false
+        description: Email address of the contact (echoed from the email filter).
+        expr:
+          kind: from_filter
+          key: email
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique contact ID assigned by Loops.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: first_name
+        type: Utf8
+        nullable: true
+        description: Contact's first name.
+        expr:
+          kind: path
+          path:
+            - firstName
+      - name: last_name
+        type: Utf8
+        nullable: true
+        description: Contact's last name.
+        expr:
+          kind: path
+          path:
+            - lastName
+      - name: source
+        type: Utf8
+        nullable: true
+        description: How the contact was added to Loops (e.g. API, form).
+        expr:
+          kind: path
+          path:
+            - source
+      - name: subscribed
+        type: Boolean
+        nullable: true
+        description: Whether the contact is subscribed to marketing emails.
+        expr:
+          kind: path
+          path:
+            - subscribed
+      - name: user_group
+        type: Utf8
+        nullable: true
+        description: >-
+          User group the contact belongs to. Used for segmentation within
+          Loops loops and campaigns.
+        expr:
+          kind: path
+          path:
+            - userGroup
+      - name: user_id
+        type: Utf8
+        nullable: true
+        description: >-
+          External user ID from your application, if set. Used to link
+          Loops contacts to your own user records.
+        expr:
+          kind: path
+          path:
+            - userId
+      - name: mailing_lists
+        type: Json
+        nullable: true
+        description: >-
+          JSON object of mailing list memberships. Keys are mailing list IDs
+          (e.g. list_123) and values are boolean subscription statuses.
+          Join IDs against loops.mailing_lists to get list names.
+        expr:
+          kind: path
+          path:
+            - mailingLists
+      - name: opt_in_status
+        type: Utf8
+        nullable: true
+        description: >-
+          Double opt-in status for this contact. One of: accepted, pending,
+          rejected, or null if double opt-in is not enabled for the account.
+        expr:
+          kind: path
+          path:
+            - optInStatus
+
+  - name: transactional_emails
+    description: >-
+      All published transactional email templates in the Loops account.
+      Each row is one template. Use `id` to reference templates when sending
+      transactional emails via the API.
+    guide: |
+      Each row is a published transactional email template. `id` is the
+      `transactionalId` you pass when triggering a send. `data_variables`
+      is a JSON array listing the variable names the template accepts
+      (e.g. ["confirmationUrl", "userName"]).
+
+      Use this table to audit which transactional emails are configured
+      and what data variables they require.
+    request:
+      method: GET
+      path: /transactional
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      response_cursor_path:
+        - pagination
+        - nextCursor
+      page_size:
+        default: 20
+        max: 50
+        query_param: perPage
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: >-
+          Transactional email template ID. Pass this as `transactionalId`
+          when triggering sends via the API.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Display name of the transactional email template.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: last_updated
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the template was last modified (UTC).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - lastUpdated
+      - name: data_variables
+        type: Json
+        nullable: true
+        description: >-
+          JSON array of data variable names accepted by this template
+          (e.g. ["confirmationUrl", "name"]). These are passed in the
+          `dataVariables` object when triggering a send.
+        expr:
+          kind: path
+          path:
+            - dataVariables
+
+  - name: campaigns
+    description: >-
+      All campaigns in the Loops account, ordered most recently created first.
+      Each row is one campaign. Status reflects lifecycle stage:
+      Draft, Scheduled, Sending, or Sent.
+    guide: |
+      Use this table to audit campaign history and track lifecycle status.
+      `campaign_id` uniquely identifies each campaign. `status` moves through:
+      Draft → Scheduled → Sending → Sent.
+
+      `email_message_id` links to the email message content for the campaign.
+      Campaigns in Draft status can still be edited; Sent campaigns are
+      immutable.
+    request:
+      method: GET
+      path: /campaigns
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      response_cursor_path:
+        - pagination
+        - nextCursor
+      page_size:
+        default: 20
+        max: 50
+        query_param: perPage
+    columns:
+      - name: campaign_id
+        type: Utf8
+        nullable: false
+        description: Unique campaign identifier.
+        expr:
+          kind: path
+          path:
+            - campaignId
+      - name: email_message_id
+        type: Utf8
+        nullable: true
+        description: >-
+          ID of the email message content associated with this campaign.
+          Null if no message has been created yet.
+        expr:
+          kind: path
+          path:
+            - emailMessageId
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Campaign name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: subject
+        type: Utf8
+        nullable: false
+        description: Email subject line for this campaign.
+        expr:
+          kind: path
+          path:
+            - subject
+      - name: status
+        type: Utf8
+        nullable: false
+        description: >-
+          Campaign lifecycle status. One of: Draft, Scheduled, Sending, Sent.
+        expr:
+          kind: path
+          path:
+            - status
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the campaign was created (UTC).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - createdAt
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the campaign was last updated (UTC).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updatedAt
