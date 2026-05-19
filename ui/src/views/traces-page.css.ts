@@ -243,6 +243,7 @@ export const waterfallRowButton = style({
   color: theme.content.primary,
   display: 'flex',
   minHeight: 38,
+  outline: 'none',
   padding: 0,
   position: 'relative',
   textAlign: 'left',
@@ -261,7 +262,7 @@ export const waterfallSpanLabel = style({
   justifyContent: 'flex-start',
   minHeight: 38,
   minWidth: 0,
-  overflow: 'hidden',
+  overflow: 'visible',
   paddingInlineEnd: 10,
 })
 export const waterfallSpanLabelActive = style({

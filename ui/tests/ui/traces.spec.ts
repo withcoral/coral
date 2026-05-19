@@ -47,7 +47,7 @@ test('lists 10 traces, searches one, opens its details, and opens a span inspect
 
   await review.chapter('Wrap a long span label', 'Open the long Linear span and verify the focus treatment stays contained')
   const longSpanRow = page.getByRole('treeitem').filter({ hasText: LONG_LINEAR_ISSUES_SPAN_LABEL })
-  const longSpanButton = longSpanRow.getByRole('button').first()
+  const longSpanButton = longSpanRow.locator(':scope > [role="button"]')
   const longSpanLabel = longSpanRow.getByText(LONG_LINEAR_ISSUES_SPAN_LABEL, { exact: true })
 
   await expect(longSpanRow).toBeVisible()
