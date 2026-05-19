@@ -1,0 +1,607 @@
+name: google_calendar
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query calendar lists, calendar metadata, and events from Google Calendar
+  via the Google Calendar REST API v3.
+base_url: https://www.googleapis.com/calendar/v3
+inputs:
+  GOOGLE_CALENDAR_ACCESS_TOKEN:
+    kind: secret
+    hint: |
+      OAuth2 bearer access token for the Google Calendar API.
+
+      Method A — Google Cloud CLI (recommended):
+        gcloud auth print-access-token
+
+      Method B — OAuth2 Playground (no CLI required):
+        1. Go to https://developers.google.com/oauthplayground
+        2. Under "Step 1", enter scope:
+             https://www.googleapis.com/auth/calendar.readonly
+        3. Click "Authorize APIs" and sign in with your Google account.
+        4. Under "Step 2", click "Exchange authorization code for tokens".
+        5. Copy the "Access token" value.
+
+      Note: access tokens expire after ~1 hour. Re-run the command or
+      playground flow to get a fresh token when needed.
+  GOOGLE_CALENDAR_CALENDAR_ID:
+    kind: variable
+    default: primary
+    hint: |
+      Default calendar ID used when no calendar_id filter is supplied.
+      Use "primary" for the authenticated user's primary calendar.
+      Run `SELECT id FROM google_calendar.calendar_lists` to list all
+      available calendar IDs in the account.
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.GOOGLE_CALENDAR_ACCESS_TOKEN}}
+test_queries:
+  - SELECT * FROM google_calendar.calendar_lists LIMIT 1
+  - SELECT id, summary, time_zone FROM google_calendar.calendars WHERE calendar_id = 'primary' LIMIT 1
+  - SELECT id, summary, start__date_time, end__date_time, status FROM google_calendar.events WHERE calendar_id = 'primary' LIMIT 5
+tables:
+  - name: calendar_lists
+    description: >-
+      All calendars on the authenticated user's calendar list. Each row is one
+      calendar entry. Use the `id` column as the `calendar_id` filter on the
+      `calendars` and `events` tables.
+    guide: |
+      Start here to discover all calendar IDs available to the authenticated
+      user. `primary = true` identifies the user's primary calendar.
+      `access_role` shows your permission level: `owner`, `writer`, `reader`,
+      or `freeBusyReader`.
+    request:
+      method: GET
+      path: /users/me/calendarList
+      query: []
+    response:
+      rows_path:
+        - items
+    pagination:
+      mode: cursor_query
+      cursor_param: pageToken
+      response_cursor_path:
+        - nextPageToken
+      page_size:
+        default: 100
+        max: 250
+        query_param: maxResults
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Calendar ID. Use as the `calendar_id` filter on other tables.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: summary
+        type: Utf8
+        nullable: true
+        description: Title of the calendar.
+        expr:
+          kind: path
+          path:
+            - summary
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Description of the calendar.
+        expr:
+          kind: path
+          path:
+            - description
+      - name: location
+        type: Utf8
+        nullable: true
+        description: Geographic location of the calendar as free-form text.
+        expr:
+          kind: path
+          path:
+            - location
+      - name: time_zone
+        type: Utf8
+        nullable: true
+        description: IANA time zone of the calendar (e.g. America/New_York).
+        expr:
+          kind: path
+          path:
+            - timeZone
+      - name: summary_override
+        type: Utf8
+        nullable: true
+        description: >-
+          Custom display name set by the user for this calendar on their list
+          (overrides the calendar's own summary).
+        expr:
+          kind: path
+          path:
+            - summaryOverride
+      - name: color_id
+        type: Utf8
+        nullable: true
+        description: Color ID referring to an entry in the calendar color list.
+        expr:
+          kind: path
+          path:
+            - colorId
+      - name: background_color
+        type: Utf8
+        nullable: true
+        description: "Background color of the calendar in hex format (e.g. #0d47a1)."
+        expr:
+          kind: path
+          path:
+            - backgroundColor
+      - name: foreground_color
+        type: Utf8
+        nullable: true
+        description: "Foreground color of the calendar in hex format (e.g. #ffffff)."
+        expr:
+          kind: path
+          path:
+            - foregroundColor
+      - name: access_role
+        type: Utf8
+        nullable: true
+        description: >-
+          Effective access role of the authenticated user on the calendar.
+          One of: owner, writer, reader, freeBusyReader.
+        expr:
+          kind: path
+          path:
+            - accessRole
+      - name: primary
+        type: Boolean
+        nullable: true
+        description: >-
+          Whether this is the authenticated user's primary calendar.
+          True for exactly one row.
+        expr:
+          kind: path
+          path:
+            - primary
+      - name: selected
+        type: Boolean
+        nullable: true
+        description: >-
+          Whether the calendar content is shown in the calendar UI.
+          True means the calendar is checked/visible.
+        expr:
+          kind: path
+          path:
+            - selected
+      - name: hidden
+        type: Boolean
+        nullable: true
+        description: Whether the calendar has been hidden from the list.
+        expr:
+          kind: path
+          path:
+            - hidden
+      - name: deleted
+        type: Boolean
+        nullable: true
+        description: >-
+          Whether the calendar has been deleted from the list. Deleted
+          calendars are normally omitted from responses.
+        expr:
+          kind: path
+          path:
+            - deleted
+
+  - name: calendars
+    description: >-
+      Metadata for a single calendar. Returns one row for the requested
+      calendar ID. Use `calendar_lists` to discover valid IDs first.
+    guide: |
+      Single-object lookup — always returns one row. Requires `calendar_id`.
+      Use `primary` as the `calendar_id` to inspect the authenticated user's
+      primary calendar without knowing its full ID.
+    filters:
+      - name: calendar_id
+        required: true
+    request:
+      method: GET
+      path: /calendars/{{filter.calendar_id}}
+    response:
+      rows_path: []
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: calendar_id
+        type: Utf8
+        nullable: false
+        description: Calendar ID passed as the filter.
+        expr:
+          kind: from_filter
+          key: calendar_id
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Calendar identifier returned by the API.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: summary
+        type: Utf8
+        nullable: true
+        description: Title of the calendar.
+        expr:
+          kind: path
+          path:
+            - summary
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Description of the calendar.
+        expr:
+          kind: path
+          path:
+            - description
+      - name: location
+        type: Utf8
+        nullable: true
+        description: Geographic location of the calendar as free-form text.
+        expr:
+          kind: path
+          path:
+            - location
+      - name: time_zone
+        type: Utf8
+        nullable: true
+        description: IANA time zone of the calendar (e.g. America/New_York).
+        expr:
+          kind: path
+          path:
+            - timeZone
+
+  - name: events
+    description: >-
+      Events on a Google Calendar. Requires `calendar_id`. Use `time_min` and
+      `time_max` to scope the result window; without them the API returns
+      events from the past 6 months by default. Set `single_events = 'true'`
+      to expand recurring event instances into individual rows.
+    guide: |
+      Requires `calendar_id`. Use `primary` for the authenticated user's
+      primary calendar, or any ID from `google_calendar.calendar_lists`.
+
+      Time filters (`time_min`, `time_max`) accept RFC 3339 / ISO 8601
+      strings with a timezone offset, e.g. `2026-05-01T00:00:00Z`.
+
+      Set `single_events = 'true'` to expand recurring event series into
+      individual occurrences. Without this flag, only the master recurring
+      event is returned once. When `single_events` is true, results are
+      ordered by `start__date_time` ascending.
+
+      `start__date_time` is NULL for all-day events; use `start__date`
+      (a plain date string) for those rows instead.
+    filters:
+      - name: calendar_id
+        required: true
+      - name: time_min
+        required: false
+      - name: time_max
+        required: false
+      - name: single_events
+        required: false
+    request:
+      method: GET
+      path: /calendars/{{filter.calendar_id}}/events
+      query:
+        - name: timeMin
+          from: filter
+          key: time_min
+        - name: timeMax
+          from: filter
+          key: time_max
+        - name: singleEvents
+          from: filter
+          key: single_events
+    response:
+      rows_path:
+        - items
+    pagination:
+      mode: cursor_query
+      cursor_param: pageToken
+      response_cursor_path:
+        - nextPageToken
+      page_size:
+        default: 250
+        max: 2500
+        query_param: maxResults
+    columns:
+      - name: calendar_id
+        type: Utf8
+        nullable: false
+        description: Calendar ID that was queried (echoed from filter).
+        expr:
+          kind: from_filter
+          key: calendar_id
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Opaque event identifier.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: i_cal_uid
+        type: Utf8
+        nullable: true
+        description: >-
+          iCalendar UID for the event. Stable across calendar copies and
+          useful for deduplication across calendars.
+        expr:
+          kind: path
+          path:
+            - iCalUID
+      - name: summary
+        type: Utf8
+        nullable: true
+        description: Title / summary of the event.
+        expr:
+          kind: path
+          path:
+            - summary
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Description of the event (may contain HTML).
+        expr:
+          kind: path
+          path:
+            - description
+      - name: location
+        type: Utf8
+        nullable: true
+        description: Geographic location of the event as free-form text.
+        expr:
+          kind: path
+          path:
+            - location
+      - name: status
+        type: Utf8
+        nullable: true
+        description: >-
+          Confirmation status of the event.
+          One of: confirmed, tentative, cancelled.
+        expr:
+          kind: path
+          path:
+            - status
+      - name: html_link
+        type: Utf8
+        nullable: true
+        description: URL to open the event in Google Calendar.
+        expr:
+          kind: path
+          path:
+            - htmlLink
+      - name: color_id
+        type: Utf8
+        nullable: true
+        description: Color ID of the event, overriding the calendar color.
+        expr:
+          kind: path
+          path:
+            - colorId
+      - name: start__date_time
+        type: Timestamp
+        nullable: true
+        description: >-
+          Start time of the event as a UTC Timestamp. NULL for all-day events
+          (use `start__date` instead).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - start
+              - dateTime
+      - name: start__date
+        type: Utf8
+        nullable: true
+        description: >-
+          Start date for all-day events (YYYY-MM-DD). NULL for timed events
+          (use `start__date_time` instead).
+        expr:
+          kind: path
+          path:
+            - start
+            - date
+      - name: start__time_zone
+        type: Utf8
+        nullable: true
+        description: IANA time zone in which `start__date_time` is specified.
+        expr:
+          kind: path
+          path:
+            - start
+            - timeZone
+      - name: end__date_time
+        type: Timestamp
+        nullable: true
+        description: >-
+          End time of the event as a UTC Timestamp. NULL for all-day events
+          (use `end__date` instead).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - end
+              - dateTime
+      - name: end__date
+        type: Utf8
+        nullable: true
+        description: >-
+          End date for all-day events (YYYY-MM-DD). NULL for timed events
+          (use `end__date_time` instead).
+        expr:
+          kind: path
+          path:
+            - end
+            - date
+      - name: end__time_zone
+        type: Utf8
+        nullable: true
+        description: IANA time zone in which `end__date_time` is specified.
+        expr:
+          kind: path
+          path:
+            - end
+            - timeZone
+      - name: recurring_event_id
+        type: Utf8
+        nullable: true
+        description: >-
+          ID of the recurring event master this instance belongs to.
+          NULL for non-recurring events.
+        expr:
+          kind: path
+          path:
+            - recurringEventId
+      - name: creator__email
+        type: Utf8
+        nullable: true
+        description: Email address of the event creator.
+        expr:
+          kind: path
+          path:
+            - creator
+            - email
+      - name: creator__display_name
+        type: Utf8
+        nullable: true
+        description: Display name of the event creator.
+        expr:
+          kind: path
+          path:
+            - creator
+            - displayName
+      - name: creator__self
+        type: Boolean
+        nullable: true
+        description: Whether the creator is the authenticated user.
+        expr:
+          kind: path
+          path:
+            - creator
+            - self
+      - name: organizer__email
+        type: Utf8
+        nullable: true
+        description: Email address of the event organizer.
+        expr:
+          kind: path
+          path:
+            - organizer
+            - email
+      - name: organizer__display_name
+        type: Utf8
+        nullable: true
+        description: Display name of the event organizer.
+        expr:
+          kind: path
+          path:
+            - organizer
+            - displayName
+      - name: organizer__self
+        type: Boolean
+        nullable: true
+        description: Whether the organizer is the authenticated user.
+        expr:
+          kind: path
+          path:
+            - organizer
+            - self
+      - name: attendees
+        type: Json
+        nullable: true
+        description: >-
+          JSON array of attendees. Each object contains email, displayName,
+          responseStatus (needsAction, declined, tentative, accepted),
+          optional (boolean), and organizer (boolean).
+        expr:
+          kind: path
+          path:
+            - attendees
+      - name: conference_data
+        type: Json
+        nullable: true
+        description: >-
+          JSON object with conference details (e.g. Google Meet). Contains
+          entryPoints (uri, label, entryPointType) and conferenceSolution name.
+        expr:
+          kind: path
+          path:
+            - conferenceData
+      - name: reminders
+        type: Json
+        nullable: true
+        description: >-
+          JSON object describing reminder settings. Contains `useDefault`
+          (boolean) and optional `overrides` array of reminder objects.
+        expr:
+          kind: path
+          path:
+            - reminders
+      - name: created
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the event was created (UTC).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created
+      - name: updated
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the event was last modified (UTC).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated
+      - name: time_min
+        type: Utf8
+        nullable: true
+        description: >-
+          Lower bound for event start time filter (ISO 8601 / RFC 3339),
+          e.g. 2026-05-01T00:00:00Z. Virtual — does not appear in event data.
+        expr:
+          kind: "null"
+        virtual: true
+      - name: time_max
+        type: Utf8
+        nullable: true
+        description: >-
+          Upper bound for event start time filter (ISO 8601 / RFC 3339),
+          e.g. 2026-06-01T00:00:00Z. Virtual — does not appear in event data.
+        expr:
+          kind: "null"
+        virtual: true
+      - name: single_events
+        type: Utf8
+        nullable: true
+        description: >-
+          Set to 'true' to expand recurring events into individual instances.
+          Virtual — does not appear in event data.
+        expr:
+          kind: from_filter
+          key: single_events
+        virtual: true

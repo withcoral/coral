@@ -6,8 +6,8 @@ use coral_api::v1::{
     SourceSecret, SourceVariable, Table, ValidateSourceRequest, ValidateSourceResponse,
 };
 use coral_client::{
-    AppClient, QueryClient, SourceClient, batches_to_json_rows, decode_execute_sql_response,
-    default_workspace,
+    AppClient, CatalogClient, QueryClient, SourceClient, batches_to_json_rows,
+    decode_execute_sql_response, default_workspace,
     local::{RunningServer, ServerBuilder},
 };
 use serde_json::{Value, json};
@@ -67,6 +67,10 @@ impl GrpcHarness {
         self.app.source_client()
     }
 
+    pub(crate) fn catalog_client(&self) -> CatalogClient {
+        self.app.catalog_client()
+    }
+
     pub(crate) fn query_client(&self) -> QueryClient {
         self.app.query_client()
     }
@@ -103,7 +107,7 @@ impl GrpcHarness {
     }
 
     pub(crate) async fn list_tables(&self) -> Vec<Table> {
-        self.query_client()
+        self.catalog_client()
             .list_tables(Request::new(ListTablesRequest {
                 workspace: Some(default_workspace()),
                 schema_name: String::new(),
@@ -248,6 +252,35 @@ pub(crate) fn fixture_manifest_with_multiple_tables_yaml(root: &Path) -> String 
                 "columns": table_columns,
             },
         ],
+    }))
+}
+
+pub(crate) fn fixture_manifest_with_required_filter_yaml() -> String {
+    manifest_yaml(&json!({
+        "name": "filtered_messages",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": "https://example.com",
+        "tables": [{
+            "name": "messages",
+            "description": "Filtered messages",
+            "request": {
+                "method": "GET",
+                "path": "/messages",
+                "query": [
+                    { "name": "channel", "from": "filter", "key": "channel" }
+                ],
+            },
+            "response": {},
+            "columns": [
+                {"name": "channel", "type": "Utf8"},
+                {"name": "text", "type": "Utf8"},
+            ],
+            "filters": [
+                { "name": "channel", "required": true }
+            ],
+        }],
     }))
 }
 

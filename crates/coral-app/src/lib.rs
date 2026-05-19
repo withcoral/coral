@@ -21,6 +21,8 @@
 //!   source-secret persistence.
 //! - `query/` owns query-time source loading and `coral-engine`
 //!   orchestration.
+//! - `catalog/` owns workspace-scoped discovery semantics over query-visible
+//!   table metadata.
 //!
 //! # Crate Relationships
 //!
@@ -32,6 +34,7 @@
 //!
 /// Bootstrap entrypoints and local server assembly.
 pub mod bootstrap;
+mod catalog;
 mod feedback;
 mod identity;
 mod query;

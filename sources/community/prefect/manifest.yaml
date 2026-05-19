@@ -1,0 +1,775 @@
+dsl_version: 3
+name: prefect
+version: 1.0.0
+description: >-
+  Query Prefect flows, flow runs, deployments, work pools, and task runs to
+  monitor pipeline health and orchestration state.
+backend: http
+base_url: "{{input.PREFECT_API_URL}}"
+inputs:
+  PREFECT_API_URL:
+    kind: variable
+    hint: |
+      Full URL of the Prefect API — include the path prefix but no trailing
+      slash. Prefect Cloud example:
+      `https://api.prefect.cloud/api/accounts/<account-id>/workspaces/<workspace-id>`
+      Self-hosted Prefect Server example: `http://localhost:4200/api`
+  PREFECT_API_KEY:
+    kind: secret
+    hint: |
+      Prefect API key for authentication. Generate one in Prefect Cloud at
+      https://app.prefect.cloud/my/api-keys under Settings → API Keys.
+      For self-hosted Prefect Server running without authentication, enter
+      any non-empty placeholder — the header is sent but ignored.
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.PREFECT_API_KEY}}
+request_headers:
+  - name: Content-Type
+    from: literal
+    value: application/json
+test_queries:
+  - SELECT * FROM prefect.flows LIMIT 1
+  - SELECT * FROM prefect.flow_runs LIMIT 1
+tables:
+  - name: flows
+    description: Prefect flows registered in the workspace
+    guide: |
+      Returns all flows visible to the configured API key, newest first.
+      Filter on `name` or `tags` using SQL WHERE clauses.
+
+      `tags` is a JSON array of string labels. Each flow can have many
+      flow runs — join on `id` to `prefect.flow_runs.flow_id` for run
+      history, or to `prefect.deployments.flow_id` for deployment info.
+    fetch_limit_default: 200
+    request:
+      method: POST
+      path: /flows/filter
+      body:
+        - path:
+            - limit
+          from: literal
+          value: 200
+        - path:
+            - sort
+          from: literal
+          value: CREATED_DESC
+    response:
+      rows_path: []
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Flow UUID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Flow name as defined in the Python code
+        expr:
+          kind: path
+          path:
+            - name
+      - name: tags
+        type: Json
+        nullable: true
+        description: List of string tags assigned to this flow
+        expr:
+          kind: path
+          path:
+            - tags
+      - name: labels
+        type: Json
+        nullable: true
+        description: Key-value label pairs (e.g. env, team, cost-center)
+        expr:
+          kind: path
+          path:
+            - labels
+      - name: created
+        type: Timestamp
+        nullable: true
+        description: Time the flow was first registered
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created
+      - name: updated
+        type: Timestamp
+        nullable: true
+        description: Time the flow record was last updated
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated
+
+  - name: flow_runs
+    description: Prefect flow run history with state, timing, and deployment info
+    guide: |
+      Returns the 200 most recent flow runs, newest first. Use an explicit
+      SQL LIMIT to narrow results — this table can have millions of rows on
+      busy workspaces.
+
+      Key values for `state_type`: SCHEDULED, PENDING, RUNNING, COMPLETED,
+      FAILED, CRASHED, CANCELLING, CANCELLED, PAUSED.
+
+      `total_run_time` is in seconds (Float64). `start_time` and `end_time`
+      are null while the run is still pending or running. `deployment_id`
+      is null for runs triggered directly without a deployment.
+
+      Join to `prefect.flows` on `flow_id` to get the flow name.
+      Join to `prefect.deployments` on `deployment_id` for schedule info.
+    fetch_limit_default: 200
+    request:
+      method: POST
+      path: /flow_runs/filter
+      body:
+        - path:
+            - limit
+          from: literal
+          value: 200
+        - path:
+            - sort
+          from: literal
+          value: START_TIME_DESC
+    response:
+      rows_path: []
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Flow run UUID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Auto-generated flow run name (e.g. fuzzy-wolverine)
+        expr:
+          kind: path
+          path:
+            - name
+      - name: flow_id
+        type: Utf8
+        nullable: false
+        description: UUID of the parent flow — join to prefect.flows.id
+        expr:
+          kind: path
+          path:
+            - flow_id
+      - name: deployment_id
+        type: Utf8
+        nullable: true
+        description: UUID of the deployment that triggered this run; null for manual runs
+        expr:
+          kind: path
+          path:
+            - deployment_id
+      - name: state_type
+        type: Utf8
+        nullable: true
+        description: "Terminal state category: COMPLETED, FAILED, CRASHED, CANCELLED; or transient: RUNNING, PENDING, SCHEDULED"
+        expr:
+          kind: path
+          path:
+            - state_type
+      - name: state_name
+        type: Utf8
+        nullable: true
+        description: Human-readable state name (e.g. Completed, Failed, Running)
+        expr:
+          kind: path
+          path:
+            - state_name
+      - name: work_pool_name
+        type: Utf8
+        nullable: true
+        description: Work pool that executed this run
+        expr:
+          kind: path
+          path:
+            - work_pool_name
+      - name: work_queue_name
+        type: Utf8
+        nullable: true
+        description: Work queue within the work pool
+        expr:
+          kind: path
+          path:
+            - work_queue_name
+      - name: tags
+        type: Json
+        nullable: true
+        description: List of string tags on this run
+        expr:
+          kind: path
+          path:
+            - tags
+      - name: labels
+        type: Json
+        nullable: true
+        description: Key-value label pairs inherited from the deployment or set at runtime
+        expr:
+          kind: path
+          path:
+            - labels
+      - name: run_count
+        type: Int64
+        nullable: true
+        description: Number of times this run has been attempted (increments on retry)
+        expr:
+          kind: path
+          path:
+            - run_count
+      - name: auto_scheduled
+        type: Boolean
+        nullable: true
+        description: Whether this run was created automatically by a schedule
+        expr:
+          kind: path
+          path:
+            - auto_scheduled
+      - name: expected_start_time
+        type: Timestamp
+        nullable: true
+        description: Scheduled start time; null for unscheduled runs
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - expected_start_time
+      - name: start_time
+        type: Timestamp
+        nullable: true
+        description: Actual start time; null if not yet started
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - start_time
+      - name: end_time
+        type: Timestamp
+        nullable: true
+        description: Completion time; null if still running
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - end_time
+      - name: total_run_time
+        type: Float64
+        nullable: true
+        description: Total wall-clock duration in seconds (excludes scheduling wait time)
+        expr:
+          kind: path
+          path:
+            - total_run_time
+      - name: created
+        type: Timestamp
+        nullable: true
+        description: Time the flow run record was created
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created
+      - name: updated
+        type: Timestamp
+        nullable: true
+        description: Time the flow run record was last updated
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated
+
+  - name: deployments
+    description: Prefect deployment definitions with schedule and work pool assignment
+    guide: |
+      Returns all deployments visible to the configured API key.
+      A deployment is a server-side configuration that tells Prefect how
+      and when to run a flow.
+
+      `paused` indicates whether the deployment schedule is active.
+      `entrypoint` is the Python import path to the flow function.
+      `last_polled` shows when a worker last checked for scheduled runs —
+      null means no worker is currently polling this deployment.
+
+      Join to `prefect.flows` on `flow_id` to get the flow name.
+    fetch_limit_default: 200
+    request:
+      method: POST
+      path: /deployments/filter
+      body:
+        - path:
+            - limit
+          from: literal
+          value: 200
+        - path:
+            - sort
+          from: literal
+          value: CREATED_DESC
+    response:
+      rows_path: []
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Deployment UUID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Deployment name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: flow_id
+        type: Utf8
+        nullable: false
+        description: UUID of the flow this deployment runs — join to prefect.flows.id
+        expr:
+          kind: path
+          path:
+            - flow_id
+      - name: version
+        type: Utf8
+        nullable: true
+        description: Deployment version string
+        expr:
+          kind: path
+          path:
+            - version
+      - name: paused
+        type: Boolean
+        nullable: true
+        description: Whether the deployment schedule is paused
+        expr:
+          kind: path
+          path:
+            - paused
+      - name: status
+        type: Utf8
+        nullable: true
+        description: "Deployment readiness status: READY or NOT_READY"
+        expr:
+          kind: path
+          path:
+            - status
+      - name: concurrency_limit
+        type: Int64
+        nullable: true
+        description: Maximum number of concurrent runs allowed; null means unlimited
+        expr:
+          kind: path
+          path:
+            - concurrency_limit
+      - name: work_queue_name
+        type: Utf8
+        nullable: true
+        description: Work queue this deployment submits runs to
+        expr:
+          kind: path
+          path:
+            - work_queue_name
+      - name: entrypoint
+        type: Utf8
+        nullable: true
+        description: Python import path to the flow function (e.g. my_module:my_flow)
+        expr:
+          kind: path
+          path:
+            - entrypoint
+      - name: path
+        type: Utf8
+        nullable: true
+        description: Working directory path for the deployment
+        expr:
+          kind: path
+          path:
+            - path
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Optional deployment description
+        expr:
+          kind: path
+          path:
+            - description
+      - name: tags
+        type: Json
+        nullable: true
+        description: List of string tags on this deployment
+        expr:
+          kind: path
+          path:
+            - tags
+      - name: labels
+        type: Json
+        nullable: true
+        description: Key-value label pairs for environment, team, or cost attribution
+        expr:
+          kind: path
+          path:
+            - labels
+      - name: last_polled
+        type: Timestamp
+        nullable: true
+        description: Time a worker last polled for scheduled runs; null if no worker is active
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - last_polled
+      - name: created
+        type: Timestamp
+        nullable: true
+        description: Time the deployment was created
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created
+      - name: updated
+        type: Timestamp
+        nullable: true
+        description: Time the deployment was last updated
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated
+
+  - name: work_pools
+    description: Prefect work pools with type, status, and concurrency configuration
+    guide: |
+      Returns all work pools in the workspace. Work pools route flow runs
+      to the appropriate infrastructure (Kubernetes, ECS, Docker, etc.).
+
+      `is_paused` — when true, no new runs are dispatched from this pool.
+      `status` — READY means workers are polling; NOT_READY means no active
+      workers. `active_slots` shows how many runs are currently executing.
+      `concurrency_limit` caps concurrent runs; null means unlimited.
+
+      Use `name` values from this table to scope flow run results with a
+      SQL WHERE clause: `WHERE work_pool_name = '...'` on
+      `prefect.flow_runs` (local filter, not pushed to the API).
+    request:
+      method: POST
+      path: /work_pools/filter
+      body:
+        - path:
+            - limit
+          from: literal
+          value: 200
+        - path:
+            - sort
+          from: literal
+          value: NAME_ASC
+    response:
+      rows_path: []
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Work pool UUID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Work pool name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: type
+        type: Utf8
+        nullable: false
+        description: "Infrastructure type: kubernetes, ecs, docker, process, etc."
+        expr:
+          kind: path
+          path:
+            - type
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Optional work pool description
+        expr:
+          kind: path
+          path:
+            - description
+      - name: is_paused
+        type: Boolean
+        nullable: true
+        description: Whether this work pool is paused — no new runs dispatched when true
+        expr:
+          kind: path
+          path:
+            - is_paused
+      - name: status
+        type: Utf8
+        nullable: true
+        description: "Worker connectivity status: READY (workers polling) or NOT_READY"
+        expr:
+          kind: path
+          path:
+            - status
+      - name: concurrency_limit
+        type: Int64
+        nullable: true
+        description: Maximum concurrent runs; null means unlimited
+        expr:
+          kind: path
+          path:
+            - concurrency_limit
+      - name: active_slots
+        type: Int64
+        nullable: true
+        description: Number of runs currently executing in this pool
+        expr:
+          kind: path
+          path:
+            - active_slots
+      - name: created
+        type: Timestamp
+        nullable: true
+        description: Time the work pool was created
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created
+      - name: updated
+        type: Timestamp
+        nullable: true
+        description: Time the work pool was last updated
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated
+
+  - name: task_runs
+    description: Prefect task run history with state, timing, and parent flow run
+    guide: |
+      Returns the 200 most recent task runs ordered by end time, with
+      running or pending tasks (null end_time) sorted last. Task runs are
+      the individual units of work within a flow run. Use SQL LIMIT to
+      narrow results — this table has very high cardinality on busy
+      workspaces (one row per task per flow run).
+
+      `flow_run_id` links to `prefect.flow_runs.id`. `task_key` is the
+      stable identifier for the task function; `name` is the per-run
+      generated name. `total_run_time` is in seconds (Float64).
+
+      Key values for `state_type`: COMPLETED, FAILED, CRASHED, RUNNING,
+      PENDING, CACHED, PAUSED.
+    fetch_limit_default: 200
+    request:
+      method: POST
+      path: /task_runs/filter
+      body:
+        - path:
+            - limit
+          from: literal
+          value: 200
+        - path:
+            - sort
+          from: literal
+          value: END_TIME_DESC
+    response:
+      rows_path: []
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Task run UUID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Auto-generated task run name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: flow_run_id
+        type: Utf8
+        nullable: true
+        description: UUID of the parent flow run — join to prefect.flow_runs.id
+        expr:
+          kind: path
+          path:
+            - flow_run_id
+      - name: task_key
+        type: Utf8
+        nullable: false
+        description: Stable identifier for the task function across runs
+        expr:
+          kind: path
+          path:
+            - task_key
+      - name: task_version
+        type: Utf8
+        nullable: true
+        description: Task version string, if set
+        expr:
+          kind: path
+          path:
+            - task_version
+      - name: state_type
+        type: Utf8
+        nullable: true
+        description: "State category: COMPLETED, FAILED, CRASHED, RUNNING, PENDING, CACHED, PAUSED"
+        expr:
+          kind: path
+          path:
+            - state_type
+      - name: state_name
+        type: Utf8
+        nullable: true
+        description: Human-readable state name
+        expr:
+          kind: path
+          path:
+            - state_name
+      - name: run_count
+        type: Int64
+        nullable: true
+        description: Number of times this task has been attempted
+        expr:
+          kind: path
+          path:
+            - run_count
+      - name: tags
+        type: Json
+        nullable: true
+        description: List of string tags on this task run
+        expr:
+          kind: path
+          path:
+            - tags
+      - name: labels
+        type: Json
+        nullable: true
+        description: Key-value label pairs on this task run
+        expr:
+          kind: path
+          path:
+            - labels
+      - name: start_time
+        type: Timestamp
+        nullable: true
+        description: Time the task run started; null if not yet started
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - start_time
+      - name: end_time
+        type: Timestamp
+        nullable: true
+        description: Time the task run completed; null if still running
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - end_time
+      - name: total_run_time
+        type: Float64
+        nullable: true
+        description: Total execution duration in seconds
+        expr:
+          kind: path
+          path:
+            - total_run_time
+      - name: created
+        type: Timestamp
+        nullable: true
+        description: Time the task run record was created
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created
+      - name: updated
+        type: Timestamp
+        nullable: true
+        description: Time the task run record was last updated
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated

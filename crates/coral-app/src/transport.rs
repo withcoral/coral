@@ -5,8 +5,11 @@ use std::future::Future;
 use coral_api::{
     CORAL_ERROR_DOMAIN, grpc_response_status_code,
     v1::{
-        Column, QueryTestFailure, QueryTestResult, QueryTestSuccess, Source, Table, TableSummary,
-        ValidateSourceResponse, Workspace, query_test_result,
+        Column, ColumnSearchResult as ProtoColumnSearchResult,
+        DescribeTableResponse as ProtoDescribeTableResponse, PaginationResponse, QueryTestFailure,
+        QueryTestResult, QueryTestSuccess, Source, Table,
+        TableSearchResult as ProtoTableSearchResult, TableSummary, ValidateSourceResponse,
+        Workspace, query_test_result,
     },
 };
 use opentelemetry::propagation::Extractor;
@@ -18,6 +21,10 @@ use tracing::{Instrument as _, field};
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
 use crate::bootstrap::{AppError, app_status, core_status};
+use crate::catalog::discovery::{
+    ColumnMetadataField, ColumnSearchResult, DescribeTableResult, TableMetadataField,
+    TableSearchResult,
+};
 use crate::query::manager::QueryManagerError;
 use crate::workspaces::WorkspaceName;
 
@@ -264,23 +271,82 @@ pub(crate) fn table_summary_to_proto(
     }
 }
 
+pub(crate) fn table_search_result_to_proto(
+    workspace_name: &WorkspaceName,
+    result: TableSearchResult,
+) -> ProtoTableSearchResult {
+    ProtoTableSearchResult {
+        table: Some(table_summary_to_proto(workspace_name, result.table)),
+        matched_fields: result
+            .matched_fields
+            .into_iter()
+            .map(TableMetadataField::as_proto_name)
+            .map(str::to_string)
+            .collect(),
+    }
+}
+
+pub(crate) fn describe_table_response_to_proto(
+    workspace_name: &WorkspaceName,
+    result: DescribeTableResult,
+) -> ProtoDescribeTableResponse {
+    match result {
+        DescribeTableResult::Found(table) => ProtoDescribeTableResponse {
+            table: Some(table_to_proto(workspace_name, table)),
+            suggestions: Vec::new(),
+            available_schemas: Vec::new(),
+            same_schema_tables: Vec::new(),
+        },
+        DescribeTableResult::Missing(context) => ProtoDescribeTableResponse {
+            table: None,
+            suggestions: context
+                .suggestions
+                .into_iter()
+                .map(|table| table_summary_to_proto(workspace_name, table))
+                .collect(),
+            available_schemas: context.available_schemas,
+            same_schema_tables: context
+                .same_schema_tables
+                .into_iter()
+                .map(|table| table_summary_to_proto(workspace_name, table))
+                .collect(),
+        },
+    }
+}
+
+pub(crate) fn column_search_result_to_proto(result: ColumnSearchResult) -> ProtoColumnSearchResult {
+    ProtoColumnSearchResult {
+        column: Some(column_to_proto(result.column)),
+        matched_fields: result
+            .matched_fields
+            .into_iter()
+            .map(ColumnMetadataField::as_proto_name)
+            .map(str::to_string)
+            .collect(),
+    }
+}
+
+pub(crate) fn pagination_to_proto(
+    total_count: u32,
+    limit: u32,
+    offset: u32,
+    has_more: bool,
+    next_offset: Option<u32>,
+) -> PaginationResponse {
+    PaginationResponse {
+        total_count,
+        limit,
+        offset,
+        has_more,
+        next_offset: next_offset.unwrap_or(0),
+    }
+}
+
 fn table_to_proto_with_columns(
     workspace_name: &WorkspaceName,
     table: coral_engine::TableInfo,
 ) -> Table {
-    let columns = table
-        .columns
-        .into_iter()
-        .map(|column| Column {
-            name: column.name,
-            data_type: column.data_type,
-            nullable: column.nullable,
-            is_virtual: column.is_virtual,
-            is_required_filter: column.is_required_filter,
-            description: column.description,
-            ordinal_position: column.ordinal_position,
-        })
-        .collect();
+    let columns = table.columns.into_iter().map(column_to_proto).collect();
 
     Table {
         workspace: Some(workspace_to_proto(workspace_name)),
@@ -290,6 +356,18 @@ fn table_to_proto_with_columns(
         columns,
         required_filters: table.required_filters,
         guide: table.guide,
+    }
+}
+
+fn column_to_proto(column: coral_engine::ColumnInfo) -> Column {
+    Column {
+        name: column.name,
+        data_type: column.data_type,
+        nullable: column.nullable,
+        is_virtual: column.is_virtual,
+        is_required_filter: column.is_required_filter,
+        description: column.description,
+        ordinal_position: column.ordinal_position,
     }
 }
 

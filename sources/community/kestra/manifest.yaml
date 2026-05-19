@@ -1,0 +1,504 @@
+name: kestra
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query flows, executions, logs, and namespaces from a Kestra instance
+  (Open Source or self-hosted). Supports Kestra v0.24+ with HTTP Basic Auth.
+inputs:
+  KESTRA_BASE_URL:
+    kind: variable
+    default: http://localhost:8080
+    hint: >-
+      Base URL of your Kestra instance. Use http://localhost:8080 for a local
+      Docker deployment. For a remote instance use its full URL
+      (e.g. https://kestra.example.com).
+  KESTRA_USERNAME:
+    kind: secret
+    hint: >-
+      Your Kestra username (email address). Used for HTTP Basic Auth.
+      Required for Kestra OSS v0.24+ where basic auth is enabled by default.
+  KESTRA_PASSWORD:
+    kind: secret
+    hint: >-
+      Your Kestra password. Used for HTTP Basic Auth alongside KESTRA_USERNAME.
+base_url: "{{input.KESTRA_BASE_URL}}"
+auth:
+  type: BasicAuth
+  username: "{{input.KESTRA_USERNAME}}"
+  password: "{{input.KESTRA_PASSWORD}}"
+test_queries:
+  - SELECT * FROM kestra.namespaces LIMIT 1
+  - SELECT * FROM kestra.flows LIMIT 1
+tables:
+  - name: namespaces
+    description: Kestra namespaces used to organise flows and executions.
+    guide: |
+      Each row is one namespace. Namespaces are hierarchical — a dot-separated
+      path such as `company.team.project` represents nested scopes. Use the
+      `id` value to scope flow and execution queries via the `namespace` filter.
+    request:
+      method: GET
+      path: /api/v1/namespaces/search
+    response:
+      rows_path:
+        - results
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      page_size:
+        default: 100
+        max: 100
+        query_param: size
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Namespace ID (dot-separated hierarchical path, e.g. `company.team`).
+        expr:
+          kind: path
+          path:
+            - id
+
+  - name: flows
+    description: Kestra flows defined across all namespaces.
+    guide: |
+      Each row is one flow. Use `namespace` to scope to a specific namespace
+      and `flow_id` to look up a single flow. `revision` increments on each
+      save — higher means more recent. `disabled = true` means the flow will
+      not run on triggers. `deleted = true` means the flow has been
+      soft-deleted. Join `id` and `namespace` to `executions.flow_id` and
+      `executions.namespace` to see run history for a flow.
+    filters:
+      - name: namespace
+        required: false
+      - name: flow_id
+        required: false
+    request:
+      method: GET
+      path: /api/v1/flows/search
+      query:
+        - name: namespace
+          from: filter
+          key: namespace
+        - name: flowId
+          from: filter
+          key: flow_id
+    response:
+      rows_path:
+        - results
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      page_size:
+        default: 25
+        max: 100
+        query_param: size
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Flow ID (unique within a namespace).
+        expr:
+          kind: path
+          path:
+            - id
+      - name: namespace
+        type: Utf8
+        nullable: false
+        description: Namespace the flow belongs to.
+        expr:
+          kind: path
+          path:
+            - namespace
+      - name: revision
+        type: Int64
+        nullable: true
+        description: Flow revision number. Increments on each save; higher means more recent.
+        expr:
+          kind: path
+          path:
+            - revision
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Flow description (may contain Markdown).
+        expr:
+          kind: path
+          path:
+            - description
+      - name: disabled
+        type: Boolean
+        nullable: true
+        description: >-
+          Whether the flow is disabled. A disabled flow will not run on
+          triggers but can still be executed manually.
+        expr:
+          kind: path
+          path:
+            - disabled
+      - name: deleted
+        type: Boolean
+        nullable: true
+        description: Whether the flow has been soft-deleted.
+        expr:
+          kind: path
+          path:
+            - deleted
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the flow was last updated (UTC).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated
+      - name: label_names
+        type: Utf8
+        nullable: true
+        description: >-
+          Comma-joined label keys attached to this flow
+          (e.g. `env,team`). Inspect `label_values` for the corresponding
+          values.
+        expr:
+          kind: join_array_path
+          path:
+            - labels
+          item_path:
+            - key
+          separator: ","
+      - name: label_values
+        type: Utf8
+        nullable: true
+        description: >-
+          Comma-joined label values corresponding to `label_names`
+          (e.g. `production,platform`).
+        expr:
+          kind: join_array_path
+          path:
+            - labels
+          item_path:
+            - value
+          separator: ","
+
+  - name: executions
+    description: Kestra flow execution runs and their status.
+    guide: |
+      Each row is one execution run. Use `state` to filter by status —
+      common values are SUCCESS, FAILED, RUNNING, KILLED, WARNING, PAUSED,
+      QUEUED, RESTARTED, and RETRYING. Filter by `namespace` and `flow_id`
+      to scope to a specific flow. `start_date` is required — pass an ISO
+      8601 timestamp to set the lower bound for the search window
+      (e.g. WHERE start_date = '2026-01-01T00:00:00Z'). `duration` is an
+      ISO 8601 duration string (e.g. `PT0.94S`). Join `flow_id` and
+      `namespace` back to `kestra.flows` to get flow metadata.
+    filters:
+      - name: namespace
+        required: false
+      - name: flow_id
+        required: false
+      - name: state
+        required: false
+      - name: start_date
+        required: true
+    request:
+      method: GET
+      path: /api/v1/executions/search
+      query:
+        - name: namespace
+          from: filter
+          key: namespace
+        - name: flowId
+          from: filter
+          key: flow_id
+        - name: state
+          from: filter
+          key: state
+        - name: startDate
+          from: filter
+          key: start_date
+    response:
+      rows_path:
+        - results
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      page_size:
+        default: 25
+        max: 100
+        query_param: size
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Execution ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: flow_id
+        type: Utf8
+        nullable: true
+        description: ID of the flow that was executed.
+        expr:
+          kind: path
+          path:
+            - flowId
+      - name: namespace
+        type: Utf8
+        nullable: true
+        description: Namespace of the flow.
+        expr:
+          kind: path
+          path:
+            - namespace
+      - name: flow_revision
+        type: Int64
+        nullable: true
+        description: Revision of the flow at execution time.
+        expr:
+          kind: path
+          path:
+            - flowRevision
+      - name: state
+        type: Utf8
+        nullable: true
+        description: >-
+          Current execution state. One of: SUCCESS, FAILED, RUNNING, KILLED,
+          WARNING, PAUSED, QUEUED, RESTARTED, RETRYING.
+        expr:
+          kind: path
+          path:
+            - state
+            - current
+      - name: start_date
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the execution started (UTC).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - state
+              - startDate
+      - name: end_date
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the execution ended (UTC). NULL if still running.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - state
+              - endDate
+      - name: duration
+        type: Utf8
+        nullable: true
+        description: >-
+          Execution duration as an ISO 8601 duration string (e.g. `PT0.94S`).
+          NULL if still running.
+        expr:
+          kind: path
+          path:
+            - state
+            - duration
+      - name: trigger_type
+        type: Utf8
+        nullable: true
+        description: >-
+          What triggered this execution. Common values: MANUAL, SCHEDULE,
+          WEBHOOK, FLOW. NULL for manually-started executions without a
+          trigger record.
+        expr:
+          kind: path
+          path:
+            - trigger
+            - type
+      - name: deleted
+        type: Boolean
+        nullable: true
+        description: Whether this execution record has been soft-deleted.
+        expr:
+          kind: path
+          path:
+            - deleted
+      - name: label_names
+        type: Utf8
+        nullable: true
+        description: Comma-joined label keys attached to this execution.
+        expr:
+          kind: join_array_path
+          path:
+            - labels
+          item_path:
+            - key
+          separator: ","
+      - name: label_values
+        type: Utf8
+        nullable: true
+        description: Comma-joined label values corresponding to `label_names`.
+        expr:
+          kind: join_array_path
+          path:
+            - labels
+          item_path:
+            - value
+          separator: ","
+
+  - name: logs
+    description: Execution task log entries across all flows.
+    guide: |
+      Each row is one log line emitted by a task during an execution.
+      `start_date` is required — pass an ISO 8601 timestamp to bound the
+      search window (e.g. WHERE start_date = '2026-01-01T00:00:00Z').
+      Filter by `namespace`, `flow_id`, or `execution_id` to narrow results.
+      Use `level` to filter by severity: TRACE, DEBUG, INFO, WARN, ERROR.
+      `message` contains the raw log text; stack traces appear as separate
+      TRACE-level rows.
+    filters:
+      - name: namespace
+        required: false
+      - name: flow_id
+        required: false
+      - name: execution_id
+        required: false
+      - name: level
+        required: false
+      - name: start_date
+        required: true
+    request:
+      method: GET
+      path: /api/v1/logs/search
+      query:
+        - name: namespace
+          from: filter
+          key: namespace
+        - name: flowId
+          from: filter
+          key: flow_id
+        - name: executionId
+          from: filter
+          key: execution_id
+        - name: minLevel
+          from: filter
+          key: level
+        - name: startDate
+          from: filter
+          key: start_date
+    response:
+      rows_path:
+        - results
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      page_size:
+        default: 100
+        max: 100
+        query_param: size
+    columns:
+      - name: timestamp
+        type: Timestamp
+        nullable: false
+        description: Timestamp when the log entry was emitted (UTC).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - timestamp
+      - name: level
+        type: Utf8
+        nullable: false
+        description: Log level. One of TRACE, DEBUG, INFO, WARN, ERROR.
+        expr:
+          kind: path
+          path:
+            - level
+      - name: namespace
+        type: Utf8
+        nullable: true
+        description: Namespace of the flow that produced this log entry.
+        expr:
+          kind: path
+          path:
+            - namespace
+      - name: flow_id
+        type: Utf8
+        nullable: true
+        description: Flow ID that produced this log entry.
+        expr:
+          kind: path
+          path:
+            - flowId
+      - name: task_id
+        type: Utf8
+        nullable: true
+        description: Task ID within the flow that emitted this log entry.
+        expr:
+          kind: path
+          path:
+            - taskId
+      - name: execution_id
+        type: Utf8
+        nullable: true
+        description: Execution ID this log entry belongs to.
+        expr:
+          kind: path
+          path:
+            - executionId
+      - name: task_run_id
+        type: Utf8
+        nullable: true
+        description: Task run ID this log entry belongs to.
+        expr:
+          kind: path
+          path:
+            - taskRunId
+      - name: attempt_number
+        type: Int64
+        nullable: true
+        description: Zero-based attempt number for the task run.
+        expr:
+          kind: path
+          path:
+            - attemptNumber
+      - name: thread
+        type: Utf8
+        nullable: true
+        description: Worker thread name that emitted this log entry.
+        expr:
+          kind: path
+          path:
+            - thread
+      - name: message
+        type: Utf8
+        nullable: true
+        description: Log message text. Stack traces appear as separate TRACE-level rows.
+        expr:
+          kind: path
+          path:
+            - message

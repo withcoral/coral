@@ -1,0 +1,686 @@
+name: rabbitmq
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query vhosts, queues, exchanges, bindings, consumers, connections,
+  nodes, users, and policies from RabbitMQ (self-hosted or Cloud).
+inputs:
+  RABBITMQ_URL:
+    kind: variable
+    hint: |
+      Base URL of your RabbitMQ management HTTP API, for example
+      `http://localhost:15672` or `https://rabbitmq.example.com`.
+      The management plugin must be enabled.
+  RABBITMQ_USERNAME:
+    kind: variable
+    hint: |
+      RabbitMQ username. The user must have the `monitoring` or
+      `administrator` tag to access all tables.
+      See https://www.rabbitmq.com/docs/management#permissions
+  RABBITMQ_PASSWORD:
+    kind: secret
+    hint: |
+      Password for the RabbitMQ user.
+base_url: "{{input.RABBITMQ_URL}}"
+auth:
+  type: BasicAuth
+  username: "{{input.RABBITMQ_USERNAME}}"
+  password: "{{input.RABBITMQ_PASSWORD}}"
+
+test_queries:
+  - SELECT * FROM rabbitmq.vhosts LIMIT 1
+
+tables:
+  - name: overview
+    description: Cluster-wide summary including version, node, message totals, and object counts.
+    guide: >
+      Returns a single row with cluster-wide statistics. Good first query to
+      confirm connectivity and check RabbitMQ and management plugin versions.
+    request:
+      method: GET
+      path: /api/overview
+    response:
+      rows_path: []
+    pagination:
+      mode: none
+    columns:
+      - name: rabbitmq_version
+        type: Utf8
+        nullable: true
+        description: RabbitMQ server version
+        expr: {kind: path, path: [rabbitmq_version]}
+      - name: management_version
+        type: Utf8
+        nullable: true
+        description: Management plugin version
+        expr: {kind: path, path: [management_version]}
+      - name: erlang_version
+        type: Utf8
+        nullable: true
+        description: Erlang runtime version
+        expr: {kind: path, path: [erlang_version]}
+      - name: cluster_name
+        type: Utf8
+        nullable: true
+        description: Name of the RabbitMQ cluster
+        expr: {kind: path, path: [cluster_name]}
+      - name: node
+        type: Utf8
+        nullable: true
+        description: Name of the node that served this request
+        expr: {kind: path, path: [node]}
+      - name: rates_mode
+        type: Utf8
+        nullable: true
+        description: Message rate tracking mode (none, basic, or detailed)
+        expr: {kind: path, path: [rates_mode]}
+      - name: queue_totals
+        type: Json
+        nullable: true
+        description: Cluster-wide queue message totals (messages, ready, unacknowledged)
+        expr: {kind: path, path: [queue_totals]}
+      - name: object_totals
+        type: Json
+        nullable: true
+        description: Cluster-wide counts of connections, channels, exchanges, queues, and consumers
+        expr: {kind: path, path: [object_totals]}
+      - name: message_stats
+        type: Json
+        nullable: true
+        description: Cluster-wide message rate statistics
+        expr: {kind: path, path: [message_stats]}
+
+  - name: vhosts
+    description: Virtual hosts configured in the RabbitMQ cluster.
+    guide: >
+      Lists all virtual hosts. Use the name column as the vhost filter
+      in the queues, exchanges, bindings, and connections tables.
+      The default virtual host is named "/".
+    request:
+      method: GET
+      path: /api/vhosts
+    response: {}
+    pagination:
+      mode: none
+    columns:
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Virtual host name (use as vhost filter in other tables)
+        expr: {kind: path, path: [name]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Virtual host description
+        expr: {kind: path, path: [description]}
+      - name: tracing
+        type: Boolean
+        nullable: true
+        description: Whether tracing is enabled for this virtual host
+        expr: {kind: path, path: [tracing]}
+      - name: default_queue_type
+        type: Utf8
+        nullable: true
+        description: Default queue type (classic, quorum, or stream)
+        expr: {kind: path, path: [default_queue_type]}
+      - name: messages
+        type: Int64
+        nullable: true
+        description: Total messages in all queues in this vhost
+        expr: {kind: path, path: [messages]}
+      - name: messages_ready
+        type: Int64
+        nullable: true
+        description: Messages ready for delivery
+        expr: {kind: path, path: [messages_ready]}
+      - name: messages_unacknowledged
+        type: Int64
+        nullable: true
+        description: Messages delivered but not yet acknowledged
+        expr: {kind: path, path: [messages_unacknowledged]}
+
+  - name: nodes
+    description: Cluster nodes with resource usage and health metrics.
+    guide: >
+      Lists all nodes in the cluster. Use the name column to identify nodes.
+      Key metrics include memory usage, disk free space, and alarm states.
+    request:
+      method: GET
+      path: /api/nodes
+    response: {}
+    pagination:
+      mode: none
+    columns:
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Node name (e.g. rabbit@hostname)
+        expr: {kind: path, path: [name]}
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Node type (disc or ram)
+        expr: {kind: path, path: [type]}
+      - name: running
+        type: Boolean
+        nullable: true
+        description: Whether the node is running
+        expr: {kind: path, path: [running]}
+      - name: mem_used
+        type: Int64
+        nullable: true
+        description: Memory used in bytes
+        expr: {kind: path, path: [mem_used]}
+      - name: mem_limit
+        type: Int64
+        nullable: true
+        description: Memory high watermark in bytes
+        expr: {kind: path, path: [mem_limit]}
+      - name: mem_alarm
+        type: Boolean
+        nullable: true
+        description: Whether the memory alarm is active
+        expr: {kind: path, path: [mem_alarm]}
+      - name: disk_free
+        type: Int64
+        nullable: true
+        description: Disk free space in bytes
+        expr: {kind: path, path: [disk_free]}
+      - name: disk_free_limit
+        type: Int64
+        nullable: true
+        description: Disk free space low watermark in bytes
+        expr: {kind: path, path: [disk_free_limit]}
+      - name: disk_free_alarm
+        type: Boolean
+        nullable: true
+        description: Whether the disk free space alarm is active
+        expr: {kind: path, path: [disk_free_alarm]}
+      - name: fd_used
+        type: Int64
+        nullable: true
+        description: File descriptors in use
+        expr: {kind: path, path: [fd_used]}
+      - name: fd_total
+        type: Int64
+        nullable: true
+        description: Total file descriptors available
+        expr: {kind: path, path: [fd_total]}
+      - name: proc_used
+        type: Int64
+        nullable: true
+        description: Erlang processes in use
+        expr: {kind: path, path: [proc_used]}
+      - name: proc_total
+        type: Int64
+        nullable: true
+        description: Maximum Erlang processes
+        expr: {kind: path, path: [proc_total]}
+      - name: uptime
+        type: Int64
+        nullable: true
+        description: Node uptime in milliseconds
+        expr: {kind: path, path: [uptime]}
+      - name: os_pid
+        type: Utf8
+        nullable: true
+        description: Operating system process ID
+        expr: {kind: path, path: [os_pid]}
+      - name: partitions
+        type: Json
+        nullable: true
+        description: Network partitions this node is seeing
+        expr: {kind: path, path: [partitions]}
+
+  - name: queues
+    description: Queues across all virtual hosts with message counts and consumer info.
+    guide: >
+      Lists all queues. Optionally filter by vhost to scope to a single
+      virtual host. Key columns are messages, messages_ready, and
+      messages_unacknowledged for queue depth monitoring.
+      Supports page-based pagination (page_size max 500).
+    request:
+      method: GET
+      path: /api/queues
+      query:
+        - name: page
+          from: literal
+          value: 1
+        - name: page_size
+          from: literal
+          value: 500
+        - name: disable_stats
+          from: literal
+          value: "false"
+    response:
+      rows_path: [items]
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      page_size:
+        default: 500
+        max: 500
+        query_param: page_size
+    columns:
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Queue name
+        expr: {kind: path, path: [name]}
+      - name: vhost
+        type: Utf8
+        nullable: true
+        description: Virtual host this queue belongs to
+        expr: {kind: path, path: [vhost]}
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Queue type (classic, quorum, or stream)
+        expr: {kind: path, path: [type]}
+      - name: state
+        type: Utf8
+        nullable: true
+        description: Queue state (running, idle, etc.)
+        expr: {kind: path, path: [state]}
+      - name: durable
+        type: Boolean
+        nullable: true
+        description: Whether the queue survives broker restarts
+        expr: {kind: path, path: [durable]}
+      - name: auto_delete
+        type: Boolean
+        nullable: true
+        description: Whether the queue is deleted when last consumer unsubscribes
+        expr: {kind: path, path: [auto_delete]}
+      - name: exclusive
+        type: Boolean
+        nullable: true
+        description: Whether the queue is exclusive to its declaring connection
+        expr: {kind: path, path: [exclusive]}
+      - name: node
+        type: Utf8
+        nullable: true
+        description: Node hosting the queue leader
+        expr: {kind: path, path: [node]}
+      - name: messages
+        type: Int64
+        nullable: true
+        description: Total messages in the queue
+        expr: {kind: path, path: [messages]}
+      - name: messages_ready
+        type: Int64
+        nullable: true
+        description: Messages ready for delivery
+        expr: {kind: path, path: [messages_ready]}
+      - name: messages_unacknowledged
+        type: Int64
+        nullable: true
+        description: Messages delivered but not yet acknowledged
+        expr: {kind: path, path: [messages_unacknowledged]}
+      - name: consumers
+        type: Int64
+        nullable: true
+        description: Number of consumers subscribed to this queue
+        expr: {kind: path, path: [consumers]}
+      - name: consumer_utilisation
+        type: Float64
+        nullable: true
+        description: Fraction of time the queue can deliver to consumers (0.0-1.0)
+        expr: {kind: path, path: [consumer_utilisation]}
+      - name: memory
+        type: Int64
+        nullable: true
+        description: Memory used by the queue in bytes
+        expr: {kind: path, path: [memory]}
+      - name: policy
+        type: Utf8
+        nullable: true
+        description: Name of the policy applied to this queue
+        expr: {kind: path, path: [policy]}
+      - name: arguments
+        type: Json
+        nullable: true
+        description: Queue arguments (x-message-ttl, x-max-length, etc.)
+        expr: {kind: path, path: [arguments]}
+
+  - name: exchanges
+    description: Exchanges across all virtual hosts with type and binding info.
+    guide: >
+      Lists all exchanges. The default exchange has an empty name.
+      Use the name and vhost columns to identify exchanges for binding queries.
+      Supports page-based pagination (page_size max 500).
+    request:
+      method: GET
+      path: /api/exchanges
+      query:
+        - name: page
+          from: literal
+          value: 1
+        - name: page_size
+          from: literal
+          value: 500
+    response:
+      rows_path: [items]
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      page_size:
+        default: 500
+        max: 500
+        query_param: page_size
+    columns:
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Exchange name (empty string for the default exchange)
+        expr: {kind: path, path: [name]}
+      - name: vhost
+        type: Utf8
+        nullable: true
+        description: Virtual host this exchange belongs to
+        expr: {kind: path, path: [vhost]}
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Exchange type (direct, fanout, topic, headers)
+        expr: {kind: path, path: [type]}
+      - name: durable
+        type: Boolean
+        nullable: true
+        description: Whether the exchange survives broker restarts
+        expr: {kind: path, path: [durable]}
+      - name: auto_delete
+        type: Boolean
+        nullable: true
+        description: Whether the exchange is deleted when no longer used
+        expr: {kind: path, path: [auto_delete]}
+      - name: internal
+        type: Boolean
+        nullable: true
+        description: Whether the exchange is internal (not directly published to by clients)
+        expr: {kind: path, path: [internal]}
+      - name: arguments
+        type: Json
+        nullable: true
+        description: Exchange arguments
+        expr: {kind: path, path: [arguments]}
+
+  - name: bindings
+    description: Bindings between exchanges and queues across all virtual hosts.
+    guide: >
+      Lists all bindings. Each row represents a routing rule between a source
+      exchange and a destination queue or exchange. Use vhost, source, and
+      destination columns to trace message routing paths.
+    request:
+      method: GET
+      path: /api/bindings
+      query:
+        - name: page
+          from: literal
+          value: 1
+        - name: page_size
+          from: literal
+          value: 500
+    response:
+      rows_path: [items]
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      page_size:
+        default: 500
+        max: 500
+        query_param: page_size
+    columns:
+      - name: vhost
+        type: Utf8
+        nullable: true
+        description: Virtual host this binding belongs to
+        expr: {kind: path, path: [vhost]}
+      - name: source
+        type: Utf8
+        nullable: true
+        description: Source exchange name
+        expr: {kind: path, path: [source]}
+      - name: destination
+        type: Utf8
+        nullable: true
+        description: Destination queue or exchange name
+        expr: {kind: path, path: [destination]}
+      - name: destination_type
+        type: Utf8
+        nullable: true
+        description: Destination type (queue or exchange)
+        expr: {kind: path, path: [destination_type]}
+      - name: routing_key
+        type: Utf8
+        nullable: true
+        description: Routing key for this binding
+        expr: {kind: path, path: [routing_key]}
+      - name: properties_key
+        type: Utf8
+        nullable: true
+        description: Unique key for this binding (routing key + argument hash)
+        expr: {kind: path, path: [properties_key]}
+      - name: arguments
+        type: Json
+        nullable: true
+        description: Binding arguments
+        expr: {kind: path, path: [arguments]}
+
+  - name: connections
+    description: Active AMQP connections to the broker.
+    guide: >
+      Lists all open connections. Returns an empty result when no clients
+      are connected. Use the name column to identify individual connections.
+      Supports page-based pagination (page_size max 500).
+    request:
+      method: GET
+      path: /api/connections
+      query:
+        - name: page
+          from: literal
+          value: 1
+        - name: page_size
+          from: literal
+          value: 500
+    response:
+      rows_path: [items]
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      page_size:
+        default: 500
+        max: 500
+        query_param: page_size
+    columns:
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Connection name (client address and port)
+        expr: {kind: path, path: [name]}
+      - name: node
+        type: Utf8
+        nullable: true
+        description: Node the connection is on
+        expr: {kind: path, path: [node]}
+      - name: vhost
+        type: Utf8
+        nullable: true
+        description: Virtual host for this connection
+        expr: {kind: path, path: [vhost]}
+      - name: user
+        type: Utf8
+        nullable: true
+        description: Username used to authenticate
+        expr: {kind: path, path: [user]}
+      - name: protocol
+        type: Utf8
+        nullable: true
+        description: AMQP protocol version (e.g. AMQP 0-9-1)
+        expr: {kind: path, path: [protocol]}
+      - name: state
+        type: Utf8
+        nullable: true
+        description: Connection state (running, blocked, etc.)
+        expr: {kind: path, path: [state]}
+      - name: channels
+        type: Int64
+        nullable: true
+        description: Number of channels on this connection
+        expr: {kind: path, path: [channels]}
+      - name: client_properties
+        type: Json
+        nullable: true
+        description: Client-provided connection properties (library, version, etc.)
+        expr: {kind: path, path: [client_properties]}
+      - name: peer_host
+        type: Utf8
+        nullable: true
+        description: Client IP address
+        expr: {kind: path, path: [peer_host]}
+      - name: peer_port
+        type: Int64
+        nullable: true
+        description: Client port number
+        expr: {kind: path, path: [peer_port]}
+
+  - name: consumers
+    description: Active consumers subscribed to queues.
+    guide: >
+      Lists all consumers across all virtual hosts. Returns an empty result
+      when no consumers are active. Use queue_name and channel_details to
+      trace which clients are consuming from which queues.
+    request:
+      method: GET
+      path: /api/consumers
+      query:
+        - name: page
+          from: literal
+          value: 1
+        - name: page_size
+          from: literal
+          value: 500
+    response:
+      rows_path: [items]
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      page_size:
+        default: 500
+        max: 500
+        query_param: page_size
+    columns:
+      - name: queue_name
+        type: Utf8
+        nullable: true
+        description: Name of the queue being consumed
+        expr: {kind: path, path: [queue, name]}
+      - name: queue_vhost
+        type: Utf8
+        nullable: true
+        description: Virtual host of the queue
+        expr: {kind: path, path: [queue, vhost]}
+      - name: consumer_tag
+        type: Utf8
+        nullable: true
+        description: Consumer tag assigned by the broker
+        expr: {kind: path, path: [consumer_tag]}
+      - name: ack_required
+        type: Boolean
+        nullable: true
+        description: Whether the consumer requires message acknowledgements
+        expr: {kind: path, path: [ack_required]}
+      - name: exclusive
+        type: Boolean
+        nullable: true
+        description: Whether this is an exclusive consumer
+        expr: {kind: path, path: [exclusive]}
+      - name: prefetch_count
+        type: Int64
+        nullable: true
+        description: Consumer prefetch (QoS) count
+        expr: {kind: path, path: [prefetch_count]}
+      - name: channel_details
+        type: Json
+        nullable: true
+        description: Details of the channel this consumer is on
+        expr: {kind: path, path: [channel_details]}
+
+  - name: users
+    description: Users in the RabbitMQ internal authentication database.
+    guide: >
+      Lists all users in the internal data store. Does not include users
+      from external backends such as LDAP. The tags column shows roles
+      (administrator, monitoring, management, etc.).
+    request:
+      method: GET
+      path: /api/users
+    response: {}
+    pagination:
+      mode: none
+    columns:
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Username
+        expr: {kind: path, path: [name]}
+      - name: tags
+        type: Json
+        nullable: true
+        description: User tags/roles (administrator, monitoring, management, policymaker)
+        expr: {kind: path, path: [tags]}
+
+  - name: policies
+    description: Policies applied to queues and exchanges across all virtual hosts.
+    guide: >
+      Lists all policies. Policies control queue and exchange behaviour such
+      as message TTL, max length, and federation. Use the vhost and apply_to
+      columns to understand which resources each policy affects.
+    request:
+      method: GET
+      path: /api/policies
+    response: {}
+    pagination:
+      mode: none
+    columns:
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Policy name
+        expr: {kind: path, path: [name]}
+      - name: vhost
+        type: Utf8
+        nullable: true
+        description: Virtual host this policy applies to
+        expr: {kind: path, path: [vhost]}
+      - name: pattern
+        type: Utf8
+        nullable: true
+        description: Regex pattern matching queue or exchange names
+        expr: {kind: path, path: [pattern]}
+      - name: apply_to
+        type: Utf8
+        nullable: true
+        description: Whether the policy applies to queues, exchanges, or all
+        expr: {kind: path, path: [apply-to]}
+      - name: priority
+        type: Int64
+        nullable: true
+        description: Policy priority (higher wins when multiple policies match)
+        expr: {kind: path, path: [priority]}
+      - name: definition
+        type: Json
+        nullable: true
+        description: Policy definition (e.g. message-ttl, max-length, ha-mode)
+        expr: {kind: path, path: [definition]}

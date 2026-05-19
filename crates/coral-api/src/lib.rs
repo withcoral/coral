@@ -48,6 +48,13 @@ pub mod v1 {
 /// needs the bump — requests are small SQL strings.
 pub const QUERY_RESPONSE_MAX_MESSAGE_SIZE: usize = 64 * 1024 * 1024;
 
+/// Maximum gRPC message size for `CatalogService` *responses*, in bytes.
+///
+/// Catalog discovery can return full table/column metadata for large source
+/// sets, and the legacy unbounded table-listing path still needs to round-trip
+/// responses larger than tonic's 4 MB default.
+pub const CATALOG_RESPONSE_MAX_MESSAGE_SIZE: usize = QUERY_RESPONSE_MAX_MESSAGE_SIZE;
+
 /// Maximum gRPC message size for `TraceService` *responses*, in bytes.
 ///
 /// Trace details can include large span attributes, which may exceed tonic's

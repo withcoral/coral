@@ -677,6 +677,7 @@ Rules:
 - `default` is allowed only for variables
 - `hint` is optional and shown alongside the input during `coral source add --interactive`
 - references elsewhere in the manifest use `{{input.KEY}}` templates or `from: input`
+- credential-like inputs such as API keys, tokens, passwords, secrets, private keys, and bearer or authorization values must be `kind: secret`; Coral rejects those names as variables because variable values are visible through source APIs and `coral.inputs`
 
 At runtime, installed source inputs are also surfaced through `coral.inputs`.
 This is useful when agents or scripts need to inspect non-secret source config

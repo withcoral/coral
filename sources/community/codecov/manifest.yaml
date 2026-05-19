@@ -1,0 +1,1027 @@
+name: codecov
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query repositories, commits, pull requests, branches, flags,
+  components, and coverage totals from Codecov.
+base_url: https://api.codecov.io/api/v2
+
+inputs:
+  CODECOV_API_TOKEN:
+    kind: secret
+    hint: >-
+      Codecov API access token. Generate one at
+      https://app.codecov.io/account (Settings > Access).
+      The token must have read access to the target organization.
+  CODECOV_SERVICE:
+    kind: variable
+    default: github
+    hint: >-
+      Git hosting service provider. One of: github,
+      github_enterprise, gitlab, gitlab_enterprise, bitbucket,
+      bitbucket_server. Defaults to github.
+  CODECOV_OWNER:
+    kind: variable
+    hint: >-
+      Username or organization name on the hosting service
+      (e.g. your GitHub username or org name). All queries
+      are scoped to this owner.
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "Bearer {{input.CODECOV_API_TOKEN}}"
+
+test_queries:
+  - SELECT name, language, active, coverage FROM codecov.repos LIMIT 1
+
+tables:
+  # ──────────────────────────────────────────────────────────────────────
+  # repos — list repositories
+  # ──────────────────────────────────────────────────────────────────────
+  - name: repos
+    description: >
+      Lists all repositories for the authenticated owner. Returns
+      repository name, language, activation status, default branch,
+      and aggregate coverage totals.
+    guide: >
+      Start with `SELECT name, language, active, coverage,
+      lines, hits, misses FROM codecov.repos LIMIT 20`. Filter
+      by active status or search by name. The totals columns
+      (coverage, lines, hits, misses, etc.) show the latest
+      aggregate coverage for the default branch.
+    filters:
+      - name: search
+      - name: active
+      - name: names
+    request:
+      method: GET
+      path: /{{input.CODECOV_SERVICE}}/{{input.CODECOV_OWNER}}/repos
+      query:
+        - name: search
+          from: filter
+          key: search
+        - name: active
+          from: filter
+          key: active
+        - name: names
+          from: filter
+          key: names
+    response:
+      rows_path:
+        - results
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_size:
+        default: 20
+        max: 100
+        query_param: page_size
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Repository name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: private
+        type: Boolean
+        nullable: true
+        description: Whether the repository is private.
+        expr:
+          kind: path
+          path:
+            - private
+      - name: language
+        type: Utf8
+        nullable: true
+        description: Primary programming language.
+        expr:
+          kind: path
+          path:
+            - language
+      - name: branch
+        type: Utf8
+        nullable: true
+        description: Default branch name.
+        expr:
+          kind: path
+          path:
+            - branch
+      - name: active
+        type: Boolean
+        nullable: true
+        description: Whether the repository has received an upload.
+        expr:
+          kind: path
+          path:
+            - active
+      - name: activated
+        type: Boolean
+        nullable: true
+        description: Whether the repository is activated in Codecov.
+        expr:
+          kind: path
+          path:
+            - activated
+      - name: coverage
+        type: Float64
+        nullable: true
+        description: Overall coverage percentage (0-100).
+        expr:
+          kind: path
+          path:
+            - totals
+            - coverage
+      - name: files
+        type: Int64
+        nullable: true
+        description: Total number of files with coverage data.
+        expr:
+          kind: path
+          path:
+            - totals
+            - files
+      - name: lines
+        type: Int64
+        nullable: true
+        description: Total number of coverable lines.
+        expr:
+          kind: path
+          path:
+            - totals
+            - lines
+      - name: hits
+        type: Int64
+        nullable: true
+        description: Number of lines hit (covered).
+        expr:
+          kind: path
+          path:
+            - totals
+            - hits
+      - name: misses
+        type: Int64
+        nullable: true
+        description: Number of lines missed (uncovered).
+        expr:
+          kind: path
+          path:
+            - totals
+            - misses
+      - name: partials
+        type: Int64
+        nullable: true
+        description: Number of partially covered lines.
+        expr:
+          kind: path
+          path:
+            - totals
+            - partials
+      - name: branches
+        type: Int64
+        nullable: true
+        description: Number of branch paths tracked.
+        expr:
+          kind: path
+          path:
+            - totals
+            - branches
+      - name: methods
+        type: Int64
+        nullable: true
+        description: Number of methods tracked.
+        expr:
+          kind: path
+          path:
+            - totals
+            - methods
+      - name: complexity
+        type: Float64
+        nullable: true
+        description: Cyclomatic complexity.
+        expr:
+          kind: path
+          path:
+            - totals
+            - complexity
+      - name: complexity_total
+        type: Float64
+        nullable: true
+        description: Total complexity.
+        expr:
+          kind: path
+          path:
+            - totals
+            - complexity_total
+      - name: author__service
+        type: Utf8
+        nullable: true
+        description: Owner's hosting service.
+        expr:
+          kind: path
+          path:
+            - author
+            - service
+      - name: author__username
+        type: Utf8
+        nullable: true
+        description: Owner username.
+        expr:
+          kind: path
+          path:
+            - author
+            - username
+      - name: author__name
+        type: Utf8
+        nullable: true
+        description: Owner display name.
+        expr:
+          kind: path
+          path:
+            - author
+            - name
+      - name: updatestamp
+        type: Utf8
+        nullable: true
+        description: Last update time (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - updatestamp
+      - name: search
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Filter by repository name search term.
+        expr:
+          kind: from_filter
+          key: search
+      - name: active_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Filter by active status.
+        expr:
+          kind: from_filter
+          key: active
+      - name: names_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Filter by repository names (comma-separated).
+        expr:
+          kind: from_filter
+          key: names
+
+  # ──────────────────────────────────────────────────────────────────────
+  # commits — list commits with coverage
+  # ──────────────────────────────────────────────────────────────────────
+  - name: commits
+    description: >
+      Lists commits with coverage data for a specific repository.
+      Returns commit SHA, message, author, branch, CI status, and
+      aggregate coverage totals per commit.
+    guide: >
+      Always filter by repo: `SELECT commitid, message, branch,
+      coverage, ci_passed FROM codecov.commits
+      WHERE repo = 'my-repo' LIMIT 20`. Optionally filter by
+      branch name.
+    filters:
+      - name: repo
+        required: true
+      - name: branch
+    request:
+      method: GET
+      path: /{{input.CODECOV_SERVICE}}/{{input.CODECOV_OWNER}}/repos/{{filter.repo}}/commits
+      query:
+        - name: branch
+          from: filter
+          key: branch
+    response:
+      rows_path:
+        - results
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_size:
+        default: 20
+        max: 100
+        query_param: page_size
+    columns:
+      - name: repo
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Repository name (from filter).
+        expr:
+          kind: from_filter
+          key: repo
+      - name: commitid
+        type: Utf8
+        nullable: false
+        description: Full commit SHA.
+        expr:
+          kind: path
+          path:
+            - commitid
+      - name: message
+        type: Utf8
+        nullable: true
+        description: Commit message.
+        expr:
+          kind: path
+          path:
+            - message
+      - name: branch
+        type: Utf8
+        nullable: true
+        description: Branch this commit belongs to.
+        expr:
+          kind: path
+          path:
+            - branch
+      - name: state
+        type: Utf8
+        nullable: true
+        description: >-
+          Commit processing state (e.g. complete, pending, error).
+        expr:
+          kind: path
+          path:
+            - state
+      - name: ci_passed
+        type: Boolean
+        nullable: true
+        description: Whether CI passed for this commit.
+        expr:
+          kind: path
+          path:
+            - ci_passed
+      - name: parent
+        type: Utf8
+        nullable: true
+        description: Parent commit SHA.
+        expr:
+          kind: path
+          path:
+            - parent
+      - name: author__username
+        type: Utf8
+        nullable: true
+        description: Commit author username.
+        expr:
+          kind: path
+          path:
+            - author
+            - username
+      - name: author__name
+        type: Utf8
+        nullable: true
+        description: Commit author display name.
+        expr:
+          kind: path
+          path:
+            - author
+            - name
+      - name: author__service
+        type: Utf8
+        nullable: true
+        description: Commit author hosting service.
+        expr:
+          kind: path
+          path:
+            - author
+            - service
+      - name: timestamp
+        type: Utf8
+        nullable: true
+        description: Commit timestamp (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - timestamp
+      - name: coverage
+        type: Float64
+        nullable: true
+        description: Overall coverage percentage for this commit.
+        expr:
+          kind: path
+          path:
+            - totals
+            - coverage
+      - name: files
+        type: Int64
+        nullable: true
+        description: Number of files with coverage data.
+        expr:
+          kind: path
+          path:
+            - totals
+            - files
+      - name: lines
+        type: Int64
+        nullable: true
+        description: Total coverable lines.
+        expr:
+          kind: path
+          path:
+            - totals
+            - lines
+      - name: hits
+        type: Int64
+        nullable: true
+        description: Lines hit (covered).
+        expr:
+          kind: path
+          path:
+            - totals
+            - hits
+      - name: misses
+        type: Int64
+        nullable: true
+        description: Lines missed (uncovered).
+        expr:
+          kind: path
+          path:
+            - totals
+            - misses
+      - name: partials
+        type: Int64
+        nullable: true
+        description: Partially covered lines.
+        expr:
+          kind: path
+          path:
+            - totals
+            - partials
+      - name: complexity
+        type: Float64
+        nullable: true
+        description: Cyclomatic complexity.
+        expr:
+          kind: path
+          path:
+            - totals
+            - complexity
+      - name: branch_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Filter by branch name.
+        expr:
+          kind: from_filter
+          key: branch
+
+  # ──────────────────────────────────────────────────────────────────────
+  # pulls — list pull requests with coverage
+  # ──────────────────────────────────────────────────────────────────────
+  - name: pulls
+    description: >
+      Lists pull requests with coverage data for a specific repository.
+      Returns pull number, title, state, author, CI status, patch
+      coverage, and base/head coverage totals.
+    guide: >
+      Always filter by repo: `SELECT pullid, title, state,
+      coverage FROM codecov.pulls WHERE repo = 'my-repo'
+      LIMIT 20`. Filter by state (open/merged/closed) or
+      start_date for narrower results.
+    filters:
+      - name: repo
+        required: true
+      - name: state
+      - name: start_date
+      - name: ordering
+    request:
+      method: GET
+      path: /{{input.CODECOV_SERVICE}}/{{input.CODECOV_OWNER}}/repos/{{filter.repo}}/pulls
+      query:
+        - name: state
+          from: filter
+          key: state
+        - name: start_date
+          from: filter
+          key: start_date
+        - name: ordering
+          from: filter
+          key: ordering
+    response:
+      rows_path:
+        - results
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_size:
+        default: 20
+        max: 100
+        query_param: page_size
+    columns:
+      - name: repo
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Repository name (from filter).
+        expr:
+          kind: from_filter
+          key: repo
+      - name: pullid
+        type: Int64
+        nullable: false
+        description: Pull request number.
+        expr:
+          kind: path
+          path:
+            - pullid
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Pull request title.
+        expr:
+          kind: path
+          path:
+            - title
+      - name: state
+        type: Utf8
+        nullable: true
+        description: >-
+          Pull request state (open, merged, closed).
+        expr:
+          kind: path
+          path:
+            - state
+      - name: ci_passed
+        type: Boolean
+        nullable: true
+        description: Whether CI passed for this pull request.
+        expr:
+          kind: path
+          path:
+            - ci_passed
+      - name: author__username
+        type: Utf8
+        nullable: true
+        description: Pull request author username.
+        expr:
+          kind: path
+          path:
+            - author
+            - username
+      - name: author__name
+        type: Utf8
+        nullable: true
+        description: Pull request author display name.
+        expr:
+          kind: path
+          path:
+            - author
+            - name
+      - name: author__service
+        type: Utf8
+        nullable: true
+        description: Pull request author hosting service.
+        expr:
+          kind: path
+          path:
+            - author
+            - service
+      - name: coverage
+        type: Float64
+        nullable: true
+        description: Head coverage percentage for this PR.
+        expr:
+          kind: path
+          path:
+            - head_totals
+            - coverage
+      - name: files
+        type: Int64
+        nullable: true
+        description: Number of files with head coverage data.
+        expr:
+          kind: path
+          path:
+            - head_totals
+            - files
+      - name: lines
+        type: Int64
+        nullable: true
+        description: Total coverable lines in the PR head.
+        expr:
+          kind: path
+          path:
+            - head_totals
+            - lines
+      - name: hits
+        type: Int64
+        nullable: true
+        description: Lines hit in the PR head.
+        expr:
+          kind: path
+          path:
+            - head_totals
+            - hits
+      - name: misses
+        type: Int64
+        nullable: true
+        description: Lines missed in the PR head.
+        expr:
+          kind: path
+          path:
+            - head_totals
+            - misses
+      - name: partials
+        type: Int64
+        nullable: true
+        description: Partially covered lines in the PR head.
+        expr:
+          kind: path
+          path:
+            - head_totals
+            - partials
+      - name: base_coverage
+        type: Float64
+        nullable: true
+        description: Base coverage percentage for this PR.
+        expr:
+          kind: path
+          path:
+            - base_totals
+            - coverage
+      - name: patch_coverage
+        type: Float64
+        nullable: true
+        description: Patch coverage percentage for changed lines.
+        expr:
+          kind: path
+          path:
+            - patch
+            - coverage
+      - name: patch_hits
+        type: Int64
+        nullable: true
+        description: Patch lines hit.
+        expr:
+          kind: path
+          path:
+            - patch
+            - hits
+      - name: patch_misses
+        type: Int64
+        nullable: true
+        description: Patch lines missed.
+        expr:
+          kind: path
+          path:
+            - patch
+            - misses
+      - name: patch_partials
+        type: Int64
+        nullable: true
+        description: Patch lines partially covered.
+        expr:
+          kind: path
+          path:
+            - patch
+            - partials
+      - name: updatestamp
+        type: Utf8
+        nullable: true
+        description: Last update time (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - updatestamp
+      - name: state_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the state filter.
+        expr:
+          kind: from_filter
+          key: state
+      - name: start_date_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the start_date filter.
+        expr:
+          kind: from_filter
+          key: start_date
+      - name: ordering_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the ordering filter.
+        expr:
+          kind: from_filter
+          key: ordering
+
+  # ──────────────────────────────────────────────────────────────────────
+  # branches — list branches
+  # ──────────────────────────────────────────────────────────────────────
+  - name: branches
+    description: >
+      Lists branches with coverage data for a specific repository.
+      Returns branch name and last update timestamp.
+    guide: >
+      Always filter by repo: `SELECT name, updatestamp
+      FROM codecov.branches WHERE repo = 'my-repo' LIMIT 20`.
+    filters:
+      - name: repo
+        required: true
+    request:
+      method: GET
+      path: /{{input.CODECOV_SERVICE}}/{{input.CODECOV_OWNER}}/repos/{{filter.repo}}/branches
+    response:
+      rows_path:
+        - results
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_size:
+        default: 20
+        max: 100
+        query_param: page_size
+    columns:
+      - name: repo
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Repository name (from filter).
+        expr:
+          kind: from_filter
+          key: repo
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Branch name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: updatestamp
+        type: Utf8
+        nullable: true
+        description: Last update time (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - updatestamp
+
+  # ──────────────────────────────────────────────────────────────────────
+  # flags — list coverage flags
+  # ──────────────────────────────────────────────────────────────────────
+  - name: flags
+    description: >
+      Lists coverage flags for a specific repository. Flags let you
+      segment coverage by test suite, component, or any grouping
+      defined in your CI configuration.
+    guide: >
+      Always filter by repo: `SELECT flag_name, coverage
+      FROM codecov.flags WHERE repo = 'my-repo'`.
+    filters:
+      - name: repo
+        required: true
+    request:
+      method: GET
+      path: /{{input.CODECOV_SERVICE}}/{{input.CODECOV_OWNER}}/repos/{{filter.repo}}/flags
+    response:
+      rows_path:
+        - results
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_size:
+        default: 20
+        max: 100
+        query_param: page_size
+    columns:
+      - name: repo
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Repository name (from filter).
+        expr:
+          kind: from_filter
+          key: repo
+      - name: flag_name
+        type: Utf8
+        nullable: false
+        description: Flag name as defined in CI configuration.
+        expr:
+          kind: path
+          path:
+            - flag_name
+      - name: coverage
+        type: Float64
+        nullable: true
+        description: Coverage percentage for this flag.
+        expr:
+          kind: path
+          path:
+            - coverage
+
+  # ──────────────────────────────────────────────────────────────────────
+  # components — list coverage components
+  # ──────────────────────────────────────────────────────────────────────
+  - name: components
+    description: >
+      Lists coverage components for a specific repository. Components
+      are named groups of file paths defined in your codecov.yml
+      that let you track coverage for logical areas of your codebase.
+    guide: >
+      Always filter by repo: `SELECT component_id, name,
+      coverage FROM codecov.components WHERE repo = 'my-repo'`.
+    filters:
+      - name: repo
+        required: true
+    request:
+      method: GET
+      path: /{{input.CODECOV_SERVICE}}/{{input.CODECOV_OWNER}}/repos/{{filter.repo}}/components
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: repo
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Repository name (from filter).
+        expr:
+          kind: from_filter
+          key: repo
+      - name: component_id
+        type: Utf8
+        nullable: false
+        description: Unique component identifier.
+        expr:
+          kind: path
+          path:
+            - component_id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Component display name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: coverage
+        type: Float64
+        nullable: true
+        description: Coverage percentage for this component.
+        expr:
+          kind: path
+          path:
+            - coverage
+
+  # ──────────────────────────────────────────────────────────────────────
+  # commit_uploads — list uploads for a commit
+  # ──────────────────────────────────────────────────────────────────────
+  - name: commit_uploads
+    description: >
+      Lists coverage report uploads for a specific commit. Returns
+      upload provider, build information, flags, job code, and
+      timestamps. Useful for debugging CI upload issues.
+    guide: >
+      Filter by repo and commitid: `SELECT upload_type, state,
+      provider, flags, job_code FROM codecov.commit_uploads
+      WHERE repo = 'my-repo' AND commitid = '<sha>'`.
+    filters:
+      - name: repo
+        required: true
+      - name: commitid
+        required: true
+    request:
+      method: GET
+      path: /{{input.CODECOV_SERVICE}}/{{input.CODECOV_OWNER}}/repos/{{filter.repo}}/commits/{{filter.commitid}}/uploads/
+    response:
+      rows_path:
+        - results
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_size:
+        default: 20
+        max: 100
+        query_param: page_size
+    columns:
+      - name: repo
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Repository name (from filter).
+        expr:
+          kind: from_filter
+          key: repo
+      - name: commitid
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Commit SHA (from filter).
+        expr:
+          kind: from_filter
+          key: commitid
+      - name: upload_type
+        type: Utf8
+        nullable: true
+        description: >-
+          Upload type (e.g. uploaded, carriedforward).
+        expr:
+          kind: path
+          path:
+            - upload_type
+      - name: state
+        type: Utf8
+        nullable: true
+        description: Upload processing state.
+        expr:
+          kind: path
+          path:
+            - state
+      - name: provider
+        type: Utf8
+        nullable: true
+        description: CI provider name.
+        expr:
+          kind: path
+          path:
+            - provider
+      - name: build_code
+        type: Utf8
+        nullable: true
+        description: CI build identifier.
+        expr:
+          kind: path
+          path:
+            - build_code
+      - name: build_url
+        type: Utf8
+        nullable: true
+        description: URL to the CI build.
+        expr:
+          kind: path
+          path:
+            - build_url
+      - name: job_code
+        type: Utf8
+        nullable: true
+        description: CI job identifier.
+        expr:
+          kind: path
+          path:
+            - job_code
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Upload name or label.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: env
+        type: Json
+        nullable: true
+        description: >-
+          Environment variables captured during upload (JSON object).
+        expr:
+          kind: path
+          path:
+            - env
+      - name: flags
+        type: Json
+        nullable: true
+        description: >-
+          Array of flag names associated with this upload.
+        expr:
+          kind: path
+          path:
+            - flags
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Upload creation time (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - created_at
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: Upload last update time (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - updated_at

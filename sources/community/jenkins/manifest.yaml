@@ -1,0 +1,194 @@
+name: jenkins
+version: 0.1.1
+dsl_version: 3
+backend: http
+description: >-
+  Query Jenkins jobs, last-build results, and Git revision metadata from Jenkins
+  (self-hosted). Read-only; uses the JSON REST API.
+inputs:
+  JENKINS_BASE_URL:
+    kind: variable
+    default: http://127.0.0.1:8081
+    hint: |
+      Jenkins root URL with no trailing slash. Use the default for a local controller
+      on port 8081; for shared controllers use your instance URL
+      (for example `https://jenkins.example.com`).
+  JENKINS_AUTHORIZATION:
+    kind: secret
+    required: true
+    hint: |
+      Full `Authorization` header value: `Basic` plus base64(`username:apiToken`).
+      Create an API token under User → Configure → API Token. Not a bare Bearer token.
+      Example: `export JENKINS_AUTHORIZATION="Basic $(echo -n 'user:token' | base64 -w0)"`
+      See [Jenkins scripted client auth](https://www.jenkins.io/doc/book/system-administration/authenticating-scripted-clients/).
+base_url: "{{input.JENKINS_BASE_URL}}"
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: input
+      key: JENKINS_AUTHORIZATION
+test_queries:
+  - SELECT name, color FROM jenkins.jobs LIMIT 10
+tables:
+  - name: jobs
+    description: Top-level Jenkins jobs with name, URL, and health color.
+    guide: |
+      No required filters. Use as the entry point, then pass `name` as `job_name` on
+      per-job tables.
+    request:
+      method: GET
+      path: /api/json
+      query:
+        - name: tree
+          from: literal
+          value: "jobs[name,url,color]"
+    response:
+      rows_path:
+        - jobs
+    pagination:
+      mode: none
+    columns:
+      - name: name
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - name
+      - name: url
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - url
+      - name: color
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - color
+
+  - name: builds
+    description: Last build for a job, including commit hash when changeSet is present.
+    guide: |
+      Required filter: `job_name` (Jenkins job name from `jenkins.jobs.name`).
+    filters:
+      - name: job_name
+        required: true
+    request:
+      method: GET
+      path: "/job/{{filter.job_name}}/lastBuild/api/json"
+      query:
+        - name: tree
+          from: literal
+          value: "number,result,url,changeSet[items[commitId]]"
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: job_name
+        type: Utf8
+        description: Echoes the job_name filter for SQL joins.
+        expr:
+          kind: from_filter
+          key: job_name
+      - name: build_number
+        type: Int64
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - number
+      - name: result
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - result
+      - name: build_url
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - url
+      - name: commit_hash
+        type: Utf8
+        nullable: true
+        description: From changeSet.items[0].commitId when present.
+        expr:
+          kind: path
+          path:
+            - changeSet
+            - items
+            - "0"
+            - commitId
+
+  - name: job_last_revision
+    description: Git lastBuiltRevision rows from job actions (plugin-dependent).
+    guide: |
+      Required filter: `job_name`. Returns one row per actions[] entry with SHA1 when present.
+    filters:
+      - name: job_name
+        required: true
+    request:
+      method: GET
+      path: "/job/{{filter.job_name}}/api/json"
+      query:
+        - name: tree
+          from: literal
+          value: "actions[lastBuiltRevision[SHA1]],name,url"
+    response:
+      rows_path:
+        - actions
+    pagination:
+      mode: none
+    columns:
+      - name: sha1
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - lastBuiltRevision
+            - SHA1
+      - name: plugin_class
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - _class
+
+  - name: job_git_sha_by_action_index
+    description: Git SHA from a fixed actions index path (plugin-dependent).
+    guide: |
+      Required filter: `job_name`. Fallback when job_last_revision layout differs by plugin.
+    filters:
+      - name: job_name
+        required: true
+    request:
+      method: GET
+      path: "/job/{{filter.job_name}}/api/json"
+      query:
+        - name: tree
+          from: literal
+          value: "actions[lastBuiltRevision[SHA1]]"
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: sha_from_indexed_action
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - actions
+            - "1"
+            - lastBuiltRevision
+            - SHA1

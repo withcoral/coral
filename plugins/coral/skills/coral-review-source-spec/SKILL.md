@@ -38,6 +38,8 @@ These checks should be based on the authoritative API docs for the API the sourc
 
 - Top-level `description` says what a user can query, not just what vendor API is wrapped.
 - `inputs` distinguish secrets from variables correctly, use clear environment-style names, and include enough hints for first success. Environment-style names are prefixed with a service-specific prefix (e.g. `GITHUB_API_TOKEN`, not `API_TOKEN`.)
+- Treat credential-like inputs as secrets, regardless of read-only scope or optional auth mode. Inputs named or described as `API_KEY`, `TOKEN`, `ACCESS_TOKEN`, `PASSWORD`, `SECRET`, `APPLICATION_KEY`, `READ_KEY`, `ADMIN_KEY`, private keys, bearer values, or authorization header values must be `kind: secret`; endpoint/base URL/site/region/domain/org/account/user/email values may be `kind: variable`.
+- Do not make a credential a variable with an empty default to simulate optional authentication. For the current source-spec surface, require the secret or call out the missing optional-auth design explicitly; never expose a token just to support anonymous installs.
 - Auth docs mention required token type, scopes or permissions, and where to get credentials.
 - Non-trivial sources include README or manifest guides with setup, schema orientation, and example queries.
 - Behavior changes, setup changes, source semantics, and examples are documented in the same PR.
