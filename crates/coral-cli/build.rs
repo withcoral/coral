@@ -62,8 +62,9 @@ fn git_path(path: &str) -> Option<String> {
 fn validate_embedded_ui_dist() {
     use std::path::Path;
 
-    let index_path = Path::new("../../ui/dist/index.html");
-    let index_metadata = std::fs::metadata(index_path).unwrap_or_else(|error| {
+    let ui_dist = Path::new("../../ui/dist");
+    let index_path = ui_dist.join("index.html");
+    let index_metadata = std::fs::metadata(&index_path).unwrap_or_else(|error| {
         panic!(
             "CORAL_REQUIRE_UI_DIST=1 requires embedded UI assets, but {} is missing or unreadable: {error}",
             index_path.display()
@@ -80,8 +81,8 @@ fn validate_embedded_ui_dist() {
         index_path.display()
     );
 
-    let assets_dir = Path::new("../../ui/dist/assets");
-    let has_assets = directory_contains_file(assets_dir);
+    let assets_dir = ui_dist.join("assets");
+    let has_assets = directory_has_file_entry(&assets_dir);
     assert!(
         has_assets,
         "CORAL_REQUIRE_UI_DIST=1 requires embedded UI assets, but {} has no built files",
@@ -89,7 +90,7 @@ fn validate_embedded_ui_dist() {
     );
 }
 
-fn directory_contains_file(path: &std::path::Path) -> bool {
+fn directory_has_file_entry(path: &std::path::Path) -> bool {
     let Ok(entries) = std::fs::read_dir(path) else {
         return false;
     };

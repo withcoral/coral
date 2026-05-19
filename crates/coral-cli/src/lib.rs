@@ -721,14 +721,16 @@ mod tests {
     #[cfg(feature = "embedded-ui")]
     #[test]
     fn embedded_ui_assets_are_present_when_release_guard_is_enabled() {
-        if super::env::require_ui_dist_guard() {
-            let index_html = super::embedded_ui_assets()
-                .get("index.html")
-                .expect("embedded ui index");
-            assert!(
-                !index_html.bytes.is_empty(),
-                "expected non-empty embedded ui index.html"
-            );
+        if !super::env::require_ui_dist_guard() {
+            return;
         }
+
+        let index_html = super::embedded_ui_assets()
+            .get("index.html")
+            .expect("embedded ui index");
+        assert!(
+            !index_html.bytes.is_empty(),
+            "expected non-empty embedded ui index.html"
+        );
     }
 }
