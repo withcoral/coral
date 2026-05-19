@@ -13,6 +13,7 @@ import {
 } from '../../../src/generated/coral/v1/traces_pb'
 
 const BASE_TIME_NANOS = 1_764_000_000_000_000_000n
+const LONG_LINEAR_ISSUES_TABLE = 'issues_with_an_exceptionally_long_label_that_should_wrap_across_multiple_lines'
 
 type SourceName = 'github' | 'linear' | 'slack'
 
@@ -103,7 +104,7 @@ const selectedTraceIndex = 6
 const detailSpans: SpanFixture[] = [
   {
     source: 'linear',
-    table: 'issues_with_an_exceptionally_long_label_that_should_wrap_across_multiple_lines',
+    table: LONG_LINEAR_ISSUES_TABLE,
     method: 'POST',
     path: '/graphql',
     durationMs: 84,

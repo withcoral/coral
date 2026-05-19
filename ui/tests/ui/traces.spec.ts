@@ -16,6 +16,7 @@ test('shows an empty trace stream without contacting a Coral server', async ({ n
 
 test('lists 10 traces, searches one, opens its details, and opens a span inspector', async ({ network, page, review }) => {
   network.use(...traceHandlers.tenTraceDetailFlow)
+  const longLinearIssuesSpanLabel = 'POST linear.issues_with_an_exceptionally_long_label_that_should_wrap_across_multiple_lines'
 
   await review.chapter('Test 2: ten traces and span details', 'Mock list and detail gRPC-Web responses')
   await page.goto('/')
@@ -45,8 +46,7 @@ test('lists 10 traces, searches one, opens its details, and opens a span inspect
   await review.pause()
 
   await review.chapter('Wrap a long span label', 'Open the long Linear span and verify the focus treatment stays contained')
-  const longSpanLabel = 'POST linear.issues_with_an_exceptionally_long_label_that_should_wrap_across_multiple_lines'
-  const longSpanRow = page.getByRole('treeitem').filter({ hasText: longSpanLabel })
+  const longSpanRow = page.getByRole('treeitem').filter({ hasText: longLinearIssuesSpanLabel })
   const longSpanButton = longSpanRow.getByRole('button')
 
   await expect(longSpanRow).toBeVisible()

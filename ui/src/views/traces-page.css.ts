@@ -6,6 +6,14 @@ import { theme } from '@/wax/theme/theme.css'
 
 const spin = keyframes({ to: { transform: 'rotate(360deg)' } })
 const codeFontFamily = '"Gustan Mono", "Roboto Mono", "SFMono-Regular", "SF Mono", Consolas, "Liberation Mono", Menlo, monospace'
+const waterfallGridColumns = 'minmax(280px, 0.38fr) minmax(0, 1fr)'
+const waterfallFocusRing = {
+  '&:focus, &:focus-visible': {
+    backgroundColor: theme.surface.onMainContentSubtle,
+    boxShadow: `inset 0 0 0 1px ${theme.pill.blue.color}`,
+    outline: 'none',
+  },
+}
 export const root = style({ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 })
 
 export const header = style({
@@ -169,7 +177,7 @@ export const waterfallTimelinePane = style({
 export const waterfallTickRow = style({
   display: 'grid',
   flexShrink: 0,
-  gridTemplateColumns: 'minmax(280px, 0.38fr) minmax(0, 1fr)',
+  gridTemplateColumns: waterfallGridColumns,
 })
 export const waterfallLabel = style({ borderBlockEnd: `1px solid ${theme.stroke.primary}`, height: 24, minWidth: 0, paddingBlockEnd: 4 })
 export const waterfallTimeline = style({ borderBlockEnd: `1px solid ${theme.stroke.primary}`, height: 24, minWidth: 0, overflow: 'hidden', paddingBlockEnd: 4, position: 'relative' })
@@ -214,7 +222,7 @@ export const waterfallRowsViewport = style({
 export const waterfallRowsGrid = style({
   alignItems: 'start',
   display: 'grid',
-  gridTemplateColumns: 'minmax(280px, 0.38fr) minmax(0, 1fr)',
+  gridTemplateColumns: waterfallGridColumns,
   minWidth: 0,
 })
 export const waterfallLabelsColumn = style({ display: 'flex', flexDirection: 'column', gap: 10, minWidth: 0 })
@@ -241,11 +249,7 @@ export const waterfallRowButton = style({
   width: '100%',
   selectors: {
     '&[role="button"]': { cursor: 'pointer' },
-    '&:focus, &:focus-visible': {
-      backgroundColor: theme.surface.onMainContentSubtle,
-      boxShadow: `inset 0 0 0 1px ${theme.pill.blue.color}`,
-      outline: 'none',
-    },
+    ...waterfallFocusRing,
   },
 })
 export const waterfallRowHover = style({ backgroundColor: theme.surface.onMainContentSubtle })
@@ -314,11 +318,7 @@ export const waterfallBarSlot = style({
   minWidth: 0,
   selectors: {
     '&[role="button"]': { cursor: 'pointer' },
-    '&:focus, &:focus-visible': {
-      backgroundColor: theme.surface.onMainContentSubtle,
-      boxShadow: `inset 0 0 0 1px ${theme.pill.blue.color}`,
-      outline: 'none',
-    },
+    ...waterfallFocusRing,
   },
 })
 export const waterfallBarSlotActive = style({
