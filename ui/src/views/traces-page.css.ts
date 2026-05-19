@@ -243,7 +243,6 @@ export const waterfallRowButton = style({
   color: theme.content.primary,
   display: 'flex',
   minHeight: 38,
-  outline: 'none',
   padding: 0,
   position: 'relative',
   textAlign: 'left',
