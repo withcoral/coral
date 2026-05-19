@@ -96,11 +96,8 @@ interface GraphqlBodyPreview {
 }
 
 interface BodyPreview {
-  emptyText?: string
   formattedText: string
   graphql?: GraphqlBodyPreview
-  isText: boolean
-  rawText: string
 }
 
 function inferGraphqlOperationType(query: string | undefined): string | undefined {
@@ -109,17 +106,18 @@ function inferGraphqlOperationType(query: string | undefined): string | undefine
   return match?.[1]?.toLowerCase() ?? 'query'
 }
 
-function detectGraphqlBody(bodyKind: BodyKind, value: JsonValue, url: string): GraphqlBodyPreview | undefined {
+function urlPathname(url: string): string {
+  if (!url) return ''
+  try {
+    return new URL(url, 'http://coral.local').pathname
+  } catch {
+    return ''
+  }
+}
+
+function detectGraphqlBody(bodyKind: BodyKind, value: JsonValue, pathname: string): GraphqlBodyPreview | undefined {
   if (!isPlainObject(value)) return undefined
 
-  const pathname = (() => {
-    if (!url) return ''
-    try {
-      return new URL(url, 'http://coral.local').pathname
-    } catch {
-      return ''
-    }
-  })()
   const query = typeof value.query === 'string' ? value.query : undefined
   const operationName = typeof value.operationName === 'string' ? value.operationName : undefined
   const variables = value.variables as JsonValue | undefined
@@ -143,34 +141,25 @@ function detectGraphqlBody(bodyKind: BodyKind, value: JsonValue, url: string): G
   }
 }
 
-function bodyPreview(kind: BodyKind, value: unknown, rawValue: unknown, url: string): BodyPreview | undefined {
+function bodyPreview(kind: BodyKind, value: unknown, pathname: string): BodyPreview | undefined {
   if (value === undefined || value === null || value === '') return undefined
 
   if (typeof value === 'string') {
     const parsedValue = parseMaybeJson(value)
     if (typeof parsedValue === 'string') {
       return {
-        emptyText: undefined,
         formattedText: value,
-        isText: true,
-        rawText: typeof rawValue === 'string' ? rawValue : value,
       }
     }
     return {
-      emptyText: undefined,
       formattedText: formatJsonValue(parsedValue),
-      graphql: detectGraphqlBody(kind, parsedValue, url),
-      isText: false,
-      rawText: typeof rawValue === 'string' ? rawValue : formatJsonValue(parsedValue),
+      graphql: detectGraphqlBody(kind, parsedValue, pathname),
     }
   }
 
   return {
-    emptyText: undefined,
     formattedText: formatJsonValue(value as JsonValue),
-    graphql: detectGraphqlBody(kind, value as JsonValue, url),
-    isText: false,
-    rawText: typeof rawValue === 'string' ? rawValue : formatJsonValue(value as JsonValue),
+    graphql: detectGraphqlBody(kind, value as JsonValue, pathname),
   }
 }
 
@@ -186,17 +175,15 @@ function BodySection({ children, label }: { children: React.ReactNode; label: st
 function BodyViewer({
   emptyText,
   kind,
-  rawValue,
-  url,
+  pathname,
   value,
 }: {
   emptyText: string
   kind: BodyKind
-  rawValue: unknown
-  url: string
+  pathname: string
   value: unknown
 }) {
-  const preview = bodyPreview(kind, value, rawValue, url)
+  const preview = bodyPreview(kind, value, pathname)
 
   if (!preview) {
     return <Typography.BodySmall variant="tertiary">{emptyText}</Typography.BodySmall>
@@ -230,6 +217,49 @@ function BodyViewer({
       </details>}
     </div>
   )
+}
+
+interface ActiveBodyState {
+  emptyText: string
+  kind: BodyKind
+  rawValue: unknown
+  value: JsonValue | undefined
+}
+
+function activeBodyState(
+  activeTab: HttpDetailTab,
+  attrs: Record<string, unknown>,
+  paramsValue: Record<string, string | string[]> | undefined,
+  requestBody: JsonValue,
+  rawRequestBody: unknown,
+  requestBodyTruncated: boolean,
+  responseBody: JsonValue,
+  rawResponseBody: unknown,
+  responseBodyTruncated: boolean,
+): ActiveBodyState {
+  switch (activeTab) {
+    case 'params':
+      return {
+        emptyText: 'No query parameters were recorded for this request.',
+        kind: 'response',
+        rawValue: paramsValue,
+        value: paramsValue,
+      }
+    case 'request':
+      return {
+        emptyText: bodyEmptyText('request', attrs, requestBodyTruncated),
+        kind: 'request',
+        rawValue: rawRequestBody,
+        value: requestBody,
+      }
+    case 'response':
+      return {
+        emptyText: bodyEmptyText('response', attrs, responseBodyTruncated),
+        kind: 'response',
+        rawValue: rawResponseBody,
+        value: responseBody,
+      }
+  }
 }
 
 function attrBool(value: unknown): boolean {
@@ -307,24 +337,21 @@ export function HttpSpanDetail({
     { id: 'request', label: `Request body${requestBodyTruncated ? ' (truncated)' : ''}` },
     { id: 'response', label: `Response body${responseBodyTruncated ? ' (truncated)' : ''}` },
   ]
-  const activeValue = activeTab === 'params'
-    ? paramsValue
-    : activeTab === 'request'
-      ? requestBody
-      : responseBody
-  const activeRawValue = activeTab === 'params'
-    ? paramsValue
-    : activeTab === 'request'
-      ? rawRequestBody
-      : rawResponseBody
-  const activeEmptyText = activeTab === 'params'
-    ? 'No query parameters were recorded for this request.'
-    : activeTab === 'request'
-      ? bodyEmptyText('request', attrs, requestBodyTruncated)
-      : bodyEmptyText('response', attrs, responseBodyTruncated)
-  const copyValue = formatDetailValue(activeValue)
-  const rawCopyValue = formatRawValue(activeRawValue, copyValue)
+  const activeBody = activeBodyState(
+    activeTab,
+    attrs,
+    paramsValue,
+    requestBody,
+    rawRequestBody,
+    requestBodyTruncated,
+    responseBody,
+    rawResponseBody,
+    responseBodyTruncated,
+  )
+  const copyValue = formatDetailValue(activeBody.value)
+  const rawCopyValue = formatRawValue(activeBody.rawValue, copyValue)
   const hasSeparateRawCopy = Boolean(rawCopyValue && rawCopyValue !== copyValue)
+  const pathname = urlPathname(url)
   const visibleAttrs = Object.fromEntries(Object.entries(attrs).filter(([key]) => !BODY_ATTRIBUTE_KEYS.has(key)))
   const offsetMs = Math.max(0, Number((BigInt(span.startTimeUnixNanos || 0) - traceStart) / 1_000_000n))
   const statusCode = attrText(attrs['http.response.status_code'])
@@ -432,13 +459,7 @@ export function HttpSpanDetail({
             id={`http-detail-${span.spanId}-${activeTab}`}
             role="tabpanel"
           >
-            {activeTab === 'params' ? (
-              <BodyViewer emptyText={activeEmptyText} kind="response" rawValue={activeRawValue} url={url} value={activeValue} />
-            ) : activeTab === 'request' ? (
-              <BodyViewer emptyText={activeEmptyText} kind="request" rawValue={activeRawValue} url={url} value={activeValue} />
-            ) : (
-              <BodyViewer emptyText={activeEmptyText} kind="response" rawValue={activeRawValue} url={url} value={activeValue} />
-            )}
+            <BodyViewer emptyText={activeBody.emptyText} kind={activeBody.kind} pathname={pathname} value={activeBody.value} />
           </section>
           <details>
             <summary className={s.detailsSummary}><Typography.Body as="span" variant="tertiary">Span attributes</Typography.Body></summary>
