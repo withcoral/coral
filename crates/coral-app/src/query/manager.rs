@@ -5,6 +5,7 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Instant;
 
+use coral_api::{CORAL_ERROR_REASON_INVALID_INPUT, CORAL_ERROR_REASON_SOURCE_NOT_FOUND};
 use coral_engine::{
     CatalogInfo, CoralQuery, CoreError, QueryExecution, QueryPlan, QueryRuntimeConfig,
     QueryRuntimeContext, QuerySource, SourceValidationReport, StatusCode, TableInfo,
@@ -346,8 +347,8 @@ fn query_error_message(error: &QueryManagerError) -> String {
 
 fn app_error_type(error: &AppError) -> &'static str {
     match error {
-        AppError::SourceNotFound(_) => "SOURCE_NOT_FOUND",
-        AppError::InvalidInput(_) => "INVALID_INPUT",
+        AppError::SourceNotFound(_) => CORAL_ERROR_REASON_SOURCE_NOT_FOUND,
+        AppError::InvalidInput(_) => CORAL_ERROR_REASON_INVALID_INPUT,
         AppError::FailedPrecondition(_) => "FAILED_PRECONDITION",
         AppError::Io(_) => "IO",
         AppError::Yaml(_) => "YAML",

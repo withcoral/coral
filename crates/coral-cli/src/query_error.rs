@@ -80,7 +80,8 @@ fn render_structured(error: &CoralQueryError) -> String {
     if !error.detail.is_empty() {
         write!(text, "\nDetail: {}", error.detail).expect("writing to String cannot fail");
     }
-    let hint = crate::cli_hint_for_app_reason(&error.reason).or(error.hint.as_deref());
+    let hint =
+        crate::cli_hint_for_reason(&error.reason, &error.metadata).or_else(|| error.hint.clone());
     if let Some(hint) = hint {
         write!(text, "\nHint: {hint}").expect("writing to String cannot fail");
     }
@@ -237,6 +238,115 @@ mod tests {
 
         assert!(rendered.contains("Hint: Run `coral source list`"));
         assert!(!rendered.contains("List installed sources, then retry."));
+    }
+
+    #[test]
+    fn structured_empty_sql_uses_cli_specific_hint() {
+        let status = build_coral_status(
+            "EMPTY_SQL",
+            vec![
+                ("summary", "SQL query is empty"),
+                ("detail", "Coral cannot run an empty SQL string."),
+                (
+                    "hint",
+                    "Try the SQL statement `SELECT * FROM coral.tables LIMIT 10`.",
+                ),
+            ],
+            false,
+        );
+        let error = match decode_status_error(&status) {
+            DecodedStatusError::Structured(e) => e,
+            DecodedStatusError::Plain(_) => panic!("expected Structured"),
+        };
+        let rendered = render_structured(&error);
+
+        assert!(rendered.contains("Hint: Run `coral sql"));
+        assert!(!rendered.contains("Try the SQL statement"));
+    }
+
+    #[test]
+    fn structured_empty_catalog_table_not_found_uses_cli_hint() {
+        let status = build_coral_status(
+            "TABLE_NOT_FOUND",
+            vec![
+                ("summary", "Table `github.issues` not found"),
+                ("detail", "No table `issues` exists in schema `github`."),
+                ("catalog_empty", "true"),
+                (
+                    "hint",
+                    "No source tables are currently queryable. Discover available sources, connect one, then retry the query.",
+                ),
+            ],
+            false,
+        );
+        let error = match decode_status_error(&status) {
+            DecodedStatusError::Structured(e) => e,
+            DecodedStatusError::Plain(_) => panic!("expected Structured"),
+        };
+        let rendered = render_structured(&error);
+
+        assert!(rendered.contains("Hint: Run `coral source discover`"));
+        assert!(!rendered.contains("Discover available sources, connect one"));
+    }
+
+    #[test]
+    fn structured_provider_auth_failure_uses_cli_hint() {
+        let status = build_coral_status(
+            "PROVIDER_REQUEST_FAILED",
+            vec![
+                ("summary", "Source credentials were rejected"),
+                (
+                    "detail",
+                    "The upstream API rejected the saved credentials for `github`.",
+                ),
+                (
+                    "hint",
+                    "Refresh the saved credentials for `github`. If this is an imported source, refresh it from the manifest used to install it.",
+                ),
+                ("source", "github"),
+                ("http_status", "401"),
+            ],
+            false,
+        );
+        let error = match decode_status_error(&status) {
+            DecodedStatusError::Structured(e) => e,
+            DecodedStatusError::Plain(_) => panic!("expected Structured"),
+        };
+        let rendered = render_structured(&error);
+
+        assert!(rendered.contains("Hint: Run `coral source add github --interactive`"));
+        assert!(rendered.contains("coral source add --file <manifest-path> --interactive"));
+        assert!(!rendered.contains("Refresh the saved credentials for `github`"));
+    }
+
+    #[test]
+    fn structured_provider_forbidden_keeps_access_hint() {
+        let status = build_coral_status(
+            "PROVIDER_REQUEST_FAILED",
+            vec![
+                ("summary", "Source access was denied"),
+                (
+                    "detail",
+                    "The upstream API rejected the saved credentials for `github`.",
+                ),
+                (
+                    "hint",
+                    "Refresh the saved credentials for `github`. If the refreshed credential still fails, check that it has access to this resource.",
+                ),
+                ("source", "github"),
+                ("http_status", "403"),
+            ],
+            false,
+        );
+        let error = match decode_status_error(&status) {
+            DecodedStatusError::Structured(e) => e,
+            DecodedStatusError::Plain(_) => panic!("expected Structured"),
+        };
+        let rendered = render_structured(&error);
+
+        assert!(rendered.contains("Hint: Run `coral source add github --interactive`"));
+        assert!(rendered.contains("check that it has access to this resource"));
+        assert!(!rendered.contains("Refresh the saved credentials for `github`"));
     }
 
     #[test]

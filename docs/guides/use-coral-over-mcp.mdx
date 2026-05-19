@@ -240,3 +240,9 @@ The agent should call `list_catalog`, `search_catalog`, or query `coral.tables` 
 
 - **`coral` not found:** Make sure `coral` is on your `PATH`, or use the full path from `which coral` on macOS or Linux or `(Get-Command coral).Source` in PowerShell.
 - **No tables visible:** Run `coral source list` in your terminal to confirm you have sources installed. If empty, add one with `coral source add`.
+
+Tool errors use structured Coral diagnostics when the local server provides
+them. MCP-facing hints avoid CLI-only commands where possible and point agents
+at MCP tools such as `list_tables` or `search_tables`; host-level setup and
+credential repairs may still require the user to run Coral CLI commands outside
+the MCP session.

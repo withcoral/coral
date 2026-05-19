@@ -27,7 +27,13 @@ use clap::{
     Parser, Subcommand, ValueEnum,
 };
 use clap_complete::{Shell, generate};
-use coral_api::v1::ExecuteSqlRequest;
+use coral_api::{
+    CORAL_ERROR_REASON_CONFIG_DIR_NOT_FOUND, CORAL_ERROR_REASON_CONFIG_WRITE_FAILED,
+    CORAL_ERROR_REASON_EMPTY_SQL, CORAL_ERROR_REASON_INVALID_INPUT,
+    CORAL_ERROR_REASON_INVALID_SECRETS_FILE, CORAL_ERROR_REASON_LOCAL_FILE_ERROR,
+    CORAL_ERROR_REASON_SECRETS_FILE_ERROR, CORAL_ERROR_REASON_SETUP_REQUIRED,
+    CORAL_ERROR_REASON_SOURCE_NOT_FOUND, CORAL_ERROR_REASON_TABLE_NOT_FOUND, v1::ExecuteSqlRequest,
+};
 #[cfg(feature = "embedded-ui")]
 use coral_app::StaticAssetsProvider;
 use coral_client::{
@@ -424,12 +430,12 @@ fn render_status_diagnostic(status: &tonic::Status) -> String {
                 summary,
                 detail,
                 hint: server_hint,
+                metadata,
                 ..
             } = *error;
-            let hint = cli_hint_for_app_reason(&reason).map_or_else(
-                || server_hint.unwrap_or_else(|| default_server_status_hint().to_string()),
-                str::to_string,
-            );
+            let hint = cli_hint_for_reason(&reason, &metadata).unwrap_or_else(|| {
+                server_hint.unwrap_or_else(|| default_server_status_hint().to_string())
+            });
             let detail = if detail.is_empty() {
                 status.message().to_string()
             } else {
@@ -445,29 +451,55 @@ fn render_status_diagnostic(status: &tonic::Status) -> String {
     }
 }
 
-pub(crate) fn cli_hint_for_app_reason(reason: &str) -> Option<&'static str> {
+pub(crate) fn cli_hint_for_reason(
+    reason: &str,
+    metadata: &std::collections::HashMap<String, String>,
+) -> Option<String> {
     match reason {
-        "SOURCE_NOT_FOUND" => Some(
-            "Run `coral source list` to see installed sources or `coral source discover` to see bundled sources available to install.",
-        ),
-        "INVALID_INPUT" => Some(
-            "Check the command input and retry. Run `coral --help` or the subcommand help for valid values.",
-        ),
-        "SETUP_REQUIRED" => Some(
-            "Run `coral source list` to inspect configured sources, then `coral source test <source>` for the source you are trying to use.",
-        ),
-        "INVALID_SECRETS_FILE" => Some(
-            "Re-run `coral source add <source> --interactive` for the affected source to refresh its saved credentials.",
-        ),
-        "CONFIG_DIR_NOT_FOUND" => Some("Set `CORAL_CONFIG_DIR` to a writable directory and retry."),
-        "LOCAL_FILE_ERROR" => Some(
-            "Check that the path exists and that Coral can read and write its config directory. You can set `CORAL_CONFIG_DIR` to a writable directory.",
-        ),
-        "CONFIG_WRITE_FAILED" | "SECRETS_FILE_ERROR" => Some(
-            "Check permissions on the Coral config directory, or set `CORAL_CONFIG_DIR` to a writable directory.",
-        ),
+        CORAL_ERROR_REASON_SOURCE_NOT_FOUND => Some("Run `coral source list` to see installed sources or `coral source discover` to see bundled sources available to install.".to_string()),
+        CORAL_ERROR_REASON_INVALID_INPUT => Some("Check the command input and retry. Run `coral --help` or the subcommand help for valid values.".to_string()),
+        CORAL_ERROR_REASON_SETUP_REQUIRED => Some("Run `coral source list` to inspect configured sources, then `coral source test <source>` for the source you are trying to use.".to_string()),
+        CORAL_ERROR_REASON_INVALID_SECRETS_FILE => Some("Re-run `coral source add <source> --interactive` for the affected source to refresh its saved credentials.".to_string()),
+        CORAL_ERROR_REASON_CONFIG_DIR_NOT_FOUND => {
+            Some("Set `CORAL_CONFIG_DIR` to a writable directory and retry.".to_string())
+        }
+        CORAL_ERROR_REASON_LOCAL_FILE_ERROR => Some("Check that the path exists and that Coral can read and write its config directory. You can set `CORAL_CONFIG_DIR` to a writable directory.".to_string()),
+        CORAL_ERROR_REASON_CONFIG_WRITE_FAILED | CORAL_ERROR_REASON_SECRETS_FILE_ERROR => Some("Check permissions on the Coral config directory, or set `CORAL_CONFIG_DIR` to a writable directory.".to_string()),
+        CORAL_ERROR_REASON_EMPTY_SQL => {
+            Some("Run `coral sql \"SELECT * FROM coral.tables LIMIT 10\"`.".to_string())
+        }
+        CORAL_ERROR_REASON_TABLE_NOT_FOUND
+            if metadata
+                .get("catalog_empty")
+                .is_some_and(|value| value == "true") =>
+        {
+            Some("Run `coral source discover` to see bundled sources, then `coral source add <source>` to connect one.".to_string())
+        }
+        "PROVIDER_REQUEST_FAILED" => cli_provider_request_hint(metadata),
         _ => None,
     }
+}
+
+fn cli_provider_request_hint(
+    metadata: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    match metadata.get("http_status").map(String::as_str) {
+        Some("401") => Some(cli_auth_refresh_hint(metadata)),
+        Some("403") => Some(format!(
+            "{} If the refreshed credential still fails, check that it has access to this resource.",
+            cli_auth_refresh_hint(metadata)
+        )),
+        _ => None,
+    }
+}
+
+fn cli_auth_refresh_hint(metadata: &std::collections::HashMap<String, String>) -> String {
+    let source = metadata
+        .get("source")
+        .map_or_else(|| "<source>".to_string(), |source| shell_quote_arg(source));
+    format!(
+        "Run `coral source add {source} --interactive` to refresh saved credentials for bundled sources. For imported sources, run `coral source add --file <manifest-path> --interactive` with the manifest used to install the source."
+    )
 }
 
 fn default_server_status_hint() -> &'static str {
@@ -501,7 +533,7 @@ impl coral_app::RunErrorTelemetry for CliError {
             Self::Query { error_type, .. } => Cow::Borrowed(error_type.as_str()),
             Self::SourceNotInstalled { .. } => Cow::Borrowed("SOURCE_NOT_INSTALLED"),
             Self::SourceNotFound { .. } | Self::SourceRemoveNotFound { .. } => {
-                Cow::Borrowed("SOURCE_NOT_FOUND")
+                Cow::Borrowed(CORAL_ERROR_REASON_SOURCE_NOT_FOUND)
             }
             Self::Diagnostic { .. } => Cow::Borrowed("COMMAND_FAILED"),
             Self::Internal(_) => Cow::Borrowed("INTERNAL"),

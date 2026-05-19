@@ -31,7 +31,11 @@ use coral_api::v1::{
     create_bundled_source_with_o_auth_response, import_source_response,
     source_input_spec::Input as ProtoSourceInput,
 };
-use coral_api::{CORAL_ERROR_DOMAIN, CORAL_ERROR_REASON_SOURCE_NOT_FOUND};
+use coral_api::{
+    CORAL_ERROR_DOMAIN, CORAL_ERROR_METADATA_DETAIL, CORAL_ERROR_METADATA_HINT,
+    CORAL_ERROR_METADATA_SUMMARY, CORAL_ERROR_REASON_LOCAL_FILE_ERROR,
+    CORAL_ERROR_REASON_SOURCE_NOT_FOUND,
+};
 use tempfile::TempDir;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
@@ -351,8 +355,62 @@ fn mock_source_info(name: &str) -> Result<SourceInfo, Status> {
             origin: SourceOrigin::Imported as i32,
             credential_storage: SourceCredentialStorage::File as i32,
         }),
-        _ => Err(Status::not_found(format!("unknown source '{name}'"))),
+        _ => Err(coral_source_not_found_status(name)),
     }
+}
+
+pub(crate) fn coral_source_not_found_status(name: &str) -> Status {
+    let metadata = std::collections::HashMap::from([
+        (
+            CORAL_ERROR_METADATA_SUMMARY.to_string(),
+            format!("Source `{name}` was not found"),
+        ),
+        (
+            CORAL_ERROR_METADATA_DETAIL.to_string(),
+            format!("No source named `{name}` is installed in this workspace."),
+        ),
+        (
+            CORAL_ERROR_METADATA_HINT.to_string(),
+            "List installed sources or discover available sources, then retry with a source that exists."
+                .to_string(),
+        ),
+    ]);
+    Status::with_error_details_vec(
+        Code::NotFound,
+        format!("Source `{name}` was not found"),
+        vec![ErrorDetail::ErrorInfo(tonic_types::ErrorInfo::new(
+            CORAL_ERROR_REASON_SOURCE_NOT_FOUND,
+            CORAL_ERROR_DOMAIN,
+            metadata,
+        ))],
+    )
+}
+
+pub(crate) fn coral_local_file_not_found_status(path: &str) -> Status {
+    let metadata = std::collections::HashMap::from([
+        (
+            CORAL_ERROR_METADATA_SUMMARY.to_string(),
+            "Coral could not read or write a local file".to_string(),
+        ),
+        (
+            CORAL_ERROR_METADATA_DETAIL.to_string(),
+            format!("No such file or directory: {path}"),
+        ),
+        (
+            CORAL_ERROR_METADATA_HINT.to_string(),
+            "Check that the path exists and that Coral can read and write its config directory."
+                .to_string(),
+        ),
+    ]);
+    Status::with_error_details_vec(
+        Code::NotFound,
+        "Coral could not read or write a local file",
+        vec![ErrorDetail::ErrorInfo(tonic_types::ErrorInfo::new(
+            CORAL_ERROR_REASON_LOCAL_FILE_ERROR,
+            CORAL_ERROR_DOMAIN,
+            metadata,
+        ))],
+    )
 }
 
 #[derive(Clone, Debug)]
@@ -404,6 +462,7 @@ impl MockError {
 enum MockResult<T> {
     Ok(T),
     Err(MockError),
+    Status(Status),
 }
 
 impl<T> MockResult<T> {
@@ -419,10 +478,15 @@ impl<T> MockResult<T> {
         Self::Err(MockError::source_not_found(qualified))
     }
 
+    fn status(status: Status) -> Self {
+        Self::Status(status)
+    }
+
     fn into_tonic_result(self) -> Result<T, Status> {
         match self {
             Self::Ok(value) => Ok(value),
             Self::Err(error) => Err(error.status()),
+            Self::Status(status) => Err(status),
         }
     }
 }
@@ -499,6 +563,11 @@ impl MockServerConfig {
         self
     }
 
+    pub(crate) fn with_validate_source_status(mut self, status: Status) -> Self {
+        self.validate_source = MockResult::status(status);
+        self
+    }
+
     pub(crate) fn with_validate_source_response(
         mut self,
         response: ValidateSourceResponse,
@@ -529,6 +598,11 @@ impl MockServerConfig {
     /// AIP-193 `ErrorInfo` with `reason = "SOURCE_NOT_FOUND"`).
     pub(crate) fn with_delete_source_not_found(mut self, qualified: impl Into<String>) -> Self {
         self.delete_source = MockResult::source_not_found(qualified);
+        self
+    }
+
+    pub(crate) fn with_delete_source_status(mut self, status: Status) -> Self {
+        self.delete_source = MockResult::status(status);
         self
     }
 }

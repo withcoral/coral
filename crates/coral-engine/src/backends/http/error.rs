@@ -224,7 +224,6 @@ fn http_request_to_structured(
     filters: &HashMap<String, String>,
     raw_detail: &str,
 ) -> StructuredQueryError {
-    let source_shell = shell_arg(source);
     let sanitized_url = url.and_then(sanitize_request_url);
 
     let (reason, summary, hint, status) = match http_status {
@@ -237,7 +236,7 @@ fn http_request_to_structured(
         Some(UNAUTHORIZED) => (
             "PROVIDER_REQUEST_FAILED",
             "Source credentials were rejected".to_string(),
-            Some(auth_refresh_hint(&source_shell)),
+            Some(auth_refresh_hint(source)),
             StatusCode::FailedPrecondition,
         ),
         Some(FORBIDDEN) => (
@@ -245,7 +244,7 @@ fn http_request_to_structured(
             "Source access was denied".to_string(),
             Some(format!(
                 "{} If the refreshed credential still fails, check that it has access to this resource.",
-                auth_refresh_hint(&source_shell)
+                auth_refresh_hint(source)
             )),
             StatusCode::FailedPrecondition,
         ),
@@ -325,9 +324,9 @@ fn http_request_to_structured(
     )
 }
 
-fn auth_refresh_hint(source_shell: &str) -> String {
+fn auth_refresh_hint(source: &str) -> String {
     format!(
-        "Refresh the saved credentials with `coral source add {source_shell} --interactive` for bundled sources, or `coral source add --file <manifest-path> --interactive` for imported sources."
+        "Refresh the saved credentials for `{source}`. If this is an imported source, refresh it from the manifest used to install it."
     )
 }
 
@@ -492,19 +491,6 @@ fn is_server_error(status: u16) -> bool {
 // String helpers
 // ---------------------------------------------------------------------------
 
-fn shell_arg(value: &str) -> String {
-    let is_safe = !value.is_empty()
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'));
-    if is_safe {
-        value.to_string()
-    } else {
-        let escaped = value.replace('\'', "'\\''");
-        format!("'{escaped}'")
-    }
-}
-
 fn sanitize_request_url(raw: &str) -> Option<String> {
     let without_fragment = raw.split_once('#').map_or(raw, |(before, _)| before);
     let without_query = without_fragment
@@ -581,8 +567,9 @@ mod tests {
         assert_eq!(error.metadata().get("http_status").unwrap(), "401");
         assert!(!error.retryable());
         let hint = error.hint().expect("401 should have a hint");
-        assert!(hint.contains("coral source add github --interactive"));
-        assert!(hint.contains("coral source add --file <manifest-path> --interactive"));
+        assert!(hint.contains("Refresh the saved credentials for `github`"));
+        assert!(hint.contains("manifest used to install it"));
+        assert!(!hint.contains("coral source"));
     }
 
     #[test]
@@ -602,8 +589,9 @@ mod tests {
         assert!(error.detail().contains("saved credentials for `github`"));
         assert_eq!(error.metadata().get("http_status").unwrap(), "403");
         let hint = error.hint().expect("403 should have a hint");
-        assert!(hint.contains("coral source add github --interactive"));
+        assert!(hint.contains("Refresh the saved credentials for `github`"));
         assert!(hint.contains("has access to this resource"));
+        assert!(!hint.contains("coral source"));
     }
 
     #[test]

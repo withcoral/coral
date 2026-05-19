@@ -2,7 +2,11 @@
 
 use coral_api::{
     CORAL_ERROR_DOMAIN, CORAL_ERROR_METADATA_DETAIL, CORAL_ERROR_METADATA_HINT,
-    CORAL_ERROR_METADATA_SUMMARY, CORAL_ERROR_REASON_SOURCE_NOT_FOUND,
+    CORAL_ERROR_METADATA_SUMMARY, CORAL_ERROR_REASON_CONFIG_DIR_NOT_FOUND,
+    CORAL_ERROR_REASON_CONFIG_WRITE_FAILED, CORAL_ERROR_REASON_INVALID_INPUT,
+    CORAL_ERROR_REASON_INVALID_SECRETS_FILE, CORAL_ERROR_REASON_LOCAL_FILE_ERROR,
+    CORAL_ERROR_REASON_SECRETS_FILE_ERROR, CORAL_ERROR_REASON_SETUP_REQUIRED,
+    CORAL_ERROR_REASON_SOURCE_NOT_FOUND,
 };
 use coral_engine::{CoreError, StatusCode};
 use tonic::{Code, Status};
@@ -71,25 +75,25 @@ impl AppError {
                 hint: Some("List installed sources or discover available sources, then retry with a source that exists.".to_string()),
             },
             AppError::InvalidInput(detail) => ErrorDiagnostic {
-                reason: "INVALID_INPUT",
+                reason: CORAL_ERROR_REASON_INVALID_INPUT,
                 summary: "Input is invalid".to_string(),
                 detail: detail.clone(),
                 hint: Some("Check the request input and retry with valid values.".to_string()),
             },
             AppError::FailedPrecondition(detail) => ErrorDiagnostic {
-                reason: "SETUP_REQUIRED",
+                reason: CORAL_ERROR_REASON_SETUP_REQUIRED,
                 summary: "Setup is incomplete".to_string(),
                 detail: detail.clone(),
                 hint: Some("Inspect configured sources, then test the source you are trying to use.".to_string()),
             },
             AppError::MissingConfigDir => ErrorDiagnostic {
-                reason: "CONFIG_DIR_NOT_FOUND",
+                reason: CORAL_ERROR_REASON_CONFIG_DIR_NOT_FOUND,
                 summary: "Coral could not find a config directory".to_string(),
                 detail: "The operating system did not provide a usable app config directory.".to_string(),
                 hint: Some("Configure Coral with a writable config directory, then retry.".to_string()),
             },
             AppError::Io(error) => ErrorDiagnostic {
-                reason: "LOCAL_FILE_ERROR",
+                reason: CORAL_ERROR_REASON_LOCAL_FILE_ERROR,
                 summary: "Coral could not read or write a local file".to_string(),
                 detail: error.to_string(),
                 hint: Some("Check that the path exists and that Coral can read and write its config directory.".to_string()),
@@ -113,7 +117,7 @@ impl AppError {
                 hint: Some("Fix the Coral config file or move it aside, then retry.".to_string()),
             },
             AppError::TomlEncode(error) => ErrorDiagnostic {
-                reason: "CONFIG_WRITE_FAILED",
+                reason: CORAL_ERROR_REASON_CONFIG_WRITE_FAILED,
                 summary: "Coral could not write its config file".to_string(),
                 detail: error.to_string(),
                 hint: Some("Check permissions on the Coral config directory, or use a writable config directory.".to_string()),
@@ -138,13 +142,13 @@ impl AppError {
             },
             AppError::Credentials(error) => match error {
                 CredentialsError::Parse(detail) => ErrorDiagnostic {
-                    reason: "INVALID_SECRETS_FILE",
+                    reason: CORAL_ERROR_REASON_INVALID_SECRETS_FILE,
                     summary: "Coral could not read saved source credentials".to_string(),
                     detail: detail.clone(),
                     hint: Some("Refresh the saved credentials for the affected source.".to_string()),
                 },
                 CredentialsError::Io(error) => ErrorDiagnostic {
-                    reason: "SECRETS_FILE_ERROR",
+                    reason: CORAL_ERROR_REASON_SECRETS_FILE_ERROR,
                     summary: "Coral could not read or write saved source credentials".to_string(),
                     detail: error.to_string(),
                     hint: Some("Check permissions on the Coral config directory, or use a writable config directory.".to_string()),

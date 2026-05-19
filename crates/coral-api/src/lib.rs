@@ -73,11 +73,44 @@ pub const HTTP2_MAX_HEADER_LIST_SIZE: u32 = 128 * 1024;
 /// Coral error domain used in `google.rpc.ErrorInfo`.
 pub const CORAL_ERROR_DOMAIN: &str = "coral.withcoral.com";
 
+/// `ErrorInfo.reason` for a source name that does not resolve.
+pub const CORAL_ERROR_REASON_SOURCE_NOT_FOUND: &str = "SOURCE_NOT_FOUND";
+
+/// `ErrorInfo.reason` for invalid request input.
+pub const CORAL_ERROR_REASON_INVALID_INPUT: &str = "INVALID_INPUT";
+
+/// `ErrorInfo.reason` for an incomplete source or app setup.
+pub const CORAL_ERROR_REASON_SETUP_REQUIRED: &str = "SETUP_REQUIRED";
+
+/// `ErrorInfo.reason` for unreadable or invalid saved credentials.
+pub const CORAL_ERROR_REASON_INVALID_SECRETS_FILE: &str = "INVALID_SECRETS_FILE";
+
+/// `ErrorInfo.reason` for an unavailable Coral config directory.
+pub const CORAL_ERROR_REASON_CONFIG_DIR_NOT_FOUND: &str = "CONFIG_DIR_NOT_FOUND";
+
+/// `ErrorInfo.reason` for local filesystem failures.
+pub const CORAL_ERROR_REASON_LOCAL_FILE_ERROR: &str = "LOCAL_FILE_ERROR";
+
+/// `ErrorInfo.reason` for Coral config write failures.
+pub const CORAL_ERROR_REASON_CONFIG_WRITE_FAILED: &str = "CONFIG_WRITE_FAILED";
+
+/// `ErrorInfo.reason` for saved credential read/write failures.
+pub const CORAL_ERROR_REASON_SECRETS_FILE_ERROR: &str = "SECRETS_FILE_ERROR";
+
+/// `ErrorInfo.reason` for an empty SQL request.
+pub const CORAL_ERROR_REASON_EMPTY_SQL: &str = "EMPTY_SQL";
+
+/// `ErrorInfo.reason` for SQL parser failures.
+pub const CORAL_ERROR_REASON_SQL_PARSE_ERROR: &str = "SQL_PARSE_ERROR";
+
+/// `ErrorInfo.reason` for an unknown SQL column reference.
+pub const CORAL_ERROR_REASON_UNKNOWN_COLUMN: &str = "UNKNOWN_COLUMN";
+
+/// `ErrorInfo.reason` for an unknown SQL table reference.
+pub const CORAL_ERROR_REASON_TABLE_NOT_FOUND: &str = "TABLE_NOT_FOUND";
+
 /// Canonical default workspace name used across local Coral surfaces.
 pub const DEFAULT_WORKSPACE_ID: &str = "default";
-
-/// Machine-readable reason for a configured source lookup miss.
-pub const CORAL_ERROR_REASON_SOURCE_NOT_FOUND: &str = "SOURCE_NOT_FOUND";
 
 /// Reserved `ErrorInfo.metadata` key for a one-line error summary.
 pub const CORAL_ERROR_METADATA_SUMMARY: &str = "summary";

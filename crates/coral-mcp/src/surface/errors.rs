@@ -1,6 +1,13 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
+use coral_api::{
+    CORAL_ERROR_REASON_CONFIG_DIR_NOT_FOUND, CORAL_ERROR_REASON_CONFIG_WRITE_FAILED,
+    CORAL_ERROR_REASON_EMPTY_SQL, CORAL_ERROR_REASON_INVALID_INPUT,
+    CORAL_ERROR_REASON_INVALID_SECRETS_FILE, CORAL_ERROR_REASON_LOCAL_FILE_ERROR,
+    CORAL_ERROR_REASON_SECRETS_FILE_ERROR, CORAL_ERROR_REASON_SETUP_REQUIRED,
+    CORAL_ERROR_REASON_SOURCE_NOT_FOUND, CORAL_ERROR_REASON_TABLE_NOT_FOUND,
+};
 use coral_client::{DecodedStatusError, decode_status_error};
 use rmcp::{
     ErrorData,
@@ -63,7 +70,7 @@ pub(crate) fn tool_error_from_status(operation: &str, status: &tonic::Status) ->
         DecodedStatusError::Structured(error) => ToolError {
             summary: error.summary.clone(),
             detail: error.detail.clone(),
-            hint: mcp_hint_for_app_reason(&error.reason)
+            hint: mcp_hint_for_reason(&error.reason, &error.metadata)
                 .map(str::to_string)
                 .or_else(|| error.hint.clone()),
             grpc_code,
@@ -118,7 +125,7 @@ fn plain_fallback(operation: &str, code: tonic::Code) -> (String, Option<String>
 pub(crate) fn status_to_error_data(status: &tonic::Status) -> ErrorData {
     match decode_status_error(status) {
         DecodedStatusError::Structured(error) => {
-            let hint = mcp_hint_for_app_reason(&error.reason)
+            let hint = mcp_hint_for_reason(&error.reason, &error.metadata)
                 .map(str::to_string)
                 .or(error.hint);
             let data = serde_json::to_value(StatusErrorDataValue {
@@ -146,26 +153,36 @@ pub(crate) fn status_to_error_data(status: &tonic::Status) -> ErrorData {
     }
 }
 
-fn mcp_hint_for_app_reason(reason: &str) -> Option<&'static str> {
+fn mcp_hint_for_reason(reason: &str, metadata: &HashMap<String, String>) -> Option<&'static str> {
     match reason {
-        "SOURCE_NOT_FOUND" => Some(
+        CORAL_ERROR_REASON_SOURCE_NOT_FOUND => Some(
             "Use `list_tables` or `search_tables` to inspect visible tables and sources before retrying.",
         ),
-        "INVALID_INPUT" => {
+        CORAL_ERROR_REASON_INVALID_INPUT => {
             Some("Check the tool arguments and retry with values that match the tool schema.")
         }
-        "SETUP_REQUIRED" => Some(
+        CORAL_ERROR_REASON_SETUP_REQUIRED => Some(
             "Use `list_tables` to inspect configured sources, then retry once the source is ready.",
         ),
-        "INVALID_SECRETS_FILE" => Some(
+        CORAL_ERROR_REASON_INVALID_SECRETS_FILE => Some(
             "Ask the user to refresh saved credentials for the affected source before retrying.",
         ),
-        "CONFIG_DIR_NOT_FOUND"
-        | "LOCAL_FILE_ERROR"
-        | "CONFIG_WRITE_FAILED"
-        | "SECRETS_FILE_ERROR" => Some(
+        CORAL_ERROR_REASON_CONFIG_DIR_NOT_FOUND
+        | CORAL_ERROR_REASON_LOCAL_FILE_ERROR
+        | CORAL_ERROR_REASON_CONFIG_WRITE_FAILED
+        | CORAL_ERROR_REASON_SECRETS_FILE_ERROR => Some(
             "Ask the host process owner to check Coral's config directory and file permissions.",
         ),
+        CORAL_ERROR_REASON_EMPTY_SQL => Some(
+            "Retry with a non-empty SQL statement, for example `SELECT * FROM coral.tables LIMIT 10`.",
+        ),
+        CORAL_ERROR_REASON_TABLE_NOT_FOUND
+            if metadata
+                .get("catalog_empty")
+                .is_some_and(|value| value == "true") =>
+        {
+            Some("Use `list_tables` or `search_tables` to inspect visible tables before retrying.")
+        }
         _ => None,
     }
 }
@@ -311,6 +328,45 @@ mod tests {
         assert_eq!(
             data["hint"],
             "Use `list_tables` or `search_tables` to inspect visible tables and sources before retrying."
+        );
+    }
+
+    #[test]
+    fn table_not_found_preserves_engine_hint_when_catalog_is_not_empty() {
+        let status = build_coral_status(
+            "TABLE_NOT_FOUND",
+            vec![
+                ("summary", "Table `github.issuse` not found"),
+                ("detail", "No table `issuse` exists in schema `github`."),
+                ("hint", "Did you mean `github.issues`?"),
+            ],
+            false,
+        );
+
+        let error = tool_error_from_status("Query", &status);
+        assert_eq!(error.hint.as_deref(), Some("Did you mean `github.issues`?"));
+    }
+
+    #[test]
+    fn empty_catalog_table_not_found_uses_mcp_hint() {
+        let status = build_coral_status(
+            "TABLE_NOT_FOUND",
+            vec![
+                ("summary", "Table `github.issues` not found"),
+                ("detail", "No table `issues` exists in schema `github`."),
+                ("catalog_empty", "true"),
+                (
+                    "hint",
+                    "No source tables are currently queryable. Discover available sources, connect one, then retry the query.",
+                ),
+            ],
+            false,
+        );
+
+        let error = tool_error_from_status("Query", &status);
+        assert_eq!(
+            error.hint.as_deref(),
+            Some("Use `list_tables` or `search_tables` to inspect visible tables before retrying.")
         );
     }
 

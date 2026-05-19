@@ -19,6 +19,8 @@ pub(crate) const EMPTY_SQL_REASON: &str = "EMPTY_SQL";
 /// Wire-stable `reason` code for SQL parse errors.
 pub(crate) const SQL_PARSE_ERROR_REASON: &str = "SQL_PARSE_ERROR";
 
+const METADATA_CATALOG_EMPTY: &str = "catalog_empty";
+
 /// Minimum `strsim::normalized_levenshtein` score for a "did you mean?"
 /// suggestion to surface.
 ///
@@ -142,7 +144,7 @@ impl StructuredQueryError {
             EMPTY_SQL_REASON,
             "SQL query is empty",
             "Coral cannot run an empty SQL string.",
-            Some("Try `coral sql \"SELECT * FROM coral.tables LIMIT 10\"`.".to_string()),
+            Some("Try the SQL statement `SELECT * FROM coral.tables LIMIT 10`.".to_string()),
             false,
             StatusCode::InvalidArgument,
             HashMap::new(),
@@ -224,6 +226,9 @@ impl StructuredQueryError {
             metadata.insert("schema".to_string(), schema.clone());
         }
         metadata.insert("table".to_string(), table.clone());
+        if known_tables.is_empty() {
+            metadata.insert(METADATA_CATALOG_EMPTY.to_string(), "true".to_string());
+        }
 
         let detail = match schema.as_deref() {
             Some(schema) => format!("No table `{table}` exists in schema `{schema}`."),
@@ -379,7 +384,7 @@ fn table_not_found_hint(
 ) -> Option<String> {
     if known_tables.is_empty() {
         return Some(
-            "No source tables are currently queryable. Run `coral source discover`, then `coral source add <source>` to connect a source.".to_string(),
+            "No source tables are currently queryable. Discover available sources, connect one, then retry the query.".to_string(),
         );
     }
 
@@ -804,8 +809,19 @@ mod tests {
 
         assert_eq!(err.reason(), TABLE_NOT_FOUND_REASON);
         let hint = err.hint().expect("hint should be present");
-        assert!(hint.contains("coral source discover"), "got: {hint}");
-        assert!(hint.contains("coral source add <source>"), "got: {hint}");
+        assert!(
+            hint.contains("No source tables are currently queryable"),
+            "got: {hint}"
+        );
+        assert!(hint.contains("Discover available sources"), "got: {hint}");
+        assert_eq!(
+            err.metadata().get(METADATA_CATALOG_EMPTY),
+            Some(&"true".to_string())
+        );
+        assert!(
+            !hint.contains("coral source"),
+            "engine hint must stay transport-neutral, got: {hint}"
+        );
     }
 
     #[test]

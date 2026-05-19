@@ -1407,7 +1407,9 @@ async fn api_returns_401() {
             assert!(!sqe.retryable());
             assert_eq!(sqe.metadata().get("http_status").unwrap(), "401");
             assert_eq!(sqe.metadata().get("source").unwrap(), "http_401");
-            assert!(sqe.hint().unwrap().contains("coral source add http_401"));
+            let hint = sqe.hint().expect("401 should include credential hint");
+            assert!(hint.contains("Refresh the saved credentials for `http_401`"));
+            assert!(!hint.contains("coral source"));
             assert!(sqe.detail().contains("unauthorized"));
         }
         other => panic!("unexpected 401 error variant: {other:?}"),
