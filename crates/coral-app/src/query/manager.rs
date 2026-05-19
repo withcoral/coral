@@ -167,9 +167,11 @@ impl QueryManager {
         workspace_name: &WorkspaceName,
     ) -> Result<Vec<QuerySource>, AppError> {
         let catalog = self.config_store.load_catalog()?;
+        let sources = catalog.workspace_sources(workspace_name);
         let mut query_sources = Vec::new();
-        for source in catalog.workspace_sources(workspace_name) {
-            match self.load_query_source(workspace_name, &source) {
+        let mut load_failures = Vec::new();
+        for source in &sources {
+            match self.load_query_source(workspace_name, source) {
                 Ok((query_source, _version)) => query_sources.push(query_source),
                 Err(error @ AppError::Credentials(CredentialsError::Unavailable(_))) => {
                     return Err(error);
@@ -180,8 +182,16 @@ impl QueryManager {
                         detail = %error,
                         "skipping source during query-source load"
                     );
+                    load_failures.push(format!("{}: {error}", source.name));
                 }
             }
+        }
+        if !sources.is_empty() && query_sources.is_empty() {
+            return Err(AppError::FailedPrecondition(format!(
+                "no installed sources could be loaded for workspace '{}': {}",
+                workspace_name.as_str(),
+                load_failures.join("; ")
+            )));
         }
         Ok(query_sources)
     }
