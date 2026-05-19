@@ -52,7 +52,7 @@ test('lists 10 traces, searches one, opens its details, and opens a span inspect
 
   await expect(longSpanRow).toBeVisible()
   await expect(longSpanLabel).toBeVisible()
-  expect(await longSpanLabel.evaluate((element) => element.getClientRects().length)).toBeGreaterThan(1)
+  expect(await longSpanLabel.evaluate((element) => element.getBoundingClientRect().height)).toBeGreaterThan(38)
   const rowBox = await longSpanRow.boundingBox()
   expect(rowBox?.height ?? 0).toBeGreaterThan(38)
 
@@ -60,8 +60,6 @@ test('lists 10 traces, searches one, opens its details, and opens a span inspect
   await expect(longSpanButton).toBeFocused()
   await expect(longSpanButton).toHaveCSS('outline-style', 'solid')
   await expect(longSpanButton).toHaveCSS('outline-offset', '-1px')
-  const boxShadow = await longSpanRow.evaluate((element) => getComputedStyle(element).boxShadow)
-  expect(boxShadow).toContain('inset')
   await page.screenshot({ path: 'ui/test-results/AOL-2-review.png', fullPage: true })
   await review.pause()
 

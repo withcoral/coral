@@ -6,7 +6,7 @@ import { theme } from '@/wax/theme/theme.css'
 
 const spin = keyframes({ to: { transform: 'rotate(360deg)' } })
 const codeFontFamily = '"Gustan Mono", "Roboto Mono", "SFMono-Regular", "SF Mono", Consolas, "Liberation Mono", Menlo, monospace'
-const traceWaterfallGridColumns = 'minmax(380px, 0.46fr) minmax(0, 1fr)'
+const traceWaterfallGridColumns = 'minmax(420px, 0.52fr) minmax(0, 1fr)'
 export const root = style({ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 })
 
 export const header = style({
@@ -312,10 +312,12 @@ export const waterfallChildCountChip = style({
 })
 export const waterfallPluginPill = style({
   alignItems: 'flex-start',
-  display: 'inline-flex',
+  display: 'flex',
+  flex: '1 1 auto',
+  minWidth: 0,
   gap: 6,
   maxWidth: '100%',
-  minWidth: 0,
+  width: '100%',
   whiteSpace: 'normal',
 })
 export const waterfallPluginDot = style({ borderRadius: '50%', flexShrink: 0, height: 8, width: 8, selectors: {
@@ -327,6 +329,7 @@ export const waterfallPluginDot = style({ borderRadius: '50%', flexShrink: 0, he
 export const waterfallLabelText = style({
   display: 'flex',
   flexDirection: 'column',
+  flex: '1 1 auto',
   minWidth: 0,
   overflowWrap: 'anywhere',
   whiteSpace: 'normal',
