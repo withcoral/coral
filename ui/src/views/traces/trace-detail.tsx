@@ -219,17 +219,13 @@ function WaterfallSpanLabel({
 function WaterfallBarSlot({
   active = false,
   durationMs,
-  hovered,
   onToggleExpanded,
-  onHover,
   row,
   traceStart,
 }: {
   active?: boolean
   durationMs: number
-  hovered: boolean
   onToggleExpanded: (spanId: string) => void
-  onHover: (spanId: string | null) => void
   row: TimelineRow
   traceStart: bigint
 }) {
@@ -238,9 +234,7 @@ function WaterfallBarSlot({
 
   return (
     <div
-      className={classNames(s.waterfallBarSlot, { [s.waterfallRowHover]: hovered, [s.waterfallBarSlotActive]: active })}
-      onMouseEnter={() => onHover(span.spanId)}
-      onMouseLeave={() => onHover(null)}
+      className={classNames(s.waterfallBarSlot, { [s.waterfallBarSlotActive]: active })}
       onClick={() => canExpandHttp && onToggleExpanded(span.spanId)}
       onKeyDown={(event) => {
         if (!canExpandHttp || (event.key !== 'Enter' && event.key !== ' ')) return
@@ -258,19 +252,19 @@ function WaterfallBarSlot({
 function WaterfallRow({
   collapsed,
   expanded,
-  hovered,
+  durationMs,
   onToggle,
   onToggleExpanded,
-  onHover,
   row,
+  traceStart,
 }: {
   collapsed: boolean
   expanded: boolean
-  hovered: boolean
+  durationMs: number
   onToggle: (spanId: string) => void
   onToggleExpanded: (spanId: string) => void
-  onHover: (spanId: string | null) => void
   row: TimelineRow
+  traceStart: bigint
 }) {
   const { childCount, depth, span } = row
   const tone = spanTone(span)
@@ -285,14 +279,13 @@ function WaterfallRow({
       aria-level={depth + 1}
       className={s.waterfallRowShell}
       data-span-row-id={span.spanId}
+      data-active={expanded || undefined}
       role="treeitem"
     >
       <div
         aria-expanded={canExpandHttp ? expanded : undefined}
-        className={classNames(s.waterfallRowButton, { [s.waterfallRowHover]: hovered })}
+        className={s.waterfallRowButton}
         data-noisy={isNoisyInternalSpan || undefined}
-        onMouseEnter={() => onHover(span.spanId)}
-        onMouseLeave={() => onHover(null)}
         onClick={() => canExpandHttp && onToggleExpanded(span.spanId)}
         onKeyDown={(event) => {
           if (!canExpandHttp || (event.key !== 'Enter' && event.key !== ' ')) return
@@ -314,6 +307,13 @@ function WaterfallRow({
           tone={tone}
         />
       </div>
+      <WaterfallBarSlot
+        active={expanded}
+        durationMs={durationMs}
+        onToggleExpanded={onToggleExpanded}
+        row={row}
+        traceStart={traceStart}
+      />
     </div>
   )
 }
@@ -331,7 +331,6 @@ function TimelineWaterfall({ expandedHttpSpanId, onExpandedHttpSpanIdChange, onN
   const hasRenderedDetailPanel = useRef(false)
   const panelAnimationFrame = useRef<number | null>(null)
   const rootRef = useRef<HTMLDivElement>(null)
-  const [hoveredSpanId, setHoveredSpanId] = useState<string | null>(null)
   const [detailPanelRatio, setDetailPanelRatio] = useState(DETAIL_PANEL_DEFAULT_RATIO)
   const [animatedDetailPanelRatio, setAnimatedDetailPanelRatio] = useState(expandedHttpSpanId ? DETAIL_PANEL_DEFAULT_RATIO : 0)
   const [isResizingDetailPanel, setIsResizingDetailPanel] = useState(false)
@@ -339,7 +338,6 @@ function TimelineWaterfall({ expandedHttpSpanId, onExpandedHttpSpanIdChange, onN
   const [detailPanelVisible, setDetailPanelVisible] = useState(Boolean(expandedHttpSpanId))
   const [detailPanelSettled, setDetailPanelSettled] = useState(Boolean(expandedHttpSpanId))
   useEffect(() => onExpandedHttpSpanIdChange(null), [onExpandedHttpSpanIdChange, summary?.traceId])
-  useEffect(() => setHoveredSpanId(null), [summary?.traceId])
   useEffect(() => setDetailPanelRatio(DETAIL_PANEL_DEFAULT_RATIO), [summary?.traceId])
   useEffect(() => {
     if (panelAnimationFrame.current !== null) {
@@ -472,34 +470,18 @@ function TimelineWaterfall({ expandedHttpSpanId, onExpandedHttpSpanIdChange, onN
         <WaterfallTickRow durationMs={durationMs} />
         <div className={s.waterfallRowsViewport} role="tree">
           <div className={s.waterfallRowsGrid}>
-            <div className={s.waterfallLabelsColumn}>
-              {rows.map((row) => (
-                <WaterfallRow
-                  collapsed={collapsedSpanIds.has(row.span.spanId)}
-                  expanded={expandedHttpSpanId === row.span.spanId}
-                  hovered={hoveredSpanId === row.span.spanId}
-                  key={row.span.spanId}
-                  onHover={setHoveredSpanId}
-                  onToggle={toggleSpan}
-                  onToggleExpanded={(spanId) => onExpandedHttpSpanIdChange((current) => current === spanId ? null : spanId)}
-                  row={row}
-                />
-              ))}
-            </div>
-            <div className={s.waterfallTimelineBody}>
-              {rows.map((row) => (
-                <WaterfallBarSlot
-                  active={expandedHttpSpanId === row.span.spanId}
-                  durationMs={durationMs}
-                  hovered={hoveredSpanId === row.span.spanId}
-                  key={row.span.spanId}
-                  onHover={setHoveredSpanId}
-                  onToggleExpanded={(spanId) => onExpandedHttpSpanIdChange((current) => current === spanId ? null : spanId)}
-                  row={row}
-                  traceStart={traceStart}
-                />
-              ))}
-            </div>
+            {rows.map((row) => (
+              <WaterfallRow
+                collapsed={collapsedSpanIds.has(row.span.spanId)}
+                durationMs={durationMs}
+                expanded={expandedHttpSpanId === row.span.spanId}
+                key={row.span.spanId}
+                onToggle={toggleSpan}
+                onToggleExpanded={(spanId) => onExpandedHttpSpanIdChange((current) => current === spanId ? null : spanId)}
+                row={row}
+                traceStart={traceStart}
+              />
+            ))}
           </div>
         </div>
       </div>

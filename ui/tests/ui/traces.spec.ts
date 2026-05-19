@@ -47,19 +47,21 @@ test('lists 10 traces, searches one, opens its details, and opens a span inspect
 
   await review.chapter('Wrap a long span label', 'Open the long Linear span and verify the focus treatment stays contained')
   const longSpanRow = page.getByRole('treeitem').filter({ hasText: LONG_LINEAR_ISSUES_SPAN_LABEL })
-  const longSpanButton = longSpanRow.locator(':scope > [role="button"]')
+  const longSpanButton = longSpanRow.locator(':scope > [role="button"]').first()
   const longSpanLabel = longSpanRow.getByText(LONG_LINEAR_ISSUES_SPAN_LABEL, { exact: true })
 
   await expect(longSpanRow).toBeVisible()
   await expect(longSpanLabel).toBeVisible()
+  expect(await longSpanLabel.evaluate((element) => element.getClientRects().length)).toBeGreaterThan(1)
   const rowBox = await longSpanRow.boundingBox()
   expect(rowBox?.height ?? 0).toBeGreaterThan(38)
 
   await longSpanButton.focus()
   await expect(longSpanButton).toBeFocused()
   await expect(longSpanButton).toHaveCSS('outline-style', 'none')
-  const boxShadow = await longSpanButton.evaluate((element) => getComputedStyle(element).boxShadow)
+  const boxShadow = await longSpanRow.evaluate((element) => getComputedStyle(element).boxShadow)
   expect(boxShadow).toContain('inset')
+  await page.screenshot({ path: 'ui/test-results/AOL-2-review.png', fullPage: true })
   await review.pause()
 
   await review.chapter('Open a span inspector', 'Expand one HTTP span and inspect the captured response body')

@@ -7,13 +7,6 @@ import { theme } from '@/wax/theme/theme.css'
 const spin = keyframes({ to: { transform: 'rotate(360deg)' } })
 const codeFontFamily = '"Gustan Mono", "Roboto Mono", "SFMono-Regular", "SF Mono", Consolas, "Liberation Mono", Menlo, monospace'
 const waterfallGridColumns = 'minmax(340px, 0.42fr) minmax(0, 1fr)'
-const waterfallFocusRing = {
-  '&:focus, &:focus-visible': {
-    backgroundColor: theme.surface.onMainContentSubtle,
-    boxShadow: `inset 0 0 0 1px ${theme.pill.blue.color}`,
-    outline: 'none',
-  },
-}
 export const root = style({ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 })
 
 export const header = style({
@@ -219,40 +212,46 @@ export const waterfallRowsViewport = style({
   minWidth: 0,
   overflow: 'auto',
 })
-export const waterfallRowsGrid = style({
-  alignItems: 'start',
+export const waterfallRowsGrid = style({ display: 'flex', flexDirection: 'column', gap: 10, minWidth: 0 })
+export const waterfallRowShell = style({
+  borderRadius: 8,
   display: 'grid',
   gridTemplateColumns: waterfallGridColumns,
   minWidth: 0,
+  overflow: 'hidden',
+  position: 'relative',
+  selectors: {
+    '&:hover, &:focus-within': {
+      backgroundColor: theme.surface.onMainContentSubtle,
+    },
+    '&:focus-within': {
+      boxShadow: `inset 0 0 0 1px ${theme.pill.blue.color}`,
+    },
+    '&[data-active="true"]': {
+      backgroundColor: theme.surface.onMainContentSubtle,
+      boxShadow: `inset 0 0 0 1px ${theme.pill.blue.color}`,
+    },
+  },
 })
-export const waterfallLabelsColumn = style({ display: 'flex', flexDirection: 'column', gap: 10, minWidth: 0 })
-export const waterfallTimelineBody = style({
-  alignSelf: 'stretch',
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 10,
-  minHeight: 0,
-  minWidth: 0,
-})
-export const waterfallRowShell = style({ borderRadius: 8, minWidth: 0, overflow: 'hidden', position: 'relative' })
 export const waterfallRowButton = style({
   alignItems: 'center',
   background: 'none',
   border: 'none',
-  borderRadius: 8,
   color: theme.content.primary,
   display: 'flex',
+  alignSelf: 'stretch',
   minHeight: 38,
+  minWidth: 0,
+  outline: 'none',
   padding: 0,
+  paddingInlineEnd: 10,
   position: 'relative',
   textAlign: 'left',
   width: '100%',
   selectors: {
     '&[role="button"]': { cursor: 'pointer' },
-    ...waterfallFocusRing,
   },
 })
-export const waterfallRowHover = style({ backgroundColor: theme.surface.onMainContentSubtle })
 export const waterfallSpanLabel = style({
   alignItems: 'flex-start',
   alignSelf: 'stretch',
@@ -327,12 +326,11 @@ export const waterfallBarSlot = style({
   borderRadius: 8,
   display: 'flex',
   flexShrink: 0,
+  alignSelf: 'stretch',
+  outline: 'none',
   minHeight: 38,
   minWidth: 0,
-  selectors: {
-    '&[role="button"]': { cursor: 'pointer' },
-    ...waterfallFocusRing,
-  },
+  selectors: { '&[role="button"]': { cursor: 'pointer' } },
 })
 export const waterfallBarSlotActive = style({
   boxShadow: `inset 0 0 0 1px ${theme.pill.blue.stroke}`,
