@@ -130,8 +130,8 @@ pub(crate) fn community_sources_page(manifests: &[ValidatedSourceManifest]) -> S
     );
 
     out.push_str("\n## Available community sources\n\n");
-    out.push_str("| Source | Description | Inputs |\n");
-    out.push_str("| --- | --- | --- |\n");
+    out.push_str("| Source | Description |\n");
+    out.push_str("| --- | --- |\n");
     for manifest in manifests {
         let name = manifest.schema_name();
         let description = manifest.description();
@@ -142,8 +142,7 @@ pub(crate) fn community_sources_page(manifests: &[ValidatedSourceManifest]) -> S
         };
         writeln!(
             out,
-            "| [{name}](https://github.com/withcoral/coral/tree/main/sources/community/{name}) | {description} | {} |",
-            input_summary(manifest),
+            "| [{name}](https://github.com/withcoral/coral/tree/main/sources/community/{name}) | {description} |",
         )
         .expect("writing to String is infallible");
     }
@@ -211,27 +210,6 @@ fn backend_label(manifest: &ValidatedSourceManifest) -> &'static str {
         // ValidatedSourceManifest covers all three backends; unreachable in
         // practice but we avoid `unreachable!` to keep the generator robust.
         "unknown"
-    }
-}
-
-fn input_summary(manifest: &ValidatedSourceManifest) -> String {
-    let inputs = manifest.declared_inputs();
-    if inputs.is_empty() {
-        return "None".to_string();
-    }
-    inputs
-        .iter()
-        .map(|input| format_input_key_for_table_cell(&input.key))
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-fn format_input_key_for_table_cell(key: &str) -> String {
-    let sanitized = escape_mdx(&flatten_for_table_cell(key));
-    if sanitized.contains('`') {
-        sanitized.replace('`', "&#96;")
-    } else {
-        format!("`{sanitized}`")
     }
 }
 
@@ -446,10 +424,7 @@ const COMMUNITY_OUTRO: &str = concat!(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        changelog_page, community_sources_page, escape_mdx, format_input_key_for_table_cell,
-        index_page,
-    };
+    use super::{changelog_page, community_sources_page, escape_mdx, index_page};
     use coral_spec::parse_source_manifest_yaml;
 
     const SAMPLE_MANIFEST: &str = r#"
@@ -651,18 +626,6 @@ tables:
         let demo = parse_source_manifest_yaml(SAMPLE_MANIFEST).expect("parse demo");
         let minimal = parse_source_manifest_yaml(NO_INPUTS_MANIFEST).expect("parse minimal");
         insta::assert_snapshot!("index_page_renders_rows", index_page(&[demo, minimal]));
-    }
-
-    #[test]
-    fn input_key_table_cell_escapes_table_breaking_characters() {
-        assert_eq!(
-            format_input_key_for_table_cell("API|TOKEN\nWITH\tSPACE"),
-            "`API\\|TOKEN WITH SPACE`"
-        );
-        assert_eq!(
-            format_input_key_for_table_cell("API`TOKEN"),
-            "API&#96;TOKEN"
-        );
     }
 
     #[test]

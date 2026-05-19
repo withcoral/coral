@@ -45,10 +45,10 @@ After importing, the source behaves like any other installed source. It appears 
 
 ## Available community sources
 
-| Source | Description | Inputs |
-| --- | --- | --- |
-| [demo](https://github.com/withcoral/coral/tree/main/sources/community/demo) | A small demo source used in snapshot tests | `DEMO_API_BASE`, `DEMO_TOKEN` |
-| [minimal](https://github.com/withcoral/coral/tree/main/sources/community/minimal) | Coral community source: minimal | None |
+| Source | Description |
+| --- | --- |
+| [demo](https://github.com/withcoral/coral/tree/main/sources/community/demo) | A small demo source used in snapshot tests |
+| [minimal](https://github.com/withcoral/coral/tree/main/sources/community/minimal) | Coral community source: minimal |
 
 ## If a source is missing
 
