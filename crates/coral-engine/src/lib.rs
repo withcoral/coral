@@ -191,14 +191,14 @@ impl CoralQuery {
     ) -> Result<SourceValidationReport, CoreError> {
         let query_runtime =
             runtime::query::build_runtime(std::slice::from_ref(source), runtime).await?;
-        let tables = query_runtime.list_tables(Some(source.source_name()), None);
-        if tables.is_empty() {
-            if let Some(failure) = query_runtime.registration_failure(source.source_name()) {
+        let source_name = source.source_name();
+        let catalog = query_runtime.catalog_info(Some(source_name));
+        if catalog.tables.is_empty() && catalog.table_functions.is_empty() {
+            if let Some(failure) = query_runtime.registration_failure(source_name) {
                 return Err(CoreError::FailedPrecondition(failure.detail.clone()));
             }
             return Err(CoreError::FailedPrecondition(format!(
-                "source '{}' did not become queryable during validation",
-                source.source_name()
+                "source '{source_name}' did not become queryable during validation"
             )));
         }
 
@@ -221,7 +221,7 @@ impl CoralQuery {
             }
         }
 
-        Ok(SourceValidationReport::new(tables, query_tests))
+        Ok(SourceValidationReport::new(catalog.tables, query_tests))
     }
 }
 

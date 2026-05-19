@@ -170,10 +170,11 @@ later, run the same command again.
 
 ### 4. Query your data
 
-Use `coral.tables` to see all available tables:
+Use `coral.tables` and `coral.table_functions` to see available query surfaces:
 
 ```bash
 coral sql "SELECT schema_name, table_name FROM coral.tables ORDER BY 1, 2"
+coral sql "SELECT schema_name, function_name FROM coral.table_functions ORDER BY 1, 2"
 ```
 
 Assuming you've connected GitHub, try listing open issues for a repo:
@@ -211,15 +212,17 @@ For Cursor, VS Code, Claude Desktop, OpenCode, and manual config examples,
 see [Use Coral over MCP](https://withcoral.com/docs/guides/use-coral-over-mcp).
 
 Coral also publishes a set of skills that teach your agent the
-discovery-first SQL workflow (`coral.tables`, `coral.columns`, etc.):
+discovery-first SQL workflow (`list_catalog`, `coral.tables`,
+`coral.table_functions`, `coral.columns`, etc.):
 
 ```bash
 npx skills add withcoral/skills
 ```
 
 Once connected, ask your agent to "list the tables available in Coral" or to
-run a small query — it'll call `list_tables` or `coral.tables` and see your
-installed sources.
+run a small query — it'll call `list_catalog`, `search_catalog`, or the
+`coral.tables` / `coral.table_functions` metadata tables and see your installed
+sources.
 
 ## Local state
 

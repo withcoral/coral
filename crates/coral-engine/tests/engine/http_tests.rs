@@ -100,6 +100,15 @@ fn search_function_manifest(name: &str, base_url: &str) -> Value {
     })
 }
 
+fn function_only_search_manifest(name: &str, base_url: &str) -> Value {
+    let mut manifest = search_function_manifest(name, base_url);
+    manifest
+        .as_object_mut()
+        .expect("manifest is an object")
+        .remove("tables");
+    manifest
+}
+
 fn internal_table_function_name(schema: &str, function: &str) -> String {
     // PR #306 only registers DataFusion's flat internal UDTF. The public
     // source-scoped planner in the next stack PR owns this mapping for users.
@@ -330,6 +339,40 @@ async fn source_scoped_table_function_builds_http_search_request() {
          FROM search.search_issues(mode => 'hybrid', q => 'flaky cleanup repo:withcoral/coral')",
     )
     .await;
+}
+
+#[tokio::test]
+async fn validate_source_accepts_function_only_http_source_and_runs_queries() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/search/issues"))
+        .and(query_param("q", "flaky cleanup repo:withcoral/coral"))
+        .and(query_param_is_missing("search_type"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [{
+                "title": "Flaky workspace cleanup",
+                "score": 9.5
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let source = build_source(function_only_search_manifest("search", &server.uri()));
+    let queries = vec![
+        "SELECT title, score \
+         FROM search.search_issues(q => 'flaky cleanup repo:withcoral/coral')"
+            .to_string(),
+    ];
+
+    let report = CoralQuery::validate_source(&source, test_runtime(), &queries)
+        .await
+        .expect("function-only source should validate");
+
+    assert!(report.tables.is_empty());
+    assert_eq!(report.query_tests.len(), 1);
+    assert!(report.query_tests[0].passed());
+    assert_eq!(report.query_tests[0].row_count(), Some(1));
 }
 
 #[tokio::test]
