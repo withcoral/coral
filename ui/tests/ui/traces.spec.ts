@@ -41,7 +41,7 @@ test('lists 10 traces, searches one, opens its details, and opens a span inspect
   await expect(page.getByText('Query details')).toBeVisible()
   await expect(page.getByText(/linear\.issues WHERE team_key = 'CORAL' AND title ILIKE '%playwright%'/)).toBeVisible()
   await expect(page.getByText('API requests')).toBeVisible()
-  await expect(page.getByRole('treeitem')).toHaveCount(10)
+  await expect(page.getByRole('treeitem')).toHaveCount(13)
   await review.pause()
 
   await review.chapter('Open a span inspector', 'Expand one HTTP span and inspect the captured response body')
@@ -51,6 +51,66 @@ test('lists 10 traces, searches one, opens its details, and opens a span inspect
   await expect(page.getByText('GET github.pull_requests')).toBeVisible()
   await expect(page.getByText('Response body')).toBeVisible()
   await expect(page.getByText('Add MSW Playwright trace fixtures')).toBeVisible()
+  await review.pause()
+})
+
+test('renders trace request and response bodies with JSON, GraphQL, and fallback states', async ({ network, page, review }) => {
+  network.use(...traceHandlers.tenTraceDetailFlow)
+
+  await review.chapter('Open the trace with span details', 'Load the selected trace so the body viewer states can be inspected')
+  await page.goto('/')
+  await page.getByRole('button', { name: 'Search queries' }).click()
+  await page.getByPlaceholder('Search queries...').fill('playwright')
+  await page.getByText(/linear\.issues WHERE team_key = 'CORAL' AND title ILIKE '%playwright%'/).click()
+  await review.pause()
+
+  await expect(page.getByRole('treeitem')).toHaveCount(13)
+
+  await review.chapter('Inspect pretty JSON', 'Open a structured response body and confirm it is pretty printed')
+  await page.getByRole('button', { name: /GET slack\.conversations/ }).click()
+
+  await expect(page.getByText('Response body')).toBeVisible()
+  await expect(page.getByText('"channels": [')).toBeVisible()
+  await expect(page.getByText('"eng-coral"')).toBeVisible()
+  await review.pause()
+
+  await review.chapter('Inspect malformed JSON fallback', 'Verify raw text stays readable when parsing fails')
+  await page.getByRole('button', { name: /GET github\.issue_previews/ }).click()
+
+  await expect(page.getByText('Response body')).toBeVisible()
+  await expect(page.getByText('{"oops":')).toBeVisible()
+  await review.pause()
+
+  await review.chapter('Inspect GraphQL bodies', 'Check request metadata, variables, and response data for GraphQL traffic')
+  await page.getByRole('button', { name: /POST linear\.issues$/ }).click()
+  await page.getByRole('tab', { name: 'Request body' }).click()
+  const requestPanel = page.getByRole('tabpanel', { name: 'Request body' })
+  const responsePanel = page.getByRole('tabpanel', { name: 'Response body' })
+
+  await expect(requestPanel.getByText('GraphQL request')).toBeVisible()
+  await expect(requestPanel.getByText('Operation')).toBeVisible()
+  await expect(requestPanel.getByText('IssuesSearch')).toBeVisible()
+  await expect(requestPanel.getByText('Type')).toBeVisible()
+  await expect(requestPanel.getByText('query', { exact: true })).toBeVisible()
+  await expect(requestPanel.getByText('Variables')).toBeVisible()
+  await expect(requestPanel.getByText('playwright')).toBeVisible()
+  await expect(requestPanel.getByText('Query')).toBeVisible()
+  await expect(requestPanel.getByText('issues(teamKey: $teamKey, query: $query, first: $first)')).toBeVisible()
+  await page.getByRole('tab', { name: 'Response body' }).click()
+
+  await expect(responsePanel.getByText('GraphQL response')).toBeVisible()
+  await expect(responsePanel.getByText('Data')).toBeVisible()
+  await expect(responsePanel.getByText('Add Playwright coverage for trace stream')).toBeVisible()
+  await review.pause()
+
+  await review.chapter('Inspect missing and truncated bodies', 'Confirm the viewer still explains empty and truncated body states')
+  await page.getByRole('button', { name: /POST linear\.issue_request_preview/ }).click()
+  await page.getByRole('tab', { name: 'Request body' }).click()
+
+  await expect(page.getByText('Request body was present (2.0 KB), but content was not captured.')).toBeVisible()
+  await page.getByRole('button', { name: /GET github\.pull_request_archive/ }).click()
+
+  await expect(page.getByText('Response body was truncated (4.0 KB), but no preview was recorded.')).toBeVisible()
   await review.pause()
 })
 

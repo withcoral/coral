@@ -18,12 +18,17 @@ const RESPONSE_BODY_ATTR = 'coral.http.response.body'
 const REQUEST_BODY_TRUNCATED_ATTR = 'coral.http.request.body.truncated'
 const RESPONSE_BODY_TRUNCATED_ATTR = 'coral.http.response.body.truncated'
 const REQUEST_BODY_PRESENT_ATTR = 'http.request.body.present'
+const RESPONSE_BODY_PRESENT_ATTR = 'http.response.body.present'
 const REQUEST_BODY_SIZE_ATTR = 'http.request.body.size'
 const RESPONSE_BODY_SIZE_ATTR = 'http.response.body.size'
 const BODY_ATTRIBUTE_KEYS = new Set([
   REQUEST_BODY_ATTR,
   RESPONSE_BODY_ATTR,
 ])
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
 
 function looksLikeJson(value: string) {
   const trimmed = value.trim()
@@ -41,6 +46,10 @@ function parseMaybeJson(value: unknown): JsonValue {
   } catch {
     return value
   }
+}
+
+function formatJsonValue(value: JsonValue): string {
+  return JSON.stringify(value, null, 2)
 }
 
 function requestParams(url: string): Record<string, string | string[]> {
@@ -64,9 +73,9 @@ function formatDetailValue(value: JsonValue | undefined): string {
   if (value === undefined || value === null || value === '') return ''
   if (typeof value === 'string') {
     const parsedValue = parseMaybeJson(value)
-    return typeof parsedValue === 'string' ? value : JSON.stringify(parsedValue, null, 2)
+    return typeof parsedValue === 'string' ? value : formatJsonValue(parsedValue)
   }
-  return JSON.stringify(value, null, 2)
+  return formatJsonValue(value)
 }
 
 function formatRawValue(value: unknown, formatted: string): string {
@@ -74,11 +83,153 @@ function formatRawValue(value: unknown, formatted: string): string {
   return typeof value === 'string' ? value : formatted
 }
 
-function DetailPre({ emptyText = 'Not recorded', value }: { emptyText?: string; value: JsonValue | undefined }) {
-  if (value === undefined || value === null || value === '') {
+type BodyKind = 'request' | 'response'
+
+interface GraphqlBodyPreview {
+  bodyKind: BodyKind
+  operationName?: string
+  operationType?: string
+  query?: string
+  variables?: JsonValue
+  data?: JsonValue
+  errors?: JsonValue
+}
+
+interface BodyPreview {
+  emptyText?: string
+  formattedText: string
+  graphql?: GraphqlBodyPreview
+  isText: boolean
+  rawText: string
+}
+
+function inferGraphqlOperationType(query: string | undefined): string | undefined {
+  if (!query) return undefined
+  const match = query.trim().match(/^(query|mutation|subscription)\b/i)
+  return match?.[1]?.toLowerCase() ?? 'query'
+}
+
+function detectGraphqlBody(bodyKind: BodyKind, value: JsonValue, url: string): GraphqlBodyPreview | undefined {
+  if (!isPlainObject(value)) return undefined
+
+  const pathname = (() => {
+    if (!url) return ''
+    try {
+      return new URL(url, 'http://coral.local').pathname
+    } catch {
+      return ''
+    }
+  })()
+  const query = typeof value.query === 'string' ? value.query : undefined
+  const operationName = typeof value.operationName === 'string' ? value.operationName : undefined
+  const variables = value.variables as JsonValue | undefined
+  const data = value.data as JsonValue | undefined
+  const errors = value.errors as JsonValue | undefined
+  const hasRequestShape = Boolean(query || operationName || variables !== undefined)
+  const hasResponseShape = Boolean(data !== undefined || errors !== undefined)
+
+  if (pathname !== '/graphql') return undefined
+  if (bodyKind === 'request' && !hasRequestShape) return undefined
+  if (bodyKind === 'response' && !hasResponseShape) return undefined
+
+  return {
+    bodyKind,
+    operationName,
+    operationType: inferGraphqlOperationType(query),
+    query,
+    variables,
+    data,
+    errors,
+  }
+}
+
+function bodyPreview(kind: BodyKind, value: unknown, rawValue: unknown, url: string): BodyPreview | undefined {
+  if (value === undefined || value === null || value === '') return undefined
+
+  if (typeof value === 'string') {
+    const parsedValue = parseMaybeJson(value)
+    if (typeof parsedValue === 'string') {
+      return {
+        emptyText: undefined,
+        formattedText: value,
+        isText: true,
+        rawText: typeof rawValue === 'string' ? rawValue : value,
+      }
+    }
+    return {
+      emptyText: undefined,
+      formattedText: formatJsonValue(parsedValue),
+      graphql: detectGraphqlBody(kind, parsedValue, url),
+      isText: false,
+      rawText: typeof rawValue === 'string' ? rawValue : formatJsonValue(parsedValue),
+    }
+  }
+
+  return {
+    emptyText: undefined,
+    formattedText: formatJsonValue(value as JsonValue),
+    graphql: detectGraphqlBody(kind, value as JsonValue, url),
+    isText: false,
+    rawText: typeof rawValue === 'string' ? rawValue : formatJsonValue(value as JsonValue),
+  }
+}
+
+function BodySection({ children, label }: { children: React.ReactNode; label: string }) {
+  return (
+    <section className={s.bodyViewerSection}>
+      <Typography.BodySmallStrong as="span" className={s.bodyViewerSectionLabel}>{label}</Typography.BodySmallStrong>
+      {children}
+    </section>
+  )
+}
+
+function BodyViewer({
+  emptyText,
+  kind,
+  rawValue,
+  url,
+  value,
+}: {
+  emptyText: string
+  kind: BodyKind
+  rawValue: unknown
+  url: string
+  value: unknown
+}) {
+  const preview = bodyPreview(kind, value, rawValue, url)
+
+  if (!preview) {
     return <Typography.BodySmall variant="tertiary">{emptyText}</Typography.BodySmall>
   }
-  return <pre className={s.detailsPre}>{formatDetailValue(value)}</pre>
+
+  if (!preview.graphql) {
+    return <pre className={s.detailsPre}>{preview.formattedText}</pre>
+  }
+
+  const { bodyKind, data, errors, operationName, operationType, query, variables } = preview.graphql
+
+  return (
+    <div className={s.bodyViewer}>
+      <div className={s.bodyViewerHeader}>
+        <Typography.BodySmallStrong as="span">{bodyKind === 'request' ? 'GraphQL request' : 'GraphQL response'}</Typography.BodySmallStrong>
+        <div className={s.bodyMetaRow}>
+          {operationName && metaChip('Operation', operationName)}
+          {operationType && metaChip('Type', operationType)}
+          {variables !== undefined && metaChip('Variables', Array.isArray(variables) ? `${variables.length}` : 'present')}
+          {Array.isArray(errors) ? metaChip('Errors', `${errors.length}`) : errors !== undefined ? metaChip('Errors', 'present') : null}
+          {data !== undefined && metaChip('Data', Array.isArray(data) ? `${data.length}` : 'present')}
+        </div>
+      </div>
+      {query !== undefined && <BodySection label="Query"><pre className={s.detailsPre}>{query}</pre></BodySection>}
+      {variables !== undefined && <BodySection label="Variables"><pre className={s.detailsPre}>{formatDetailValue(variables)}</pre></BodySection>}
+      {data !== undefined && <BodySection label="Data"><pre className={s.detailsPre}>{formatDetailValue(data)}</pre></BodySection>}
+      {errors !== undefined && <BodySection label="Errors"><pre className={s.detailsPre}>{formatDetailValue(errors)}</pre></BodySection>}
+      {preview.formattedText && <details className={s.bodyViewerRawDetails}>
+        <summary className={s.detailsSummary}><Typography.Body as="span" variant="tertiary">Full body JSON</Typography.Body></summary>
+        <pre className={s.detailsPre}>{preview.formattedText}</pre>
+      </details>}
+    </div>
+  )
 }
 
 function attrBool(value: unknown): boolean {
@@ -103,7 +254,9 @@ function formatBytes(value: unknown): string | undefined {
 function bodyEmptyText(kind: 'request' | 'response', attrs: Record<string, unknown>, truncated: boolean) {
   const label = kind === 'request' ? 'Request body' : 'Response body'
   const size = formatBytes(attrs[kind === 'request' ? REQUEST_BODY_SIZE_ATTR : RESPONSE_BODY_SIZE_ATTR])
-  const present = kind === 'request' ? attrBool(attrs[REQUEST_BODY_PRESENT_ATTR]) : Boolean(size)
+  const present = kind === 'request'
+    ? attrBool(attrs[REQUEST_BODY_PRESENT_ATTR])
+    : attrBool(attrs[RESPONSE_BODY_PRESENT_ATTR]) || Boolean(size)
 
   if (truncated) return `${label} was truncated${size ? ` (${size})` : ''}, but no preview was recorded.`
   if (present) return `${label} was present${size ? ` (${size})` : ''}, but content was not captured.`
@@ -279,7 +432,13 @@ export function HttpSpanDetail({
             id={`http-detail-${span.spanId}-${activeTab}`}
             role="tabpanel"
           >
-            <DetailPre emptyText={activeEmptyText} value={activeValue} />
+            {activeTab === 'params' ? (
+              <BodyViewer emptyText={activeEmptyText} kind="response" rawValue={activeRawValue} url={url} value={activeValue} />
+            ) : activeTab === 'request' ? (
+              <BodyViewer emptyText={activeEmptyText} kind="request" rawValue={activeRawValue} url={url} value={activeValue} />
+            ) : (
+              <BodyViewer emptyText={activeEmptyText} kind="response" rawValue={activeRawValue} url={url} value={activeValue} />
+            )}
           </section>
           <details>
             <summary className={s.detailsSummary}><Typography.Body as="span" variant="tertiary">Span attributes</Typography.Body></summary>
