@@ -1,0 +1,794 @@
+name: todoist
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: Query tasks, projects, sections, and labels from Todoist.
+inputs:
+  TODOIST_API_TOKEN:
+    kind: secret
+    hint: |
+      Todoist personal API token or OAuth access token with read access.
+      For a personal token, open Todoist web Settings > Integrations >
+      Developer and copy the API token. For OAuth, request the `data:read`
+      scope. See https://www.todoist.com/help/articles/find-your-api-token-Jpzx9IIlB
+      and https://developer.todoist.com/api/v1/#authorization.
+base_url: https://api.todoist.com/api/v1
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.TODOIST_API_TOKEN}}
+test_queries:
+  - SELECT * FROM todoist.projects LIMIT 1
+  - SELECT * FROM todoist.tasks LIMIT 1
+tables:
+  - name: tasks
+    description: Active Todoist tasks accessible to the authenticated user.
+    guide: >
+      Use this table for active tasks. Optional filters push down to Todoist:
+      project_id, section_id, parent_id, label, ids, and goal_id. For natural
+      language Todoist filters such as `today` or `overdue`, use
+      todoist.filtered_tasks instead.
+    fetch_limit_default: 100
+    filters:
+      - name: project_id
+      - name: section_id
+      - name: parent_id
+      - name: label
+      - name: ids
+      - name: goal_id
+    request:
+      method: GET
+      path: /tasks
+      query:
+        - name: project_id
+          from: filter
+          key: project_id
+        - name: section_id
+          from: filter
+          key: section_id
+        - name: parent_id
+          from: filter
+          key: parent_id
+        - name: label
+          from: filter
+          key: label
+        - name: ids
+          from: filter
+          key: ids
+        - name: goal_id
+          from: filter
+          key: goal_id
+    response:
+      rows_path:
+        - results
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      response_cursor_path:
+        - next_cursor
+      page_size:
+        default: 50
+        max: 200
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Todoist task ID.
+      - name: user_id
+        type: Utf8
+        nullable: true
+        description: Todoist user ID that owns the task.
+      - name: project_id
+        type: Utf8
+        nullable: true
+        description: Project ID containing the task.
+      - name: section_id
+        type: Utf8
+        nullable: true
+        description: Section ID containing the task, if any.
+      - name: parent_id
+        type: Utf8
+        nullable: true
+        description: Parent task ID for subtasks.
+      - name: content
+        type: Utf8
+        nullable: true
+        description: Task title/content.
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Task description.
+      - name: priority
+        type: Int64
+        nullable: true
+        description: Todoist priority, where 1 is normal and 4 is urgent.
+      - name: labels
+        type: Utf8
+        nullable: true
+        description: Comma-joined task label names.
+        expr:
+          kind: join_array
+          path:
+            - labels
+      - name: due
+        type: Json
+        nullable: true
+        description: Todoist due object, including date/string/lang fields.
+      - name: due__date
+        type: Utf8
+        nullable: true
+        description: Due date from the Todoist due object.
+        expr:
+          kind: path
+          path:
+            - due
+            - date
+      - name: due__datetime
+        type: Timestamp
+        nullable: true
+        description: Due date-time when Todoist returns an ISO 8601 datetime.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - due
+              - datetime
+      - name: due__string
+        type: Utf8
+        nullable: true
+        description: Human-readable due string from Todoist.
+        expr:
+          kind: path
+          path:
+            - due
+            - string
+      - name: due__is_recurring
+        type: Boolean
+        nullable: true
+        description: Whether the due date is recurring.
+        expr:
+          kind: path
+          path:
+            - due
+            - is_recurring
+      - name: deadline
+        type: Json
+        nullable: true
+        description: Todoist deadline object, when present.
+      - name: deadline__date
+        type: Utf8
+        nullable: true
+        description: Deadline date from the Todoist deadline object.
+        expr:
+          kind: path
+          path:
+            - deadline
+            - date
+      - name: duration
+        type: Json
+        nullable: true
+        description: Todoist duration object, when present.
+      - name: duration__amount
+        type: Int64
+        nullable: true
+        description: Duration amount from the Todoist duration object.
+        expr:
+          kind: path
+          path:
+            - duration
+            - amount
+      - name: duration__unit
+        type: Utf8
+        nullable: true
+        description: Duration unit from the Todoist duration object.
+        expr:
+          kind: path
+          path:
+            - duration
+            - unit
+      - name: added_by_uid
+        type: Utf8
+        nullable: true
+        description: User ID that added the task.
+      - name: assigned_by_uid
+        type: Utf8
+        nullable: true
+        description: User ID that assigned the task in shared projects.
+      - name: responsible_uid
+        type: Utf8
+        nullable: true
+        description: User ID responsible for the task in shared projects.
+      - name: checked
+        type: Boolean
+        nullable: true
+        description: Whether the task is checked/completed.
+      - name: is_deleted
+        type: Boolean
+        nullable: true
+        description: Whether Todoist marks the task as deleted.
+      - name: is_collapsed
+        type: Boolean
+        nullable: true
+        description: Whether subtasks are collapsed in Todoist.
+      - name: child_order
+        type: Int64
+        nullable: true
+        description: Task order among siblings.
+      - name: day_order
+        type: Int64
+        nullable: true
+        description: Task order inside Today or Next 7 days views.
+      - name: note_count
+        type: Int64
+        nullable: true
+        description: Number of comments/notes attached to the task.
+      - name: added_at
+        type: Timestamp
+        nullable: true
+        description: Time when the task was added.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - added_at
+      - name: completed_at
+        type: Timestamp
+        nullable: true
+        description: Time when the task was completed, if returned.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - completed_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Time when the task was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Todoist web URL for the task.
+        expr:
+          kind: template
+          template: https://app.todoist.com/app/task/{{expr.id}}
+          values:
+            id:
+              kind: path
+              path:
+                - id
+      - name: project_id_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the project_id filter used for this scan.
+        expr:
+          kind: from_filter
+          key: project_id
+      - name: section_id_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the section_id filter used for this scan.
+        expr:
+          kind: from_filter
+          key: section_id
+      - name: parent_id_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the parent_id filter used for this scan.
+        expr:
+          kind: from_filter
+          key: parent_id
+      - name: label_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the label filter used for this scan.
+        expr:
+          kind: from_filter
+          key: label
+      - name: ids_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the comma-separated ids filter used for this scan.
+        expr:
+          kind: from_filter
+          key: ids
+      - name: goal_id_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the goal_id filter used for this scan.
+        expr:
+          kind: from_filter
+          key: goal_id
+
+  - name: filtered_tasks
+    description: Active Todoist tasks returned by a Todoist filter query.
+    guide: >
+      Requires query. Use Todoist filter syntax such as `today`, `overdue`,
+      `p1`, `#Work`, or `@next_action`. The Todoist API v1 does not support
+      comma-separated multiple filter expressions on this endpoint.
+    fetch_limit_default: 100
+    filters:
+      - name: query
+        required: true
+      - name: lang
+    request:
+      method: GET
+      path: /tasks/filter
+      query:
+        - name: query
+          from: filter
+          key: query
+        - name: lang
+          from: filter
+          key: lang
+    response:
+      rows_path:
+        - results
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      response_cursor_path:
+        - next_cursor
+      page_size:
+        default: 50
+        max: 200
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Todoist task ID.
+      - name: project_id
+        type: Utf8
+        nullable: true
+        description: Project ID containing the task.
+      - name: section_id
+        type: Utf8
+        nullable: true
+        description: Section ID containing the task, if any.
+      - name: parent_id
+        type: Utf8
+        nullable: true
+        description: Parent task ID for subtasks.
+      - name: content
+        type: Utf8
+        nullable: true
+        description: Task title/content.
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Task description.
+      - name: priority
+        type: Int64
+        nullable: true
+        description: Todoist priority, where 1 is normal and 4 is urgent.
+      - name: labels
+        type: Utf8
+        nullable: true
+        description: Comma-joined task label names.
+        expr:
+          kind: join_array
+          path:
+            - labels
+      - name: due
+        type: Json
+        nullable: true
+        description: Todoist due object.
+      - name: due__date
+        type: Utf8
+        nullable: true
+        description: Due date from the Todoist due object.
+        expr:
+          kind: path
+          path:
+            - due
+            - date
+      - name: due__datetime
+        type: Timestamp
+        nullable: true
+        description: Due date-time when Todoist returns an ISO 8601 datetime.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - due
+              - datetime
+      - name: deadline
+        type: Json
+        nullable: true
+        description: Todoist deadline object, when present.
+      - name: duration
+        type: Json
+        nullable: true
+        description: Todoist duration object, when present.
+      - name: checked
+        type: Boolean
+        nullable: true
+        description: Whether the task is checked/completed.
+      - name: is_deleted
+        type: Boolean
+        nullable: true
+        description: Whether Todoist marks the task as deleted.
+      - name: is_collapsed
+        type: Boolean
+        nullable: true
+        description: Whether subtasks are collapsed in Todoist.
+      - name: child_order
+        type: Int64
+        nullable: true
+        description: Task order among siblings.
+      - name: note_count
+        type: Int64
+        nullable: true
+        description: Number of comments/notes attached to the task.
+      - name: added_at
+        type: Timestamp
+        nullable: true
+        description: Time when the task was added.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - added_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Time when the task was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Todoist web URL for the task.
+        expr:
+          kind: template
+          template: https://app.todoist.com/app/task/{{expr.id}}
+          values:
+            id:
+              kind: path
+              path:
+                - id
+      - name: query
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Todoist filter query used for this scan.
+        expr:
+          kind: from_filter
+          key: query
+      - name: lang
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional IETF language tag used to parse the filter query.
+        expr:
+          kind: from_filter
+          key: lang
+
+  - name: projects
+    description: Active Todoist projects accessible to the authenticated user.
+    guide: >
+      Use this table to discover project_id values before querying tasks or
+      sections. Optional folder_id and workspace_id filters push down to
+      Todoist; folder_id takes precedence upstream when both are set.
+    fetch_limit_default: 100
+    filters:
+      - name: folder_id
+      - name: workspace_id
+    request:
+      method: GET
+      path: /projects
+      query:
+        - name: folder_id
+          from: filter
+          key: folder_id
+        - name: workspace_id
+          from: filter
+          key: workspace_id
+    response:
+      rows_path:
+        - results
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      response_cursor_path:
+        - next_cursor
+      page_size:
+        default: 50
+        max: 200
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Todoist project ID.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Project name.
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Project description.
+      - name: color
+        type: Utf8
+        nullable: true
+        description: Project color name.
+      - name: parent_id
+        type: Utf8
+        nullable: true
+        description: Parent project ID for sub-projects.
+      - name: creator_uid
+        type: Utf8
+        nullable: true
+        description: User ID that created the project.
+      - name: child_order
+        type: Int64
+        nullable: true
+        description: Project ordering value among siblings.
+      - name: default_order
+        type: Int64
+        nullable: true
+        description: Default task ordering value in the project.
+      - name: is_archived
+        type: Boolean
+        nullable: true
+        description: Whether the project is archived.
+      - name: is_deleted
+        type: Boolean
+        nullable: true
+        description: Whether Todoist marks the project as deleted.
+      - name: is_favorite
+        type: Boolean
+        nullable: true
+        description: Whether the project is marked as favorite.
+      - name: is_frozen
+        type: Boolean
+        nullable: true
+        description: Whether Todoist marks the project as frozen.
+      - name: is_shared
+        type: Boolean
+        nullable: true
+        description: Whether the project is shared.
+      - name: inbox_project
+        type: Boolean
+        nullable: true
+        description: Whether this is the user's inbox project.
+      - name: view_style
+        type: Utf8
+        nullable: true
+        description: Project view style, such as list or board.
+      - name: role
+        type: Utf8
+        nullable: true
+        description: Authenticated user's role on the project.
+      - name: access
+        type: Utf8
+        nullable: true
+        description: Project access value, when returned.
+      - name: public_key
+        type: Utf8
+        nullable: true
+        description: Public key for project sharing, when returned.
+      - name: can_assign_tasks
+        type: Boolean
+        nullable: true
+        description: Whether the authenticated user can assign tasks.
+      - name: can_comment
+        type: Boolean
+        nullable: true
+        description: Whether the authenticated user can comment.
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Time when the project was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Time when the project was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at
+      - name: folder_id_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the folder_id filter used for this scan.
+        expr:
+          kind: from_filter
+          key: folder_id
+      - name: workspace_id_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the workspace_id filter used for this scan.
+        expr:
+          kind: from_filter
+          key: workspace_id
+
+  - name: sections
+    description: Active Todoist project sections.
+    guide: >
+      Use project_id to narrow sections to one project. Without project_id,
+      Todoist returns sections across all active projects.
+    fetch_limit_default: 100
+    filters:
+      - name: project_id
+    request:
+      method: GET
+      path: /sections
+      query:
+        - name: project_id
+          from: filter
+          key: project_id
+    response:
+      rows_path:
+        - results
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      response_cursor_path:
+        - next_cursor
+      page_size:
+        default: 50
+        max: 200
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Todoist section ID.
+      - name: project_id
+        type: Utf8
+        nullable: true
+        description: Project ID containing the section.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Section name.
+      - name: section_order
+        type: Int64
+        nullable: true
+        description: Section order in the project.
+      - name: is_collapsed
+        type: Boolean
+        nullable: true
+        description: Whether the section is collapsed in Todoist.
+      - name: is_archived
+        type: Boolean
+        nullable: true
+        description: Whether the section is archived.
+      - name: is_deleted
+        type: Boolean
+        nullable: true
+        description: Whether Todoist marks the section as deleted.
+      - name: added_at
+        type: Timestamp
+        nullable: true
+        description: Time when the section was added.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - added_at
+      - name: archived_at
+        type: Timestamp
+        nullable: true
+        description: Time when the section was archived.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - archived_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Time when the section was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at
+      - name: project_id_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the project_id filter used for this scan.
+        expr:
+          kind: from_filter
+          key: project_id
+
+  - name: labels
+    description: Personal Todoist labels for the authenticated user.
+    guide: >
+      Use this table to discover label names before filtering tasks with
+      todoist.tasks.label or Todoist filter syntax.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /labels
+    response:
+      rows_path:
+        - results
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      response_cursor_path:
+        - next_cursor
+      page_size:
+        default: 50
+        max: 200
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Todoist label ID.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Label name.
+      - name: color
+        type: Utf8
+        nullable: true
+        description: Label color name.
+      - name: order
+        type: Int64
+        nullable: true
+        description: Label order in the label list.
+      - name: is_favorite
+        type: Boolean
+        nullable: true
+        description: Whether the label is marked as favorite.

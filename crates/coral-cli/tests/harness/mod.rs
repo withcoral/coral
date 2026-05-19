@@ -11,16 +11,19 @@ use arrow::datatypes::{DataType, Field, Schema};
 use arrow::ipc::writer::StreamWriter;
 use arrow::record_batch::RecordBatch;
 use assert_cmd::Command;
+use coral_api::v1::catalog_service_server::{CatalogService, CatalogServiceServer};
 use coral_api::v1::query_service_server::{QueryService, QueryServiceServer};
 use coral_api::v1::source_service_server::{SourceService, SourceServiceServer};
 use coral_api::v1::{
-    Column, CreateBundledSourceRequest, CreateBundledSourceResponse, DeleteSourceRequest,
-    DeleteSourceResponse, DiscoverSourcesRequest, DiscoverSourcesResponse, ExecuteSqlRequest,
-    ExecuteSqlResponse, ExplainSqlRequest, ExplainSqlResponse, GetSourceInfoRequest,
-    GetSourceInfoResponse, GetSourceRequest, GetSourceResponse, ImportSourceRequest,
-    ImportSourceResponse, ListSourcesRequest, ListSourcesResponse, ListTablesRequest,
-    ListTablesResponse, PaginationResponse, QueryPlan, Source, SourceInfo, SourceInputKind,
-    SourceInputSpec, SourceOrigin, Table, TableSummary, ValidateSourceRequest,
+    Column, ColumnSearchResult, CreateBundledSourceRequest, CreateBundledSourceResponse,
+    DeleteSourceRequest, DeleteSourceResponse, DescribeTableRequest, DescribeTableResponse,
+    DiscoverSourcesRequest, DiscoverSourcesResponse, ExecuteSqlRequest, ExecuteSqlResponse,
+    ExplainSqlRequest, ExplainSqlResponse, GetSourceInfoRequest, GetSourceInfoResponse,
+    GetSourceRequest, GetSourceResponse, ImportSourceRequest, ImportSourceResponse,
+    ListColumnsRequest, ListColumnsResponse, ListSourcesRequest, ListSourcesResponse,
+    ListTablesRequest, ListTablesResponse, PaginationRequest, PaginationResponse, QueryPlan,
+    SearchTablesRequest, SearchTablesResponse, Source, SourceInfo, SourceInputKind,
+    SourceInputSpec, SourceOrigin, Table, TableSearchResult, TableSummary, ValidateSourceRequest,
     ValidateSourceResponse, Workspace,
 };
 use tokio::net::TcpListener;
@@ -121,6 +124,102 @@ fn table_summary(table: &Table) -> TableSummary {
         required_filters: table.required_filters.clone(),
         guide: table.guide.clone(),
     }
+}
+
+fn list_tables_response(request: &ListTablesRequest) -> ListTablesResponse {
+    let tables = mock_visible_tables()
+        .into_iter()
+        .filter(|table| request.schema_name.is_empty() || table.schema_name == request.schema_name)
+        .filter(|table| request.table_name.is_empty() || table.name == request.table_name)
+        .collect::<Vec<_>>();
+    let (mut tables, pagination) = paginate(
+        tables,
+        request.pagination.unwrap_or(PaginationRequest {
+            limit: 0,
+            offset: 0,
+        }),
+    );
+    let table_summaries = if request.omit_columns {
+        tables.iter().map(table_summary).collect()
+    } else {
+        Vec::new()
+    };
+    if request.omit_columns {
+        tables.clear();
+    }
+    ListTablesResponse {
+        tables,
+        table_summaries,
+        pagination: Some(pagination),
+    }
+}
+
+fn paginate<T>(items: Vec<T>, pagination: PaginationRequest) -> (Vec<T>, PaginationResponse) {
+    let total = u32::try_from(items.len()).unwrap_or(u32::MAX);
+    let offset = usize::try_from(pagination.offset).expect("offset");
+    let limit = usize::try_from(pagination.limit).expect("limit");
+    let items = if pagination.limit == 0 {
+        items.into_iter().skip(offset).collect::<Vec<_>>()
+    } else {
+        items
+            .into_iter()
+            .skip(offset)
+            .take(limit)
+            .collect::<Vec<_>>()
+    };
+    let returned_count = u32::try_from(items.len()).unwrap_or(u32::MAX);
+    let has_more =
+        pagination.limit != 0 && pagination.offset.saturating_add(returned_count) < total;
+    let next_offset = if has_more {
+        pagination.offset.saturating_add(returned_count)
+    } else {
+        0
+    };
+    (
+        items,
+        PaginationResponse {
+            total_count: total,
+            limit: pagination.limit,
+            offset: pagination.offset,
+            has_more,
+            next_offset,
+        },
+    )
+}
+
+fn table_matched_fields(table: &Table, regex: &regex::Regex) -> Vec<String> {
+    let name = format!("{}.{}", table.schema_name, table.name);
+    let candidates = [
+        ("schema_name", table.schema_name.as_str()),
+        ("table_name", table.name.as_str()),
+        ("name", name.as_str()),
+        ("description", table.description.as_str()),
+        ("guide", table.guide.as_str()),
+    ];
+    let mut matches = candidates
+        .into_iter()
+        .filter_map(|(field, value)| regex.is_match(value).then_some(field.to_string()))
+        .collect::<Vec<_>>();
+    if table
+        .required_filters
+        .iter()
+        .any(|filter| regex.is_match(filter))
+    {
+        matches.push("required_filters".to_string());
+    }
+    matches
+}
+
+fn column_matched_fields(column: &Column, regex: &regex::Regex) -> Vec<String> {
+    let candidates = [
+        ("column_name", column.name.as_str()),
+        ("description", column.description.as_str()),
+        ("data_type", column.data_type.as_str()),
+    ];
+    candidates
+        .into_iter()
+        .filter_map(|(field, value)| regex.is_match(value).then_some(field.to_string()))
+        .collect()
 }
 
 fn mock_sql_response(sql: &str) -> ExecuteSqlResponse {
@@ -391,6 +490,9 @@ impl MockServerConfig {
 struct Captured {
     execute_sql: Mutex<Vec<ExecuteSqlRequest>>,
     list_tables: Mutex<Vec<ListTablesRequest>>,
+    search_tables: Mutex<Vec<SearchTablesRequest>>,
+    describe_table: Mutex<Vec<DescribeTableRequest>>,
+    list_columns: Mutex<Vec<ListColumnsRequest>>,
     discover_sources: Mutex<Vec<DiscoverSourcesRequest>>,
     list_sources: Mutex<Vec<ListSourcesRequest>>,
     get_source: Mutex<Vec<GetSourceRequest>>,
@@ -424,65 +526,6 @@ struct MockQueryService {
 
 #[tonic::async_trait]
 impl QueryService for MockQueryService {
-    async fn list_tables(
-        &self,
-        request: Request<ListTablesRequest>,
-    ) -> Result<Response<ListTablesResponse>, Status> {
-        let request = request.into_inner();
-        self.captured
-            .list_tables
-            .lock()
-            .expect("list_tables capture")
-            .push(request.clone());
-        let mut tables = mock_visible_tables()
-            .into_iter()
-            .filter(|table| {
-                request.schema_name.is_empty() || table.schema_name == request.schema_name
-            })
-            .filter(|table| request.table_name.is_empty() || table.name == request.table_name)
-            .collect::<Vec<_>>();
-        let total = u32::try_from(tables.len()).unwrap_or(u32::MAX);
-        let pagination = request.pagination.unwrap_or_default();
-        let offset = usize::try_from(pagination.offset).expect("offset");
-        let limit = usize::try_from(pagination.limit).expect("limit");
-        tables = if limit == 0 {
-            tables.into_iter().skip(offset).collect()
-        } else {
-            tables.into_iter().skip(offset).take(limit).collect()
-        };
-        let table_summaries = if request.omit_columns {
-            tables.iter().map(table_summary).collect()
-        } else {
-            Vec::new()
-        };
-        let returned_count = if request.omit_columns {
-            u32::try_from(table_summaries.len()).unwrap_or(u32::MAX)
-        } else {
-            u32::try_from(tables.len()).unwrap_or(u32::MAX)
-        };
-        if request.omit_columns {
-            tables.clear();
-        }
-        let has_more =
-            pagination.limit != 0 && pagination.offset.saturating_add(returned_count) < total;
-        let next_offset = if has_more {
-            pagination.offset.saturating_add(returned_count)
-        } else {
-            0
-        };
-        Ok(Response::new(ListTablesResponse {
-            tables,
-            table_summaries,
-            pagination: Some(PaginationResponse {
-                total_count: total,
-                limit: pagination.limit,
-                offset: pagination.offset,
-                has_more,
-                next_offset,
-            }),
-        }))
-    }
-
     async fn execute_sql(
         &self,
         request: Request<ExecuteSqlRequest>,
@@ -520,6 +563,158 @@ impl QueryService for MockQueryService {
                 optimized_logical_plan: "OptimizedLogicalPlan".to_string(),
                 physical_plan: "PhysicalPlan".to_string(),
             }),
+        }))
+    }
+}
+
+#[derive(Clone)]
+struct MockCatalogService {
+    captured: Arc<Captured>,
+}
+
+#[tonic::async_trait]
+impl CatalogService for MockCatalogService {
+    async fn list_tables(
+        &self,
+        request: Request<ListTablesRequest>,
+    ) -> Result<Response<ListTablesResponse>, Status> {
+        let request = request.into_inner();
+        self.captured
+            .list_tables
+            .lock()
+            .expect("list_tables capture")
+            .push(request.clone());
+        Ok(Response::new(list_tables_response(&request)))
+    }
+
+    async fn search_tables(
+        &self,
+        request: Request<SearchTablesRequest>,
+    ) -> Result<Response<SearchTablesResponse>, Status> {
+        let request = request.into_inner();
+        self.captured
+            .search_tables
+            .lock()
+            .expect("search_tables capture")
+            .push(request.clone());
+        let pattern = regex::RegexBuilder::new(&request.pattern)
+            .case_insensitive(request.ignore_case)
+            .build()
+            .map_err(|error| Status::invalid_argument(format!("invalid regex pattern: {error}")))?;
+        let mut matches = Vec::new();
+        for table in mock_visible_tables().into_iter().filter(|table| {
+            request.schema_name.is_empty() || table.schema_name == request.schema_name
+        }) {
+            let matched_fields = table_matched_fields(&table, &pattern);
+            if !matched_fields.is_empty() {
+                matches.push(TableSearchResult {
+                    table: Some(table_summary(&table)),
+                    matched_fields,
+                });
+            }
+        }
+        let (tables, pagination) = paginate(
+            matches,
+            request.pagination.unwrap_or(PaginationRequest {
+                limit: 20,
+                offset: 0,
+            }),
+        );
+        Ok(Response::new(SearchTablesResponse {
+            tables,
+            pagination: Some(pagination),
+        }))
+    }
+
+    async fn describe_table(
+        &self,
+        request: Request<DescribeTableRequest>,
+    ) -> Result<Response<DescribeTableResponse>, Status> {
+        let request = request.into_inner();
+        self.captured
+            .describe_table
+            .lock()
+            .expect("describe_table capture")
+            .push(request.clone());
+        let table = mock_visible_tables().into_iter().find(|table| {
+            table.schema_name == request.schema_name && table.name == request.table_name
+        });
+        if let Some(table) = table {
+            return Ok(Response::new(DescribeTableResponse {
+                table: Some(table),
+                suggestions: Vec::new(),
+                available_schemas: Vec::new(),
+                same_schema_tables: Vec::new(),
+            }));
+        }
+        let same_schema_tables = mock_visible_tables()
+            .into_iter()
+            .filter(|table| table.schema_name == request.schema_name)
+            .take(10)
+            .map(|table| table_summary(&table))
+            .collect();
+        Ok(Response::new(DescribeTableResponse {
+            table: None,
+            suggestions: Vec::new(),
+            available_schemas: vec!["local_messages".to_string()],
+            same_schema_tables,
+        }))
+    }
+
+    async fn list_columns(
+        &self,
+        request: Request<ListColumnsRequest>,
+    ) -> Result<Response<ListColumnsResponse>, Status> {
+        let request = request.into_inner();
+        self.captured
+            .list_columns
+            .lock()
+            .expect("list_columns capture")
+            .push(request.clone());
+        let table = mock_visible_tables()
+            .into_iter()
+            .find(|table| {
+                table.schema_name == request.schema_name && table.name == request.table_name
+            })
+            .ok_or_else(|| Status::not_found("table not found"))?;
+        let regex = request
+            .pattern
+            .as_deref()
+            .map(|pattern| {
+                regex::RegexBuilder::new(pattern)
+                    .case_insensitive(request.ignore_case)
+                    .build()
+                    .map_err(|error| {
+                        Status::invalid_argument(format!("invalid regex pattern: {error}"))
+                    })
+            })
+            .transpose()?;
+        let mut columns = Vec::new();
+        for column in table.columns {
+            if request.required_only && !column.is_required_filter {
+                continue;
+            }
+            let matched_fields = regex
+                .as_ref()
+                .map_or_else(Vec::new, |regex| column_matched_fields(&column, regex));
+            if regex.is_some() && matched_fields.is_empty() {
+                continue;
+            }
+            columns.push(ColumnSearchResult {
+                column: Some(column),
+                matched_fields,
+            });
+        }
+        let (columns, pagination) = paginate(
+            columns,
+            request.pagination.unwrap_or(PaginationRequest {
+                limit: 50,
+                offset: 0,
+            }),
+        );
+        Ok(Response::new(ListColumnsResponse {
+            columns,
+            pagination: Some(pagination),
         }))
     }
 }
@@ -666,10 +861,14 @@ impl MockServer {
         let config = Arc::new(config);
         let captured = Arc::new(Captured::default());
         let query_captured = Arc::clone(&captured);
+        let catalog_captured = Arc::clone(&captured);
         let source_captured = Arc::clone(&captured);
         let query_config = Arc::clone(&config);
         let task = tokio::spawn(async move {
             Server::builder()
+                .add_service(CatalogServiceServer::new(MockCatalogService {
+                    captured: catalog_captured,
+                }))
                 .add_service(QueryServiceServer::new(MockQueryService {
                     config: query_config,
                     captured: query_captured,
@@ -735,6 +934,30 @@ impl MockServer {
             .list_tables
             .lock()
             .expect("list_tables capture")
+            .clone()
+    }
+
+    pub(crate) fn search_tables_requests(&self) -> Vec<SearchTablesRequest> {
+        self.captured
+            .search_tables
+            .lock()
+            .expect("search_tables capture")
+            .clone()
+    }
+
+    pub(crate) fn describe_table_requests(&self) -> Vec<DescribeTableRequest> {
+        self.captured
+            .describe_table
+            .lock()
+            .expect("describe_table capture")
+            .clone()
+    }
+
+    pub(crate) fn list_columns_requests(&self) -> Vec<ListColumnsRequest> {
+        self.captured
+            .list_columns
+            .lock()
+            .expect("list_columns capture")
             .clone()
     }
 

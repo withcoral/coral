@@ -1,0 +1,582 @@
+name: honeycomb
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query datasets, columns, boards, markers, and triggers from Honeycomb
+  observability environments.
+inputs:
+  HONEYCOMB_API_BASE:
+    kind: variable
+    default: https://api.honeycomb.io/1
+    hint: >-
+      Honeycomb API base URL. Use the default for US regions, or set to
+      https://api.eu1.honeycomb.io/1 for EU.
+  HONEYCOMB_API_KEY:
+    kind: secret
+    hint: >-
+      Honeycomb Configuration Key (starts with hcxlk_). Create one at
+      Environment Settings → API Keys → Configuration tab. Requires
+      read access to datasets, columns, boards, markers, and triggers.
+      See https://docs.honeycomb.io/api/authentication/ for details.
+base_url: "{{input.HONEYCOMB_API_BASE}}"
+auth:
+  type: HeaderAuth
+  headers:
+    - name: X-Honeycomb-Team
+      from: input
+      key: HONEYCOMB_API_KEY
+test_queries:
+  - SELECT name, slug FROM honeycomb.datasets LIMIT 1
+
+tables:
+  # ──────────────────────────────────────────────────────────────────────
+  # datasets — discovery table
+  # ──────────────────────────────────────────────────────────────────────
+  - name: datasets
+    description: >-
+      List all datasets in the Honeycomb environment. Use the slug column
+      as the dataset_slug filter for columns, markers, and triggers tables.
+    request:
+      method: GET
+      path: /datasets
+    response: {}
+    pagination:
+      mode: none
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: The name of the dataset.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: slug
+        type: Utf8
+        nullable: false
+        description: URL-friendly slug for the dataset, used as a filter in other tables.
+        expr:
+          kind: path
+          path:
+            - slug
+      - name: description
+        type: Utf8
+        nullable: true
+        description: A description of the dataset.
+        expr:
+          kind: path
+          path:
+            - description
+      - name: expand_json_depth
+        type: Int64
+        nullable: true
+        description: Maximum unpacking depth of nested JSON fields (0–10).
+        expr:
+          kind: path
+          path:
+            - expand_json_depth
+      - name: regular_columns_count
+        type: Int64
+        nullable: true
+        description: Total number of unique fields for this dataset. Null if no fields exist.
+        expr:
+          kind: path
+          path:
+            - regular_columns_count
+      - name: dataset_type
+        type: Utf8
+        nullable: true
+        description: Only present for time-series metrics datasets (value is "metrics").
+        expr:
+          kind: path
+          path:
+            - dataset_type
+      - name: created_at
+        type: Timestamp
+        nullable: false
+        description: ISO 8601 time when the dataset was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: last_written_at
+        type: Timestamp
+        nullable: true
+        description: ISO 8601 time when the dataset last received event data. Null if never.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - last_written_at
+
+  # ──────────────────────────────────────────────────────────────────────
+  # columns — per-dataset field metadata
+  # ──────────────────────────────────────────────────────────────────────
+  - name: columns
+    description: >-
+      List all columns (fields) in a dataset. Set dataset_slug to a dataset
+      slug from the datasets table, or use '__all__' to retrieve columns
+      across all datasets (not available for Classic environments).
+    filters:
+      - name: dataset_slug
+        required: true
+    request:
+      method: GET
+      path: /columns/{{filter.dataset_slug}}
+    response: {}
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique column identifier.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: key_name
+        type: Utf8
+        nullable: false
+        description: Name of the column.
+        expr:
+          kind: path
+          path:
+            - key_name
+      - name: type
+        type: Utf8
+        nullable: true
+        description: "Data type: string, float, integer, boolean, or histogram."
+        expr:
+          kind: path
+          path:
+            - type
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Column description.
+        expr:
+          kind: path
+          path:
+            - description
+      - name: hidden
+        type: Boolean
+        nullable: true
+        description: If true, the column is excluded from autocomplete and raw data field lists.
+        expr:
+          kind: path
+          path:
+            - hidden
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: ISO 8601 time the column was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: ISO 8601 time the column was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at
+      - name: last_written
+        type: Timestamp
+        nullable: true
+        description: ISO 8601 time the column last received event data.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - last_written
+      - name: dataset_slug
+        type: Utf8
+        nullable: true
+        description: Echoes the dataset_slug filter that produced this row.
+        expr:
+          kind: from_filter
+          key: dataset_slug
+
+  # ──────────────────────────────────────────────────────────────────────
+  # boards — dashboards and boards
+  # ──────────────────────────────────────────────────────────────────────
+  - name: boards
+    description: >-
+      List all non-secret boards in the Honeycomb environment. Secret boards
+      are excluded by the API.
+    request:
+      method: GET
+      path: /boards
+    response: {}
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique board identifier.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: The name of the board.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: description
+        type: Utf8
+        nullable: true
+        description: A description of the board.
+        expr:
+          kind: path
+          path:
+            - description
+      - name: board_type
+        type: Utf8
+        nullable: true
+        description: "Board type. Only 'flexible' boards are supported."
+        expr:
+          kind: path
+          path:
+            - type
+      - name: layout_generation
+        type: Utf8
+        nullable: true
+        description: "Layout mode: 'manual' or 'auto'."
+        expr:
+          kind: path
+          path:
+            - layout_generation
+      - name: panels
+        type: Json
+        nullable: true
+        description: Board panels containing queries, SLOs, and text blocks.
+        expr:
+          kind: path
+          path:
+            - panels
+      - name: tags
+        type: Json
+        nullable: true
+        description: Key-value tag pairs for identifying the board.
+        expr:
+          kind: path
+          path:
+            - tags
+      - name: preset_filters
+        type: Json
+        nullable: true
+        description: Preset filters applied to the board (max 5).
+        expr:
+          kind: path
+          path:
+            - preset_filters
+
+  # ──────────────────────────────────────────────────────────────────────
+  # markers — deployment and event markers
+  # ──────────────────────────────────────────────────────────────────────
+  - name: markers
+    description: >-
+      List all markers for a dataset. Set dataset_slug to a dataset slug
+      from the datasets table, or use '__all__' for environment-wide
+      markers (not available for Classic environments).
+    filters:
+      - name: dataset_slug
+        required: true
+    request:
+      method: GET
+      path: /markers/{{filter.dataset_slug}}
+    response: {}
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Marker ID (6-character hexadecimal string).
+        expr:
+          kind: path
+          path:
+            - id
+      - name: message
+        type: Utf8
+        nullable: true
+        description: A message describing this marker.
+        expr:
+          kind: path
+          path:
+            - message
+      - name: marker_type
+        type: Utf8
+        nullable: true
+        description: "Groups similar markers (e.g. 'deploy'). Same type shares color."
+        expr:
+          kind: path
+          path:
+            - type
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Target URL. Clicking the marker text opens this link.
+        expr:
+          kind: path
+          path:
+            - url
+      - name: color
+        type: Utf8
+        nullable: true
+        description: Marker color assigned via Marker Settings.
+        expr:
+          kind: path
+          path:
+            - color
+      - name: start_time
+        type: Int64
+        nullable: true
+        description: Marker start time as Unix epoch seconds.
+        expr:
+          kind: path
+          path:
+            - start_time
+      - name: end_time
+        type: Int64
+        nullable: true
+        description: Marker end time as Unix epoch seconds (for range markers).
+        expr:
+          kind: path
+          path:
+            - end_time
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: ISO 8601 time when the marker was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: ISO 8601 time when the marker was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at
+      - name: dataset_slug
+        type: Utf8
+        nullable: true
+        description: Echoes the dataset_slug filter that produced this row.
+        expr:
+          kind: from_filter
+          key: dataset_slug
+
+  # ──────────────────────────────────────────────────────────────────────
+  # triggers — alert triggers
+  # ──────────────────────────────────────────────────────────────────────
+  - name: triggers
+    description: >-
+      List all triggers for a dataset. Set dataset_slug to a dataset slug
+      from the datasets table, or use '__all__' for environment-wide
+      triggers (not available for Classic environments).
+    filters:
+      - name: dataset_slug
+        required: true
+    request:
+      method: GET
+      path: /triggers/{{filter.dataset_slug}}
+    response: {}
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique trigger identifier.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Short, human-readable trigger name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Longer trigger description.
+        expr:
+          kind: path
+          path:
+            - description
+      - name: dataset_slug
+        type: Utf8
+        nullable: true
+        description: Slug of the dataset this trigger belongs to.
+        expr:
+          kind: path
+          path:
+            - dataset_slug
+      - name: alert_type
+        type: Utf8
+        nullable: true
+        description: "How often to fire: 'on_change' or 'on_true'."
+        expr:
+          kind: path
+          path:
+            - alert_type
+      - name: frequency
+        type: Int64
+        nullable: true
+        description: Check interval in seconds (60–86400, multiple of 60).
+        expr:
+          kind: path
+          path:
+            - frequency
+      - name: disabled
+        type: Boolean
+        nullable: true
+        description: If true, the trigger is not evaluated and alerts are not sent.
+        expr:
+          kind: path
+          path:
+            - disabled
+      - name: triggered
+        type: Boolean
+        nullable: true
+        description: If true, the trigger has crossed its threshold without resolving.
+        expr:
+          kind: path
+          path:
+            - triggered
+      - name: auto_investigate
+        type: Boolean
+        nullable: true
+        description: When true, Honeycomb auto-starts an investigation on fire.
+        expr:
+          kind: path
+          path:
+            - auto_investigate
+      - name: evaluation_schedule_type
+        type: Utf8
+        nullable: true
+        description: "Schedule type: 'frequency' (default) or 'window'."
+        expr:
+          kind: path
+          path:
+            - evaluation_schedule_type
+      - name: query_id
+        type: Utf8
+        nullable: true
+        description: ID of the saved query used by this trigger.
+        expr:
+          kind: path
+          path:
+            - query_id
+      - name: threshold
+        type: Json
+        nullable: true
+        description: Threshold configuration (op, value, exceeded_limit).
+        expr:
+          kind: path
+          path:
+            - threshold
+      - name: query
+        type: Json
+        nullable: true
+        description: Inline query specification for this trigger.
+        expr:
+          kind: path
+          path:
+            - query
+      - name: recipients
+        type: Json
+        nullable: true
+        description: List of notification recipients for this trigger.
+        expr:
+          kind: path
+          path:
+            - recipients
+      - name: tags
+        type: Json
+        nullable: true
+        description: Key-value tag pairs for identifying the trigger.
+        expr:
+          kind: path
+          path:
+            - tags
+      - name: evaluation_schedule
+        type: Json
+        nullable: true
+        description: Schedule window configuration for windowed triggers.
+        expr:
+          kind: path
+          path:
+            - evaluation_schedule
+      - name: baseline_details
+        type: Json
+        nullable: true
+        description: Dynamic baseline threshold configuration.
+        expr:
+          kind: path
+          path:
+            - baseline_details
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: ISO 8601 time when the trigger was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: ISO 8601 time when the trigger was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at
+      - name: dataset_slug_filter
+        type: Utf8
+        nullable: true
+        description: Echoes the dataset_slug filter that produced this row.
+        expr:
+          kind: from_filter
+          key: dataset_slug

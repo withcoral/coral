@@ -1,0 +1,465 @@
+name: opsgenie
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: Query Opsgenie alerts, teams, users, schedules, escalations, and on-call responders.
+base_url: "{{input.OPSGENIE_API_BASE_URL}}"
+
+inputs:
+  OPSGENIE_API_BASE_URL:
+    kind: variable
+    default: https://api.opsgenie.com/v2
+    hint: |
+      Opsgenie API base URL. Use `https://api.opsgenie.com/v2` for the US
+      region or `https://api.eu.opsgenie.com/v2` for the EU region. Do not
+      include a trailing slash.
+  OPSGENIE_API_KEY:
+    kind: secret
+    hint: |
+      Opsgenie API integration key. Create an API integration in Opsgenie and
+      grant read access to the resources you want Coral to query.
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: GenieKey {{input.OPSGENIE_API_KEY}}
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+  - name: Content-Type
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT id, name, description FROM opsgenie.teams LIMIT 1
+
+tables:
+  - name: alerts
+    description: Opsgenie alerts visible to the API key.
+    filters:
+      - name: query
+        mode: search
+      - name: search_identifier
+      - name: sort
+      - name: order
+    request:
+      method: GET
+      path: /alerts
+      query:
+        - name: query
+          from: filter
+          key: query
+        - name: searchIdentifier
+          from: filter
+          key: search_identifier
+        - name: sort
+          from: filter
+          key: sort
+        - name: order
+          from: filter
+          key: order
+    response:
+      rows_path: [data]
+    pagination:
+      mode: offset
+      offset_param: offset
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Alert ID.
+        expr: {kind: path, path: [id]}
+      - name: tiny_id
+        type: Utf8
+        nullable: true
+        description: Short alert ID.
+        expr: {kind: path, path: [tinyId]}
+      - name: alias
+        type: Utf8
+        nullable: true
+        description: Alert alias.
+        expr: {kind: path, path: [alias]}
+      - name: message
+        type: Utf8
+        nullable: true
+        description: Alert message.
+        expr: {kind: path, path: [message]}
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Alert status.
+        expr: {kind: path, path: [status]}
+      - name: acknowledged
+        type: Boolean
+        nullable: true
+        description: Whether the alert is acknowledged.
+        expr: {kind: path, path: [acknowledged]}
+      - name: is_seen
+        type: Boolean
+        nullable: true
+        description: Whether the alert has been seen.
+        expr: {kind: path, path: [isSeen]}
+      - name: priority
+        type: Utf8
+        nullable: true
+        description: Alert priority.
+        expr: {kind: path, path: [priority]}
+      - name: source
+        type: Utf8
+        nullable: true
+        description: Alert source.
+        expr: {kind: path, path: [source]}
+      - name: owner
+        type: Utf8
+        nullable: true
+        description: Alert owner.
+        expr: {kind: path, path: [owner]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Alert creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [createdAt]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Alert update time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [updatedAt]}
+      - name: last_occurred_at
+        type: Timestamp
+        nullable: true
+        description: Last alert occurrence time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [lastOccurredAt]}
+      - name: count
+        type: Int64
+        nullable: true
+        description: Alert occurrence count.
+        expr: {kind: path, path: [count]}
+      - name: tags
+        type: Json
+        nullable: true
+        description: Alert tags.
+        expr: {kind: path, path: [tags]}
+      - name: teams
+        type: Json
+        nullable: true
+        description: Teams routed to the alert.
+        expr: {kind: path, path: [teams]}
+      - name: responders
+        type: Json
+        nullable: true
+        description: Alert responders.
+        expr: {kind: path, path: [responders]}
+      - name: integration
+        type: Json
+        nullable: true
+        description: Integration that created the alert.
+        expr: {kind: path, path: [integration]}
+      - name: details
+        type: Json
+        nullable: true
+        description: Alert details map.
+        expr: {kind: path, path: [details]}
+
+  - name: teams
+    description: Opsgenie teams visible to the API key.
+    request:
+      method: GET
+      path: /teams
+    response:
+      rows_path: [data]
+    pagination:
+      mode: offset
+      offset_param: offset
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Team ID.
+        expr: {kind: path, path: [id]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Team name.
+        expr: {kind: path, path: [name]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Team description.
+        expr: {kind: path, path: [description]}
+      - name: links
+        type: Json
+        nullable: true
+        description: Opsgenie links for the team.
+        expr: {kind: path, path: [_links]}
+
+  - name: users
+    description: Opsgenie users visible to the API key.
+    filters:
+      - name: query
+        mode: search
+    request:
+      method: GET
+      path: /users
+      query:
+        - name: query
+          from: filter
+          key: query
+    response:
+      rows_path: [data]
+    pagination:
+      mode: offset
+      offset_param: offset
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: User ID.
+        expr: {kind: path, path: [id]}
+      - name: username
+        type: Utf8
+        nullable: true
+        description: User login or email.
+        expr: {kind: path, path: [username]}
+      - name: full_name
+        type: Utf8
+        nullable: true
+        description: User full name.
+        expr: {kind: path, path: [fullName]}
+      - name: role
+        type: Json
+        nullable: true
+        description: User role object.
+        expr: {kind: path, path: [role]}
+      - name: locale
+        type: Utf8
+        nullable: true
+        description: User locale.
+        expr: {kind: path, path: [locale]}
+      - name: time_zone
+        type: Utf8
+        nullable: true
+        description: User time zone.
+        expr: {kind: path, path: [timeZone]}
+      - name: verified
+        type: Boolean
+        nullable: true
+        description: Whether the user is verified.
+        expr: {kind: path, path: [verified]}
+      - name: blocked
+        type: Boolean
+        nullable: true
+        description: Whether the user is blocked.
+        expr: {kind: path, path: [blocked]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: User creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [createdAt]}
+      - name: teams
+        type: Json
+        nullable: true
+        description: Teams the user belongs to.
+        expr: {kind: path, path: [teams]}
+      - name: contact
+        type: Json
+        nullable: true
+        description: User contact methods.
+        expr: {kind: path, path: [contact]}
+
+  - name: schedules
+    description: Opsgenie on-call schedules.
+    filters:
+      - name: query
+        mode: search
+      - name: expand
+    request:
+      method: GET
+      path: /schedules
+      query:
+        - name: query
+          from: filter
+          key: query
+        - name: expand
+          from: filter
+          key: expand
+    response:
+      rows_path: [data]
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Schedule ID.
+        expr: {kind: path, path: [id]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Schedule name.
+        expr: {kind: path, path: [name]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Schedule description.
+        expr: {kind: path, path: [description]}
+      - name: timezone
+        type: Utf8
+        nullable: true
+        description: Schedule time zone.
+        expr: {kind: path, path: [timezone]}
+      - name: enabled
+        type: Boolean
+        nullable: true
+        description: Whether the schedule is enabled.
+        expr: {kind: path, path: [enabled]}
+      - name: owner_team__id
+        type: Utf8
+        nullable: true
+        description: Owning team ID.
+        expr: {kind: path, path: [ownerTeam, id]}
+      - name: owner_team__name
+        type: Utf8
+        nullable: true
+        description: Owning team name.
+        expr: {kind: path, path: [ownerTeam, name]}
+      - name: rotations
+        type: Json
+        nullable: true
+        description: Expanded schedule rotations when requested.
+        expr: {kind: path, path: [rotations]}
+
+  - name: escalations
+    description: Opsgenie escalation policies.
+    filters:
+      - name: query
+        mode: search
+    request:
+      method: GET
+      path: /escalations
+      query:
+        - name: query
+          from: filter
+          key: query
+    response:
+      rows_path: [data]
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Escalation ID.
+        expr: {kind: path, path: [id]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Escalation name.
+        expr: {kind: path, path: [name]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Escalation description.
+        expr: {kind: path, path: [description]}
+      - name: enabled
+        type: Boolean
+        nullable: true
+        description: Whether the escalation is enabled.
+        expr: {kind: path, path: [enabled]}
+      - name: owner_team__id
+        type: Utf8
+        nullable: true
+        description: Owning team ID.
+        expr: {kind: path, path: [ownerTeam, id]}
+      - name: owner_team__name
+        type: Utf8
+        nullable: true
+        description: Owning team name.
+        expr: {kind: path, path: [ownerTeam, name]}
+      - name: rules
+        type: Json
+        nullable: true
+        description: Escalation rules.
+        expr: {kind: path, path: [rules]}
+      - name: repeat
+        type: Json
+        nullable: true
+        description: Escalation repeat settings.
+        expr: {kind: path, path: [repeat]}
+
+  - name: on_calls
+    description: Current on-call participants for a schedule.
+    filters:
+      - name: schedule_identifier
+        required: true
+      - name: flat
+      - name: date
+    request:
+      method: GET
+      path: /schedules/{{filter.schedule_identifier}}/on-calls
+      query:
+        - name: flat
+          from: filter
+          key: flat
+        - name: date
+          from: filter
+          key: date
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: schedule_identifier
+        type: Utf8
+        nullable: false
+        description: Schedule identifier used for the request.
+        expr:
+          kind: from_filter
+          key: schedule_identifier
+      - name: schedule_id
+        type: Utf8
+        nullable: true
+        description: Schedule ID.
+        expr: {kind: path, path: [data, _parent, id]}
+      - name: schedule_name
+        type: Utf8
+        nullable: true
+        description: Schedule name.
+        expr: {kind: path, path: [data, _parent, name]}
+      - name: enabled
+        type: Boolean
+        nullable: true
+        description: Whether the schedule is enabled.
+        expr: {kind: path, path: [data, _parent, enabled]}
+      - name: participants
+        type: Json
+        nullable: true
+        description: On-call participants.
+        expr: {kind: path, path: [data, onCallParticipants]}

@@ -3,8 +3,8 @@
 ## Repo Map
 
 - `crates/coral-api`: protobuf contract and generated Rust bindings.
-- `crates/coral-app`: local server composition, state, workspaces, and source
-  lifecycle.
+- `crates/coral-app`: local server composition, state, workspaces, source
+  lifecycle, and workspace-scoped catalog discovery behavior.
 - `crates/coral-cli`: terminal adapter.
 - `crates/coral-client`: intentionally thin local transport bootstrap plus
   Arrow IPC decode/render helpers.
@@ -34,6 +34,11 @@
   ambient process environment directly.
 - Changes to CLI or MCP surfaces must include corresponding documentation
   updates under `docs/` in the same change.
+- Source inputs that carry credentials must be `kind: secret`, never
+  `kind: variable`. This includes API keys, bearer tokens, access tokens,
+  passwords, private keys, authorization header values, and admin/read keys,
+  even when the credential is read-only or the source also supports anonymous
+  access.
 - Keep maintained Coral agent skills in `plugins/coral/skills`. External
   distribution repos or packages should mirror from that directory rather than
   becoming a separate source of truth. Use

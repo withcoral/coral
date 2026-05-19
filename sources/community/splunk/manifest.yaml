@@ -1,0 +1,563 @@
+name: splunk
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: Query Splunk server info, indexes, saved searches, apps, users, and search jobs.
+base_url: "{{input.SPLUNK_API_BASE}}"
+
+inputs:
+  SPLUNK_API_BASE:
+    kind: variable
+    default: https://localhost:8089
+    hint: |
+      Base URL for the Splunk management REST API, for example
+      `https://splunk.example.com:8089`. Do not include a trailing slash.
+  SPLUNK_TOKEN:
+    kind: secret
+    hint: |
+      Splunk authentication token for REST API access. Create a Splunk
+      authentication token and grant read access to the indexes, saved
+      searches, apps, users, and search jobs you plan to query.
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.SPLUNK_TOKEN}}
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT name, version, server_name FROM splunk.server_info LIMIT 1
+
+tables:
+  - name: server_info
+    description: Splunk server information.
+    fetch_limit_default: 1
+    request:
+      method: GET
+      path: /services/server/info
+      query:
+        - name: output_mode
+          from: literal
+          value: json
+    response:
+      rows_path: [entry]
+    pagination:
+      mode: none
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Entry name.
+        expr: {kind: path, path: [name]}
+      - name: server_name
+        type: Utf8
+        nullable: true
+        description: Splunk server name.
+        expr: {kind: path, path: [content, serverName]}
+      - name: host
+        type: Utf8
+        nullable: true
+        description: Splunk server host.
+        expr: {kind: path, path: [content, host]}
+      - name: version
+        type: Utf8
+        nullable: true
+        description: Splunk version.
+        expr: {kind: path, path: [content, version]}
+      - name: build
+        type: Utf8
+        nullable: true
+        description: Splunk build.
+        expr: {kind: path, path: [content, build]}
+      - name: guid
+        type: Utf8
+        nullable: true
+        description: Splunk server GUID.
+        expr: {kind: path, path: [content, guid]}
+      - name: license_signature
+        type: Utf8
+        nullable: true
+        description: License signature.
+        expr: {kind: path, path: [content, licenseSignature]}
+      - name: os_name
+        type: Utf8
+        nullable: true
+        description: Operating system name.
+        expr: {kind: path, path: [content, os_name]}
+      - name: os_version
+        type: Utf8
+        nullable: true
+        description: Operating system version.
+        expr: {kind: path, path: [content, os_version]}
+      - name: cpu_arch
+        type: Utf8
+        nullable: true
+        description: CPU architecture.
+        expr: {kind: path, path: [content, cpu_arch]}
+
+  - name: indexes
+    description: Splunk indexes visible to the authenticated token.
+    filters:
+      - name: search
+        mode: search
+    request:
+      method: GET
+      path: /services/data/indexes
+      query:
+        - name: output_mode
+          from: literal
+          value: json
+        - name: search
+          from: filter
+          key: search
+    response:
+      rows_path: [entry]
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 100
+        query_param: count
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Index name.
+        expr: {kind: path, path: [name]}
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Index title.
+        expr: {kind: path, path: [content, title]}
+      - name: disabled
+        type: Boolean
+        nullable: true
+        description: Whether the index is disabled.
+        expr: {kind: path, path: [content, disabled]}
+      - name: datatype
+        type: Utf8
+        nullable: true
+        description: Index data type.
+        expr: {kind: path, path: [content, datatype]}
+      - name: home_path
+        type: Utf8
+        nullable: true
+        description: Home path for hot and warm buckets.
+        expr: {kind: path, path: [content, homePath]}
+      - name: cold_path
+        type: Utf8
+        nullable: true
+        description: Cold bucket path.
+        expr: {kind: path, path: [content, coldPath]}
+      - name: thawed_path
+        type: Utf8
+        nullable: true
+        description: Thawed bucket path.
+        expr: {kind: path, path: [content, thawedPath]}
+      - name: current_db_size_mb
+        type: Int64
+        nullable: true
+        description: Current index size in MB.
+        expr: {kind: path, path: [content, currentDBSizeMB]}
+      - name: total_event_count
+        type: Int64
+        nullable: true
+        description: Total event count.
+        expr: {kind: path, path: [content, totalEventCount]}
+      - name: max_total_data_size_mb
+        type: Int64
+        nullable: true
+        description: Maximum total data size in MB.
+        expr: {kind: path, path: [content, maxTotalDataSizeMB]}
+      - name: frozen_time_period_in_secs
+        type: Int64
+        nullable: true
+        description: Retention period in seconds before data is frozen.
+        expr: {kind: path, path: [content, frozenTimePeriodInSecs]}
+      - name: updated
+        type: Timestamp
+        nullable: true
+        description: Entry update time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [updated]}
+      - name: acl
+        type: Json
+        nullable: true
+        description: Access control metadata.
+        expr: {kind: path, path: [acl]}
+
+  - name: saved_searches
+    description: Saved searches, reports, and alert searches across Splunk namespaces.
+    filters:
+      - name: search
+        mode: search
+    request:
+      method: GET
+      path: /servicesNS/-/-/saved/searches
+      query:
+        - name: output_mode
+          from: literal
+          value: json
+        - name: search
+          from: filter
+          key: search
+    response:
+      rows_path: [entry]
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 100
+        query_param: count
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Saved search name.
+        expr: {kind: path, path: [name]}
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Saved search title.
+        expr: {kind: path, path: [content, title]}
+      - name: author
+        type: Utf8
+        nullable: true
+        description: Saved search author.
+        expr: {kind: path, path: [author]}
+      - name: app
+        type: Utf8
+        nullable: true
+        description: Splunk app namespace.
+        expr: {kind: path, path: [acl, app]}
+      - name: owner
+        type: Utf8
+        nullable: true
+        description: Splunk owner namespace.
+        expr: {kind: path, path: [acl, owner]}
+      - name: sharing
+        type: Utf8
+        nullable: true
+        description: Sharing scope.
+        expr: {kind: path, path: [acl, sharing]}
+      - name: disabled
+        type: Boolean
+        nullable: true
+        description: Whether the saved search is disabled.
+        expr: {kind: path, path: [content, disabled]}
+      - name: is_scheduled
+        type: Boolean
+        nullable: true
+        description: Whether the saved search is scheduled.
+        expr: {kind: path, path: [content, is_scheduled]}
+      - name: cron_schedule
+        type: Utf8
+        nullable: true
+        description: Cron schedule.
+        expr: {kind: path, path: [content, cron_schedule]}
+      - name: search
+        type: Utf8
+        nullable: true
+        description: SPL search string.
+        expr: {kind: path, path: [content, search]}
+      - name: alert_type
+        type: Utf8
+        nullable: true
+        description: Alert type.
+        expr: {kind: path, path: [content, alert_type]}
+      - name: alert_comparator
+        type: Utf8
+        nullable: true
+        description: Alert comparator.
+        expr: {kind: path, path: [content, alert_comparator]}
+      - name: alert_threshold
+        type: Utf8
+        nullable: true
+        description: Alert threshold.
+        expr: {kind: path, path: [content, alert_threshold]}
+      - name: actions
+        type: Utf8
+        nullable: true
+        description: Comma-separated alert actions.
+        expr: {kind: path, path: [content, actions]}
+      - name: dispatch_earliest_time
+        type: Utf8
+        nullable: true
+        description: Earliest dispatch time.
+        expr: {kind: path, path: [content, dispatch.earliest_time]}
+      - name: dispatch_latest_time
+        type: Utf8
+        nullable: true
+        description: Latest dispatch time.
+        expr: {kind: path, path: [content, dispatch.latest_time]}
+      - name: updated
+        type: Timestamp
+        nullable: true
+        description: Entry update time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [updated]}
+
+  - name: apps
+    description: Installed Splunk apps.
+    filters:
+      - name: search
+        mode: search
+    request:
+      method: GET
+      path: /services/apps/local
+      query:
+        - name: output_mode
+          from: literal
+          value: json
+        - name: search
+          from: filter
+          key: search
+    response:
+      rows_path: [entry]
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 100
+        query_param: count
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: App name.
+        expr: {kind: path, path: [name]}
+      - name: label
+        type: Utf8
+        nullable: true
+        description: App label.
+        expr: {kind: path, path: [content, label]}
+      - name: version
+        type: Utf8
+        nullable: true
+        description: App version.
+        expr: {kind: path, path: [content, version]}
+      - name: author
+        type: Utf8
+        nullable: true
+        description: App author.
+        expr: {kind: path, path: [author]}
+      - name: disabled
+        type: Boolean
+        nullable: true
+        description: Whether the app is disabled.
+        expr: {kind: path, path: [content, disabled]}
+      - name: visible
+        type: Boolean
+        nullable: true
+        description: Whether the app is visible in the launcher.
+        expr: {kind: path, path: [content, visible]}
+      - name: configured
+        type: Boolean
+        nullable: true
+        description: Whether the app has completed setup.
+        expr: {kind: path, path: [content, configured]}
+      - name: state
+        type: Utf8
+        nullable: true
+        description: App state.
+        expr: {kind: path, path: [content, state]}
+      - name: updated
+        type: Timestamp
+        nullable: true
+        description: Entry update time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [updated]}
+
+  - name: users
+    description: Splunk users visible to the authenticated token.
+    filters:
+      - name: search
+        mode: search
+    request:
+      method: GET
+      path: /services/authentication/users
+      query:
+        - name: output_mode
+          from: literal
+          value: json
+        - name: search
+          from: filter
+          key: search
+    response:
+      rows_path: [entry]
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 100
+        query_param: count
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Username.
+        expr: {kind: path, path: [name]}
+      - name: realname
+        type: Utf8
+        nullable: true
+        description: User real name.
+        expr: {kind: path, path: [content, realname]}
+      - name: email
+        type: Utf8
+        nullable: true
+        description: User email address.
+        expr: {kind: path, path: [content, email]}
+      - name: default_app
+        type: Utf8
+        nullable: true
+        description: Default Splunk app.
+        expr: {kind: path, path: [content, defaultApp]}
+      - name: type
+        type: Utf8
+        nullable: true
+        description: User type.
+        expr: {kind: path, path: [content, type]}
+      - name: roles
+        type: Json
+        nullable: true
+        description: Roles assigned to the user.
+        expr: {kind: path, path: [content, roles]}
+      - name: updated
+        type: Timestamp
+        nullable: true
+        description: Entry update time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [updated]}
+
+  - name: search_jobs
+    description: Search jobs visible to the authenticated token.
+    filters:
+      - name: search
+        mode: search
+    request:
+      method: GET
+      path: /services/search/jobs
+      query:
+        - name: output_mode
+          from: literal
+          value: json
+        - name: search
+          from: filter
+          key: search
+    response:
+      rows_path: [entry]
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 100
+        query_param: count
+    columns:
+      - name: sid
+        type: Utf8
+        nullable: false
+        description: Search job ID.
+        expr: {kind: path, path: [name]}
+      - name: label
+        type: Utf8
+        nullable: true
+        description: Search job label.
+        expr: {kind: path, path: [content, label]}
+      - name: dispatch_state
+        type: Utf8
+        nullable: true
+        description: Dispatch state.
+        expr: {kind: path, path: [content, dispatchState]}
+      - name: is_done
+        type: Boolean
+        nullable: true
+        description: Whether the job is done.
+        expr: {kind: path, path: [content, isDone]}
+      - name: is_failed
+        type: Boolean
+        nullable: true
+        description: Whether the job failed.
+        expr: {kind: path, path: [content, isFailed]}
+      - name: is_paused
+        type: Boolean
+        nullable: true
+        description: Whether the job is paused.
+        expr: {kind: path, path: [content, isPaused]}
+      - name: event_count
+        type: Int64
+        nullable: true
+        description: Number of matching events.
+        expr: {kind: path, path: [content, eventCount]}
+      - name: result_count
+        type: Int64
+        nullable: true
+        description: Number of search results.
+        expr: {kind: path, path: [content, resultCount]}
+      - name: scan_count
+        type: Int64
+        nullable: true
+        description: Number of scanned events.
+        expr: {kind: path, path: [content, scanCount]}
+      - name: done_progress
+        type: Float64
+        nullable: true
+        description: Search completion progress.
+        expr: {kind: path, path: [content, doneProgress]}
+      - name: run_duration
+        type: Float64
+        nullable: true
+        description: Search run duration in seconds.
+        expr: {kind: path, path: [content, runDuration]}
+      - name: earliest_time
+        type: Timestamp
+        nullable: true
+        description: Earliest event time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [content, earliestTime]}
+      - name: latest_time
+        type: Timestamp
+        nullable: true
+        description: Latest event time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [content, latestTime]}
+      - name: updated
+        type: Timestamp
+        nullable: true
+        description: Entry update time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [updated]}
+      - name: search
+        type: Utf8
+        nullable: true
+        description: Search string.
+        expr: {kind: path, path: [content, search]}

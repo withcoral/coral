@@ -5,6 +5,8 @@
     reason = "Integration tests inherit the library crate's dependency set and intentionally exercise only a subset of it."
 )]
 
+#[path = "grpc/catalog_discovery_tests.rs"]
+mod catalog_discovery_tests;
 #[path = "grpc/harness.rs"]
 mod harness;
 #[path = "grpc/resilience_tests.rs"]

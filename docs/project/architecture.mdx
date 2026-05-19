@@ -67,6 +67,7 @@ The local server and core orchestrator.
 | Workspace state | Config, secrets, and workspace layout (`state/`, `storage/`) |
 | Feedback persistence | Workspace-scoped blocked-agent feedback reports (`feedback/`) |
 | Query orchestration | Loads sources, builds the engine, executes SQL (`query/`) |
+| Catalog discovery | Lists/searches/describes query-visible tables and columns (`catalog/`) |
 
 This is the largest crate. It ties `coral-spec` and `coral-engine` together and manages all persistent local state.
 
@@ -101,7 +102,7 @@ The MCP stdio server.
 | Owns            | Details                                                             |
 | --------------- | ------------------------------------------------------------------- |
 | MCP protocol    | Tool and resource handlers via the `rmcp` SDK (`server.rs`)         |
-| Surface shaping | Tool/resource/error helpers split across `surface/{mod,tools,resources,errors}.rs` |
+| Surface shaping | Tool/resource/error helpers split across `surface/{mod,tools,resources,errors}.rs`; discovery semantics come from `coral-app` |
 | Tools           | `sql`, `list_tables`, `search_tables`, `describe_table`, `list_columns`, optional `feedback` |
 | Resources       | `coral://guide`, `coral://tables`                                   |
 

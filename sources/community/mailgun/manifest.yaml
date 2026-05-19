@@ -1,0 +1,566 @@
+name: mailgun
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query sending domains, SMTP credentials, inbound routes, and email
+  suppression lists (bounces, unsubscribes, complaints) from Mailgun.
+base_url: "{{input.MAILGUN_BASE_URL}}"
+
+inputs:
+  MAILGUN_API_KEY:
+    kind: secret
+    hint: >-
+      Mailgun Private API Key. Find it in the Mailgun Dashboard at
+      https://app.mailgun.com/settings/api_security under API Keys.
+      Starts with "key-" for legacy keys or a long hex string for
+      newer keys.
+  MAILGUN_BASE_URL:
+    kind: variable
+    default: "https://api.mailgun.net"
+    hint: >-
+      Base URL for the Mailgun API. Defaults to the US region
+      (https://api.mailgun.net). For EU-hosted domains, use
+      https://api.eu.mailgun.net.
+
+auth:
+  type: BasicAuth
+  username: api
+  password: "{{input.MAILGUN_API_KEY}}"
+
+test_queries:
+  - SELECT name, state, type FROM mailgun.domains LIMIT 1
+
+tables:
+  # ──────────────────────────────────────────────────────────────────────
+  # domains — list all sending domains
+  # ──────────────────────────────────────────────────────────────────────
+  - name: domains
+    description: >
+      Lists all sending domains for the Mailgun account. Returns domain
+      verification state, type, SMTP login, security, and tracking settings.
+    guide: >
+      Start with `SELECT name, state, type, created_at
+      FROM mailgun.domains LIMIT 10`. Use the name value as the
+      domain filter for bounces, unsubscribes, complaints, and
+      credentials tables.
+    request:
+      method: GET
+      path: /v4/domains
+    response:
+      rows_path:
+        - items
+    pagination:
+      mode: offset
+      offset_param: skip
+      page_size:
+        default: 100
+        max: 1000
+        query_param: limit
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Fully qualified domain name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: id
+        type: Utf8
+        nullable: true
+        description: Unique domain identifier.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: state
+        type: Utf8
+        nullable: true
+        description: >-
+          Domain verification state (e.g. active, unverified, disabled).
+        expr:
+          kind: path
+          path:
+            - state
+      - name: type
+        type: Utf8
+        nullable: true
+        description: >-
+          Domain type (e.g. custom, sandbox).
+        expr:
+          kind: path
+          path:
+            - type
+      - name: subaccount_id
+        type: Utf8
+        nullable: true
+        description: Subaccount ID when the domain belongs to a subaccount.
+        expr:
+          kind: path
+          path:
+            - subaccount_id
+      - name: smtp_login
+        type: Utf8
+        nullable: true
+        description: SMTP login username for the domain.
+        expr:
+          kind: path
+          path:
+            - smtp_login
+      - name: archive_to
+        type: Utf8
+        nullable: true
+        description: URL where delivered message copies are posted.
+        expr:
+          kind: path
+          path:
+            - archive_to
+      - name: wildcard
+        type: Boolean
+        nullable: true
+        description: Whether wildcard matching is enabled for subdomains.
+        expr:
+          kind: path
+          path:
+            - wildcard
+      - name: spam_action
+        type: Utf8
+        nullable: true
+        description: >-
+          Action taken on spam (e.g. disabled, block, tag).
+        expr:
+          kind: path
+          path:
+            - spam_action
+      - name: web_scheme
+        type: Utf8
+        nullable: true
+        description: >-
+          URL scheme for tracking links (http or https).
+        expr:
+          kind: path
+          path:
+            - web_scheme
+      - name: web_prefix
+        type: Utf8
+        nullable: true
+        description: >-
+          Custom CNAME prefix used for tracking URLs.
+        expr:
+          kind: path
+          path:
+            - web_prefix
+      - name: tracking_host
+        type: Utf8
+        nullable: true
+        description: Custom host used for open and click tracking.
+        expr:
+          kind: path
+          path:
+            - tracking_host
+      - name: use_automatic_sender_security
+        type: Boolean
+        nullable: true
+        description: Whether Mailgun manages DKIM keys and DNS automatically.
+        expr:
+          kind: path
+          path:
+            - use_automatic_sender_security
+      - name: is_disabled
+        type: Boolean
+        nullable: true
+        description: Whether the domain is disabled.
+        expr:
+          kind: path
+          path:
+            - is_disabled
+      - name: disabled
+        type: Json
+        nullable: true
+        description: Additional details about disabled domain status.
+        expr:
+          kind: path
+          path:
+            - disabled
+      - name: require_tls
+        type: Boolean
+        nullable: true
+        description: Whether TLS is required for outbound messages.
+        expr:
+          kind: path
+          path:
+            - require_tls
+      - name: skip_verification
+        type: Boolean
+        nullable: true
+        description: Whether certificate verification is skipped.
+        expr:
+          kind: path
+          path:
+            - skip_verification
+      - name: encrypt_incoming_message
+        type: Boolean
+        nullable: true
+        description: Whether incoming messages to this domain are encrypted.
+        expr:
+          kind: path
+          path:
+            - encrypt_incoming_message
+      - name: message_ttl
+        type: Int64
+        nullable: true
+        description: Time-to-live in seconds for retrieving stored messages.
+        expr:
+          kind: path
+          path:
+            - message_ttl
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: When the domain was created (RFC 2822 format).
+        expr:
+          kind: path
+          path:
+            - created_at
+
+  # ──────────────────────────────────────────────────────────────────────
+  # credentials — SMTP credentials per domain
+  # ──────────────────────────────────────────────────────────────────────
+  - name: credentials
+    description: >
+      Lists SMTP credentials for a specific sending domain. Returns
+      login usernames and creation timestamps. Passwords are never
+      returned by the API. Requires a domain filter.
+    guide: >
+      Always filter by domain: `SELECT login, created_at
+      FROM mailgun.credentials
+      WHERE domain = 'example.com'`. Get domain names from
+      mailgun.domains first.
+    filters:
+      - name: domain
+        required: true
+    request:
+      method: GET
+      path: /v3/domains/{{filter.domain}}/credentials
+    response:
+      rows_path:
+        - items
+    pagination:
+      mode: offset
+      offset_param: skip
+      page_size:
+        default: 100
+        max: 1000
+        query_param: limit
+    columns:
+      - name: domain
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Domain name (from URL filter).
+        expr:
+          kind: from_filter
+          key: domain
+      - name: login
+        type: Utf8
+        nullable: false
+        description: SMTP login username (e.g. postmaster@example.com).
+        expr:
+          kind: path
+          path:
+            - login
+      - name: mailbox
+        type: Utf8
+        nullable: true
+        description: Email address-style username for this credential.
+        expr:
+          kind: path
+          path:
+            - mailbox
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: When the credential was created (RFC 2822 format).
+        expr:
+          kind: path
+          path:
+            - created_at
+      - name: size_bytes
+        type: Utf8
+        nullable: true
+        description: Credential storage size metadata, when present.
+        expr:
+          kind: path
+          path:
+            - size_bytes
+
+  # ──────────────────────────────────────────────────────────────────────
+  # routes — list all inbound routes
+  # ──────────────────────────────────────────────────────────────────────
+  - name: routes
+    description: >
+      Lists all inbound routing rules for the Mailgun account. Routes
+      are global (not domain-specific) and define match expressions and
+      actions for incoming messages.
+    guide: >
+      Start with `SELECT id, expression, priority, description
+      FROM mailgun.routes LIMIT 10`. Routes are account-wide and
+      do not require a domain filter.
+    request:
+      method: GET
+      path: /v3/routes
+    response:
+      rows_path:
+        - items
+    pagination:
+      mode: offset
+      offset_param: skip
+      page_size:
+        default: 100
+        max: 1000
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique route identifier.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: expression
+        type: Utf8
+        nullable: true
+        description: >-
+          Filter expression (e.g. match_recipient(".*@example.com")).
+        expr:
+          kind: path
+          path:
+            - expression
+      - name: actions
+        type: Json
+        nullable: true
+        description: >-
+          Array of action strings (e.g. forward(), stop(), store()).
+        expr:
+          kind: path
+          path:
+            - actions
+      - name: priority
+        type: Int64
+        nullable: true
+        description: >-
+          Route priority; lower numbers are processed first.
+          Defaults to 0.
+        expr:
+          kind: path
+          path:
+            - priority
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Human-readable name or description for the route.
+        expr:
+          kind: path
+          path:
+            - description
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: When the route was created (RFC 2822 format).
+        expr:
+          kind: path
+          path:
+            - created_at
+
+  # ──────────────────────────────────────────────────────────────────────
+  # bounces — bounced email addresses per domain
+  # ──────────────────────────────────────────────────────────────────────
+  - name: bounces
+    description: >
+      Lists bounced email addresses for a specific sending domain.
+      Bounces are addresses that have permanently failed delivery
+      and are automatically suppressed from future sends.
+      Requires a domain filter.
+    guide: >
+      Always filter by domain: `SELECT address, code, error,
+      created_at FROM mailgun.bounces
+      WHERE domain = 'example.com'`. Get domain names from
+      mailgun.domains first.
+    filters:
+      - name: domain
+        required: true
+    request:
+      method: GET
+      path: /v3/{{filter.domain}}/bounces
+    response:
+      rows_path:
+        - items
+    pagination:
+      mode: offset
+      offset_param: skip
+      page_size:
+        default: 100
+        max: 1000
+        query_param: limit
+    columns:
+      - name: domain
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Domain name (from URL filter).
+        expr:
+          kind: from_filter
+          key: domain
+      - name: address
+        type: Utf8
+        nullable: false
+        description: Bounced email address.
+        expr:
+          kind: path
+          path:
+            - address
+      - name: code
+        type: Utf8
+        nullable: true
+        description: SMTP error code from the bounce (e.g. 550).
+        expr:
+          kind: path
+          path:
+            - code
+      - name: error
+        type: Utf8
+        nullable: true
+        description: SMTP error message from the bounce.
+        expr:
+          kind: path
+          path:
+            - error
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: When the bounce was recorded (RFC 2822 format).
+        expr:
+          kind: path
+          path:
+            - created_at
+
+  # ──────────────────────────────────────────────────────────────────────
+  # unsubscribes — unsubscribed addresses per domain
+  # ──────────────────────────────────────────────────────────────────────
+  - name: unsubscribes
+    description: >
+      Lists email addresses that have unsubscribed from a specific
+      sending domain. These addresses are automatically suppressed
+      from future sends. Requires a domain filter.
+    guide: >
+      Always filter by domain: `SELECT address, tags, created_at
+      FROM mailgun.unsubscribes
+      WHERE domain = 'example.com'`. Get domain names from
+      mailgun.domains first.
+    filters:
+      - name: domain
+        required: true
+    request:
+      method: GET
+      path: /v3/{{filter.domain}}/unsubscribes
+    response:
+      rows_path:
+        - items
+    pagination:
+      mode: offset
+      offset_param: skip
+      page_size:
+        default: 100
+        max: 1000
+        query_param: limit
+    columns:
+      - name: domain
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Domain name (from URL filter).
+        expr:
+          kind: from_filter
+          key: domain
+      - name: address
+        type: Utf8
+        nullable: false
+        description: Unsubscribed email address.
+        expr:
+          kind: path
+          path:
+            - address
+      - name: tags
+        type: Json
+        nullable: true
+        description: >-
+          Array of tag strings associated with the unsubscribe event.
+        expr:
+          kind: path
+          path:
+            - tags
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: When the unsubscribe was recorded (RFC 2822 format).
+        expr:
+          kind: path
+          path:
+            - created_at
+
+  # ──────────────────────────────────────────────────────────────────────
+  # complaints — spam complaints per domain
+  # ──────────────────────────────────────────────────────────────────────
+  - name: complaints
+    description: >
+      Lists email addresses that have filed spam complaints for a
+      specific sending domain. These addresses are automatically
+      suppressed from future sends. Requires a domain filter.
+    guide: >
+      Always filter by domain: `SELECT address, created_at
+      FROM mailgun.complaints
+      WHERE domain = 'example.com'`. Get domain names from
+      mailgun.domains first.
+    filters:
+      - name: domain
+        required: true
+    request:
+      method: GET
+      path: /v3/{{filter.domain}}/complaints
+    response:
+      rows_path:
+        - items
+    pagination:
+      mode: offset
+      offset_param: skip
+      page_size:
+        default: 100
+        max: 1000
+        query_param: limit
+    columns:
+      - name: domain
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Domain name (from URL filter).
+        expr:
+          kind: from_filter
+          key: domain
+      - name: address
+        type: Utf8
+        nullable: false
+        description: Email address that filed the complaint.
+        expr:
+          kind: path
+          path:
+            - address
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: When the complaint was recorded (RFC 2822 format).
+        expr:
+          kind: path
+          path:
+            - created_at

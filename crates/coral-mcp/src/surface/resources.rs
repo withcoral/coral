@@ -1,9 +1,11 @@
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
-use coral_api::v1::{ListTablesResponse, Source, Table, TableSummary};
+use coral_api::v1::{ListTablesResponse, Source, TableSummary};
 use rmcp::model::{AnnotateAble, RawResource, Resource};
 use serde_json::{Value, json};
+
+use super::values::{paged_collection_value, queryable_table_summary_values, table_to_summary};
 
 static INITIAL_INSTRUCTIONS: &str = "You are connected to Coral. Read `coral://guide` for query patterns, use `list_tables`, `search_tables`, `describe_table`, and `list_columns` to inspect queryable tables, and use `sql` for final queries.";
 static GUIDE_TEMPLATE: &str = include_str!("../guide_template.md");
@@ -71,26 +73,19 @@ FROM coral.columns WHERE schema_name = '{schema_name}' AND table_name = '{table_
 pub(crate) fn tables_resource_content(
     tables: &[TableSummary],
 ) -> Result<String, serde_json::Error> {
-    serde_json::to_string_pretty(&json!({ "tables": queryable_tables(tables) }))
+    serde_json::to_string_pretty(&json!({
+        "tables": queryable_table_summary_values(tables)
+    }))
 }
 
 pub(crate) fn list_tables_value(response: &ListTablesResponse) -> Value {
     let pagination = response.pagination.unwrap_or_default();
     let table_summaries = response_table_summaries(response);
-    let mut value = json!({
-        "tables": queryable_tables(&table_summaries),
-        "total": pagination.total_count,
-        "limit": pagination.limit,
-        "offset": pagination.offset,
-        "has_more": pagination.has_more,
-    });
-    if pagination.has_more {
-        value
-            .as_object_mut()
-            .expect("list tables value is initialized as a JSON object")
-            .insert("next_offset".to_string(), json!(pagination.next_offset));
-    }
-    value
+    paged_collection_value(
+        "tables",
+        queryable_table_summary_values(&table_summaries),
+        &pagination,
+    )
 }
 
 fn guide_resource_description(sources: &[Source], visible_table_count: usize) -> String {
@@ -105,45 +100,11 @@ fn tables_resource_description(visible_table_count: usize) -> String {
     format!("Queryable fully qualified Coral tables ({visible_table_count} table(s)).")
 }
 
-fn queryable_tables(tables: &[TableSummary]) -> Vec<Value> {
-    let mut summaries = tables
-        .iter()
-        .map(|table| {
-            json!({
-                "schema_name": table.schema_name,
-                "table_name": table.name,
-                "name": format!("{}.{}", table.schema_name, table.name),
-                "sql_reference": format_schema_table_equivalent(&table.schema_name, &table.name),
-                "description": table.description,
-                "guide": table.guide,
-                "required_filters": table.required_filters,
-            })
-        })
-        .collect::<Vec<_>>();
-    summaries.sort_by(|left, right| {
-        left.get("name")
-            .and_then(Value::as_str)
-            .cmp(&right.get("name").and_then(Value::as_str))
-    });
-    summaries
-}
-
 fn response_table_summaries(response: &ListTablesResponse) -> Vec<TableSummary> {
     if response.table_summaries.is_empty() {
         response.tables.iter().map(table_to_summary).collect()
     } else {
         response.table_summaries.clone()
-    }
-}
-
-fn table_to_summary(table: &Table) -> TableSummary {
-    TableSummary {
-        workspace: table.workspace.clone(),
-        schema_name: table.schema_name.clone(),
-        name: table.name.clone(),
-        description: table.description.clone(),
-        required_filters: table.required_filters.clone(),
-        guide: table.guide.clone(),
     }
 }
 
@@ -156,33 +117,6 @@ fn first_visible_table(tables: &[TableSummary]) -> Option<(&str, &str)> {
         .map(|table| (table.schema_name.as_str(), table.name.as_str()))
 }
 
-pub(crate) fn format_schema_table_equivalent(schema_name: &str, table_name: &str) -> String {
-    format!(
-        "{}.{}",
-        quote_identifier_if_needed(schema_name),
-        quote_identifier_if_needed(table_name)
-    )
-}
-
-fn quote_identifier_if_needed(identifier: &str) -> String {
-    if identifier_needs_quotes(identifier) {
-        format!("\"{}\"", identifier.replace('"', "\"\""))
-    } else {
-        identifier.to_string()
-    }
-}
-
-fn identifier_needs_quotes(identifier: &str) -> bool {
-    let mut chars = identifier.chars();
-    let Some(first) = chars.next() else {
-        return true;
-    };
-    if !(first.is_ascii_lowercase() || first == '_') {
-        return true;
-    }
-    !chars.all(|char| char.is_ascii_lowercase() || char.is_ascii_digit() || char == '_')
-}
-
 #[cfg(test)]
 mod tests {
     #![expect(
@@ -193,7 +127,8 @@ mod tests {
     use coral_api::v1::{ListTablesResponse, PaginationResponse, Source, TableSummary, Workspace};
     use serde_json::json;
 
-    use super::{format_schema_table_equivalent, guide_resource_content, list_tables_value};
+    use super::{guide_resource_content, list_tables_value};
+    use crate::surface::values::format_schema_table_equivalent;
 
     fn source(name: &str) -> Source {
         Source {

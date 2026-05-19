@@ -1,0 +1,1791 @@
+name: shopify
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Shopify shop metadata, products, product variants, collections,
+  orders, customers, locations, and inventory items.
+inputs:
+  SHOPIFY_SHOP_DOMAIN:
+    kind: variable
+    hint: |
+      Shopify shop domain for the Admin GraphQL API, for example
+      `example.myshopify.com`. Do not include `https://` or a trailing slash.
+  SHOPIFY_API_VERSION:
+    kind: variable
+    default: "2026-04"
+    hint: |
+      Shopify Admin GraphQL API version. Defaults to `2026-04`, the latest
+      stable version checked for this source. Override only when you have
+      validated the source against another supported Admin API version.
+  SHOPIFY_ADMIN_ACCESS_TOKEN:
+    kind: secret
+    hint: |
+      Shopify Admin API access token from a custom or public app. The token is
+      sent as `X-Shopify-Access-Token`. Grant only the read scopes needed for
+      the tables you use: `read_products`, `read_orders`, `read_customers`,
+      `read_locations`, and `read_inventory`. Historical orders require
+      approved `read_all_orders` in addition to `read_orders`.
+base_url: https://{{input.SHOPIFY_SHOP_DOMAIN}}/admin/api/{{input.SHOPIFY_API_VERSION}}
+auth:
+  type: HeaderAuth
+  headers:
+    - name: X-Shopify-Access-Token
+      from: template
+      template: "{{input.SHOPIFY_ADMIN_ACCESS_TOKEN}}"
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+  - name: Content-Type
+    from: literal
+    value: application/json
+test_queries:
+  - SELECT id, name, myshopify_domain FROM shopify.shop LIMIT 1
+  - SELECT id, title, status FROM shopify.products LIMIT 1
+tables:
+  - name: shop
+    description: Shopify shop metadata for the authenticated Admin API token.
+    guide: |
+      Start here to validate credentials and confirm which shop a token
+      belongs to. This table returns one row from the Admin GraphQL `shop`
+      query.
+    fetch_limit_default: 1
+    request:
+      method: POST
+      path: /graphql.json
+      body:
+        - path: [query]
+          from: literal
+          value: |
+            query ShopifyShop {
+              shop {
+                id
+                name
+                myshopifyDomain
+                email
+                contactEmail
+                currencyCode
+                ianaTimezone
+                timezoneAbbreviation
+                taxesIncluded
+                taxShipping
+                createdAt
+                updatedAt
+                url
+                weightUnit
+                primaryDomain {
+                  id
+                  host
+                  url
+                  sslEnabled
+                }
+                plan {
+                  displayName
+                  partnerDevelopment
+                  shopifyPlus
+                }
+              }
+            }
+    response:
+      rows_path: [data, shop]
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Globally unique Shopify shop ID.
+        expr:
+          kind: path
+          path: [id]
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Shop name.
+        expr:
+          kind: path
+          path: [name]
+      - name: myshopify_domain
+        type: Utf8
+        nullable: false
+        description: Canonical myshopify.com domain.
+        expr:
+          kind: path
+          path: [myshopifyDomain]
+      - name: email
+        type: Utf8
+        nullable: true
+        description: Shop owner email address.
+        expr:
+          kind: path
+          path: [email]
+      - name: contact_email
+        type: Utf8
+        nullable: true
+        description: Public contact email address for the shop.
+        expr:
+          kind: path
+          path: [contactEmail]
+      - name: currency_code
+        type: Utf8
+        nullable: true
+        description: Shop currency code.
+        expr:
+          kind: path
+          path: [currencyCode]
+      - name: iana_timezone
+        type: Utf8
+        nullable: true
+        description: Shop IANA timezone.
+        expr:
+          kind: path
+          path: [ianaTimezone]
+      - name: timezone_abbreviation
+        type: Utf8
+        nullable: true
+        description: Shop timezone abbreviation.
+        expr:
+          kind: path
+          path: [timezoneAbbreviation]
+      - name: taxes_included
+        type: Boolean
+        nullable: true
+        description: Whether product prices include taxes.
+        expr:
+          kind: path
+          path: [taxesIncluded]
+      - name: tax_shipping
+        type: Boolean
+        nullable: true
+        description: Whether the shop charges taxes on shipping.
+        expr:
+          kind: path
+          path: [taxShipping]
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Shop creation timestamp from Shopify.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [createdAt]
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Shop last updated timestamp from Shopify.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [updatedAt]
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Shop online store URL.
+        expr:
+          kind: path
+          path: [url]
+      - name: weight_unit
+        type: Utf8
+        nullable: true
+        description: Shop primary weight unit.
+        expr:
+          kind: path
+          path: [weightUnit]
+      - name: primary_domain__id
+        type: Utf8
+        nullable: true
+        description: Primary domain ID.
+        expr:
+          kind: path
+          path: [primaryDomain, id]
+      - name: primary_domain__host
+        type: Utf8
+        nullable: true
+        description: Primary domain host.
+        expr:
+          kind: path
+          path: [primaryDomain, host]
+      - name: primary_domain__url
+        type: Utf8
+        nullable: true
+        description: Primary domain URL.
+        expr:
+          kind: path
+          path: [primaryDomain, url]
+      - name: primary_domain__ssl_enabled
+        type: Boolean
+        nullable: true
+        description: Whether SSL is enabled on the primary domain.
+        expr:
+          kind: path
+          path: [primaryDomain, sslEnabled]
+      - name: plan__display_name
+        type: Utf8
+        nullable: true
+        description: Shopify plan display name.
+        expr:
+          kind: path
+          path: [plan, displayName]
+      - name: plan__partner_development
+        type: Boolean
+        nullable: true
+        description: Whether this is a partner development shop.
+        expr:
+          kind: path
+          path: [plan, partnerDevelopment]
+      - name: plan__shopify_plus
+        type: Boolean
+        nullable: true
+        description: Whether the shop is on Shopify Plus.
+        expr:
+          kind: path
+          path: [plan, shopifyPlus]
+
+  - name: products
+    description: Products in the Shopify catalog.
+    guide: |
+      Requires `read_products`. Use the optional `query` filter with Shopify
+      API search syntax, for example `status:active`, `vendor:Snowdevil`, or
+      `updated_at:>2026-01-01`. Join `id` to `product_variants.product_id`.
+    fetch_limit_default: 100
+    filters:
+      - name: query
+        mode: search
+    request:
+      method: POST
+      path: /graphql.json
+      body:
+        - path: [query]
+          from: literal
+          value: |
+            query ShopifyProducts($first: Int!, $after: String, $query: String) {
+              products(first: $first, after: $after, query: $query) {
+                nodes {
+                  id
+                  title
+                  handle
+                  status
+                  vendor
+                  productType
+                  tags
+                  totalInventory
+                  hasOnlyDefaultVariant
+                  createdAt
+                  updatedAt
+                  publishedAt
+                  priceRangeV2 {
+                    minVariantPrice {
+                      amount
+                      currencyCode
+                    }
+                    maxVariantPrice {
+                      amount
+                      currencyCode
+                    }
+                  }
+                }
+                pageInfo {
+                  endCursor
+                  hasNextPage
+                }
+              }
+            }
+        - path: [variables, first]
+          from: literal
+          value: 100
+        - path: [variables, query]
+          from: filter
+          key: query
+    response:
+      rows_path: [data, products, nodes]
+      row_strategy: direct
+    pagination:
+      mode: cursor_body
+      cursor_body_path: [variables, after]
+      response_cursor_path: [data, products, pageInfo, endCursor]
+      page_size:
+        default: 100
+        max: 250
+        body_path: [variables, first]
+    columns:
+      - name: query
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Shopify API search query filter.
+        expr:
+          kind: from_filter
+          key: query
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Globally unique Shopify product ID.
+        expr:
+          kind: path
+          path: [id]
+      - name: title
+        type: Utf8
+        nullable: false
+        description: Product title.
+        expr:
+          kind: path
+          path: [title]
+      - name: handle
+        type: Utf8
+        nullable: true
+        description: Product handle.
+        expr:
+          kind: path
+          path: [handle]
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Product status such as ACTIVE, DRAFT, or ARCHIVED.
+        expr:
+          kind: path
+          path: [status]
+      - name: vendor
+        type: Utf8
+        nullable: true
+        description: Product vendor.
+        expr:
+          kind: path
+          path: [vendor]
+      - name: product_type
+        type: Utf8
+        nullable: true
+        description: Merchant-defined product type.
+        expr:
+          kind: path
+          path: [productType]
+      - name: tags
+        type: Json
+        nullable: true
+        description: Product tags.
+        expr:
+          kind: path
+          path: [tags]
+      - name: total_inventory
+        type: Int64
+        nullable: true
+        description: Total inventory across variants.
+        expr:
+          kind: path
+          path: [totalInventory]
+      - name: has_only_default_variant
+        type: Boolean
+        nullable: true
+        description: Whether the product has only the default variant.
+        expr:
+          kind: path
+          path: [hasOnlyDefaultVariant]
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Product creation timestamp from Shopify.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [createdAt]
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Product last updated timestamp from Shopify.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [updatedAt]
+      - name: published_at
+        type: Timestamp
+        nullable: true
+        description: Product publication timestamp, when present.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [publishedAt]
+      - name: min_variant_price_amount_decimal
+        type: Utf8
+        nullable: true
+        description: Minimum variant price amount as Shopify's decimal string.
+        expr:
+          kind: path
+          path: [priceRangeV2, minVariantPrice, amount]
+      - name: min_variant_price_amount
+        type: Float64
+        nullable: true
+        description: Minimum variant price amount as Float64 for arithmetic.
+        expr:
+          kind: path
+          path: [priceRangeV2, minVariantPrice, amount]
+      - name: min_variant_price_currency_code
+        type: Utf8
+        nullable: true
+        description: Currency code for the minimum variant price.
+        expr:
+          kind: path
+          path: [priceRangeV2, minVariantPrice, currencyCode]
+      - name: max_variant_price_amount_decimal
+        type: Utf8
+        nullable: true
+        description: Maximum variant price amount as Shopify's decimal string.
+        expr:
+          kind: path
+          path: [priceRangeV2, maxVariantPrice, amount]
+      - name: max_variant_price_amount
+        type: Float64
+        nullable: true
+        description: Maximum variant price amount as Float64 for arithmetic.
+        expr:
+          kind: path
+          path: [priceRangeV2, maxVariantPrice, amount]
+      - name: max_variant_price_currency_code
+        type: Utf8
+        nullable: true
+        description: Currency code for the maximum variant price.
+        expr:
+          kind: path
+          path: [priceRangeV2, maxVariantPrice, currencyCode]
+
+  - name: product_variants
+    description: Product variants and their SKU, price, and inventory item metadata.
+    guide: |
+      Requires `read_products`. Use the optional `query` filter with Shopify
+      API search syntax, for example `sku:ABC-123`, `barcode:ABC-abc-1234`,
+      `product_id:123`, or `collection_id:123`.
+    fetch_limit_default: 100
+    filters:
+      - name: query
+        mode: search
+    request:
+      method: POST
+      path: /graphql.json
+      body:
+        - path: [query]
+          from: literal
+          value: |
+            query ShopifyProductVariants($first: Int!, $after: String, $query: String) {
+              productVariants(first: $first, after: $after, query: $query) {
+                nodes {
+                  id
+                  title
+                  displayName
+                  sku
+                  barcode
+                  price
+                  compareAtPrice
+                  availableForSale
+                  inventoryQuantity
+                  inventoryPolicy
+                  selectedOptions {
+                    name
+                    value
+                  }
+                  createdAt
+                  updatedAt
+                  product {
+                    id
+                    title
+                    handle
+                  }
+                  inventoryItem {
+                    id
+                    sku
+                    tracked
+                    requiresShipping
+                  }
+                }
+                pageInfo {
+                  endCursor
+                  hasNextPage
+                }
+              }
+            }
+        - path: [variables, first]
+          from: literal
+          value: 100
+        - path: [variables, query]
+          from: filter
+          key: query
+    response:
+      rows_path: [data, productVariants, nodes]
+      row_strategy: direct
+    pagination:
+      mode: cursor_body
+      cursor_body_path: [variables, after]
+      response_cursor_path: [data, productVariants, pageInfo, endCursor]
+      page_size:
+        default: 100
+        max: 250
+        body_path: [variables, first]
+    columns:
+      - name: query
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Shopify API search query filter.
+        expr:
+          kind: from_filter
+          key: query
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Globally unique Shopify product variant ID.
+        expr:
+          kind: path
+          path: [id]
+      - name: product_id
+        type: Utf8
+        nullable: true
+        description: Parent product ID.
+        expr:
+          kind: path
+          path: [product, id]
+      - name: product_title
+        type: Utf8
+        nullable: true
+        description: Parent product title.
+        expr:
+          kind: path
+          path: [product, title]
+      - name: product_handle
+        type: Utf8
+        nullable: true
+        description: Parent product handle.
+        expr:
+          kind: path
+          path: [product, handle]
+      - name: title
+        type: Utf8
+        nullable: false
+        description: Variant title.
+        expr:
+          kind: path
+          path: [title]
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: Display name combining product and variant context.
+        expr:
+          kind: path
+          path: [displayName]
+      - name: sku
+        type: Utf8
+        nullable: true
+        description: Variant SKU.
+        expr:
+          kind: path
+          path: [sku]
+      - name: barcode
+        type: Utf8
+        nullable: true
+        description: Variant barcode.
+        expr:
+          kind: path
+          path: [barcode]
+      - name: price_decimal
+        type: Utf8
+        nullable: true
+        description: Variant price as Shopify's decimal string.
+        expr:
+          kind: path
+          path: [price]
+      - name: price
+        type: Float64
+        nullable: true
+        description: Variant price as Float64 for arithmetic.
+        expr:
+          kind: path
+          path: [price]
+      - name: compare_at_price_decimal
+        type: Utf8
+        nullable: true
+        description: Variant compare-at price as Shopify's decimal string.
+        expr:
+          kind: path
+          path: [compareAtPrice]
+      - name: compare_at_price
+        type: Float64
+        nullable: true
+        description: Variant compare-at price as Float64 for arithmetic.
+        expr:
+          kind: path
+          path: [compareAtPrice]
+      - name: available_for_sale
+        type: Boolean
+        nullable: true
+        description: Whether the variant is available for sale.
+        expr:
+          kind: path
+          path: [availableForSale]
+      - name: inventory_quantity
+        type: Int64
+        nullable: true
+        description: Total sellable quantity of the variant.
+        expr:
+          kind: path
+          path: [inventoryQuantity]
+      - name: inventory_policy
+        type: Utf8
+        nullable: true
+        description: Inventory policy for out-of-stock ordering.
+        expr:
+          kind: path
+          path: [inventoryPolicy]
+      - name: selected_options
+        type: Json
+        nullable: true
+        description: Selected option name/value pairs for the variant.
+        expr:
+          kind: path
+          path: [selectedOptions]
+      - name: inventory_item_id
+        type: Utf8
+        nullable: true
+        description: Inventory item ID connected to this variant.
+        expr:
+          kind: path
+          path: [inventoryItem, id]
+      - name: inventory_item_sku
+        type: Utf8
+        nullable: true
+        description: Inventory item SKU.
+        expr:
+          kind: path
+          path: [inventoryItem, sku]
+      - name: inventory_item_tracked
+        type: Boolean
+        nullable: true
+        description: Whether inventory tracking is enabled for the inventory item.
+        expr:
+          kind: path
+          path: [inventoryItem, tracked]
+      - name: inventory_item_requires_shipping
+        type: Boolean
+        nullable: true
+        description: Whether the inventory item requires shipping.
+        expr:
+          kind: path
+          path: [inventoryItem, requiresShipping]
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Variant creation timestamp from Shopify.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [createdAt]
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Variant last updated timestamp from Shopify.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [updatedAt]
+
+  - name: collections
+    description: Product collections in the Shopify catalog.
+    guide: |
+      Requires `read_products`. Use the optional `query` filter with Shopify
+      API search syntax, for example `collection_type:smart`,
+      `title:Summer`, or `updated_at:>2026-01-01`.
+    fetch_limit_default: 100
+    filters:
+      - name: query
+        mode: search
+    request:
+      method: POST
+      path: /graphql.json
+      body:
+        - path: [query]
+          from: literal
+          value: |
+            query ShopifyCollections($first: Int!, $after: String, $query: String) {
+              collections(first: $first, after: $after, query: $query) {
+                nodes {
+                  id
+                  title
+                  handle
+                  description
+                  descriptionHtml
+                  sortOrder
+                  templateSuffix
+                  updatedAt
+                  productsCount {
+                    count
+                    precision
+                  }
+                  seo {
+                    title
+                    description
+                  }
+                  ruleSet {
+                    appliedDisjunctively
+                    rules {
+                      column
+                      relation
+                      condition
+                    }
+                  }
+                }
+                pageInfo {
+                  endCursor
+                  hasNextPage
+                }
+              }
+            }
+        - path: [variables, first]
+          from: literal
+          value: 100
+        - path: [variables, query]
+          from: filter
+          key: query
+    response:
+      rows_path: [data, collections, nodes]
+      row_strategy: direct
+    pagination:
+      mode: cursor_body
+      cursor_body_path: [variables, after]
+      response_cursor_path: [data, collections, pageInfo, endCursor]
+      page_size:
+        default: 100
+        max: 250
+        body_path: [variables, first]
+    columns:
+      - name: query
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Shopify API search query filter.
+        expr:
+          kind: from_filter
+          key: query
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Globally unique Shopify collection ID.
+        expr:
+          kind: path
+          path: [id]
+      - name: title
+        type: Utf8
+        nullable: false
+        description: Collection title.
+        expr:
+          kind: path
+          path: [title]
+      - name: handle
+        type: Utf8
+        nullable: true
+        description: Collection handle.
+        expr:
+          kind: path
+          path: [handle]
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Plain-text collection description.
+        expr:
+          kind: path
+          path: [description]
+      - name: description_html
+        type: Utf8
+        nullable: true
+        description: HTML collection description.
+        expr:
+          kind: path
+          path: [descriptionHtml]
+      - name: sort_order
+        type: Utf8
+        nullable: true
+        description: Default product sort order for the collection.
+        expr:
+          kind: path
+          path: [sortOrder]
+      - name: template_suffix
+        type: Utf8
+        nullable: true
+        description: Liquid template suffix for the collection.
+        expr:
+          kind: path
+          path: [templateSuffix]
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Collection last updated timestamp from Shopify.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [updatedAt]
+      - name: products_count
+        type: Int64
+        nullable: true
+        description: Number of products in the collection.
+        expr:
+          kind: path
+          path: [productsCount, count]
+      - name: products_count_precision
+        type: Utf8
+        nullable: true
+        description: Precision of the products count.
+        expr:
+          kind: path
+          path: [productsCount, precision]
+      - name: seo__title
+        type: Utf8
+        nullable: true
+        description: SEO title for the collection.
+        expr:
+          kind: path
+          path: [seo, title]
+      - name: seo__description
+        type: Utf8
+        nullable: true
+        description: SEO description for the collection.
+        expr:
+          kind: path
+          path: [seo, description]
+      - name: rule_set
+        type: Json
+        nullable: true
+        description: Smart collection rule set, when present.
+        expr:
+          kind: path
+          path: [ruleSet]
+
+  - name: orders
+    description: Orders placed in the Shopify store.
+    guide: |
+      Requires `read_orders`. Shopify limits order access to the default recent
+      order window unless the app also has approved `read_all_orders`. Use the
+      optional `query` filter with Shopify API search syntax, for example
+      `financial_status:paid fulfillment_status:unfulfilled`,
+      `created_at:>=2026-01-01`, or `sku:ABC-123`.
+    fetch_limit_default: 100
+    filters:
+      - name: query
+        mode: search
+    request:
+      method: POST
+      path: /graphql.json
+      body:
+        - path: [query]
+          from: literal
+          value: |
+            query ShopifyOrders($first: Int!, $after: String, $query: String) {
+              orders(first: $first, after: $after, query: $query) {
+                nodes {
+                  id
+                  name
+                  createdAt
+                  updatedAt
+                  processedAt
+                  cancelledAt
+                  displayFinancialStatus
+                  displayFulfillmentStatus
+                  currencyCode
+                  currentTotalPriceSet {
+                    shopMoney {
+                      amount
+                      currencyCode
+                    }
+                  }
+                  currentSubtotalPriceSet {
+                    shopMoney {
+                      amount
+                      currencyCode
+                    }
+                  }
+                  currentTotalTaxSet {
+                    shopMoney {
+                      amount
+                      currencyCode
+                    }
+                  }
+                  subtotalLineItemsQuantity
+                  tags
+                  test
+                  customer {
+                    id
+                    displayName
+                    firstName
+                    lastName
+                    defaultEmailAddress {
+                      emailAddress
+                    }
+                  }
+                }
+                pageInfo {
+                  endCursor
+                  hasNextPage
+                }
+              }
+            }
+        - path: [variables, first]
+          from: literal
+          value: 100
+        - path: [variables, query]
+          from: filter
+          key: query
+    response:
+      rows_path: [data, orders, nodes]
+      row_strategy: direct
+    pagination:
+      mode: cursor_body
+      cursor_body_path: [variables, after]
+      response_cursor_path: [data, orders, pageInfo, endCursor]
+      page_size:
+        default: 100
+        max: 250
+        body_path: [variables, first]
+    columns:
+      - name: query
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Shopify API search query filter.
+        expr:
+          kind: from_filter
+          key: query
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Globally unique Shopify order ID.
+        expr:
+          kind: path
+          path: [id]
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Merchant-facing order name, such as #1001.
+        expr:
+          kind: path
+          path: [name]
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Order creation timestamp from Shopify.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [createdAt]
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Order last updated timestamp from Shopify.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [updatedAt]
+      - name: processed_at
+        type: Timestamp
+        nullable: true
+        description: Order processed timestamp from Shopify.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [processedAt]
+      - name: cancelled_at
+        type: Timestamp
+        nullable: true
+        description: Order cancellation timestamp, when cancelled.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [cancelledAt]
+      - name: display_financial_status
+        type: Utf8
+        nullable: true
+        description: Financial status shown in the Shopify admin.
+        expr:
+          kind: path
+          path: [displayFinancialStatus]
+      - name: display_fulfillment_status
+        type: Utf8
+        nullable: true
+        description: Fulfillment status shown in the Shopify admin.
+        expr:
+          kind: path
+          path: [displayFulfillmentStatus]
+      - name: currency_code
+        type: Utf8
+        nullable: true
+        description: Order currency code.
+        expr:
+          kind: path
+          path: [currencyCode]
+      - name: current_total_price_amount_decimal
+        type: Utf8
+        nullable: true
+        description: Current total order price amount as Shopify's decimal string.
+        expr:
+          kind: path
+          path: [currentTotalPriceSet, shopMoney, amount]
+      - name: current_total_price_amount
+        type: Float64
+        nullable: true
+        description: Current total order price amount as Float64 for arithmetic.
+        expr:
+          kind: path
+          path: [currentTotalPriceSet, shopMoney, amount]
+      - name: current_total_price_currency_code
+        type: Utf8
+        nullable: true
+        description: Current total order price currency code.
+        expr:
+          kind: path
+          path: [currentTotalPriceSet, shopMoney, currencyCode]
+      - name: current_subtotal_price_amount_decimal
+        type: Utf8
+        nullable: true
+        description: Current subtotal price amount as Shopify's decimal string.
+        expr:
+          kind: path
+          path: [currentSubtotalPriceSet, shopMoney, amount]
+      - name: current_subtotal_price_amount
+        type: Float64
+        nullable: true
+        description: Current subtotal price amount as Float64 for arithmetic.
+        expr:
+          kind: path
+          path: [currentSubtotalPriceSet, shopMoney, amount]
+      - name: current_subtotal_price_currency_code
+        type: Utf8
+        nullable: true
+        description: Current subtotal price currency code.
+        expr:
+          kind: path
+          path: [currentSubtotalPriceSet, shopMoney, currencyCode]
+      - name: current_total_tax_amount_decimal
+        type: Utf8
+        nullable: true
+        description: Current total tax amount as Shopify's decimal string.
+        expr:
+          kind: path
+          path: [currentTotalTaxSet, shopMoney, amount]
+      - name: current_total_tax_amount
+        type: Float64
+        nullable: true
+        description: Current total tax amount as Float64 for arithmetic.
+        expr:
+          kind: path
+          path: [currentTotalTaxSet, shopMoney, amount]
+      - name: current_total_tax_currency_code
+        type: Utf8
+        nullable: true
+        description: Current total tax currency code.
+        expr:
+          kind: path
+          path: [currentTotalTaxSet, shopMoney, currencyCode]
+      - name: subtotal_line_items_quantity
+        type: Int64
+        nullable: true
+        description: Total quantity of line items contributing to the order subtotal.
+        expr:
+          kind: path
+          path: [subtotalLineItemsQuantity]
+      - name: tags
+        type: Json
+        nullable: true
+        description: Order tags.
+        expr:
+          kind: path
+          path: [tags]
+      - name: test
+        type: Boolean
+        nullable: true
+        description: Whether this is a test order.
+        expr:
+          kind: path
+          path: [test]
+      - name: customer_id
+        type: Utf8
+        nullable: true
+        description: Customer ID associated with the order, when present.
+        expr:
+          kind: path
+          path: [customer, id]
+      - name: customer_display_name
+        type: Utf8
+        nullable: true
+        description: Customer display name associated with the order.
+        expr:
+          kind: path
+          path: [customer, displayName]
+      - name: customer_first_name
+        type: Utf8
+        nullable: true
+        description: Customer first name associated with the order.
+        expr:
+          kind: path
+          path: [customer, firstName]
+      - name: customer_last_name
+        type: Utf8
+        nullable: true
+        description: Customer last name associated with the order.
+        expr:
+          kind: path
+          path: [customer, lastName]
+      - name: customer_email
+        type: Utf8
+        nullable: true
+        description: Customer default email address associated with the order, when available.
+        expr:
+          kind: path
+          path: [customer, defaultEmailAddress, emailAddress]
+
+  - name: customers
+    description: Customer records in the Shopify store.
+    guide: |
+      Requires `read_customers` and may require protected customer data approval
+      for non-development stores. Use the optional `query` filter with Shopify
+      API search syntax, for example `email:buyer@example.com`,
+      `state:enabled`, or `created_at:>=2026-01-01`.
+    fetch_limit_default: 100
+    filters:
+      - name: query
+        mode: search
+    request:
+      method: POST
+      path: /graphql.json
+      body:
+        - path: [query]
+          from: literal
+          value: |
+            query ShopifyCustomers($first: Int!, $after: String, $query: String) {
+              customers(first: $first, after: $after, query: $query) {
+                nodes {
+                  id
+                  displayName
+                  firstName
+                  lastName
+                  createdAt
+                  updatedAt
+                  state
+                  numberOfOrders
+                  verifiedEmail
+                  taxExempt
+                  tags
+                  amountSpent {
+                    amount
+                    currencyCode
+                  }
+                  defaultEmailAddress {
+                    emailAddress
+                    marketingState
+                  }
+                  defaultPhoneNumber {
+                    phoneNumber
+                    marketingState
+                  }
+                }
+                pageInfo {
+                  endCursor
+                  hasNextPage
+                }
+              }
+            }
+        - path: [variables, first]
+          from: literal
+          value: 100
+        - path: [variables, query]
+          from: filter
+          key: query
+    response:
+      rows_path: [data, customers, nodes]
+      row_strategy: direct
+    pagination:
+      mode: cursor_body
+      cursor_body_path: [variables, after]
+      response_cursor_path: [data, customers, pageInfo, endCursor]
+      page_size:
+        default: 100
+        max: 250
+        body_path: [variables, first]
+    columns:
+      - name: query
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Shopify API search query filter.
+        expr:
+          kind: from_filter
+          key: query
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Globally unique Shopify customer ID.
+        expr:
+          kind: path
+          path: [id]
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: Customer display name.
+        expr:
+          kind: path
+          path: [displayName]
+      - name: first_name
+        type: Utf8
+        nullable: true
+        description: Customer first name.
+        expr:
+          kind: path
+          path: [firstName]
+      - name: last_name
+        type: Utf8
+        nullable: true
+        description: Customer last name.
+        expr:
+          kind: path
+          path: [lastName]
+      - name: default_email
+        type: Utf8
+        nullable: true
+        description: Customer default email address, when available.
+        expr:
+          kind: path
+          path: [defaultEmailAddress, emailAddress]
+      - name: default_email_marketing_state
+        type: Utf8
+        nullable: true
+        description: Marketing state for the default email address.
+        expr:
+          kind: path
+          path: [defaultEmailAddress, marketingState]
+      - name: default_phone
+        type: Utf8
+        nullable: true
+        description: Customer default phone number, when available.
+        expr:
+          kind: path
+          path: [defaultPhoneNumber, phoneNumber]
+      - name: default_phone_marketing_state
+        type: Utf8
+        nullable: true
+        description: Marketing state for the default phone number.
+        expr:
+          kind: path
+          path: [defaultPhoneNumber, marketingState]
+      - name: state
+        type: Utf8
+        nullable: true
+        description: Customer account state.
+        expr:
+          kind: path
+          path: [state]
+      - name: number_of_orders
+        type: Int64
+        nullable: true
+        description: Number of orders placed by the customer.
+        expr:
+          kind: path
+          path: [numberOfOrders]
+      - name: amount_spent_decimal
+        type: Utf8
+        nullable: true
+        description: Lifetime amount spent as Shopify's decimal string.
+        expr:
+          kind: path
+          path: [amountSpent, amount]
+      - name: amount_spent
+        type: Float64
+        nullable: true
+        description: Lifetime amount spent as Float64 for arithmetic.
+        expr:
+          kind: path
+          path: [amountSpent, amount]
+      - name: amount_spent_currency_code
+        type: Utf8
+        nullable: true
+        description: Currency code for the lifetime amount spent.
+        expr:
+          kind: path
+          path: [amountSpent, currencyCode]
+      - name: verified_email
+        type: Boolean
+        nullable: true
+        description: Whether the customer has a verified email address.
+        expr:
+          kind: path
+          path: [verifiedEmail]
+      - name: tax_exempt
+        type: Boolean
+        nullable: true
+        description: Whether the customer is tax exempt.
+        expr:
+          kind: path
+          path: [taxExempt]
+      - name: tags
+        type: Json
+        nullable: true
+        description: Customer tags.
+        expr:
+          kind: path
+          path: [tags]
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Customer creation timestamp from Shopify.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [createdAt]
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Customer last updated timestamp from Shopify.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [updatedAt]
+
+  - name: locations
+    description: Shopify inventory locations where products can be stocked or fulfilled.
+    guide: |
+      Requires `read_locations` or an inventory-related scope. By default,
+      Shopify returns active locations. Use `include_inactive` or
+      `include_legacy` when you need deactivated or fulfillment-service
+      locations. The optional `query` filter uses Shopify API search syntax.
+    fetch_limit_default: 100
+    filters:
+      - name: query
+        mode: search
+      - name: include_inactive
+      - name: include_legacy
+    request:
+      method: POST
+      path: /graphql.json
+      body:
+        - path: [query]
+          from: literal
+          value: |
+            query ShopifyLocations(
+              $first: Int!,
+              $after: String,
+              $query: String,
+              $includeInactive: Boolean,
+              $includeLegacy: Boolean
+            ) {
+              locations(
+                first: $first,
+                after: $after,
+                query: $query,
+                includeInactive: $includeInactive,
+                includeLegacy: $includeLegacy
+              ) {
+                nodes {
+                  id
+                  name
+                  isActive
+                  isFulfillmentService
+                  fulfillsOnlineOrders
+                  hasActiveInventory
+                  shipsInventory
+                  createdAt
+                  updatedAt
+                  address {
+                    address1
+                    address2
+                    city
+                    country
+                    countryCode
+                    province
+                    provinceCode
+                    zip
+                  }
+                  fulfillmentService {
+                    handle
+                    serviceName
+                  }
+                }
+                pageInfo {
+                  endCursor
+                  hasNextPage
+                }
+              }
+            }
+        - path: [variables, first]
+          from: literal
+          value: 100
+        - path: [variables, query]
+          from: filter
+          key: query
+        - path: [variables, includeInactive]
+          from: filter_bool
+          key: include_inactive
+        - path: [variables, includeLegacy]
+          from: filter_bool
+          key: include_legacy
+    response:
+      rows_path: [data, locations, nodes]
+      row_strategy: direct
+    pagination:
+      mode: cursor_body
+      cursor_body_path: [variables, after]
+      response_cursor_path: [data, locations, pageInfo, endCursor]
+      page_size:
+        default: 100
+        max: 250
+        body_path: [variables, first]
+    columns:
+      - name: query
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Shopify API search query filter.
+        expr:
+          kind: from_filter
+          key: query
+      - name: include_inactive
+        type: Boolean
+        nullable: true
+        virtual: true
+        description: Include deactivated locations when true.
+        expr:
+          kind: from_filter
+          key: include_inactive
+      - name: include_legacy
+        type: Boolean
+        nullable: true
+        virtual: true
+        description: Include legacy fulfillment-service locations when true.
+        expr:
+          kind: from_filter
+          key: include_legacy
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Globally unique Shopify location ID.
+        expr:
+          kind: path
+          path: [id]
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Location name.
+        expr:
+          kind: path
+          path: [name]
+      - name: is_active
+        type: Boolean
+        nullable: true
+        description: Whether the location is active.
+        expr:
+          kind: path
+          path: [isActive]
+      - name: is_fulfillment_service
+        type: Boolean
+        nullable: true
+        description: Whether the location belongs to a fulfillment service.
+        expr:
+          kind: path
+          path: [isFulfillmentService]
+      - name: fulfills_online_orders
+        type: Boolean
+        nullable: true
+        description: Whether the location can fulfill online orders.
+        expr:
+          kind: path
+          path: [fulfillsOnlineOrders]
+      - name: has_active_inventory
+        type: Boolean
+        nullable: true
+        description: Whether the location has active inventory.
+        expr:
+          kind: path
+          path: [hasActiveInventory]
+      - name: ships_inventory
+        type: Boolean
+        nullable: true
+        description: Whether the location ships inventory.
+        expr:
+          kind: path
+          path: [shipsInventory]
+      - name: address__address1
+        type: Utf8
+        nullable: true
+        description: Location address line 1.
+        expr:
+          kind: path
+          path: [address, address1]
+      - name: address__address2
+        type: Utf8
+        nullable: true
+        description: Location address line 2.
+        expr:
+          kind: path
+          path: [address, address2]
+      - name: address__city
+        type: Utf8
+        nullable: true
+        description: Location city.
+        expr:
+          kind: path
+          path: [address, city]
+      - name: address__country
+        type: Utf8
+        nullable: true
+        description: Location country.
+        expr:
+          kind: path
+          path: [address, country]
+      - name: address__country_code
+        type: Utf8
+        nullable: true
+        description: Location country code.
+        expr:
+          kind: path
+          path: [address, countryCode]
+      - name: address__province
+        type: Utf8
+        nullable: true
+        description: Location province or state.
+        expr:
+          kind: path
+          path: [address, province]
+      - name: address__province_code
+        type: Utf8
+        nullable: true
+        description: Location province or state code.
+        expr:
+          kind: path
+          path: [address, provinceCode]
+      - name: address__zip
+        type: Utf8
+        nullable: true
+        description: Location postal code.
+        expr:
+          kind: path
+          path: [address, zip]
+      - name: fulfillment_service__handle
+        type: Utf8
+        nullable: true
+        description: Fulfillment service handle, when the location is service-backed.
+        expr:
+          kind: path
+          path: [fulfillmentService, handle]
+      - name: fulfillment_service__service_name
+        type: Utf8
+        nullable: true
+        description: Fulfillment service name, when the location is service-backed.
+        expr:
+          kind: path
+          path: [fulfillmentService, serviceName]
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Location creation timestamp from Shopify.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [createdAt]
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Location last updated timestamp from Shopify.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [updatedAt]
+
+  - name: inventory_items
+    description: Shopify inventory item metadata connected to product variants.
+    guide: |
+      Requires `read_inventory` or `read_products`. Use the optional `query`
+      filter with Shopify API search syntax, for example `sku:ABC-123`,
+      `id:>=1234`, or `updated_at:>2026-01-01`. This table exposes inventory
+      item metadata, not per-location quantities.
+    fetch_limit_default: 100
+    filters:
+      - name: query
+        mode: search
+    request:
+      method: POST
+      path: /graphql.json
+      body:
+        - path: [query]
+          from: literal
+          value: |
+            query ShopifyInventoryItems($first: Int!, $after: String, $query: String) {
+              inventoryItems(first: $first, after: $after, query: $query) {
+                nodes {
+                  id
+                  sku
+                  tracked
+                  requiresShipping
+                  duplicateSkuCount
+                  countryCodeOfOrigin
+                  provinceCodeOfOrigin
+                  harmonizedSystemCode
+                  inventoryHistoryUrl
+                  locationsCount {
+                    count
+                    precision
+                  }
+                  createdAt
+                  updatedAt
+                }
+                pageInfo {
+                  endCursor
+                  hasNextPage
+                }
+              }
+            }
+        - path: [variables, first]
+          from: literal
+          value: 100
+        - path: [variables, query]
+          from: filter
+          key: query
+    response:
+      rows_path: [data, inventoryItems, nodes]
+      row_strategy: direct
+    pagination:
+      mode: cursor_body
+      cursor_body_path: [variables, after]
+      response_cursor_path: [data, inventoryItems, pageInfo, endCursor]
+      page_size:
+        default: 100
+        max: 250
+        body_path: [variables, first]
+    columns:
+      - name: query
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Shopify API search query filter.
+        expr:
+          kind: from_filter
+          key: query
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Globally unique Shopify inventory item ID.
+        expr:
+          kind: path
+          path: [id]
+      - name: sku
+        type: Utf8
+        nullable: true
+        description: Inventory item SKU.
+        expr:
+          kind: path
+          path: [sku]
+      - name: tracked
+        type: Boolean
+        nullable: true
+        description: Whether inventory levels are tracked for this item.
+        expr:
+          kind: path
+          path: [tracked]
+      - name: requires_shipping
+        type: Boolean
+        nullable: true
+        description: Whether the inventory item requires shipping.
+        expr:
+          kind: path
+          path: [requiresShipping]
+      - name: duplicate_sku_count
+        type: Int64
+        nullable: true
+        description: Number of inventory items sharing the same SKU.
+        expr:
+          kind: path
+          path: [duplicateSkuCount]
+      - name: country_code_of_origin
+        type: Utf8
+        nullable: true
+        description: Country of origin code for the item.
+        expr:
+          kind: path
+          path: [countryCodeOfOrigin]
+      - name: province_code_of_origin
+        type: Utf8
+        nullable: true
+        description: Province of origin code for the item.
+        expr:
+          kind: path
+          path: [provinceCodeOfOrigin]
+      - name: harmonized_system_code
+        type: Utf8
+        nullable: true
+        description: Harmonized system code for customs.
+        expr:
+          kind: path
+          path: [harmonizedSystemCode]
+      - name: inventory_history_url
+        type: Utf8
+        nullable: true
+        description: Shopify admin URL for inventory history.
+        expr:
+          kind: path
+          path: [inventoryHistoryUrl]
+      - name: locations_count
+        type: Int64
+        nullable: true
+        description: Number of locations where this inventory item is stocked.
+        expr:
+          kind: path
+          path: [locationsCount, count]
+      - name: locations_count_precision
+        type: Utf8
+        nullable: true
+        description: Precision of the locations count.
+        expr:
+          kind: path
+          path: [locationsCount, precision]
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Inventory item creation timestamp from Shopify.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [createdAt]
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Inventory item last updated timestamp from Shopify.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [updatedAt]

@@ -1,0 +1,533 @@
+name: mixpanel
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query projects, cohorts, annotations, annotation tags,
+  Lexicon schemas, and dashboards from Mixpanel.
+base_url: "{{input.MIXPANEL_BASE_URL}}"
+
+inputs:
+  MIXPANEL_BASE_URL:
+    kind: variable
+    default: https://mixpanel.com
+    hint: >-
+      Mixpanel API base URL. Use https://mixpanel.com for US,
+      https://eu.mixpanel.com for EU, or https://in.mixpanel.com
+      for India projects.
+  MIXPANEL_SERVICE_ACCOUNT_USERNAME:
+    kind: secret
+    hint: >-
+      Service account username. Create one from Organization Settings >
+      Service Accounts in the Mixpanel dashboard.
+  MIXPANEL_SERVICE_ACCOUNT_SECRET:
+    kind: secret
+    hint: >-
+      Service account secret (password). Generated alongside the
+      service account username. Keep this value secure.
+  MIXPANEL_PROJECT_ID:
+    kind: variable
+    hint: >-
+      Numeric Mixpanel project ID. Find it in Project Settings >
+      Overview in the Mixpanel dashboard (e.g. 1234567).
+
+auth:
+  type: BasicAuth
+  username: "{{input.MIXPANEL_SERVICE_ACCOUNT_USERNAME}}"
+  password: "{{input.MIXPANEL_SERVICE_ACCOUNT_SECRET}}"
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+
+test_queries:
+  - >-
+    SELECT id, name
+    FROM mixpanel.projects
+    LIMIT 1
+
+tables:
+  # ──────────────────────────────────────────────────────────────────────
+  # projects
+  # ──────────────────────────────────────────────────────────────────────
+  - name: projects
+    description: >-
+      Projects accessible by the authenticated service account.
+    guide: >
+      Start here to discover project IDs.
+      `SELECT id, name FROM mixpanel.projects`.
+    request:
+      method: GET
+      path: /api/app/projects
+    response:
+      rows_path:
+        - results
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Unique project ID.
+        expr:
+          kind: path
+          path: [id]
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Project display name.
+        expr:
+          kind: path
+          path: [name]
+      - name: timezone
+        type: Utf8
+        nullable: true
+        description: Project timezone.
+        expr:
+          kind: path
+          path: [timezone]
+      - name: token
+        type: Utf8
+        nullable: true
+        description: Project token (for client-side tracking).
+        expr:
+          kind: path
+          path: [token]
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Project creation timestamp.
+        expr:
+          kind: path
+          path: [created_at]
+
+  # ──────────────────────────────────────────────────────────────────────
+  # cohorts  (requires paid Mixpanel plan)
+  # ──────────────────────────────────────────────────────────────────────
+  - name: cohorts
+    description: >-
+      Saved cohorts for the configured project with name,
+      description, and user count. Requires a paid Mixpanel plan.
+    guide: >
+      `SELECT id, name, description, count
+      FROM mixpanel.cohorts`.
+      Note: this endpoint requires a paid Mixpanel plan.
+    request:
+      method: GET
+      path: /api/2.0/cohorts/list
+      query:
+        - name: project_id
+          from: input
+          key: MIXPANEL_PROJECT_ID
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Unique cohort ID.
+        expr:
+          kind: path
+          path: [id]
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Cohort name.
+        expr:
+          kind: path
+          path: [name]
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Cohort description.
+        expr:
+          kind: path
+          path: [description]
+      - name: count
+        type: Int64
+        nullable: true
+        description: Number of users in the cohort.
+        expr:
+          kind: path
+          path: [count]
+      - name: created
+        type: Utf8
+        nullable: true
+        description: Cohort creation date.
+        expr:
+          kind: path
+          path: [created]
+      - name: is_visible
+        type: Int64
+        nullable: true
+        description: Cohort visibility flag (0 if hidden, 1 if visible).
+        expr:
+          kind: path
+          path: [is_visible]
+
+  # ──────────────────────────────────────────────────────────────────────
+  # annotations
+  # ──────────────────────────────────────────────────────────────────────
+  - name: annotations
+    description: >-
+      Project annotations marking significant events like
+      releases or campaigns. Optionally filter by date range.
+    guide: >
+      `SELECT id, date, description
+      FROM mixpanel.annotations`.
+      Optional date range:
+      `WHERE from_date = '2024-01-01'
+        AND to_date = '2024-12-31'`.
+    filters:
+      - name: from_date
+        required: false
+      - name: to_date
+        required: false
+    request:
+      method: GET
+      path: /api/app/projects/{{input.MIXPANEL_PROJECT_ID}}/annotations
+      query:
+        - name: from_date
+          from: filter
+          key: from_date
+        - name: to_date
+          from: filter
+          key: to_date
+    response:
+      rows_path:
+        - results
+    pagination:
+      mode: none
+    columns:
+      - name: from_date
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Start date filter value (YYYY-MM-DD).
+        expr:
+          kind: from_filter
+          key: from_date
+      - name: to_date
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: End date filter value (YYYY-MM-DD).
+        expr:
+          kind: from_filter
+          key: to_date
+      - name: id
+        type: Int64
+        nullable: false
+        description: Unique annotation ID.
+        expr:
+          kind: path
+          path: [id]
+      - name: date
+        type: Utf8
+        nullable: true
+        description: Annotation date (YYYY-MM-DD HH:mm:ss).
+        expr:
+          kind: path
+          path: [date]
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Annotation text.
+        expr:
+          kind: path
+          path: [description]
+      - name: user_id
+        type: Int64
+        nullable: true
+        description: ID of the user who created the annotation.
+        expr:
+          kind: path
+          path: [user, id]
+      - name: user_first_name
+        type: Utf8
+        nullable: true
+        description: First name of the annotation creator.
+        expr:
+          kind: path
+          path: [user, first_name]
+      - name: user_last_name
+        type: Utf8
+        nullable: true
+        description: Last name of the annotation creator.
+        expr:
+          kind: path
+          path: [user, last_name]
+
+  # ──────────────────────────────────────────────────────────────────────
+  # annotation_tags
+  # ──────────────────────────────────────────────────────────────────────
+  - name: annotation_tags
+    description: >-
+      Tags that have been added to annotations in the project.
+    guide: >
+      `SELECT id, name, has_annotations
+      FROM mixpanel.annotation_tags`.
+    request:
+      method: GET
+      path: /api/app/projects/{{input.MIXPANEL_PROJECT_ID}}/annotations/tags
+    response:
+      rows_path:
+        - results
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Unique tag ID.
+        expr:
+          kind: path
+          path: [id]
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Tag name.
+        expr:
+          kind: path
+          path: [name]
+      - name: project_id
+        type: Int64
+        nullable: true
+        description: Project ID this tag belongs to.
+        expr:
+          kind: path
+          path: [project_id]
+      - name: has_annotations
+        type: Boolean
+        nullable: true
+        description: Whether this tag is attached to any annotations.
+        expr:
+          kind: path
+          path: [has_annotations]
+
+  # ──────────────────────────────────────────────────────────────────────
+  # schemas
+  # ──────────────────────────────────────────────────────────────────────
+  - name: schemas
+    description: >-
+      Lexicon schema entries (events and profile properties)
+      for the configured project.
+    guide: >
+      `SELECT name, entity_type, description
+      FROM mixpanel.schemas`.
+    request:
+      method: GET
+      path: /api/app/projects/{{input.MIXPANEL_PROJECT_ID}}/schemas
+    response:
+      rows_path:
+        - results
+    pagination:
+      mode: none
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Event or property name.
+        expr:
+          kind: path
+          path: [name]
+      - name: entity_type
+        type: Utf8
+        nullable: true
+        description: Entity type (event or profile).
+        expr:
+          kind: path
+          path: [entityType]
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Human-readable description.
+        expr:
+          kind: path
+          path: [description]
+      - name: schema_json
+        type: Json
+        nullable: true
+        description: Full schema definition as JSON.
+        expr:
+          kind: path
+          path: [schemaJson]
+
+  # ──────────────────────────────────────────────────────────────────────
+  # event_schemas
+  # ──────────────────────────────────────────────────────────────────────
+  - name: event_schemas
+    description: >-
+      Lexicon schemas filtered to event-type entities only.
+    guide: >
+      `SELECT name, description FROM mixpanel.event_schemas`.
+    request:
+      method: GET
+      path: /api/app/projects/{{input.MIXPANEL_PROJECT_ID}}/schemas/event
+    response:
+      rows_path:
+        - results
+    pagination:
+      mode: none
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Event name.
+        expr:
+          kind: path
+          path: [name]
+      - name: entity_type
+        type: Utf8
+        nullable: true
+        description: Entity type (always event).
+        expr:
+          kind: path
+          path: [entityType]
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Event description.
+        expr:
+          kind: path
+          path: [description]
+      - name: schema_json
+        type: Json
+        nullable: true
+        description: Full event schema definition.
+        expr:
+          kind: path
+          path: [schemaJson]
+
+  # ──────────────────────────────────────────────────────────────────────
+  # profile_schemas
+  # ──────────────────────────────────────────────────────────────────────
+  - name: profile_schemas
+    description: >-
+      Lexicon schemas filtered to profile-type entities only.
+    guide: >
+      `SELECT name, description
+      FROM mixpanel.profile_schemas`.
+    request:
+      method: GET
+      path: /api/app/projects/{{input.MIXPANEL_PROJECT_ID}}/schemas/profile
+    response:
+      rows_path:
+        - results
+    pagination:
+      mode: none
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Profile property name.
+        expr:
+          kind: path
+          path: [name]
+      - name: entity_type
+        type: Utf8
+        nullable: true
+        description: Entity type (always profile).
+        expr:
+          kind: path
+          path: [entityType]
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Property description.
+        expr:
+          kind: path
+          path: [description]
+      - name: schema_json
+        type: Json
+        nullable: true
+        description: Full profile schema definition.
+        expr:
+          kind: path
+          path: [schemaJson]
+
+  # ──────────────────────────────────────────────────────────────────────
+  # dashboards
+  # ──────────────────────────────────────────────────────────────────────
+  - name: dashboards
+    description: >-
+      Dashboards defined in the project with title, creator,
+      and modification timestamps.
+    guide: >
+      `SELECT id, title, creator_name, created
+      FROM mixpanel.dashboards`.
+    request:
+      method: GET
+      path: /api/app/projects/{{input.MIXPANEL_PROJECT_ID}}/dashboards
+    response:
+      rows_path:
+        - results
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Unique dashboard ID.
+        expr:
+          kind: path
+          path: [id]
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Dashboard title.
+        expr:
+          kind: path
+          path: [title]
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Dashboard description.
+        expr:
+          kind: path
+          path: [description]
+      - name: creator_name
+        type: Utf8
+        nullable: true
+        description: Name of the dashboard creator.
+        expr:
+          kind: path
+          path: [creator_name]
+      - name: creator_email
+        type: Utf8
+        nullable: true
+        description: Email of the dashboard creator.
+        expr:
+          kind: path
+          path: [creator_email]
+      - name: creator_id
+        type: Int64
+        nullable: true
+        description: ID of the user who created the dashboard.
+        expr:
+          kind: path
+          path: [creator_id]
+      - name: is_private
+        type: Boolean
+        nullable: true
+        description: Whether the dashboard is private.
+        expr:
+          kind: path
+          path: [is_private]
+      - name: created
+        type: Utf8
+        nullable: true
+        description: Creation timestamp.
+        expr:
+          kind: path
+          path: [created]
+      - name: last_modified
+        type: Utf8
+        nullable: true
+        description: Last modification timestamp.
+        expr:
+          kind: path
+          path: [last_modified]

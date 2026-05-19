@@ -14,6 +14,9 @@ root.
 - bundled-source manifest description and install-time manifest mapping through
   `coral-spec`
 - query-time selection of installed sources before calling `coral-engine`
+- workspace-scoped catalog discovery behavior over query-visible tables:
+  matching, pagination, exact lookup, column filtering, and missing-table
+  context
 
 ## Does Not Own
 
@@ -30,9 +33,9 @@ root.
 - Keep process environment access in `src/bootstrap/env.rs` or other clearly
   app-owned bootstrap seams. Do not read ambient process environment from
   managers, services, or state helpers.
-- Keep `state/`, `workspaces/`, `sources/`, and `query/` as the main internal
-  boundaries. Do not create new sub-boundaries unless they own durable,
-  independent behavior.
+- Keep `state/`, `workspaces/`, `sources/`, `query/`, and `catalog/` as the
+  main internal boundaries. Do not create new sub-boundaries unless they own
+  durable, independent behavior.
 - Persist imported manifests as files under app-owned state; do not inline
   them into `config.toml`.
 - Bundled installs persist source identity plus configured variables and
@@ -55,6 +58,10 @@ root.
 - `manager.rs` files own app-level orchestration. They coordinate installed
   state, secrets, manifests, rollback, runtime setup, and engine calls. They
   should not know about tonic request or response types.
+- `catalog/discovery.rs` owns provider-independent discovery semantics that
+  adapters need to share. CLI, MCP, and UI code should render catalog results,
+  not reimplement table matching, column filtering, pagination, or
+  missing-table context.
 - For all service calls, keep protobuf request/response types confined to the
   service edge. Convert request data into small app-local command, query, or
   binding structs before calling managers; do not pass `coral_api::v1`
