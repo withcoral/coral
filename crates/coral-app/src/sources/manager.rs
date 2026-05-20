@@ -194,18 +194,18 @@ impl SourceManager {
                 .credential_manager
                 .snapshot_material(workspace_name, &credential_set_id)?,
         };
-        if source_dir.exists()
-            && let Err(error) = std::fs::remove_dir_all(&source_dir)
-        {
-            self.restore_source_rollback_state(workspace_name, source_name, Some(previous));
-            return Err(error.into());
-        }
         if let Err(error) = self
             .credential_manager
             .remove_material(workspace_name, &credential_set_id)
         {
             self.restore_source_rollback_state(workspace_name, source_name, Some(previous));
             return Err(error);
+        }
+        if source_dir.exists()
+            && let Err(error) = std::fs::remove_dir_all(&source_dir)
+        {
+            self.restore_source_rollback_state(workspace_name, source_name, Some(previous));
+            return Err(error.into());
         }
         if let Err(error) = self.config_store.remove_source(workspace_name, source_name) {
             self.restore_source_rollback_state(workspace_name, source_name, Some(previous));
