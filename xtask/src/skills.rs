@@ -215,11 +215,10 @@ fn validate_skill_definition(
         );
     }
     let expected_prompt_token = format!("${}", metadata.name);
-    if !agent_metadata
-        .interface
-        .default_prompt
-        .contains(&expected_prompt_token)
-    {
+    if !mentions_skill_token(
+        &agent_metadata.interface.default_prompt,
+        &expected_prompt_token,
+    ) {
         bail!(
             "skill '{}' default_prompt must mention '{}'",
             metadata.name,
@@ -227,6 +226,23 @@ fn validate_skill_definition(
         );
     }
     Ok(())
+}
+
+fn mentions_skill_token(prompt: &str, token: &str) -> bool {
+    prompt.match_indices(token).any(|(start, _)| {
+        let before = prompt
+            .get(..start)
+            .and_then(|value| value.chars().next_back());
+        let after = prompt
+            .get(start + token.len()..)
+            .and_then(|value| value.chars().next());
+        before.is_none_or(|ch| !is_skill_token_char(ch) && ch != '$')
+            && after.is_none_or(|ch| !is_skill_token_char(ch))
+    })
+}
+
+fn is_skill_token_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || ch == '-' || ch == '_'
 }
 
 fn expected_display_name(name: &str) -> Result<String> {
@@ -348,7 +364,8 @@ fn render_readme(skills: &[Skill]) -> String {
 mod tests {
     use super::{
         AgentInterface, AgentMetadata, Skill, SkillMetadata, expected_display_name,
-        parse_skill_metadata_str, render_readme, unquote, validate_skill_definition,
+        mentions_skill_token, parse_skill_metadata_str, render_readme, unquote,
+        validate_skill_definition,
     };
 
     #[test]
@@ -401,6 +418,42 @@ description: "Query live sources through Coral MCP."
             .expect_err("heading drift should be rejected")
             .to_string();
         assert!(error.contains("heading must match display_name"));
+    }
+
+    #[test]
+    fn matches_skill_prompt_token_as_standalone_token() {
+        assert!(mentions_skill_token("Use $coral to query data.", "$coral"));
+        assert!(mentions_skill_token("Use ($coral).", "$coral"));
+        assert!(mentions_skill_token(
+            "Use $coral-create-source-spec to create specs.",
+            "$coral-create-source-spec"
+        ));
+        assert!(!mentions_skill_token(
+            "Use $coral-create-source-spec to create specs.",
+            "$coral"
+        ));
+        assert!(!mentions_skill_token("Use $coral_review.", "$coral"));
+        assert!(!mentions_skill_token("Use $$coral.", "$coral"));
+    }
+
+    #[test]
+    fn rejects_prompt_that_only_mentions_longer_skill_token() {
+        let metadata = SkillMetadata {
+            name: "coral".to_string(),
+            description: "Query live sources.".to_string(),
+            title: "Coral".to_string(),
+        };
+        let agent_metadata = AgentMetadata {
+            interface: AgentInterface {
+                display_name: "Coral".to_string(),
+                short_description: "Query live sources".to_string(),
+                default_prompt: "Use $coral-create-source-spec to create specs.".to_string(),
+            },
+        };
+        let error = validate_skill_definition(&metadata, &agent_metadata)
+            .expect_err("longer token should not satisfy the base skill")
+            .to_string();
+        assert!(error.contains("default_prompt must mention '$coral'"));
     }
 
     #[test]
