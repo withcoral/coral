@@ -52,41 +52,34 @@ message Source {
   SourceOrigin origin = 6;
 }
 
-// Input kinds that Coral prompts for while installing or importing a source.
-enum SourceInputKind {
-  // Source input kind was not specified.
-  SOURCE_INPUT_KIND_UNSPECIFIED = 0;
-  // Source input is a visible non-secret variable.
-  SOURCE_INPUT_KIND_VARIABLE = 1;
-  // Source input is a secret value.
-  SOURCE_INPUT_KIND_SECRET = 2;
-}
-
 // One manifest-declared source input prompt.
 message SourceInputSpec {
   // Logical variable or secret key.
   string key = 1;
-  // How Coral should prompt for and persist the value.
-  SourceInputKind kind = 2;
   // Whether the input must be supplied explicitly.
-  bool required = 3;
-  // Optional manifest-declared default value.
-  string default_value = 4;
+  bool required = 2;
   // Optional authored hint shown to the user while collecting this input.
-  string hint = 5;
-  // Optional credential retrieval choices for secret inputs. If absent, clients
-  // collect the secret value as if a source_config method were declared.
-  SourceCredential credential = 6;
+  string hint = 3;
+  // Input-specific metadata.
+  oneof input {
+    // Visible non-secret variable input metadata.
+    SourceVariableInput variable = 4;
+    // Secret input metadata.
+    SourceSecretInput secret = 5;
+  }
 }
 
-// Supported source credential retrieval method kinds.
-enum SourceCredentialMethodType {
-  // Method kind is unspecified.
-  SOURCE_CREDENTIAL_METHOD_TYPE_UNSPECIFIED = 0;
-  // Secret value is supplied through the source configuration path.
-  SOURCE_CREDENTIAL_METHOD_TYPE_SOURCE_CONFIG = 1;
-  // Coral retrieves the secret through an OAuth authorization-code flow.
-  SOURCE_CREDENTIAL_METHOD_TYPE_OAUTH = 2;
+// Manifest-declared visible non-secret variable input metadata.
+message SourceVariableInput {
+  // Optional manifest-declared default value.
+  string default_value = 1;
+}
+
+// Manifest-declared secret input metadata.
+message SourceSecretInput {
+  // Optional credential retrieval choices. If absent, clients collect the
+  // secret value as if a source_config method were declared.
+  SourceCredential credential = 1;
 }
 
 // Credential retrieval choices for one source secret input.
@@ -97,56 +90,46 @@ message SourceCredential {
 
 // One credential retrieval method.
 message SourceCredentialMethod {
-  // Method kind.
-  SourceCredentialMethodType type = 1;
   // Optional display label.
-  string label = 2;
+  string label = 1;
   // Optional display description.
-  string description = 3;
-  // OAuth configuration when `type` is OAuth.
-  OAuthCredentialMethod oauth = 4;
+  string description = 2;
+  // Method-specific metadata.
+  oneof method {
+    // Secret value is supplied through the source configuration path.
+    SourceConfigCredentialMethod source_config = 3;
+    // Coral retrieves the secret through an OAuth authorization-code flow.
+    OAuthAuthorizationCodeCredentialMethod oauth_authorization_code = 4;
+  }
+}
+
+// Source-configuration credential retrieval method marker.
+message SourceConfigCredentialMethod {
 }
 
 // OAuth authorization-code credential retrieval configuration.
-message OAuthCredentialMethod {
-  // OAuth flow settings.
-  OAuthCredentialFlow flow = 1;
+message OAuthAuthorizationCodeCredentialMethod {
   // Loopback callback URI Coral binds during the OAuth session.
-  string redirect_uri = 2;
+  string redirect_uri = 1;
   // Provider OAuth endpoints.
-  OAuthCredentialEndpoints endpoints = 3;
+  OAuthCredentialEndpoints endpoints = 2;
   // OAuth client configuration.
-  OAuthCredentialClient client = 4;
+  OAuthCredentialClient client = 3;
   // Optional scope parameter configuration.
-  OAuthCredentialScopes scopes = 5;
-}
-
-// Supported OAuth credential flow kinds.
-enum OAuthCredentialFlowType {
-  // Flow kind is unspecified. This is invalid for OAuth credential methods;
-  // clients must reject it instead of inferring a default flow.
-  O_AUTH_CREDENTIAL_FLOW_TYPE_UNSPECIFIED = 0;
-  // OAuth authorization-code flow.
-  O_AUTH_CREDENTIAL_FLOW_TYPE_AUTHORIZATION_CODE = 1;
+  OAuthCredentialScopes scopes = 4;
+  // PKCE mode.
+  OauthCredentialPkceMode pkce = 5;
 }
 
 // Supported OAuth PKCE modes.
-enum OAuthCredentialPkceMode {
+enum OauthCredentialPkceMode {
   // PKCE mode is unspecified. This is invalid for OAuth credential methods;
   // clients must reject it instead of inferring a PKCE policy.
-  O_AUTH_CREDENTIAL_PKCE_MODE_UNSPECIFIED = 0;
+  OAUTH_CREDENTIAL_PKCE_MODE_UNSPECIFIED = 0;
   // PKCE must be used for the OAuth flow.
-  O_AUTH_CREDENTIAL_PKCE_MODE_REQUIRED = 1;
+  OAUTH_CREDENTIAL_PKCE_MODE_REQUIRED = 1;
   // PKCE is not used for the OAuth flow.
-  O_AUTH_CREDENTIAL_PKCE_MODE_DISABLED = 2;
-}
-
-// OAuth flow settings.
-message OAuthCredentialFlow {
-  // Flow kind.
-  OAuthCredentialFlowType type = 1;
-  // PKCE mode.
-  OAuthCredentialPkceMode pkce = 2;
+  OAUTH_CREDENTIAL_PKCE_MODE_DISABLED = 2;
 }
 
 // OAuth provider endpoints.
@@ -168,19 +151,19 @@ message OAuthCredentialClient {
 // OAuth client ID resolution configuration.
 message OAuthCredentialClientId {
   // Optional manifest-authored default client ID.
-  string default = 1;
+  string default_value = 1;
   // Optional credential-retrieval input key for a client ID override.
   string input = 2;
 }
 
 // Supported client secret transport modes.
-enum OAuthCredentialClientSecretTransport {
+enum OauthCredentialClientSecretTransport {
   // Client secret transport is unspecified.
-  O_AUTH_CREDENTIAL_CLIENT_SECRET_TRANSPORT_UNSPECIFIED = 0;
+  OAUTH_CREDENTIAL_CLIENT_SECRET_TRANSPORT_UNSPECIFIED = 0;
   // Client secret is sent using HTTP Basic authentication.
-  O_AUTH_CREDENTIAL_CLIENT_SECRET_TRANSPORT_BASIC_AUTH = 1;
+  OAUTH_CREDENTIAL_CLIENT_SECRET_TRANSPORT_BASIC_AUTH = 1;
   // Client secret is sent in the token request body.
-  O_AUTH_CREDENTIAL_CLIENT_SECRET_TRANSPORT_REQUEST_BODY = 2;
+  OAUTH_CREDENTIAL_CLIENT_SECRET_TRANSPORT_REQUEST_BODY = 2;
 }
 
 // OAuth client secret retrieval configuration.
@@ -188,17 +171,17 @@ message OAuthCredentialClientSecret {
   // Credential-retrieval input key for the client secret.
   string input = 1;
   // How Coral sends the secret to the token endpoint.
-  OAuthCredentialClientSecretTransport transport = 2;
+  OauthCredentialClientSecretTransport transport = 2;
 }
 
 // Supported OAuth scope delimiters.
-enum OAuthCredentialScopeDelimiter {
+enum OauthCredentialScopeDelimiter {
   // Scope delimiter is unspecified.
-  O_AUTH_CREDENTIAL_SCOPE_DELIMITER_UNSPECIFIED = 0;
+  OAUTH_CREDENTIAL_SCOPE_DELIMITER_UNSPECIFIED = 0;
   // Scope values are joined with spaces.
-  O_AUTH_CREDENTIAL_SCOPE_DELIMITER_SPACE = 1;
+  OAUTH_CREDENTIAL_SCOPE_DELIMITER_SPACE = 1;
   // Scope values are joined with commas.
-  O_AUTH_CREDENTIAL_SCOPE_DELIMITER_COMMA = 2;
+  OAUTH_CREDENTIAL_SCOPE_DELIMITER_COMMA = 2;
 }
 
 // OAuth scope parameter configuration.
@@ -210,7 +193,7 @@ message OAuthCredentialScopes {
 // OAuth scope values and delimiter.
 message OAuthCredentialScope {
   // Delimiter used to join scope values.
-  OAuthCredentialScopeDelimiter delimiter = 1;
+  OauthCredentialScopeDelimiter delimiter = 1;
   // Authored scope values.
   repeated string values = 2;
 }

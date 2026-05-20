@@ -11,7 +11,7 @@ use coral_api::v1::{
     ExplainSqlRequest, GetSourceInfoRequest, GetSourceRequest, ImportSourceRequest,
     ListCatalogRequest, PaginationRequest, QueryTestFailure, QueryTestSuccess, SourceOrigin,
     SourceSecret, SourceVariable, ValidateSourceRequest, Workspace, catalog_item,
-    query_test_result,
+    query_test_result, source_input_spec::Input as ProtoSourceInput,
 };
 use coral_client::default_workspace;
 use tempfile::TempDir;
@@ -836,7 +836,12 @@ async fn get_source_info_uses_effective_installed_imported_manifest() {
     assert!(info.installed);
     assert_eq!(info.inputs.len(), 2);
     assert_eq!(info.inputs[0].key, "API_BASE");
-    assert_eq!(info.inputs[0].default_value, "https://example.com");
+    match info.inputs[0].input.as_ref().expect("input metadata") {
+        ProtoSourceInput::Variable(variable) => {
+            assert_eq!(variable.default_value, "https://example.com");
+        }
+        ProtoSourceInput::Secret(_) => panic!("expected variable input"),
+    }
     assert_eq!(info.inputs[1].key, "API_TOKEN");
 }
 

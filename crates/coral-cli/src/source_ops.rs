@@ -6,8 +6,8 @@ use coral_api::CORAL_ERROR_REASON_SOURCE_NOT_FOUND;
 use coral_api::v1::{
     CreateBundledSourceRequest, DeleteSourceRequest, DiscoverSourcesRequest, GetSourceInfoRequest,
     ImportSourceRequest, ListSourcesRequest, QueryTestFailure, QueryTestSuccess, Source,
-    SourceInfo, SourceInputKind, SourceOrigin, SourceSecret, SourceVariable, ValidateSourceRequest,
-    ValidateSourceResponse, query_test_result,
+    SourceInfo, SourceOrigin, SourceSecret, SourceVariable, ValidateSourceRequest,
+    ValidateSourceResponse, query_test_result, source_input_spec::Input as ProtoSourceInput,
 };
 use coral_client::{AppClient, DecodedStatusError, decode_status_error, default_workspace};
 use coral_spec::{
@@ -188,10 +188,12 @@ fn print_source_info_response(source: &SourceInfo, verbose: bool) {
     println!();
     println!("  {}", style("Inputs").bold());
     for input in &source.inputs {
-        let kind_label = match SourceInputKind::try_from(input.kind) {
-            Ok(SourceInputKind::Variable) => "variable",
-            Ok(SourceInputKind::Secret) => "secret",
-            Ok(SourceInputKind::Unspecified) | Err(_) => "unknown",
+        let (kind_label, default_value) = match input.input.as_ref() {
+            Some(ProtoSourceInput::Variable(variable)) => {
+                ("variable", variable.default_value.as_str())
+            }
+            Some(ProtoSourceInput::Secret(_)) => ("secret", ""),
+            None => ("unknown", ""),
         };
         let requirement = if input.required {
             "required"
@@ -203,8 +205,8 @@ fn print_source_info_response(source: &SourceInfo, verbose: bool) {
             style(&input.key).bold(),
             style(format!("({kind_label}, {requirement})")).dim()
         );
-        if !input.default_value.is_empty() {
-            println!("      default: {}", input.default_value);
+        if !default_value.is_empty() {
+            println!("      default: {default_value}");
         }
         if verbose && !input.hint.is_empty() {
             println!("      {}", style(&input.hint).dim());

@@ -23,8 +23,8 @@ use coral_api::v1::{
     ImportSourceResponse, ListCatalogRequest, ListCatalogResponse, ListColumnsRequest,
     ListColumnsResponse, ListSourcesRequest, ListSourcesResponse, PaginationRequest,
     PaginationResponse, QueryPlan, SearchCatalogRequest, SearchCatalogResponse, Source, SourceInfo,
-    SourceInputKind, SourceInputSpec, SourceOrigin, Table, TableSummary, ValidateSourceRequest,
-    ValidateSourceResponse, Workspace, catalog_item,
+    SourceInputSpec, SourceOrigin, SourceSecretInput, Table, TableSummary, ValidateSourceRequest,
+    ValidateSourceResponse, Workspace, catalog_item, source_input_spec::Input as ProtoSourceInput,
 };
 use coral_api::{CORAL_ERROR_DOMAIN, CORAL_ERROR_REASON_SOURCE_NOT_FOUND};
 use tokio::net::TcpListener;
@@ -272,11 +272,11 @@ fn mock_discover_response() -> DiscoverSourcesResponse {
                 version: "1.0.0".to_string(),
                 inputs: vec![SourceInputSpec {
                     key: "GITHUB_TOKEN".to_string(),
-                    kind: SourceInputKind::Secret as i32,
                     required: true,
-                    default_value: String::new(),
                     hint: "Create a token at github.com/settings/tokens".to_string(),
-                    credential: None,
+                    input: Some(ProtoSourceInput::Secret(SourceSecretInput {
+                        credential: None,
+                    })),
                 }],
                 installed: true,
                 origin: SourceOrigin::Bundled as i32,
@@ -313,11 +313,11 @@ fn mock_source_info(name: &str) -> Result<SourceInfo, Status> {
             version: "1.0.0".to_string(),
             inputs: vec![SourceInputSpec {
                 key: "GITHUB_TOKEN".to_string(),
-                kind: SourceInputKind::Secret as i32,
                 required: true,
-                default_value: String::new(),
                 hint: "Create a token at github.com/settings/tokens".to_string(),
-                credential: None,
+                input: Some(ProtoSourceInput::Secret(SourceSecretInput {
+                    credential: None,
+                })),
             }],
             installed: true,
             origin: SourceOrigin::Bundled as i32,

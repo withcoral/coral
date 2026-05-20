@@ -5,19 +5,20 @@ use coral_api::v1::{
     CreateBundledSourceRequest, CreateBundledSourceResponse, DeleteSourceRequest,
     DeleteSourceResponse, DiscoverSourcesRequest, DiscoverSourcesResponse, GetSourceInfoRequest,
     GetSourceInfoResponse, GetSourceRequest, GetSourceResponse, ImportSourceRequest,
-    ImportSourceResponse, ListSourcesRequest, ListSourcesResponse, OAuthCredentialClient,
-    OAuthCredentialClientId, OAuthCredentialClientSecret, OAuthCredentialClientSecretTransport,
-    OAuthCredentialEndpoints, OAuthCredentialFlow, OAuthCredentialFlowType, OAuthCredentialMethod,
-    OAuthCredentialPkceMode, OAuthCredentialScope, OAuthCredentialScopeDelimiter,
-    OAuthCredentialScopes, Source, SourceCredential, SourceCredentialMethod,
-    SourceCredentialMethodType, SourceInfo, SourceInputKind, SourceInputSpec,
-    SourceOrigin as ProtoSourceOrigin, SourceSecret, SourceVariable, ValidateSourceRequest,
-    ValidateSourceResponse,
+    ImportSourceResponse, ListSourcesRequest, ListSourcesResponse,
+    OAuthAuthorizationCodeCredentialMethod, OAuthCredentialClient, OAuthCredentialClientId,
+    OAuthCredentialClientSecret, OAuthCredentialEndpoints, OAuthCredentialScope,
+    OAuthCredentialScopes, OauthCredentialClientSecretTransport, OauthCredentialPkceMode,
+    OauthCredentialScopeDelimiter, Source, SourceConfigCredentialMethod, SourceCredential,
+    SourceCredentialMethod, SourceInfo, SourceInputSpec, SourceOrigin as ProtoSourceOrigin,
+    SourceSecret, SourceSecretInput, SourceVariable, SourceVariableInput, ValidateSourceRequest,
+    ValidateSourceResponse, source_credential_method::Method as ProtoCredentialMethod,
+    source_input_spec::Input as ProtoSourceInput,
 };
 use coral_spec::{
     ManifestCredentialMethodKind, ManifestCredentialSpec, ManifestInputKind, ManifestInputSpec,
-    ManifestOAuthClientSecretTransport, ManifestOAuthCredentialSpec, ManifestOAuthFlowKind,
-    ManifestOAuthPkceMode, ManifestOAuthScopeDelimiter,
+    ManifestOAuthClientSecretTransport, ManifestOAuthCredentialSpec, ManifestOAuthPkceMode,
+    ManifestOAuthScopeDelimiter,
 };
 use tonic::{Request, Response, Status};
 
@@ -294,20 +295,19 @@ fn candidate_source_to_proto(source: CandidateSource) -> SourceInfo {
 }
 
 fn candidate_source_input_to_proto(input: ManifestInputSpec) -> SourceInputSpec {
+    let input_body = match input.kind {
+        ManifestInputKind::Variable => ProtoSourceInput::Variable(SourceVariableInput {
+            default_value: input.default_value,
+        }),
+        ManifestInputKind::Secret => ProtoSourceInput::Secret(SourceSecretInput {
+            credential: input.credential.map(credential_to_proto),
+        }),
+    };
     SourceInputSpec {
         key: input.key,
-        kind: proto_candidate_input_kind(input.kind) as i32,
         required: input.required,
-        default_value: input.default_value,
         hint: input.hint.unwrap_or_default(),
-        credential: input.credential.map(credential_to_proto),
-    }
-}
-
-fn proto_candidate_input_kind(kind: ManifestInputKind) -> SourceInputKind {
-    match kind {
-        ManifestInputKind::Variable => SourceInputKind::Variable,
-        ManifestInputKind::Secret => SourceInputKind::Secret,
+        input: Some(input_body),
     }
 }
 
@@ -316,29 +316,31 @@ fn credential_to_proto(credential: ManifestCredentialSpec) -> SourceCredential {
         methods: credential
             .methods
             .into_iter()
-            .map(|method| SourceCredentialMethod {
-                r#type: proto_credential_method_kind(method.kind) as i32,
-                label: method.label.unwrap_or_default(),
-                description: method.description.unwrap_or_default(),
-                oauth: method.oauth.map(oauth_to_proto),
-            })
+            .map(credential_method_to_proto)
             .collect(),
     }
 }
 
-fn proto_credential_method_kind(kind: ManifestCredentialMethodKind) -> SourceCredentialMethodType {
-    match kind {
-        ManifestCredentialMethodKind::SourceConfig => SourceCredentialMethodType::SourceConfig,
-        ManifestCredentialMethodKind::OAuth => SourceCredentialMethodType::Oauth,
+fn credential_method_to_proto(
+    method: coral_spec::ManifestCredentialMethod,
+) -> SourceCredentialMethod {
+    let method_body = match method.kind {
+        ManifestCredentialMethodKind::SourceConfig => {
+            ProtoCredentialMethod::SourceConfig(SourceConfigCredentialMethod {})
+        }
+        ManifestCredentialMethodKind::OAuth => ProtoCredentialMethod::OauthAuthorizationCode(
+            method.oauth.map(oauth_to_proto).unwrap_or_default(),
+        ),
+    };
+    SourceCredentialMethod {
+        label: method.label.unwrap_or_default(),
+        description: method.description.unwrap_or_default(),
+        method: Some(method_body),
     }
 }
 
-fn oauth_to_proto(oauth: ManifestOAuthCredentialSpec) -> OAuthCredentialMethod {
-    OAuthCredentialMethod {
-        flow: Some(OAuthCredentialFlow {
-            r#type: proto_oauth_flow_kind(oauth.flow.kind) as i32,
-            pkce: proto_oauth_pkce_mode(oauth.flow.pkce) as i32,
-        }),
+fn oauth_to_proto(oauth: ManifestOAuthCredentialSpec) -> OAuthAuthorizationCodeCredentialMethod {
+    OAuthAuthorizationCodeCredentialMethod {
         redirect_uri: oauth.redirect_uri,
         endpoints: Some(OAuthCredentialEndpoints {
             authorization_url: oauth.authorization_url,
@@ -346,7 +348,7 @@ fn oauth_to_proto(oauth: ManifestOAuthCredentialSpec) -> OAuthCredentialMethod {
         }),
         client: Some(OAuthCredentialClient {
             id: Some(OAuthCredentialClientId {
-                r#default: oauth.client.id.default.unwrap_or_default(),
+                default_value: oauth.client.id.default.unwrap_or_default(),
                 input: oauth.client.id.input.unwrap_or_default(),
             }),
             secret: oauth
@@ -363,41 +365,36 @@ fn oauth_to_proto(oauth: ManifestOAuthCredentialSpec) -> OAuthCredentialMethod {
                 values: scopes.scope.values,
             }),
         }),
+        pkce: proto_oauth_pkce_mode(oauth.flow.pkce) as i32,
     }
 }
 
-fn proto_oauth_flow_kind(kind: ManifestOAuthFlowKind) -> OAuthCredentialFlowType {
-    match kind {
-        ManifestOAuthFlowKind::AuthorizationCode => OAuthCredentialFlowType::AuthorizationCode,
-    }
-}
-
-fn proto_oauth_pkce_mode(mode: ManifestOAuthPkceMode) -> OAuthCredentialPkceMode {
+fn proto_oauth_pkce_mode(mode: ManifestOAuthPkceMode) -> OauthCredentialPkceMode {
     match mode {
-        ManifestOAuthPkceMode::Required => OAuthCredentialPkceMode::Required,
-        ManifestOAuthPkceMode::Disabled => OAuthCredentialPkceMode::Disabled,
+        ManifestOAuthPkceMode::Required => OauthCredentialPkceMode::Required,
+        ManifestOAuthPkceMode::Disabled => OauthCredentialPkceMode::Disabled,
     }
 }
 
 fn proto_oauth_client_secret_transport(
     transport: ManifestOAuthClientSecretTransport,
-) -> OAuthCredentialClientSecretTransport {
+) -> OauthCredentialClientSecretTransport {
     match transport {
         ManifestOAuthClientSecretTransport::BasicAuth => {
-            OAuthCredentialClientSecretTransport::BasicAuth
+            OauthCredentialClientSecretTransport::BasicAuth
         }
         ManifestOAuthClientSecretTransport::RequestBody => {
-            OAuthCredentialClientSecretTransport::RequestBody
+            OauthCredentialClientSecretTransport::RequestBody
         }
     }
 }
 
 fn proto_oauth_scope_delimiter(
     delimiter: ManifestOAuthScopeDelimiter,
-) -> OAuthCredentialScopeDelimiter {
+) -> OauthCredentialScopeDelimiter {
     match delimiter {
-        ManifestOAuthScopeDelimiter::Space => OAuthCredentialScopeDelimiter::Space,
-        ManifestOAuthScopeDelimiter::Comma => OAuthCredentialScopeDelimiter::Comma,
+        ManifestOAuthScopeDelimiter::Space => OauthCredentialScopeDelimiter::Space,
+        ManifestOAuthScopeDelimiter::Comma => OauthCredentialScopeDelimiter::Comma,
     }
 }
 
@@ -460,24 +457,26 @@ mod tests {
 
         let proto = candidate_source_input_to_proto(input);
 
-        let credential = proto.credential.expect("credential");
+        let secret = match proto.input.expect("input") {
+            ProtoSourceInput::Secret(secret) => secret,
+            ProtoSourceInput::Variable(_) => panic!("expected secret input"),
+        };
+        let credential = secret.credential.expect("credential");
         assert_eq!(credential.methods.len(), 2);
-        assert_eq!(
-            SourceCredentialMethodType::try_from(credential.methods[0].r#type).expect("type"),
-            SourceCredentialMethodType::Oauth
-        );
-        assert_eq!(
-            credential.methods[0]
-                .oauth
-                .as_ref()
-                .expect("oauth")
-                .redirect_uri,
-            "http://127.0.0.1:53682/oauth/callback"
-        );
-        assert_eq!(
-            SourceCredentialMethodType::try_from(credential.methods[1].r#type).expect("type"),
-            SourceCredentialMethodType::SourceConfig
-        );
+        match credential.methods[0].method.as_ref().expect("method") {
+            ProtoCredentialMethod::OauthAuthorizationCode(oauth) => {
+                assert_eq!(oauth.redirect_uri, "http://127.0.0.1:53682/oauth/callback");
+                assert_eq!(
+                    OauthCredentialPkceMode::try_from(oauth.pkce).expect("pkce"),
+                    OauthCredentialPkceMode::Required
+                );
+            }
+            ProtoCredentialMethod::SourceConfig(_) => panic!("expected oauth method"),
+        }
+        assert!(matches!(
+            credential.methods[1].method,
+            Some(ProtoCredentialMethod::SourceConfig(_))
+        ));
     }
 
     #[test]
@@ -491,6 +490,12 @@ mod tests {
             credential: None,
         };
 
-        assert!(candidate_source_input_to_proto(input).credential.is_none());
+        let proto = candidate_source_input_to_proto(input);
+        let secret = match proto.input.expect("input") {
+            ProtoSourceInput::Secret(secret) => secret,
+            ProtoSourceInput::Variable(_) => panic!("expected secret input"),
+        };
+
+        assert!(secret.credential.is_none());
     }
 }
