@@ -27,6 +27,9 @@ use rmcp::{ClientHandler, ServiceExt};
 use serde_json::Value;
 use tokio::process::Command;
 
+use crate::backends::common::{
+    RegisteredTableFunctionArgument, RegisteredTableFunctionResultColumn,
+};
 use crate::backends::shared::filter_expr::{extract_filter_values, literal_to_string};
 use crate::backends::shared::json_exec::{JsonExec, RowFetcher};
 use crate::backends::shared::json_path::get_path_value;
@@ -783,23 +786,19 @@ fn registered_table_function(
     let arguments = function
         .args
         .iter()
-        .map(|arg| {
-            serde_json::json!({
-                "name": arg.name,
-                "required": arg.required,
-                "values": arg.values,
-            })
+        .map(|arg| RegisteredTableFunctionArgument {
+            name: arg.name.clone(),
+            required: arg.required,
+            values: arg.values.clone(),
         })
         .collect::<Vec<_>>();
     let result_columns = registered_columns_from_specs(&function.columns, &[])
         .into_iter()
-        .map(|column| {
-            serde_json::json!({
-                "name": column.name,
-                "type": column.data_type,
-                "nullable": column.nullable,
-                "description": column.description,
-            })
+        .map(|column| RegisteredTableFunctionResultColumn {
+            name: column.name,
+            data_type: column.data_type,
+            nullable: column.nullable,
+            description: column.description,
         })
         .collect::<Vec<_>>();
 
@@ -808,8 +807,8 @@ fn registered_table_function(
         function_name: function.name.clone(),
         internal_name,
         description: function.description.clone(),
-        arguments_json: serde_json::to_string(&arguments).expect("arguments json"),
-        result_columns_json: serde_json::to_string(&result_columns).expect("result columns json"),
+        arguments,
+        result_columns,
         arg_names: function.args.iter().map(|arg| arg.name.clone()).collect(),
     }
 }

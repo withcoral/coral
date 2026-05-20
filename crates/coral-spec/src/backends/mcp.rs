@@ -160,8 +160,10 @@ impl McpTableSpec {
             .iter()
             .map(|filter| FilterSpec {
                 name: filter.name.clone(),
+                data_type: "Utf8".to_string(),
                 required: filter.required,
                 mode: filter.mode,
+                description: String::new(),
             })
             .collect()
     }
