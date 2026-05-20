@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 
+use datafusion::error::DataFusionError;
 use reqwest::StatusCode as HttpStatus;
 
 use crate::contracts::{StatusCode, StructuredQueryError};
@@ -74,6 +75,33 @@ pub(crate) enum ProviderQueryError {
         url: Option<String>,
         detail: String,
     },
+}
+
+pub(super) fn pagination_error(
+    source_schema: &str,
+    table_name: &str,
+    method_label: Option<&str>,
+    logged_url: Option<&str>,
+    error: &DataFusionError,
+) -> DataFusionError {
+    provider_error(ProviderQueryError::Pagination {
+        source_schema: source_schema.to_string(),
+        table: table_name.to_string(),
+        method: method_label.map(ToOwned::to_owned),
+        url: logged_url.map(ToOwned::to_owned),
+        detail: datafusion_detail(error),
+    })
+}
+
+pub(super) fn provider_error(error: ProviderQueryError) -> DataFusionError {
+    DataFusionError::External(Box::new(error))
+}
+
+fn datafusion_detail(error: &DataFusionError) -> String {
+    match error {
+        DataFusionError::Execution(detail) => detail.clone(),
+        other => other.to_string(),
+    }
 }
 
 // ---------------------------------------------------------------------------
