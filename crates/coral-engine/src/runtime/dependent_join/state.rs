@@ -41,7 +41,8 @@ impl DependentJoinRuntimeState {
         caps: &ResolverCaps,
     ) -> Result<Vec<Tuple>> {
         let projected_tuples = self.project_batch_tuples(batch, projector, caps)?;
-        let observed = self.resolver_rows.saturating_add(batch.num_rows());
+        let valid_rows = projected_tuples.iter().filter(|t| t.is_some()).count();
+        let observed = self.resolver_rows.saturating_add(valid_rows);
         if observed > caps.max_resolver_rows {
             return Err(resolver_rows_exceeded(caps, observed));
         }
