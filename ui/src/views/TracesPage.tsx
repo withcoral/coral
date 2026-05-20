@@ -80,7 +80,7 @@ function HeaderActions({ expanded, searchText, setExpanded, setSearchText }: {
         handler={(e) => {
           e.preventDefault()
           setExpanded(true)
-          inputRef.current?.focus()
+          inputRef.current?.select()
         }}
         shortcut="$mod+f"
       />
