@@ -26,12 +26,14 @@ use coral_api::v1::{
     SourceInputKind, SourceInputSpec, SourceOrigin, Table, TableSummary, ValidateSourceRequest,
     ValidateSourceResponse, Workspace, catalog_item,
 };
+use coral_api::{CORAL_ERROR_DOMAIN, CORAL_ERROR_REASON_SOURCE_NOT_FOUND};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
 use tonic::{Code, Request, Response, Status};
+use tonic_types::{ErrorDetail, StatusExt as _};
 
 fn workspace() -> Workspace {
     Workspace {
@@ -342,6 +344,11 @@ fn mock_source_info(name: &str) -> Result<SourceInfo, Status> {
 struct MockError {
     code: Code,
     message: String,
+    /// When `Some`, the error carries an AIP-193 `ErrorInfo` matching what
+    /// the real server attaches via `app_status` for the
+    /// `AppError::SourceNotFound` variant. Set via
+    /// `MockError::source_not_found(qualified)`.
+    source_not_found_qualified: Option<String>,
 }
 
 impl MockError {
@@ -349,10 +356,31 @@ impl MockError {
         Self {
             code,
             message: message.into(),
+            source_not_found_qualified: None,
+        }
+    }
+
+    fn source_not_found(qualified: impl Into<String>) -> Self {
+        let qualified = qualified.into();
+        Self {
+            code: Code::NotFound,
+            message: format!("source '{qualified}' not found"),
+            source_not_found_qualified: Some(qualified),
         }
     }
 
     fn status(&self) -> Status {
+        if self.source_not_found_qualified.is_some() {
+            // Mirrors `coral_app::bootstrap::error::app_status`: the
+            // reason alone discriminates the error class — no unbounded
+            // identifier is echoed into structured metadata.
+            let details = vec![ErrorDetail::ErrorInfo(tonic_types::ErrorInfo::new(
+                CORAL_ERROR_REASON_SOURCE_NOT_FOUND,
+                CORAL_ERROR_DOMAIN,
+                std::collections::HashMap::new(),
+            ))];
+            return Status::with_error_details_vec(self.code, self.message.clone(), details);
+        }
         Status::new(self.code, self.message.clone())
     }
 }
@@ -370,6 +398,10 @@ impl<T> MockResult<T> {
 
     fn err(code: Code, message: impl Into<String>) -> Self {
         Self::Err(MockError::new(code, message))
+    }
+
+    fn source_not_found(qualified: impl Into<String>) -> Self {
+        Self::Err(MockError::source_not_found(qualified))
     }
 
     fn into_tonic_result(self) -> Result<T, Status> {
@@ -455,6 +487,31 @@ impl MockServerConfig {
         response: ValidateSourceResponse,
     ) -> Self {
         self.validate_source = MockResult::ok(response);
+        self
+    }
+
+    /// Mirrors what the real server emits for `AppError::SourceNotFound`
+    /// from `validate_source` (a `Code::NotFound` Status carrying an
+    /// AIP-193 `ErrorInfo` with `reason = "SOURCE_NOT_FOUND"`).
+    pub(crate) fn with_validate_source_not_found(mut self, qualified: impl Into<String>) -> Self {
+        self.validate_source = MockResult::source_not_found(qualified);
+        self
+    }
+
+    pub(crate) fn with_delete_source_error(
+        mut self,
+        code: Code,
+        message: impl Into<String>,
+    ) -> Self {
+        self.delete_source = MockResult::err(code, message);
+        self
+    }
+
+    /// Mirrors what the real server emits for `AppError::SourceNotFound`
+    /// from `delete_source` (a `Code::NotFound` Status carrying an
+    /// AIP-193 `ErrorInfo` with `reason = "SOURCE_NOT_FOUND"`).
+    pub(crate) fn with_delete_source_not_found(mut self, qualified: impl Into<String>) -> Self {
+        self.delete_source = MockResult::source_not_found(qualified);
         self
     }
 }
