@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import * as Button from '@/wax/components/button'
 import { Icon } from '@/wax/components/icon'
 import { TextInput } from '@/wax/components/inputs/text'
+import { KeyboardShortcut } from '@/wax/components/keyboard-shortcut'
 import { Typography } from '@/wax/components/typography'
 import { listTraces } from '@/lib/coral-traces-client'
 import type { TraceSummary } from '@/generated/coral/v1/traces_pb'
@@ -75,6 +76,14 @@ function HeaderActions({ expanded, searchText, setExpanded, setSearchText }: {
 
   return (
     <div className={s.headerActions}>
+      <KeyboardShortcut
+        handler={(e) => {
+          e.preventDefault()
+          setExpanded(true)
+          inputRef.current?.focus()
+        }}
+        shortcut="$mod+f"
+      />
       <div className={s.inlineSearch} data-expanded={expanded ? 'true' : undefined}>
         <div className={s.searchTrigger}>
           <Button.IconButton name="Search" onClick={() => setExpanded(true)} size="32" tooltipText="Search" variant="bare" />
