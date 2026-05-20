@@ -395,7 +395,7 @@ tables:
       - name: date_created
         type: Timestamp
         nullable: true
-        description: Product creation time (site timezone)
+        description: Product creation time (UTC)
         expr:
           kind: format_timestamp
           input: iso8601
