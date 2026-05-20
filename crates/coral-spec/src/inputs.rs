@@ -669,12 +669,29 @@ fn validate_loopback_redirect_uri(input_key: &str, raw: &str) -> Result<()> {
             "manifest input '{input_key}' oauth.redirect_uri must use a loopback host"
         )));
     }
-    if url.port().is_none() {
+    if !redirect_uri_has_explicit_port(raw) {
         return Err(ManifestError::validation(format!(
             "manifest input '{input_key}' oauth.redirect_uri must include an explicit port"
         )));
     }
     Ok(())
+}
+
+fn redirect_uri_has_explicit_port(raw: &str) -> bool {
+    let Some((_, after_scheme)) = raw.split_once("://") else {
+        return false;
+    };
+    let authority = after_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default();
+    let host_and_port = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host_and_port)| host_and_port);
+    let Some((_, port)) = host_and_port.rsplit_once(':') else {
+        return false;
+    };
+    !port.is_empty() && port.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 fn validate_url(input_key: &str, field: &str, raw: &str) -> Result<()> {
@@ -1082,6 +1099,28 @@ tables: []
         )
         .expect_err("missing redirect uri should fail");
         assert!(error.to_string().contains("missing redirect_uri"));
+    }
+
+    #[test]
+    fn parses_redirect_uri_with_explicit_default_http_port() {
+        let inputs = collect(
+            &oauth_input(
+                r"
+              id:
+                default: default-client
+",
+            )
+            .replace(
+                "http://127.0.0.1:53682/oauth/callback",
+                "http://127.0.0.1:80/oauth/callback",
+            ),
+        )
+        .expect("explicit default port should pass");
+        let oauth = inputs[0].credential.as_ref().expect("credential").methods[0]
+            .oauth
+            .as_ref()
+            .expect("oauth");
+        assert_eq!(oauth.redirect_uri, "http://127.0.0.1:80/oauth/callback");
     }
 
     #[test]
