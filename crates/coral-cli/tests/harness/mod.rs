@@ -538,28 +538,6 @@ fn list_catalog_response(request: &ListCatalogRequest) -> ListCatalogResponse {
     }
 }
 
-fn list_catalog_response(request: &ListCatalogRequest) -> ListCatalogResponse {
-    let items = mock_visible_tables()
-        .into_iter()
-        .filter(|table| request.schema_name.is_empty() || table.schema_name == request.schema_name)
-        .filter(|_| request.kind == 0 || request.kind == 1)
-        .map(|table| CatalogItem {
-            item: Some(catalog_item::Item::Table(table_summary(&table))),
-        })
-        .collect::<Vec<_>>();
-    let (items, pagination) = paginate(
-        items,
-        request.pagination.unwrap_or(PaginationRequest {
-            limit: 0,
-            offset: 0,
-        }),
-    );
-    ListCatalogResponse {
-        items,
-        pagination: Some(pagination),
-    }
-}
-
 #[derive(Default)]
 struct Captured {
     execute_sql: Mutex<Vec<ExecuteSqlRequest>>,
