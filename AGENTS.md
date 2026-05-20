@@ -47,6 +47,11 @@
   becoming a separate source of truth. Use
   `cargo run --locked -p xtask -- export-skills --dest <path>` for local
   export checks and distribution syncs.
+- Coral skills must include `agents/openai.yaml`. Keep
+  `interface.display_name` in the form `Coral` or `Coral <Title Case Suffix>`,
+  keep the top-level `SKILL.md` heading equal to that display name, and set
+  non-empty `short_description` and `default_prompt` values. The default prompt
+  should mention the skill token, such as `$coral-create-source-spec`.
 - When proposing or updating a PR title, use Conventional Commits:
   `type(scope): summary`.
 - When using a scope, prefer one that matches the primary area changed,

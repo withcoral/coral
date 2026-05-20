@@ -3,7 +3,7 @@ name: coral-create-source-spec
 description: Create or update a Coral source spec YAML for a custom HTTP API or local dataset. Use when authoring a standalone source for `coral source add --file`, or when adapting that spec into a Coral repo source under `sources/core` or `sources/community`.
 ---
 
-# Create Source Spec
+# Coral Create Source Spec
 
 Use this skill when the task is to author or repair a Coral source spec.
 
