@@ -388,6 +388,12 @@ export const httpMetaChip = style({
 })
 export const copyButtonGroup = style({ alignItems: 'center', display: 'flex', flexShrink: 0, gap: 6 })
 export const waterfallHttpDetailSection = style({ display: 'flex', flex: 1, flexDirection: 'column', gap: 4, minHeight: 0, minWidth: 0 })
+export const bodyViewer = style({ display: 'flex', flexDirection: 'column', gap: 8, minHeight: 0, minWidth: 0 })
+export const bodyViewerHeader = style({ display: 'flex', flexDirection: 'column', gap: 6 })
+export const bodyMetaRow = style({ display: 'flex', flexWrap: 'wrap', gap: 6 })
+export const bodyViewerSection = style({ display: 'flex', flexDirection: 'column', gap: 4, minHeight: 0, minWidth: 0 })
+export const bodyViewerSectionLabel = style({ color: theme.content.tertiary })
+export const bodyViewerRawDetails = style({ display: 'flex', flexDirection: 'column', gap: 4 })
 
 export const statusBadge = style({ borderRadius: 999, display: 'inline-flex', fontSize: 12, paddingBlock: 2, paddingInline: 8, selectors: {
   '&[data-tone="ok"]': { backgroundColor: theme.pill.green.background, color: theme.pill.green.color },

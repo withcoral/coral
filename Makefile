@@ -46,8 +46,9 @@ fix-sources:
 # ----------------------------------------------------------------------------
 # Source docs generation
 # ----------------------------------------------------------------------------
-# Regenerates the bundled-sources index and Mintlify navigation from
-# sources/core/*/manifest.y{a,}ml via the xtask binary.
+# Regenerates the source catalog pages and Mintlify navigation from
+# sources/core/*/manifest.y{a,}ml and sources/community/*/manifest.y{a,}ml
+# via the xtask binary.
 #
 #   make docs-generate   # write/refresh the generated files in docs/
 #   make docs-check      # CI freshness check: non-zero exit if stale
@@ -56,11 +57,15 @@ docs-generate:
 	cargo run --locked -p xtask -- generate-docs \
 	  --sources-dir sources/core \
 	  --index docs/reference/bundled-sources.mdx \
+	  --community-sources-dir sources/community \
+	  --community-index docs/reference/community-sources.mdx \
 	  --docs-json docs/docs.json
 
 docs-check:
 	cargo run --locked -p xtask -- generate-docs \
 	  --sources-dir sources/core \
 	  --index docs/reference/bundled-sources.mdx \
+	  --community-sources-dir sources/community \
+	  --community-index docs/reference/community-sources.mdx \
 	  --docs-json docs/docs.json \
 	  --check

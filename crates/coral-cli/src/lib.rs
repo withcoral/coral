@@ -204,6 +204,12 @@ pub enum CliError {
         /// Normalized source name requested by the user.
         source_name: String,
     },
+    /// A requested source was not found while removing an installed source.
+    #[error("source '{source_name}' was not found")]
+    SourceRemoveNotFound {
+        /// Normalized source name requested by the user.
+        source_name: String,
+    },
     /// Any non-renderable internal command failure.
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
@@ -222,6 +228,9 @@ impl CliError {
             )),
             Self::SourceNotFound { source_name } => Some(format!(
                 "source '{source_name}' was not found. Run `coral source list` to see installed sources or `coral source discover` to see bundled sources available to install.\n"
+            )),
+            Self::SourceRemoveNotFound { source_name } => Some(format!(
+                "source '{source_name}' was not found. Run `coral source list` to see installed sources.\n"
             )),
             Self::Internal(_) => None,
         }
@@ -250,7 +259,9 @@ impl coral_app::RunErrorTelemetry for CliError {
         match self {
             Self::Query { error_type, .. } => Cow::Borrowed(error_type.as_str()),
             Self::SourceNotInstalled { .. } => Cow::Borrowed("SOURCE_NOT_INSTALLED"),
-            Self::SourceNotFound { .. } => Cow::Borrowed("SOURCE_NOT_FOUND"),
+            Self::SourceNotFound { .. } | Self::SourceRemoveNotFound { .. } => {
+                Cow::Borrowed("SOURCE_NOT_FOUND")
+            }
             Self::Internal(_) => Cow::Borrowed("INTERNAL"),
         }
     }
@@ -261,7 +272,7 @@ impl coral_app::RunErrorTelemetry for CliError {
             Self::SourceNotInstalled { source_name } => {
                 Cow::Owned(format!("source '{source_name}' is not installed"))
             }
-            Self::SourceNotFound { source_name } => {
+            Self::SourceNotFound { source_name } | Self::SourceRemoveNotFound { source_name } => {
                 Cow::Owned(format!("source '{source_name}' was not found"))
             }
             Self::Internal(error) => Cow::Owned(error.to_string()),
@@ -514,8 +525,7 @@ async fn run_source(app: &AppClient, args: SourceArgs) -> Result<(), CliError> {
             .await?;
         }
         SourceCommand::Remove { name } => {
-            source_ops::delete_source(app, &name).await?;
-            println!("Removed source {name}");
+            source_ops::remove_and_print(app, &name).await?;
         }
     }
     Ok(())

@@ -79,7 +79,7 @@ jobs:
               - 'Cargo.lock'
               - 'xtask/**'
               - 'crates/coral-spec/**'
-              - 'sources/**'
+              - 'sources/core/**'
               - 'docs/**'
               - 'CHANGELOG.md'
             license-check:

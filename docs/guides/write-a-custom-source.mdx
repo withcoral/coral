@@ -3,7 +3,7 @@ title: "Write a custom source spec"
 description: "Extend Coral by adding any API or dataset as a queryable source."
 ---
 
-Coral ships with [popular data sources](/reference/bundled-sources), but you are not limited to them. If the data source you need is not available out of the box, you can write a source spec in YAML and import it.
+Coral ships with [popular data sources](/reference/bundled-sources), but you are not limited to them. Before writing a new spec, check whether a [community source](/reference/community-sources) already exists. If the data source you need is not available out of the box or in the community catalog, you can write a source spec in YAML and import it.
 
 A source spec tells Coral how to connect to an API or read a local dataset, what tables to expose, and what columns each table has. Once added, the source works exactly like a bundled one: same SQL, same `coral.tables`, `coral.columns` and `coral.inputs`, same MCP surface.
 

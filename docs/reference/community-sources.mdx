@@ -1,0 +1,101 @@
+---
+title: "Community sources"
+description: "Discover community-maintained Coral source specs and import them into your workspace."
+---
+
+{/* AUTO-GENERATED — DO NOT EDIT. Run `make docs-generate` to update. */}
+
+Community sources are source specs built and maintained by our community. These are kept in the Coral repository under
+[sources/community](https://github.com/withcoral/coral/tree/main/sources/community).
+
+<Note>
+  Community sources are not included in `coral source discover`, and `coral
+  source add <name>` only installs [bundled sources](/reference/bundled-sources).
+  Import community sources
+  with `coral source add --file`.
+</Note>
+
+## Install a community source
+
+Clone the Coral repository so you have the source specs locally:
+
+```shellscript
+git clone https://github.com/withcoral/coral.git
+cd coral
+```
+
+Review the source's manifest and README when one exists, then add it from its manifest file:
+
+```shellscript
+coral source add --file sources/community/hn/manifest.yaml
+coral source test hn
+```
+
+If a source declares inputs, Coral reads them from environment variables by default. Add `--interactive` to be prompted instead:
+
+```shellscript
+coral source add --interactive --file sources/community/fly/manifest.yaml
+```
+
+After importing, the source behaves like any other installed source. It appears in `coral source list`, works with `coral source info <name> --verbose`, and exposes tables through `coral.tables`, `coral.columns`, the CLI, and MCP.
+
+## Available community sources
+
+| Source | Description |
+| --- | --- |
+| [airflow](https://github.com/withcoral/coral/tree/main/sources/community/airflow) | Query DAGs, DAG runs, task instances, tasks, connections, pools, and providers from Apache Airflow (self-hosted). Covers pipeline inventory, execution history, task-level telemetry, infrastructure configuration, and installed provider packages via the Airflow REST API v2. |
+| [beehiiv](https://github.com/withcoral/coral/tree/main/sources/community/beehiiv) | Query publications, posts, and subscribers from Beehiiv. Covers publication stats, post metadata (title, slug, status, URLs), and subscriber acquisition data. |
+| [betterstack](https://github.com/withcoral/coral/tree/main/sources/community/betterstack) | Query monitors, incidents, heartbeats, status pages, on-call schedules, monitor groups, heartbeat groups, email integrations, and incoming webhooks from Better Stack Uptime. |
+| [cal](https://github.com/withcoral/coral/tree/main/sources/community/cal) | Query bookings, event types, schedules, and profile data from Cal.com (Cloud or self-hosted). |
+| [clear_ml](https://github.com/withcoral/coral/tree/main/sources/community/clear_ml) | Query ClearML projects, tasks, models, pipelines, workers, queues, artifact metadata, and current user context. |
+| [clerk](https://github.com/withcoral/coral/tree/main/sources/community/clerk) | Query users, organizations, memberships, invitations, and sessions from Clerk. |
+| [clickhouse](https://github.com/withcoral/coral/tree/main/sources/community/clickhouse) | Query ClickHouse databases, tables, columns, query history, running processes, server metrics, storage parts, and replication health via the ClickHouse HTTP interface. |
+| [cloudflare](https://github.com/withcoral/coral/tree/main/sources/community/cloudflare) | Query zones, DNS records, accounts, members, Workers scripts, R2 buckets, and audit logs from Cloudflare. |
+| [codecov](https://github.com/withcoral/coral/tree/main/sources/community/codecov) | Query repositories, commits, pull requests, branches, flags, components, and coverage totals from Codecov. |
+| [coralogix](https://github.com/withcoral/coral/tree/main/sources/community/coralogix) | Query Coralogix dashboards, alerts, SLOs, team groups, and roles. |
+| [crates_io](https://github.com/withcoral/coral/tree/main/sources/community/crates_io) | Query the Rust crate registry (crates.io) for packages, versions, dependencies, owners, categories, and keywords via the public crates.io API. No authentication required. |
+| [databricks](https://github.com/withcoral/coral/tree/main/sources/community/databricks) | Query Databricks jobs, job runs, clusters, SQL warehouses, and Unity Catalog metadata via Databricks REST APIs. |
+| [datahub](https://github.com/withcoral/coral/tree/main/sources/community/datahub) | Query datasets, dataflows, datajobs, users, tags, and domains from DataHub (Open Source or self-hosted). Covers data catalog inventory, lineage ownership, and governance metadata via the DataHub GraphQL API. |
+| [digitalocean](https://github.com/withcoral/coral/tree/main/sources/community/digitalocean) | Query Droplets, domains, volumes, databases, apps, Kubernetes clusters, projects, SSH keys, regions, sizes, and account data from DigitalOcean. |
+| [elasticsearch](https://github.com/withcoral/coral/tree/main/sources/community/elasticsearch) | Inspect Elasticsearch cluster health, nodes, indices, shards, aliases, index templates, and pending cluster tasks through the native REST and _cat APIs. |
+| [figma](https://github.com/withcoral/coral/tree/main/sources/community/figma) | Query projects, files, file versions, comments, published components, component sets, styles, webhooks, dev resources, and library analytics from Figma. |
+| [fly](https://github.com/withcoral/coral/tree/main/sources/community/fly) | Query apps, machines, and volumes from Fly.io. |
+| [hn](https://github.com/withcoral/coral/tree/main/sources/community/hn) | Hacker News search and item lookup via the public Algolia HN API (no auth). |
+| [honeycomb](https://github.com/withcoral/coral/tree/main/sources/community/honeycomb) | Query datasets, columns, boards, markers, and triggers from Honeycomb observability environments. |
+| [hubspot](https://github.com/withcoral/coral/tree/main/sources/community/hubspot) | Query HubSpot CRM contacts, companies, deals, tickets, and owners from HubSpot (Cloud). Join with bundled Stripe, Intercom, and Linear sources on email and company domain. |
+| [huggingface](https://github.com/withcoral/coral/tree/main/sources/community/huggingface) | Query models, datasets, Spaces, daily papers, and trending repositories from the Hugging Face Hub. Discover ML models by task, framework, and popularity. Browse datasets, Spaces, and community-curated research papers. |
+| [jenkins](https://github.com/withcoral/coral/tree/main/sources/community/jenkins) | Query Jenkins jobs, last-build results, and Git revision metadata from Jenkins (self-hosted). Read-only; uses the JSON REST API. |
+| [kestra](https://github.com/withcoral/coral/tree/main/sources/community/kestra) | Query flows, executions, logs, and namespaces from a Kestra instance (Open Source or self-hosted). Supports Kestra v0.24+ with HTTP Basic Auth. |
+| [langfuse](https://github.com/withcoral/coral/tree/main/sources/community/langfuse) | Query traces, observations, scores, sessions, and projects from Langfuse (Cloud or self-hosted). |
+| [langsmith](https://github.com/withcoral/coral/tree/main/sources/community/langsmith) | Query LangSmith projects, runs, datasets, examples, and feedback. |
+| [loops](https://github.com/withcoral/coral/tree/main/sources/community/loops) | Query mailing lists, contact properties, contacts, transactional emails, and campaigns from Loops via the Loops REST API v1. |
+| [mailgun](https://github.com/withcoral/coral/tree/main/sources/community/mailgun) | Query sending domains, SMTP credentials, inbound routes, and email suppression lists (bounces, unsubscribes, complaints) from Mailgun. |
+| [milvus](https://github.com/withcoral/coral/tree/main/sources/community/milvus) | Query databases, collections, partitions, users, roles, and aliases from Milvus (self-hosted or Zilliz Cloud). |
+| [mixpanel](https://github.com/withcoral/coral/tree/main/sources/community/mixpanel) | Query projects, cohorts, annotations, annotation tags, Lexicon schemas, and dashboards from Mixpanel. |
+| [neondb](https://github.com/withcoral/coral/tree/main/sources/community/neondb) | Query Neon organizations, projects, branches, databases, roles, compute endpoints, operations, and user identity. |
+| [netlify](https://github.com/withcoral/coral/tree/main/sources/community/netlify) | Query sites, deploys, forms, submissions, env vars, DNS zones, and accounts from Netlify. |
+| [okta](https://github.com/withcoral/coral/tree/main/sources/community/okta) | Query Okta users, groups, apps, app assignments, and system log events. |
+| [opsgenie](https://github.com/withcoral/coral/tree/main/sources/community/opsgenie) | Query Opsgenie alerts, teams, users, schedules, escalations, and on-call responders. |
+| [osv](https://github.com/withcoral/coral/tree/main/sources/community/osv) | Query OSV vulnerability records by package version, commit hash, or vulnerability ID from the OSV API. |
+| [postman](https://github.com/withcoral/coral/tree/main/sources/community/postman) | Query workspaces, collections, requests, environments, and monitors from Postman. Access API collections, test configurations, and monitoring data for API inventory analysis and governance workflows. |
+| [postmark](https://github.com/withcoral/coral/tree/main/sources/community/postmark) | Query server metadata, message streams, messages, bounces, templates, and outbound delivery statistics from Postmark. |
+| [prefect](https://github.com/withcoral/coral/tree/main/sources/community/prefect) | Query Prefect flows, flow runs, deployments, work pools, and task runs to monitor pipeline health and orchestration state. |
+| [qdrant_cloud](https://github.com/withcoral/coral/tree/main/sources/community/qdrant_cloud) | Query Qdrant Cloud accounts, clusters, and backups using the Qdrant Cloud management API. |
+| [rabbitmq](https://github.com/withcoral/coral/tree/main/sources/community/rabbitmq) | Query vhosts, queues, exchanges, bindings, consumers, connections, nodes, users, and policies from RabbitMQ (self-hosted or Cloud). |
+| [resend](https://github.com/withcoral/coral/tree/main/sources/community/resend) | Query sent emails, domains, API keys, contacts, segments, topics, broadcasts, webhooks, API request logs, and legacy audiences from Resend. |
+| [sendgrid](https://github.com/withcoral/coral/tree/main/sources/community/sendgrid) | Query email templates, suppression lists (bounces, blocks, spam reports, invalid emails), marketing lists, single sends, suppression groups, sender identities, verified senders, API keys, and teammates from Twilio SendGrid. |
+| [shopify](https://github.com/withcoral/coral/tree/main/sources/community/shopify) | Query Shopify shop metadata, products, product variants, collections, orders, customers, locations, and inventory items. |
+| [signoz](https://github.com/withcoral/coral/tree/main/sources/community/signoz) | Query services, logs, traces, dashboards, and alerts from SigNoz (Cloud or self-hosted). |
+| [splunk](https://github.com/withcoral/coral/tree/main/sources/community/splunk) | Query Splunk server info, indexes, saved searches, apps, users, and search jobs. |
+| [tailscale](https://github.com/withcoral/coral/tree/main/sources/community/tailscale) | Query Tailscale devices, users, keys, device routes, and DNS configuration from a tailnet. |
+| [todoist](https://github.com/withcoral/coral/tree/main/sources/community/todoist) | Query tasks, projects, sections, and labels from Todoist. |
+| [travis_ci](https://github.com/withcoral/coral/tree/main/sources/community/travis_ci) | Query repositories, builds, jobs, branches, stages, cron jobs, environment variables, settings, caches, build requests, organizations, and broadcasts from Travis CI. |
+| [trino](https://github.com/withcoral/coral/tree/main/sources/community/trino) | Query Trino coordinator information and the cluster's active and recently completed query history, including state, errors, timings, driver counts, and memory usage, from a self-hosted Trino coordinator. |
+| [umami_cloud](https://github.com/withcoral/coral/tree/main/sources/community/umami_cloud) | Query websites, pageviews, events, sessions, and summary statistics from Umami Cloud (or a self-hosted Umami deployment). |
+| [upstash](https://github.com/withcoral/coral/tree/main/sources/community/upstash) | Query Upstash platform metadata — Redis databases, database statistics, and Vector indexes — via the Upstash Developer API v2 with Basic authentication. |
+| [weaviate](https://github.com/withcoral/coral/tree/main/sources/community/weaviate) | Query Weaviate server metadata, collection (class) schema, and per-node cluster health and object counts from a self-hosted or Weaviate Cloud vector database. |
+| [zulip](https://github.com/withcoral/coral/tree/main/sources/community/zulip) | Query users, channels, topics, and bounded message windows from Zulip. |
+
+## If a source is missing
+
+If the source you need is not bundled and does not have a community spec yet, [write a custom source spec](/guides/write-a-custom-source). If the source is generally useful, open a pull request that adds it under `sources/community` with a `manifest.yaml` and source-specific README.

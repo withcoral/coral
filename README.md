@@ -199,9 +199,9 @@ coral sql "
 
 ## Use Coral with an agent
 
-Coral ships with a built-in MCP server so your agent can run SQL queries and
-discover schemas across your installed sources. Once you've added at least one
-source, wire Coral into your agent:
+Coral ships with a built-in MCP server that presents Coral to your agent as a
+read-only SQL database. Once you've added at least one source, wire Coral into
+your agent:
 
 ```bash
 claude mcp add --scope user coral -- coral mcp-stdio   # Claude Code
@@ -220,9 +220,10 @@ npx skills add withcoral/skills
 ```
 
 Once connected, ask your agent to "list the tables available in Coral" or to
-run a small query — it'll call `list_catalog`, `search_catalog`, or the
-`coral.tables` / `coral.table_functions` metadata tables and see your installed
-sources.
+run a small query. It should use `list_catalog`, `search_catalog`, or the
+`coral.tables` / `coral.table_functions` metadata tables as database catalog
+discovery, then answer with SQL over your visible schemas, tables, and table
+functions.
 
 ## Local state
 

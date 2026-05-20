@@ -2,13 +2,14 @@ use std::collections::BTreeMap;
 use std::io::{IsTerminal, stdin, stdout};
 use std::path::Path;
 
+use coral_api::CORAL_ERROR_REASON_SOURCE_NOT_FOUND;
 use coral_api::v1::{
     CreateBundledSourceRequest, DeleteSourceRequest, DiscoverSourcesRequest, GetSourceInfoRequest,
     ImportSourceRequest, ListSourcesRequest, QueryTestFailure, QueryTestSuccess, Source,
     SourceInfo, SourceInputKind, SourceInputSpec, SourceOrigin, SourceSecret, SourceVariable,
     ValidateSourceRequest, ValidateSourceResponse, query_test_result,
 };
-use coral_client::{AppClient, default_workspace};
+use coral_client::{AppClient, DecodedStatusError, decode_status_error, default_workspace};
 use coral_spec::{
     ManifestInputKind, ManifestInputSpec, ValidatedSourceManifest, parse_source_manifest_yaml,
 };
@@ -397,11 +398,12 @@ pub(crate) async fn test_and_print(
     let normalized = source_name_arg(Some(source_name))?;
     let response = match validate_source_request(app, normalized.clone()).await {
         Ok(response) => response,
-        Err(status) if status.code() == tonic::Code::NotFound => {
+        Err(status) if is_source_missing_status(&status) => {
             return source_test_not_found_error(app, &normalized, status).await;
         }
         Err(status) => return Err(anyhow::Error::from(status).into()),
     };
+
     print_validation_pretty(&response, limit)?;
     match validation_follow_up(&response, severity_mode) {
         ValidationFollowUp::None => Ok(()),
@@ -434,6 +436,45 @@ async fn source_test_not_found_error(
     Err(crate::CliError::SourceNotFound {
         source_name: source_name.to_string(),
     })
+}
+
+pub(crate) async fn remove_and_print(
+    app: &AppClient,
+    source_name: &str,
+) -> Result<(), crate::CliError> {
+    let normalized = source_name_arg(Some(source_name))?;
+    match delete_source(app, &normalized).await {
+        Ok(()) => {
+            println!("Removed source {normalized}");
+            Ok(())
+        }
+        Err(err) => {
+            if err
+                .downcast_ref::<tonic::Status>()
+                .is_some_and(is_source_missing_status)
+            {
+                Err(crate::CliError::SourceRemoveNotFound {
+                    source_name: normalized,
+                })
+            } else {
+                Err(err.into())
+            }
+        }
+    }
+}
+
+/// Returns `true` only when the gRPC status carries the server's
+/// `SOURCE_NOT_FOUND` AIP-193 reason. Other `Code::NotFound` causes
+/// (e.g. a missing manifest file mapped from `io::ErrorKind::NotFound`)
+/// have no Coral `ErrorInfo` attached, so they remain diagnosable instead
+/// of being rewritten into the friendly "source not found" message.
+fn is_source_missing_status(status: &tonic::Status) -> bool {
+    match decode_status_error(status) {
+        DecodedStatusError::Structured(error) => {
+            error.reason == CORAL_ERROR_REASON_SOURCE_NOT_FOUND
+        }
+        DecodedStatusError::Plain(_) => false,
+    }
 }
 
 pub(crate) fn print_validation_pretty(
