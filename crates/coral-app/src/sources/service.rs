@@ -1,6 +1,8 @@
 //! Implements the gRPC `SourceService` for source lifecycle APIs.
 
+use std::future::Future;
 use std::pin::Pin;
+use std::task::{Context, Poll};
 
 use coral_api::v1::source_service_server::SourceService as SourceServiceApi;
 use coral_api::v1::{
@@ -10,7 +12,7 @@ use coral_api::v1::{
     ImportSourceRequest, ImportSourceResponse, ListSourcesRequest, ListSourcesResponse,
     OAuthAuthorizationCodeCredentialMethod, OAuthCredentialAuthorization, OAuthCredentialClient,
     OAuthCredentialClientId, OAuthCredentialClientSecret, OAuthCredentialCompleted,
-    OAuthCredentialEndpoints, OAuthCredentialScope, OAuthCredentialScopes,
+    OAuthCredentialEndpoints, OAuthCredentialInput, OAuthCredentialScope, OAuthCredentialScopes,
     OauthCredentialClientSecretTransport, OauthCredentialPkceMode, OauthCredentialScopeDelimiter,
     Source, SourceConfigCredentialMethod, SourceCredential, SourceCredentialMethod, SourceInfo,
     SourceInputSpec, SourceOrigin as ProtoSourceOrigin, SourceSecret, SourceSecretInput,
@@ -29,8 +31,9 @@ use crate::bootstrap::app_status;
 use crate::query::manager::QueryManager;
 use crate::sources::SourceName;
 use crate::sources::manager::{
-    CreateBundledSourceCommand, ImportSourceCommand, ImportSourceWithCredentialsCommand,
-    ImportSourceWithCredentialsEvent, SourceBinding, SourceBindings, SourceManager,
+    CreateBundledSourceCommand, ImportSourceCommand, ImportSourceEventSender,
+    ImportSourceWithCredentialsCommand, ImportSourceWithCredentialsEvent,
+    PendingImportSourceWithCredentialsEvent, SourceBinding, SourceBindings, SourceManager,
     SourceOAuthCredentialRequest,
 };
 use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
@@ -39,8 +42,8 @@ use crate::transport::{
     workspace_name_from_proto, workspace_to_proto,
 };
 use crate::workspaces::WorkspaceName;
+use tokio::sync::mpsc;
 use tokio_stream::Stream;
-use tokio_stream::wrappers::ReceiverStream;
 
 #[derive(Clone)]
 pub(crate) struct SourceService {
@@ -172,82 +175,63 @@ impl SourceServiceApi for SourceService {
     ) -> Result<Response<Self::ImportSourceStream>, Status> {
         let span = grpc_span(&request);
         let sources = self.sources.clone();
-        let request = request.into_inner();
-        let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-        let response_workspace_name = workspace_name.clone();
-        if request.oauth_credentials.is_empty() {
-            let command = ImportSourceCommand {
+        instrument_grpc(span.clone(), async move {
+            let request = request.into_inner();
+            let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            let response_workspace_name = workspace_name.clone();
+            if request.oauth_credentials.is_empty() {
+                let command = ImportSourceCommand {
+                    manifest_yaml: request.manifest_yaml,
+                    bindings: source_bindings_from_proto(request.variables, request.secrets),
+                };
+                let installed = sources
+                    .import_source(&workspace_name, &command)
+                    .map_err(app_status)?;
+                let response = ImportSourceResponse {
+                    event: Some(import_source_response::Event::Source(
+                        installed_source_to_proto(&response_workspace_name, installed),
+                    )),
+                };
+                return Ok(Response::new(
+                    Box::pin(tokio_stream::once(Ok(response))) as Self::ImportSourceStream
+                ));
+            }
+            let command = ImportSourceWithCredentialsCommand {
                 manifest_yaml: request.manifest_yaml,
                 bindings: source_bindings_from_proto(request.variables, request.secrets),
+                oauth_credentials: request
+                    .oauth_credentials
+                    .into_iter()
+                    .map(|credential| SourceOAuthCredentialRequest {
+                        input_key: credential.input_key,
+                        method_index: usize::try_from(credential.method_index)
+                            .unwrap_or(usize::MAX),
+                        credential_inputs: credential
+                            .credential_inputs
+                            .into_iter()
+                            .map(oauth_credential_input_from_proto)
+                            .collect(),
+                    })
+                    .collect(),
             };
-            let installed = instrument_grpc(span, async move {
+            let (event_tx, event_rx) = mpsc::channel(8);
+            let import = Box::pin(instrument_grpc(span, async move {
                 sources
-                    .import_source(&workspace_name, &command)
-                    .map_err(app_status)
-            })
-            .await?;
-            let response = ImportSourceResponse {
-                event: Some(import_source_response::Event::Source(
-                    installed_source_to_proto(&response_workspace_name, installed),
-                )),
-            };
-            return Ok(Response::new(Box::pin(tokio_stream::once(Ok(response)))));
-        }
-        let command = ImportSourceWithCredentialsCommand {
-            manifest_yaml: request.manifest_yaml,
-            bindings: source_bindings_from_proto(request.variables, request.secrets),
-            oauth_credentials: request
-                .oauth_credentials
-                .into_iter()
-                .map(|credential| SourceOAuthCredentialRequest {
-                    input_key: credential.input_key,
-                    method_index: usize::try_from(credential.method_index).unwrap_or(usize::MAX),
-                    credential_inputs: credential
-                        .credential_inputs
-                        .into_iter()
-                        .map(source_variable_from_proto)
-                        .collect(),
-                })
-                .collect(),
-        };
-        let (response_tx, response_rx) = tokio::sync::mpsc::channel(8);
-        tokio::spawn(async move {
-            let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(8);
-            let forward_tx = response_tx.clone();
-            let forwarder = tokio::spawn(async move {
-                while let Some(event) = event_rx.recv().await {
-                    if forward_tx
-                        .send(Ok(import_source_event_to_proto(event)))
-                        .await
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
-            });
-            let result = instrument_grpc(span, async move {
-                sources
-                    .import_source_with_credentials(&workspace_name, command, event_tx)
+                    .import_source_with_credentials(
+                        &workspace_name,
+                        command,
+                        ImportSourceEventSender::new(event_tx),
+                    )
                     .await
                     .map_err(app_status)
-            })
-            .await;
-            drop(forwarder.await);
-            match result {
-                Ok(installed) => {
-                    let response = ImportSourceResponse {
-                        event: Some(import_source_response::Event::Source(
-                            installed_source_to_proto(&response_workspace_name, installed),
-                        )),
-                    };
-                    drop(response_tx.send(Ok(response)).await);
-                }
-                Err(status) => {
-                    drop(response_tx.send(Err(status)).await);
-                }
-            }
-        });
-        Ok(Response::new(Box::pin(ReceiverStream::new(response_rx))))
+            }));
+            Ok(Response::new(Box::pin(ImportSourceResponseStream::new(
+                event_rx,
+                import,
+                response_workspace_name,
+            )) as Self::ImportSourceStream))
+        })
+        .await
     }
 
     async fn delete_source(
@@ -294,6 +278,71 @@ impl SourceServiceApi for SourceService {
     }
 }
 
+type ImportSourceFuture = Pin<Box<dyn Future<Output = Result<InstalledSource, Status>> + Send>>;
+
+struct ImportSourceResponseStream {
+    events: mpsc::Receiver<PendingImportSourceWithCredentialsEvent>,
+    import: Option<ImportSourceFuture>,
+    response_workspace_name: WorkspaceName,
+    completion: Option<Result<ImportSourceResponse, Status>>,
+}
+
+impl ImportSourceResponseStream {
+    fn new(
+        events: mpsc::Receiver<PendingImportSourceWithCredentialsEvent>,
+        import: ImportSourceFuture,
+        response_workspace_name: WorkspaceName,
+    ) -> Self {
+        Self {
+            events,
+            import: Some(import),
+            response_workspace_name,
+            completion: None,
+        }
+    }
+
+    fn poll_event(&mut self, cx: &mut Context<'_>) -> Poll<Option<ImportSourceResponse>> {
+        Pin::new(&mut self.events)
+            .poll_recv(cx)
+            .map(|event| event.map(|event| import_source_event_to_proto(event.into_event())))
+    }
+}
+
+impl Stream for ImportSourceResponseStream {
+    type Item = Result<ImportSourceResponse, Status>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        loop {
+            if let Poll::Ready(Some(event)) = this.poll_event(cx) {
+                return Poll::Ready(Some(Ok(event)));
+            }
+            if let Some(completion) = this.completion.take() {
+                return Poll::Ready(Some(completion));
+            }
+            let Some(import) = this.import.as_mut() else {
+                return Poll::Ready(None);
+            };
+            match import.as_mut().poll(cx) {
+                Poll::Ready(result) => {
+                    this.import = None;
+                    this.completion = Some(result.map(|installed| ImportSourceResponse {
+                        event: Some(import_source_response::Event::Source(
+                            installed_source_to_proto(&this.response_workspace_name, installed),
+                        )),
+                    }));
+                }
+                Poll::Pending => {
+                    return match this.poll_event(cx) {
+                        Poll::Ready(Some(event)) => Poll::Ready(Some(Ok(event))),
+                        Poll::Ready(None) | Poll::Pending => Poll::Pending,
+                    };
+                }
+            }
+        }
+    }
+}
+
 fn source_bindings_from_proto(
     variables: Vec<SourceVariable>,
     secrets: Vec<SourceSecret>,
@@ -311,6 +360,13 @@ fn source_variable_from_proto(variable: SourceVariable) -> SourceBinding {
     SourceBinding {
         key: variable.key,
         value: variable.value,
+    }
+}
+
+fn oauth_credential_input_from_proto(input: OAuthCredentialInput) -> SourceBinding {
+    SourceBinding {
+        key: input.key,
+        value: input.value,
     }
 }
 

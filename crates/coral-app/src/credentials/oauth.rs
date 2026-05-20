@@ -126,6 +126,20 @@ impl OAuthCredentialManager {
         self.run_session(session).await
     }
 
+    pub(crate) fn validate_credential_inputs(
+        oauth: &ManifestOAuthCredentialSpec,
+        credential_inputs: Vec<(String, String)>,
+    ) -> Result<(), AppError> {
+        let credential_inputs = normalize_credential_inputs(credential_inputs)?;
+        reject_unknown_credential_inputs(oauth, &credential_inputs)?;
+        let _client_id = resolve_client_id(oauth, &credential_inputs)?;
+        let _client_secret = resolve_client_secret(oauth, &credential_inputs)?;
+        Url::parse(&oauth.redirect_uri).map_err(|error| {
+            AppError::InvalidInput(format!("invalid OAuth redirect URI: {error}"))
+        })?;
+        Ok(())
+    }
+
     async fn run_session(
         &self,
         session: OAuthSessionConfig,

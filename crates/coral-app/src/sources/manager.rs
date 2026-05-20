@@ -20,7 +20,7 @@ use crate::state::{AppStateLayout, ConfigStore};
 use crate::storage::fs;
 use crate::workspaces::WorkspaceName;
 use coral_spec::{ManifestCredentialMethodKind, ManifestInputKind, ManifestOAuthCredentialSpec};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tracing::warn;
 
 #[derive(Clone)]
@@ -74,6 +74,40 @@ pub(crate) enum ImportSourceWithCredentialsEvent {
         input_key: String,
         metadata: BTreeMap<String, String>,
     },
+}
+
+#[derive(Clone)]
+pub(crate) struct ImportSourceEventSender {
+    tx: mpsc::Sender<PendingImportSourceWithCredentialsEvent>,
+}
+
+pub(crate) struct PendingImportSourceWithCredentialsEvent {
+    event: ImportSourceWithCredentialsEvent,
+    delivered: oneshot::Sender<()>,
+}
+
+impl ImportSourceEventSender {
+    pub(crate) fn new(tx: mpsc::Sender<PendingImportSourceWithCredentialsEvent>) -> Self {
+        Self { tx }
+    }
+
+    async fn send(&self, event: ImportSourceWithCredentialsEvent) -> Result<(), AppError> {
+        let (delivered, delivered_rx) = oneshot::channel();
+        self.tx
+            .send(PendingImportSourceWithCredentialsEvent { event, delivered })
+            .await
+            .map_err(|_closed| AppError::FailedPrecondition(import_stream_closed_message()))?;
+        delivered_rx
+            .await
+            .map_err(|_closed| AppError::FailedPrecondition(import_stream_closed_message()))
+    }
+}
+
+impl PendingImportSourceWithCredentialsEvent {
+    pub(crate) fn into_event(self) -> ImportSourceWithCredentialsEvent {
+        let _delivery = self.delivered.send(());
+        self.event
+    }
 }
 
 struct SourceCredentialOAuthConfig<'a> {
@@ -223,7 +257,7 @@ impl SourceManager {
         &self,
         workspace_name: &WorkspaceName,
         command: ImportSourceWithCredentialsCommand,
-        events: mpsc::Sender<ImportSourceWithCredentialsEvent>,
+        events: ImportSourceEventSender,
     ) -> Result<InstalledSource, AppError> {
         let mut candidate =
             describe_manifest(&command.manifest_yaml, SourceOrigin::Imported, false)?;
@@ -231,6 +265,12 @@ impl SourceManager {
         let stored_material = self
             .read_source_material(workspace_name, &candidate.name)
             .unwrap_or_default();
+        Self::validate_oauth_import_preflight(
+            &candidate,
+            &command.bindings,
+            &stored_material,
+            &command.oauth_credentials,
+        )?;
         let oauth_material = self
             .retrieve_oauth_material(&candidate, command.oauth_credentials, events)
             .await?;
@@ -402,11 +442,48 @@ impl SourceManager {
             .read_material(workspace_name, &credential_set_id)
     }
 
+    fn validate_oauth_import_preflight(
+        candidate: &CandidateSource,
+        bindings: &SourceBindings,
+        stored_material: &BTreeMap<String, String>,
+        oauth_credentials: &[SourceOAuthCredentialRequest],
+    ) -> Result<(), AppError> {
+        let mut seen = BTreeSet::new();
+        let mut validation_material = stored_material.clone();
+        for credential in oauth_credentials {
+            if !seen.insert(credential.input_key.clone()) {
+                return Err(AppError::InvalidInput(format!(
+                    "OAuth credential for source input '{}' is repeated",
+                    credential.input_key
+                )));
+            }
+            let config =
+                source_oauth_config(candidate, &credential.input_key, credential.method_index)?;
+            let credential_inputs = credential
+                .credential_inputs
+                .iter()
+                .map(|input| (input.key.clone(), input.value.clone()))
+                .collect();
+            OAuthCredentialManager::validate_credential_inputs(config.oauth, credential_inputs)?;
+            validation_material.insert(config.input_key.to_string(), String::new());
+        }
+
+        let bindings = validate_bindings(candidate, bindings, &validation_material)?;
+        for input_key in seen {
+            if bindings.secrets.contains_key(&input_key) {
+                return Err(AppError::InvalidInput(format!(
+                    "source secret '{input_key}' was provided by both source config and OAuth"
+                )));
+            }
+        }
+        Ok(())
+    }
+
     async fn retrieve_oauth_material(
         &self,
         candidate: &CandidateSource,
         oauth_credentials: Vec<SourceOAuthCredentialRequest>,
-        events: mpsc::Sender<ImportSourceWithCredentialsEvent>,
+        events: ImportSourceEventSender,
     ) -> Result<Vec<OAuthCredentialMaterial>, AppError> {
         let mut seen = BTreeSet::new();
         let mut materials = Vec::new();
@@ -755,13 +832,14 @@ fn merge_oauth_material_into_bindings(
 }
 
 async fn send_import_event(
-    events: &mpsc::Sender<ImportSourceWithCredentialsEvent>,
+    events: &ImportSourceEventSender,
     event: ImportSourceWithCredentialsEvent,
 ) -> Result<(), AppError> {
-    events
-        .send(event)
-        .await
-        .map_err(|_closed| AppError::FailedPrecondition("source import stream closed".to_string()))
+    events.send(event).await
+}
+
+fn import_stream_closed_message() -> String {
+    "source import stream closed".to_string()
 }
 
 fn collect_unique_variables(
@@ -851,9 +929,9 @@ mod tests {
     use url::Url;
 
     use super::{
-        ImportSourceCommand, ImportSourceWithCredentialsCommand, ImportSourceWithCredentialsEvent,
-        SourceBinding, SourceBindings, SourceManager, SourceOAuthCredentialRequest,
-        normalize_binding_key,
+        ImportSourceCommand, ImportSourceEventSender, ImportSourceWithCredentialsCommand,
+        ImportSourceWithCredentialsEvent, PendingImportSourceWithCredentialsEvent, SourceBinding,
+        SourceBindings, SourceManager, SourceOAuthCredentialRequest, normalize_binding_key,
     };
     use crate::credentials::{CredentialManager, CredentialSetId, CredentialStore};
     use crate::sources::SourceName;
@@ -1296,6 +1374,91 @@ tables:
     }
 
     #[tokio::test]
+    async fn import_with_oauth_persists_retrieved_material() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let credential_store = CredentialStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(credential_store);
+        let manager = SourceManager::new(config_store, credential_manager.clone(), layout);
+        let source_name = SourceName::parse("secured_messages").expect("source");
+        let credential_set_id = CredentialSetId::for_source(&source_name);
+        let fixture = OAuthFixture::new();
+        let redirect_port = free_loopback_port();
+        let (event_tx, mut event_rx) = import_event_channel();
+        let workspace_name = default_workspace();
+        let import = manager.import_source_with_credentials(
+            &workspace_name,
+            ImportSourceWithCredentialsCommand {
+                manifest_yaml: manifest_with_oauth_secret(&fixture.token_url, redirect_port),
+                bindings: SourceBindings {
+                    variables: vec![SourceBinding {
+                        key: "API_BASE".to_string(),
+                        value: "https://api.example.test".to_string(),
+                    }],
+                    secrets: Vec::new(),
+                },
+                oauth_credentials: vec![SourceOAuthCredentialRequest {
+                    input_key: "API_TOKEN".to_string(),
+                    method_index: 0,
+                    credential_inputs: Vec::new(),
+                }],
+            },
+            event_tx,
+        );
+        let callback = async {
+            let event = event_rx
+                .recv()
+                .await
+                .expect("authorization event")
+                .into_event();
+            let ImportSourceWithCredentialsEvent::OAuthAuthorization {
+                input_key,
+                authorization_url,
+                ..
+            } = event
+            else {
+                panic!("unexpected import event");
+            };
+            assert_eq!(input_key, "API_TOKEN");
+            callback(&authorization_url, redirect_port).await;
+            let event = event_rx
+                .recv()
+                .await
+                .expect("completion event")
+                .into_event();
+            let ImportSourceWithCredentialsEvent::OAuthCompleted { input_key, .. } = event else {
+                panic!("unexpected import event");
+            };
+            assert_eq!(input_key, "API_TOKEN");
+        };
+
+        let (source, ()) = tokio::join!(import, callback);
+        let source = source.expect("import source with OAuth");
+        assert_eq!(source.secrets, vec!["API_TOKEN"]);
+        let captured = fixture.token_server.await.expect("token server");
+        assert_eq!(
+            captured.form.get("code").map(String::as_str),
+            Some("test-code")
+        );
+        let material = credential_manager
+            .read_material(&default_workspace(), &credential_set_id)
+            .expect("read material");
+        assert_eq!(
+            material.get("API_TOKEN").map(String::as_str),
+            Some("access-token")
+        );
+        assert_eq!(
+            material
+                .get("__coral_oauth.QVBJX1RPS0VO.method")
+                .map(String::as_str),
+            Some("oauth")
+        );
+    }
+
+    #[tokio::test]
     async fn import_with_oauth_does_not_overwrite_installed_credentials_when_validation_fails() {
         let temp = TempDir::new().expect("temp dir");
         let layout =
@@ -1323,53 +1486,36 @@ tables:
             )
             .expect("install source");
 
-        let fixture = OAuthFixture::new();
         let redirect_port = free_loopback_port();
-        let (event_tx, mut event_rx) = mpsc::channel(4);
+        let (event_tx, mut event_rx) = import_event_channel();
         let workspace_name = default_workspace();
-        let import = manager.import_source_with_credentials(
-            &workspace_name,
-            ImportSourceWithCredentialsCommand {
-                manifest_yaml: manifest_with_oauth_secret(&fixture.token_url, redirect_port),
-                bindings: SourceBindings::default(),
-                oauth_credentials: vec![SourceOAuthCredentialRequest {
-                    input_key: "API_TOKEN".to_string(),
-                    method_index: 0,
-                    credential_inputs: Vec::new(),
-                }],
-            },
-            event_tx,
-        );
-        let callback = async {
-            let event = event_rx.recv().await.expect("authorization event");
-            let ImportSourceWithCredentialsEvent::OAuthAuthorization {
-                input_key,
-                authorization_url,
-                ..
-            } = event
-            else {
-                panic!("unexpected import event");
-            };
-            assert_eq!(input_key, "API_TOKEN");
-            callback(&authorization_url, redirect_port).await;
-            let event = event_rx.recv().await.expect("completion event");
-            let ImportSourceWithCredentialsEvent::OAuthCompleted { input_key, .. } = event else {
-                panic!("unexpected import event");
-            };
-            assert_eq!(input_key, "API_TOKEN");
-        };
-
-        let (result, ()) = tokio::join!(import, callback);
-        let error = result.expect_err("missing API_BASE should fail validation");
+        let error = manager
+            .import_source_with_credentials(
+                &workspace_name,
+                ImportSourceWithCredentialsCommand {
+                    manifest_yaml: manifest_with_oauth_secret(
+                        "http://127.0.0.1:1/token",
+                        redirect_port,
+                    ),
+                    bindings: SourceBindings::default(),
+                    oauth_credentials: vec![SourceOAuthCredentialRequest {
+                        input_key: "API_TOKEN".to_string(),
+                        method_index: 0,
+                        credential_inputs: Vec::new(),
+                    }],
+                },
+                event_tx,
+            )
+            .await
+            .expect_err("missing API_BASE should fail validation");
         assert!(
             error
                 .to_string()
                 .contains("missing required source variable 'API_BASE'")
         );
-        let captured = fixture.token_server.await.expect("token server");
-        assert_eq!(
-            captured.form.get("code").map(String::as_str),
-            Some("test-code")
+        assert!(
+            event_rx.try_recv().is_err(),
+            "preflight validation should fail before OAuth retrieval starts"
         );
         let material = credential_manager
             .read_material(&default_workspace(), &credential_set_id)
@@ -1381,6 +1527,58 @@ tables:
         assert!(
             !material.values().any(|value| value == "access-token"),
             "candidate OAuth material should not be persisted on validation failure"
+        );
+    }
+
+    #[tokio::test]
+    async fn import_with_oauth_rejects_source_config_conflict_before_authorization() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let credential_store = CredentialStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(credential_store);
+        let manager = SourceManager::new(config_store, credential_manager, layout);
+        let redirect_port = free_loopback_port();
+        let (event_tx, mut event_rx) = import_event_channel();
+
+        let error = manager
+            .import_source_with_credentials(
+                &default_workspace(),
+                ImportSourceWithCredentialsCommand {
+                    manifest_yaml: manifest_with_oauth_secret(
+                        "http://127.0.0.1:1/token",
+                        redirect_port,
+                    ),
+                    bindings: SourceBindings {
+                        variables: vec![SourceBinding {
+                            key: "API_BASE".to_string(),
+                            value: "https://api.example.test".to_string(),
+                        }],
+                        secrets: vec![SourceBinding {
+                            key: "API_TOKEN".to_string(),
+                            value: "manual-token".to_string(),
+                        }],
+                    },
+                    oauth_credentials: vec![SourceOAuthCredentialRequest {
+                        input_key: "API_TOKEN".to_string(),
+                        method_index: 0,
+                        credential_inputs: Vec::new(),
+                    }],
+                },
+                event_tx,
+            )
+            .await
+            .expect_err("source config and OAuth should conflict");
+        assert!(
+            error
+                .to_string()
+                .contains("source secret 'API_TOKEN' was provided by both source config and OAuth")
+        );
+        assert!(
+            event_rx.try_recv().is_err(),
+            "preflight validation should fail before OAuth retrieval starts"
         );
     }
 
@@ -1397,6 +1595,14 @@ tables:
             .expect("callback response")
             .error_for_status()
             .expect("callback success");
+    }
+
+    fn import_event_channel() -> (
+        ImportSourceEventSender,
+        mpsc::Receiver<PendingImportSourceWithCredentialsEvent>,
+    ) {
+        let (tx, rx) = mpsc::channel(4);
+        (ImportSourceEventSender::new(tx), rx)
     }
 
     fn free_loopback_port() -> u16 {

@@ -279,6 +279,15 @@ message CredentialMetadata {
   string value = 2;
 }
 
+// Transient OAuth method input.
+message OAuthCredentialInput {
+  // Logical input key expected by the selected OAuth credential method.
+  string key = 1;
+  // Input value. This may contain sensitive material such as an OAuth client
+  // secret and must not be treated like source-visible configuration.
+  string value = 2;
+}
+
 // OAuth credential retrieval selected for one source secret input.
 message ImportSourceOAuthCredential {
   // Secret input key being retrieved.
@@ -286,7 +295,7 @@ message ImportSourceOAuthCredential {
   // Zero-based selected credential method index.
   uint32 method_index = 2;
   // Method-specific retrieval input values, such as client ID or client secret.
-  repeated SourceVariable credential_inputs = 3;
+  repeated OAuthCredentialInput credential_inputs = 3;
 }
 
 // Authorization URL emitted while importing a source with OAuth credentials.

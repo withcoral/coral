@@ -753,9 +753,11 @@ used. OAuth method metadata currently supports authorization-code flow with a
 fixed loopback HTTP callback URI:
 `http://127.0.0.1:<port>/<path>` or
 `http://localhost:<port>/<path>`. Coral validates and exposes the declared
-`redirect_uri`, but does not run the OAuth flow yet. When users provide their
-own OAuth client ID for a future OAuth retrieval flow, they must configure that
-exact redirect URI in the OAuth app.
+`redirect_uri`. For OAuth methods, Coral starts the loopback flow and returns
+the provider authorization URL. After the callback, Coral exchanges the code,
+stores the access token as the source secret, and stores any refresh token as
+internal credential metadata. If users provide their own OAuth client ID, they
+must configure the declared redirect URI exactly in the OAuth app.
 
 `flow.type` and `pkce` are required. Unspecified protobuf enum values are
 invalid and are rejected rather than treated as defaults. `pkce` is either
@@ -766,9 +768,9 @@ required `transport` of `basic_auth` or `request_body`. Client secrets are sent
 only to the token endpoint and are never included in the authorization URL.
 
 Scopes are declared under `scopes.scope`; `delimiter: space` represents
-`scope=a b`, and `delimiter: comma` represents `scope=a,b`. OAuth token
-exchange, refresh-token storage, and automatic token refresh are not
-implemented yet.
+`scope=a b`, and `delimiter: comma` represents `scope=a,b`. Automatic token
+refresh is not implemented yet; stored refresh tokens are preserved for a
+future refresh flow.
 
 At runtime, installed source inputs are also surfaced through `coral.inputs`.
 This is useful when agents or scripts need to inspect non-secret source config
