@@ -76,8 +76,12 @@ SELECT id, name, is_ephemeral
 
 ### Variables for a service
 
+> **Warning:** Querying `railway.variables.value` can expose secret environment variables
+> or credentials in plain text. Railway account tokens can access all resources across
+> workspaces. Only select `value` if you intentionally need to read secrets.
+
 ```sql
-SELECT name, value
+SELECT name
   FROM railway.variables
  WHERE project_id     = 'your-project-id'
    AND environment_id = 'your-env-id'

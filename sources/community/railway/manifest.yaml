@@ -594,6 +594,10 @@ tables:
       Returns key-value pairs for a given project + environment +
       service combination. All three filters are required. Values may
       contain Railway variable references (e.g. `${{shared.DB_URL}}`).
+
+      **Warning:** Querying the `value` column can expose secret
+      environment variables in plain text. Avoid querying it in shared
+      workspaces unless you explicitly need the secret values.
     filters:
       - name: project_id
         required: true
