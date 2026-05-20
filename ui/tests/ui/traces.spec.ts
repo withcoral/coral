@@ -28,7 +28,6 @@ test('lists 10 traces, searches one, opens its details, and opens a span inspect
   await review.pause()
 
   await review.chapter('Search for one trace', 'Filter ten traces down to the Playwright Linear query')
-  await page.getByRole('button', { name: 'Search queries' }).click()
   await page.getByPlaceholder('Search queries...').fill('playwright')
 
   await expect(page.getByText(/linear\.issues WHERE team_key = 'CORAL' AND title ILIKE '%playwright%'/)).toBeVisible()
@@ -59,7 +58,6 @@ test('renders trace request and response bodies with JSON, GraphQL, and fallback
 
   await review.chapter('Open the trace with span details', 'Load the selected trace so the body viewer states can be inspected')
   await page.goto('/')
-  await page.getByRole('button', { name: 'Search queries' }).click()
   await page.getByPlaceholder('Search queries...').fill('playwright')
   await page.getByText(/linear\.issues WHERE team_key = 'CORAL' AND title ILIKE '%playwright%'/).click()
   await review.pause()

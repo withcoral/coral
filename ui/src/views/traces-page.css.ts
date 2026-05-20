@@ -1,6 +1,7 @@
 import { globalStyle, keyframes, style } from '@vanilla-extract/css'
 
 import { utils } from '@/styles/utils'
+import { breakpoints } from '@/styles/theme'
 import { lightTheme } from '@/wax/theme/theme-light.css'
 import { theme } from '@/wax/theme/theme.css'
 
@@ -30,16 +31,64 @@ export const headerTitle = style({
   paddingInlineEnd: 24,
   textOverflow: 'ellipsis',
   whiteSpace: 'nowrap',
+  '@media': {
+    [`screen and (max-width: ${breakpoints.mobile})`]: {
+      selectors: {
+        [`${header}[data-search-expanded="true"] &`]: { display: 'none' },
+      },
+    },
+  },
 })
 
-export const headerActions = style({ alignItems: 'center', display: 'flex', flexShrink: 0, gap: 4 })
+export const headerActions = style({
+  alignItems: 'center',
+  display: 'flex',
+  flexShrink: 0,
+  gap: 4,
+  '@media': {
+    [`screen and (max-width: ${breakpoints.mobile})`]: {
+      selectors: {
+        [`${header}[data-search-expanded="true"] &`]: { flex: 1 },
+      },
+    },
+  },
+})
 export const inlineSearch = style({
   alignItems: 'center',
   display: 'flex',
-  gap: 6,
-  width: 360,
+  '@media': {
+    [`screen and (max-width: ${breakpoints.mobile})`]: {
+      selectors: {
+        '&[data-expanded="true"]': { flex: 1 },
+      },
+    },
+  },
 })
-export const inlineSearchField = style({ flex: 1, minWidth: 0 })
+
+export const searchTrigger = style({
+  display: 'none',
+  '@media': {
+    [`screen and (max-width: ${breakpoints.mobile})`]: {
+      display: 'inline-flex',
+      selectors: {
+        [`${inlineSearch}[data-expanded="true"] &`]: { display: 'none' },
+      },
+    },
+  },
+})
+
+export const searchField = style({
+  display: 'block',
+  '@media': {
+    [`screen and (max-width: ${breakpoints.mobile})`]: {
+      display: 'none',
+      selectors: {
+        [`${inlineSearch}[data-expanded="true"] &`]: { display: 'block', flex: 1 },
+      },
+    },
+  },
+})
+
 export const disconnectedBanner = style({
   backgroundColor: theme.pill.red.background,
   borderBlockEnd: `1px solid ${theme.pill.red.stroke}`,

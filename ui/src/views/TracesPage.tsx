@@ -61,32 +61,36 @@ function useTraceList(enabled: boolean) {
   return { error, loading, traces }
 }
 
-function HeaderActions({ onClearSearch, searchText, setSearchText, setShowSearch, showSearch }: {
-  onClearSearch: () => void
+function HeaderActions({ expanded, searchText, setExpanded, setSearchText }: {
+  expanded: boolean
   searchText: string
+  setExpanded: (value: boolean) => void
   setSearchText: (value: string) => void
-  setShowSearch: (value: boolean) => void
-  showSearch: boolean
 }) {
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (expanded) inputRef.current?.focus()
+  }, [expanded])
+
   return (
     <div className={s.headerActions}>
-      {showSearch ? (
-        <div className={s.inlineSearch}>
-          <div className={s.inlineSearchField}>
-            <TextInput
-              autoFocus
-              icon="Search"
-              onChange={setSearchText}
-              placeholder="Search queries..."
-              type="search"
-              value={searchText}
-            />
-          </div>
-          <Button.IconButton name="X" onClick={onClearSearch} size="32" tooltipText="Close search" variant="bare" />
+      <div className={s.inlineSearch} data-expanded={expanded ? 'true' : undefined}>
+        <div className={s.searchTrigger}>
+          <Button.IconButton name="Search" onClick={() => setExpanded(true)} size="32" tooltipText="Search" variant="bare" />
         </div>
-      ) : (
-        <Button.IconButton name="Search" onClick={() => setShowSearch(true)} size="32" tooltipText="Search queries" variant="bare" />
-      )}
+        <div className={s.searchField}>
+          <TextInput
+            icon="Search"
+            onBlur={() => { if (!searchText.trim()) setExpanded(false) }}
+            onChange={setSearchText}
+            onKeyDown={(e) => { if (e.key === 'Escape') { setSearchText(''); setExpanded(false); inputRef.current?.blur() } }}
+            placeholder="Search queries..."
+            ref={inputRef}
+            value={searchText}
+          />
+        </div>
+      </div>
     </div>
   )
 }
@@ -99,7 +103,7 @@ export function TracesPage() {
   const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null)
   const { error, loading, traces } = useTraceList(selectedTraceId === null)
   const [searchText, setSearchText] = useState('')
-  const [showSearch, setShowSearch] = useState(false)
+  const [searchExpanded, setSearchExpanded] = useState(false)
 
   const filtered = traces.filter((trace) => {
     const needle = searchText.trim().toLowerCase()
@@ -126,13 +130,12 @@ export function TracesPage() {
   const connected = !error
   return (
     <section className={s.root} aria-label="Coral traces">
-      <PageHeader title="Query Stream">
+      <PageHeader title="Query stream" searchExpanded={searchExpanded}>
         <HeaderActions
-          onClearSearch={() => { setShowSearch(false); setSearchText('') }}
+          expanded={searchExpanded}
           searchText={searchText}
+          setExpanded={setSearchExpanded}
           setSearchText={setSearchText}
-          setShowSearch={setShowSearch}
-          showSearch={showSearch}
         />
       </PageHeader>
       {error && <DisconnectedBanner message={error} />}
