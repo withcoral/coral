@@ -97,6 +97,7 @@ pub(crate) fn convert_items(
 pub(crate) fn filter_items_by_column_values(
     columns: &[ColumnSpec],
     filter_values: &HashMap<String, String>,
+    active_filter_values: &HashMap<String, String>,
     args: &HashMap<String, String>,
     items: &[Value],
 ) -> Vec<Value> {
@@ -118,12 +119,12 @@ pub(crate) fn filter_items_by_column_values(
         return Vec::new();
     }
 
-    let empty_filters = HashMap::new();
     items
         .iter()
         .filter(|row| {
             filter_columns.iter().all(|(expr, expected)| {
-                to_utf8(eval_expr(expr, row, &empty_filters, args)).as_deref() == Some(*expected)
+                to_utf8(eval_expr(expr, row, active_filter_values, args)).as_deref()
+                    == Some(*expected)
             })
         })
         .cloned()
@@ -477,7 +478,9 @@ fn to_bool(value: Option<Value>) -> Option<bool> {
 
 #[cfg(test)]
 mod tests {
-    use super::{convert_items, eval_template, parse_iso8601_micros};
+    use super::{
+        convert_items, eval_template, filter_items_by_column_values, parse_iso8601_micros,
+    };
     use crate::backends::schema_from_columns;
     use coral_spec::backends::http::HttpTableSpec;
     use coral_spec::{
@@ -488,6 +491,15 @@ mod tests {
     use std::collections::HashMap;
 
     fn table_with_expr(name: &str, data_type: &str, expr: &ExprSpec) -> HttpTableSpec {
+        table_with_expr_and_filters(name, data_type, expr, &[])
+    }
+
+    fn table_with_expr_and_filters(
+        name: &str,
+        data_type: &str,
+        expr: &ExprSpec,
+        filters: &[&str],
+    ) -> HttpTableSpec {
         let source_manifest = parse_source_manifest_value(serde_json::json!({
             "dsl_version": 3,
             "name": "test",
@@ -498,6 +510,10 @@ mod tests {
                 "name": "t",
                 "description": "test",
                 "request": request_json(&RequestSpec::default()),
+                "filters": filters
+                    .iter()
+                    .map(|name| json!({ "name": name }))
+                    .collect::<Vec<_>>(),
                 "columns": [{
                     "name": name,
                     "type": data_type,
@@ -576,6 +592,18 @@ mod tests {
                 "path": path,
                 "item_path": item_path,
                 "separator": separator,
+            }),
+            ExprSpec::FromFilter { key } => json!({
+                "kind": "from_filter",
+                "key": key,
+            }),
+            ExprSpec::Template { template, values } => json!({
+                "kind": "template",
+                "template": template.raw(),
+                "values": values
+                    .iter()
+                    .map(|(key, expr)| (key.clone(), expr_json(expr)))
+                    .collect::<serde_json::Map<String, Value>>(),
             }),
             other => panic!("unsupported test expr: {other:?}"),
         }
@@ -954,6 +982,66 @@ mod tests {
         );
 
         assert_eq!(rendered, Some(Value::String("untitled".to_string())));
+    }
+
+    #[test]
+    fn local_filtering_uses_active_filter_values_for_from_filter_columns() {
+        let table = table_with_expr_and_filters(
+            "channel",
+            "Utf8",
+            &ExprSpec::FromFilter {
+                key: "channel".into(),
+            },
+            &["channel"],
+        );
+        let filter_values = HashMap::from([("channel".to_string(), "C123".to_string())]);
+        let items = vec![json!({"text": "hello"}), json!({"text": "world"})];
+
+        let filtered = filter_items_by_column_values(
+            table.columns(),
+            &filter_values,
+            &filter_values,
+            &HashMap::new(),
+            &items,
+        );
+
+        assert_eq!(filtered, items);
+    }
+
+    #[test]
+    fn local_filtering_uses_active_filter_values_for_template_columns() {
+        let table = table_with_expr_and_filters(
+            "repo_full_name",
+            "Utf8",
+            &ExprSpec::Template {
+                template: ParsedTemplate::parse("{{filter.owner}}/{{expr.name}}")
+                    .expect("template"),
+                values: HashMap::from([(
+                    "name".to_string(),
+                    ExprSpec::Path {
+                        path: vec!["name".into()],
+                    },
+                )]),
+            },
+            &["owner", "repo_full_name"],
+        );
+        let filter_values =
+            HashMap::from([("repo_full_name".to_string(), "withcoral/coral".to_string())]);
+        let active_filter_values = HashMap::from([
+            ("owner".to_string(), "withcoral".to_string()),
+            ("repo_full_name".to_string(), "withcoral/coral".to_string()),
+        ]);
+        let items = vec![json!({"name": "coral"}), json!({"name": "other"})];
+
+        let filtered = filter_items_by_column_values(
+            table.columns(),
+            &filter_values,
+            &active_filter_values,
+            &HashMap::new(),
+            &items,
+        );
+
+        assert_eq!(filtered, vec![json!({"name": "coral"})]);
     }
 
     #[test]

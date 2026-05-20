@@ -144,6 +144,7 @@ impl TableProvider for HttpSourceFunctionCallTableProvider {
             schema: self.state.schema.clone(),
             request_filter_values: HashMap::new(),
             local_filter_values: HashMap::new(),
+            active_filter_values: HashMap::new(),
             has_residual_filters: false,
             arg_values: self.arg_values.clone(),
             projection,

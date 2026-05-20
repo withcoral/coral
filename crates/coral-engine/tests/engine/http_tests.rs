@@ -581,6 +581,87 @@ async fn local_route_filter_is_applied_before_limit() {
 }
 
 #[tokio::test]
+async fn local_route_filter_can_use_request_filter_values_in_template_column() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users/1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [
+                { "name": "Ada" },
+                { "name": "Grace" }
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let manifest = json!({
+        "name": "http_local_template_filter",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": &server.uri(),
+        "tables": [{
+            "name": "users",
+            "description": "HTTP users",
+            "filters": [
+                { "name": "id" },
+                { "name": "lookup_key" }
+            ],
+            "request": {
+                "method": "GET",
+                "path": "/api/users"
+            },
+            "requests": [{
+                "when_filters": ["id"],
+                "method": "GET",
+                "path": "/api/users/{{filter.id}}"
+            }],
+            "response": {
+                "rows_path": ["data"]
+            },
+            "columns": [
+                {
+                    "name": "id",
+                    "type": "Utf8",
+                    "expr": { "kind": "from_filter", "key": "id" }
+                },
+                {
+                    "name": "name",
+                    "type": "Utf8",
+                    "expr": { "kind": "path", "path": ["name"] }
+                },
+                {
+                    "name": "lookup_key",
+                    "type": "Utf8",
+                    "expr": {
+                        "kind": "template",
+                        "template": "{{filter.id}}:{{expr.name}}",
+                        "values": {
+                            "name": { "kind": "path", "path": ["name"] }
+                        }
+                    }
+                }
+            ]
+        }]
+    });
+    let source = build_source(manifest);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT name FROM http_local_template_filter.users \
+             WHERE id = '1' AND lookup_key = '1:Grace'",
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(rows, vec![json!({ "name": "Grace" })]);
+}
+
+#[tokio::test]
 async fn unconsumed_search_filter_does_not_populate_from_filter_column() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))

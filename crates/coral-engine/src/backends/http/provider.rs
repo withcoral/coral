@@ -98,6 +98,7 @@ pub(crate) struct HttpJsonExecRequest<'a> {
     pub(crate) schema: SchemaRef,
     pub(crate) request_filter_values: HashMap<String, String>,
     pub(crate) local_filter_values: HashMap<String, String>,
+    pub(crate) active_filter_values: HashMap<String, String>,
     pub(crate) has_residual_filters: bool,
     pub(crate) arg_values: HashMap<String, String>,
     pub(crate) projection: Option<&'a Vec<usize>>,
@@ -139,6 +140,7 @@ pub(crate) fn http_json_exec(request: HttpJsonExecRequest<'_>) -> Result<Arc<dyn
         schema,
         request_filter_values,
         local_filter_values,
+        active_filter_values,
         has_residual_filters,
         arg_values,
         projection,
@@ -147,6 +149,7 @@ pub(crate) fn http_json_exec(request: HttpJsonExecRequest<'_>) -> Result<Arc<dyn
     let target = Arc::new(target);
     let request_filter_values = Arc::new(request_filter_values);
     let local_filter_values = Arc::new(local_filter_values);
+    let active_filter_values = Arc::new(active_filter_values);
     let arg_values = Arc::new(arg_values);
     let post_filter_limit = if local_filter_values.is_empty() {
         None
@@ -167,6 +170,7 @@ pub(crate) fn http_json_exec(request: HttpJsonExecRequest<'_>) -> Result<Arc<dyn
         let schema = schema.clone();
         let request_filter_values = request_filter_values.clone();
         let local_filter_values = local_filter_values.clone();
+        let active_filter_values = active_filter_values.clone();
         let arg_values = arg_values.clone();
         Arc::new(move |items: &[Value]| {
             let mut filtered_items;
@@ -176,6 +180,7 @@ pub(crate) fn http_json_exec(request: HttpJsonExecRequest<'_>) -> Result<Arc<dyn
                 filtered_items = filter_items_by_column_values(
                     target.columns(),
                     &local_filter_values,
+                    &active_filter_values,
                     &arg_values,
                     items,
                 );
@@ -295,6 +300,7 @@ impl TableProvider for HttpSourceTableProvider {
             schema: self.schema.clone(),
             request_filter_values,
             local_filter_values,
+            active_filter_values: filter_values,
             has_residual_filters,
             arg_values: HashMap::new(),
             projection,

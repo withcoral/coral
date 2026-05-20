@@ -510,9 +510,11 @@ async fn too_many_resolver_rows_for_one_binding_returns_cap_error() {
     write_jsonl_file(temp.path(), "issues.jsonl", &issues);
 
     let server = MockServer::start().await;
+    // The 1001 JSONL rows above are resolver-side rows for one binding tuple.
+    // Overflow must be detected before dispatching any dependent HTTP fetch.
     Mock::given(method("GET"))
         .and(path("/repos/withcoral/coral/pulls/123"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": [] })))
+        .respond_with(ResponseTemplate::new(500).set_body_string("unreachable dependent fetch"))
         .expect(0)
         .mount(&server)
         .await;
