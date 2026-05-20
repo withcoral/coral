@@ -36,14 +36,14 @@ To disable trace history:
 enabled = false
 ```
 
-HTTP request and response bodies are recorded in local traces by default, up to `http_body_max_bytes` bytes per body (`65536` by default). To disable local body recording:
+HTTP request and response body previews are not recorded by default. To enable local body recording:
 
 ```toml
 [trace_history]
-record_http_bodies = false
+record_http_bodies = true
 ```
 
-Recorded HTTP bodies are visible in local trace history only. They are not exported to external OTLP collectors.
+Recorded HTTP body previews are capped by `http_body_max_bytes` bytes per body (`65536` by default). They are visible in local trace history only and are not exported to external OTLP collectors.
 
 ## Configuration reference
 
@@ -65,7 +65,7 @@ External OpenTelemetry export settings live under `[otel]` in `config.toml`. Cor
 | --------------------- | ------- | ------- | --------------------------------------------------------------------------------- |
 | `enabled`             | boolean | `true`  | Enables trace history without requiring an OTLP collector.                        |
 | `retention_days`      | integer | `7`     | Number of days of local trace spans to retain.                                    |
-| `record_http_bodies`  | boolean | `true`  | Records HTTP request and response bodies in local traces when local tracing is enabled. |
+| `record_http_bodies`  | boolean | `false` | Records HTTP request and response bodies in local traces when local tracing is enabled. |
 | `http_body_max_bytes` | integer | `65536` | Maximum request or response body bytes recorded in a local trace.                 |
 
 Example with auth headers and a hosted endpoint:

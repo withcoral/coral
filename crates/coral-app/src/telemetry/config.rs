@@ -70,7 +70,7 @@ impl Default for TraceHistoryConfig {
         Self {
             enabled: true,
             retention_days: DEFAULT_TRACE_HISTORY_RETENTION_DAYS,
-            record_http_bodies: true,
+            record_http_bodies: false,
             http_body_max_bytes: DEFAULT_TRACE_HISTORY_HTTP_BODY_MAX_BYTES,
         }
     }
@@ -134,11 +134,8 @@ mod tests {
 
         assert_eq!(config, TelemetryConfig::default());
         assert!(config.trace_history.enabled);
-        assert!(config.trace_history.record_http_bodies);
-        assert_eq!(
-            config.trace_history.http_body_recording_max_bytes(),
-            Some(64 * 1024)
-        );
+        assert!(!config.trace_history.record_http_bodies);
+        assert_eq!(config.trace_history.http_body_recording_max_bytes(), None);
     }
 
     #[test]

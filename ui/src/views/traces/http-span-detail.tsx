@@ -21,6 +21,8 @@ const REQUEST_BODY_PRESENT_ATTR = 'http.request.body.present'
 const RESPONSE_BODY_PRESENT_ATTR = 'http.response.body.present'
 const REQUEST_BODY_SIZE_ATTR = 'http.request.body.size'
 const RESPONSE_BODY_SIZE_ATTR = 'http.response.body.size'
+const ENABLE_BODY_RECORDING_TEXT =
+  'Set [trace_history] record_http_bodies = true in config.toml to capture request/response previews.'
 const BODY_ATTRIBUTE_KEYS = new Set([
   REQUEST_BODY_ATTR,
   RESPONSE_BODY_ATTR,
@@ -294,8 +296,8 @@ function bodyEmptyText(kind: 'request' | 'response', attrs: Record<string, unkno
     : attrBool(attrs[RESPONSE_BODY_PRESENT_ATTR]) || Boolean(size)
 
   if (truncated) return `${label} was truncated${size ? ` (${size})` : ''}, but no preview was recorded.`
-  if (present) return `${label} was present${size ? ` (${size})` : ''}, but content was not captured.`
-  return `No ${kind} body was recorded for this request.`
+  if (present) return `${label} was present${size ? ` (${size})` : ''}, but content was not captured. ${ENABLE_BODY_RECORDING_TEXT}`
+  return `No ${kind} body was recorded for this request. ${ENABLE_BODY_RECORDING_TEXT}`
 }
 
 function metaChip(label: string, value: React.ReactNode) {
