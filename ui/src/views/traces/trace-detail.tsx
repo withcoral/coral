@@ -31,6 +31,7 @@ import {
 export type DetailTab = 'timeline' | 'api'
 type WaterfallTone = 'query' | 'http' | 'span' | 'error'
 
+const WATERFALL_LABEL_PADDING_INLINE_PX = 10
 const INDENT_PX = 14
 const DETAIL_PANEL_DEFAULT_RATIO = 0.4
 const DETAIL_PANEL_MIN_RATIO = 0.28
@@ -172,6 +173,7 @@ function WaterfallSpanLabel({
   label,
   meta,
   onToggle,
+  reserveToggleSpace,
   spanId,
   tone,
 }: {
@@ -182,11 +184,12 @@ function WaterfallSpanLabel({
   label: string
   meta: string
   onToggle: (spanId: string) => void
+  reserveToggleSpace: boolean
   spanId: string
   tone: WaterfallTone
 }) {
   return (
-    <div className={classNames(s.waterfallSpanLabel, { [s.waterfallSpanLabelActive]: active })} style={{ paddingInlineStart: depth * INDENT_PX }}>
+    <div className={classNames(s.waterfallSpanLabel, { [s.waterfallSpanLabelActive]: active })} style={{ paddingInlineStart: WATERFALL_LABEL_PADDING_INLINE_PX + depth * INDENT_PX }}>
       {depth > 0 && <span className={s.waterfallTreeGuide} aria-hidden />}
       {childCount > 0 ? (
         <button
@@ -202,9 +205,9 @@ function WaterfallSpanLabel({
           <Icon name={collapsed ? 'ChevronRight' : 'ChevronDown'} size="14" color="secondary" />
           <span className={s.waterfallChildCountChip}>{childCount}</span>
         </button>
-      ) : (
-        <span className={s.waterfallTreeTogglePlaceholder} />
-      )}
+      ) : reserveToggleSpace ? (
+        <span aria-hidden className={s.waterfallTreeTogglePlaceholder} />
+      ) : null}
       <span className={s.waterfallPluginPill}>
         <span className={s.waterfallPluginDot} data-tone={tone} />
         <span className={s.waterfallLabelText}>
@@ -262,6 +265,7 @@ function WaterfallRow({
   onToggle,
   onToggleExpanded,
   onHover,
+  reserveToggleSpace,
   row,
 }: {
   collapsed: boolean
@@ -270,6 +274,7 @@ function WaterfallRow({
   onToggle: (spanId: string) => void
   onToggleExpanded: (spanId: string) => void
   onHover: (spanId: string | null) => void
+  reserveToggleSpace: boolean
   row: TimelineRow
 }) {
   const { childCount, depth, span } = row
@@ -289,7 +294,7 @@ function WaterfallRow({
     >
       <div
         aria-expanded={canExpandHttp ? expanded : undefined}
-        className={classNames(s.waterfallRowButton, { [s.waterfallRowHover]: hovered })}
+        className={classNames(s.waterfallRowButton, { [s.waterfallRowHover]: hovered, [s.waterfallRowActive]: expanded })}
         data-noisy={isNoisyInternalSpan || undefined}
         onMouseEnter={() => onHover(span.spanId)}
         onMouseLeave={() => onHover(null)}
@@ -310,6 +315,7 @@ function WaterfallRow({
           label={label}
           meta={meta}
           onToggle={onToggle}
+          reserveToggleSpace={reserveToggleSpace}
           spanId={span.spanId}
           tone={tone}
         />
@@ -482,6 +488,7 @@ function TimelineWaterfall({ expandedHttpSpanId, onExpandedHttpSpanIdChange, onN
                   onHover={setHoveredSpanId}
                   onToggle={toggleSpan}
                   onToggleExpanded={(spanId) => onExpandedHttpSpanIdChange((current) => current === spanId ? null : spanId)}
+                  reserveToggleSpace={proMode}
                   row={row}
                 />
               ))}

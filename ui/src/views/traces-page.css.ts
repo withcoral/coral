@@ -169,9 +169,9 @@ export const waterfallTimelinePane = style({
 export const waterfallTickRow = style({
   display: 'grid',
   flexShrink: 0,
-  gridTemplateColumns: '220px minmax(0, 1fr)',
+  gridTemplateColumns: '320px minmax(0, 1fr)',
 })
-export const waterfallLabel = style({ borderBlockEnd: `1px solid ${theme.stroke.primary}`, height: 24, minWidth: 0, paddingBlockEnd: 4 })
+export const waterfallLabel = style({ height: 24, minWidth: 0, paddingBlockEnd: 4 })
 export const waterfallTimeline = style({ borderBlockEnd: `1px solid ${theme.stroke.primary}`, height: 24, minWidth: 0, overflow: 'hidden', paddingBlockEnd: 4, position: 'relative' })
 export const waterfallTick = style({ color: theme.content.tertiary, fontFamily: codeFontFamily, fontSize: 12, lineHeight: '16px', position: 'absolute', whiteSpace: 'nowrap' })
 export const waterfallResizeHandle = style({
@@ -214,7 +214,7 @@ export const waterfallRowsViewport = style({
 export const waterfallRowsGrid = style({
   alignItems: 'start',
   display: 'grid',
-  gridTemplateColumns: '220px minmax(0, 1fr)',
+  gridTemplateColumns: '320px minmax(0, 1fr)',
   minWidth: 0,
 })
 export const waterfallLabelsColumn = style({ display: 'flex', flexDirection: 'column', gap: 10, minWidth: 0 })
@@ -226,12 +226,14 @@ export const waterfallTimelineBody = style({
   minHeight: 0,
   minWidth: 0,
 })
-export const waterfallRowShell = style({ borderRadius: 8, minWidth: 0, overflow: 'hidden', position: 'relative' })
+export const waterfallRowShell = style({ borderRadius: 8, borderBottomRightRadius: 0, borderTopRightRadius: 0, minWidth: 0, overflow: 'hidden', position: 'relative' })
 export const waterfallRowButton = style({
   alignItems: 'center',
   background: 'none',
   border: 'none',
   borderRadius: 4,
+  borderBottomRightRadius: 0,
+  borderTopRightRadius: 0,
   color: theme.content.primary,
   display: 'flex',
   minHeight: 38,
@@ -244,6 +246,7 @@ export const waterfallRowButton = style({
   },
 })
 export const waterfallRowHover = style({ backgroundColor: theme.surface.onMainContentSubtle })
+export const waterfallRowActive = style({ backgroundColor: theme.pill.blue.background, color: theme.content.primary })
 export const waterfallSpanLabel = style({
   alignItems: 'center',
   alignSelf: 'stretch',
@@ -252,11 +255,9 @@ export const waterfallSpanLabel = style({
   minHeight: 38,
   minWidth: 0,
   overflow: 'hidden',
-  paddingInlineEnd: 10,
+  paddingInline: 10,
 })
 export const waterfallSpanLabelActive = style({
-  backgroundColor: theme.pill.blue.background,
-  boxShadow: `inset 3px 0 0 ${theme.pill.blue.color}`,
   color: theme.content.primary,
 })
 export const waterfallTreeGuide = style({ borderBlockEnd: `1px solid ${theme.stroke.primary}`, borderInlineStart: `1px solid ${theme.stroke.primary}`, flexShrink: 0, height: 18, marginInlineEnd: 6, width: 10 })
@@ -302,6 +303,8 @@ export const waterfallLabelText = style({ display: 'flex', flexDirection: 'colum
 export const waterfallBarSlot = style({
   alignItems: 'center',
   borderRadius: 4,
+  borderBottomLeftRadius: 0,
+  borderTopLeftRadius: 0,
   display: 'flex',
   flexShrink: 0,
   minHeight: 38,
@@ -311,7 +314,8 @@ export const waterfallBarSlot = style({
   },
 })
 export const waterfallBarSlotActive = style({
-  boxShadow: `inset 0 0 0 1px ${theme.pill.blue.stroke}`,
+  backgroundColor: theme.pill.blue.background,
+  color: theme.content.primary,
 })
 export const waterfallBarArea = style({ height: 24, minWidth: 0, overflow: 'hidden', position: 'relative', width: '100%' })
 export const waterfallBar = style({ alignItems: 'center', borderRadius: 6, display: 'flex', height: 20, insetBlockStart: 2, minWidth: 2, overflow: 'hidden', paddingInline: 8, position: 'absolute', whiteSpace: 'nowrap', selectors: {

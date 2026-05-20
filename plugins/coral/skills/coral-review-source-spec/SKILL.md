@@ -3,7 +3,7 @@ name: coral-review-source-spec
 description: Review new or updated Coral source manifests and source PRs for content, style, product fit, query ergonomics, documentation quality, and consistency with existing Coral sources. Use when Codex is asked to review a sources/core/name or sources/community/name source directory, a manifest.yaml, or a GitHub PR that adds or changes a Coral source.
 ---
 
-# Review Source Spec
+# Coral Review Source Spec
 
 ## Review Goal
 

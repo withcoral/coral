@@ -247,6 +247,18 @@ upgrades pick up newer bundled manifests without re-adding the source.
 
 ## Development
 
+Install the local test runner once with Homebrew:
+
+```bash
+brew install cargo-nextest
+```
+
+Or install it with Cargo:
+
+```bash
+cargo install cargo-nextest --locked
+```
+
 Run the workspace validation gate from the repository root:
 
 ```bash

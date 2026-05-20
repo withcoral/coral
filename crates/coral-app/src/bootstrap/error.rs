@@ -8,7 +8,7 @@ use coral_engine::{CoreError, StatusCode};
 use tonic::{Code, Status};
 use tonic_types::{ErrorDetail, StatusExt as _};
 
-use crate::state::CredentialsError;
+use crate::credentials::CredentialsError;
 
 /// Errors surfaced by the local application layer.
 #[derive(Debug, thiserror::Error)]
@@ -43,7 +43,7 @@ pub enum AppError {
     /// Background server task failed to join cleanly.
     #[error(transparent)]
     TaskJoin(#[from] tokio::task::JoinError),
-    /// Secret-store access failed.
+    /// Credential material access failed.
     #[error(transparent)]
     Credentials(#[from] CredentialsError),
     /// The Coral config directory could not be discovered from defaults.

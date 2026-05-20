@@ -15,11 +15,12 @@ use tracing::Instrument as _;
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
 use crate::bootstrap::AppError;
+use crate::credentials::{CredentialManager, CredentialSetId};
 use crate::query::extensions::{EngineExtensionsProvider, engine_extensions_for_providers};
 use crate::sources::SourceName;
 use crate::sources::catalog::resolve_installed_manifest;
 use crate::sources::model::InstalledSource;
-use crate::state::{AppStateLayout, ConfigStore, SecretStore};
+use crate::state::{AppStateLayout, ConfigStore};
 use crate::workspaces::WorkspaceName;
 
 #[derive(Debug)]
@@ -36,7 +37,7 @@ pub(crate) struct ValidatedSource {
 #[derive(Clone)]
 pub(crate) struct QueryManager {
     config_store: ConfigStore,
-    secret_store: SecretStore,
+    credential_manager: CredentialManager,
     runtime_context: QueryRuntimeContext,
     layout: AppStateLayout,
     engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
@@ -45,14 +46,14 @@ pub(crate) struct QueryManager {
 impl QueryManager {
     pub(crate) fn new(
         config_store: ConfigStore,
-        secret_store: SecretStore,
+        credential_manager: CredentialManager,
         runtime_context: QueryRuntimeContext,
         layout: AppStateLayout,
         engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
     ) -> Self {
         Self {
             config_store,
-            secret_store,
+            credential_manager,
             runtime_context,
             layout,
             engine_extensions_providers,
@@ -189,9 +190,10 @@ impl QueryManager {
         let installed = resolve_installed_manifest(workspace_name, source, &self.layout)?;
         let source_spec = installed.source_spec;
         validate_required_variables(source, source_spec.declared_inputs())?;
+        let credential_set_id = CredentialSetId::for_source(&source.name);
         let stored_secrets = self
-            .secret_store
-            .read_source_secrets_for(workspace_name, &source.name)?;
+            .credential_manager
+            .read_material(workspace_name, &credential_set_id)?;
         let mut resolved_secrets = BTreeMap::new();
         let missing_secrets: Vec<String> = source_spec
             .required_secret_names()
