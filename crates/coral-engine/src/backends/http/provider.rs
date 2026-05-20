@@ -280,9 +280,24 @@ impl TableProvider for HttpSourceTableProvider {
             .filter(|(filter, _)| consumed_filters.contains(*filter))
             .map(|(filter, value)| (filter.clone(), value.clone()))
             .collect();
-        let has_residual_filters = filter_values
-            .keys()
-            .any(|filter| !consumed_filters.contains(filter));
+        let allowed: HashSet<&str> = self
+            .table
+            .filters()
+            .iter()
+            .map(|f| f.name.as_str())
+            .collect();
+        let filter_modes: HashMap<&str, FilterMode> = self
+            .table
+            .filters()
+            .iter()
+            .map(|f| (f.name.as_str(), f.mode))
+            .collect();
+        let has_residual_filters = filters.iter().any(|expr| {
+            !matches!(
+                classify_filter(expr, &allowed, &filter_modes, &consumed_filters),
+                TableProviderFilterPushDown::Exact
+            )
+        });
         let local_filter_values =
             match extract_exact_filter_values_checked(filters, self.table.filters()) {
                 FilterExtraction::Values(values) => values
