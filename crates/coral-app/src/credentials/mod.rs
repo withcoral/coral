@@ -11,6 +11,10 @@ use crate::workspaces::WorkspaceName;
 
 pub(crate) use store::{CredentialStore, CredentialsError};
 
+/// Opaque credential material captured for best-effort rollback.
+#[derive(Clone)]
+pub(crate) struct CredentialMaterialSnapshot(Option<Vec<u8>>);
+
 /// App-owned identity for one durable credential set.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct CredentialSetId(String);
@@ -68,6 +72,25 @@ impl CredentialManager {
         credential_set_id: &CredentialSetId,
     ) -> Result<BTreeMap<String, String>, AppError> {
         self.store.read_material(workspace_name, credential_set_id)
+    }
+
+    pub(crate) fn snapshot_material(
+        &self,
+        workspace_name: &WorkspaceName,
+        credential_set_id: &CredentialSetId,
+    ) -> Result<CredentialMaterialSnapshot, AppError> {
+        self.store
+            .snapshot_material(workspace_name, credential_set_id)
+    }
+
+    pub(crate) fn restore_material(
+        &self,
+        workspace_name: &WorkspaceName,
+        credential_set_id: &CredentialSetId,
+        snapshot: &CredentialMaterialSnapshot,
+    ) -> Result<(), AppError> {
+        self.store
+            .restore_material(workspace_name, credential_set_id, snapshot)
     }
 
     pub(crate) fn remove_material(

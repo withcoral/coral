@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::bootstrap::AppError;
-use crate::credentials::{CredentialManager, CredentialSetId};
+use crate::credentials::{CredentialManager, CredentialMaterialSnapshot, CredentialSetId};
 use crate::sources::SourceName;
 use crate::sources::catalog::{
     describe_manifest, list_bundled_sources, load_bundled_source, resolve_installed_manifest,
@@ -58,7 +58,7 @@ struct PersistSourceRequest<'a> {
 struct SourceRollbackState {
     source: InstalledSource,
     manifest_yaml: Option<String>,
-    credential_material: BTreeMap<String, String>,
+    credential_material: CredentialMaterialSnapshot,
 }
 
 impl SourceManager {
@@ -192,7 +192,7 @@ impl SourceManager {
             },
             credential_material: self
                 .credential_manager
-                .read_material(workspace_name, &credential_set_id)?,
+                .snapshot_material(workspace_name, &credential_set_id)?,
         };
         if source_dir.exists()
             && let Err(error) = std::fs::remove_dir_all(&source_dir)
@@ -303,7 +303,7 @@ impl SourceManager {
         let credential_set_id = CredentialSetId::for_source(source_name);
         let credential_material = self
             .credential_manager
-            .read_material(workspace_name, &credential_set_id)?;
+            .snapshot_material(workspace_name, &credential_set_id)?;
         Ok(Some(SourceRollbackState {
             manifest_yaml: match source.origin {
                 SourceOrigin::Bundled => None,
@@ -343,7 +343,7 @@ impl SourceManager {
                 None => {}
             }
             let credential_set_id = CredentialSetId::for_source(source_name);
-            if let Err(e) = self.credential_manager.replace_material(
+            if let Err(e) = self.credential_manager.restore_material(
                 workspace_name,
                 &credential_set_id,
                 &previous.credential_material,
@@ -730,6 +730,107 @@ tables:
         assert_eq!(
             source.variables.get("API_BASE").map(String::as_str),
             Some("https://example.com")
+        );
+    }
+
+    #[test]
+    fn import_replaces_malformed_existing_credential_material() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let credential_store = CredentialStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(credential_store);
+        let manager = SourceManager::new(config_store, credential_manager, layout.clone());
+
+        let source_name = SourceName::parse("secured_messages").expect("source");
+        manager
+            .import_source(
+                &default_workspace(),
+                &ImportSourceCommand {
+                    manifest_yaml: manifest_with_secret(),
+                    bindings: SourceBindings {
+                        variables: vec![],
+                        secrets: vec![SourceBinding {
+                            key: "API_TOKEN".to_string(),
+                            value: "old-token".to_string(),
+                        }],
+                    },
+                },
+            )
+            .expect("initial import");
+
+        let secret_path = layout.secret_file(&default_workspace(), &source_name);
+        std::fs::write(&secret_path, "BROKEN\n").expect("write malformed credential material");
+
+        manager
+            .import_source(
+                &default_workspace(),
+                &ImportSourceCommand {
+                    manifest_yaml: manifest_with_secret(),
+                    bindings: SourceBindings {
+                        variables: vec![],
+                        secrets: vec![SourceBinding {
+                            key: "API_TOKEN".to_string(),
+                            value: "new-token".to_string(),
+                        }],
+                    },
+                },
+            )
+            .expect("replace malformed credential material");
+
+        assert_eq!(
+            std::fs::read_to_string(&secret_path).expect("read replaced credential material"),
+            "API_TOKEN=new-token\n"
+        );
+    }
+
+    #[test]
+    fn delete_removes_source_with_malformed_credential_material() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let credential_store = CredentialStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(credential_store);
+        let manager = SourceManager::new(config_store, credential_manager, layout.clone());
+
+        let source_name = SourceName::parse("secured_messages").expect("source");
+        manager
+            .import_source(
+                &default_workspace(),
+                &ImportSourceCommand {
+                    manifest_yaml: manifest_with_secret(),
+                    bindings: SourceBindings {
+                        variables: vec![],
+                        secrets: vec![SourceBinding {
+                            key: "API_TOKEN".to_string(),
+                            value: "secret-token".to_string(),
+                        }],
+                    },
+                },
+            )
+            .expect("initial import");
+
+        let secret_path = layout.secret_file(&default_workspace(), &source_name);
+        std::fs::write(&secret_path, "BROKEN\n").expect("write malformed credential material");
+
+        manager
+            .delete_source(&default_workspace(), &source_name)
+            .expect("delete source with malformed credential material");
+
+        assert!(
+            !secret_path.exists(),
+            "delete should remove malformed credential material"
+        );
+        assert!(
+            manager
+                .list_workspace_sources(&default_workspace())
+                .expect("list sources")
+                .is_empty(),
+            "source config should be removed"
         );
     }
 }

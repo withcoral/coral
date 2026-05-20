@@ -10,7 +10,7 @@ use crate::storage::fs as storage_fs;
 use crate::storage::fs::FileLock;
 use crate::workspaces::WorkspaceName;
 
-use super::CredentialSetId;
+use super::{CredentialMaterialSnapshot, CredentialSetId};
 
 /// Errors returned by the plaintext credential env-file helpers.
 #[derive(Debug, thiserror::Error)]
@@ -54,6 +54,30 @@ impl CredentialStore {
         load_file(&path).map_err(Into::into)
     }
 
+    pub(crate) fn snapshot_material(
+        &self,
+        workspace_name: &WorkspaceName,
+        credential_set_id: &CredentialSetId,
+    ) -> Result<CredentialMaterialSnapshot, AppError> {
+        let path = self.material_file(workspace_name, credential_set_id)?;
+        tracing::trace!(%credential_set_id, "snapshotting credential material");
+        let _lock = FileLock::shared(self.layout.state_lock())?;
+        snapshot_file(&path).map_err(Into::into)
+    }
+
+    pub(crate) fn restore_material(
+        &self,
+        workspace_name: &WorkspaceName,
+        credential_set_id: &CredentialSetId,
+        snapshot: &CredentialMaterialSnapshot,
+    ) -> Result<(), AppError> {
+        let path = self.material_file(workspace_name, credential_set_id)?;
+        tracing::trace!(%credential_set_id, "restoring credential material");
+        let _lock = FileLock::exclusive(self.layout.state_lock())?;
+        restore_snapshot_unlocked(&path, snapshot)?;
+        Ok(())
+    }
+
     pub(crate) fn remove_material(
         &self,
         workspace_name: &WorkspaceName,
@@ -61,9 +85,8 @@ impl CredentialStore {
     ) -> Result<(), AppError> {
         let path = self.material_file(workspace_name, credential_set_id)?;
         tracing::trace!(%credential_set_id, "removing credential material");
-        if path.exists() {
-            std::fs::remove_file(&path)?;
-        }
+        let _lock = FileLock::exclusive(self.layout.state_lock())?;
+        remove_file_if_exists_unlocked(&path)?;
         Ok(())
     }
 
@@ -85,6 +108,31 @@ fn load_file(path: &Path) -> Result<BTreeMap<String, String>, CredentialsError> 
     parse_env_file(&std::fs::read_to_string(path)?)
 }
 
+fn snapshot_file(path: &Path) -> Result<CredentialMaterialSnapshot, CredentialsError> {
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(CredentialMaterialSnapshot(Some(bytes))),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            Ok(CredentialMaterialSnapshot(None))
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn restore_snapshot_unlocked(
+    path: &Path,
+    snapshot: &CredentialMaterialSnapshot,
+) -> Result<(), CredentialsError> {
+    match &snapshot.0 {
+        Some(bytes) => {
+            let parent = path.parent().unwrap_or_else(|| Path::new("."));
+            storage_fs::ensure_dir(parent)?;
+            storage_fs::write_atomic(path, bytes)?;
+        }
+        None => remove_file_if_exists_unlocked(path)?,
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 fn save_file(
     path: &Path,
@@ -100,9 +148,7 @@ fn save_values_unlocked(
     values: &BTreeMap<String, String>,
 ) -> Result<(), CredentialsError> {
     if values.is_empty() {
-        if path.exists() {
-            std::fs::remove_file(path)?;
-        }
+        remove_file_if_exists_unlocked(path)?;
         return Ok(());
     }
 
@@ -119,6 +165,14 @@ fn save_values_unlocked(
 
     storage_fs::write_atomic(path, output.as_bytes())?;
     Ok(())
+}
+
+fn remove_file_if_exists_unlocked(path: &Path) -> Result<(), io::Error> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
 }
 
 fn parse_env_file(raw: &str) -> Result<BTreeMap<String, String>, CredentialsError> {
@@ -283,5 +337,64 @@ mod tests {
             .replace_material(&workspace_name, &credential_set_id, &BTreeMap::new())
             .expect("remove malformed material");
         assert!(!path.exists(), "empty replacement should remove material");
+    }
+
+    #[test]
+    fn remove_material_treats_missing_files_as_success() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let store = CredentialStore::new(layout.clone());
+        let workspace_name = WorkspaceName::default();
+        let source_name = SourceName::parse("secured_messages").expect("source");
+        let credential_set_id = CredentialSetId::for_source(&source_name);
+        let path = layout.secret_file(&workspace_name, &source_name);
+
+        store
+            .remove_material(&workspace_name, &credential_set_id)
+            .expect("missing material should be removable");
+
+        std::fs::create_dir_all(path.parent().expect("secret parent")).expect("secret parent dir");
+        std::fs::write(&path, "BROKEN\n").expect("write malformed existing env file");
+        store
+            .remove_material(&workspace_name, &credential_set_id)
+            .expect("malformed material should be removable");
+        assert!(!path.exists(), "remove should delete material");
+
+        store
+            .remove_material(&workspace_name, &credential_set_id)
+            .expect("second remove should still be successful");
+    }
+
+    #[test]
+    fn restore_material_snapshot_preserves_raw_bytes() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let store = CredentialStore::new(layout.clone());
+        let workspace_name = WorkspaceName::default();
+        let source_name = SourceName::parse("secured_messages").expect("source");
+        let credential_set_id = CredentialSetId::for_source(&source_name);
+        let path = layout.secret_file(&workspace_name, &source_name);
+        std::fs::create_dir_all(path.parent().expect("secret parent")).expect("secret parent dir");
+        std::fs::write(&path, "BROKEN\n").expect("write malformed existing env file");
+
+        let snapshot = store
+            .snapshot_material(&workspace_name, &credential_set_id)
+            .expect("snapshot malformed material");
+        let values = BTreeMap::from([("API_TOKEN".to_string(), "secret-token".to_string())]);
+        store
+            .replace_material(&workspace_name, &credential_set_id, &values)
+            .expect("replace material");
+
+        store
+            .restore_material(&workspace_name, &credential_set_id, &snapshot)
+            .expect("restore malformed material");
+        assert_eq!(
+            std::fs::read(&path).expect("restored bytes"),
+            b"BROKEN\n".to_vec()
+        );
     }
 }
