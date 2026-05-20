@@ -1,0 +1,778 @@
+use super::*;
+use crate::QuerySource;
+use crate::runtime::catalog;
+use crate::runtime::registry::{CompiledQuerySource, register_sources_blocking};
+use crate::runtime::source_functions::SourceFunctionRegistry;
+use datafusion::arrow::util::pretty::pretty_format_batches;
+use datafusion::error::DataFusionError;
+use datafusion::prelude::SessionContext;
+use rmcp::model::JsonObject;
+use serde_json::Value;
+use serde_json::json;
+use std::sync::Mutex;
+
+#[derive(Debug)]
+struct FakeMcpCaller {
+    calls: Mutex<Vec<(String, JsonObject)>>,
+}
+
+#[async_trait]
+impl McpToolCaller for FakeMcpCaller {
+    async fn call_tool(
+        &self,
+        _relation: &str,
+        tool_name: &str,
+        arguments: JsonObject,
+    ) -> Result<Value> {
+        self.calls
+            .lock()
+            .expect("calls lock")
+            .push((tool_name.to_string(), arguments.clone()));
+        let query = arguments
+            .get("query")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        Ok(json!({
+            "items": [
+                { "title": format!("{query} one"), "url": "https://example.com/1" },
+                { "title": format!("{query} two"), "url": "https://example.com/2" }
+            ]
+        }))
+    }
+}
+
+/// Records each MCP tool call and returns a fixed payload for table tests.
+#[derive(Debug)]
+struct FakeMcpTableCaller {
+    calls: Mutex<Vec<(String, JsonObject)>>,
+}
+
+#[async_trait]
+impl McpToolCaller for FakeMcpTableCaller {
+    async fn call_tool(
+        &self,
+        _relation: &str,
+        tool_name: &str,
+        arguments: JsonObject,
+    ) -> Result<Value> {
+        self.calls
+            .lock()
+            .expect("calls lock")
+            .push((tool_name.to_string(), arguments.clone()));
+        Ok(json!({
+            "issues": [
+                { "id": "1", "title": "Bug A", "state": "open" },
+                { "id": "2", "title": "Bug B", "state": "open" },
+                { "id": "3", "title": "Bug C", "state": "closed" }
+            ]
+        }))
+    }
+}
+
+/// Returns two cursor-paginated pages and records each MCP tool call.
+#[derive(Debug)]
+struct FakePaginatedMcpTableCaller {
+    calls: Mutex<Vec<(String, JsonObject)>>,
+}
+
+#[async_trait]
+impl McpToolCaller for FakePaginatedMcpTableCaller {
+    async fn call_tool(
+        &self,
+        _relation: &str,
+        tool_name: &str,
+        arguments: JsonObject,
+    ) -> Result<Value> {
+        self.calls
+            .lock()
+            .expect("calls lock")
+            .push((tool_name.to_string(), arguments.clone()));
+        let cursor = arguments.get("cursor").and_then(Value::as_str);
+        match cursor {
+            None => Ok(json!({
+                "issues": [
+                    { "id": "1", "title": "Bug A", "state": "open" }
+                ],
+                "meta": { "nextCursor": "page-2" }
+            })),
+            Some("page-2") => Ok(json!({
+                "issues": [
+                    { "id": "2", "title": "Bug B", "state": "open" },
+                    { "id": "3", "title": "Bug C", "state": "closed" }
+                ],
+                "meta": {}
+            })),
+            Some(other) => panic!("unexpected cursor: {other}"),
+        }
+    }
+}
+
+fn mcp_manifest() -> coral_spec::ValidatedSourceManifest {
+    coral_spec::parse_source_manifest_value(json!({
+        "dsl_version": 3,
+        "name": "test_mcp",
+        "version": "0.1.0",
+        "backend": "mcp",
+        "server": {
+            "transport": "stdio",
+            "command": "unused"
+        },
+        "functions": [{
+            "name": "search",
+            "tool": "search_tool",
+            "args": [{
+                "name": "query",
+                "required": true,
+                "bind": { "arg": "query" }
+            }],
+            "response": {
+                "rows_path": ["items"]
+            },
+            "columns": [
+                { "name": "title", "type": "Utf8" },
+                { "name": "url", "type": "Utf8" }
+            ]
+        }]
+    }))
+    .expect("mcp manifest should parse")
+}
+
+fn mcp_typed_args_manifest() -> coral_spec::ValidatedSourceManifest {
+    coral_spec::parse_source_manifest_value(json!({
+        "dsl_version": 3,
+        "name": "test_mcp",
+        "version": "0.1.0",
+        "backend": "mcp",
+        "server": {
+            "transport": "stdio",
+            "command": "unused"
+        },
+        "functions": [{
+            "name": "typed_search",
+            "tool": "typed_search_tool",
+            "args": [
+                {
+                    "name": "query",
+                    "required": true,
+                    "bind": { "arg": "query" }
+                },
+                {
+                    "name": "limit",
+                    "required": true,
+                    "bind": { "arg": "limit" }
+                },
+                {
+                    "name": "include_archived",
+                    "required": true,
+                    "bind": { "arg": "include_archived" }
+                },
+                {
+                    "name": "threshold",
+                    "required": true,
+                    "bind": { "arg": "threshold" }
+                }
+            ],
+            "response": {
+                "rows_path": ["items"]
+            },
+            "columns": [
+                { "name": "title", "type": "Utf8" },
+                { "name": "url", "type": "Utf8" }
+            ]
+        }]
+    }))
+    .expect("mcp typed args manifest should parse")
+}
+
+fn compile_sources(
+    manifest: coral_spec::ValidatedSourceManifest,
+    caller: Arc<dyn McpToolCaller>,
+) -> Vec<CompiledQuerySource> {
+    let mcp_manifest = manifest.as_mcp().expect("mcp manifest").clone();
+    let variables = BTreeMap::new();
+    let secrets = BTreeMap::new();
+    let resolved_inputs = Arc::new(coral_spec::resolve_inputs(
+        &mcp_manifest.declared_inputs,
+        &secrets,
+        &variables,
+    ));
+    let compiled = compile_source_with_caller(
+        mcp_manifest,
+        secrets.clone(),
+        variables.clone(),
+        resolved_inputs,
+        caller,
+    );
+    vec![CompiledQuerySource {
+        source: QuerySource::new(manifest, variables, secrets),
+        compiled,
+    }]
+}
+
+#[tokio::test]
+async fn executes_mcp_table_function_with_bound_args() {
+    let ctx = SessionContext::new();
+    let caller = Arc::new(FakeMcpCaller {
+        calls: Mutex::new(Vec::new()),
+    });
+    register_test_sources(&ctx, compile_sources(mcp_manifest(), caller.clone()));
+
+    let batches = ctx
+        .sql("SELECT title, url FROM test_mcp.search(query => 'issue') ORDER BY title")
+        .await
+        .expect("query should plan")
+        .collect()
+        .await
+        .expect("query should execute");
+
+    let rendered = pretty_format_batches(&batches)
+        .expect("batches should render")
+        .to_string();
+    assert!(rendered.contains("| issue one"));
+    assert!(rendered.contains("| issue two"));
+
+    let calls = caller.calls.lock().expect("calls lock");
+    assert_eq!(calls.len(), 1);
+    let call = calls.first().expect("one MCP call should be recorded");
+    assert_eq!(call.0, "search_tool");
+    assert_eq!(
+        call.1.get("query"),
+        Some(&Value::String("issue".to_string()))
+    );
+}
+
+#[tokio::test]
+async fn mcp_table_function_preserves_json_scalar_arg_types() {
+    let ctx = SessionContext::new();
+    let caller = Arc::new(FakeMcpCaller {
+        calls: Mutex::new(Vec::new()),
+    });
+    register_test_sources(
+        &ctx,
+        compile_sources(mcp_typed_args_manifest(), caller.clone()),
+    );
+
+    let _ = ctx
+        .sql(
+            "SELECT title FROM test_mcp.typed_search(\
+             query => 'issue', \
+             limit => 10, \
+             include_archived => true, \
+             threshold => 0.75)",
+        )
+        .await
+        .expect("typed function query should plan")
+        .collect()
+        .await
+        .expect("typed function query should execute");
+
+    let calls = caller.calls.lock().expect("calls lock");
+    assert_eq!(calls.len(), 1);
+    let call = calls.first().expect("one MCP call should be recorded");
+    assert_eq!(call.0, "typed_search_tool");
+    assert_eq!(
+        call.1.get("query"),
+        Some(&Value::String("issue".to_string()))
+    );
+    assert_eq!(call.1.get("limit"), Some(&Value::from(10)));
+    assert_eq!(call.1.get("include_archived"), Some(&Value::Bool(true)));
+    assert_eq!(call.1.get("threshold"), Some(&json!(0.75)));
+}
+
+#[tokio::test]
+async fn missing_required_function_arg_fails_planning() {
+    let ctx = SessionContext::new();
+    let caller = Arc::new(FakeMcpCaller {
+        calls: Mutex::new(Vec::new()),
+    });
+    register_test_sources(&ctx, compile_sources(mcp_manifest(), caller));
+
+    let error = ctx
+        .sql("SELECT title FROM test_mcp.search()")
+        .await
+        .expect_err("missing required arg should fail");
+
+    assert!(
+        error
+            .to_string()
+            .contains("test_mcp.search missing required argument(s): query"),
+        "unexpected error: {error}"
+    );
+}
+
+fn register_test_sources(ctx: &SessionContext, sources: Vec<CompiledQuerySource>) {
+    let registration = register_sources_blocking(ctx, sources).expect("mcp source should register");
+    let source_functions = SourceFunctionRegistry::new(
+        registration
+            .active_sources
+            .iter()
+            .flat_map(|source| source.table_functions.iter()),
+    );
+    ctx.register_relation_planner(Arc::new(source_functions))
+        .expect("source function planner should register");
+}
+
+fn register_test_sources_with_catalog(ctx: &SessionContext, sources: Vec<CompiledQuerySource>) {
+    let registration = register_sources_blocking(ctx, sources).expect("mcp source should register");
+    catalog::register(ctx, &registration.active_sources).expect("catalog should register");
+    let source_functions = SourceFunctionRegistry::new(
+        registration
+            .active_sources
+            .iter()
+            .flat_map(|source| source.table_functions.iter()),
+    );
+    ctx.register_relation_planner(Arc::new(source_functions))
+        .expect("source function planner should register");
+}
+
+fn mcp_table_manifest() -> coral_spec::ValidatedSourceManifest {
+    coral_spec::parse_source_manifest_value(json!({
+        "dsl_version": 3,
+        "name": "test_mcp",
+        "version": "0.1.0",
+        "backend": "mcp",
+        "server": { "transport": "stdio", "command": "unused" },
+        "tables": [{
+            "name": "issues",
+            "description": "Open issues",
+            "tool": "list_issues",
+            "tool_args": {
+                "owner": { "from": "literal", "value": "acme" }
+            },
+            "filters": [{
+                "name": "state",
+                "required": false,
+                "tool_arg": "state"
+            }],
+            "response": { "rows_path": ["issues"] },
+            "columns": [
+                { "name": "id", "type": "Utf8" },
+                { "name": "title", "type": "Utf8" },
+                { "name": "state", "type": "Utf8" }
+            ]
+        }]
+    }))
+    .expect("mcp table manifest should parse")
+}
+
+fn mcp_table_required_filter_manifest() -> coral_spec::ValidatedSourceManifest {
+    coral_spec::parse_source_manifest_value(json!({
+        "dsl_version": 3,
+        "name": "test_mcp",
+        "version": "0.1.0",
+        "backend": "mcp",
+        "server": { "transport": "stdio", "command": "unused" },
+        "tables": [{
+            "name": "issues",
+            "description": "Open issues",
+            "tool": "list_issues",
+            "filters": [{
+                "name": "state",
+                "required": true,
+                "tool_arg": "state"
+            }],
+            "response": { "rows_path": ["issues"] },
+            "columns": [
+                { "name": "id", "type": "Utf8" },
+                { "name": "title", "type": "Utf8" },
+                { "name": "state", "type": "Utf8" }
+            ]
+        }]
+    }))
+    .expect("required-filter manifest should parse")
+}
+
+#[tokio::test]
+async fn scans_mcp_table_with_manifest_tool_args_and_no_filters() {
+    let ctx = SessionContext::new();
+    let caller = Arc::new(FakeMcpTableCaller {
+        calls: Mutex::new(Vec::new()),
+    });
+    register_test_sources(&ctx, compile_sources(mcp_table_manifest(), caller.clone()));
+
+    let batches = ctx
+        .sql("SELECT id, title, state FROM test_mcp.issues ORDER BY id")
+        .await
+        .expect("table query should plan")
+        .collect()
+        .await
+        .expect("table query should execute");
+
+    let rendered = pretty_format_batches(&batches)
+        .expect("batches should render")
+        .to_string();
+    assert!(rendered.contains("| Bug A"));
+    assert!(rendered.contains("| Bug B"));
+    assert!(rendered.contains("| Bug C"));
+
+    let calls = caller.calls.lock().expect("calls lock");
+    assert_eq!(calls.len(), 1);
+    let call = calls.first().expect("one MCP call");
+    assert_eq!(call.0, "list_issues");
+    assert_eq!(
+        call.1.get("owner"),
+        Some(&Value::String("acme".to_string()))
+    );
+    assert!(
+        call.1.get("state").is_none(),
+        "unbound optional filter should not be passed: {:?}",
+        call.1
+    );
+}
+
+#[tokio::test]
+async fn pushes_equality_filter_into_mcp_tool_arg() {
+    let ctx = SessionContext::new();
+    let caller = Arc::new(FakeMcpTableCaller {
+        calls: Mutex::new(Vec::new()),
+    });
+    register_test_sources(&ctx, compile_sources(mcp_table_manifest(), caller.clone()));
+
+    let _ = ctx
+        .sql("SELECT id FROM test_mcp.issues WHERE state = 'open'")
+        .await
+        .expect("filter query should plan")
+        .collect()
+        .await
+        .expect("filter query should execute");
+
+    let calls = caller.calls.lock().expect("calls lock");
+    assert_eq!(calls.len(), 1);
+    let call = calls.first().expect("one MCP call");
+    assert_eq!(
+        call.1.get("state"),
+        Some(&Value::String("open".to_string()))
+    );
+}
+
+#[tokio::test]
+async fn missing_required_filter_fails_planning() {
+    let ctx = SessionContext::new();
+    let caller = Arc::new(FakeMcpTableCaller {
+        calls: Mutex::new(Vec::new()),
+    });
+    register_test_sources(
+        &ctx,
+        compile_sources(mcp_table_required_filter_manifest(), caller.clone()),
+    );
+
+    let error = ctx
+        .sql("SELECT id FROM test_mcp.issues")
+        .await
+        .expect("planning succeeds before scan")
+        .collect()
+        .await
+        .expect_err("missing required filter should fail");
+
+    let message = error.to_string();
+    assert!(
+        message.contains("test_mcp.issues table requires a constant equality filter"),
+        "unexpected error: {message}"
+    );
+    assert!(
+        message.contains("WHERE state = <constant>"),
+        "missing column hint in error: {message}"
+    );
+
+    let root = error.find_root();
+    match root {
+        DataFusionError::External(inner) => {
+            let provider = inner
+                .downcast_ref::<McpProviderQueryError>()
+                .expect("error should downcast to McpProviderQueryError");
+            match provider {
+                McpProviderQueryError::MissingRequiredFilter {
+                    schema,
+                    table,
+                    column,
+                } => {
+                    assert_eq!(schema, "test_mcp");
+                    assert_eq!(table, "issues");
+                    assert_eq!(column, "state");
+                }
+                other => panic!("unexpected MCP error variant: {other:?}"),
+            }
+            let structured = provider.to_structured();
+            assert_eq!(structured.reason(), "MISSING_REQUIRED_FILTER");
+        }
+        other => panic!("expected External error, got {other:?}"),
+    }
+
+    assert!(
+        caller.calls.lock().expect("calls lock").is_empty(),
+        "no MCP call should be made when planning fails"
+    );
+}
+
+#[tokio::test]
+async fn applies_projection_and_limit_to_mcp_table_scan() {
+    let ctx = SessionContext::new();
+    let caller = Arc::new(FakeMcpTableCaller {
+        calls: Mutex::new(Vec::new()),
+    });
+    register_test_sources(&ctx, compile_sources(mcp_table_manifest(), caller));
+
+    let batches = ctx
+        .sql("SELECT title FROM test_mcp.issues ORDER BY id LIMIT 1")
+        .await
+        .expect("limit query should plan")
+        .collect()
+        .await
+        .expect("limit query should execute");
+
+    let total_rows: usize = batches
+        .iter()
+        .map(datafusion::arrow::array::RecordBatch::num_rows)
+        .sum();
+    assert_eq!(total_rows, 1);
+    let schema = batches.first().expect("at least one batch").schema();
+    assert_eq!(schema.fields().len(), 1);
+    assert_eq!(schema.field(0).name(), "title");
+}
+
+fn mcp_table_with_limit_binding_manifest(
+    max: Option<usize>,
+) -> coral_spec::ValidatedSourceManifest {
+    let mut binding = serde_json::Map::new();
+    binding.insert(
+        "tool_arg".to_string(),
+        Value::String("page_size".to_string()),
+    );
+    if let Some(max) = max {
+        binding.insert("max".to_string(), serde_json::json!(max));
+    }
+    let binding = Value::Object(binding);
+    coral_spec::parse_source_manifest_value(json!({
+        "dsl_version": 3,
+        "name": "test_mcp",
+        "version": "0.1.0",
+        "backend": "mcp",
+        "server": { "transport": "stdio", "command": "unused" },
+        "tables": [{
+            "name": "issues",
+            "description": "issues with limit binding",
+            "tool": "list_issues",
+            "limit_binding": binding,
+            "response": { "rows_path": ["issues"] },
+            "columns": [
+                { "name": "id", "type": "Utf8" },
+                { "name": "title", "type": "Utf8" },
+                { "name": "state", "type": "Utf8" }
+            ]
+        }]
+    }))
+    .expect("limit-binding manifest should parse")
+}
+
+fn mcp_table_with_cursor_pagination_manifest() -> coral_spec::ValidatedSourceManifest {
+    coral_spec::parse_source_manifest_value(json!({
+        "dsl_version": 3,
+        "name": "test_mcp",
+        "version": "0.1.0",
+        "backend": "mcp",
+        "server": { "transport": "stdio", "command": "unused" },
+        "tables": [{
+            "name": "issues",
+            "description": "issues with cursor pagination",
+            "tool": "list_issues",
+            "pagination": {
+                "cursor_arg": "cursor",
+                "response_cursor_path": ["meta", "nextCursor"],
+                "max_pages": 3
+            },
+            "response": { "rows_path": ["issues"] },
+            "columns": [
+                { "name": "id", "type": "Utf8" },
+                { "name": "title", "type": "Utf8" },
+                { "name": "state", "type": "Utf8" }
+            ]
+        }]
+    }))
+    .expect("pagination manifest should parse")
+}
+
+#[tokio::test]
+async fn limit_binding_pushes_sql_limit_into_tool_arg() {
+    let ctx = SessionContext::new();
+    let caller = Arc::new(FakeMcpTableCaller {
+        calls: Mutex::new(Vec::new()),
+    });
+    register_test_sources(
+        &ctx,
+        compile_sources(mcp_table_with_limit_binding_manifest(None), caller.clone()),
+    );
+
+    let _ = ctx
+        .sql("SELECT id FROM test_mcp.issues LIMIT 2")
+        .await
+        .expect("limit query should plan")
+        .collect()
+        .await
+        .expect("limit query should execute");
+
+    let calls = caller.calls.lock().expect("calls lock");
+    let call = calls.first().expect("one MCP call");
+    assert_eq!(call.1.get("page_size"), Some(&Value::from(2u64)));
+}
+
+#[tokio::test]
+async fn limit_binding_caps_sql_limit_at_manifest_max() {
+    let ctx = SessionContext::new();
+    let caller = Arc::new(FakeMcpTableCaller {
+        calls: Mutex::new(Vec::new()),
+    });
+    register_test_sources(
+        &ctx,
+        compile_sources(
+            mcp_table_with_limit_binding_manifest(Some(2)),
+            caller.clone(),
+        ),
+    );
+
+    let batches = ctx
+        .sql("SELECT id FROM test_mcp.issues LIMIT 1000")
+        .await
+        .expect("limit query should plan")
+        .collect()
+        .await
+        .expect("limit query should execute");
+
+    let calls = caller.calls.lock().expect("calls lock");
+    let call = calls.first().expect("one MCP call");
+    assert_eq!(
+        call.1.get("page_size"),
+        Some(&Value::from(2u64)),
+        "expected SQL LIMIT to be capped at manifest max"
+    );
+
+    let total_rows: usize = batches
+        .iter()
+        .map(datafusion::arrow::array::RecordBatch::num_rows)
+        .sum();
+    assert_eq!(
+        total_rows, 2,
+        "post-response truncation should still apply at the manifest cap"
+    );
+}
+
+#[tokio::test]
+async fn limit_binding_omits_arg_when_no_limit_set() {
+    let ctx = SessionContext::new();
+    let caller = Arc::new(FakeMcpTableCaller {
+        calls: Mutex::new(Vec::new()),
+    });
+    register_test_sources(
+        &ctx,
+        compile_sources(mcp_table_with_limit_binding_manifest(None), caller.clone()),
+    );
+
+    let _ = ctx
+        .sql("SELECT id FROM test_mcp.issues")
+        .await
+        .expect("query should plan")
+        .collect()
+        .await
+        .expect("query should execute");
+
+    let calls = caller.calls.lock().expect("calls lock");
+    let call = calls.first().expect("one MCP call");
+    assert!(
+        call.1.get("page_size").is_none(),
+        "unbounded scan should not pass page_size: {:?}",
+        call.1
+    );
+}
+
+#[tokio::test]
+async fn cursor_pagination_fetches_until_response_cursor_is_absent() {
+    let ctx = SessionContext::new();
+    let caller = Arc::new(FakePaginatedMcpTableCaller {
+        calls: Mutex::new(Vec::new()),
+    });
+    register_test_sources(
+        &ctx,
+        compile_sources(mcp_table_with_cursor_pagination_manifest(), caller.clone()),
+    );
+
+    let batches = ctx
+        .sql("SELECT id FROM test_mcp.issues ORDER BY id")
+        .await
+        .expect("pagination query should plan")
+        .collect()
+        .await
+        .expect("pagination query should execute");
+
+    let rendered = pretty_format_batches(&batches)
+        .expect("batches should render")
+        .to_string();
+    assert!(rendered.contains("| 1"));
+    assert!(rendered.contains("| 2"));
+    assert!(rendered.contains("| 3"));
+
+    let calls = caller.calls.lock().expect("calls lock");
+    assert_eq!(calls.len(), 2);
+    let first_call = calls.first().expect("first call");
+    let second_call = calls.get(1).expect("second call");
+    assert!(first_call.1.get("cursor").is_none());
+    assert_eq!(
+        second_call.1.get("cursor"),
+        Some(&Value::String("page-2".to_string()))
+    );
+}
+
+#[tokio::test]
+async fn cursor_pagination_stops_when_sql_limit_is_satisfied() {
+    let ctx = SessionContext::new();
+    let caller = Arc::new(FakePaginatedMcpTableCaller {
+        calls: Mutex::new(Vec::new()),
+    });
+    register_test_sources(
+        &ctx,
+        compile_sources(mcp_table_with_cursor_pagination_manifest(), caller.clone()),
+    );
+
+    let batches = ctx
+        .sql("SELECT id FROM test_mcp.issues LIMIT 1")
+        .await
+        .expect("pagination query should plan")
+        .collect()
+        .await
+        .expect("pagination query should execute");
+
+    let total_rows: usize = batches
+        .iter()
+        .map(datafusion::arrow::array::RecordBatch::num_rows)
+        .sum();
+    assert_eq!(total_rows, 1);
+
+    let calls = caller.calls.lock().expect("calls lock");
+    assert_eq!(calls.len(), 1);
+}
+
+#[tokio::test]
+async fn mcp_table_appears_in_catalog_metadata() {
+    let ctx = SessionContext::new();
+    let caller = Arc::new(FakeMcpTableCaller {
+        calls: Mutex::new(Vec::new()),
+    });
+    register_test_sources_with_catalog(&ctx, compile_sources(mcp_table_manifest(), caller));
+
+    let batches = ctx
+        .sql(
+            "SELECT column_name FROM coral.columns \
+             WHERE schema_name = 'test_mcp' AND table_name = 'issues' \
+             ORDER BY column_name",
+        )
+        .await
+        .expect("metadata query should plan")
+        .collect()
+        .await
+        .expect("metadata query should execute");
+
+    let rendered = pretty_format_batches(&batches)
+        .expect("batches should render")
+        .to_string();
+    assert!(rendered.contains("| id"));
+    assert!(rendered.contains("| title"));
+    assert!(rendered.contains("| state"));
+}

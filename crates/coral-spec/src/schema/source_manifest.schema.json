@@ -19,6 +19,9 @@
         "properties": {
           "tables": {
             "items": { "$ref": "#/$defs/http_table" }
+          },
+          "functions": {
+            "items": { "$ref": "#/$defs/table_function" }
           }
         }
       }
@@ -86,12 +89,7 @@
     "functions": {
       "type": "array",
       "minItems": 1,
-      "items": {
-        "oneOf": [
-          { "$ref": "#/$defs/table_function" },
-          { "$ref": "#/$defs/mcp_table_function" }
-        ]
-      }
+      "items": { "type": "object" }
     },
     "onboarding": {
       "type": "object",
@@ -557,8 +555,10 @@
       "required": ["name", "tool_arg"],
       "properties": {
         "name": { "type": "string", "minLength": 1 },
+        "type": { "type": "string", "enum": ["Utf8", "Int64", "Boolean", "Float64", "Timestamp", "Json"] },
         "required": { "type": "boolean" },
         "mode": { "type": "string", "enum": ["equality", "search", "contains"] },
+        "description": { "type": "string" },
         "tool_arg": { "type": "string", "minLength": 1 }
       }
     },

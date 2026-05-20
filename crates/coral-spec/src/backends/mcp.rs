@@ -12,7 +12,8 @@ use serde_json::Value;
 
 use crate::{
     ColumnSpec, FilterMode, FilterSpec, FunctionArgBinding, ManifestError, ManifestInputKind,
-    ManifestInputSpec, ResponseSpec, Result, SourceBackend, SourceManifestCommon,
+    ManifestInputSpec, PaginationSpec, RequestSpec, ResponseSpec, Result, SourceBackend,
+    SourceManifestCommon, SourceTableFunctionKind, SourceTableFunctionSpec, TableCommon,
     TableFunctionArgSpec, ValueSourceSpec, inputs::collect_source_inputs_value, validate_columns,
     validate_filters_and_column_exprs, validate_test_queries,
 };
@@ -42,9 +43,9 @@ struct RawMcpSourceManifest {
     inputs: Option<Value>,
     server: McpServerSpec,
     #[serde(default)]
-    functions: Vec<McpTableFunctionSpec>,
+    functions: Vec<RawMcpTableFunctionSpec>,
     #[serde(default)]
-    tables: Vec<McpTableSpec>,
+    tables: Vec<RawMcpTableSpec>,
 }
 
 /// MCP server connection settings.
@@ -74,50 +75,68 @@ pub struct McpEnvSpec {
     pub value: crate::ValueSourceSpec,
 }
 
-/// One source-scoped table-valued function backed by an MCP tool call.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct RawMcpTableFunctionSpec {
+    name: String,
+    tool: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    fetch_limit_default: Option<usize>,
+    #[serde(default)]
+    args: Vec<TableFunctionArgSpec>,
+    #[serde(default)]
+    pagination: Option<McpPaginationSpec>,
+    #[serde(default)]
+    response: ResponseSpec,
+    #[serde(default)]
+    columns: Vec<ColumnSpec>,
+}
+
+/// One source-scoped table-valued function backed by an MCP tool call.
+#[derive(Debug, Clone)]
 pub struct McpTableFunctionSpec {
-    pub name: String,
+    pub common: SourceTableFunctionSpec,
     pub tool: String,
+    pub pagination: Option<McpPaginationSpec>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawMcpTableSpec {
+    name: String,
+    tool: String,
     #[serde(default)]
     pub description: String,
     #[serde(default)]
+    guide: String,
+    #[serde(default)]
     pub fetch_limit_default: Option<usize>,
     #[serde(default)]
-    pub args: Vec<TableFunctionArgSpec>,
+    tool_args: BTreeMap<String, ValueSourceSpec>,
     #[serde(default)]
-    pub pagination: Option<McpPaginationSpec>,
+    filters: Vec<McpTableFilterSpec>,
     #[serde(default)]
-    pub response: ResponseSpec,
+    limit_binding: Option<McpLimitBinding>,
     #[serde(default)]
-    pub columns: Vec<ColumnSpec>,
+    pagination: Option<McpPaginationSpec>,
+    #[serde(default)]
+    response: ResponseSpec,
+    #[serde(default)]
+    columns: Vec<ColumnSpec>,
 }
 
 /// One SQL table backed by an MCP tool call.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone)]
 pub struct McpTableSpec {
-    pub name: String,
+    pub common: TableCommon,
     pub tool: String,
-    #[serde(default)]
-    pub description: String,
-    #[serde(default)]
-    pub guide: String,
-    #[serde(default)]
-    pub fetch_limit_default: Option<usize>,
-    #[serde(default)]
     pub tool_args: BTreeMap<String, ValueSourceSpec>,
-    #[serde(default)]
-    pub filters: Vec<McpTableFilterSpec>,
-    #[serde(default)]
+    pub filter_bindings: Vec<McpTableFilterBinding>,
     pub limit_binding: Option<McpLimitBinding>,
-    #[serde(default)]
     pub pagination: Option<McpPaginationSpec>,
-    #[serde(default)]
     pub response: ResponseSpec,
-    #[serde(default)]
-    pub columns: Vec<ColumnSpec>,
 }
 
 /// How `LIMIT` pushes into an MCP tool argument.
@@ -144,27 +163,167 @@ pub struct McpPaginationSpec {
 #[serde(deny_unknown_fields)]
 pub struct McpTableFilterSpec {
     pub name: String,
+    #[serde(rename = "type", default = "default_mcp_filter_data_type")]
+    pub data_type: String,
     #[serde(default)]
     pub required: bool,
     #[serde(default)]
     pub mode: FilterMode,
+    #[serde(default)]
+    pub description: String,
+    pub tool_arg: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct McpTableFilterBinding {
+    pub name: String,
     pub tool_arg: String,
 }
 
 impl McpTableSpec {
-    /// Returns the filter declarations as the backend-shared [`FilterSpec`] shape
-    /// used by the SQL filter extraction helper.
     #[must_use]
-    pub fn filter_specs(&self) -> Vec<FilterSpec> {
+    /// Returns the stable table name.
+    pub fn name(&self) -> &str {
+        &self.common.name
+    }
+
+    #[must_use]
+    /// Returns the declared SQL filters that may bind into MCP tool arguments.
+    pub fn filters(&self) -> &[FilterSpec] {
+        &self.common.filters
+    }
+
+    #[must_use]
+    /// Returns the declared output columns for this table.
+    pub fn columns(&self) -> &[ColumnSpec] {
+        &self.common.columns
+    }
+
+    #[must_use]
+    /// Returns the default fetch limit declared by the manifest, if any.
+    pub fn fetch_limit_default(&self) -> Option<usize> {
+        self.common.fetch_limit_default
+    }
+
+    #[must_use]
+    /// Returns the MCP tool argument name bound to a declared SQL filter.
+    pub fn tool_arg_for_filter(&self, filter_name: &str) -> Option<&str> {
+        self.filter_bindings
+            .iter()
+            .find(|binding| binding.name == filter_name)
+            .map(|binding| binding.tool_arg.as_str())
+    }
+}
+
+impl McpTableFunctionSpec {
+    #[must_use]
+    /// Returns the stable function name.
+    pub fn name(&self) -> &str {
+        &self.common.name
+    }
+
+    #[must_use]
+    /// Returns the function arguments.
+    pub fn args(&self) -> &[TableFunctionArgSpec] {
+        &self.common.args
+    }
+
+    #[must_use]
+    /// Returns the declared output columns for this function.
+    pub fn columns(&self) -> &[ColumnSpec] {
+        &self.common.columns
+    }
+
+    #[must_use]
+    /// Returns the default fetch limit declared by the manifest, if any.
+    pub fn fetch_limit_default(&self) -> Option<usize> {
+        self.common.fetch_limit_default
+    }
+}
+
+fn default_mcp_filter_data_type() -> String {
+    "Utf8".to_string()
+}
+
+impl McpTableFilterSpec {
+    fn filter_spec(&self) -> FilterSpec {
+        FilterSpec {
+            name: self.name.clone(),
+            data_type: self.data_type.clone(),
+            required: self.required,
+            mode: self.mode,
+            description: self.description.clone(),
+        }
+    }
+
+    fn binding(&self) -> McpTableFilterBinding {
+        McpTableFilterBinding {
+            name: self.name.clone(),
+            tool_arg: self.tool_arg.clone(),
+        }
+    }
+}
+
+impl RawMcpTableFunctionSpec {
+    fn into_validated(self, source_name: &str) -> Result<McpTableFunctionSpec> {
+        validate_mcp_function(source_name, &self)?;
+        Ok(McpTableFunctionSpec {
+            tool: self.tool,
+            pagination: self.pagination,
+            common: SourceTableFunctionSpec {
+                name: self.name,
+                kind: SourceTableFunctionKind::default(),
+                description: self.description,
+                fetch_limit_default: self.fetch_limit_default,
+                search_limits: None,
+                detail_hints: Vec::new(),
+                args: self.args,
+                request: RequestSpec::default(),
+                response: self.response,
+                pagination: PaginationSpec::default(),
+                columns: self.columns,
+            },
+        })
+    }
+}
+
+impl RawMcpTableSpec {
+    fn into_validated(self, source_name: &str) -> Result<McpTableSpec> {
+        validate_mcp_table(source_name, &self)?;
+        let filters = self
+            .filters
+            .iter()
+            .map(McpTableFilterSpec::filter_spec)
+            .collect();
+        let filter_bindings = self
+            .filters
+            .iter()
+            .map(McpTableFilterSpec::binding)
+            .collect();
+        Ok(McpTableSpec {
+            common: TableCommon::new(
+                self.name,
+                self.description,
+                self.guide,
+                filters,
+                self.fetch_limit_default,
+                None,
+                Vec::new(),
+                self.columns,
+            ),
+            tool: self.tool,
+            tool_args: self.tool_args,
+            filter_bindings,
+            limit_binding: self.limit_binding,
+            pagination: self.pagination,
+            response: self.response,
+        })
+    }
+
+    fn filter_specs(&self) -> Vec<FilterSpec> {
         self.filters
             .iter()
-            .map(|filter| FilterSpec {
-                name: filter.name.clone(),
-                data_type: "Utf8".to_string(),
-                required: filter.required,
-                mode: filter.mode,
-                description: String::new(),
-            })
+            .map(McpTableFilterSpec::filter_spec)
             .collect()
     }
 }
@@ -204,21 +363,19 @@ impl McpSourceManifest {
         validate_test_queries(&name, &test_queries)?;
         validate_server(&name, &server)?;
         validate_table_and_function_names(&name, &tables, &functions)?;
-        for function in &functions {
-            validate_mcp_function(&name, function)?;
-        }
-        for table in &tables {
-            validate_mcp_table(&name, table)?;
-        }
+        let common =
+            SourceManifestCommon::new(dsl_version, name, version, description, test_queries);
+        let functions = functions
+            .into_iter()
+            .map(|function| function.into_validated(&common.name))
+            .collect::<Result<Vec<_>>>()?;
+        let tables = tables
+            .into_iter()
+            .map(|table| table.into_validated(&common.name))
+            .collect::<Result<Vec<_>>>()?;
 
         Ok(Self {
-            common: SourceManifestCommon::new(
-                dsl_version,
-                name,
-                version,
-                description,
-                test_queries,
-            ),
+            common,
             server,
             functions,
             tables,
@@ -261,8 +418,8 @@ fn validate_server_env_value_source(source_name: &str, env: &McpEnvSpec) -> Resu
 
 fn validate_table_and_function_names(
     source_name: &str,
-    tables: &[McpTableSpec],
-    functions: &[McpTableFunctionSpec],
+    tables: &[RawMcpTableSpec],
+    functions: &[RawMcpTableFunctionSpec],
 ) -> Result<()> {
     let mut table_names = HashSet::new();
     for table in tables {
@@ -298,7 +455,7 @@ fn validate_table_and_function_names(
     Ok(())
 }
 
-fn validate_mcp_function(source_name: &str, function: &McpTableFunctionSpec) -> Result<()> {
+fn validate_mcp_function(source_name: &str, function: &RawMcpTableFunctionSpec) -> Result<()> {
     if function.tool.trim().is_empty() {
         return Err(ManifestError::validation(format!(
             "source '{source_name}' function '{}' must define a non-empty tool",
@@ -366,7 +523,7 @@ fn validate_mcp_function(source_name: &str, function: &McpTableFunctionSpec) -> 
     Ok(())
 }
 
-fn validate_mcp_table(source_name: &str, table: &McpTableSpec) -> Result<()> {
+fn validate_mcp_table(source_name: &str, table: &RawMcpTableSpec) -> Result<()> {
     if table.tool.trim().is_empty() {
         return Err(ManifestError::validation(format!(
             "source '{source_name}' table '{}' must define a non-empty tool",
@@ -763,10 +920,17 @@ mod tests {
 
         assert_eq!(manifest.tables.len(), 1);
         let table = manifest.tables.first().expect("one table");
-        assert_eq!(table.name, "issues");
+        assert_eq!(table.name(), "issues");
         assert_eq!(table.tool, "list_issues");
-        assert_eq!(table.filters.len(), 1);
-        assert_eq!(table.filters.first().expect("one filter").tool_arg, "state");
+        assert_eq!(table.filters().len(), 1);
+        assert_eq!(
+            table
+                .filter_bindings
+                .first()
+                .expect("one filter binding")
+                .tool_arg,
+            "state"
+        );
     }
 
     #[test]
