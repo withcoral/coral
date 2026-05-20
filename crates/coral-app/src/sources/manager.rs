@@ -215,9 +215,12 @@ impl SourceManager {
     ) -> Result<InstalledSource, AppError> {
         let bundled = load_bundled_source(&command.name)?;
         let candidate = self.describe_bundled_source(workspace_name, &bundled.manifest_yaml)?;
-        let stored_material = self
-            .read_source_material(workspace_name, &candidate.name)
-            .unwrap_or_default();
+        let stored_material = self.source_material_for_validation(
+            workspace_name,
+            &candidate,
+            &command.bindings,
+            &BTreeSet::new(),
+        )?;
         let bindings = validate_bindings(&candidate, &command.bindings, &stored_material)?;
         self.persist_source(
             workspace_name,
@@ -238,9 +241,12 @@ impl SourceManager {
         let mut candidate =
             describe_manifest(&command.manifest_yaml, SourceOrigin::Imported, false)?;
         candidate.installed = self.source_exists(workspace_name, &candidate.name)?;
-        let stored_material = self
-            .read_source_material(workspace_name, &candidate.name)
-            .unwrap_or_default();
+        let stored_material = self.source_material_for_validation(
+            workspace_name,
+            &candidate,
+            &command.bindings,
+            &BTreeSet::new(),
+        )?;
         let bindings = validate_bindings(&candidate, &command.bindings, &stored_material)?;
         self.persist_source(
             workspace_name,
@@ -262,9 +268,17 @@ impl SourceManager {
         let mut candidate =
             describe_manifest(&command.manifest_yaml, SourceOrigin::Imported, false)?;
         candidate.installed = self.source_exists(workspace_name, &candidate.name)?;
-        let stored_material = self
-            .read_source_material(workspace_name, &candidate.name)
-            .unwrap_or_default();
+        let oauth_input_keys = command
+            .oauth_credentials
+            .iter()
+            .map(|credential| credential.input_key.clone())
+            .collect::<BTreeSet<_>>();
+        let stored_material = self.source_material_for_validation(
+            workspace_name,
+            &candidate,
+            &command.bindings,
+            &oauth_input_keys,
+        )?;
         Self::validate_oauth_import_preflight(
             &candidate,
             &command.bindings,
@@ -438,8 +452,35 @@ impl SourceManager {
         source_name: &SourceName,
     ) -> Result<BTreeMap<String, String>, AppError> {
         let credential_set_id = CredentialSetId::for_source(source_name);
-        self.credential_manager
+        match self
+            .credential_manager
             .read_material(workspace_name, &credential_set_id)
+        {
+            Ok(material) => Ok(material),
+            Err(AppError::Credentials(CredentialsError::Parse(_))) => Ok(BTreeMap::new()),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn source_material_for_validation(
+        &self,
+        workspace_name: &WorkspaceName,
+        candidate: &CandidateSource,
+        bindings: &SourceBindings,
+        filled_secret_keys: &BTreeSet<String>,
+    ) -> Result<BTreeMap<String, String>, AppError> {
+        let supplied_secrets = collect_unique_secrets(&bindings.secrets)?;
+        let needs_stored_material = candidate.inputs.iter().any(|input| {
+            input.kind == ManifestInputKind::Secret
+                && input.required
+                && !supplied_secrets.contains_key(&input.key)
+                && !filled_secret_keys.contains(&input.key)
+        });
+        if needs_stored_material {
+            self.read_source_material(workspace_name, &candidate.name)
+        } else {
+            Ok(BTreeMap::new())
+        }
     }
 
     fn validate_oauth_import_preflight(
@@ -1309,6 +1350,41 @@ tables:
                 .get("__coral_oauth.QVBJX1RPS0VO.method")
                 .map(String::as_str),
             Some("oauth")
+        );
+    }
+
+    #[test]
+    fn import_preserves_credential_store_io_errors_when_material_is_needed() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let credential_store = CredentialStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(credential_store);
+        let manager = SourceManager::new(config_store, credential_manager, layout.clone());
+        let source_name = SourceName::parse("secured_messages").expect("source");
+        let secret_path = layout.secret_file(&default_workspace(), &source_name);
+        std::fs::create_dir_all(&secret_path).expect("create blocking secret directory");
+
+        let error = manager
+            .import_source(
+                &default_workspace(),
+                &ImportSourceCommand {
+                    manifest_yaml: manifest_with_secret(),
+                    bindings: SourceBindings::default(),
+                },
+            )
+            .expect_err("stored material I/O error should fail import");
+
+        assert!(
+            matches!(
+                error,
+                crate::bootstrap::AppError::Credentials(crate::credentials::CredentialsError::Io(
+                    _
+                ))
+            ),
+            "unexpected error: {error:#}"
         );
     }
 

@@ -293,7 +293,7 @@ message ImportSourceOAuthCredential {
   // Secret input key being retrieved.
   string input_key = 1;
   // Zero-based selected credential method index.
-  uint32 method_index = 2;
+  optional uint32 method_index = 2;
   // Method-specific retrieval input values, such as client ID or client secret.
   repeated OAuthCredentialInput credential_inputs = 3;
 }

@@ -910,6 +910,38 @@ tables:
         assert_eq!(body[0], 0, "expected first frame to be a data frame");
         let len = u32::from_be_bytes([body[1], body[2], body[3], body[4]]) as usize;
         let frame = body.get(5..5 + len).expect("complete gRPC-Web data frame");
+        let trailer_offset = 5 + len;
+        assert!(
+            body.len() >= trailer_offset + 5,
+            "expected final gRPC-Web trailer frame"
+        );
+        assert_eq!(
+            body[trailer_offset], 0x80,
+            "expected final frame to be uncompressed trailers"
+        );
+        let trailer_len = u32::from_be_bytes([
+            body[trailer_offset + 1],
+            body[trailer_offset + 2],
+            body[trailer_offset + 3],
+            body[trailer_offset + 4],
+        ]) as usize;
+        let trailer_end = trailer_offset + 5 + trailer_len;
+        let trailers = body
+            .get(trailer_offset + 5..trailer_end)
+            .expect("complete gRPC-Web trailer frame");
+        assert_eq!(
+            body.len(),
+            trailer_end,
+            "expected trailers to be the final gRPC-Web frame"
+        );
+        let trailers = std::str::from_utf8(trailers).expect("trailers are UTF-8");
+        assert!(
+            trailers.lines().any(|line| {
+                line.strip_prefix("grpc-status:")
+                    .is_some_and(|status| status.trim() == "0")
+            }),
+            "expected successful gRPC-Web trailer status, got {trailers:?}"
+        );
         let event = <ImportSourceResponse as prost::Message>::decode(frame)
             .expect("decode import source response")
             .event

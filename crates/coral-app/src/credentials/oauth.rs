@@ -19,6 +19,7 @@ use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::TcpListener;
+use tokio::sync::mpsc;
 use url::{Url, form_urlencoded};
 use uuid::Uuid;
 
@@ -66,6 +67,19 @@ struct OAuthSessionConfig {
 
 struct Callback {
     code: String,
+}
+
+enum CallbackConnectionResult {
+    Callback(Callback),
+    Ignored,
+}
+
+enum CallbackRequestResult {
+    Callback(Callback),
+    Ignored {
+        status: &'static str,
+        message: &'static str,
+    },
 }
 
 struct TokenResponse {
@@ -175,7 +189,7 @@ fn normalize_credential_inputs(
 
 fn expired_session_error(input_key: &str) -> AppError {
     AppError::FailedPrecondition(format!(
-        "OAuth session for '{input_key}' expired; rerun `coral source add`"
+        "OAuth session for '{input_key}' expired; start a new credential retrieval"
     ))
 }
 
@@ -346,20 +360,74 @@ fn pkce_challenge(verifier: &str) -> String {
 }
 
 async fn receive_callback(session: &OAuthSessionConfig) -> Result<Callback, AppError> {
-    let (mut stream, _peer): (_, SocketAddr) = session.listener.accept().await?;
-    let request = read_callback_http_request(&mut stream).await?;
-    let result = parse_callback_request(&request, session);
-    let page = match &result {
-        Ok(_) => callback_page("OAuth complete. You can return to Coral."),
-        Err(error) => callback_page(&format!("OAuth failed: {error}")),
+    let (result_tx, mut result_rx) = mpsc::channel(8);
+    let deadline = tokio::time::Instant::from_std(session.expires_at);
+    loop {
+        tokio::select! {
+            accepted = session.listener.accept() => {
+                let (mut stream, _peer): (_, SocketAddr) = accepted?;
+                let result_tx = result_tx.clone();
+                let expected_path = session.redirect_uri.path().to_string();
+                let expected_state = session.state.clone();
+                tokio::spawn(async move {
+                    let result = handle_callback_connection(
+                        &mut stream,
+                        &expected_path,
+                        &expected_state,
+                        deadline,
+                    )
+                    .await;
+                    if result_tx.send(result).await.is_err() {
+                        tracing::debug!(
+                            "OAuth callback receiver closed before connection result was delivered"
+                        );
+                    }
+                });
+            }
+            Some(result) = result_rx.recv() => {
+                match result? {
+                    CallbackConnectionResult::Callback(callback) => return Ok(callback),
+                    CallbackConnectionResult::Ignored => {}
+                }
+            }
+        }
+    }
+}
+
+async fn handle_callback_connection(
+    stream: &mut tokio::net::TcpStream,
+    expected_path: &str,
+    expected_state: &str,
+    deadline: tokio::time::Instant,
+) -> Result<CallbackConnectionResult, AppError> {
+    let request = match tokio::time::timeout_at(deadline, read_callback_http_request(stream)).await
+    {
+        Ok(Ok(request)) => request,
+        Ok(Err(error)) => {
+            tracing::debug!(%error, "ignoring unreadable OAuth callback connection");
+            return Ok(CallbackConnectionResult::Ignored);
+        }
+        Err(_elapsed) => return Ok(CallbackConnectionResult::Ignored),
     };
-    let status = if result.is_ok() {
-        "200 OK"
-    } else {
-        "400 Bad Request"
-    };
-    write_callback_response(&mut stream, status, &page).await?;
-    result
+    match parse_callback_request(&request, expected_path, expected_state) {
+        Ok(CallbackRequestResult::Callback(callback)) => {
+            let page = callback_page("OAuth complete. You can return to Coral.");
+            write_callback_response(stream, "200 OK", &page).await?;
+            Ok(CallbackConnectionResult::Callback(callback))
+        }
+        Ok(CallbackRequestResult::Ignored { status, message }) => {
+            let page = callback_page(message);
+            if let Err(error) = write_callback_response(stream, status, &page).await {
+                tracing::debug!(%error, "failed to write ignored OAuth callback response");
+            }
+            Ok(CallbackConnectionResult::Ignored)
+        }
+        Err(error) => {
+            let page = callback_page(&format!("OAuth failed: {error}"));
+            write_callback_response(stream, "400 Bad Request", &page).await?;
+            Err(error)
+        }
+    }
 }
 
 async fn read_callback_http_request(
@@ -396,7 +464,11 @@ async fn read_callback_http_request(
     Ok(String::from_utf8_lossy(&buffer).into_owned())
 }
 
-fn parse_callback_request(raw: &str, session: &OAuthSessionConfig) -> Result<Callback, AppError> {
+fn parse_callback_request(
+    raw: &str,
+    expected_path: &str,
+    expected_state: &str,
+) -> Result<CallbackRequestResult, AppError> {
     let first_line = raw.lines().next().ok_or_else(|| {
         AppError::FailedPrecondition("OAuth callback request was empty".to_string())
     })?;
@@ -404,19 +476,22 @@ fn parse_callback_request(raw: &str, session: &OAuthSessionConfig) -> Result<Cal
     let method = parts.next().unwrap_or_default();
     let target = parts.next().unwrap_or_default();
     if method != "GET" || target.is_empty() {
-        return Err(AppError::FailedPrecondition(
-            "OAuth callback must be a GET request".to_string(),
-        ));
+        return Ok(CallbackRequestResult::Ignored {
+            status: "400 Bad Request",
+            message: "OAuth callback request ignored.",
+        });
     }
-    let callback = Url::parse(&format!("http://callback.local{target}")).map_err(|error| {
-        AppError::FailedPrecondition(format!("OAuth callback URL was invalid: {error}"))
-    })?;
-    if callback.path() != session.redirect_uri.path() {
-        return Err(AppError::FailedPrecondition(format!(
-            "OAuth callback path '{}' did not match expected path '{}'",
-            callback.path(),
-            session.redirect_uri.path()
-        )));
+    let Ok(callback) = Url::parse(&format!("http://callback.local{target}")) else {
+        return Ok(CallbackRequestResult::Ignored {
+            status: "400 Bad Request",
+            message: "OAuth callback request ignored.",
+        });
+    };
+    if callback.path() != expected_path {
+        return Ok(CallbackRequestResult::Ignored {
+            status: "404 Not Found",
+            message: "OAuth callback request ignored.",
+        });
     }
     let params = callback.query_pairs().into_owned().fold(
         BTreeMap::<String, Vec<String>>::new(),
@@ -437,7 +512,7 @@ fn parse_callback_request(raw: &str, session: &OAuthSessionConfig) -> Result<Cal
     let state = single_query_param(&params, "state")?.ok_or_else(|| {
         AppError::FailedPrecondition("OAuth callback was missing state".to_string())
     })?;
-    if state != session.state {
+    if state != expected_state {
         return Err(AppError::FailedPrecondition(
             "OAuth callback state did not match the active session".to_string(),
         ));
@@ -445,7 +520,7 @@ fn parse_callback_request(raw: &str, session: &OAuthSessionConfig) -> Result<Cal
     let code = single_query_param(&params, "code")?.ok_or_else(|| {
         AppError::FailedPrecondition("OAuth callback was missing authorization code".to_string())
     })?;
-    Ok(Callback { code })
+    Ok(CallbackRequestResult::Callback(Callback { code }))
 }
 
 fn single_query_param(
@@ -592,7 +667,8 @@ fn parse_token_response(body: &str) -> Result<TokenResponse, AppError> {
     let expires_at = body
         .get("expires_in")
         .and_then(|value| value.as_i64().or_else(|| value.as_str()?.parse().ok()))
-        .and_then(|seconds| Utc::now().checked_add_signed(chrono::Duration::seconds(seconds)));
+        .and_then(chrono::Duration::try_seconds)
+        .and_then(|duration| Utc::now().checked_add_signed(duration));
     Ok(TokenResponse {
         access_token,
         refresh_token,
@@ -705,7 +781,7 @@ mod tests {
     use super::{
         OAuthCredentialManager, OAuthSessionConfig, StartOAuthCredentialRequest,
         basic_client_authorization, join_scope_values, material_key_belongs_to_input,
-        oauth_metadata_prefix, pkce_challenge, receive_callback,
+        oauth_metadata_prefix, parse_token_response, pkce_challenge, receive_callback,
     };
     use coral_spec::{
         ManifestOAuthClientIdSpec, ManifestOAuthClientSecretSpec,
@@ -753,6 +829,17 @@ mod tests {
 
         assert!(material_key_belongs_to_input(&dotted_key, "A.B"));
         assert!(!material_key_belongs_to_input(&dotted_key, "A"));
+    }
+
+    #[test]
+    fn token_response_ignores_unrepresentable_expires_in() {
+        let token = parse_token_response(
+            r#"{"access_token":"access-token","expires_in":9223372036854775807}"#,
+        )
+        .expect("parse token response");
+
+        assert_eq!(token.access_token, "access-token");
+        assert!(token.expires_at.is_none());
     }
 
     #[tokio::test]
@@ -954,6 +1041,66 @@ mod tests {
                 .write_all(b"te=expected-state&code=test-code HTTP/1.1\r\nhost: 127.0.0.1\r\n\r\n")
                 .await
                 .expect("write rest of callback");
+            let mut response = Vec::new();
+            stream
+                .read_to_end(&mut response)
+                .await
+                .expect("read callback response");
+            assert!(
+                String::from_utf8_lossy(&response).starts_with("HTTP/1.1 200 OK"),
+                "unexpected callback response: {}",
+                String::from_utf8_lossy(&response)
+            );
+        };
+
+        let (callback, ()) = tokio::join!(receive, send);
+        assert_eq!(callback.expect("callback").code, "test-code");
+    }
+
+    #[tokio::test]
+    async fn oauth_callback_accepts_real_callback_after_idle_preconnection() {
+        let redirect_port = free_loopback_port();
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", redirect_port))
+            .await
+            .expect("bind callback listener");
+        let session = OAuthSessionConfig {
+            input_key: "API_TOKEN".to_string(),
+            oauth: oauth_spec(
+                "https://provider.example.com/oauth/token",
+                redirect_port,
+                ManifestOAuthPkceMode::Disabled,
+                ManifestOAuthClientSpec {
+                    id: ManifestOAuthClientIdSpec {
+                        default: Some("client".to_string()),
+                        input: None,
+                    },
+                    secret: None,
+                },
+            ),
+            client_id: "client".to_string(),
+            client_secret: None,
+            state: "expected-state".to_string(),
+            code_verifier: None,
+            redirect_uri: Url::parse(&format!("http://127.0.0.1:{redirect_port}/oauth/callback"))
+                .expect("redirect uri"),
+            listener,
+            expires_at: std::time::Instant::now() + std::time::Duration::from_mins(1),
+        };
+
+        let receive = receive_callback(&session);
+        let send = async move {
+            let _idle = tokio::net::TcpStream::connect(("127.0.0.1", redirect_port))
+                .await
+                .expect("connect idle preconnection");
+            let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", redirect_port))
+                .await
+                .expect("connect callback");
+            stream
+                .write_all(
+                    b"GET /oauth/callback?state=expected-state&code=test-code HTTP/1.1\r\nhost: 127.0.0.1\r\n\r\n",
+                )
+                .await
+                .expect("write callback");
             let mut response = Vec::new();
             stream
                 .read_to_end(&mut response)

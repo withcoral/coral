@@ -9,15 +9,16 @@ use coral_api::v1::{
     CreateBundledSourceRequest, CreateBundledSourceResponse, CredentialMetadata,
     DeleteSourceRequest, DeleteSourceResponse, DiscoverSourcesRequest, DiscoverSourcesResponse,
     GetSourceInfoRequest, GetSourceInfoResponse, GetSourceRequest, GetSourceResponse,
-    ImportSourceRequest, ImportSourceResponse, ListSourcesRequest, ListSourcesResponse,
-    OAuthAuthorizationCodeCredentialMethod, OAuthCredentialAuthorization, OAuthCredentialClient,
-    OAuthCredentialClientId, OAuthCredentialClientSecret, OAuthCredentialCompleted,
-    OAuthCredentialEndpoints, OAuthCredentialInput, OAuthCredentialScope, OAuthCredentialScopes,
-    OauthCredentialClientSecretTransport, OauthCredentialPkceMode, OauthCredentialScopeDelimiter,
-    Source, SourceConfigCredentialMethod, SourceCredential, SourceCredentialMethod, SourceInfo,
-    SourceInputSpec, SourceOrigin as ProtoSourceOrigin, SourceSecret, SourceSecretInput,
-    SourceVariable, SourceVariableInput, ValidateSourceRequest, ValidateSourceResponse,
-    import_source_response, source_credential_method::Method as ProtoCredentialMethod,
+    ImportSourceOAuthCredential, ImportSourceRequest, ImportSourceResponse, ListSourcesRequest,
+    ListSourcesResponse, OAuthAuthorizationCodeCredentialMethod, OAuthCredentialAuthorization,
+    OAuthCredentialClient, OAuthCredentialClientId, OAuthCredentialClientSecret,
+    OAuthCredentialCompleted, OAuthCredentialEndpoints, OAuthCredentialInput, OAuthCredentialScope,
+    OAuthCredentialScopes, OauthCredentialClientSecretTransport, OauthCredentialPkceMode,
+    OauthCredentialScopeDelimiter, Source, SourceConfigCredentialMethod, SourceCredential,
+    SourceCredentialMethod, SourceInfo, SourceInputSpec, SourceOrigin as ProtoSourceOrigin,
+    SourceSecret, SourceSecretInput, SourceVariable, SourceVariableInput, ValidateSourceRequest,
+    ValidateSourceResponse, import_source_response,
+    source_credential_method::Method as ProtoCredentialMethod,
     source_input_spec::Input as ProtoSourceInput,
 };
 use coral_spec::{
@@ -27,7 +28,7 @@ use coral_spec::{
 };
 use tonic::{Request, Response, Status};
 
-use crate::bootstrap::app_status;
+use crate::bootstrap::{AppError, app_status};
 use crate::query::manager::QueryManager;
 use crate::sources::SourceName;
 use crate::sources::manager::{
@@ -202,17 +203,9 @@ impl SourceServiceApi for SourceService {
                 oauth_credentials: request
                     .oauth_credentials
                     .into_iter()
-                    .map(|credential| SourceOAuthCredentialRequest {
-                        input_key: credential.input_key,
-                        method_index: usize::try_from(credential.method_index)
-                            .unwrap_or(usize::MAX),
-                        credential_inputs: credential
-                            .credential_inputs
-                            .into_iter()
-                            .map(oauth_credential_input_from_proto)
-                            .collect(),
-                    })
-                    .collect(),
+                    .map(source_oauth_credential_from_proto)
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(app_status)?,
             };
             let (event_tx, event_rx) = mpsc::channel(8);
             let import = Box::pin(instrument_grpc(span, async move {
@@ -368,6 +361,26 @@ fn oauth_credential_input_from_proto(input: OAuthCredentialInput) -> SourceBindi
         key: input.key,
         value: input.value,
     }
+}
+
+fn source_oauth_credential_from_proto(
+    credential: ImportSourceOAuthCredential,
+) -> Result<SourceOAuthCredentialRequest, AppError> {
+    let input_key = credential.input_key;
+    let method_index = credential.method_index.ok_or_else(|| {
+        AppError::InvalidInput(format!(
+            "missing OAuth credential method_index for source input '{input_key}'"
+        ))
+    })?;
+    Ok(SourceOAuthCredentialRequest {
+        input_key,
+        method_index: usize::try_from(method_index).unwrap_or(usize::MAX),
+        credential_inputs: credential
+            .credential_inputs
+            .into_iter()
+            .map(oauth_credential_input_from_proto)
+            .collect(),
+    })
 }
 
 fn source_secret_from_proto(secret: SourceSecret) -> SourceBinding {
