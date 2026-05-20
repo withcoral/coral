@@ -77,16 +77,27 @@ Authorization: Token <INFLUXDB_TOKEN>
 
 A read-scoped token is sufficient. Username/password is not used.
 
+## Known limitations
+
+- **`tasks` is capped at 500 rows per request and does not paginate.**
+  InfluxDB's tasks API paginates by an `after` cursor (task ID), not by
+  `offset`, and Coral's DSL does not currently express that mode. On
+  instances with more than 500 tasks the table silently truncates at the
+  cap — apply the `org` or `status` filter to narrow results.
+- `retention_seconds` exposes the **first** retention rule only. Buckets
+  with multiple rules need `retention_rules` (JSON) plus the JSON
+  accessor functions to inspect the rest.
+- The `buckets.org` column is a `from_filter` echo: it only populates
+  when the query uses `WHERE org = '...'` (which pushes the predicate
+  down to the API). Without that filter the column is null — join
+  `buckets.org_id = orgs.id` to attach organization names.
+
 ## Limits
 
 - This source is **read-only**. It exposes health and metadata endpoints
   only — no writing points and no running Flux/SQL queries.
-- `retention_seconds` is the first retention rule's expiry in seconds
-  (`0` = infinite). For multi-rule buckets use `retention_rules` (JSON)
-  with the JSON accessor functions.
-- `buckets` uses `limit`/`offset` pagination. `tasks` fetches up to 500 in
-  one request (no pagination); on instances with more tasks, filter by
-  `org` or `status` to narrow results.
+- `buckets` uses `limit`/`offset` pagination (default 20, max 100 per
+  page); Coral follows pages until empty.
 - Timestamps (`created_at`, `updated_at`, `latest_completed`) are parsed
   from RFC 3339 / ISO 8601 strings into real `Timestamp` columns.
 - No server-side filtering beyond the declared filters; filter the rest
@@ -104,7 +115,7 @@ SELECT name, status, version, commit FROM influxdb.health
 
 ```sql
 SELECT name, type,
-       CAST(retention_seconds AS BIGINT) / 86400 AS retention_days
+       retention_seconds / 86400 AS retention_days
 FROM influxdb.buckets
 WHERE type = 'user'
 ORDER BY name

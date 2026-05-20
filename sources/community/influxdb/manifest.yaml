@@ -165,7 +165,10 @@ tables:
       `retention_seconds` is the expiry of the first retention rule in
       seconds (`0` means infinite); `retention_rules` is the full rule list
       as JSON. Use the optional `org` filter (organization name) to scope
-      results to one org; it is pushed down to the API.
+      results to one org; it is pushed down to the API. The `org` column
+      only populates when the predicate is used (`WHERE org = '...'`);
+      without the filter it is null — join `buckets.org_id = orgs.id` to
+      attach the organization name in that case.
     filters:
       - name: org
     request:
@@ -236,16 +239,15 @@ tables:
           path:
             - description
       - name: retention_seconds
-        type: Utf8
+        type: Int64
         nullable: true
-        description: Expiry of the first retention rule in seconds; 0 is infinite
+        description: Expiry of the first retention rule in seconds; 0 means infinite
         expr:
-          kind: join_array_path
+          kind: path
           path:
             - retentionRules
-          item_path:
+            - "0"
             - everySeconds
-          separator: ","
       - name: retention_rules
         type: Json
         nullable: true
@@ -325,6 +327,22 @@ tables:
           kind: path
           path:
             - name
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Human-readable task description, when set
+        expr:
+          kind: path
+          path:
+            - description
+      - name: labels
+        type: Json
+        nullable: true
+        description: Labels attached to the task, as a JSON array
+        expr:
+          kind: path
+          path:
+            - labels
       - name: org_id
         type: Utf8
         nullable: true
