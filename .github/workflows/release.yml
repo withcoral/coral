@@ -21,7 +21,6 @@ jobs:
       TAG_NAME: ${{ github.event.release.tag_name || inputs.tag }}
     outputs:
       has-ui: ${{ steps.detect-ui.outputs.has-ui }}
-      node-version: ${{ steps.detect-ui.outputs.node-version }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
@@ -32,20 +31,14 @@ jobs:
         run: |
           if [ -f ui/package.json ]; then
             echo "has-ui=true" >> "$GITHUB_OUTPUT"
-            if [ -f ui/.node-version ]; then
-              echo "node-version=$(cat ui/.node-version)" >> "$GITHUB_OUTPUT"
-            else
-              echo "node-version=22" >> "$GITHUB_OUTPUT"
-            fi
           else
             echo "has-ui=false" >> "$GITHUB_OUTPUT"
-            echo "node-version=22" >> "$GITHUB_OUTPUT"
           fi
       - name: Set up Node
         if: steps.detect-ui.outputs.has-ui == 'true'
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
-          node-version: ${{ steps.detect-ui.outputs.node-version }}
+          node-version-file: ui/.node-version
           package-manager-cache: false
       - name: Install UI dependencies
         if: steps.detect-ui.outputs.has-ui == 'true'
