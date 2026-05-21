@@ -144,6 +144,9 @@ Or on Linux:
 curl -fsSL https://withcoral.com/install.sh | sh
 ```
 
+On Windows, official binaries are not published yet, but experimental native
+source builds are documented in the install options.
+
 See [all install options](https://withcoral.com/docs/getting-started/installation).
 
 ### 2. Discover bundled sources

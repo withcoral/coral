@@ -35,7 +35,7 @@ Start Coral as `coral mcp-stdio --enable-feedback` to expose the optional `feedb
 
 ## Client setup
 
-Coral uses stdio transport. If a client supports a command-based install flow, point it at `coral mcp-stdio`. If a client needs a full path, run `which coral` and use that path in the config instead of `coral`. To include the optional feedback tool, use `coral mcp-stdio --enable-feedback`.
+Coral uses stdio transport. If a client supports a command-based install flow, point it at `coral mcp-stdio`. To include the optional feedback tool, use `coral mcp-stdio --enable-feedback`.
 
 <Tabs>
 <Tab title="npx add-mcp">
@@ -45,6 +45,12 @@ Coral uses stdio transport. If a client supports a command-based install flow, p
 
   ```shellscript
   npx add-mcp -n coral -g "$(which coral) mcp-stdio"
+  ```
+
+  On Windows PowerShell:
+
+  ```powershell
+  npx add-mcp -n coral -g "$((Get-Command coral).Source) mcp-stdio"
   ```
 
   (To install only in the current project, omit the `-g` flag.)
@@ -127,7 +133,8 @@ Coral uses stdio transport. If a client supports a command-based install flow, p
   }
   ```
 
-  If `coral` is not on Cursor's `PATH`, use the full path from `which coral`.
+  If `coral` is not on Cursor's `PATH`, use the full path from `which coral`
+  on macOS or Linux, or `(Get-Command coral).Source` in PowerShell.
 </Tab>
 
   <Tab title="VS Code">
@@ -203,5 +210,5 @@ The agent should call `list_catalog`, `search_catalog`, or query `coral.tables` 
 
 ## Troubleshooting
 
-- **`coral` not found:** Make sure `coral` is on your `PATH`, or use the full path from `which coral` in your client config.
+- **`coral` not found:** Make sure `coral` is on your `PATH`, or use the full path from `which coral` on macOS or Linux or `(Get-Command coral).Source` in PowerShell.
 - **No tables visible:** Run `coral source list` in your terminal to confirm you have sources installed. If empty, add one with `coral source add`.

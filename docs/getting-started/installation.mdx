@@ -6,7 +6,8 @@ description: "Install the Coral CLI"
 Coral ships as a single local CLI. Once installed, the same binary is used for source management, SQL queries, and the MCP stdio server.
 
 <Note>
-  Coral currently supports macOS and Linux only.
+  Coral currently publishes macOS and Linux binaries. Native Windows source
+  builds are experimental.
 </Note>
 
 ## Install Coral
@@ -30,6 +31,69 @@ Coral ships as a single local CLI. Once installed, the same binary is used for s
     ```shellscript
     cargo install --path crates/coral-cli --locked
     coral --help
+    ```
+
+    This installs Coral's source-management, SQL, and MCP surfaces. It does
+    not include `coral ui`, which is compiled only when the `embedded-ui`
+    feature is enabled.
+  </Tab>
+
+  <Tab title="Build for Windows">
+    Native Windows source builds are experimental and target Windows 10 or 11 on
+    `x86_64-pc-windows-msvc`. WSL is not required for this path.
+
+    Prerequisites:
+
+    - [Git for Windows](https://git-scm.com/download/win)
+    - [Rust via rustup](https://www.rust-lang.org/tools/install), using the
+      default MSVC toolchain
+    - Visual Studio Build Tools with the "Desktop development with C++" workload
+    - Windows 10 SDK or Windows 11 SDK
+
+    Build the CLI:
+
+    ```powershell
+    cargo build --release --locked -p coral-cli
+    ```
+
+    The compiled binary is:
+
+    ```text
+    target\release\coral.exe
+    ```
+
+    Install it under your user profile:
+
+    ```powershell
+    New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.local\bin"
+    Copy-Item "target\release\coral.exe" "$env:USERPROFILE\.local\bin\coral.exe"
+    ```
+
+    If that directory is not already on your user `PATH`, add it:
+
+    ```powershell
+    [Environment]::SetEnvironmentVariable("Path", "$env:USERPROFILE\.local\bin;$env:Path", "User")
+    $env:Path = "$env:USERPROFILE\.local\bin;$env:Path"
+    ```
+
+    Verify the build:
+
+    ```powershell
+    coral --version
+    coral source discover
+    coral onboard
+    ```
+
+    This build includes Coral's source-management, SQL, and MCP surfaces. It
+    does not include `coral ui`, which is compiled only when the `embedded-ui`
+    feature is enabled.
+
+    To include the local UI, build the UI first and enable `embedded-ui`:
+
+    ```powershell
+    npm ci --prefix ui
+    npm run build --prefix ui
+    cargo build --release --locked -p coral-cli --features embedded-ui
     ```
   </Tab>
 </Tabs>
