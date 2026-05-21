@@ -249,7 +249,7 @@ pub struct DependentJoinConfig {
     pub max_bindings: usize,
     /// Maximum rows read from the key-supplying side before falling back.
     pub max_resolver_rows: usize,
-    /// Maximum rows accepted from one upstream request.
+    /// Maximum rows accepted for one join-key combination across the full upstream fetch.
     pub max_rows_per_binding: usize,
     /// Maximum key-supplying rows allowed for one join-key combination.
     pub max_resolver_rows_per_binding: usize,
