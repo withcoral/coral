@@ -1,20 +1,22 @@
 name: k8s
-version: 0.1.0
+version: 0.1.1
 dsl_version: 3
 backend: http
 description: >-
   Query Kubernetes workloads, networking, storage, events, and cluster nodes
-  through the Kubernetes REST API. Supports kubectl-proxy local dev and
-  configurable API base URLs for in-cluster or remote access.
+  through the Kubernetes REST API. Read-only v1; use kubectl proxy locally or an
+  API base URL that already injects authentication.
 inputs:
   K8S_BASE_URL:
     kind: variable
     default: http://127.0.0.1:8080
     hint: |
-      Kubernetes API base URL. For local development, run
-      `kubectl proxy --port=8080` and keep the default. For in-cluster access,
-      use `https://kubernetes.default.svc`. For remote clusters, point at your API
-      gateway or load-balanced control-plane endpoint.
+      Kubernetes API base URL that Coral can call without extra auth headers.
+      Recommended: run `kubectl proxy --port=8080` and keep the default
+      `http://127.0.0.1:8080`. You may also point at an authenticating reverse
+      proxy or gateway in front of the API server. Do not set this to a raw API
+      server URL (for example `https://kubernetes.default.svc`) unless that
+      endpoint is already authenticated for anonymous or proxy access.
 base_url: "{{input.K8S_BASE_URL}}"
 test_queries:
   - SELECT namespace, name, status FROM k8s.pods LIMIT 20

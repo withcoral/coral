@@ -1,13 +1,13 @@
 # Kubernetes Connector (Community)
 
-**Version:** 0.1.0
+**Version:** 0.1.1
 **Backend:** HTTP (Kubernetes REST API)
 **Tables:** 16
 **Default base URL:** `http://127.0.0.1:8080` (override with `K8S_BASE_URL`)
 
-Community source for querying live Kubernetes cluster state with SQL: workloads,
-networking, storage, events, and nodes. Designed for operational triage and
-Day-2 workflows without custom kubectl scripts.
+Query live Kubernetes cluster state with SQL: workloads, networking, storage,
+events, and nodes. Read-only v1 uses unauthenticated HTTP against a base URL
+that already handles auth (typically `kubectl proxy`).
 
 ## Install
 
@@ -43,11 +43,15 @@ export K8S_BASE_URL=http://127.0.0.1:8080
 coral source add --file sources/community/k8s/manifest.yaml
 ```
 
-### In-cluster or direct API access
+### Authenticated gateways (advanced)
 
-Point `K8S_BASE_URL` at the API server or in-cluster service URL
-(`https://kubernetes.default.svc`). Ensure the caller identity has Kubernetes
-list/get permissions for the resources you query.
+v1 does not send `Authorization` headers or client certificates. To reach a
+cluster without `kubectl proxy`, point `K8S_BASE_URL` at a reverse proxy or API
+gateway that authenticates on your behalf (for example an in-cluster OAuth proxy
+or a corporate API front door). A raw Kubernetes API server URL such as
+`https://kubernetes.default.svc` requires bearer-token auth and is not supported
+in v1; use `kubectl proxy` locally or add a follow-on auth input in a later
+release.
 
 ### Multi-cluster
 
@@ -177,6 +181,9 @@ coral source test k8s
 
 ## Limitations
 
+- Read-only v1; no mutating Kubernetes API calls.
+- No bearer-token or client-cert auth in the manifest; use `kubectl proxy` or a
+  pre-authenticated API base URL.
 - Large list responses can be heavy; use filters and `LIMIT`.
 - Nested Kubernetes fields are exposed as `Json` columns for downstream parsing.
 - Community sources are maintained separately from bundled core sources.
