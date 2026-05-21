@@ -47,6 +47,23 @@ pub(crate) enum DependentJoinFallbackReason {
     UnconsumedFilter,
 }
 
+impl DependentJoinFallbackReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::NonInner => "not_inner_join",
+            Self::NonEqui => "not_inner_equi_join",
+            Self::NonHttpProvider => "not_http_provider",
+            Self::NonPeelableWrapper => "non_peelable_wrapper",
+            Self::MixedBindable => "mixed_or_missing_bindable_filter",
+            Self::MissingRequired => "missing_required_filter",
+            Self::OverConstrained => "over_constrained_filter",
+            Self::NonCoercible => "non_coercible_binding_type",
+            Self::CostUnfavourable => "cost_unfavourable",
+            Self::UnconsumedFilter => "unconsumed_filter",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum JoinSide {
     Left,
@@ -277,8 +294,20 @@ fn analyze_dependent_bindings(
 }
 
 fn rewrite_join(join: &Join) -> Option<LogicalPlan> {
-    let DependentJoinAnalysis::Candidate(candidate) = analyze_join(join) else {
-        return None;
+    let candidate = match analyze_join(join) {
+        DependentJoinAnalysis::Candidate(candidate) => candidate,
+        DependentJoinAnalysis::Fallback(reason) => {
+            tracing::debug!(
+                target = "coral_engine::dependent_join",
+                reason = reason.as_str(),
+                join_kind = ?join.join_type,
+                null_equality = ?join.null_equality,
+                join_predicates = join.on.len(),
+                has_join_filter = join.filter.is_some(),
+                "skipping dependent join rewrite candidate",
+            );
+            return None;
+        }
     };
 
     let (dependent_plan, resolver_plan, resolver_schema, dependent_first) =

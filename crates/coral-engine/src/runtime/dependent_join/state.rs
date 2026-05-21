@@ -42,8 +42,7 @@ impl DependentJoinRuntimeState {
         caps: &ResolverCaps,
     ) -> Result<Vec<Tuple>> {
         let projected_tuples = self.project_batch_tuples(batch, projector, caps)?;
-        let valid_rows = projected_tuples.iter().filter(|t| t.is_some()).count();
-        let observed = self.resolver_rows.saturating_add(valid_rows);
+        let observed = self.resolver_rows.saturating_add(batch.num_rows());
         if observed > caps.max_resolver_rows {
             return Err(resolver_rows_exceeded(caps, observed));
         }
@@ -229,6 +228,12 @@ mod tests {
             .expect("record batch")
     }
 
+    fn nullable_id_batch(values: Vec<Option<&str>>) -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Utf8, true)]));
+        RecordBatch::try_new(schema, vec![Arc::new(StringArray::from(values))])
+            .expect("record batch")
+    }
+
     #[test]
     fn resolver_row_cap_rejects_batch_before_buffering_it() {
         let batch = id_batch(vec!["one", "two"]);
@@ -243,7 +248,29 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("produced 2 rows, which exceeds max_resolver_rows=1"),
+                .contains("produced 2 rows, but Coral is configured to inspect at most 1 rows"),
+            "{error}"
+        );
+        assert_eq!(state.resolver_rows(), 0);
+        assert_eq!(state.resolver_null_binding_rows(), 0);
+        assert!(state.resolver_batch(0).is_none());
+    }
+
+    #[test]
+    fn null_binding_rows_count_toward_resolver_row_cap() {
+        let batch = nullable_id_batch(vec![None, None]);
+        let caps = caps(10, 1, 10);
+        let projector = id_projector();
+        let mut state = DependentJoinRuntimeState::default();
+
+        let error = state
+            .ingest_resolver_batch(&batch, &projector, &caps)
+            .expect_err("null binding rows should count toward resolver row cap");
+
+        assert!(
+            error
+                .to_string()
+                .contains("produced 2 rows, but Coral is configured to inspect at most 1 rows"),
             "{error}"
         );
         assert_eq!(state.resolver_rows(), 0);
@@ -265,7 +292,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("produced 2 binding tuples, which exceeds cap 1"),
+                .contains("produced 2 distinct combinations of join-key values"),
             "{error}"
         );
         assert_eq!(state.resolver_rows(), 0);
@@ -286,9 +313,9 @@ mod tests {
             .expect_err("per-binding cap should fail before resolver row fallback cap");
 
         assert!(
-            error.to_string().contains(
-                "produced 2 rows for one binding, which exceeds max_resolver_rows_per_binding=1"
-            ),
+            error
+                .to_string()
+                .contains("One join-key combination for github.pull_requests matched 2 rows"),
             "{error}"
         );
         assert_eq!(state.resolver_rows(), 0);

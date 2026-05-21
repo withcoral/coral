@@ -545,7 +545,20 @@ async fn too_many_distinct_bindings_returns_cap_error() {
 
     assert_error_contains(
         &error,
-        "dependent join into 'github.pull_requests' produced 501 binding tuples, which exceeds cap 500",
+        "Your query produced 501 distinct combinations of join-key values for github.pull_requests",
+    );
+    assert_dependent_join_limit_error(
+        &error,
+        "DEPENDENT_JOIN_BINDING_LIMIT_EXCEEDED",
+        "501",
+        "500",
+    );
+    let CoreError::QueryFailure(query_error) = &error else {
+        panic!("expected structured query failure, got {error:?}");
+    };
+    assert_eq!(
+        query_error.metadata().get("binding_filters").unwrap(),
+        "owner,repo,number"
     );
     assert_eq!(error.status_code(), StatusCode::FailedPrecondition);
 }
@@ -581,7 +594,7 @@ async fn too_many_resolver_rows_for_one_binding_returns_cap_error() {
 
     assert_error_contains(
         &error,
-        "dependent join resolver for 'github.pull_requests' produced 1001 rows for one binding, which exceeds max_resolver_rows_per_binding=1000",
+        "One join-key combination for github.pull_requests matched 1001 rows",
     );
     assert_eq!(error.status_code(), StatusCode::FailedPrecondition);
 }
@@ -627,7 +640,7 @@ async fn single_fetch_too_many_rows_returns_cap_error() {
 
     assert_error_contains(
         &error,
-        "dependent join fetch for 'github.pull_requests' returned 1001 rows for one binding, which exceeds max_rows_per_binding=1000",
+        "The upstream API for github.pull_requests returned 1001 rows for one join-key combination",
     );
     assert_eq!(error.status_code(), StatusCode::FailedPrecondition);
 }
@@ -720,7 +733,7 @@ async fn rows_per_binding_cap_stops_paginated_fetch_after_overflow_is_known() {
 
     assert_error_contains(
         &error,
-        "dependent join fetch for 'github.pull_requests' returned 1001 rows for one binding, which exceeds max_rows_per_binding=1000",
+        "The upstream API for github.pull_requests returned 1001 rows for one join-key combination",
     );
     assert_eq!(error.status_code(), StatusCode::FailedPrecondition);
 }
@@ -1138,7 +1151,7 @@ async fn explain_analyze_reports_dependent_join_metrics() {
     assert!(explain.contains("DependentJoinExec"));
     assert!(explain.contains("binding_count=2"), "{explain}");
     assert!(explain.contains("fetch_count=2"), "{explain}");
-    assert!(explain.contains("resolver_rows=3"), "{explain}");
+    assert!(explain.contains("resolver_rows=4"), "{explain}");
     assert!(
         explain.contains("resolver_null_binding_rows=1"),
         "{explain}"
@@ -1927,6 +1940,35 @@ fn assert_error_contains(error: &CoreError, expected: &str) {
     assert!(
         rendered.contains(expected),
         "expected error to contain {expected:?}, got {rendered:?}"
+    );
+}
+
+fn assert_dependent_join_limit_error(
+    error: &CoreError,
+    expected_reason: &str,
+    expected_observed: &str,
+    expected_limit: &str,
+) {
+    let CoreError::QueryFailure(query_error) = error else {
+        panic!("expected structured query failure, got {error:?}");
+    };
+
+    assert_eq!(query_error.reason(), expected_reason);
+    assert_eq!(
+        query_error.metadata().get("source").map(String::as_str),
+        Some("github")
+    );
+    assert_eq!(
+        query_error.metadata().get("table").map(String::as_str),
+        Some("pull_requests")
+    );
+    assert_eq!(
+        query_error.metadata().get("observed").map(String::as_str),
+        Some(expected_observed)
+    );
+    assert_eq!(
+        query_error.metadata().get("limit").map(String::as_str),
+        Some(expected_limit)
     );
 }
 
