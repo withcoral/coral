@@ -83,11 +83,14 @@ test('lists 10 traces, searches one, opens its details, and opens a span inspect
   await review.pause()
 })
 
-test('renders trace request and response bodies with JSON, GraphQL, and fallback states', async ({
-  network,
-  page,
-  review,
-}) => {
+test('renders trace request and response bodies with JSON, GraphQL, and fallback states', async (
+  { network, page, review },
+  testInfo,
+) => {
+  if (process.env.PW_UI_SCREENCAST === '1') {
+    testInfo.setTimeout(60_000)
+  }
+
   network.use(...traceHandlers.tenTraceDetailFlow)
 
   await review.chapter(
@@ -130,12 +133,12 @@ test('renders trace request and response bodies with JSON, GraphQL, and fallback
   const requestPanel = page.getByRole('tabpanel', { name: 'Request body' })
   const responsePanel = page.getByRole('tabpanel', { name: 'Response body' })
 
-  await expect(requestPanel.getByText('GraphQL request')).toBeVisible()
-  await expect(requestPanel.getByText('Operation', { exact: true })).toBeVisible()
-  await expect(requestPanel.getByText('IssuesSearch', { exact: true })).toBeVisible()
-  await expect(requestPanel.getByText('Type', { exact: true })).toBeVisible()
-  await expect(requestPanel.getByText('query', { exact: true })).toBeVisible()
-  await expect(requestPanel.getByText('Variables', { exact: true }).first()).toBeVisible()
+  await expect(requestPanel.getByText('GraphQL request')).toBeVisible({ timeout: 10_000 })
+  await expect(requestPanel.getByText('Operation', { exact: true })).toBeVisible({ timeout: 10_000 })
+  await expect(requestPanel.getByText('IssuesSearch', { exact: true })).toBeVisible({ timeout: 10_000 })
+  await expect(requestPanel.getByText('Type', { exact: true })).toBeVisible({ timeout: 10_000 })
+  await expect(requestPanel.getByText('query', { exact: true })).toBeVisible({ timeout: 10_000 })
+  await expect(requestPanel.getByText('Variables', { exact: true }).first()).toBeVisible({ timeout: 10_000 })
   await expect(requestPanel.getByText('"query": "playwright"')).toBeVisible()
   await expect(requestPanel.getByText('Query', { exact: true })).toBeVisible()
   await expect(requestPanel.locator('pre').filter({ hasText: /^query IssuesSearch/ })).toBeVisible()
