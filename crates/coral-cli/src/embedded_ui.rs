@@ -7,7 +7,6 @@ use rust_embed::Embed;
 
 #[derive(Embed)]
 #[folder = "../../ui/dist/"]
-#[allow_missing = true]
 struct EmbeddedUiFiles;
 
 pub(crate) struct EmbeddedUi;

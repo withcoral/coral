@@ -1,13 +1,17 @@
-.PHONY: install rust-checks license-check lint-proto lint-sources fix-sources docs-generate docs-check
+.PHONY: install ui-build rust-checks license-check lint-proto lint-sources fix-sources docs-generate docs-check
 
-install:
+install: ui-build
 	cargo install --path crates/coral-cli --locked
+
+ui-build:
+	npm ci --prefix ui
+	npm run build --prefix ui
 
 rust-checks:
 	cargo fmt --all -- --check
-	cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-	cargo nextest run --workspace --all-targets --all-features --locked --no-fail-fast
-	RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps --locked
+	cargo clippy --workspace --all-targets --no-default-features --features coral-cli/cli-test-server --locked -- -D warnings
+	cargo nextest run --workspace --all-targets --no-default-features --features coral-cli/cli-test-server --locked --no-fail-fast
+	RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-default-features --features coral-cli/cli-test-server --no-deps --locked
 
 # ----------------------------------------------------------------------------
 # Dependency license scan
