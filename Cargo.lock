@@ -1110,6 +1110,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-opentelemetry",
+ "url",
  "urlencoding",
  "wiremock",
 ]

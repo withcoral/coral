@@ -348,32 +348,60 @@ pub(crate) fn resolve_file_location(
     location: &str,
     home_dir: Option<&Path>,
 ) -> Result<PathBuf, CoreError> {
-    let location = if let Some(rest) = location.strip_prefix("file://localhost/") {
-        std::borrow::Cow::Owned(format!("file:///{rest}"))
-    } else {
-        std::borrow::Cow::Borrowed(location)
-    };
-    let decoded;
     if let Some(rest) = location.strip_prefix("file://~/") {
+        reject_file_location_components(location)?;
         let home = home_dir.ok_or_else(|| {
             CoreError::FailedPrecondition(
                 "source.location uses '~' but home directory is not available".to_string(),
             )
         })?;
-        decoded = urlencoding::decode(rest).map_err(|error| {
+        let decoded = urlencoding::decode(rest).map_err(|error| {
             CoreError::InvalidInput(format!("source.location has invalid encoding: {error}"))
         })?;
-        Ok(home.join(decoded.as_ref()))
-    } else if let Some(path) = location.strip_prefix("file://") {
-        decoded = urlencoding::decode(path).map_err(|error| {
-            CoreError::InvalidInput(format!("source.location has invalid encoding: {error}"))
-        })?;
-        Ok(PathBuf::from(decoded.as_ref()))
-    } else {
-        Err(CoreError::InvalidInput(format!(
-            "source.location must start with file://, got '{location}'"
-        )))
+        return Ok(home.join(decoded.as_ref()));
     }
+
+    let location = if let Some(rest) = location.strip_prefix("file://localhost/") {
+        std::borrow::Cow::Owned(format!("file:///{rest}"))
+    } else {
+        std::borrow::Cow::Borrowed(location)
+    };
+
+    let url = url::Url::parse(&location).map_err(|error| {
+        CoreError::InvalidInput(format!("source.location has invalid file URL: {error}"))
+    })?;
+    if url.scheme() != "file" {
+        return Err(CoreError::InvalidInput(format!(
+            "source.location must start with file://, got '{location}'"
+        )));
+    }
+    if url.query().is_some() || url.fragment().is_some() {
+        return Err(CoreError::InvalidInput(format!(
+            "source.location must not include query or fragment components, got '{location}'"
+        )));
+    }
+
+    url.to_file_path().map_err(|()| {
+        CoreError::InvalidInput(format!(
+            "source.location must be a valid local file URL, got '{location}'"
+        ))
+    })
+}
+
+fn reject_file_location_components(location: &str) -> Result<(), CoreError> {
+    if location.contains('?') || location.contains('#') {
+        return Err(CoreError::InvalidInput(format!(
+            "source.location must not include query or fragment components, got '{location}'"
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn file_url_from_directory_path(path: &Path) -> String {
+    url::Url::from_directory_path(path)
+        .expect("path should convert to file URL")
+        .to_string()
 }
 
 #[async_trait]
@@ -496,7 +524,6 @@ mod tests {
     use serde_json::{Value, json};
     use std::collections::BTreeMap;
     use std::fs;
-    use std::path::PathBuf;
     use tempfile::tempdir;
 
     fn compile_sources(manifests: Vec<ValidatedSourceManifest>) -> Vec<CompiledQuerySource> {
@@ -554,6 +581,94 @@ mod tests {
         ]
     }
 
+    #[test]
+    fn resolve_file_location_accepts_native_file_urls() {
+        let fixture_dir = tempdir().expect("tempdir");
+        let location = super::file_url_from_directory_path(fixture_dir.path());
+
+        let resolved = super::resolve_file_location(&location, None).expect("resolve file URL");
+
+        assert_eq!(resolved, fixture_dir.path());
+    }
+
+    #[test]
+    fn resolve_file_location_accepts_localhost_file_urls() {
+        let fixture_dir = tempdir().expect("tempdir");
+        let location = super::file_url_from_directory_path(fixture_dir.path()).replacen(
+            "file:///",
+            "file://localhost/",
+            1,
+        );
+
+        let resolved =
+            super::resolve_file_location(&location, None).expect("resolve localhost file URL");
+
+        assert_eq!(resolved, fixture_dir.path());
+    }
+
+    #[test]
+    fn resolve_file_location_expands_home_relative_file_urls() {
+        let home = tempdir().expect("home");
+
+        let resolved = super::resolve_file_location("file://~/nested%20dir/", Some(home.path()))
+            .expect("resolve home-relative file URL");
+
+        assert_eq!(resolved, home.path().join("nested dir"));
+    }
+
+    #[test]
+    fn resolve_file_location_rejects_query_components() {
+        let fixture_dir = tempdir().expect("tempdir");
+        let location = format!(
+            "{}?download=1",
+            super::file_url_from_directory_path(fixture_dir.path())
+        );
+
+        let error = super::resolve_file_location(&location, None)
+            .expect_err("query components should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("must not include query or fragment components"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn resolve_file_location_rejects_fragment_components() {
+        let fixture_dir = tempdir().expect("tempdir");
+        let location = format!(
+            "{}#events",
+            super::file_url_from_directory_path(fixture_dir.path())
+        );
+
+        let error = super::resolve_file_location(&location, None)
+            .expect_err("fragment components should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("must not include query or fragment components"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn resolve_file_location_rejects_home_relative_query_components() {
+        let home = tempdir().expect("home");
+
+        let error = super::resolve_file_location("file://~/nested/?download=1", Some(home.path()))
+            .expect_err("home-relative query components should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("must not include query or fragment components"),
+            "unexpected error: {error}"
+        );
+    }
+
     // --- Integration tests ---
 
     #[tokio::test]
@@ -580,7 +695,7 @@ mod tests {
         .expect("write fixture b");
 
         let ctx = SessionContext::new();
-        let location = format!("file://{}/", fixture_dir.path().display());
+        let location = super::file_url_from_directory_path(fixture_dir.path());
         let columns = simple_columns();
         let manifest = jsonl_manifest(&location, &columns);
 
@@ -621,7 +736,7 @@ mod tests {
         .expect("write fixture");
 
         let ctx = SessionContext::new();
-        let location = format!("file://{}/", fixture_dir.path().display());
+        let location = super::file_url_from_directory_path(fixture_dir.path());
         let columns = simple_columns();
         let manifest = jsonl_manifest(&location, &columns);
 
@@ -695,8 +810,10 @@ mod tests {
 
     #[test]
     fn read_jsonl_files_returns_empty_for_nonexistent_directory() {
+        let dir = tempdir().expect("tempdir");
+        let missing_dir = dir.path().join("missing");
         let pattern = glob::Pattern::new("**/*.jsonl").unwrap();
-        let result = super::read_jsonl_files(&PathBuf::from("/nonexistent/dir"), &pattern).unwrap();
+        let result = super::read_jsonl_files(&missing_dir, &pattern).unwrap();
         assert!(
             result.is_empty(),
             "nonexistent directory should return empty, not error"
@@ -725,7 +842,7 @@ mod tests {
                 "name": "events",
                 "description": "test",
                 "source": {
-                    "location": format!("file://{}/", fixture_dir.path().display()),
+                    "location": super::file_url_from_directory_path(fixture_dir.path()),
                     "partitions": [],
                 },
                 "columns": simple_columns(),
@@ -756,9 +873,12 @@ mod tests {
 
     #[tokio::test]
     async fn missing_source_directory_skips_registration() {
+        let dir = tempdir().expect("tempdir");
+        let missing_dir = dir.path().join("missing");
         let ctx = SessionContext::new();
         let columns = simple_columns();
-        let manifest = jsonl_manifest("file:///nonexistent/path/that/does/not/exist/", &columns);
+        let location = super::file_url_from_directory_path(&missing_dir);
+        let manifest = jsonl_manifest(&location, &columns);
 
         let result = register_sources_blocking(&ctx, compile_sources(vec![manifest]));
         // Registration succeeds (doesn't error) but the source is skipped.
