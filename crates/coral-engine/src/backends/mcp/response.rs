@@ -6,7 +6,7 @@
 //! `backends/shared/response_rows.rs`.
 
 use datafusion::error::{DataFusionError, Result};
-use rmcp::model::CallToolResult;
+use rmcp::model::{CallToolResult, ResourceContents};
 use serde_json::Value;
 
 use super::error::McpProviderQueryError;
@@ -21,7 +21,7 @@ pub(super) fn normalize_tool_result(
         let detail = result
             .content
             .iter()
-            .find_map(|content| content.as_text().map(|text| text.text.clone()))
+            .find_map(|content| extract_text_payload(content).map(str::to_string))
             .or_else(|| {
                 result.structured_content.as_ref().map(|value| match value {
                     Value::String(text) => text.clone(),
@@ -43,8 +43,8 @@ pub(super) fn normalize_tool_result(
     }
     let mut saw_non_text_content = false;
     for content in &result.content {
-        if let Some(text) = content.as_text() {
-            return serde_json::from_str(&text.text).map_err(|error| {
+        if let Some(text) = extract_text_payload(content) {
+            return serde_json::from_str(text).map_err(|error| {
                 DataFusionError::External(Box::new(McpProviderQueryError::ResultDecode {
                     source_schema: source_schema.to_string(),
                     relation: relation.to_string(),
@@ -68,4 +68,20 @@ pub(super) fn normalize_tool_result(
     // Empty `content` with no `structured_content` and `is_error` unset is a
     // legitimate "tool succeeded with no output" — surface as zero rows.
     Ok(Value::Null)
+}
+
+/// Returns the inline text of a content item, whether it's a top-level
+/// `Text` variant or an embedded resource carrying `TextResourceContents`.
+fn extract_text_payload(
+    content: &rmcp::model::Content,
+) -> Option<&str> {
+    if let Some(text) = content.as_text() {
+        return Some(text.text.as_str());
+    }
+    if let Some(embedded) = content.as_resource()
+        && let ResourceContents::TextResourceContents { text, .. } = &embedded.resource
+    {
+        return Some(text.as_str());
+    }
+    None
 }
