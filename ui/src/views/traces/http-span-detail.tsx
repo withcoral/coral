@@ -214,25 +214,20 @@ function BodyViewer({
   }
 
   const { bodyKind, data, errors, operationName, operationType, query, variables } = preview.graphql
+  const errorCountLabel = Array.isArray(errors) ? `${errors.length}` : 'present'
+  const dataCountLabel = Array.isArray(data) ? `${data.length}` : 'present'
+  const variablesCountLabel = Array.isArray(variables) ? `${variables.length}` : 'present'
 
   return (
     <div className={s.bodyViewer}>
       <div className={s.bodyViewerHeader}>
-        <Typography.BodySmallStrong as="span">
-          {bodyKind === 'request' ? 'GraphQL request' : 'GraphQL response'}
-        </Typography.BodySmallStrong>
+        <Typography.BodySmallStrong as="span">{graphqlBodyTitle(bodyKind)}</Typography.BodySmallStrong>
         <div className={s.bodyMetaRow}>
           {operationName && metaChip('Operation', operationName)}
           {operationType && metaChip('Type', operationType)}
-          {variables !== undefined &&
-            metaChip('Variables', Array.isArray(variables) ? `${variables.length}` : 'present')}
-          {Array.isArray(errors)
-            ? metaChip('Errors', `${errors.length}`)
-            : errors !== undefined
-              ? metaChip('Errors', 'present')
-              : null}
-          {data !== undefined &&
-            metaChip('Data', Array.isArray(data) ? `${data.length}` : 'present')}
+          {variables !== undefined && metaChip('Variables', variablesCountLabel)}
+          {errors !== undefined && metaChip('Errors', errorCountLabel)}
+          {data !== undefined && metaChip('Data', dataCountLabel)}
         </div>
       </div>
       {query !== undefined && (
@@ -258,6 +253,15 @@ function BodyViewer({
       {rawBodyDetails}
     </div>
   )
+}
+
+function graphqlBodyTitle(kind: BodyKind) {
+  switch (kind) {
+    case 'request':
+      return 'GraphQL request'
+    case 'response':
+      return 'GraphQL response'
+  }
 }
 
 interface ActiveBodyState {
@@ -322,25 +326,62 @@ function formatBytes(value: unknown): string | undefined {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
-function bodyEmptyText(
-  kind: 'request' | 'response',
-  attrs: Record<string, unknown>,
-  truncated: boolean,
-) {
-  const label = kind === 'request' ? 'Request body' : 'Response body'
-  const size = formatBytes(
-    attrs[kind === 'request' ? REQUEST_BODY_SIZE_ATTR : RESPONSE_BODY_SIZE_ATTR],
-  )
-  const present =
-    kind === 'request'
-      ? attrBool(attrs[REQUEST_BODY_PRESENT_ATTR])
-      : attrBool(attrs[RESPONSE_BODY_PRESENT_ATTR]) || Boolean(size)
+function bodyEmptyText(kind: BodyKind, attrs: Record<string, unknown>, truncated: boolean) {
+  const label = bodyLabel(kind)
+  const size = formatBytes(attrs[bodySizeAttr(kind)])
+  const present = bodyPresent(kind, attrs, size)
 
   if (truncated)
     return `${label} was truncated${size ? ` (${size})` : ''}, but no preview was recorded.`
   if (present)
     return `${label} was present${size ? ` (${size})` : ''}, but content was not captured.`
   return `No ${kind} body was recorded for this request.`
+}
+
+function bodyLabel(kind: BodyKind) {
+  switch (kind) {
+    case 'request':
+      return 'Request body'
+    case 'response':
+      return 'Response body'
+  }
+}
+
+function bodySizeAttr(kind: BodyKind) {
+  switch (kind) {
+    case 'request':
+      return REQUEST_BODY_SIZE_ATTR
+    case 'response':
+      return RESPONSE_BODY_SIZE_ATTR
+  }
+}
+
+function bodyPresent(kind: BodyKind, attrs: Record<string, unknown>, size: string | undefined) {
+  switch (kind) {
+    case 'request':
+      return attrBool(attrs[REQUEST_BODY_PRESENT_ATTR])
+    case 'response':
+      return attrBool(attrs[RESPONSE_BODY_PRESENT_ATTR]) || Boolean(size)
+  }
+}
+
+function preferredHttpDetailTab(responseBody: JsonValue, requestBody: JsonValue, paramsValue: Record<string, string | string[]> | undefined): HttpDetailTab {
+  if (responseBody) return 'response'
+  if (requestBody) return 'request'
+  if (paramsValue) return 'params'
+  return 'response'
+}
+
+function formattedCopyLabel(copyState: CopyKind | 'failed' | 'idle') {
+  switch (copyState) {
+    case 'formatted':
+      return 'Copied'
+    case 'failed':
+      return 'Copy failed'
+    case 'idle':
+    case 'raw':
+      return 'Copy formatted'
+  }
 }
 
 function metaChip(label: string, value: React.ReactNode) {
@@ -383,13 +424,7 @@ export function HttpSpanDetail({
   const requestBodyTruncated = attrBool(attrs[REQUEST_BODY_TRUNCATED_ATTR])
   const responseBodyTruncated = attrBool(attrs[RESPONSE_BODY_TRUNCATED_ATTR])
   const paramsValue = Object.keys(params).length ? params : undefined
-  const preferredTab: HttpDetailTab = responseBody
-    ? 'response'
-    : requestBody
-      ? 'request'
-      : paramsValue
-        ? 'params'
-        : 'response'
+  const preferredTab = preferredHttpDetailTab(responseBody, requestBody, paramsValue)
   const tabs: Array<{ id: HttpDetailTab; label: string }> = [
     { id: 'params', label: 'Params' },
     { id: 'request', label: `Request body${requestBodyTruncated ? ' (truncated)' : ''}` },
@@ -520,7 +555,7 @@ export function HttpSpanDetail({
               </Button.TextButton>
             )}
             <Button.TextButton disabled={!copyValue} onClick={() => copyValueToClipboard(copyValue, 'formatted')} size="22" variant="secondary">
-              {copyState === 'formatted' ? 'Copied' : copyState === 'failed' ? 'Copy failed' : 'Copy formatted'}
+              {formattedCopyLabel(copyState)}
             </Button.TextButton>
           </div>
         </div>
