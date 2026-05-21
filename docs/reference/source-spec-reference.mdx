@@ -322,10 +322,16 @@ In this minimal example:
 ### HTTP table functions
 
 HTTP sources can declare source-scoped table functions for provider-native
-operations that return rows, such as search endpoints. A function adds
+operations that return rows and need invocation arguments. A function adds
 invocation arguments, but it still owns the same execution shape as an HTTP
 table: request, response mapping, pagination, and result columns. It does not
 need a backing table.
+
+Table functions are not only for search. Use the default `kind: table` for
+parameterized non-retrieval operations, such as scoped child collections,
+time-range log queries, metrics queries, or detail operations that do not map
+cleanly to a stable table. Use `kind: search` only for provider-ranked
+retrieval surfaces.
 
 ```yaml
 functions:
@@ -385,9 +391,10 @@ Use `bind.arg` when a SQL argument should populate a differently named request
 argument. Function request values can then reference those bound arguments with
 `from: arg`.
 
-`kind: search` marks a provider-native retrieval surface. Search functions
-return provider-ranked candidate rows, not exhaustive SQL-filtered tables. Use
-named SQL arguments when calling them:
+`kind: search` marks a provider-ranked retrieval surface. Search functions
+return provider-ranked candidate rows, not exhaustive SQL-filtered tables.
+Other table functions keep the default `kind: table`. Use named SQL arguments
+when calling table functions:
 
 ```sql
 SELECT id, title, html_url
@@ -407,10 +414,9 @@ filters:
     mode: contains
 ```
 
-`mode: search` is still accepted as a legacy compatibility marker for existing
-virtual-filter tables and is exposed through `coral.filters.filter_mode` and
-`coral.columns.filter_mode`. Do not use it for new provider-native retrieval
-surfaces; declare those as `kind: search` functions instead.
+Provider-ranked retrieval surfaces must be declared as `kind: search`
+functions. Table filters are for exact lookup, required scoping, or ordinary
+provider-side filtering on list/detail tables.
 
 `search_limits` values must be positive. `default_top_k` and `max_top_k` are
 capped at 1000, `max_calls_per_query` is capped at 100, and
