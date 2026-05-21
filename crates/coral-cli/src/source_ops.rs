@@ -204,7 +204,9 @@ async fn source_from_credential_stream(
                     .map_or(authorization.input_key.as_str(), String::as_str);
                 println!("Open this URL to connect {label}:");
                 println!("{}", authorization.authorization_url);
-                open_url(&authorization.authorization_url);
+                if let Err(err) = crate::browser::open_url(&authorization.authorization_url) {
+                    println!("{}", style(format!("Could not open browser: {err}")).dim());
+                }
             }
             Some(import_source_response::Event::Source(source)) => {
                 return Ok(source);
@@ -930,25 +932,6 @@ fn prompt_oauth_client_secret(input_key: &str) -> Result<String, anyhow::Error> 
         ));
     }
     Ok(value)
-}
-
-fn open_url(url: &str) {
-    let result = if cfg!(target_os = "macos") {
-        std::process::Command::new("open").arg(url).status()
-    } else if cfg!(target_os = "linux") {
-        std::process::Command::new("xdg-open").arg(url).status()
-    } else if cfg!(target_os = "windows") {
-        std::process::Command::new("cmd")
-            .args(["/c", "start", url])
-            .status()
-    } else {
-        return;
-    };
-    match result {
-        Ok(status) if status.success() => {}
-        Ok(status) => println!("{}", style(format!("Browser exited with {status}")).dim()),
-        Err(err) => println!("{}", style(format!("Could not open browser: {err}")).dim()),
-    }
 }
 
 fn print_input_hint(input: &ManifestInputSpec) {
