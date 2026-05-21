@@ -1,0 +1,267 @@
+name: prometheus
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Prometheus scrape health, firing alerts, and instant PromQL results from
+  Prometheus (self-hosted). Read-only v1; instant queries via the HTTP query API.
+inputs:
+  PROMETHEUS_BASE_URL:
+    kind: variable
+    default: http://127.0.0.1:9090
+    hint: |
+      Prometheus server root URL with no trailing slash. Use the default for a local
+      server on port 9090. For secured deployments, point at a reverse proxy or
+      gateway that injects authentication. v1 does not send bearer tokens from Coral.
+base_url: "{{input.PROMETHEUS_BASE_URL}}"
+test_queries:
+  - SELECT metric_name, instance, sample_value FROM prometheus.query_up LIMIT 5
+  - SELECT alert_name, alert_state FROM prometheus.alerts WHERE alert_state = 'firing' LIMIT 10
+tables:
+  - name: query_up
+    description: Instant vector for the `up` metric (target scrape health).
+    guide: |
+      Fixed PromQL `up`. No required filters. Use `LIMIT` on large fleets.
+    request:
+      method: GET
+      path: /api/v1/query
+      query:
+        - name: query
+          from: literal
+          value: "up"
+    response:
+      rows_path:
+        - data
+        - result
+    pagination:
+      mode: none
+    columns:
+      - name: metric_name
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - metric
+            - "__name__"
+      - name: instance
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - metric
+            - instance
+      - name: job
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - metric
+            - job
+      - name: sample_time_unix
+        type: Utf8
+        nullable: true
+        description: Sample timestamp from the value tuple (string).
+        expr:
+          kind: path
+          path:
+            - value
+            - "0"
+      - name: sample_value
+        type: Utf8
+        nullable: true
+        description: Sample value from the value tuple (1 = up).
+        expr:
+          kind: path
+          path:
+            - value
+            - "1"
+      - name: metric_labels
+        type: Json
+        expr:
+          kind: path
+          path:
+            - metric
+
+  - name: alerts
+    description: Firing and pending alert series from the internal `ALERTS` metric.
+    guide: |
+      Fixed PromQL `ALERTS`. Filter on `alert_state`. Join `pod` and `namespace` to
+      k8s.pods when your rules expose those labels.
+    request:
+      method: GET
+      path: /api/v1/query
+      query:
+        - name: query
+          from: literal
+          value: "ALERTS"
+    response:
+      rows_path:
+        - data
+        - result
+    pagination:
+      mode: none
+    columns:
+      - name: alert_name
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - metric
+            - alertname
+      - name: alert_state
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - metric
+            - alertstate
+      - name: severity
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - metric
+            - severity
+      - name: pod
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - metric
+            - pod
+      - name: namespace
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - metric
+            - namespace
+      - name: instance
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - metric
+            - instance
+      - name: job
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - metric
+            - job
+      - name: sample_value
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - value
+            - "1"
+      - name: metric_labels
+        type: Json
+        expr:
+          kind: path
+          path:
+            - metric
+
+  - name: query_custom
+    description: Instant query with PromQL supplied through the `promql` filter.
+    guide: |
+      Required filter: `promql` (full PromQL expression, for example `rate(http_requests_total[5m])`).
+      Prefer aggregations and label filters to limit cardinality.
+    filters:
+      - name: promql
+        required: true
+    request:
+      method: GET
+      path: /api/v1/query
+      query:
+        - name: query
+          from: filter
+          key: promql
+    response:
+      rows_path:
+        - data
+        - result
+    pagination:
+      mode: none
+    columns:
+      - name: promql
+        type: Utf8
+        description: Echoes the promql filter that produced this row.
+        expr:
+          kind: from_filter
+          key: promql
+      - name: metric_name
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - metric
+            - "__name__"
+      - name: instance
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - metric
+            - instance
+      - name: pod
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - metric
+            - pod
+      - name: namespace
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - metric
+            - namespace
+      - name: job
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - metric
+            - job
+      - name: sample_time_unix
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - value
+            - "0"
+      - name: sample_value
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - value
+            - "1"
+      - name: metric_labels
+        type: Json
+        expr:
+          kind: path
+          path:
+            - metric
