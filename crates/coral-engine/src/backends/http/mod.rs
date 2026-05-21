@@ -16,6 +16,7 @@ use crate::backends::{
     registered_columns_from_specs, required_filter_names,
 };
 use crate::{RequestAuthenticator, SourceInputResolutionContext, SourceInputResolver};
+use coral_spec::SourceBackend;
 use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec};
 pub(crate) mod auth;
 pub(crate) mod client;
@@ -92,8 +93,8 @@ impl CompiledBackendSource for HttpCompiledSource {
         &self.manifest.common.name
     }
 
-    fn backend_kind(&self) -> &'static str {
-        "http"
+    fn backend_kind(&self) -> SourceBackend {
+        SourceBackend::Http
     }
 
     fn has_bindable_filters(&self) -> bool {

@@ -25,6 +25,7 @@ use crate::backends::{
     RegisteredSource, RegisteredTable, build_registered_inputs, build_registered_table,
     registered_columns_from_schema, registered_columns_from_specs, required_filter_names,
 };
+use coral_spec::SourceBackend;
 use coral_spec::backends::file::{FileFormat, FileSourceManifest, FileTableSpec};
 
 use self::json::JsonFileTableProvider;
@@ -74,8 +75,8 @@ impl CompiledBackendSource for FileCompiledSource {
         &self.manifest.common.name
     }
 
-    fn backend_kind(&self) -> &'static str {
-        "file"
+    fn backend_kind(&self) -> SourceBackend {
+        SourceBackend::File
     }
 
     fn has_bindable_filters(&self) -> bool {
