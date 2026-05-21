@@ -1,0 +1,292 @@
+name: open_meteo_weather
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query current weather conditions from the public Open-Meteo Forecast API by
+  latitude and longitude. No authentication required.
+base_url: https://api.open-meteo.com/v1
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT time, temperature_2m, relative_humidity_2m, wind_speed_10m FROM open_meteo_weather.current_weather WHERE latitude = '31.23' AND longitude = '121.47' AND timezone = 'auto' LIMIT 1
+
+tables:
+  - name: current_weather
+    description: |
+      Current weather for a latitude/longitude coordinate. The request asks
+      Open-Meteo for a practical set of current variables for assistant,
+      travel, operations, and planning use cases. Use open_meteo_geocoding to
+      resolve city names before querying this table.
+    guide: >
+      Required filters: latitude and longitude. Add timezone = 'auto' to return
+      local timestamps for the coordinate. Example:
+      SELECT time, temperature_2m, weather_code, wind_speed_10m
+      FROM open_meteo_weather.current_weather
+      WHERE latitude = '31.23' AND longitude = '121.47' AND timezone = 'auto'.
+    filters:
+      - name: latitude
+        required: true
+      - name: longitude
+        required: true
+      - name: timezone
+      - name: temperature_unit
+      - name: wind_speed_unit
+      - name: precipitation_unit
+    request:
+      method: GET
+      path: /forecast
+      query:
+        - name: latitude
+          from: filter
+          key: latitude
+        - name: longitude
+          from: filter
+          key: longitude
+        - name: current
+          from: literal
+          value: >-
+            temperature_2m,relative_humidity_2m,apparent_temperature,is_day,precipitation,rain,showers,snowfall,weather_code,cloud_cover,pressure_msl,surface_pressure,wind_speed_10m,wind_direction_10m,wind_gusts_10m
+        - name: timezone
+          from: filter
+          key: timezone
+        - name: temperature_unit
+          from: filter
+          key: temperature_unit
+        - name: wind_speed_unit
+          from: filter
+          key: wind_speed_unit
+        - name: precipitation_unit
+          from: filter
+          key: precipitation_unit
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: latitude
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Echoes the requested latitude filter.
+        expr:
+          kind: from_filter
+          key: latitude
+      - name: longitude
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Echoes the requested longitude filter.
+        expr:
+          kind: from_filter
+          key: longitude
+      - name: response_latitude
+        type: Float64
+        nullable: false
+        description: Latitude returned by Open-Meteo after grid snapping.
+        expr:
+          kind: path
+          path:
+            - latitude
+      - name: response_longitude
+        type: Float64
+        nullable: false
+        description: Longitude returned by Open-Meteo after grid snapping.
+        expr:
+          kind: path
+          path:
+            - longitude
+      - name: generationtime_ms
+        type: Float64
+        nullable: true
+        description: Open-Meteo server generation time in milliseconds.
+      - name: utc_offset_seconds
+        type: Int64
+        nullable: true
+        description: UTC offset in seconds for the response timezone.
+      - name: timezone
+        type: Utf8
+        nullable: true
+        description: Response timezone.
+      - name: timezone_abbreviation
+        type: Utf8
+        nullable: true
+        description: Response timezone abbreviation.
+      - name: elevation
+        type: Float64
+        nullable: true
+        description: Elevation in meters for the selected forecast grid cell.
+      - name: time
+        type: Timestamp
+        nullable: true
+        description: Current weather observation timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - current
+              - time
+      - name: interval
+        type: Int64
+        nullable: true
+        description: Observation interval in seconds.
+        expr:
+          kind: path
+          path:
+            - current
+            - interval
+      - name: temperature_2m
+        type: Float64
+        nullable: true
+        description: Air temperature at 2 meters.
+        expr:
+          kind: path
+          path:
+            - current
+            - temperature_2m
+      - name: relative_humidity_2m
+        type: Int64
+        nullable: true
+        description: Relative humidity at 2 meters as a percentage.
+        expr:
+          kind: path
+          path:
+            - current
+            - relative_humidity_2m
+      - name: apparent_temperature
+        type: Float64
+        nullable: true
+        description: Human-perceived apparent temperature.
+        expr:
+          kind: path
+          path:
+            - current
+            - apparent_temperature
+      - name: is_day
+        type: Boolean
+        nullable: true
+        description: Whether the location is in daytime according to Open-Meteo.
+        expr:
+          kind: path
+          path:
+            - current
+            - is_day
+      - name: precipitation
+        type: Float64
+        nullable: true
+        description: Total precipitation amount for the current interval.
+        expr:
+          kind: path
+          path:
+            - current
+            - precipitation
+      - name: rain
+        type: Float64
+        nullable: true
+        description: Rain amount for the current interval.
+        expr:
+          kind: path
+          path:
+            - current
+            - rain
+      - name: showers
+        type: Float64
+        nullable: true
+        description: Shower precipitation amount for the current interval.
+        expr:
+          kind: path
+          path:
+            - current
+            - showers
+      - name: snowfall
+        type: Float64
+        nullable: true
+        description: Snowfall amount for the current interval.
+        expr:
+          kind: path
+          path:
+            - current
+            - snowfall
+      - name: weather_code
+        type: Int64
+        nullable: true
+        description: WMO weather interpretation code.
+        expr:
+          kind: path
+          path:
+            - current
+            - weather_code
+      - name: cloud_cover
+        type: Int64
+        nullable: true
+        description: Total cloud cover percentage.
+        expr:
+          kind: path
+          path:
+            - current
+            - cloud_cover
+      - name: pressure_msl
+        type: Float64
+        nullable: true
+        description: Mean sea level air pressure in hPa.
+        expr:
+          kind: path
+          path:
+            - current
+            - pressure_msl
+      - name: surface_pressure
+        type: Float64
+        nullable: true
+        description: Surface air pressure in hPa.
+        expr:
+          kind: path
+          path:
+            - current
+            - surface_pressure
+      - name: wind_speed_10m
+        type: Float64
+        nullable: true
+        description: Wind speed at 10 meters.
+        expr:
+          kind: path
+          path:
+            - current
+            - wind_speed_10m
+      - name: wind_direction_10m
+        type: Int64
+        nullable: true
+        description: Wind direction at 10 meters in degrees.
+        expr:
+          kind: path
+          path:
+            - current
+            - wind_direction_10m
+      - name: wind_gusts_10m
+        type: Float64
+        nullable: true
+        description: Wind gust speed at 10 meters.
+        expr:
+          kind: path
+          path:
+            - current
+            - wind_gusts_10m
+      - name: current_units
+        type: Json
+        nullable: true
+        description: Units for the current weather variables.
+        expr:
+          kind: path
+          path:
+            - current_units
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw Open-Meteo forecast response.
+        expr:
+          kind: current_row
