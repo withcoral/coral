@@ -5,9 +5,10 @@
 **Tables:** 2
 **Base URL:** `SUPABASE_REST_URL` (for example `https://<project-ref>.supabase.co/rest/v1`)
 
-Query rows from Supabase Postgres tables exposed through the PostgREST API. Read-only
-v1 uses your project REST URL and API key. Join app data with HubSpot, GitHub, or
-other Coral sources on `email`, `user_id`, or fields in the `row` JSON column.
+Query rows from Supabase Postgres tables exposed through the PostgREST API (Supabase
+Cloud). Read-only v1 uses your project REST URL and API key. Join app data with
+HubSpot, GitHub, or other Coral sources on `email`, `user_id`, or fields in the
+`row` JSON column.
 
 ## Install
 

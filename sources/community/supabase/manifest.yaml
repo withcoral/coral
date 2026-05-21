@@ -3,8 +3,8 @@ version: 0.1.0
 dsl_version: 3
 backend: http
 description: >-
-  Query rows from Supabase Postgres tables exposed through the PostgREST REST API.
-  Read-only v1; use the table_rows table with a table filter for any public API table.
+  Query rows from Supabase (Cloud) via PostgREST. List any exposed table with
+  table_rows or fetch one row by id with row_by_id. Read-only v1.
 inputs:
   SUPABASE_REST_URL:
     kind: variable
