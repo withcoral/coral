@@ -5,6 +5,8 @@ pub(crate) mod error;
 mod fetch;
 mod function;
 mod provider;
+mod response;
+mod transport;
 
 pub(crate) use error::McpProviderQueryError;
 
@@ -17,9 +19,10 @@ use datafusion::catalog::TableFunctionImpl;
 use datafusion::datasource::TableProvider;
 use datafusion::error::Result;
 
-use self::client::{McpSourceClient, McpToolCaller, StdioMcpToolCaller};
+use self::client::{McpSourceClient, McpToolCaller};
 use self::function::McpSourceTableFunction;
 use self::provider::McpTableProvider;
+use self::transport::StdioMcpToolCaller;
 use crate::backends::{
     BackendCompileRequest, BackendRegistration, CompiledBackendSource, RegisteredSource,
     SourceTableFunctions, build_registered_inputs, build_registered_table,
