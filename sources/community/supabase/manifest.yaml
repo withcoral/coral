@@ -1,0 +1,207 @@
+name: supabase
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query rows from Supabase Postgres tables exposed through the PostgREST REST API.
+  Read-only v1; use the table_rows table with a table filter for any public API table.
+inputs:
+  SUPABASE_REST_URL:
+    kind: variable
+    hint: |
+      Supabase PostgREST base URL with no trailing slash, for example
+      `https://abcdefghijklmnop.supabase.co/rest/v1`. Find your project ref and URL
+      under Project Settings > API in the Supabase dashboard.
+  SUPABASE_API_KEY:
+    kind: secret
+    required: true
+    hint: |
+      Supabase anon or service_role API key (Project Settings > API). Prefer the
+      anon key when Row Level Security should apply. The service role bypasses RLS;
+      use only in trusted environments. Sent as `apikey` and Bearer authorization.
+base_url: "{{input.SUPABASE_REST_URL}}"
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.SUPABASE_API_KEY}}
+request_headers:
+  - name: apikey
+    from: input
+    key: SUPABASE_API_KEY
+  - name: Accept
+    from: literal
+    value: application/json
+  - name: Prefer
+    from: literal
+    value: count=exact
+test_queries:
+  - SELECT table, id FROM supabase.table_rows WHERE table = 'profiles' LIMIT 1
+tables:
+  - name: table_rows
+    description: Rows from a Supabase table exposed via PostgREST.
+    guide: |
+      Required filter: `table` (PostgREST resource name, for example `profiles` or
+      `orders`). Optional `select_columns` maps to PostgREST `select` (comma-separated
+      columns). For a single row by primary key, use `row_by_id` instead.
+      Expose tables to the API in Supabase (public schema + grants/RLS). Coral caps
+      fetched rows at 100; use SQL `LIMIT` and narrow `select_columns` on wide tables.
+      The `row` column contains the full JSON object when you need fields not listed
+      as top-level columns.
+    fetch_limit_default: 100
+    filters:
+      - name: table
+        required: true
+      - name: select_columns
+    request:
+      method: GET
+      path: /{{filter.table}}
+      query:
+        - name: select
+          from: filter
+          key: select_columns
+    response:
+      rows_path: []
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 1000
+        query_param: limit
+    columns:
+      - name: table
+        type: Utf8
+        description: PostgREST table name from the required table filter.
+        expr:
+          kind: from_filter
+          key: table
+      - name: id
+        type: Utf8
+        nullable: true
+        description: Primary key when present on the row (uuid or text).
+        expr:
+          kind: path
+          path:
+            - id
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Created timestamp when the column exists on the table.
+        expr:
+          kind: path
+          path:
+            - created_at
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: Updated timestamp when the column exists on the table.
+        expr:
+          kind: path
+          path:
+            - updated_at
+      - name: email
+        type: Utf8
+        nullable: true
+        description: Email column when present (common on profiles/users tables).
+        expr:
+          kind: path
+          path:
+            - email
+      - name: user_id
+        type: Utf8
+        nullable: true
+        description: Foreign key to auth.users when present on the table.
+        expr:
+          kind: path
+          path:
+            - user_id
+      - name: row
+        type: Json
+        nullable: true
+        description: Full PostgREST row object for columns not mapped above.
+        expr:
+          kind: path
+          path: []
+
+  - name: row_by_id
+    description: Single row from a Supabase table by primary key `id`.
+    guide: |
+      Required filters: `table` and `row_id` (uuid or text primary key value).
+      Maps to PostgREST `id=eq.<row_id>`. Use `table_rows` for scans; use this
+      table for point lookups. Coral caps fetched rows at 1.
+    fetch_limit_default: 1
+    filters:
+      - name: table
+        required: true
+      - name: row_id
+        required: true
+    request:
+      method: GET
+      path: /{{filter.table}}
+      query:
+        - name: id
+          from: template
+          template: eq.{{filter.row_id}}
+    response:
+      rows_path: []
+    pagination:
+      mode: none
+    columns:
+      - name: table
+        type: Utf8
+        description: PostgREST table name from the table filter.
+        expr:
+          kind: from_filter
+          key: table
+      - name: row_id
+        type: Utf8
+        description: Primary key value from the row_id filter.
+        expr:
+          kind: from_filter
+          key: row_id
+      - name: id
+        type: Utf8
+        nullable: true
+        description: Primary key on the returned row.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: created_at
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - created_at
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - updated_at
+      - name: email
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - email
+      - name: user_id
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - user_id
+      - name: row
+        type: Json
+        nullable: true
+        description: Full PostgREST row object.
+        expr:
+          kind: path
+          path: []
