@@ -7,18 +7,19 @@ use std::task::{Context, Poll};
 use coral_api::v1::source_service_server::SourceService as SourceServiceApi;
 use coral_api::v1::{
     CreateBundledSourceRequest, CreateBundledSourceResponse,
-    CreateBundledSourceWithCredentialsRequest, CredentialMetadata, DeleteSourceRequest,
-    DeleteSourceResponse, DiscoverSourcesRequest, DiscoverSourcesResponse, GetSourceInfoRequest,
-    GetSourceInfoResponse, GetSourceRequest, GetSourceResponse, ImportSourceRequest,
-    ImportSourceResponse, ListSourcesRequest, ListSourcesResponse,
-    OAuthAuthorizationCodeCredentialMethod, OAuthCredentialAuthorization, OAuthCredentialClient,
-    OAuthCredentialClientId, OAuthCredentialClientSecret, OAuthCredentialCompleted,
-    OAuthCredentialEndpoints, OAuthCredentialInput, OAuthCredentialRetrieval, OAuthCredentialScope,
-    OAuthCredentialScopes, OauthCredentialClientSecretTransport, OauthCredentialPkceMode,
-    OauthCredentialScopeDelimiter, Source, SourceConfigCredentialMethod, SourceCredential,
-    SourceCredentialMethod, SourceInfo, SourceInputSpec, SourceOrigin as ProtoSourceOrigin,
-    SourceSecret, SourceSecretInput, SourceVariable, SourceVariableInput, ValidateSourceRequest,
-    ValidateSourceResponse, import_source_response,
+    CreateBundledSourceWithCredentialsRequest, CreateBundledSourceWithCredentialsResponse,
+    CredentialMetadata, DeleteSourceRequest, DeleteSourceResponse, DiscoverSourcesRequest,
+    DiscoverSourcesResponse, GetSourceInfoRequest, GetSourceInfoResponse, GetSourceRequest,
+    GetSourceResponse, ImportSourceRequest, ImportSourceResponse, ListSourcesRequest,
+    ListSourcesResponse, OAuthAuthorizationCodeCredentialMethod, OAuthCredentialAuthorization,
+    OAuthCredentialClient, OAuthCredentialClientId, OAuthCredentialClientSecret,
+    OAuthCredentialCompleted, OAuthCredentialEndpoints, OAuthCredentialInput,
+    OAuthCredentialRetrieval, OAuthCredentialScope, OAuthCredentialScopes,
+    OauthCredentialClientSecretTransport, OauthCredentialPkceMode, OauthCredentialScopeDelimiter,
+    Source, SourceConfigCredentialMethod, SourceCredential, SourceCredentialMethod, SourceInfo,
+    SourceInputSpec, SourceOrigin as ProtoSourceOrigin, SourceSecret, SourceSecretInput,
+    SourceVariable, SourceVariableInput, ValidateSourceRequest, ValidateSourceResponse,
+    create_bundled_source_with_credentials_response, import_source_response,
     source_credential_method::Method as ProtoCredentialMethod,
     source_input_spec::Input as ProtoSourceInput,
 };
@@ -46,6 +47,7 @@ use crate::transport::{
 use crate::workspaces::WorkspaceName;
 use tokio::sync::mpsc;
 use tokio_stream::Stream;
+use tokio_stream::StreamExt as _;
 
 #[derive(Clone)]
 pub(crate) struct SourceService {
@@ -64,7 +66,8 @@ impl SourceService {
 
 #[tonic::async_trait]
 impl SourceServiceApi for SourceService {
-    type CreateBundledSourceWithCredentialsStream = ImportSourceResponseStreamBox;
+    type CreateBundledSourceWithCredentialsStream =
+        CreateBundledSourceWithCredentialsResponseStreamBox;
     type ImportSourceStream = ImportSourceResponseStreamBox;
 
     async fn discover_sources(
@@ -204,7 +207,10 @@ impl SourceServiceApi for SourceService {
                             .map_err(app_status)
                     })
                 });
-            Ok(Response::new(stream))
+            Ok(Response::new(Box::pin(stream.map(|response| {
+                response.map(create_bundled_source_with_credentials_response_from_import_response)
+            }))
+                as Self::CreateBundledSourceWithCredentialsStream))
         })
         .await
     }
@@ -304,6 +310,8 @@ impl SourceServiceApi for SourceService {
     }
 }
 
+type CreateBundledSourceWithCredentialsResponseStreamBox =
+    Pin<Box<dyn Stream<Item = Result<CreateBundledSourceWithCredentialsResponse, Status>> + Send>>;
 type ImportSourceResponseStreamBox =
     Pin<Box<dyn Stream<Item = Result<ImportSourceResponse, Status>> + Send>>;
 type ImportSourceFuture = Pin<Box<dyn Future<Output = Result<InstalledSource, Status>> + Send>>;
@@ -464,6 +472,25 @@ fn import_source_event_to_proto(event: ImportSourceWithCredentialsEvent) -> Impo
         }),
     };
     ImportSourceResponse { event: Some(event) }
+}
+
+fn create_bundled_source_with_credentials_response_from_import_response(
+    response: ImportSourceResponse,
+) -> CreateBundledSourceWithCredentialsResponse {
+    let event = response.event.map(|event| match event {
+        import_source_response::Event::Source(source) => {
+            create_bundled_source_with_credentials_response::Event::Source(source)
+        }
+        import_source_response::Event::OauthAuthorization(authorization) => {
+            create_bundled_source_with_credentials_response::Event::OauthAuthorization(
+                authorization,
+            )
+        }
+        import_source_response::Event::OauthCompleted(completed) => {
+            create_bundled_source_with_credentials_response::Event::OauthCompleted(completed)
+        }
+    });
+    CreateBundledSourceWithCredentialsResponse { event }
 }
 
 fn installed_source_to_proto(workspace_name: &WorkspaceName, source: InstalledSource) -> Source {

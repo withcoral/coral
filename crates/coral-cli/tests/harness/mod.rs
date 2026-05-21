@@ -17,16 +17,18 @@ use coral_api::v1::query_service_server::{QueryService, QueryServiceServer};
 use coral_api::v1::source_service_server::{SourceService, SourceServiceServer};
 use coral_api::v1::{
     CatalogItem, CatalogSearchResult, Column, ColumnSearchResult, CreateBundledSourceRequest,
-    CreateBundledSourceResponse, CreateBundledSourceWithCredentialsRequest, DeleteSourceRequest,
-    DeleteSourceResponse, DescribeTableRequest, DescribeTableResponse, DiscoverSourcesRequest,
-    DiscoverSourcesResponse, ExecuteSqlRequest, ExecuteSqlResponse, ExplainSqlRequest,
-    ExplainSqlResponse, GetSourceInfoRequest, GetSourceInfoResponse, GetSourceRequest,
-    GetSourceResponse, ImportSourceRequest, ImportSourceResponse, ListCatalogRequest,
-    ListCatalogResponse, ListColumnsRequest, ListColumnsResponse, ListSourcesRequest,
-    ListSourcesResponse, PaginationRequest, PaginationResponse, QueryPlan, SearchCatalogRequest,
-    SearchCatalogResponse, Source, SourceInfo, SourceInputSpec, SourceOrigin, SourceSecretInput,
-    Table, TableSummary, ValidateSourceRequest, ValidateSourceResponse, Workspace, catalog_item,
-    import_source_response, source_input_spec::Input as ProtoSourceInput,
+    CreateBundledSourceResponse, CreateBundledSourceWithCredentialsRequest,
+    CreateBundledSourceWithCredentialsResponse, DeleteSourceRequest, DeleteSourceResponse,
+    DescribeTableRequest, DescribeTableResponse, DiscoverSourcesRequest, DiscoverSourcesResponse,
+    ExecuteSqlRequest, ExecuteSqlResponse, ExplainSqlRequest, ExplainSqlResponse,
+    GetSourceInfoRequest, GetSourceInfoResponse, GetSourceRequest, GetSourceResponse,
+    ImportSourceRequest, ImportSourceResponse, ListCatalogRequest, ListCatalogResponse,
+    ListColumnsRequest, ListColumnsResponse, ListSourcesRequest, ListSourcesResponse,
+    PaginationRequest, PaginationResponse, QueryPlan, SearchCatalogRequest, SearchCatalogResponse,
+    Source, SourceInfo, SourceInputSpec, SourceOrigin, SourceSecretInput, Table, TableSummary,
+    ValidateSourceRequest, ValidateSourceResponse, Workspace, catalog_item,
+    create_bundled_source_with_credentials_response, import_source_response,
+    source_input_spec::Input as ProtoSourceInput,
 };
 use coral_api::{CORAL_ERROR_DOMAIN, CORAL_ERROR_REASON_SOURCE_NOT_FOUND};
 use tokio::net::TcpListener;
@@ -787,22 +789,34 @@ struct MockSourceService {
     captured: Arc<Captured>,
 }
 
-fn mock_source_stream() -> Pin<Box<dyn Stream<Item = Result<ImportSourceResponse, Status>> + Send>>
-{
+type MockBundledSourceStream =
+    Pin<Box<dyn Stream<Item = Result<CreateBundledSourceWithCredentialsResponse, Status>> + Send>>;
+type MockImportSourceStream =
+    Pin<Box<dyn Stream<Item = Result<ImportSourceResponse, Status>> + Send>>;
+
+fn mock_bundled_source_stream() -> MockBundledSourceStream {
+    let (tx, rx) =
+        tokio::sync::mpsc::channel::<Result<CreateBundledSourceWithCredentialsResponse, Status>>(1);
+    tx.try_send(Ok(CreateBundledSourceWithCredentialsResponse {
+        event: Some(create_bundled_source_with_credentials_response::Event::Source(mock_source())),
+    }))
+    .expect("send mock bundled source credential event");
+    Box::pin(ReceiverStream::new(rx))
+}
+
+fn mock_import_source_stream() -> MockImportSourceStream {
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<ImportSourceResponse, Status>>(1);
     tx.try_send(Ok(ImportSourceResponse {
         event: Some(import_source_response::Event::Source(mock_source())),
     }))
-    .expect("send mock import event");
+    .expect("send mock import source credential event");
     Box::pin(ReceiverStream::new(rx))
 }
 
 #[tonic::async_trait]
 impl SourceService for MockSourceService {
-    type CreateBundledSourceWithCredentialsStream =
-        Pin<Box<dyn Stream<Item = Result<ImportSourceResponse, Status>> + Send>>;
-    type ImportSourceStream =
-        Pin<Box<dyn Stream<Item = Result<ImportSourceResponse, Status>> + Send>>;
+    type CreateBundledSourceWithCredentialsStream = MockBundledSourceStream;
+    type ImportSourceStream = MockImportSourceStream;
 
     async fn discover_sources(
         &self,
@@ -884,7 +898,7 @@ impl SourceService for MockSourceService {
             .lock()
             .expect("create_bundled_source_with_credentials capture")
             .push(request.into_inner());
-        Ok(Response::new(mock_source_stream()))
+        Ok(Response::new(mock_bundled_source_stream()))
     }
 
     async fn import_source(
@@ -896,7 +910,7 @@ impl SourceService for MockSourceService {
             .lock()
             .expect("import_source capture")
             .push(request.into_inner());
-        Ok(Response::new(mock_source_stream()))
+        Ok(Response::new(mock_import_source_stream()))
     }
 
     async fn delete_source(

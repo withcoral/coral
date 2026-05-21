@@ -4,13 +4,13 @@ use std::path::Path;
 
 use coral_api::CORAL_ERROR_REASON_SOURCE_NOT_FOUND;
 use coral_api::v1::{
-    CreateBundledSourceRequest, CreateBundledSourceWithCredentialsRequest, DeleteSourceRequest,
-    DiscoverSourcesRequest, GetSourceInfoRequest, ImportSourceRequest, ImportSourceResponse,
-    ListSourcesRequest, OAuthCredentialInput, OAuthCredentialRetrieval, QueryTestFailure,
-    QueryTestSuccess, Source, SourceInfo, SourceOrigin, SourceSecret, SourceVariable,
-    ValidateSourceRequest,
-    ValidateSourceResponse, import_source_response, query_test_result,
-    source_input_spec::Input as ProtoSourceInput,
+    CreateBundledSourceRequest, CreateBundledSourceWithCredentialsRequest,
+    CreateBundledSourceWithCredentialsResponse, DeleteSourceRequest, DiscoverSourcesRequest,
+    GetSourceInfoRequest, ImportSourceRequest, ImportSourceResponse, ListSourcesRequest,
+    OAuthCredentialInput, OAuthCredentialRetrieval, QueryTestFailure, QueryTestSuccess, Source,
+    SourceInfo, SourceOrigin, SourceSecret, SourceVariable, ValidateSourceRequest,
+    ValidateSourceResponse, create_bundled_source_with_credentials_response,
+    import_source_response, query_test_result, source_input_spec::Input as ProtoSourceInput,
 };
 use coral_client::{AppClient, DecodedStatusError, decode_status_error, default_workspace};
 use coral_spec::{
@@ -164,7 +164,7 @@ pub(crate) async fn add_bundled_source_with_credentials(
             },
         ))
         .await?;
-    source_from_credential_stream(response.into_inner(), &inputs.oauth_labels).await
+    source_from_bundled_credential_stream(response.into_inner(), &inputs.oauth_labels).await
 }
 
 pub(crate) async fn import_source_with_credentials(
@@ -185,10 +185,29 @@ pub(crate) async fn import_source_with_credentials(
             oauth_credential_retrievals: inputs.oauth_credential_retrievals,
         }))
         .await?;
-    source_from_credential_stream(response.into_inner(), &inputs.oauth_labels).await
+    source_from_import_credential_stream(response.into_inner(), &inputs.oauth_labels).await
 }
 
-async fn source_from_credential_stream(
+async fn source_from_bundled_credential_stream(
+    mut stream: tonic::Streaming<CreateBundledSourceWithCredentialsResponse>,
+    oauth_labels: &BTreeMap<String, String>,
+) -> Result<Source, anyhow::Error> {
+    while let Some(response) = stream
+        .message()
+        .await
+        .map_err(|error| oauth_error("retrieve", &error))?
+    {
+        let event = response.event.map(CredentialStreamEvent::from);
+        if let Some(source) = handle_credential_stream_event(event, oauth_labels) {
+            return Ok(source);
+        }
+    }
+    Err(anyhow::anyhow!(
+        "source credential retrieval stream ended before source installation completed"
+    ))
+}
+
+async fn source_from_import_credential_stream(
     mut stream: tonic::Streaming<ImportSourceResponse>,
     oauth_labels: &BTreeMap<String, String>,
 ) -> Result<Source, anyhow::Error> {
@@ -197,26 +216,81 @@ async fn source_from_credential_stream(
         .await
         .map_err(|error| oauth_error("retrieve", &error))?
     {
-        match response.event {
-            Some(import_source_response::Event::OauthAuthorization(authorization)) => {
-                let label = oauth_labels
-                    .get(&authorization.input_key)
-                    .map_or(authorization.input_key.as_str(), String::as_str);
-                println!("Open this URL to connect {label}:");
-                println!("{}", authorization.authorization_url);
-                if let Err(err) = crate::browser::open_url(&authorization.authorization_url) {
-                    println!("{}", style(format!("Could not open browser: {err}")).dim());
-                }
-            }
-            Some(import_source_response::Event::Source(source)) => {
-                return Ok(source);
-            }
-            Some(import_source_response::Event::OauthCompleted(_)) | None => {}
+        let event = response.event.map(CredentialStreamEvent::from);
+        if let Some(source) = handle_credential_stream_event(event, oauth_labels) {
+            return Ok(source);
         }
     }
     Err(anyhow::anyhow!(
         "source credential retrieval stream ended before source import completed"
     ))
+}
+
+enum CredentialStreamEvent {
+    Source(Source),
+    OAuthAuthorization {
+        input_key: String,
+        authorization_url: String,
+    },
+    OAuthCompleted,
+}
+
+impl From<create_bundled_source_with_credentials_response::Event> for CredentialStreamEvent {
+    fn from(event: create_bundled_source_with_credentials_response::Event) -> Self {
+        match event {
+            create_bundled_source_with_credentials_response::Event::Source(source) => {
+                Self::Source(source)
+            }
+            create_bundled_source_with_credentials_response::Event::OauthAuthorization(
+                authorization,
+            ) => Self::OAuthAuthorization {
+                input_key: authorization.input_key,
+                authorization_url: authorization.authorization_url,
+            },
+            create_bundled_source_with_credentials_response::Event::OauthCompleted(_) => {
+                Self::OAuthCompleted
+            }
+        }
+    }
+}
+
+impl From<import_source_response::Event> for CredentialStreamEvent {
+    fn from(event: import_source_response::Event) -> Self {
+        match event {
+            import_source_response::Event::Source(source) => Self::Source(source),
+            import_source_response::Event::OauthAuthorization(authorization) => {
+                Self::OAuthAuthorization {
+                    input_key: authorization.input_key,
+                    authorization_url: authorization.authorization_url,
+                }
+            }
+            import_source_response::Event::OauthCompleted(_) => Self::OAuthCompleted,
+        }
+    }
+}
+
+fn handle_credential_stream_event(
+    event: Option<CredentialStreamEvent>,
+    oauth_labels: &BTreeMap<String, String>,
+) -> Option<Source> {
+    match event {
+        Some(CredentialStreamEvent::OAuthAuthorization {
+            input_key,
+            authorization_url,
+        }) => {
+            let label = oauth_labels
+                .get(&input_key)
+                .map_or(input_key.as_str(), String::as_str);
+            println!("Open this URL to connect {label}:");
+            println!("{authorization_url}");
+            if let Err(err) = crate::browser::open_url(&authorization_url) {
+                println!("{}", style(format!("Could not open browser: {err}")).dim());
+            }
+            None
+        }
+        Some(CredentialStreamEvent::Source(source)) => Some(source),
+        Some(CredentialStreamEvent::OAuthCompleted) | None => None,
+    }
 }
 
 pub(crate) async fn validate_source(

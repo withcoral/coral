@@ -258,6 +258,19 @@ message CreateBundledSourceWithCredentialsRequest {
   repeated OAuthCredentialRetrieval oauth_credential_retrievals = 5;
 }
 
+// Streaming event emitted while installing a bundled source with credentials.
+message CreateBundledSourceWithCredentialsResponse {
+  // Installation progress or completion event.
+  oneof event {
+    // Bundled source installation completed.
+    Source source = 1;
+    // OAuth authorization URL is ready.
+    OAuthCredentialAuthorization oauth_authorization = 2;
+    // OAuth credential retrieval completed.
+    OAuthCredentialCompleted oauth_completed = 3;
+  }
+}
+
 // Imports one user-supplied source manifest into Coral ownership.
 message ImportSourceRequest {
   // Owning workspace resource.
@@ -440,7 +453,7 @@ service SourceService {
   rpc CreateBundledSource(CreateBundledSourceRequest) returns (CreateBundledSourceResponse);
   // Installs one bundled source with app-owned credential retrieval.
   rpc CreateBundledSourceWithCredentials(CreateBundledSourceWithCredentialsRequest)
-      returns (stream ImportSourceResponse);
+      returns (stream CreateBundledSourceWithCredentialsResponse);
   // Imports one user-provided source manifest, streaming credential retrieval
   // progress before the final source event when credentials are app-owned.
   rpc ImportSource(ImportSourceRequest) returns (stream ImportSourceResponse);
