@@ -72,9 +72,7 @@ pub(super) fn normalize_tool_result(
 
 /// Returns the inline text of a content item, whether it's a top-level
 /// `Text` variant or an embedded resource carrying `TextResourceContents`.
-fn extract_text_payload(
-    content: &rmcp::model::Content,
-) -> Option<&str> {
+fn extract_text_payload(content: &rmcp::model::Content) -> Option<&str> {
     if let Some(text) = content.as_text() {
         return Some(text.text.as_str());
     }
