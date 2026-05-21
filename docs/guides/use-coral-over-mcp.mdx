@@ -24,14 +24,50 @@ Before setting up a client, make sure you have [connected at least one source](/
 | Resource | `coral://tables` | JSON summaries of database tables and required filters  |
 
 Clients see the same database catalog and query results as `coral sql`. You set up sources with the CLI, then agents query Coral over MCP as SQL schemas and tables.
-Agents should use the discovery tools as catalog helpers, not as replacement provider APIs. For data questions, prefer one `sql` call with `JOIN`, `CROSS JOIN`, CTEs, subqueries, aggregates, or window functions over multiple tool calls that fetch rows and combine them in the agent.
-`list_catalog` returns database tables and parameterized table functions in pages and accepts optional `schema`, `kind`, `limit`, and `offset` arguments. Omit `kind` or pass `null` to include both `"table"` and `"table_function"` items. For tables, use `sql_reference` in `FROM` and `JOIN` clauses. For table functions, use `sql_call_example` and fill in the required arguments. Do not quote the whole `schema.item` string: write `github.pulls` or `"github"."pulls"`, not `"github.pulls"`.
-`search_catalog` accepts a required `pattern` plus optional `schema`, `kind`, `ignore_case`, `limit`, and `offset` arguments for deterministic regex matching over database catalog metadata.
-`describe_table` accepts exact `schema` and `table` arguments and returns guide text, required filters, and a column count without dumping full columns.
-`list_columns` accepts exact `schema` and `table` arguments plus optional `pattern`, `ignore_case`, `required_only`, `limit`, and `offset` arguments. For existing tables it returns a paginated `columns` page with `total`, `has_more`, and optional `next_offset`; when `pattern` is set, matching rows include `matched_fields` so clients can explain why a column matched. When the requested table does not exist, `list_columns` returns `found: false` with recovery hints instead of an empty page, so clients should branch to `search_catalog` or `list_catalog` rather than pretending the table has zero columns.
-For richer metadata, have the agent query `coral.tables`, `coral.columns`, `coral.filters`, `coral.table_functions`, and `coral.inputs` over the `sql` tool instead of relying only on `list_catalog` or `coral://tables`. Use `coral.filters` as the normalized filter surface, with `coral.columns.filter_mode` available when inspecting filter-only virtual columns.
-Provider search should use `kind = 'search'` table functions when available. Those functions retrieve provider-ranked candidates, so agents should preserve returned rank columns when present and use returned ids plus catalog-described tables to fetch full detail rows when the search result itself is incomplete.
-Start Coral as `coral mcp-stdio --enable-feedback` to expose the optional `feedback` tool. Agents can call `feedback` when they get blocked or repeat a pattern that is not working. Coral stores the report locally with what the agent was trying to do, what it tried, and where it got stuck, then uploads an anonymous copy to Coral's hosted feedback service in the background. Coral does not attach user identifiers to the hosted copy and uses these reports to improve Coral's performance. Only enable this tool if you are comfortable sending the feedback text to Coral. If hosted upload fails, the local report is still stored.
+
+Agents should treat the discovery tools as catalog helpers, not as replacement provider APIs. For data questions, prefer a single `sql` call using `JOIN`, `CROSS JOIN`, CTEs, subqueries, aggregates, or window functions over multiple tool calls that fetch rows and combine them in the agent.
+
+### Discovery tools
+
+**`list_catalog`**: paginated list of database tables and parameterized table functions.
+
+- Arguments: optional `schema`, `kind`, `limit`, `offset`. Omit `kind` (or pass `null`) to include both `"table"` and `"table_function"` items.
+- For tables, use `sql_reference` in `FROM` and `JOIN` clauses.
+- For table functions, use `sql_call_example` and fill in the required arguments.
+- Do not quote the whole `schema.item` string: write `github.pulls` or `"github"."pulls"`, not `"github.pulls"`.
+
+**`search_catalog`**: deterministic regex matching over database catalog metadata.
+
+- Arguments: required `pattern` plus optional `schema`, `kind`, `ignore_case`, `limit`, `offset`.
+
+**`describe_table`**: compact metadata for one table.
+
+- Arguments: exact `schema` and `table`.
+- Returns guide text, required filters, and a column count without dumping full columns.
+
+**`list_columns`**: paginated columns for one table.
+
+- Arguments: exact `schema` and `table`, plus optional `pattern`, `ignore_case`, `required_only`, `limit`, `offset`.
+- For existing tables, returns a `columns` page with `total`, `has_more`, and optional `next_offset`. When `pattern` is set, matching rows include `matched_fields` so clients can explain why a column matched.
+- When the requested table does not exist, returns `found: false` with recovery hints instead of an empty page. Clients should branch to `search_catalog` or `list_catalog` rather than pretending the table has zero columns.
+
+### Richer metadata via SQL
+
+For deeper introspection, query `coral.tables`, `coral.columns`, `coral.filters`, `coral.table_functions`, and `coral.inputs` through the `sql` tool instead of relying only on `list_catalog` or `coral://tables`. Use `coral.filters` as the normalized filter surface, with `coral.columns.filter_mode` available when inspecting filter-only virtual columns.
+
+### Searching a provider's data
+
+Some sources expose native search endpoints (for example, GitHub issue search) as table functions with `kind = 'search'`. Prefer these over scanning a regular table when the agent needs ranked, query-driven results. They return provider-ranked candidates, so agents should preserve any returned rank columns and use the returned ids plus catalog-described tables to fetch full detail rows when the search result itself is incomplete.
+
+### Optional feedback tool
+
+Start Coral as `coral mcp-stdio --enable-feedback` to expose the `feedback` tool. Agents can call it when they get blocked or repeat a pattern that isn't working.
+
+Coral stores the report locally (what the agent was trying to do, what it tried, and where it got stuck) and uploads an anonymous copy to Coral's hosted feedback service in the background. No user identifiers are attached to the hosted copy, and reports are used to improve Coral's performance. If hosted upload fails, the local report is still stored.
+
+<Note>
+Only enable this tool if you are comfortable sending the feedback text to Coral.
+</Note>
 
 ## Client setup
 
