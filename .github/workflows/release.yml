@@ -70,6 +70,8 @@ jobs:
             os: macos-latest
           - target: aarch64-apple-darwin
             os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
     runs-on: ${{ matrix.os }}
     env:
       TAG_NAME: ${{ github.event.release.tag_name || inputs.tag }}
@@ -96,7 +98,9 @@ jobs:
           set -euo pipefail
           cargo install cargo-binstall --locked
           cargo binstall --no-confirm --force --disable-strategies compile cross@0.2.5
-      - name: Build
+      - name: Build Unix
+        if: runner.os != 'Windows'
+        shell: bash
         env:
           CROSS: ${{ matrix.cross }}
           HAS_UI: ${{ needs.build-ui.outputs.has-ui }}
@@ -112,7 +116,33 @@ jobs:
           else
             cargo build --locked --release --target "$TARGET" "${feature_args[@]}"
           fi
-      - name: Package
+
+      - name: Build Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          HAS_UI: ${{ needs.build-ui.outputs.has-ui }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          $featureArgs = @()
+          if ($env:HAS_UI -eq "true") {
+            $featureArgs += @("--features", "embedded-ui")
+          }
+
+          cargo build --locked --release --target $env:TARGET @featureArgs
+
+      - name: Smoke Windows release binary
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          .\target\$env:TARGET\release\coral.exe --version
+          .\target\$env:TARGET\release\coral.exe source discover
+
+      - name: Package Unix
+        if: runner.os != 'Windows'
+        shell: bash
         env:
           TARGET: ${{ matrix.target }}
         run: |
@@ -120,11 +150,27 @@ jobs:
           cd "target/${TARGET}/release"
           tar czf "../../../${archive}" coral
           cd ../../../
+
+      - name: Package Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          $staging = "package-$env:TARGET"
+          New-Item -ItemType Directory -Force -Path $staging | Out-Null
+          Copy-Item "target\$env:TARGET\release\coral.exe" "$staging\coral.exe"
+          Push-Location $staging
+          Compress-Archive -Path coral.exe -DestinationPath "..\coral-$env:TARGET.zip" -Force
+          Pop-Location
+
       - name: Upload artifact
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: coral-${{ matrix.target }}
-          path: coral-${{ matrix.target }}.tar.gz
+          path: |
+            coral-${{ matrix.target }}.tar.gz
+            coral-${{ matrix.target }}.zip
 
   checksums:
     needs: build
@@ -139,7 +185,10 @@ jobs:
       - name: Generate checksums
         run: |
           cd artifacts
-          sha256sum coral-*.tar.gz > checksums.sha256
+          find . -maxdepth 1 -type f \( -name 'coral-*.tar.gz' -o -name 'coral-*.zip' \) -print0 |
+            sort -z |
+            xargs -0 sha256sum > checksums.sha256
+          test -s checksums.sha256
       - name: Upload checksums
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
@@ -178,9 +227,14 @@ jobs:
           GH_TOKEN: ${{ steps.github-app-token.outputs.token }}
         run: |
           set -euo pipefail
+          shopt -s nullglob
+          artifacts=(artifacts/coral-*.tar.gz artifacts/coral-*.zip artifacts/checksums.sha256)
+          if [ "${#artifacts[@]}" -lt 2 ]; then
+            echo "No Coral release archives found" >&2
+            exit 1
+          fi
           gh release upload "$TAG_NAME" \
-            artifacts/coral-*.tar.gz \
-            artifacts/checksums.sha256 \
+            "${artifacts[@]}" \
             --repo "$GITHUB_REPOSITORY" \
             --clobber
 
