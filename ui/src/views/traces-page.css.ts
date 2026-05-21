@@ -1,12 +1,12 @@
 import { globalStyle, keyframes, style } from '@vanilla-extract/css'
 
-import { utils } from '@/styles/utils'
 import { breakpoints } from '@/styles/theme'
+import { utils } from '@/styles/utils'
+import { fontFamily } from '@/wax/theme/font.css'
 import { lightTheme } from '@/wax/theme/theme-light.css'
 import { theme } from '@/wax/theme/theme.css'
 
 const spin = keyframes({ to: { transform: 'rotate(360deg)' } })
-const codeFontFamily = '"Gustan Mono", "Roboto Mono", "SFMono-Regular", "SF Mono", Consolas, "Liberation Mono", Menlo, monospace'
 export const root = style({ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 })
 
 export const header = style({
@@ -124,7 +124,7 @@ export const cellTimestamp = style({ minWidth: 80 })
 export const sqlPreview = style({
   color: utils.opacify(theme.content.primary, 85),
   flex: 1,
-  fontFamily: codeFontFamily,
+  fontFamily: fontFamily.dmMono,
   fontSize: 14,
   lineHeight: 1.65,
   margin: 0,
@@ -222,7 +222,7 @@ export const waterfallTickRow = style({
 })
 export const waterfallLabel = style({ height: 24, minWidth: 0, paddingBlockEnd: 4 })
 export const waterfallTimeline = style({ borderBlockEnd: `1px solid ${theme.stroke.primary}`, height: 24, minWidth: 0, overflow: 'hidden', paddingBlockEnd: 4, position: 'relative' })
-export const waterfallTick = style({ color: theme.content.tertiary, fontFamily: codeFontFamily, fontSize: 12, lineHeight: '16px', position: 'absolute', whiteSpace: 'nowrap' })
+export const waterfallTick = style({ color: theme.content.tertiary, fontFamily: fontFamily.dmMono, fontSize: 12, lineHeight: '16px', position: 'absolute', whiteSpace: 'nowrap' })
 export const waterfallResizeHandle = style({
   alignSelf: 'stretch',
   backgroundColor: theme.stroke.primary,
@@ -333,7 +333,7 @@ export const waterfallChildCountChip = style({
   borderRadius: 999,
   color: theme.pill.gray.color,
   display: 'inline-flex',
-  fontFamily: codeFontFamily,
+  fontFamily: fontFamily.dmMono,
   fontSize: 10,
   height: 14,
   justifyContent: 'center',
@@ -373,10 +373,10 @@ export const waterfallBar = style({ alignItems: 'center', borderRadius: 6, displ
   '&[data-tone="span"]': { backgroundColor: theme.pill.green.background, border: `1px solid ${theme.pill.green.stroke}`, color: theme.pill.green.color },
   '&[data-tone="error"]': { backgroundColor: theme.pill.red.background, border: `1px solid ${theme.pill.red.stroke}`, color: theme.pill.red.color },
 }})
-export const waterfallBarLabel = style({ fontFamily: codeFontFamily, fontSize: 12, lineHeight: '16px' })
+export const waterfallBarLabel = style({ fontFamily: fontFamily.dmMono, fontSize: 12, lineHeight: '16px' })
 export const waterfallBarLabelOutside = style({
   color: theme.content.secondary,
-  fontFamily: codeFontFamily,
+  fontFamily: fontFamily.dmMono,
   fontSize: 12,
   lineHeight: '16px',
   maxWidth: '100%',
@@ -470,7 +470,7 @@ export const detailsPre = style({
   backgroundColor: theme.surface.main,
   borderRadius: 6,
   flex: 1,
-  fontFamily: codeFontFamily,
+  fontFamily: fontFamily.dmMono,
   fontSize: 12,
   lineHeight: '18px',
   margin: 0,
@@ -494,4 +494,4 @@ globalStyle('.sql-comment', { color: '#6A9955', fontStyle: 'italic' })
 globalStyle(`body.${lightTheme} .sql-comment`, { color: '#008000' })
 globalStyle('.sql-identifier', { color: '#9CDCFE' })
 globalStyle(`body.${lightTheme} .sql-identifier`, { color: '#001080' })
-globalStyle(`${sqlBlock} pre`, { color: theme.content.primary, fontFamily: codeFontFamily, fontSize: 14, lineHeight: 1.65, margin: 0, overflowX: 'auto', padding: 12, whiteSpace: 'pre-wrap', wordBreak: 'break-all' })
+globalStyle(`${sqlBlock} pre`, { color: theme.content.primary, fontFamily: fontFamily.dmMono, fontSize: 14, lineHeight: 1.65, margin: 0, overflowX: 'auto', padding: 12, whiteSpace: 'pre-wrap', wordBreak: 'break-all' })
