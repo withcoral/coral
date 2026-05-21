@@ -41,6 +41,7 @@ pub(super) fn normalize_tool_result(
     if let Some(value) = result.structured_content {
         return Ok(value);
     }
+    let mut saw_non_text_content = false;
     for content in &result.content {
         if let Some(text) = content.as_text() {
             return serde_json::from_str(&text.text).map_err(|error| {
@@ -52,6 +53,19 @@ pub(super) fn normalize_tool_result(
                 }))
             });
         }
+        saw_non_text_content = true;
     }
+    if saw_non_text_content {
+        return Err(DataFusionError::External(Box::new(
+            McpProviderQueryError::ResultDecode {
+                source_schema: source_schema.to_string(),
+                relation: relation.to_string(),
+                tool: tool_name.to_string(),
+                detail: "tool returned only non-text content (e.g. image, audio, resource) with no structured_content; Coral cannot decode this into rows".to_string(),
+            },
+        )));
+    }
+    // Empty `content` with no `structured_content` and `is_error` unset is a
+    // legitimate "tool succeeded with no output" — surface as zero rows.
     Ok(Value::Null)
 }
