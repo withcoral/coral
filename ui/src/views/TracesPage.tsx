@@ -62,38 +62,39 @@ function useTraceList(enabled: boolean) {
   return { error, loading, traces }
 }
 
-function HeaderActions({ isSearching, searchText, setIsSearching, setSearchText }: {
-  isSearching: boolean
+function HeaderActions({ searchOpen, searchText, searchVisible, setSearchOpen, setSearchText }: {
+  searchOpen: boolean
   searchText: string
-  setIsSearching: (value: boolean) => void
+  searchVisible: boolean
+  setSearchOpen: (value: boolean) => void
   setSearchText: (value: string) => void
 }) {
   const inputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
-    if (isSearching) inputRef.current?.focus()
-  }, [isSearching])
+    if (searchOpen) inputRef.current?.focus()
+  }, [searchOpen])
 
   return (
     <div className={s.headerActions}>
       <KeyboardShortcut
         handler={(e) => {
           e.preventDefault()
-          setIsSearching(true)
+          setSearchOpen(true)
           inputRef.current?.select()
         }}
         shortcut="$mod+f"
       />
-      <div className={s.inlineSearch} data-searching={isSearching ? 'true' : undefined}>
+      <div className={s.inlineSearch} data-searching={searchVisible ? 'true' : undefined}>
         <div className={s.searchTrigger}>
-          <Button.IconButton name="Search" onClick={() => setIsSearching(true)} size="32" tooltipText="Search" variant="bare" />
+          <Button.IconButton name="Search" onClick={() => setSearchOpen(true)} size="32" tooltipText="Search" variant="bare" />
         </div>
         <div className={s.searchField}>
           <TextInput
             icon="Search"
-            onBlur={() => { if (!searchText.trim()) setIsSearching(false) }}
+            onBlur={() => setSearchOpen(false)}
             onChange={setSearchText}
-            onKeyDown={(e) => { if (e.key === 'Escape') { setSearchText(''); setIsSearching(false); inputRef.current?.blur() } }}
+            onKeyDown={(e) => { if (e.key === 'Escape') { setSearchText(''); setSearchOpen(false); inputRef.current?.blur() } }}
             placeholder="Search queries..."
             ref={inputRef}
             value={searchText}
@@ -112,7 +113,8 @@ export function TracesPage() {
   const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null)
   const { error, loading, traces } = useTraceList(selectedTraceId === null)
   const [searchText, setSearchText] = useState('')
-  const [isSearching, setIsSearching] = useState(false)
+  const [searchOpen, setSearchOpen] = useState(false)
+  const searchVisible = searchOpen || searchText.trim().length > 0
 
   const filtered = traces.filter((trace) => {
     const needle = searchText.trim().toLowerCase()
@@ -139,11 +141,12 @@ export function TracesPage() {
   const connected = !error
   return (
     <section className={s.root} aria-label="Coral traces">
-      <PageHeader title="Query stream" isSearching={isSearching}>
+      <PageHeader title="Query stream" isSearching={searchVisible}>
         <HeaderActions
-          isSearching={isSearching}
+          searchOpen={searchOpen}
           searchText={searchText}
-          setIsSearching={setIsSearching}
+          searchVisible={searchVisible}
+          setSearchOpen={setSearchOpen}
           setSearchText={setSearchText}
         />
       </PageHeader>
