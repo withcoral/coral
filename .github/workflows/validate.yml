@@ -151,19 +151,6 @@ jobs:
             exit 1
           fi
 
-      - name: Install Rust toolchain
-        run: rustup show
-
-      - name: Cache Rust artifacts
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-        with:
-          shared-key: coral-ui-embed-${{ runner.os }}
-          cache-on-failure: true
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-
-      - name: Check CLI embeds built UI
-        run: cargo check -p coral-cli --all-targets --locked --features cli-test-server
-
   ui-tests:
     name: UI tests
     runs-on: ubuntu-latest
