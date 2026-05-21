@@ -10,7 +10,8 @@ const NAV_ITEMS: { icon: IconName; label: string; active?: boolean }[] = [
   { icon: 'Activity', label: 'Traces', active: true },
 ]
 
-const BRAND_TOOLTIP = 'Query stream'
+const QUERY_STREAM_LABEL = 'Query stream'
+const PRIMARY_NAVIGATION_ID = 'primary-navigation'
 
 export function Navbar() {
   const [isCollapsed, setIsCollapsed] = useState(false)
@@ -18,11 +19,11 @@ export function Navbar() {
   return (
     <nav className={styles.navbar({ isCollapsed })} aria-label="Coral">
       <div className={styles.header}>
-        <Tooltip content={BRAND_TOOLTIP}>
+        <Tooltip content={QUERY_STREAM_LABEL}>
           <button
-            aria-controls="primary-navigation"
+            aria-controls={PRIMARY_NAVIGATION_ID}
             aria-expanded={!isCollapsed}
-            aria-label={BRAND_TOOLTIP}
+            aria-label={QUERY_STREAM_LABEL}
             className={styles.brandButton}
             onClick={() => setIsCollapsed((value) => !value)}
             type="button"
@@ -31,7 +32,7 @@ export function Navbar() {
           </button>
         </Tooltip>
       </div>
-      <div className={styles.nav} aria-label="Primary navigation" id="primary-navigation">
+      <div className={styles.nav} aria-label="Primary navigation" id={PRIMARY_NAVIGATION_ID}>
         {NAV_ITEMS.map((item) => (
           <SidebarButton
             aria-current={item.active ? 'page' : undefined}

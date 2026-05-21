@@ -56,10 +56,10 @@ export const brandButton = style({
 })
 
 export const nav = style({
+  alignItems: 'stretch',
   display: 'flex',
   flex: 1,
   flexDirection: 'column',
-  alignItems: 'stretch',
   gap: '4px',
   marginBlockStart: '24px',
 })

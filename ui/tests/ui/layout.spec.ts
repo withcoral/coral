@@ -12,8 +12,9 @@ test('sidebar collapses, expands, and exposes the Query stream tooltip', async (
   const brandButton = page.getByRole('button', { name: 'Query stream' })
   const sidebar = page.getByRole('navigation', { name: 'Coral' })
   const tracesButton = page.getByRole('button', { name: 'Traces' })
+  const sidebarWidth = () => sidebar.evaluate((element) => element.getBoundingClientRect().width)
 
-  const expandedWidth = await sidebar.evaluate((element) => element.getBoundingClientRect().width)
+  const expandedWidth = await sidebarWidth()
   await expect(brandButton).toHaveAttribute('aria-expanded', 'true')
   await expect(tracesButton).toHaveAttribute('aria-current', 'page')
 
@@ -25,14 +26,14 @@ test('sidebar collapses, expands, and exposes the Query stream tooltip', async (
   await review.chapter('Collapse the sidebar', 'Toggle the brand button and verify the sidebar narrows')
   await brandButton.click()
   await expect(brandButton).toHaveAttribute('aria-expanded', 'false')
-  await expect.poll(async () => sidebar.evaluate((element) => element.getBoundingClientRect().width)).toBeLessThan(expandedWidth)
+  await expect.poll(sidebarWidth).toBeLessThan(expandedWidth)
 
-  const collapsedWidth = await sidebar.evaluate((element) => element.getBoundingClientRect().width)
+  const collapsedWidth = await sidebarWidth()
 
   await review.chapter('Expand the sidebar', 'Toggle the brand button again and confirm the item stays active')
   await brandButton.click()
   await expect(brandButton).toHaveAttribute('aria-expanded', 'true')
-  await expect.poll(async () => sidebar.evaluate((element) => element.getBoundingClientRect().width)).toBeGreaterThan(collapsedWidth)
+  await expect.poll(sidebarWidth).toBeGreaterThan(collapsedWidth)
   await expect(tracesButton).toHaveAttribute('aria-current', 'page')
   await expect(tracesButton).toBeDisabled()
 
