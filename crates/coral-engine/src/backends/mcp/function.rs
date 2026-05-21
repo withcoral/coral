@@ -277,9 +277,9 @@ fn literal_to_json_value(expr: &Expr) -> Option<Value> {
 
 fn scalar_value_to_json(value: &ScalarValue) -> Option<Value> {
     match value {
-        ScalarValue::Utf8(Some(value)) | ScalarValue::LargeUtf8(Some(value)) => {
-            Some(Value::String(value.clone()))
-        }
+        ScalarValue::Utf8(Some(value))
+        | ScalarValue::LargeUtf8(Some(value))
+        | ScalarValue::Utf8View(Some(value)) => Some(Value::String(value.clone())),
         ScalarValue::Boolean(Some(value)) => Some(Value::Bool(*value)),
         ScalarValue::Int8(Some(value)) => Some(Value::from(*value)),
         ScalarValue::Int16(Some(value)) => Some(Value::from(*value)),

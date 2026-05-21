@@ -29,7 +29,7 @@ pub(super) struct McpFetchPlan {
 impl RowFetcher for McpFetchPlan {
     async fn fetch(&self) -> Result<Vec<Value>> {
         let mut all_rows = Vec::new();
-        let mut next_cursor: Option<String> = None;
+        let mut next_cursor: Option<Value> = None;
         let mut page_count = 0usize;
         let max_pages = self
             .pagination
@@ -50,7 +50,7 @@ impl RowFetcher for McpFetchPlan {
                 )));
             }
 
-            let arguments = self.arguments_for_cursor(next_cursor.as_deref());
+            let arguments = self.arguments_for_cursor(next_cursor.as_ref());
             let payload = self
                 .backend
                 .call_tool(&self.relation, &self.tool_name, arguments)
@@ -77,23 +77,24 @@ impl RowFetcher for McpFetchPlan {
 }
 
 impl McpFetchPlan {
-    fn arguments_for_cursor(&self, cursor: Option<&str>) -> JsonObject {
+    fn arguments_for_cursor(&self, cursor: Option<&Value>) -> JsonObject {
         let Some((pagination, cursor)) = self.pagination.as_ref().zip(cursor) else {
             return self.arguments.clone();
         };
         let mut arguments = self.arguments.clone();
-        arguments.insert(
-            pagination.cursor_arg.clone(),
-            Value::String(cursor.to_string()),
-        );
+        arguments.insert(pagination.cursor_arg.clone(), cursor.clone());
         arguments
     }
 }
 
-fn next_page_cursor(pagination: &McpPaginationSpec, payload: &Value) -> Option<String> {
-    get_path_value(payload, &pagination.response_cursor_path)
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|cursor| !cursor.is_empty())
-        .map(ToOwned::to_owned)
+fn next_page_cursor(pagination: &McpPaginationSpec, payload: &Value) -> Option<Value> {
+    let value = get_path_value(payload, &pagination.response_cursor_path)?;
+    match value {
+        Value::Null => None,
+        Value::String(text) => {
+            let trimmed = text.trim();
+            (!trimmed.is_empty()).then(|| Value::String(trimmed.to_string()))
+        }
+        other => Some(other.clone()),
+    }
 }

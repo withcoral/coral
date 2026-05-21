@@ -146,6 +146,12 @@ fn normalize_tool_result(
             .content
             .iter()
             .find_map(|content| content.as_text().map(|text| text.text.clone()))
+            .or_else(|| {
+                result.structured_content.as_ref().map(|value| match value {
+                    Value::String(text) => text.clone(),
+                    other => other.to_string(),
+                })
+            })
             .unwrap_or_else(|| "tool reported isError=true with no content".to_string());
         return Err(DataFusionError::External(Box::new(
             McpProviderQueryError::ToolReturnedError {

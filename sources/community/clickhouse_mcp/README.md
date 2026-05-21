@@ -181,7 +181,7 @@ coral sql "
 
 # 9. Aggregate costs
 coral sql "
-  SELECT SUM(json_extract_scalar(row, '$.totalCHC')::DOUBLE) AS total
+  SELECT SUM(json_get_float(row, 'totalCHC')) AS total
   FROM clickhouse_mcp.organization_costs
   WHERE organization_id = '<org-id>'
     AND from_date = '2026-04-01'
@@ -224,8 +224,8 @@ ClickHouse SQL query. To project a specific field:
 
 ```sql
 SELECT
-  json_extract_scalar(row, '$.name')   AS name,
-  json_extract_scalar(row, '$.engine') AS engine
+  json_get_str(row, 'name')   AS name,
+  json_get_str(row, 'engine') AS engine
 FROM clickhouse_mcp.run_select_query(
   query => 'SELECT name, engine FROM system.tables LIMIT 10',
   service_id => '<id>'
@@ -244,14 +244,6 @@ Coral spawns `mcp-remote` per query, so every scan does the
 OAuth-token-read + connect handshake (~1s overhead). Fine for interactive
 use; less ideal for many small queries in a loop. Tracked in
 the MCP backend follow-up plan.
-
-### `timeoutSeconds` is not exposed on `run_select_query`
-
-The MCP tool accepts an optional `timeoutSeconds` integer, but the
-`coral-engine` MCP backend serializes all function args as JSON strings,
-which the server rejects for an integer-typed field. The server default
-(300s, max 3600s) applies. If you need to tune it, add a fixed value via
-`tool_args` (table form) instead.
 
 ### Error responses produce zero rows
 

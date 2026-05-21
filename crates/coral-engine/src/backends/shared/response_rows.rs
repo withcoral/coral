@@ -83,9 +83,27 @@ fn extract_series_point_list(response: &ResponseSpec, payload: &Value) -> Vec<Va
             let Some(value) = pair.get(1).and_then(Value::as_f64) else {
                 continue;
             };
+            // Range-check before the i64 cast. i64::MIN is exactly representable
+            // in f64; i64::MAX rounds up to 2^63, so the lossy cast yields a
+            // safe upper bound — anything ≥ that value is out of range.
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "comparing against the rounded-up i64::MAX is safe for an out-of-range check"
+            )]
+            let max_inclusive = i64::MAX as f64;
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "i64::MIN is exactly representable as f64"
+            )]
+            let min_inclusive = i64::MIN as f64;
+            if !raw_timestamp.is_finite()
+                || !(min_inclusive..=max_inclusive).contains(&raw_timestamp)
+            {
+                continue;
+            }
             #[expect(
                 clippy::cast_possible_truncation,
-                reason = "Series timestamps are integral epoch values that fit in i64"
+                reason = "Series timestamps are integral epoch values; range checked above"
             )]
             let timestamp = raw_timestamp as i64;
             rows.push(json!({
