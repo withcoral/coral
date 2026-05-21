@@ -663,4 +663,51 @@ mod tests {
 
         assert!(secret.credential.is_none());
     }
+
+    #[test]
+    fn converts_oauth_credential_request_from_proto() {
+        let request = source_oauth_credential_from_proto(ImportSourceOAuthCredential {
+            input_key: "API_TOKEN".to_string(),
+            method_index: Some(1),
+            credential_inputs: vec![
+                OAuthCredentialInput {
+                    key: "CLIENT_ID".to_string(),
+                    value: "client-id".to_string(),
+                },
+                OAuthCredentialInput {
+                    key: "CLIENT_SECRET".to_string(),
+                    value: "client-secret".to_string(),
+                },
+            ],
+        })
+        .expect("convert OAuth credential request");
+
+        assert_eq!(request.input_key, "API_TOKEN");
+        assert_eq!(request.method_index, 1);
+        assert_eq!(request.credential_inputs.len(), 2);
+        assert_eq!(request.credential_inputs[0].key, "CLIENT_ID");
+        assert_eq!(request.credential_inputs[0].value, "client-id");
+        assert_eq!(request.credential_inputs[1].key, "CLIENT_SECRET");
+        assert_eq!(request.credential_inputs[1].value, "client-secret");
+    }
+
+    #[test]
+    fn rejects_oauth_credential_request_without_method_index() {
+        let result = source_oauth_credential_from_proto(ImportSourceOAuthCredential {
+            input_key: "API_TOKEN".to_string(),
+            method_index: None,
+            credential_inputs: Vec::new(),
+        });
+        let Err(error) = result else {
+            panic!("missing method_index should be rejected");
+        };
+
+        let AppError::InvalidInput(message) = error else {
+            panic!("unexpected error: {error}");
+        };
+        assert!(
+            message.contains("missing OAuth credential method_index for source input 'API_TOKEN'"),
+            "unexpected error message: {message}"
+        );
+    }
 }
