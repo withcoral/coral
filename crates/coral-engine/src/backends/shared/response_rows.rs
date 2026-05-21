@@ -84,20 +84,20 @@ fn extract_series_point_list(response: &ResponseSpec, payload: &Value) -> Vec<Va
                 continue;
             };
             // Range-check before the i64 cast. i64::MIN is exactly representable
-            // in f64; i64::MAX rounds up to 2^63, so the lossy cast yields a
-            // safe upper bound — anything ≥ that value is out of range.
+            // in f64; i64::MAX rounds up to 2^63, so use it as an *exclusive*
+            // upper bound — values ≥ 2^63 cannot be represented in i64.
             #[expect(
                 clippy::cast_precision_loss,
-                reason = "comparing against the rounded-up i64::MAX is safe for an out-of-range check"
+                reason = "i64::MAX rounds up to 2^63, used as exclusive upper bound"
             )]
-            let max_inclusive = i64::MAX as f64;
+            let upper_exclusive = i64::MAX as f64;
             #[expect(
                 clippy::cast_precision_loss,
                 reason = "i64::MIN is exactly representable as f64"
             )]
-            let min_inclusive = i64::MIN as f64;
+            let lower_inclusive = i64::MIN as f64;
             if !raw_timestamp.is_finite()
-                || !(min_inclusive..=max_inclusive).contains(&raw_timestamp)
+                || !(lower_inclusive..upper_exclusive).contains(&raw_timestamp)
             {
                 continue;
             }

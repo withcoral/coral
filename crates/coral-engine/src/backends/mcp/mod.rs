@@ -120,7 +120,7 @@ impl CompiledBackendSource for McpCompiledSource {
             )?);
             tables.insert(table.name().to_string(), provider);
             let required_filters = required_filter_names(table.filters());
-            let columns = registered_columns_from_specs(table.columns(), &required_filters);
+            let columns = registered_columns_from_specs(table.columns(), table.filters());
             table_infos.push(build_registered_table(
                 &table.common,
                 columns,
