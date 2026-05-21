@@ -47,6 +47,7 @@ export const brandButton = style({
   background: 'transparent',
   border: 'none',
   borderRadius: '8px',
+  color: theme.content.primary,
   display: 'flex',
   height: '32px',
   justifyContent: 'center',

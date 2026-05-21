@@ -1,10 +1,10 @@
 import { traceHandlers } from './support/trace-handlers'
 import { expect, test } from './playwright.setup'
 
-test('sidebar expands and the brand icon exposes the Query stream tooltip', async ({ network, page, review }, testInfo) => {
+test('sidebar collapses, expands, and exposes the Query stream tooltip', async ({ network, page, review }, testInfo) => {
   network.use(...traceHandlers.empty)
 
-  await review.chapter('Load the shell', 'Render the empty query stream with the sidebar visible')
+  await review.chapter('Load the shell', 'Render the query stream with the sidebar visible')
   await page.goto('/')
 
   await expect(page.getByText('No queries yet')).toBeVisible()
@@ -13,7 +13,7 @@ test('sidebar expands and the brand icon exposes the Query stream tooltip', asyn
   const sidebar = page.getByRole('navigation', { name: 'Coral' })
   const tracesButton = page.getByRole('button', { name: 'Traces' })
 
-  const expandedWidth = await tracesButton.evaluate((element) => element.getBoundingClientRect().width)
+  const expandedWidth = await sidebar.evaluate((element) => element.getBoundingClientRect().width)
   await expect(brandButton).toHaveAttribute('aria-expanded', 'true')
   await expect(tracesButton).toHaveAttribute('aria-current', 'page')
 
@@ -22,19 +22,20 @@ test('sidebar expands and the brand icon exposes the Query stream tooltip', asyn
   await expect(page.getByText('Query stream', { exact: true })).toBeVisible()
   await review.pause()
 
-  await review.chapter('Collapse and expand the sidebar', 'Toggle the sidebar width and keep the active item selected')
+  await review.chapter('Collapse the sidebar', 'Toggle the brand button and verify the sidebar narrows')
   await brandButton.click()
   await expect(brandButton).toHaveAttribute('aria-expanded', 'false')
   await expect.poll(async () => sidebar.evaluate((element) => element.getBoundingClientRect().width)).toBeLessThan(expandedWidth)
 
   const collapsedWidth = await sidebar.evaluate((element) => element.getBoundingClientRect().width)
 
+  await review.chapter('Expand the sidebar', 'Toggle the brand button again and confirm the item stays active')
   await brandButton.click()
   await expect(brandButton).toHaveAttribute('aria-expanded', 'true')
   await expect.poll(async () => sidebar.evaluate((element) => element.getBoundingClientRect().width)).toBeGreaterThan(collapsedWidth)
   await expect(tracesButton).toHaveAttribute('aria-current', 'page')
   await expect(tracesButton).toBeDisabled()
 
-  await page.screenshot({ path: testInfo.outputPath('navbar-expanded.png'), fullPage: true })
+  await page.screenshot({ path: testInfo.outputPath('layout-expanded.png'), fullPage: true })
   await review.pause()
 })
