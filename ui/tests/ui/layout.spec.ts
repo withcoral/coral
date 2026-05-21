@@ -12,11 +12,13 @@ test('sidebar collapses, expands, and exposes the Query stream tooltip', async (
   const brandButton = page.getByRole('button', { name: 'Query stream' })
   const sidebar = page.getByRole('navigation', { name: 'Coral' })
   const tracesButton = page.getByRole('button', { name: 'Traces' })
+  const tracesLabel = page.getByText('Traces', { exact: true })
   const sidebarWidth = () => sidebar.evaluate((element) => element.getBoundingClientRect().width)
 
   const expandedWidth = await sidebarWidth()
   await expect(brandButton).toHaveAttribute('aria-expanded', 'true')
   await expect(tracesButton).toHaveAttribute('aria-current', 'page')
+  await expect(tracesLabel).toBeVisible()
 
   await review.chapter('Show the brand tooltip', 'Hover the Coral icon and confirm the exact tooltip copy')
   await brandButton.hover()
@@ -27,6 +29,10 @@ test('sidebar collapses, expands, and exposes the Query stream tooltip', async (
   await brandButton.click()
   await expect(brandButton).toHaveAttribute('aria-expanded', 'false')
   await expect.poll(sidebarWidth).toBeLessThan(expandedWidth)
+  await expect(tracesLabel).toHaveCount(0)
+
+  await page.screenshot({ path: testInfo.outputPath('layout-collapsed.png'), fullPage: true })
+  await review.pause()
 
   const collapsedWidth = await sidebarWidth()
 
