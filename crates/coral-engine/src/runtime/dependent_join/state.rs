@@ -30,6 +30,7 @@ pub(crate) struct DependentJoinRuntimeState {
     seen_tuples: HashSet<Tuple>,
     buffered_results: HashMap<Tuple, Vec<Value>>,
     resolver_rows: usize,
+    resolver_null_binding_rows: usize,
     distinct_tuples: usize,
 }
 
@@ -50,6 +51,9 @@ impl DependentJoinRuntimeState {
         let batch_idx = self.resolver_batches.len();
         self.resolver_batches.push(batch.clone());
         self.resolver_rows = observed;
+        self.resolver_null_binding_rows = self
+            .resolver_null_binding_rows
+            .saturating_add(projected_tuples.iter().filter(|t| t.is_none()).count());
 
         let mut new_tuples = Vec::new();
 
@@ -116,6 +120,10 @@ impl DependentJoinRuntimeState {
 
     pub(crate) fn resolver_rows(&self) -> usize {
         self.resolver_rows
+    }
+
+    pub(crate) fn resolver_null_binding_rows(&self) -> usize {
+        self.resolver_null_binding_rows
     }
 
     pub(crate) fn distinct_tuples(&self) -> usize {
@@ -239,6 +247,7 @@ mod tests {
             "{error}"
         );
         assert_eq!(state.resolver_rows(), 0);
+        assert_eq!(state.resolver_null_binding_rows(), 0);
         assert!(state.resolver_batch(0).is_none());
     }
 
@@ -260,6 +269,7 @@ mod tests {
             "{error}"
         );
         assert_eq!(state.resolver_rows(), 0);
+        assert_eq!(state.resolver_null_binding_rows(), 0);
         assert_eq!(state.distinct_tuples(), 0);
         assert!(state.resolver_batch(0).is_none());
     }
@@ -282,6 +292,7 @@ mod tests {
             "{error}"
         );
         assert_eq!(state.resolver_rows(), 0);
+        assert_eq!(state.resolver_null_binding_rows(), 0);
         assert_eq!(state.distinct_tuples(), 0);
         assert!(state.resolver_batch(0).is_none());
     }

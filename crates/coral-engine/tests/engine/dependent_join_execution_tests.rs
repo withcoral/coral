@@ -1079,6 +1079,12 @@ async fn explain_analyze_reports_dependent_join_metrics() {
             issue_row("First", "withcoral", "coral", 123),
             issue_row("Duplicate tuple", "withcoral", "coral", 123),
             issue_row("Second", "apache", "arrow-datafusion", 42),
+            json!({
+                "title": "Null owner",
+                "github_owner": null,
+                "github_repo": "coral",
+                "github_pr_number": 123
+            }),
         ],
     );
 
@@ -1133,6 +1139,10 @@ async fn explain_analyze_reports_dependent_join_metrics() {
     assert!(explain.contains("binding_count=2"), "{explain}");
     assert!(explain.contains("fetch_count=2"), "{explain}");
     assert!(explain.contains("resolver_rows=3"), "{explain}");
+    assert!(
+        explain.contains("resolver_null_binding_rows=1"),
+        "{explain}"
+    );
     assert!(explain.contains("dependent_rows_returned=1"), "{explain}");
 }
 

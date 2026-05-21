@@ -128,6 +128,7 @@ struct DependentJoinMetrics {
     binding_count: Count,
     fetch_count: Count,
     resolver_rows: Count,
+    resolver_null_binding_rows: Count,
     dependent_rows_returned: Count,
 }
 
@@ -137,6 +138,8 @@ impl DependentJoinMetrics {
             binding_count: MetricBuilder::new(metrics).counter("binding_count", partition),
             fetch_count: MetricBuilder::new(metrics).counter("fetch_count", partition),
             resolver_rows: MetricBuilder::new(metrics).counter("resolver_rows", partition),
+            resolver_null_binding_rows: MetricBuilder::new(metrics)
+                .counter("resolver_null_binding_rows", partition),
             dependent_rows_returned: MetricBuilder::new(metrics)
                 .counter("dependent_rows_returned", partition),
         }
@@ -146,6 +149,8 @@ impl DependentJoinMetrics {
         self.binding_count.add(state.distinct_tuples());
         self.fetch_count.add(state.fetch_count());
         self.resolver_rows.add(state.resolver_rows());
+        self.resolver_null_binding_rows
+            .add(state.resolver_null_binding_rows());
         self.dependent_rows_returned
             .add(state.dependent_rows_returned());
     }
