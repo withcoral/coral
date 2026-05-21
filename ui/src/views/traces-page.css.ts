@@ -642,6 +642,7 @@ export const waterfallHttpDetailContent = style({
   display: 'flex',
   flexDirection: 'column',
   gap: 10,
+  height: '100%',
   minHeight: 0,
   minWidth: 0,
   paddingBlockEnd: 10,
@@ -679,13 +680,16 @@ export const waterfallHttpDetailSection = style({
   gap: 4,
   minHeight: 0,
   minWidth: 0,
+  overflow: 'hidden',
 })
 export const bodyViewer = style({
   display: 'flex',
+  flex: 1,
   flexDirection: 'column',
   gap: 8,
   minHeight: 0,
   minWidth: 0,
+  overflow: 'hidden',
 })
 export const bodyViewerHeader = style({ display: 'flex', flexDirection: 'column', gap: 6 })
 export const bodyMetaRow = style({ display: 'flex', flexWrap: 'wrap', gap: 6 })

@@ -73,6 +73,9 @@ test('lists 10 traces, searches one, opens its details, and opens a span inspect
   await expect(page.getByText('GET github.pull_requests')).toBeVisible()
   await expect(page.getByText('Response body')).toBeVisible()
   await expect(page.getByText('"title": "Add MSW Playwright trace fixtures"')).toBeVisible()
+  await page.screenshot({ path: 'test-results/AOL-6-review.png', fullPage: true })
+  await expect(page.getByText('Raw body')).toBeVisible()
+  await expect(page.getByText('Span attributes')).toBeVisible()
   await review.pause()
 })
 
