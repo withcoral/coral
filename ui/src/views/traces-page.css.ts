@@ -34,7 +34,7 @@ export const headerTitle = style({
   '@media': {
     [`screen and (max-width: ${breakpoints.mobile})`]: {
       selectors: {
-        [`${header}[data-search-expanded="true"] &`]: { display: 'none' },
+        [`${header}[data-searching="true"] &`]: { display: 'none' },
       },
     },
   },
@@ -48,7 +48,7 @@ export const headerActions = style({
   '@media': {
     [`screen and (max-width: ${breakpoints.mobile})`]: {
       selectors: {
-        [`${header}[data-search-expanded="true"] &`]: { flex: 1 },
+        [`${header}[data-searching="true"] &`]: { flex: 1 },
       },
     },
   },
@@ -59,7 +59,7 @@ export const inlineSearch = style({
   '@media': {
     [`screen and (max-width: ${breakpoints.mobile})`]: {
       selectors: {
-        '&[data-expanded="true"]': { flex: 1 },
+        '&[data-searching="true"]': { flex: 1 },
       },
     },
   },
@@ -71,7 +71,7 @@ export const searchTrigger = style({
     [`screen and (max-width: ${breakpoints.mobile})`]: {
       display: 'inline-flex',
       selectors: {
-        [`${inlineSearch}[data-expanded="true"] &`]: { display: 'none' },
+        [`${inlineSearch}[data-searching="true"] &`]: { display: 'none' },
       },
     },
   },
@@ -83,7 +83,7 @@ export const searchField = style({
     [`screen and (max-width: ${breakpoints.mobile})`]: {
       display: 'none',
       selectors: {
-        [`${inlineSearch}[data-expanded="true"] &`]: { display: 'block', flex: 1 },
+        [`${inlineSearch}[data-searching="true"] &`]: { display: 'block', flex: 1 },
       },
     },
   },
