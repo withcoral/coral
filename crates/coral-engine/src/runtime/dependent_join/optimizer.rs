@@ -43,6 +43,7 @@ pub(crate) enum DependentJoinFallbackReason {
     NonCoercible,
     CostUnfavourable,
     UnconsumedFilter,
+    SourceDisabled,
 }
 
 impl DependentJoinFallbackReason {
@@ -58,6 +59,7 @@ impl DependentJoinFallbackReason {
             Self::NonCoercible => "non_coercible_binding_type",
             Self::CostUnfavourable => "cost_unfavourable",
             Self::UnconsumedFilter => "unconsumed_filter",
+            Self::SourceDisabled => "source_disabled",
         }
     }
 }
@@ -138,7 +140,7 @@ pub(crate) fn rule(config: DependentJoinConfig) -> DependentJoinOptimizerRule {
     DependentJoinOptimizerRule { config }
 }
 
-fn analyze_join(join: &Join) -> DependentJoinAnalysis {
+fn analyze_join(join: &Join, config: &DependentJoinConfig) -> DependentJoinAnalysis {
     if join.join_type != JoinType::Inner {
         return DependentJoinAnalysis::Fallback(DependentJoinFallbackReason::NonInner);
     }
@@ -151,17 +153,23 @@ fn analyze_join(join: &Join) -> DependentJoinAnalysis {
         return DependentJoinAnalysis::Fallback(DependentJoinFallbackReason::NonEqui);
     }
 
-    let left = analyze_side_as_dependent(
-        JoinSide::Left,
-        join.left.as_ref(),
-        join.right.schema(),
-        &join.on,
+    let left = apply_source_enablement(
+        analyze_side_as_dependent(
+            JoinSide::Left,
+            join.left.as_ref(),
+            join.right.schema(),
+            &join.on,
+        ),
+        config,
     );
-    let right = analyze_side_as_dependent(
-        JoinSide::Right,
-        join.right.as_ref(),
-        join.left.schema(),
-        &join.on,
+    let right = apply_source_enablement(
+        analyze_side_as_dependent(
+            JoinSide::Right,
+            join.right.as_ref(),
+            join.left.schema(),
+            &join.on,
+        ),
+        config,
     );
 
     match (&left, &right) {
@@ -176,6 +184,28 @@ fn analyze_join(join: &Join) -> DependentJoinAnalysis {
         ) => DependentJoinAnalysis::Fallback(DependentJoinFallbackReason::NonHttpProvider),
         (DependentJoinAnalysis::Fallback(reason), _) => DependentJoinAnalysis::Fallback(*reason),
     }
+}
+
+fn apply_source_enablement(
+    analysis: DependentJoinAnalysis,
+    config: &DependentJoinConfig,
+) -> DependentJoinAnalysis {
+    let DependentJoinAnalysis::Candidate(candidate) = analysis else {
+        return analysis;
+    };
+
+    if config.for_source(&candidate.source_name).enabled {
+        return DependentJoinAnalysis::Candidate(candidate);
+    }
+
+    tracing::debug!(
+        target = "coral_engine::dependent_join",
+        source = %candidate.source_name,
+        table = %candidate.table_name,
+        reason = "source_disabled",
+        "skipping dependent join rewrite candidate",
+    );
+    DependentJoinAnalysis::Fallback(DependentJoinFallbackReason::SourceDisabled)
 }
 
 fn analyze_side_as_dependent(
@@ -292,7 +322,7 @@ fn analyze_dependent_bindings(
 }
 
 fn rewrite_join(join: &Join, config: &DependentJoinConfig) -> Option<LogicalPlan> {
-    let candidate = match analyze_join(join) {
+    let candidate = match analyze_join(join, config) {
         DependentJoinAnalysis::Candidate(candidate) => candidate,
         DependentJoinAnalysis::Fallback(reason) => {
             tracing::debug!(
@@ -328,16 +358,6 @@ fn rewrite_join(join: &Join, config: &DependentJoinConfig) -> Option<LogicalPlan
         return None;
     };
     let effective_config = config.for_source(&dependent.source_name);
-    if !effective_config.enabled {
-        tracing::debug!(
-            target = "coral_engine::dependent_join",
-            source = %dependent.source_name,
-            table = %candidate.table_name,
-            reason = "source_disabled",
-            "skipping dependent join rewrite candidate",
-        );
-        return None;
-    }
 
     let (resolver, binding_keys, resolver_projection_len) =
         resolver_with_binding_columns(resolver_plan, &dependent, resolver_schema, &join.on)?;

@@ -178,11 +178,7 @@ impl QueryManager {
             .load_query_source(workspace_name, &source)
             .map_err(QueryManagerError::App)?;
         let runtime = self
-            .runtime_config(
-                workspace_name,
-                std::slice::from_ref(&query_source),
-                &config,
-            )
+            .runtime_config(workspace_name, std::slice::from_ref(&query_source), &config)
             .map_err(QueryManagerError::App)?;
         let report = CoralQuery::validate_source(
             &query_source,
@@ -510,7 +506,8 @@ mod tests {
 
         let runtime = fixture
             .manager
-            .runtime_config(&WorkspaceName::default(), &[]);
+            .runtime_config(&WorkspaceName::default(), &[], &AppConfig::default())
+            .expect("runtime config");
 
         let config = runtime
             .context
@@ -635,9 +632,10 @@ tables:
             layout,
             Vec::new(),
         );
+        let config = manager.config_store.load_config().expect("load config");
 
         let error = manager
-            .load_query_sources(&workspace_name)
+            .load_query_sources(&workspace_name, &config)
             .expect_err("unavailable keychain should fail closed");
 
         assert!(
@@ -762,7 +760,12 @@ tables:
         let source = QuerySource::new(source_spec, BTreeMap::new(), BTreeMap::new());
         let runtime = fixture
             .manager
-            .runtime_config(&workspace_name, std::slice::from_ref(&source));
+            .runtime_config(
+                &workspace_name,
+                std::slice::from_ref(&source),
+                &AppConfig::default(),
+            )
+            .expect("runtime config");
         let input_resolver = runtime
             .extensions
             .source_input_resolver

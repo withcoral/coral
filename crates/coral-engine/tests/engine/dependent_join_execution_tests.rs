@@ -1396,6 +1396,46 @@ async fn dependent_join_source_config_disables_rewrite_for_source() {
 }
 
 #[tokio::test]
+async fn dependent_join_source_config_disables_one_mixed_bindable_side() {
+    let execution = CoralQuery::execute_sql(
+        &[
+            build_source(github_broad_query_manifest("http://127.0.0.1:9")),
+            build_source(source_named(
+                github_broad_query_manifest("http://127.0.0.1:9"),
+                "mirror",
+            )),
+        ],
+        runtime_with_dependent_join(DependentJoinConfig {
+            per_source: BTreeMap::from([(
+                "github".to_string(),
+                DependentJoinSourceConfig {
+                    enabled: Some(false),
+                    ..DependentJoinSourceConfig::default()
+                },
+            )]),
+            ..DependentJoinConfig::default()
+        }),
+        "
+        EXPLAIN
+        SELECT pr.state AS github_state, mirror.state AS mirror_state
+        FROM github.pull_requests AS pr
+        JOIN mirror.pull_requests AS mirror
+          ON mirror.owner = pr.owner
+         AND mirror.repo = pr.repo
+         AND mirror.number = pr.number
+        ",
+    )
+    .await
+    .expect("explain should succeed");
+
+    let explain = execution_text(&execution);
+    assert!(
+        explain.contains("DependentJoinExec: table=mirror.pull_requests"),
+        "{explain}"
+    );
+}
+
+#[tokio::test]
 async fn dependent_join_source_config_overrides_default_caps() {
     let temp = TempDir::new().expect("temp dir");
     write_jsonl_file(
@@ -2676,6 +2716,14 @@ fn github_broad_manifest(base_url: &str) -> Value {
 
 fn github_broad_query_manifest(base_url: &str) -> Value {
     github_broad_query_manifest_with_bindable(base_url, true)
+}
+
+fn source_named(mut manifest: Value, name: &str) -> Value {
+    manifest
+        .as_object_mut()
+        .expect("test manifest should be an object")
+        .insert("name".to_string(), json!(name));
+    manifest
 }
 
 fn github_broad_query_manifest_with_bindable(base_url: &str, bindable: bool) -> Value {
