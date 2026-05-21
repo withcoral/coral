@@ -64,10 +64,8 @@ impl SourceService {
 
 #[tonic::async_trait]
 impl SourceServiceApi for SourceService {
-    type CreateBundledSourceWithCredentialsStream =
-        Pin<Box<dyn Stream<Item = Result<ImportSourceResponse, Status>> + Send>>;
-    type ImportSourceStream =
-        Pin<Box<dyn Stream<Item = Result<ImportSourceResponse, Status>> + Send>>;
+    type CreateBundledSourceWithCredentialsStream = ImportSourceResponseStreamBox;
+    type ImportSourceStream = ImportSourceResponseStreamBox;
 
     async fn discover_sources(
         &self,
@@ -193,23 +191,20 @@ impl SourceServiceApi for SourceService {
                     .collect::<Result<Vec<_>, _>>()
                     .map_err(app_status)?,
             };
-            let (event_tx, event_rx) = mpsc::channel(8);
-            let import = Box::pin(instrument_grpc(span, async move {
-                sources
-                    .create_bundled_source_with_credentials(
-                        &workspace_name,
-                        command,
-                        ImportSourceEventSender::new(event_tx),
-                    )
-                    .await
-                    .map_err(app_status)
-            }));
-            Ok(Response::new(Box::pin(ImportSourceResponseStream::new(
-                event_rx,
-                import,
-                response_workspace_name,
-            ))
-                as Self::CreateBundledSourceWithCredentialsStream))
+            let stream =
+                import_source_response_stream(response_workspace_name, move |event_sender| {
+                    instrument_grpc(span, async move {
+                        sources
+                            .create_bundled_source_with_credentials(
+                                &workspace_name,
+                                command,
+                                event_sender,
+                            )
+                            .await
+                            .map_err(app_status)
+                    })
+                });
+            Ok(Response::new(stream))
         })
         .await
     }
@@ -251,22 +246,16 @@ impl SourceServiceApi for SourceService {
                     .collect::<Result<Vec<_>, _>>()
                     .map_err(app_status)?,
             };
-            let (event_tx, event_rx) = mpsc::channel(8);
-            let import = Box::pin(instrument_grpc(span, async move {
-                sources
-                    .import_source_with_credentials(
-                        &workspace_name,
-                        command,
-                        ImportSourceEventSender::new(event_tx),
-                    )
-                    .await
-                    .map_err(app_status)
-            }));
-            Ok(Response::new(Box::pin(ImportSourceResponseStream::new(
-                event_rx,
-                import,
-                response_workspace_name,
-            )) as Self::ImportSourceStream))
+            let stream =
+                import_source_response_stream(response_workspace_name, move |event_sender| {
+                    instrument_grpc(span, async move {
+                        sources
+                            .import_source_with_credentials(&workspace_name, command, event_sender)
+                            .await
+                            .map_err(app_status)
+                    })
+                });
+            Ok(Response::new(stream))
         })
         .await
     }
@@ -315,7 +304,25 @@ impl SourceServiceApi for SourceService {
     }
 }
 
+type ImportSourceResponseStreamBox =
+    Pin<Box<dyn Stream<Item = Result<ImportSourceResponse, Status>> + Send>>;
 type ImportSourceFuture = Pin<Box<dyn Future<Output = Result<InstalledSource, Status>> + Send>>;
+
+fn import_source_response_stream<F, Fut>(
+    response_workspace_name: WorkspaceName,
+    import: F,
+) -> ImportSourceResponseStreamBox
+where
+    F: FnOnce(ImportSourceEventSender) -> Fut,
+    Fut: Future<Output = Result<InstalledSource, Status>> + Send + 'static,
+{
+    let (event_tx, event_rx) = mpsc::channel(8);
+    Box::pin(ImportSourceResponseStream::new(
+        event_rx,
+        Box::pin(import(ImportSourceEventSender::new(event_tx))),
+        response_workspace_name,
+    ))
+}
 
 struct ImportSourceResponseStream {
     events: mpsc::Receiver<PendingImportSourceWithCredentialsEvent>,
