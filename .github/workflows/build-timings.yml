@@ -37,6 +37,9 @@ jobs:
       - name: Build UI
         run: npm run build --prefix ui
 
+      - name: Verify UI entrypoint
+        run: test -s ui/dist/index.html
+
       - name: Cache Rust artifacts
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:

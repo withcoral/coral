@@ -141,6 +141,9 @@ jobs:
       - name: Build UI
         run: npm run build --prefix ui
 
+      - name: Verify UI entrypoint
+        run: test -s ui/dist/index.html
+
       - name: Verify production build excludes test mocks
         run: |
           if grep -R -E 'mockServiceWorker|setupWorker|@msw/playwright|mockScenario|PW_UI_SCREENCAST' ui/dist; then

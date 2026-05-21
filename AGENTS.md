@@ -19,13 +19,12 @@
 ## Rules
 
 - Run `make rust-checks` before submitting PRs that include changes to Rust code.
-- `make rust-checks` is the Rust-only local gate and disables the default
-  `embedded-ui` feature explicitly. Do not hide those feature flags behind a
-  Make variable; readers should see exactly which Cargo surface is checked.
-- The embedded UI is built by repo/CI orchestration (`make ui-build` or the
-  `UI build` workflow job), not by `crates/coral-cli/build.rs`. The build
-  script should only validate that `ui/dist/index.html` exists when
-  `embedded-ui` is enabled.
+- `make rust-checks` is the Rust-only local gate and should keep using
+  `--all-features`; the embedded UI feature is a normal CLI build surface.
+- The built UI artifact is produced by repo/CI orchestration (`make ui-build`
+  or the `UI build` workflow job), not by `crates/coral-cli/build.rs`. Local
+  Rust builds may compile without `ui/dist`, because UI development normally
+  serves assets from Vite while the CLI provides the loopback API server.
 - Keep adapters thin. If CLI or MCP behavior gets complex, move it inward.
 - Keep transport contract concerns in `coral-api`, source-spec concerns in
   `coral-spec`, app/state concerns in `coral-app`, and query/runtime

@@ -404,26 +404,20 @@ pub async fn run(app: AppClient, ctx: coral_app::RunContext) -> Result<(), CliEr
     }
 }
 
-type CliFuture = std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), CliError>>>>;
-
-fn run_no_runtime_command(command: Command) -> CliFuture {
+async fn run_no_runtime_command(command: Command) -> Result<(), CliError> {
     match command {
-        Command::Completion(args) => Box::pin(async move {
-            run_completion(&args);
+        Command::Completion(args) => {
+            let mut cmd = Cli::command();
+            let bin_name = cmd.get_name().to_string();
+            generate(args.shell, &mut cmd, bin_name, &mut std::io::stdout());
             Ok(())
-        }),
+        }
         #[cfg(feature = "embedded-ui")]
-        Command::Ui(args) => Box::pin(async move { run_ui(args).await.map_err(Into::into) }),
+        Command::Ui(args) => run_ui(args).await.map_err(Into::into),
         Command::Sql(_) | Command::Source(_) | Command::Onboard | Command::McpStdio(_) => {
             unreachable!("app client commands are routed through app runtime startup")
         }
     }
-}
-
-fn run_completion(args: &CompletionArgs) {
-    let mut cmd = Cli::command();
-    let bin_name = cmd.get_name().to_string();
-    generate(args.shell, &mut cmd, bin_name, &mut std::io::stdout());
 }
 
 async fn run_app_command(

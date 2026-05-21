@@ -6,12 +6,13 @@ install: ui-build
 ui-build:
 	npm ci --prefix ui
 	npm run build --prefix ui
+	test -s ui/dist/index.html
 
 rust-checks:
 	cargo fmt --all -- --check
-	cargo clippy --workspace --all-targets --no-default-features --features coral-cli/cli-test-server --locked -- -D warnings
-	cargo nextest run --workspace --all-targets --no-default-features --features coral-cli/cli-test-server --locked --no-fail-fast
-	RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-default-features --features coral-cli/cli-test-server --no-deps --locked
+	cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+	cargo nextest run --workspace --all-targets --all-features --locked --no-fail-fast
+	RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps --locked
 
 # ----------------------------------------------------------------------------
 # Dependency license scan
