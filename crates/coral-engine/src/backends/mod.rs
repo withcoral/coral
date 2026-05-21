@@ -10,12 +10,12 @@
 //! | File | Purpose | When to include |
 //! |---|---|---|
 //! | `mod.rs` | Module entry. `CompiledBackendSource` impl, `compile_source` / `compile_manifest`, internal module declarations. | always |
-//! | `provider.rs` | DataFusion `TableProvider` implementation. | if the backend exposes tables |
-//! | `function.rs` | DataFusion `TableFunctionImpl` for source-scoped UDTFs. | only if the backend exposes table functions |
+//! | `provider.rs` | `DataFusion` `TableProvider` implementation. | if the backend exposes tables |
+//! | `function.rs` | `DataFusion` `TableFunctionImpl` for source-scoped UDTFs. | only if the backend exposes table functions |
 //! | `client.rs` | Configured stateful wrapper (the value the rest of the backend talks to) and any transport-abstracting trait. | if the backend has a per-source client; skip if config is per-table (file backend) |
 //! | `transport.rs` | Per-instance transport impls (HTTP requests, stdio child spawn, object-store wiring, ...). | if there are multiple transports or transport code is non-trivial |
 //! | `response.rs` | Decode one response from the backend into the JSON payload that `shared/response_rows::extract_rows` consumes. | if response decoding is non-trivial |
-//! | `fetch.rs` | Multi-request orchestration: pagination loop, cursor handling, row accumulation. | if pagination is backend-driven; skip if DataFusion drives the scan (file) |
+//! | `fetch.rs` | Multi-request orchestration: pagination loop, cursor handling, row accumulation. | if pagination is backend-driven; skip if `DataFusion` drives the scan (file) |
 //! | `error.rs` | Backend-specific structured error variants (`MISSING_REQUIRED_FILTER`, `*_TOOL_RETURNED_ERROR`, ...) that surface stable codes to CLI / MCP consumers. | always — even with one or two variants today |
 //! | `tests.rs` | In-module unit tests and helpers. | always |
 //!
@@ -63,9 +63,9 @@
 //!   `pagination`, `request`, `rate_limit`, `validation`, `trace`.
 //! - [`mcp`] — smaller: `client` + `transport` + `response` + `fetch` (no
 //!   per-request body building, no rate limit yet).
-//! - [`file`] — DataFusion-driven: `listing.rs` wraps `ObjectStore` and
-//!   hands a `ListingTableConfig` to DataFusion. No transport / fetch /
-//!   response files because DataFusion owns those layers.
+//! - [`file`] — `DataFusion`-driven: `listing.rs` wraps `ObjectStore` and
+//!   hands a `ListingTableConfig` to `DataFusion`. No transport / fetch /
+//!   response files because `DataFusion` owns those layers.
 
 use std::collections::HashMap;
 use std::sync::Arc;
