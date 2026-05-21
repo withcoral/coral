@@ -21,7 +21,9 @@ tables:
   - name: query_up
     description: Instant vector for the `up` metric (target scrape health).
     guide: |
-      Fixed PromQL `up`. No required filters. Use `LIMIT` on large fleets.
+      Fixed PromQL `up`. No required filters. Coral caps fetched rows at 500;
+      use SQL `LIMIT` on large fleets.
+    fetch_limit_default: 500
     request:
       method: GET
       path: /api/v1/query
@@ -89,7 +91,8 @@ tables:
     description: Firing and pending alert series from the internal `ALERTS` metric.
     guide: |
       Fixed PromQL `ALERTS`. Filter on `alert_state`. Join `pod` and `namespace` to
-      k8s.pods when your rules expose those labels.
+      k8s.pods when your rules expose those labels. Coral caps fetched rows at 200.
+    fetch_limit_default: 200
     request:
       method: GET
       path: /api/v1/query
@@ -176,10 +179,16 @@ tables:
             - metric
 
   - name: query_custom
-    description: Instant query with PromQL supplied through the `promql` filter.
+    description: >-
+      Instant-vector PromQL via the `promql` filter. Scalar and matrix results
+      from `/api/v1/query` are not supported in v1.
     guide: |
-      Required filter: `promql` (full PromQL expression, for example `rate(http_requests_total[5m])`).
-      Prefer aggregations and label filters to limit cardinality.
+      Required filter: `promql` with an expression that returns an instant vector
+      (for example `up`, `rate(http_requests_total[5m])`, or `sum(...) by (pod)`).
+      Scalar literals (for example `42`) and range/matrix selectors are not
+      supported. Prefer aggregations and label filters to limit cardinality.
+      Coral caps fetched rows at 100.
+    fetch_limit_default: 100
     filters:
       - name: promql
         required: true

@@ -57,7 +57,7 @@ Register one Coral source per server (for example `prometheus_dev`,
 | Table | Description |
 | --- | --- |
 | `query_up` | Scrape health via fixed PromQL `up` |
-| `query_custom` | Arbitrary instant query via required `promql` filter |
+| `query_custom` | Instant-vector PromQL via required `promql` filter (not scalar/matrix) |
 
 ### Alerts
 
@@ -67,8 +67,11 @@ Register one Coral source per server (for example `prometheus_dev`,
 
 ## Filters and pagination
 
-`query_custom` requires a `promql` filter with the full PromQL expression.
-`query_up` and `alerts` use fixed queries.
+`query_custom` requires a `promql` filter with PromQL that evaluates to an
+instant vector (selectors, `rate(...)`, `sum(...) by (...)`). Scalar literals and
+matrix/range results are not supported in v1. `query_up` and `alerts` use fixed
+queries. Each table has a conservative default fetch cap (`query_up` 500,
+`alerts` 200, `query_custom` 100); use SQL `LIMIT` as well.
 
 Example:
 
@@ -141,8 +144,11 @@ coral source test prometheus
 - Read-only v1; instant queries (`/api/v1/query`) only, not `query_range`.
 - No bearer-token auth in the manifest; use a local server or authenticated gateway.
 - Sample timestamps and values are strings from Prometheus value tuples.
+- `query_custom` supports instant-vector PromQL only; scalar and matrix results
+  return empty or malformed rows.
 - `query_custom` does not validate PromQL; errors surface at query time.
-- High-cardinality PromQL can overload Prometheus; use aggregations and `LIMIT`.
+- Default fetch caps apply per table; high-cardinality PromQL can still overload
+  Prometheus—use aggregations and `LIMIT`.
 
 ## Contributing
 
