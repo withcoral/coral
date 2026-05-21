@@ -11,14 +11,15 @@ Day-2 workflows without custom kubectl scripts.
 
 ## Install
 
-Community sources are not bundled with the Coral binary. Import the manifest from
+Community sources are not bundled with the Coral binary. Add the manifest from
 this directory:
 
 ```bash
-coral source import sources/community/k8s/manifest.yaml
+coral source add --file sources/community/k8s/manifest.yaml
 ```
 
-Or copy `manifest.yaml` into your workspace and import the local path.
+Or copy `manifest.yaml` into your workspace and pass that path to
+`coral source add --file`.
 
 Reference the linked GitHub issue in your PR so maintainers can connect the
 contribution to the prior discussion.
@@ -35,11 +36,11 @@ kubectl proxy --port=8080
 ```
 
 Keep the default `K8S_BASE_URL` (`http://127.0.0.1:8080`) or set it when
-importing:
+adding the source:
 
 ```bash
 export K8S_BASE_URL=http://127.0.0.1:8080
-coral source import sources/community/k8s/manifest.yaml
+coral source add --file sources/community/k8s/manifest.yaml
 ```
 
 ### In-cluster or direct API access
@@ -170,7 +171,7 @@ make lint-sources
 # Manifest structure and smoke queries (requires Coral CLI)
 coral source lint sources/community/k8s/manifest.yaml
 kubectl proxy --port=8080 &
-coral source import sources/community/k8s/manifest.yaml
+coral source add --file sources/community/k8s/manifest.yaml
 coral source test k8s
 ```
 
