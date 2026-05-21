@@ -77,7 +77,7 @@ pub(crate) async fn build_runtime(
             source,
             &runtime_context,
             &extensions.request_authenticators,
-            extensions.http_body_recorder.clone(),
+            runtime_context.http_body_capture_max_bytes,
         ) {
             Ok(compiled) => {
                 source_candidates.push(SourceRegistrationCandidate::Compiled(

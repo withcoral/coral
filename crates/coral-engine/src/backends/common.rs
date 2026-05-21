@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write;
 use std::sync::Arc;
 
-use crate::{HttpBodyRecorder, QueryRuntimeContext, RequestAuthenticator};
+use crate::{QueryRuntimeContext, RequestAuthenticator};
 use async_trait::async_trait;
 use coral_spec::backends::file::PartitionColumnSpec;
 use coral_spec::{
@@ -132,7 +132,7 @@ pub(crate) struct BackendCompileRequest<'a> {
     pub(crate) source_secrets: BTreeMap<String, String>,
     pub(crate) source_variables: BTreeMap<String, String>,
     pub(crate) request_authenticators: &'a HashMap<String, Arc<dyn RequestAuthenticator>>,
-    pub(crate) http_body_recorder: Option<Arc<dyn HttpBodyRecorder>>,
+    pub(crate) http_body_capture_max_bytes: Option<usize>,
 }
 
 #[async_trait]

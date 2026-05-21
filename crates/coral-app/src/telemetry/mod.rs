@@ -3,10 +3,9 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
-use coral_engine::HttpBodyRecorder;
 use opentelemetry::Value as OtelValue;
 use opentelemetry::metrics::MeterProvider as _;
 use opentelemetry::propagation::Extractor;
@@ -351,16 +350,6 @@ pub(crate) fn init_tracing(
     Ok(state.local_trace_store.clone())
 }
 
-pub(crate) fn http_body_recorder(
-    local_trace_store_dir: PathBuf,
-    retention: Duration,
-    max_bytes: usize,
-) -> Result<Arc<dyn HttpBodyRecorder>, AppError> {
-    local_store::LocalHttpBodyRecorder::new(local_trace_store_dir, retention, max_bytes)
-        .map(|recorder| Arc::new(recorder) as Arc<dyn HttpBodyRecorder>)
-        .map_err(|error| AppError::InvalidInput(error.to_string()))
-}
-
 #[expect(
     clippy::too_many_lines,
     reason = "Initialization wires OpenTelemetry traces, logs, metrics, and local export"
@@ -621,10 +610,11 @@ mod tests {
         assert!(targets.would_enable("coral_mcp::server", &tracing::Level::TRACE));
         assert!(targets.would_enable("coral_engine::http", &tracing::Level::TRACE));
         assert!(!targets.would_enable("coral_engine::datafusion", &tracing::Level::TRACE));
+        assert!(!targets.would_enable("coral.http.body", &tracing::Level::TRACE));
     }
 
     #[test]
-    fn local_trace_filter_includes_datafusion() {
+    fn local_trace_filter_includes_datafusion_and_body_spans() {
         let (targets, error) =
             build_trace_targets(DEFAULT_LOCAL_TRACE_FILTER, DEFAULT_LOCAL_TRACE_FILTER);
 
@@ -633,6 +623,7 @@ mod tests {
         assert!(targets.would_enable("coral_mcp::server", &tracing::Level::TRACE));
         assert!(targets.would_enable("coral_engine::http", &tracing::Level::TRACE));
         assert!(targets.would_enable("coral_engine::datafusion", &tracing::Level::TRACE));
+        assert!(targets.would_enable("coral.http.body", &tracing::Level::TRACE));
     }
 
     #[test]
@@ -642,6 +633,7 @@ mod tests {
         assert!(error.is_none());
         assert!(targets.would_enable("coral_engine::http", &tracing::Level::TRACE));
         assert!(targets.would_enable("coral_engine::datafusion", &tracing::Level::TRACE));
+        assert!(targets.would_enable("coral.http.body", &tracing::Level::TRACE));
     }
 
     #[test]

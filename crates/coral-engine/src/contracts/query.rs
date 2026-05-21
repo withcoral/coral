@@ -187,32 +187,17 @@ impl SourceValidationReport {
 pub struct QueryRuntimeContext {
     /// Current user's home directory for local path resolution.
     pub home_dir: Option<PathBuf>,
+    /// Optional positive byte cap for pre-export HTTP body preview capture.
+    pub http_body_capture_max_bytes: Option<usize>,
 }
 
-/// Direction for one local HTTP body record.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HttpBodyDirection {
-    /// Outbound request body.
-    Request,
-    /// Inbound response body.
-    Response,
-}
-
-/// Local-only HTTP body record captured for a finished trace span.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HttpBodyRecord {
-    /// W3C trace identifier for the HTTP span.
-    pub trace_id: String,
-    /// W3C span identifier for the HTTP span.
-    pub span_id: String,
-    /// Monotonic Coral HTTP request identifier recorded on the HTTP span.
-    pub request_id: u64,
-    /// Request or response body direction.
-    pub direction: HttpBodyDirection,
-    /// UTF-8 body content.
-    pub body: String,
-    /// Whether the body content was truncated to the configured byte cap.
-    pub truncated: bool,
+impl QueryRuntimeContext {
+    /// Adds app-owned local trace body capture byte cap to this runtime context.
+    #[must_use]
+    pub fn with_http_body_capture_max_bytes(mut self, max_bytes: Option<usize>) -> Self {
+        self.http_body_capture_max_bytes = max_bytes.filter(|bytes| *bytes > 0);
+        self
+    }
 }
 
 /// Owned runtime-build inputs needed while compiling and registering sources.

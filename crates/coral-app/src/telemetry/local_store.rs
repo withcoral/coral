@@ -9,7 +9,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use coral_engine::{HttpBodyDirection, HttpBodyRecord, HttpBodyRecorder};
 use opentelemetry::trace::{SpanId, SpanKind, Status};
 use opentelemetry::{Array as OtelArray, KeyValue, Value as OtelValue};
 use opentelemetry_sdk::Resource;
@@ -79,9 +78,7 @@ pub(crate) struct JsonlSpanExporter {
 impl JsonlSpanExporter {
     pub(crate) fn new(dir: PathBuf, retention: Duration) -> Result<Self, LocalTraceStoreError> {
         Ok(Self {
-            writer: Arc::new(Mutex::new(RollingJsonlWriter::new(
-                dir, retention, "spans",
-            )?)),
+            writer: Arc::new(Mutex::new(RollingJsonlWriter::new(dir, retention)?)),
             resource_json: Arc::new(Mutex::new("{}".to_string())),
             shutdown_called: Arc::new(AtomicBool::new(false)),
         })
@@ -135,52 +132,10 @@ impl SpanExporter for JsonlSpanExporter {
     }
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct LocalHttpBodyRecorder {
-    max_bytes: usize,
-    writer: Arc<Mutex<RollingJsonlWriter>>,
-}
-
-impl LocalHttpBodyRecorder {
-    pub(crate) fn new(
-        dir: PathBuf,
-        retention: Duration,
-        max_bytes: usize,
-    ) -> Result<Self, LocalTraceStoreError> {
-        Ok(Self {
-            max_bytes,
-            writer: Arc::new(Mutex::new(RollingJsonlWriter::new(
-                dir,
-                retention,
-                "http-bodies",
-            )?)),
-        })
-    }
-}
-
-impl HttpBodyRecorder for LocalHttpBodyRecorder {
-    fn max_body_bytes(&self) -> usize {
-        self.max_bytes
-    }
-
-    fn record_http_body(&self, body: HttpBodyRecord) {
-        let record = StoredHttpBodyRecord::from(body);
-        let result = self
-            .writer
-            .lock()
-            .map_err(|_poisoned| LocalTraceStoreError::WriterPoisoned)
-            .and_then(|mut writer| writer.write_records(&[record]));
-        if let Err(error) = result {
-            tracing::warn!(detail = %error, "failed to record local HTTP body record");
-        }
-    }
-}
-
 #[derive(Debug)]
 struct RollingJsonlWriter {
     dir: PathBuf,
     retention: Duration,
-    file_prefix: &'static str,
     last_prune: Option<SystemTime>,
     file_counter: u64,
     current: Option<OpenJsonlFile>,
@@ -196,11 +151,7 @@ struct OpenJsonlFile {
 }
 
 impl RollingJsonlWriter {
-    fn new(
-        dir: PathBuf,
-        retention: Duration,
-        file_prefix: &'static str,
-    ) -> Result<Self, LocalTraceStoreError> {
+    fn new(dir: PathBuf, retention: Duration) -> Result<Self, LocalTraceStoreError> {
         let now = SystemTime::now();
         if dir.exists() {
             prune_expired_jsonl_files(&dir, retention, now)?;
@@ -209,7 +160,6 @@ impl RollingJsonlWriter {
         Ok(Self {
             dir,
             retention,
-            file_prefix,
             last_prune: Some(now),
             file_counter: 0,
             current: None,
@@ -318,8 +268,7 @@ impl RollingJsonlWriter {
         self.file_counter = self.file_counter.saturating_add(1);
         let unix_nanos = unix_nanos(now);
         self.dir.join(format!(
-            "{}-{unix_nanos:020}-{}-{sequence:016}.jsonl",
-            self.file_prefix,
+            "spans-{unix_nanos:020}-{}-{sequence:016}.jsonl",
             process::id(),
         ))
     }
@@ -479,64 +428,6 @@ pub(crate) struct TraceSpanRecord {
     pub(crate) is_remote: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct StoredHttpBodyRecord {
-    trace_id: String,
-    span_id: String,
-    request_id: u64,
-    #[serde(with = "http_body_direction_serde")]
-    direction: HttpBodyDirection,
-    body: String,
-    truncated: bool,
-}
-
-impl From<HttpBodyRecord> for StoredHttpBodyRecord {
-    fn from(record: HttpBodyRecord) -> Self {
-        Self {
-            trace_id: record.trace_id,
-            span_id: record.span_id,
-            request_id: record.request_id,
-            direction: record.direction,
-            body: record.body,
-            truncated: record.truncated,
-        }
-    }
-}
-
-mod http_body_direction_serde {
-    use coral_engine::HttpBodyDirection;
-    use serde::{Deserialize as _, Deserializer, Serializer, de};
-
-    #[expect(
-        clippy::trivially_copy_pass_by_ref,
-        reason = "serde with-module serializers receive a borrowed field value"
-    )]
-    pub(super) fn serialize<S>(
-        direction: &HttpBodyDirection,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(match direction {
-            HttpBodyDirection::Request => "request",
-            HttpBodyDirection::Response => "response",
-        })
-    }
-
-    pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<HttpBodyDirection, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-        match value.as_str() {
-            "request" => Ok(HttpBodyDirection::Request),
-            "response" => Ok(HttpBodyDirection::Response),
-            _ => Err(de::Error::unknown_variant(&value, &["request", "response"])),
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TraceDetailRecord {
     pub(crate) summary: TraceSummaryRecord,
@@ -609,12 +500,6 @@ struct TraceSpanAttributesRecord {
 #[derive(Debug, Deserialize)]
 struct TraceSpanIdentityRecord {
     trace_id: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct StoredHttpBodyIdentityRecord {
-    trace_id: String,
-    span_id: String,
 }
 
 impl TraceStore {
@@ -717,8 +602,6 @@ impl TraceStore {
             return Err(TraceStoreError::NotFound(trace_id.to_string()));
         }
 
-        self.apply_http_body_records(trace_id, &mut spans);
-
         spans.sort_by(|left, right| {
             left.start_time_unix_nanos
                 .cmp(&right.start_time_unix_nanos)
@@ -727,25 +610,6 @@ impl TraceStore {
 
         let summary = summary_from_spans(trace_id, &spans);
         Ok(TraceDetailRecord { summary, spans })
-    }
-
-    fn apply_http_body_records(&self, trace_id: &str, spans: &mut [TraceSpanRecord]) {
-        let span_indexes = spans
-            .iter()
-            .enumerate()
-            .map(|(index, span)| (span.span_id.clone(), index))
-            .collect::<HashMap<_, _>>();
-
-        let paths = match self.body_jsonl_files() {
-            Ok(paths) => paths,
-            Err(error) => {
-                tracing::warn!(detail = %error, "failed to list local HTTP body records");
-                return;
-            }
-        };
-        for path in paths {
-            apply_http_body_file(&path, trace_id, &span_indexes, spans);
-        }
     }
 
     fn prune_expired(&self) -> Result<(), TraceStoreError> {
@@ -774,31 +638,7 @@ impl TraceStore {
                 source,
             })?;
             let path = entry.path();
-            if prefixed_jsonl_file(&path, "spans") {
-                files.push(path);
-            }
-        }
-        files.sort();
-        Ok(files)
-    }
-
-    fn body_jsonl_files(&self) -> Result<Vec<PathBuf>, TraceStoreError> {
-        if !self.dir.exists() {
-            return Ok(Vec::new());
-        }
-
-        let entries = fs::read_dir(&self.dir).map_err(|source| TraceStoreError::ReadDir {
-            path: self.dir.clone(),
-            source,
-        })?;
-        let mut files = Vec::new();
-        for entry in entries {
-            let entry = entry.map_err(|source| TraceStoreError::ReadDir {
-                path: self.dir.clone(),
-                source,
-            })?;
-            let path = entry.path();
-            if prefixed_jsonl_file(&path, "http-bodies") {
+            if span_jsonl_file(&path) {
                 files.push(path);
             }
         }
@@ -807,7 +647,7 @@ impl TraceStore {
     }
 }
 
-fn prefixed_jsonl_file(path: &Path, prefix: &str) -> bool {
+fn span_jsonl_file(path: &Path) -> bool {
     path.extension()
         .and_then(std::ffi::OsStr::to_str)
         .is_some_and(|extension| extension == "jsonl")
@@ -815,7 +655,7 @@ fn prefixed_jsonl_file(path: &Path, prefix: &str) -> bool {
             .file_name()
             .and_then(std::ffi::OsStr::to_str)
             .is_some_and(|name| {
-                name.strip_prefix(prefix)
+                name.strip_prefix("spans")
                     .is_some_and(|suffix| suffix.starts_with('-'))
             })
 }
@@ -1020,112 +860,6 @@ fn read_trace_spans_file(
     }
 
     Ok(spans)
-}
-
-fn apply_http_body_file(
-    path: &Path,
-    trace_id: &str,
-    span_indexes: &HashMap<String, usize>,
-    spans: &mut [TraceSpanRecord],
-) {
-    let file = match File::open(path) {
-        Ok(file) => file,
-        Err(source) => {
-            let error = TraceStoreError::OpenFile {
-                path: path.to_path_buf(),
-                source,
-            };
-            tracing::warn!(detail = %error, path = %path.display(), "failed to read local HTTP body records");
-            return;
-        }
-    };
-    let mut reader = BufReader::new(file);
-    let mut line = String::new();
-    let mut line_number = 0;
-
-    loop {
-        line.clear();
-        let bytes_read = match reader.read_line(&mut line) {
-            Ok(bytes_read) => bytes_read,
-            Err(source) => {
-                let error = TraceStoreError::ReadFile {
-                    path: path.to_path_buf(),
-                    source,
-                };
-                tracing::warn!(detail = %error, path = %path.display(), "failed to read local HTTP body records");
-                return;
-            }
-        };
-        if bytes_read == 0 {
-            break;
-        }
-
-        line_number += 1;
-        let complete_line = line.ends_with('\n');
-        let trimmed = line.trim_end_matches(['\r', '\n']);
-        if trimmed.trim().is_empty() {
-            continue;
-        }
-
-        match serde_json::from_str::<StoredHttpBodyIdentityRecord>(trimmed) {
-            Ok(identity)
-                if identity.trace_id == trace_id
-                    && span_indexes.contains_key(&identity.span_id) =>
-            {
-                match serde_json::from_str::<StoredHttpBodyRecord>(trimmed) {
-                    Ok(record) => {
-                        let Some(index) = span_indexes.get(&record.span_id).copied() else {
-                            continue;
-                        };
-                        if let Some(span) = spans.get_mut(index) {
-                            merge_http_body_record(span, &record);
-                        }
-                    }
-                    Err(_) if !complete_line => break,
-                    Err(source) => {
-                        tracing::warn!(
-                            detail = %source,
-                            path = %path.display(),
-                            line = line_number,
-                            "failed to decode local HTTP body record"
-                        );
-                    }
-                }
-            }
-            Ok(_identity) => {}
-            Err(_) if !complete_line => break,
-            Err(source) => {
-                tracing::warn!(
-                    detail = %source,
-                    path = %path.display(),
-                    line = line_number,
-                    "failed to decode local HTTP body record"
-                );
-            }
-        }
-    }
-}
-
-fn merge_http_body_record(span: &mut TraceSpanRecord, record: &StoredHttpBodyRecord) {
-    let mut attributes = parse_attributes(&span.attributes_json)
-        .and_then(|value| match value {
-            JsonValue::Object(map) => Some(map),
-            _ => None,
-        })
-        .unwrap_or_default();
-    let (body_key, truncated_key) = match record.direction {
-        HttpBodyDirection::Request => (
-            "coral.http.request.body",
-            "coral.http.request.body.truncated",
-        ),
-        HttpBodyDirection::Response => (
-            "coral.http.response.body",
-            "coral.http.response.body.truncated",
-        ),
-    };
-    attributes.insert(body_key.to_string(), JsonValue::String(record.body.clone()));
-    attributes.insert(truncated_key.to_string(), JsonValue::Bool(record.truncated));
-    span.attributes_json = JsonValue::Object(attributes).to_string();
 }
 
 fn summary_from_spans(trace_id: &str, spans: &[TraceSpanRecord]) -> TraceSummaryRecord {
@@ -1593,11 +1327,9 @@ mod tests {
     use serde_json::json;
     use tempfile::TempDir;
 
-    use coral_engine::{HttpBodyDirection, HttpBodyRecord, HttpBodyRecorder as _};
-
     use super::{
-        JSONL_MAX_FILE_AGE, JsonlSpanExporter, LocalHttpBodyRecorder, RollingJsonlWriter,
-        StoredHttpBodyRecord, StoredTraceStatus, TraceSpanRecord, TraceStore, unix_nanos,
+        JSONL_MAX_FILE_AGE, JsonlSpanExporter, RollingJsonlWriter, StoredTraceStatus,
+        TraceSpanRecord, TraceStore, unix_nanos,
     };
 
     const TRACE_RETENTION: Duration = Duration::from_hours(7 * 24);
@@ -1652,120 +1384,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn merges_local_http_body_records_into_trace_detail() {
-        let temp = TempDir::new().expect("temp dir");
-        let dir = temp.path().join("telemetry").join("traces");
-        let exporter =
-            JsonlSpanExporter::new(dir.clone(), TRACE_RETENTION).expect("jsonl span exporter");
-        let provider = SdkTracerProvider::builder()
-            .with_simple_exporter(exporter)
-            .build();
-        let tracer = provider.tracer("local-store-test");
-        let mut span = tracer
-            .span_builder("http.request")
-            .with_kind(SpanKind::Client)
-            .with_attributes([
-                KeyValue::new("coral.http.request_id", 7_i64),
-                KeyValue::new("http.request.body.size", 15_i64),
-            ])
-            .start(&tracer);
-        span.end();
-        provider.shutdown().expect("provider shutdown");
-
-        let store = TraceStore::new(dir.clone());
-        let summary = store
-            .list_traces_sync(10, 0)
-            .expect("list traces")
-            .into_iter()
-            .next()
-            .expect("trace summary");
-        let detail = store
-            .get_trace_sync(&summary.trace_id)
-            .expect("trace detail");
-        let span = detail.spans.first().expect("trace span");
-
-        let recorder =
-            LocalHttpBodyRecorder::new(dir.clone(), TRACE_RETENTION, 1024).expect("recorder");
-        recorder.record_http_body(HttpBodyRecord {
-            trace_id: summary.trace_id.clone(),
-            span_id: span.span_id.clone(),
-            request_id: 7,
-            direction: HttpBodyDirection::Request,
-            body: r#"{"query":"Ada"}"#.to_string(),
-            truncated: false,
-        });
-
-        let detail = TraceStore::new(dir)
-            .get_trace_sync(&summary.trace_id)
-            .expect("trace detail");
-        let span = detail.spans.first().expect("trace span");
-
-        assert!(
-            span.attributes_json
-                .contains(r#""coral.http.request.body":"{\"query\":\"Ada\"}""#)
-        );
-        assert!(
-            span.attributes_json
-                .contains(r#""coral.http.request.body.truncated":false"#)
-        );
-    }
-
-    #[test]
-    fn trace_detail_filters_and_skips_bad_http_body_records() {
-        let temp = TempDir::new().expect("temp dir");
-        let dir = temp.path().join("telemetry").join("traces");
-        fs::create_dir_all(&dir).expect("trace dir");
-        write_record_file(
-            &dir.join(timestamped_jsonl_path(SystemTime::now())),
-            &trace_record("trace-1", "span-1"),
-        );
-        let matching_record = StoredHttpBodyRecord {
-            trace_id: "trace-1".to_string(),
-            span_id: "span-1".to_string(),
-            request_id: 7,
-            direction: HttpBodyDirection::Request,
-            body: "selected body".to_string(),
-            truncated: false,
-        };
-        let malformed_unrelated = json!({
-            "trace_id": "trace-2",
-            "span_id": "span-2",
-            "request_id": 8,
-            "direction": "request",
-            "body": { "not": "a string" },
-            "truncated": false,
-        });
-        let malformed_orphan = json!({
-            "trace_id": "trace-1",
-            "span_id": "missing-span",
-            "request_id": 9,
-            "direction": "request",
-            "body": { "not": "a string" },
-            "truncated": false,
-        });
-        fs::write(
-            dir.join("http-bodies-00000000000000000001-test-0000000000000000.jsonl"),
-            format!(
-                "{malformed_unrelated}\nnot json\n{malformed_orphan}\n{}\n",
-                serde_json::to_string(&matching_record).expect("serialize body record")
-            ),
-        )
-        .expect("write body records");
-
-        let detail = TraceStore::new(dir)
-            .get_trace_sync("trace-1")
-            .expect("trace detail");
-        let span = detail.spans.first().expect("trace span");
-
-        assert!(
-            span.attributes_json
-                .contains(r#""coral.http.request.body":"selected body""#)
-        );
-        assert!(!span.attributes_json.contains("trace-2"));
-        assert!(!span.attributes_json.contains("missing-span"));
-    }
-
     #[cfg(unix)]
     #[test]
     fn rolling_writer_creates_private_dir_and_file() {
@@ -1776,8 +1394,8 @@ mod tests {
         fs::create_dir_all(&dir).expect("trace dir");
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o755))
             .expect("make trace dir permissive");
-        let mut writer = RollingJsonlWriter::new(dir.clone(), TRACE_RETENTION, "http-bodies")
-            .expect("jsonl writer");
+        let mut writer =
+            RollingJsonlWriter::new(dir.clone(), TRACE_RETENTION).expect("jsonl writer");
 
         writer
             .write_records(&[trace_record("trace-1", "span-1")])
@@ -1983,7 +1601,7 @@ mod tests {
         let temp = TempDir::new().expect("temp dir");
         let dir = temp.path().join("telemetry").join("traces");
         let mut writer =
-            RollingJsonlWriter::new(dir.clone(), TRACE_RETENTION, "spans").expect("jsonl writer");
+            RollingJsonlWriter::new(dir.clone(), TRACE_RETENTION).expect("jsonl writer");
 
         writer
             .write_records(&[trace_record("trace-1", "span-1")])

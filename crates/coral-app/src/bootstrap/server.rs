@@ -44,7 +44,6 @@ use crate::feedback::publisher::{
     FeedbackPublisher, HostedFeedbackPublisher, NoopFeedbackPublisher,
 };
 use crate::feedback::service::FeedbackService;
-use crate::query::extensions::HttpBodyRecorderEngineExtensionsProvider;
 use crate::query::manager::QueryManager;
 use crate::query::service::QueryService;
 use crate::sources::manager::SourceManager;
@@ -271,30 +270,19 @@ impl ServerBuilder {
         );
         let feedback_manager =
             FeedbackManager::with_publisher(layout.clone(), self.config.feedback_publisher);
-        let query_runtime_context = env.query_runtime_context();
-        let mut engine_extensions_providers = self.config.engine_extensions_providers;
-        if let (Some(store), Some(max_bytes)) = (
-            installed_trace_store.as_ref(),
-            telemetry_config
-                .trace_history
-                .http_body_recording_max_bytes(),
-        ) {
-            let recorder = crate::telemetry::http_body_recorder(
-                store.dir.clone(),
-                store.retention,
-                max_bytes,
-            )?;
-            engine_extensions_providers.push(Arc::new(
-                HttpBodyRecorderEngineExtensionsProvider::new(recorder),
-            ));
-        }
+        let http_body_capture_max_bytes = telemetry_config
+            .trace_history
+            .http_body_recording_max_bytes();
+        let query_runtime_context = env
+            .query_runtime_context()
+            .with_http_body_capture_max_bytes(http_body_capture_max_bytes);
 
         let query_manager = QueryManager::new(
             config_store,
             credential_manager,
             query_runtime_context,
             layout,
-            engine_extensions_providers,
+            self.config.engine_extensions_providers,
         );
         let trace_service = if telemetry_config.trace_history.enabled {
             installed_trace_store.map(|store| TraceService::new(store.dir, store.retention))
@@ -1104,6 +1092,7 @@ tables:
             credential_manager,
             QueryRuntimeContext {
                 home_dir: Some(fake_home.clone()),
+                ..QueryRuntimeContext::default()
             },
             layout,
             vec![Arc::new(NoopEngineExtensionsProvider)],

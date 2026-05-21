@@ -61,15 +61,15 @@ pub mod contracts;
 mod runtime;
 
 pub use composition::{
-    EngineExtensions, HttpBodyRecorder, QueryResultObserver, QueryResultObserverError,
-    RequestAuthenticator, RequestAuthenticatorError, SourceDecorator, SourceDecoratorError,
-    SourceFailurePolicy, SourceTables,
+    EngineExtensions, QueryResultObserver, QueryResultObserverError, RequestAuthenticator,
+    RequestAuthenticatorError, SourceDecorator, SourceDecoratorError, SourceFailurePolicy,
+    SourceTables,
 };
 pub use contracts::{
-    CatalogInfo, ColumnInfo, CoreError, HttpBodyDirection, HttpBodyRecord, QueryExecution,
-    QueryPlan, QueryRuntimeConfig, QueryRuntimeContext, QuerySource, QueryTestFailure,
-    QueryTestResult, QueryTestSuccess, SourceValidationReport, StatusCode, StructuredQueryError,
-    TableFunctionArgumentInfo, TableFunctionInfo, TableFunctionResultColumnInfo, TableInfo,
+    CatalogInfo, ColumnInfo, CoreError, QueryExecution, QueryPlan, QueryRuntimeConfig,
+    QueryRuntimeContext, QuerySource, QueryTestFailure, QueryTestResult, QueryTestSuccess,
+    SourceValidationReport, StatusCode, StructuredQueryError, TableFunctionArgumentInfo,
+    TableFunctionInfo, TableFunctionResultColumnInfo, TableInfo,
 };
 
 /// High-level query operations for the local query engine.

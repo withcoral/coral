@@ -7,14 +7,12 @@ use std::time::{Duration, Instant};
 
 use datafusion::error::{DataFusionError, Result};
 use opentelemetry::propagation::Injector;
-use opentelemetry::trace::TraceContextExt as _;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde_json::{Map, Value, json};
 use tracing::Instrument as _;
 use tracing::field;
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
-use crate::HttpBodyRecorder;
 use crate::RequestAuthenticator;
 use crate::backends::http::ProviderQueryError;
 use crate::backends::http::auth::{resolve_auth_headers, validate_auth_inputs};
@@ -25,7 +23,6 @@ use crate::backends::shared::template::{
     RenderContext, render_template, resolve_value_source, validate_input_dependencies,
     validate_value_source_inputs, value_to_string,
 };
-use crate::contracts::{HttpBodyDirection, HttpBodyRecord};
 use coral_spec::backends::http::{HttpSourceManifest, RateLimitSpec};
 use coral_spec::{
     AuthSpec, BodySpec, HeaderSpec, HttpMethod, PageSizeSpec, ParsedTemplate, RequestRouteSpec,
@@ -38,6 +35,7 @@ const DEFAULT_HTTP_REQUEST_TIMEOUT_SECS: u64 = 30;
 const DEFAULT_HTTP_USER_AGENT: &str = concat!("coral/", env!("CARGO_PKG_VERSION"));
 const HTTP_BODY_CAPTURE_IDLE_TIMEOUT: Duration = Duration::from_millis(50);
 const HTTP_BODY_CAPTURE_TOTAL_TIMEOUT: Duration = Duration::from_millis(200);
+const HTTP_BODY_TRACE_TARGET: &str = "coral.http.body";
 static NEXT_HTTP_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Executes manifest-driven HTTP requests for one registered source.
@@ -102,30 +100,33 @@ struct UnconsumedTraceBody {
     complete_body_size: Option<usize>,
 }
 
-#[derive(Clone, Default)]
-struct HttpBodyCapture {
-    recorder: Option<Arc<dyn HttpBodyRecorder>>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HttpBodyDirection {
+    Request,
+    Response,
 }
 
-impl std::fmt::Debug for HttpBodyCapture {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let max_bytes = self.enabled_max_bytes();
-        f.debug_struct("HttpBodyCapture")
-            .field("enabled", &max_bytes.is_some())
-            .field("max_bytes", &max_bytes)
-            .finish_non_exhaustive()
+impl HttpBodyDirection {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Request => "request",
+            Self::Response => "response",
+        }
     }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct HttpBodyCapture {
+    max_bytes: Option<usize>,
 }
 
 impl HttpBodyCapture {
-    fn new(recorder: Option<Arc<dyn HttpBodyRecorder>>) -> Self {
-        Self { recorder }
+    fn new(max_bytes: Option<usize>) -> Self {
+        Self { max_bytes }
     }
 
     fn enabled_max_bytes(&self) -> Option<usize> {
-        self.recorder
-            .as_deref()
-            .map(HttpBodyRecorder::max_body_bytes)
+        self.max_bytes
     }
 
     fn record_request(&self, span: &tracing::Span, request_id: u64, body: Option<&RequestBody>) {
@@ -135,18 +136,18 @@ impl HttpBodyCapture {
         let Some(content) = trace_request_body_content(body, max_bytes) else {
             return;
         };
-        self.record(span, request_id, HttpBodyDirection::Request, content);
+        Self::record(span, request_id, HttpBodyDirection::Request, &content);
     }
 
     fn record_response(&self, span: &tracing::Span, request_id: u64, body: &str) {
         let Some(max_bytes) = self.enabled_max_bytes() else {
             return;
         };
-        self.record(
+        Self::record(
             span,
             request_id,
             HttpBodyDirection::Response,
-            trace_body_content(body, max_bytes),
+            &trace_body_content(body, max_bytes),
         );
     }
 
@@ -169,35 +170,44 @@ impl HttpBodyCapture {
                     i64::try_from(body_size).unwrap_or(i64::MAX),
                 );
             }
-            self.record(
+            Self::record(
                 response_span,
                 request_id,
                 HttpBodyDirection::Response,
-                body.content,
+                &body.content,
             );
         }
     }
 
     fn record(
-        &self,
         span: &tracing::Span,
         request_id: u64,
         direction: HttpBodyDirection,
-        content: TraceBodyContent,
+        content: &TraceBodyContent,
     ) {
-        let Some(recorder) = self.recorder.as_deref() else {
-            return;
-        };
-        let Some((trace_id, span_id)) = span_trace_context(span) else {
-            return;
-        };
-        recorder.record_http_body(HttpBodyRecord {
-            trace_id,
-            span_id,
-            request_id,
-            direction,
-            body: content.body,
-            truncated: content.truncated,
+        span.in_scope(|| match direction {
+            HttpBodyDirection::Request => {
+                let body_span = tracing::trace_span!(
+                    target: HTTP_BODY_TRACE_TARGET,
+                    "coral.http.request.body",
+                    coral.http.request_id = request_id,
+                    coral.http.body.direction = direction.as_str(),
+                    coral.http.request.body = content.body.as_str(),
+                    coral.http.request.body.truncated = content.truncated,
+                );
+                body_span.in_scope(|| {});
+            }
+            HttpBodyDirection::Response => {
+                let body_span = tracing::trace_span!(
+                    target: HTTP_BODY_TRACE_TARGET,
+                    "coral.http.response.body",
+                    coral.http.request_id = request_id,
+                    coral.http.body.direction = direction.as_str(),
+                    coral.http.response.body = content.body.as_str(),
+                    coral.http.response.body.truncated = content.truncated,
+                );
+                body_span.in_scope(|| {});
+            }
         });
     }
 }
@@ -249,7 +259,7 @@ impl HttpSourceClient {
         source_secrets: &BTreeMap<String, String>,
         source_variables: &BTreeMap<String, String>,
         request_authenticators: &HashMap<String, Arc<dyn RequestAuthenticator>>,
-        body_recorder: Option<Arc<dyn HttpBodyRecorder>>,
+        body_capture_max_bytes: Option<usize>,
     ) -> Result<Self> {
         let resolved_inputs =
             coral_spec::resolve_inputs(&manifest.declared_inputs, source_secrets, source_variables);
@@ -277,7 +287,7 @@ impl HttpSourceClient {
             request_authenticators: request_authenticators.clone(),
             rate_limit: manifest.rate_limit.clone(),
             resolved_inputs: Arc::new(resolved_inputs),
-            body_capture: HttpBodyCapture::new(body_recorder),
+            body_capture: HttpBodyCapture::new(body_capture_max_bytes),
         })
     }
 
@@ -413,7 +423,7 @@ impl HttpSourceClient {
                     response_format: target.response().format,
                     source_schema: &self.source_schema,
                     rate_limit: &self.rate_limit,
-                    body_capture: self.body_capture.clone(),
+                    body_capture: self.body_capture,
                     render_context,
                     allow_404_empty: target.response().allow_404_empty,
                     link_header_require_results: pagination.link_header_require_results,
@@ -1547,18 +1557,6 @@ fn request_body_size(body: Option<&RequestBody>) -> Option<usize> {
     }
 }
 
-fn span_trace_context(span: &tracing::Span) -> Option<(String, String)> {
-    let context = span.context();
-    let span = context.span();
-    let span_context = span.span_context();
-    span_context.is_valid().then(|| {
-        (
-            span_context.trace_id().to_string(),
-            span_context.span_id().to_string(),
-        )
-    })
-}
-
 fn trace_request_body_content(
     body: Option<&RequestBody>,
     max_bytes: usize,
@@ -1811,18 +1809,22 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use datafusion::error::DataFusionError;
+    use opentelemetry::Value as OtelValue;
+    use opentelemetry::trace::TracerProvider as _;
+    use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider, SpanData};
     use reqwest::header::{HeaderMap, HeaderValue};
     use serde_json::json;
     use tokio::io::AsyncWriteExt as _;
     use tokio::net::TcpListener;
     use tokio::task::JoinHandle;
+    use tracing_subscriber::layer::SubscriberExt as _;
 
     use super::{
         HttpBodyCapture, HttpSourceClient, OutgoingHttpRequest as TestOutgoingHttpRequest,
-        PageState, apply_pagination_body_fields, apply_pagination_query_pairs, execute_request,
-        extract_next_link_url, extract_rows, join_url, normalize_base_url, page_is_exhausted,
-        read_unconsumed_response_body, resolve_value_source, set_path_value, trace_body_content,
-        trace_http_endpoint, trace_request_body_content,
+        PageState, RequestBody, apply_pagination_body_fields, apply_pagination_query_pairs,
+        execute_request, extract_next_link_url, extract_rows, join_url, normalize_base_url,
+        page_is_exhausted, read_unconsumed_response_body, resolve_value_source, set_path_value,
+        trace_body_content, trace_http_endpoint, trace_request_body_content,
     };
     use crate::backends::http::ProviderQueryError;
     use crate::backends::http::target::HttpFetchTarget;
@@ -2009,6 +2011,56 @@ mod tests {
         assert!(!content.truncated);
     }
 
+    #[test]
+    fn body_capture_emits_child_span_with_preview_attributes() {
+        let memory = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(memory.clone())
+            .build();
+        let tracer = provider.tracer("body-capture-test");
+        let layer = tracing_opentelemetry::layer()
+            .with_tracer(tracer)
+            .with_level(true)
+            .with_target(true);
+        let subscriber = tracing_subscriber::Registry::default().with(layer);
+
+        tracing::subscriber::with_default(subscriber, || {
+            let parent = tracing::info_span!(target: "coral_engine::http", "http.request");
+            let capture = HttpBodyCapture::new(Some(4));
+            capture.record_request(&parent, 7, Some(&RequestBody::Text("abcdef".to_string())));
+            drop(parent);
+        });
+        provider.force_flush().expect("flush spans");
+
+        let spans = memory.get_finished_spans().expect("finished spans");
+        let parent = spans
+            .iter()
+            .find(|span| span.name == "http.request")
+            .expect("parent span");
+        let body = spans
+            .iter()
+            .find(|span| span.name == "coral.http.request.body")
+            .expect("body span");
+
+        assert_eq!(body.parent_span_id, parent.span_context.span_id());
+        assert_eq!(
+            span_string_attr(body, "target").as_deref(),
+            Some("coral.http.body")
+        );
+        assert_eq!(
+            span_string_attr(body, "coral.http.body.direction").as_deref(),
+            Some("request")
+        );
+        assert_eq!(
+            span_string_attr(body, "coral.http.request.body").as_deref(),
+            Some("abcd")
+        );
+        assert_eq!(
+            span_bool_attr(body, "coral.http.request.body.truncated"),
+            Some(true)
+        );
+    }
+
     #[tokio::test]
     async fn unconsumed_response_body_capture_does_not_wait_for_body_eof() {
         let (base_url, task) = spawn_hanging_response_body_server("abcdef".repeat(16_384)).await;
@@ -2110,6 +2162,28 @@ mod tests {
                 "value": value_source_json(&header.value),
             })).collect::<Vec<_>>(),
         })
+    }
+
+    fn span_string_attr(span: &SpanData, key: &str) -> Option<String> {
+        span.attributes
+            .iter()
+            .find(|attribute| attribute.key.as_str() == key)
+            .and_then(|attribute| match &attribute.value {
+                OtelValue::String(value) => Some(value.to_string()),
+                OtelValue::I64(value) => Some(value.to_string()),
+                _ => None,
+            })
+    }
+
+    fn span_bool_attr(span: &SpanData, key: &str) -> Option<bool> {
+        span.attributes
+            .iter()
+            .find(|attribute| attribute.key.as_str() == key)
+            .and_then(|attribute| match &attribute.value {
+                OtelValue::Bool(value) => Some(value),
+                _ => None,
+            })
+            .copied()
     }
 
     fn value_source_json(value: &ValueSourceSpec) -> serde_json::Value {
