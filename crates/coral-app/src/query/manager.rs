@@ -22,7 +22,7 @@ use crate::query::extensions::{
 use crate::sources::SourceName;
 use crate::sources::catalog::resolve_installed_manifest;
 use crate::sources::model::InstalledSource;
-use crate::state::{AppStateLayout, ConfigStore};
+use crate::state::{AppConfig, AppStateLayout, ConfigStore};
 use crate::workspaces::WorkspaceName;
 
 #[derive(Debug)]
@@ -68,10 +68,16 @@ impl QueryManager {
         schema_filter: Option<&str>,
         table_filter: Option<&str>,
     ) -> Result<Vec<TableInfo>, QueryManagerError> {
-        let sources = self
-            .load_query_sources(workspace_name)
+        let config = self
+            .config_store
+            .load_config()
             .map_err(QueryManagerError::App)?;
-        let runtime = self.runtime_config(workspace_name, &sources);
+        let sources = self
+            .load_query_sources(workspace_name, &config)
+            .map_err(QueryManagerError::App)?;
+        let runtime = self
+            .runtime_config(workspace_name, &sources, &config)
+            .map_err(QueryManagerError::App)?;
         CoralQuery::list_tables(&sources, runtime, schema_filter, table_filter)
             .await
             .map_err(QueryManagerError::Core)
@@ -82,10 +88,16 @@ impl QueryManager {
         workspace_name: &WorkspaceName,
         schema_filter: Option<&str>,
     ) -> Result<CatalogInfo, QueryManagerError> {
-        let sources = self
-            .load_query_sources(workspace_name)
+        let config = self
+            .config_store
+            .load_config()
             .map_err(QueryManagerError::App)?;
-        let runtime = self.runtime_config(workspace_name, &sources);
+        let sources = self
+            .load_query_sources(workspace_name, &config)
+            .map_err(QueryManagerError::App)?;
+        let runtime = self
+            .runtime_config(workspace_name, &sources, &config)
+            .map_err(QueryManagerError::App)?;
         CoralQuery::list_catalog(&sources, runtime, schema_filter)
             .await
             .map_err(QueryManagerError::Core)
@@ -101,10 +113,16 @@ impl QueryManager {
             workspace_name,
             sql,
             async {
-                let sources = self
-                    .load_query_sources(workspace_name)
+                let config = self
+                    .config_store
+                    .load_config()
                     .map_err(QueryManagerError::App)?;
-                let runtime = self.runtime_config(workspace_name, &sources);
+                let sources = self
+                    .load_query_sources(workspace_name, &config)
+                    .map_err(QueryManagerError::App)?;
+                let runtime = self
+                    .runtime_config(workspace_name, &sources, &config)
+                    .map_err(QueryManagerError::App)?;
                 CoralQuery::execute_sql(&sources, runtime, sql)
                     .await
                     .map_err(QueryManagerError::Core)
@@ -124,10 +142,16 @@ impl QueryManager {
             workspace_name,
             sql,
             async {
-                let sources = self
-                    .load_query_sources(workspace_name)
+                let config = self
+                    .config_store
+                    .load_config()
                     .map_err(QueryManagerError::App)?;
-                let runtime = self.runtime_config(workspace_name, &sources);
+                let sources = self
+                    .load_query_sources(workspace_name, &config)
+                    .map_err(QueryManagerError::App)?;
+                let runtime = self
+                    .runtime_config(workspace_name, &sources, &config)
+                    .map_err(QueryManagerError::App)?;
                 CoralQuery::explain_sql(&sources, runtime, sql)
                     .await
                     .map_err(QueryManagerError::Core)
@@ -142,14 +166,24 @@ impl QueryManager {
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
     ) -> Result<ValidatedSource, QueryManagerError> {
-        let source = self
+        let config = self
             .config_store
+            .load_config()
+            .map_err(QueryManagerError::App)?;
+        let source = config
             .get_source(workspace_name, source_name)
+            .ok_or_else(|| AppError::SourceNotFound(format!("{workspace_name}:{source_name}")))
             .map_err(QueryManagerError::App)?;
         let (query_source, version) = self
             .load_query_source(workspace_name, &source)
             .map_err(QueryManagerError::App)?;
-        let runtime = self.runtime_config(workspace_name, std::slice::from_ref(&query_source));
+        let runtime = self
+            .runtime_config(
+                workspace_name,
+                std::slice::from_ref(&query_source),
+                &config,
+            )
+            .map_err(QueryManagerError::App)?;
         let report = CoralQuery::validate_source(
             &query_source,
             runtime,
@@ -166,10 +200,10 @@ impl QueryManager {
     fn load_query_sources(
         &self,
         workspace_name: &WorkspaceName,
+        config: &AppConfig,
     ) -> Result<Vec<QuerySource>, AppError> {
-        let catalog = self.config_store.load_catalog()?;
         let mut query_sources = Vec::new();
-        for source in catalog.workspace_sources(workspace_name) {
+        for source in config.workspace_sources(workspace_name) {
             match self.load_query_source(workspace_name, &source) {
                 Ok((query_source, _version)) => query_sources.push(query_source),
                 Err(error @ AppError::Credentials(CredentialsError::Unavailable(_))) => {
@@ -238,7 +272,8 @@ impl QueryManager {
         &self,
         workspace_name: &WorkspaceName,
         selected_sources: &[QuerySource],
-    ) -> QueryRuntimeConfig {
+        config: &AppConfig,
+    ) -> Result<QueryRuntimeConfig, AppError> {
         let mut extensions =
             engine_extensions_for_providers(&self.engine_extensions_providers, selected_sources);
         let provider_input_resolver = extensions.source_input_resolver.take();
@@ -250,7 +285,13 @@ impl QueryManager {
         )));
         let mut runtime_context = self.runtime_context.clone();
         runtime_context.trace_context = Some(tracing::Span::current().context());
-        QueryRuntimeConfig::new(runtime_context, extensions)
+        let mut runtime = QueryRuntimeConfig::new(runtime_context, extensions);
+        let selected_source_names = selected_sources
+            .iter()
+            .map(|source| source.source_name().to_string())
+            .collect::<Vec<_>>();
+        runtime.dependent_join = config.dependent_join_config(&selected_source_names)?;
+        Ok(runtime)
     }
 }
 

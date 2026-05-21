@@ -849,7 +849,6 @@ Coral always treats `429 Too Many Requests` as a rate-limit signal. Use `extra_s
 | `retry_after_header` | string          | `Retry-After`   | Header that carries a retry delay in seconds or HTTP-date form              |
 | `remaining_header`   | string          | —               | Header whose value `0` means the current quota is exhausted                 |
 | `reset_header`       | string          | —               | Header with the quota reset time as Unix epoch seconds                      |
-| `max_concurrency`    | integer         | —               | Maximum concurrent dependent-join HTTP calls for this source                |
 
 Example for a GitHub-style API:
 
@@ -858,7 +857,6 @@ rate_limit:
   extra_statuses: [403]
   remaining_header: X-RateLimit-Remaining
   reset_header: X-RateLimit-Reset
-  max_concurrency: 8
 ```
 
 ### HTTP dependent-join capability metadata

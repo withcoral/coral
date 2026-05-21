@@ -341,8 +341,7 @@
         },
         "retry_after_header": { "type": "string", "minLength": 1 },
         "remaining_header": { "type": "string", "minLength": 1 },
-        "reset_header": { "type": "string", "minLength": 1 },
-        "max_concurrency": { "type": "integer", "minimum": 1 }
+        "reset_header": { "type": "string", "minLength": 1 }
       }
     },
     "http_table": {

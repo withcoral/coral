@@ -85,8 +85,6 @@ pub struct RateLimitSpec {
     pub remaining_header: Option<String>,
     #[serde(default)]
     pub reset_header: Option<String>,
-    #[serde(default)]
-    pub max_concurrency: Option<usize>,
 }
 
 /// Validated top-level manifest for an HTTP-backed source.
@@ -234,15 +232,6 @@ impl HttpSourceManifest {
     }
 }
 
-fn validate_rate_limit(schema: &str, spec: &RateLimitSpec) -> Result<()> {
-    if spec.max_concurrency == Some(0) {
-        return Err(ManifestError::validation(format!(
-            "source '{schema}' rate_limit.max_concurrency = 0"
-        )));
-    }
-    Ok(())
-}
-
 impl RawHttpTableSpec {
     fn into_validated(self, schema: &str) -> Result<HttpTableSpec> {
         validate_http_table(HttpTableValidation {
@@ -303,7 +292,6 @@ impl HttpSourceManifest {
                 "source '{name}' must define at least one table or function"
             )));
         }
-        validate_rate_limit(&name, &rate_limit)?;
         validate_test_queries(&name, &test_queries)?;
         validate_table_names(&name, tables.iter().map(|table| table.name.as_str()))?;
         let common =
