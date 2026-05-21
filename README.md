@@ -144,8 +144,9 @@ Or on Linux:
 curl -fsSL https://withcoral.com/install.sh | sh
 ```
 
-On Windows, official binaries are not published yet, but experimental native
-source builds are documented in the install options.
+Or on Windows 10/11 x86_64, download
+`coral-x86_64-pc-windows-msvc.zip` from the latest GitHub release and put
+`coral.exe` on your `PATH`.
 
 See [all install options](https://withcoral.com/docs/getting-started/installation).
 
