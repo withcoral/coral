@@ -103,6 +103,9 @@ List instance variables.
 
 **Optional filter:** `project_id`
 
+> **Note:** Variables require a paid n8n license. Self-hosted free instances
+> will return a `403` error for this table.
+
 ## Functions
 
 ### `n8n.executions_by_workflow`
@@ -198,10 +201,12 @@ coral sql "SELECT id, name, active FROM n8n.workflows LIMIT 5"
   errors) is available.
 - **API availability.** The n8n Public API requires a paid or self-hosted
   instance. It is not available during the n8n Cloud free trial.
-- **Credentials endpoint.** The `/credentials` endpoint is not included because
-  it returns `405 Method Not Allowed` on standard n8n self-hosted instances.
+- **Credentials endpoint.** The `/credentials` endpoint returns
+  `405 Method Not Allowed` on standard n8n self-hosted instances.
   Credential metadata may be added in a future version if the API behavior
   changes.
+- **Variables require paid license.** The `/variables` endpoint returns `403`
+  on free self-hosted instances. This table works for paid n8n users.
 
 ## Out of scope for v1
 
