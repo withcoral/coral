@@ -7,8 +7,14 @@ import { KeyboardShortcut } from '@/wax/components/keyboard-shortcut'
 import { SidebarButton } from '@/wax/components/sidebar-button/sidebar-button'
 import * as styles from './navbar.css'
 
-const NAV_ITEMS: { icon: IconName; label: string; active?: boolean }[] = [
-  { icon: 'Activity', label: 'Traces', active: true },
+interface NavItem {
+  icon: IconName
+  isActive?: boolean
+  label: string
+}
+
+const NAV_ITEMS: NavItem[] = [
+  { icon: 'Activity', isActive: true, label: 'Traces' },
 ]
 
 const QUERY_STREAM_LABEL = 'Query stream'
@@ -51,10 +57,10 @@ export function Navbar() {
       <div className={styles.nav} aria-label="Primary navigation" id={PRIMARY_NAVIGATION_ID}>
         {NAV_ITEMS.map((item) => (
           <SidebarButton
-            aria-current={item.active ? 'page' : undefined}
-            disabled={item.active}
+            aria-current={item.isActive ? 'page' : undefined}
+            disabled={item.isActive}
             icon={item.icon}
-            isActive={item.active}
+            isActive={item.isActive}
             isMinimized={isCollapsed}
             key={item.label}
           >

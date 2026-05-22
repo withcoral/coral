@@ -1,5 +1,6 @@
 import classNames from 'classnames'
-import React, { ElementType, MouseEvent } from 'react'
+import React from 'react'
+import type { ElementType, MouseEvent } from 'react'
 
 import { Icon } from '@/wax/components/icon'
 import type { IconName } from '@/wax/components/icon'
@@ -15,6 +16,13 @@ import {
 function handleDisabledClick(event: MouseEvent<HTMLElement>) {
   event.preventDefault()
   event.stopPropagation()
+}
+
+function resolveAriaLabel(children: React.ReactNode, explicitLabel: string | undefined, isMinimized: boolean) {
+  if (explicitLabel !== undefined) return explicitLabel
+  if (!isMinimized || typeof children !== 'string') return undefined
+
+  return children
 }
 
 export interface SidebarButtonProps<T extends ElementType = 'button'> {
@@ -56,8 +64,7 @@ export function SidebarButton<T extends ElementType = 'button'>(
   const Component = (as ?? 'button') as ElementType
   const isNativeButton = Component === 'button'
   const type = 'type' in props ? props.type! : 'button'
-  const childrenLabel = typeof children === 'string' ? children : undefined
-  const resolvedAriaLabel: string | undefined = ariaLabel ?? (isMinimized ? childrenLabel : undefined)
+  const resolvedAriaLabel = resolveAriaLabel(children, ariaLabel, isMinimized)
 
   const componentProps = {
     className: classNames(

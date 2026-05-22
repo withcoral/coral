@@ -38,6 +38,8 @@ export const header = recipe({
   base: {
     alignItems: 'center',
     display: 'flex',
+    gap: '8px',
+    justifyContent: 'flex-start',
     minHeight: '32px',
     paddingBlockStart: '10px',
     width: '100%',
@@ -49,14 +51,10 @@ export const header = recipe({
     isCollapsed: {
       false: {
         flexDirection: 'row',
-        gap: '8px',
-        justifyContent: 'flex-start',
       },
       true: {
-        gap: '8px',
         flexDirection: 'column',
         alignItems: 'flex-start',
-        justifyContent: 'flex-start',
       },
     },
   },
