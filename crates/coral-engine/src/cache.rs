@@ -108,7 +108,7 @@ pub fn normalize_sql(sql: &str) -> String {
                         normalized.push(' ');
                     }
                     pending_space = false;
-                    normalized.push(ch);
+                    normalized.push(ch.to_ascii_lowercase());
                 }
             },
             Mode::SingleQuote => {
@@ -195,5 +195,14 @@ mod tests {
     fn normalize_sql_collapses_formatting_outside_literals() {
         let sql = "  select   *   from   foo  where  id = 1  -- comment\n";
         assert_eq!(normalize_sql(sql), "select * from foo where id = 1");
+    }
+
+    #[test]
+    fn normalize_sql_canonicalizes_case_outside_literals() {
+        let upper = "SELECT * FROM Foo WHERE id = 1";
+        let lower = "select * from foo where id = 1";
+
+        assert_eq!(normalize_sql(upper), "select * from foo where id = 1");
+        assert_eq!(normalize_sql(upper), normalize_sql(lower));
     }
 }
