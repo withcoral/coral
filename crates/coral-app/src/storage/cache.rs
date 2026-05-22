@@ -2,10 +2,12 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::fs;
+use std::io::Cursor;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use arrow::ipc::reader::StreamReader;
 use arrow::ipc::writer::StreamWriter;
 use arrow::record_batch::RecordBatch;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -86,13 +88,17 @@ impl QueryCache {
         let Some(entry) = self.lookup_entry(key, CacheValueKind::QueryExecution)? else {
             return Ok(None);
         };
-        let payload = STANDARD.decode(&entry.payload).map_err(|error| {
-            AppError::InvalidInput(format!("cache payload decode failed: {error}"))
-        })?;
-        let execution = QueryExecution::from_arrow_ipc_stream(&payload).map_err(|error| {
-            AppError::InvalidInput(format!("cache query decode failed: {error}"))
-        })?;
-        Ok(Some(execution))
+        match STANDARD
+            .decode(&entry.payload)
+            .ok()
+            .and_then(|payload| decode_query_execution_ipc(&payload).ok())
+        {
+            Some(execution) => Ok(Some(execution)),
+            None => {
+                self.evict_corrupt_entry(key);
+                Ok(None)
+            }
+        }
     }
 
     pub(crate) fn put_query_execution(
@@ -169,11 +175,17 @@ impl QueryCache {
         let Some(entry) = self.lookup_entry(key, kind)? else {
             return Ok(None);
         };
-        let payload = STANDARD.decode(&entry.payload).map_err(|error| {
-            AppError::InvalidInput(format!("cache payload decode failed: {error}"))
-        })?;
-        let value = serde_json::from_slice(&payload).map_err(AppError::from)?;
-        Ok(Some(value))
+        match STANDARD
+            .decode(&entry.payload)
+            .ok()
+            .and_then(|payload| serde_json::from_slice(&payload).ok())
+        {
+            Some(value) => Ok(Some(value)),
+            None => {
+                self.evict_corrupt_entry(key);
+                Ok(None)
+            }
+        }
     }
 
     fn lookup_entry(
@@ -222,6 +234,14 @@ impl QueryCache {
             .expect("cache lock poisoned during disk load")
             .put(entry.clone());
         Ok(Some(entry))
+    }
+
+    fn evict_corrupt_entry(&self, key: &str) {
+        self.memory
+            .lock()
+            .expect("cache lock poisoned during corruption eviction")
+            .remove(key);
+        let _ = self.remove_entry_file(key);
     }
 
     fn cache_dir(&self) -> PathBuf {
@@ -418,6 +438,17 @@ fn current_unix_seconds() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+fn decode_query_execution_ipc(bytes: &[u8]) -> Result<QueryExecution, arrow::error::ArrowError> {
+    let cursor = Cursor::new(bytes);
+    let mut reader = StreamReader::try_new(cursor, None)?;
+    let arrow_schema = Arc::new(reader.schema().as_ref().clone());
+    let mut batches = Vec::new();
+    for batch in &mut reader {
+        batches.push(batch?);
+    }
+    Ok(QueryExecution::new(arrow_schema, batches))
 }
 
 pub(crate) fn query_cache_key(prefix: &str, fingerprint: &str) -> String {

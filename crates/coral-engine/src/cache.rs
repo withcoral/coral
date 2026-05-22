@@ -1,6 +1,8 @@
 //! Deterministic query cache fingerprinting for app-side result caching.
 
 use sha2::{Digest, Sha256};
+use datafusion::sql::sqlparser::dialect::GenericDialect;
+use datafusion::sql::sqlparser::parser::Parser;
 
 /// Query operation categories that participate in cache fingerprinting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,10 +46,23 @@ pub struct QueryCacheInput<'a> {
     pub execution_settings: &'a [&'a str],
 }
 
-/// Normalizes SQL by trimming and collapsing whitespace.
+/// Normalizes SQL without rewriting literal contents.
 #[must_use]
 pub fn normalize_sql(sql: &str) -> String {
-    sql.split_whitespace().collect::<Vec<_>>().join(" ")
+    let trimmed = sql.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    let dialect = GenericDialect {};
+    match Parser::parse_sql(&dialect, trimmed) {
+        Ok(statements) => statements
+            .into_iter()
+            .map(|statement| statement.to_string())
+            .collect::<Vec<_>>()
+            .join("; "),
+        Err(_) => trimmed.to_string(),
+    }
 }
 
 /// Builds a deterministic fingerprint for one cacheable query or metadata request.
@@ -69,4 +84,19 @@ pub fn query_cache_fingerprint(input: QueryCacheInput<'_>) -> String {
         hasher.update(b"\0");
     }
     format!("{:x}", hasher.finalize())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_sql;
+
+    #[test]
+    fn normalize_sql_preserves_string_literal_whitespace() {
+        let with_double_space = "select 'a  b' as value";
+        let with_single_space = "select 'a b' as value";
+
+        assert_eq!(normalize_sql(with_double_space), "SELECT 'a  b' AS value");
+        assert_eq!(normalize_sql(with_single_space), "SELECT 'a b' AS value");
+        assert_ne!(normalize_sql(with_double_space), normalize_sql(with_single_space));
+    }
 }

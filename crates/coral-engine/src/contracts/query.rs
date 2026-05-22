@@ -288,21 +288,6 @@ impl QueryExecution {
     }
 
     #[must_use]
-    /// Rebuilds one fully materialized query result from an `Arrow` IPC stream.
-    pub fn from_arrow_ipc_stream(bytes: &[u8]) -> Result<Self, arrow::error::ArrowError> {
-        use arrow::ipc::reader::StreamReader;
-
-        let cursor = std::io::Cursor::new(bytes);
-        let mut reader = StreamReader::try_new(cursor, None)?;
-        let arrow_schema = Arc::new(reader.schema().as_ref().clone());
-        let mut batches = Vec::new();
-        for batch in &mut reader {
-            batches.push(batch?);
-        }
-        Ok(Self::new(arrow_schema, batches))
-    }
-
-    #[must_use]
     /// Returns the logical result-set schema.
     pub fn schema(&self) -> &[ColumnInfo] {
         &self.schema
