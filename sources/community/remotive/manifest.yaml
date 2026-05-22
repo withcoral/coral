@@ -8,18 +8,18 @@ description: >-
 base_url: "https://remotive.com/api"
 test_queries:
   - SELECT * FROM remotive.jobs LIMIT 1
-  - SELECT title, company_name, category FROM remotive.jobs WHERE category = 'software-dev' LIMIT 5
+  - SELECT title, company_name, category_slug FROM remotive.jobs WHERE category_slug = 'software-development' LIMIT 5
 tables:
   - name: jobs
     description: |
-      Remote job listings from Remotive. Filter by category (e.g. software-dev,
+      Remote job listings from Remotive. Filter locally by category_slug (e.g. software-development,
       marketing) or keyword search. Data updates approximately every 24 hours.
     guide: |
-      Each row is one remote job listing. Use `category` to filter by job
-      category slug (e.g. 'software-dev', 'marketing', 'design', 'data',
-      'product', 'customer-support', 'sales', 'devops', 'finance',
+      Each row is one remote job listing. Use `category_slug` to filter by job
+      category slug (e.g. 'software-development', 'marketing', 'design', 'data',
+      'product', 'customer-service', 'sales', 'devops', 'finance',
       'human-resources', 'qa', 'writing', 'all-others') and `search` for
-      full-text keyword matching. Both filters push down to the API.
+      full-text keyword matching using ILIKE (e.g. `WHERE search ILIKE '%python%'`).
 
       The API returns all matching jobs in a single response (no pagination).
       Results are bounded locally by `fetch_limit_default`.
@@ -29,19 +29,9 @@ tables:
       excluded to keep response payloads compact for downstream agent
       workflows; use the `url` column to link to the full listing.
     fetch_limit_default: 20
-    filters:
-      - name: category
-      - name: search
     request:
       method: GET
       path: /remote-jobs
-      query:
-        - name: category
-          from: filter
-          key: category
-        - name: search
-          from: filter
-          key: search
     response:
       rows_path:
         - jobs
@@ -143,17 +133,155 @@ tables:
           kind: path
           path:
             - url
-      - name: category_filter
+      - name: category_slug
         type: Utf8
         nullable: true
-        description: Echoes the category filter that produced this row.
+        description: Lowercase URL-friendly category slug.
         expr:
-          kind: from_filter
-          key: category
-      - name: search_filter
+          kind: replace
+          from: "Software Development"
+          to: "software-development"
+          expr:
+            kind: replace
+            from: "Customer Service"
+            to: "customer-service"
+            expr:
+              kind: replace
+              from: "Design"
+              to: "design"
+              expr:
+                kind: replace
+                from: "Marketing"
+                to: "marketing"
+                expr:
+                  kind: replace
+                  from: "Sales"
+                  to: "sales"
+                  expr:
+                    kind: replace
+                    from: "Product Management"
+                    to: "product"
+                    expr:
+                      kind: replace
+                      from: "Project Management"
+                      to: "project-management"
+                      expr:
+                        kind: replace
+                        from: "Artificial Intelligence"
+                        to: "artificial-intelligence"
+                        expr:
+                          kind: replace
+                          from: "Data and Analytics"
+                          to: "data"
+                          expr:
+                            kind: replace
+                            from: "Devops"
+                            to: "devops"
+                            expr:
+                              kind: replace
+                              from: "Finance"
+                              to: "finance"
+                              expr:
+                                kind: replace
+                                from: "Human Resources"
+                                to: "human-resources"
+                                expr:
+                                  kind: replace
+                                  from: "Quality Assurance"
+                                  to: "qa"
+                                  expr:
+                                    kind: replace
+                                    from: "Writing"
+                                    to: "writing"
+                                    expr:
+                                      kind: replace
+                                      from: "Legal"
+                                      to: "legal"
+                                      expr:
+                                        kind: replace
+                                        from: "Medical"
+                                        to: "medical"
+                                        expr:
+                                          kind: replace
+                                          from: "Teaching"
+                                          to: "education"
+                                          expr:
+                                            kind: replace
+                                            from: "Account Management"
+                                            to: "account-management"
+                                            expr:
+                                              kind: replace
+                                              from: "Business Development"
+                                              to: "business-development"
+                                              expr:
+                                                kind: replace
+                                                from: "Communications"
+                                                to: "communications"
+                                                expr:
+                                                  kind: replace
+                                                  from: "Compliance"
+                                                  to: "compliance"
+                                                  expr:
+                                                    kind: replace
+                                                    from: "Engineering"
+                                                    to: "engineering"
+                                                    expr:
+                                                      kind: replace
+                                                      from: "Information Technology"
+                                                      to: "information-technology"
+                                                      expr:
+                                                        kind: replace
+                                                        from: "Knowledge Management"
+                                                        to: "knowledge-management"
+                                                        expr:
+                                                          kind: replace
+                                                          from: "Operations"
+                                                          to: "operations"
+                                                          expr:
+                                                            kind: replace
+                                                            from: "Research"
+                                                            to: "research"
+                                                            expr:
+                                                              kind: replace
+                                                              from: "Strategy"
+                                                              to: "strategy"
+                                                              expr:
+                                                                kind: replace
+                                                                from: "Supply Chain"
+                                                                to: "supply-chain"
+                                                                expr:
+                                                                  kind: replace
+                                                                  from: "Travel and Hospitality"
+                                                                  to: "travel-hospitality"
+                                                                  expr:
+                                                                    kind: replace
+                                                                    from: "All others"
+                                                                    to: "all-others"
+                                                                    expr:
+                                                                      kind: path
+                                                                      path:
+                                                                        - category
+      - name: search
         type: Utf8
         nullable: true
-        description: Echoes the search keyword filter that produced this row.
+        description: Search column combining job title, company name, tags, and category.
         expr:
-          kind: from_filter
-          key: search
+          kind: template
+          template: "{{expr.title}} {{expr.company_name}} {{expr.tags}} {{expr.category}}"
+          values:
+            title:
+              kind: path
+              path:
+                - title
+            company_name:
+              kind: path
+              path:
+                - company_name
+            tags:
+              kind: join_array
+              path:
+                - tags
+            category:
+              kind: path
+              path:
+                - category

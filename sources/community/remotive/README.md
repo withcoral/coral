@@ -21,27 +21,44 @@ coral source add --file sources/community/remotive/manifest.yaml
 
 | Table | Description | Filters |
 |---|---|---|
-| `jobs` | Remote job listings from Remotive | `category`, `search` |
+| `jobs` | Remote job listings from Remotive | None (Filtering is done locally in SQL) |
 
-### Category filter values
+### Supported Category Slugs
 
-The `category` filter accepts slugs. Common values:
+Use the `category_slug` column in SQL `WHERE` clauses to filter by category slug. The display-only `category` column returns the user-friendly name.
 
 | Slug | Display name |
 |---|---|
-| `software-dev` | Software Development |
-| `marketing` | Marketing |
+| `software-development` | Software Development |
+| `customer-service` | Customer Service |
 | `design` | Design |
-| `data` | Data |
-| `product` | Product |
-| `customer-support` | Customer Support |
+| `marketing` | Marketing |
 | `sales` | Sales |
-| `devops` | DevOps / Sysadmin |
-| `finance` | Finance / Legal |
+| `product` | Product Management |
+| `project-management` | Project Management |
+| `artificial-intelligence` | Artificial Intelligence |
+| `data` | Data and Analytics |
+| `devops` | Devops |
+| `finance` | Finance |
 | `human-resources` | Human Resources |
-| `qa` | QA |
+| `qa` | Quality Assurance |
 | `writing` | Writing |
-| `all-others` | All Others |
+| `legal` | Legal |
+| `medical` | Medical |
+| `education` | Teaching |
+| `account-management` | Account Management |
+| `business-development` | Business Development |
+| `communications` | Communications |
+| `compliance` | Compliance |
+| `engineering` | Engineering |
+| `information-technology` | Information Technology |
+| `knowledge-management` | Knowledge Management |
+| `operations` | Operations |
+| `research` | Research |
+| `strategy` | Strategy |
+| `supply-chain` | Supply Chain |
+| `travel-hospitality` | Travel and Hospitality |
+| `all-others` | All others |
 
 ## Quick start
 
@@ -53,15 +70,15 @@ coral sql "SELECT id, title, company_name, category FROM remotive.jobs LIMIT 1"
 coral sql "
   SELECT title, company_name, salary, candidate_required_location
   FROM remotive.jobs
-  WHERE category = 'software-dev'
+  WHERE category_slug = 'software-development'
   LIMIT 10
 "
 
-# Search by keyword
+# Search by keyword using ILIKE
 coral sql "
   SELECT title, company_name, category, job_type
   FROM remotive.jobs
-  WHERE search = 'python'
+  WHERE search ILIKE '%python%'
   LIMIT 10
 "
 
@@ -98,11 +115,19 @@ coral sql "
 "
 ```
 
+## Attribution & Terms of Service
+
+According to Remotive's API Terms and Legal Notice:
+
+1. **Attribution:** Consumers **must** link back to the job's URL on Remotive and mention Remotive as the source.
+2. **Redistribution Restrictions:** Do **not** submit jobs fetched from the Remotive API to third-party job boards/websites (including but not limited to Jooble, Neuvoo, Google Jobs, LinkedIn Jobs).
+3. **Usage Restrictions:** Displaying jobs to collect signups or email addresses constitutes a breach of terms of service.
+4. **Rate Limits & Delay:** Data is delayed by 24 hours. The API recommends requesting data at most 4 times per day. Excessive requests will be blocked.
+
+Refer to [Remotive API Documentation](https://remotive.com/api-documentation) for detailed rules.
+
 ## Notes
 
-- The API returns all matching jobs in a single response (no pagination).
-- The HTML job `description` field is intentionally excluded to keep
-  payloads compact for agent workflows. Use the `url` column to view
-  the full listing.
-- Data is delayed 24 hours; `publication_date` reflects this delay.
-- The API recommends at most 4 requests per day — avoid excessive polling.
+- The API ignores query parameters, so all SQL filters (such as `category_slug` and `search`) are evaluated locally on the fetched payload.
+- The API returns all jobs in a single response (no pagination). Results are bounded locally by `fetch_limit_default`.
+- The HTML job `description` field is intentionally excluded to keep payloads compact for downstream agent workflows. Use the `url` column to link to the full listing.
