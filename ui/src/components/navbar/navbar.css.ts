@@ -51,13 +51,52 @@ export const header = recipe({
     isCollapsed: {
       false: {
         flexDirection: 'row',
+        justifyContent: 'space-between',
       },
       true: {
         flexDirection: 'column',
         alignItems: 'flex-start',
+        justifyContent: 'flex-start',
       },
     },
   },
+})
+
+export const brandIdentity = recipe({
+  base: {
+    alignItems: 'center',
+    display: 'flex',
+    flexShrink: 0,
+    gap: '10px',
+    minWidth: 0,
+  },
+  defaultVariants: {
+    isCollapsed: false,
+  },
+  variants: {
+    isCollapsed: {
+      false: {
+        flex: 1,
+      },
+      true: {
+        flex: 'none',
+      },
+    },
+  },
+})
+
+export const brandName = style({
+  ...theme.typography.headingSmall,
+  color: theme.content.primary,
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+})
+
+export const toggleSlot = style({
+  display: 'flex',
+  flexShrink: 0,
+  justifyContent: 'center',
 })
 
 export const brandMark = style({
@@ -80,4 +119,9 @@ export const nav = style({
   flexDirection: 'column',
   gap: '4px',
   marginBlockStart: '24px',
+})
+
+export const navItemTooltipTrigger = style({
+  display: 'flex',
+  width: 'max-content',
 })

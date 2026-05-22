@@ -18,7 +18,11 @@ function handleDisabledClick(event: MouseEvent<HTMLElement>) {
   event.stopPropagation()
 }
 
-function resolveAriaLabel(children: React.ReactNode, explicitLabel: string | undefined, isMinimized: boolean) {
+function resolveAriaLabel(
+  children: React.ReactNode,
+  explicitLabel: string | undefined,
+  isMinimized: boolean,
+) {
   if (explicitLabel !== undefined) return explicitLabel
   if (!isMinimized || typeof children !== 'string') return undefined
 

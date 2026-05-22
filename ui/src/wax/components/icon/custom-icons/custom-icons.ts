@@ -1,10 +1,10 @@
 import { ArrowDownIcon } from '@/wax/components/icon/custom-icons/arrow-down'
 import { ArrowUpIcon } from '@/wax/components/icon/custom-icons/arrow-up'
 import { ChevronDownIcon } from '@/wax/components/icon/custom-icons/chevron-down'
-import { ChevronLeftIcon } from '@/wax/components/icon/custom-icons/chevron-left'
 import { ChevronRightIcon } from '@/wax/components/icon/custom-icons/chevron-right'
 import { CircleAlertIcon } from '@/wax/components/icon/custom-icons/circle-alert'
 import { CoralIcon } from '@/wax/components/icon/custom-icons/coral'
+import { PanelLeftIcon } from '@/wax/components/icon/custom-icons/panel-left'
 import { SearchIcon } from '@/wax/components/icon/custom-icons/search'
 import { XIcon } from '@/wax/components/icon/custom-icons/x'
 import { IconName } from '@/wax/components/icon'
@@ -20,10 +20,10 @@ export const customIcons = {
   ArrowDown: ArrowDownIcon,
   ArrowUp: ArrowUpIcon,
   ChevronDown: ChevronDownIcon,
-  ChevronLeft: ChevronLeftIcon,
   ChevronRight: ChevronRightIcon,
   CircleAlert: CircleAlertIcon,
   Coral: CoralIcon,
+  PanelLeft: PanelLeftIcon,
   Search: SearchIcon,
   X: XIcon,
 } as const
