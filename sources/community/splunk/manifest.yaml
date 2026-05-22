@@ -198,7 +198,7 @@ functions:
         type: Utf8
         nullable: true
         description: App author.
-        expr: {kind: path, path: [content, author]}
+        expr: {kind: path, path: [author]}
       - name: raw
         type: Json
         nullable: false

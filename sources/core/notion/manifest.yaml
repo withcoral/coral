@@ -218,6 +218,13 @@ functions:
           kind: path
           path:
             - id
+      - name: data_source_id
+        type: Utf8
+        nullable: false
+        description: Data source ID used for the request
+        expr:
+          kind: from_arg
+          key: data_source_id
       - name: name
         type: Utf8
         nullable: false

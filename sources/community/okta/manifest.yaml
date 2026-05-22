@@ -420,6 +420,11 @@ functions:
         nullable: false
         description: App user assignment ID.
         expr: {kind: path, path: [id]}
+      - name: app_id
+        type: Utf8
+        nullable: false
+        description: Application ID used for the request.
+        expr: {kind: from_arg, key: app_id}
       - name: status
         type: Utf8
         nullable: true
