@@ -50,7 +50,7 @@ These checks should be based on the authoritative API docs for the API the sourc
 - High-cardinality or expensive endpoints require filters or have conservative `fetch_limit_default` values.
 - Required filters are explicit and described in table `description` or `guide`.
 - Guides tell users how to start, which IDs to join through, and any provider-specific timestamp or query syntax traps.
-- Search-like operations use search filters or table functions when that is clearer than pretending the endpoint is a normal list table.
+- Provider endpoints that accept query text and return ranked candidates use `kind: search` table functions with `search_limits`, stable result identifiers, and useful candidate metadata. Non-retrieval table functions keep the default kind for parameterized operations such as scoped child collections, time-range logs, metrics queries, or detail operations. Ordinary table filters are for exact lookup, scoping, or provider-side filtering; `mode: contains` is only substring matching. Flag provider-native search modeled as a filter and require a `kind: search` function.
 - Table and column names are snake_case, stable, and obvious. Avoid leaking odd provider operation names unless the source is intentionally generated.
 
 ### HTTP and API Semantics
