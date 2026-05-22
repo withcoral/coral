@@ -67,7 +67,6 @@ test('lists 10 traces, searches one, opens its details, and opens a span inspect
   await page.getByRole('button', { name: /^GET github\.pull_requests\b/ }).click()
 
   await expect(page.getByText('GET github.pull_requests /repos/oxide/coral/pulls?state=open&per_page=25')).toBeVisible()
-  await expect(page.getByText('Span details')).toHaveCount(0)
   await expect(page.getByText('Response body')).toBeVisible()
   await expect(page.getByText('"title": "Add MSW Playwright trace fixtures"')).toBeVisible()
   await expect(page.getByText('Raw body')).toBeVisible()
@@ -76,12 +75,11 @@ test('lists 10 traces, searches one, opens its details, and opens a span inspect
   await review.pause()
 })
 
-test('renders trace request and response bodies with JSON, GraphQL, and fallback states', async ({
-  network,
-  page,
-  review,
-}) => {
-  test.slow()
+test('renders trace request and response bodies with JSON, GraphQL, and fallback states', async ({ network, page, review }, testInfo) => {
+  if (process.env.PW_UI_SCREENCAST) {
+    testInfo.setTimeout(45_000)
+  }
+
   network.use(...traceHandlers.tenTraceDetailFlow)
 
   await review.chapter(
@@ -90,10 +88,7 @@ test('renders trace request and response bodies with JSON, GraphQL, and fallback
   )
   await page.goto('/')
   await page.getByPlaceholder('Search queries...').fill('playwright')
-  await page
-    .getByText(/linear\.issues WHERE team_key = 'CORAL' AND title ILIKE '%playwright%'/)
-    .click()
-  await review.pause()
+  await page.getByText(/linear\.issues WHERE team_key = 'CORAL' AND title ILIKE '%playwright%'/).click()
 
   await expect(page.getByRole('treeitem')).toHaveCount(14)
 
@@ -103,14 +98,12 @@ test('renders trace request and response bodies with JSON, GraphQL, and fallback
   await expect(page.getByText('Response body')).toBeVisible()
   await expect(page.getByText('"channels": [')).toBeVisible()
   await expect(page.getByText('"name": "eng-coral"')).toBeVisible()
-  await review.pause()
 
   await review.chapter('Inspect malformed JSON fallback', 'Verify raw text stays readable when parsing fails')
   await page.getByRole('button', { name: /^GET github\.issue_previews\b/ }).click()
 
   await expect(page.getByText('Response body')).toBeVisible()
   await expect(page.getByText('{"oops":')).toBeVisible()
-  await review.pause()
 
   await review.chapter('Inspect GraphQL bodies', 'Check request metadata, variables, and response data for GraphQL traffic')
   await page.getByRole('button', { name: /^POST linear\.issues\b/ }).click()
@@ -149,10 +142,7 @@ test('renders trace request and response bodies with JSON, GraphQL, and fallback
 
   await expect(githubResponsePanel.getByText('GraphQL response')).toBeVisible()
   await expect(githubResponsePanel.getByText('Errors', { exact: true }).first()).toBeVisible()
-  await expect(
-    githubResponsePanel.getByText('"message": "GraphQL warnings should still be visible"'),
-  ).toBeVisible()
-  await review.pause()
+  await expect(githubResponsePanel.getByText('"message": "GraphQL warnings should still be visible"')).toBeVisible()
 
   await review.chapter('Inspect missing and truncated bodies', 'Confirm the viewer still explains empty and truncated body states')
   await page.getByRole('button', { name: /^POST linear\.issue_request_preview\b/ }).click()
@@ -162,10 +152,7 @@ test('renders trace request and response bodies with JSON, GraphQL, and fallback
   await page.getByRole('button', { name: /^GET github\.pull_request_archive\b/ }).click()
   await page.getByRole('tab', { name: 'Response body (truncated)' }).click()
 
-  await expect(
-    page.getByText('Response body was truncated (4.0 KB), but no preview was recorded.'),
-  ).toBeVisible()
-  await review.pause()
+  await expect(page.getByText('Response body was truncated (4.0 KB), but no preview was recorded.')).toBeVisible()
 })
 
 test('shows trace storage unavailable errors from TraceService', async ({

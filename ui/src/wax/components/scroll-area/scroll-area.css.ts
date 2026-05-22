@@ -68,7 +68,6 @@ export const viewportFade = styleVariants({
 
 export const content = style({
   display: 'block',
-  height: '100%',
 })
 
 export const scrollbar = style({
