@@ -137,8 +137,9 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
         run: |
-          .\target\$env:TARGET\release\coral.exe --version
-          .\target\$env:TARGET\release\coral.exe source discover
+          $coral = "target\$env:TARGET\release\coral.exe"
+          & $coral --version
+          & $coral source discover
 
       - name: Package Unix
         if: runner.os != 'Windows'
