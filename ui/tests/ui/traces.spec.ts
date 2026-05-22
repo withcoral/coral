@@ -63,13 +63,10 @@ test('lists 10 traces, searches one, opens its details, and opens a span inspect
   await expect(page.getByRole('treeitem')).toHaveCount(14)
   await review.pause()
 
-  await review.chapter(
-    'Open a span inspector',
-    'Expand one HTTP span and inspect the captured response body',
-  )
-  await page.getByRole('button', { name: /GET github\.pull_requests/ }).click()
+  await review.chapter('Open a span inspector', 'Expand one HTTP span and inspect the captured response body')
+  await page.getByRole('button', { name: /^GET github\.pull_requests\b/ }).click()
 
-  await expect(page.getByText('GET github.pull_requests')).toBeVisible()
+  await expect(page.getByText('GET github.pull_requests /repos/oxide/coral/pulls?state=open&per_page=25')).toBeVisible()
   await expect(page.getByText('Span details')).toHaveCount(0)
   await expect(page.getByText('Response body')).toBeVisible()
   await expect(page.getByText('"title": "Add MSW Playwright trace fixtures"')).toBeVisible()
@@ -100,32 +97,23 @@ test('renders trace request and response bodies with JSON, GraphQL, and fallback
 
   await expect(page.getByRole('treeitem')).toHaveCount(14)
 
-  await review.chapter(
-    'Inspect pretty JSON',
-    'Open a structured response body and confirm it is pretty printed',
-  )
-  await page.getByRole('button', { name: /GET slack\.conversations/ }).click()
+  await review.chapter('Inspect pretty JSON', 'Open a structured response body and confirm it is pretty printed')
+  await page.getByRole('button', { name: /^GET slack\.conversations\b/ }).click()
 
   await expect(page.getByText('Response body')).toBeVisible()
   await expect(page.getByText('"channels": [')).toBeVisible()
   await expect(page.getByText('"name": "eng-coral"')).toBeVisible()
   await review.pause()
 
-  await review.chapter(
-    'Inspect malformed JSON fallback',
-    'Verify raw text stays readable when parsing fails',
-  )
-  await page.getByRole('button', { name: /GET github\.issue_previews/ }).click()
+  await review.chapter('Inspect malformed JSON fallback', 'Verify raw text stays readable when parsing fails')
+  await page.getByRole('button', { name: /^GET github\.issue_previews\b/ }).click()
 
   await expect(page.getByText('Response body')).toBeVisible()
   await expect(page.getByText('{"oops":')).toBeVisible()
   await review.pause()
 
-  await review.chapter(
-    'Inspect GraphQL bodies',
-    'Check request metadata, variables, and response data for GraphQL traffic',
-  )
-  await page.getByRole('button', { name: /POST linear\.issues\b/ }).click()
+  await review.chapter('Inspect GraphQL bodies', 'Check request metadata, variables, and response data for GraphQL traffic')
+  await page.getByRole('button', { name: /^POST linear\.issues\b/ }).click()
   await page.getByRole('tab', { name: 'Request body' }).click()
   const requestPanel = page.getByRole('tabpanel', { name: 'Request body' })
   const responsePanel = page.getByRole('tabpanel', { name: 'Response body' })
@@ -148,11 +136,8 @@ test('renders trace request and response bodies with JSON, GraphQL, and fallback
   ).toBeVisible()
   await review.pause()
 
-  await review.chapter(
-    'Inspect GraphQL detection without /graphql',
-    'Open a GraphQL-shaped body on a non-GraphQL path and confirm the richer rendering still appears',
-  )
-  await page.getByRole('button', { name: /POST github\.repository_search/ }).click()
+  await review.chapter('Inspect GraphQL detection without /graphql', 'Open a GraphQL-shaped body on a non-GraphQL path and confirm the richer rendering still appears')
+  await page.getByRole('button', { name: /^POST github\.repository_search\b/ }).click()
   await page.getByRole('tab', { name: 'Request body' }).click()
   const githubRequestPanel = page.getByRole('tabpanel', { name: 'Request body' })
   const githubResponsePanel = page.getByRole('tabpanel', { name: 'Response body' })
@@ -169,17 +154,12 @@ test('renders trace request and response bodies with JSON, GraphQL, and fallback
   ).toBeVisible()
   await review.pause()
 
-  await review.chapter(
-    'Inspect missing and truncated bodies',
-    'Confirm the viewer still explains empty and truncated body states',
-  )
-  await page.getByRole('button', { name: /POST linear\.issue_request_preview/ }).click()
+  await review.chapter('Inspect missing and truncated bodies', 'Confirm the viewer still explains empty and truncated body states')
+  await page.getByRole('button', { name: /^POST linear\.issue_request_preview\b/ }).click()
   await page.getByRole('tab', { name: 'Request body' }).click()
 
-  await expect(
-    page.getByText('Request body was present (2.0 KB), but content was not captured.'),
-  ).toBeVisible()
-  await page.getByRole('button', { name: /GET github\.pull_request_archive/ }).click()
+  await expect(page.getByText('Request body was present (2.0 KB), but content was not captured.')).toBeVisible()
+  await page.getByRole('button', { name: /^GET github\.pull_request_archive\b/ }).click()
   await page.getByRole('tab', { name: 'Response body (truncated)' }).click()
 
   await expect(

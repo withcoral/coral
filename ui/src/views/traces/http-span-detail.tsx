@@ -6,13 +6,7 @@ import { Typography } from '@/wax/components/typography'
 import type { TraceSpan } from '@/generated/coral/v1/traces_pb'
 
 import * as s from '../traces-page.css'
-import {
-  formatDuration,
-  formatDurationFromNanos,
-  parseJsonObject,
-  spanOperation,
-  spanUrl,
-} from './trace-utils'
+import { formatDuration, formatDurationFromNanos, parseJsonObject, spanRequestLine, spanUrl } from './trace-utils'
 
 type JsonValue = Record<string, unknown> | unknown[] | string | number | boolean | null
 type BodyKind = 'request' | 'response'
@@ -445,6 +439,7 @@ export function HttpSpanDetail({
   const attempt = attrText(attrs['coral.http.attempt'])
   const source = attrText(attrs['coral.source'])
   const table = attrText(attrs['coral.table'])
+  const requestLine = spanRequestLine(span)
 
   useEffect(() => setActiveTab(preferredTab), [preferredTab, span.spanId])
   useEffect(() => setCopyState('idle'), [activeTab, span.spanId])
@@ -472,12 +467,7 @@ export function HttpSpanDetail({
     >
       <div className={s.waterfallHttpDetailHeader}>
         <div className={s.waterfallHttpDetailTitle}>
-          <Typography.CodeSmallInlineStrong as="span" className={s.methodBadge}>
-            {spanOperation(span)}
-          </Typography.CodeSmallInlineStrong>
-          <Typography.BodySmall as="span" className={s.requestUrl} variant="tertiary" truncate>
-            {url || 'No URL recorded'}
-          </Typography.BodySmall>
+          <Typography.CodeSmallInlineStrong as="span" className={s.requestLine} truncate>{requestLine || 'No URL recorded'}</Typography.CodeSmallInlineStrong>
         </div>
         <div className={s.waterfallHttpDetailHeaderActions}>
           <Button.IconButton

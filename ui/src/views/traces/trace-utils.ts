@@ -103,6 +103,16 @@ function endpointPath(url: string): string {
   }
 }
 
+function endpointLine(url: string): string {
+  if (!url) return ''
+  try {
+    const parsed = new URL(url, 'http://coral.local')
+    return `${parsed.pathname}${parsed.search}`
+  } catch {
+    return endpointPath(url)
+  }
+}
+
 export function spanOperation(span: TraceSpan): string {
   const attrs = parseJsonObject(span.attributesJson)
   const method = attrFrom(attrs, 'http.request.method')
@@ -110,6 +120,14 @@ export function spanOperation(span: TraceSpan): string {
   if (method && table) return `${method} ${table}`
   if (method) return method
   return table ?? span.name
+}
+
+export function spanRequestLine(span: TraceSpan): string {
+  const operation = spanDisplayLabel(span)
+  const url = spanUrl(span)
+  const endpoint = endpointLine(url)
+  if (!endpoint) return operation
+  return `${operation} ${endpoint}`
 }
 
 export function spanDisplayLabel(span: TraceSpan): string {
