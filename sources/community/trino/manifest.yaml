@@ -1,0 +1,552 @@
+name: trino
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Trino coordinator information and the cluster's active and recently
+  completed query history, including state, errors, timings, driver counts,
+  and memory usage, from a self-hosted Trino coordinator.
+base_url: "{{input.TRINO_URL}}"
+inputs:
+  TRINO_URL:
+    kind: variable
+    default: http://localhost:8080
+    hint: |
+      Base URL of the Trino coordinator, including scheme and port. The
+      default `http://localhost:8080` matches a local Trino. For a TLS
+      cluster use `https://coordinator.example.com:8443`. Do not include a
+      trailing slash.
+  TRINO_USER:
+    kind: variable
+    default: coral
+    hint: |
+      Identity sent in the `X-Trino-User` header. Trino requires a user on
+      requests to `/v1/query`. Use an identity your cluster's access control
+      allows to read query state; on clusters without authentication any
+      non-empty value works. Defaults to `coral`.
+auth:
+  type: HeaderAuth
+  headers:
+    - name: X-Trino-User
+      from: template
+      template: "{{input.TRINO_USER}}"
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+test_queries:
+  - SELECT * FROM trino.info LIMIT 1
+  - SELECT * FROM trino.queries LIMIT 1
+tables:
+  - name: info
+    description: Coordinator server information from the /v1/info endpoint
+    guide: |
+      Returns a single row describing the coordinator. `starting` is true
+      while the server is still coming up and not yet accepting queries;
+      `state` is `ACTIVE` on a healthy coordinator. `uptime` is a
+      human-readable duration string such as `1.88m` or `2.15h`, not a
+      number.
+    fetch_limit_default: 1
+    request:
+      method: GET
+      path: /v1/info
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: node_id
+        type: Utf8
+        nullable: true
+        description: Internal node identifier of the coordinator
+        expr:
+          kind: path
+          path:
+            - nodeId
+      - name: state
+        type: Utf8
+        nullable: true
+        description: "Coordinator state, e.g. ACTIVE"
+        expr:
+          kind: path
+          path:
+            - state
+      - name: version
+        type: Utf8
+        nullable: true
+        description: Trino server version
+        expr:
+          kind: path
+          path:
+            - nodeVersion
+            - version
+      - name: environment
+        type: Utf8
+        nullable: true
+        description: Configured environment name for the cluster
+        expr:
+          kind: path
+          path:
+            - environment
+      - name: coordinator
+        type: Boolean
+        nullable: true
+        description: Whether this node is a coordinator
+        expr:
+          kind: path
+          path:
+            - coordinator
+      - name: coordinator_id
+        type: Utf8
+        nullable: true
+        description: Identifier of the coordinator that served the request
+        expr:
+          kind: path
+          path:
+            - coordinatorId
+      - name: starting
+        type: Boolean
+        nullable: true
+        description: True while the server is still starting up
+        expr:
+          kind: path
+          path:
+            - starting
+      - name: uptime
+        type: Utf8
+        nullable: true
+        description: Human-readable server uptime duration string
+        expr:
+          kind: path
+          path:
+            - uptime
+
+  - name: queries
+    description: Active and recently completed queries from the /v1/query endpoint
+    guide: |
+      Returns the queries the coordinator still retains in memory: queries
+      in flight plus a bounded history of recently finished ones. Older
+      queries are evicted, so this is a live operational view, not a
+      complete audit log. Filter on `state` with a SQL WHERE clause; an
+      equality predicate such as `WHERE state = 'FAILED'` is pushed down to
+      the coordinator's `/v1/query?state=` parameter, so only matching
+      queries are fetched:
+
+      - `RUNNING`, `QUEUED`, `PLANNING`, `STARTING`, `FINISHING` — in flight
+      - `FINISHED` — completed successfully
+      - `FAILED` — failed; see `error_type` and `error_code_name`
+
+      Duration fields (`elapsed_time`, `execution_time`, `total_cpu_time`,
+      etc.) and data-size fields (`physical_input_data_size`,
+      `peak_user_memory_reservation`, etc.) are human-readable strings
+      exactly as Trino returns them (e.g. `439.69ms`, `0B`, `4.5GB`), not
+      numbers. `create_time` and `end_time` are real timestamps;
+      `end_time` is null while a query is still running. `error_type` and
+      `error_code_name` are null unless the query state is `FAILED`.
+    filters:
+      - name: state
+    request:
+      method: GET
+      path: /v1/query
+      query:
+        - name: state
+          from: filter
+          key: state
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: query_id
+        type: Utf8
+        nullable: false
+        description: Unique query identifier
+        expr:
+          kind: path
+          path:
+            - queryId
+      - name: state
+        type: Utf8
+        nullable: false
+        description: "Query state: RUNNING, QUEUED, PLANNING, FINISHED, FAILED, etc."
+        expr:
+          kind: path
+          path:
+            - state
+      - name: query
+        type: Utf8
+        nullable: true
+        description: SQL text of the query
+        expr:
+          kind: path
+          path:
+            - query
+      - name: query_type
+        type: Utf8
+        nullable: true
+        description: "Statement category, e.g. SELECT, INSERT, CREATE_TABLE"
+        expr:
+          kind: path
+          path:
+            - queryType
+      - name: user
+        type: Utf8
+        nullable: true
+        description: Session user that submitted the query
+        expr:
+          kind: path
+          path:
+            - session
+            - user
+      - name: original_user
+        type: Utf8
+        nullable: true
+        description: Original user before any user mapping
+        expr:
+          kind: path
+          path:
+            - session
+            - originalUser
+      - name: principal
+        type: Utf8
+        nullable: true
+        description: Authenticated principal, when present
+        expr:
+          kind: path
+          path:
+            - session
+            - principal
+      - name: source
+        type: Utf8
+        nullable: true
+        description: Client source string; null when the client did not set one
+        expr:
+          kind: path
+          path:
+            - session
+            - source
+      - name: catalog
+        type: Utf8
+        nullable: true
+        description: Default catalog for the session; null when unset
+        expr:
+          kind: path
+          path:
+            - session
+            - catalog
+      - name: schema
+        type: Utf8
+        nullable: true
+        description: Default schema for the session; null when unset
+        expr:
+          kind: path
+          path:
+            - session
+            - schema
+      - name: remote_user_address
+        type: Utf8
+        nullable: true
+        description: Client IP address that submitted the query
+        expr:
+          kind: path
+          path:
+            - session
+            - remoteUserAddress
+      - name: error_type
+        type: Utf8
+        nullable: true
+        description: "Error category when FAILED: USER_ERROR, INTERNAL_ERROR, INSUFFICIENT_RESOURCES, EXTERNAL"
+        expr:
+          kind: path
+          path:
+            - errorType
+      - name: error_code_name
+        type: Utf8
+        nullable: true
+        description: "Specific error code name when FAILED, e.g. MISSING_SCHEMA_NAME"
+        expr:
+          kind: path
+          path:
+            - errorCode
+            - name
+      - name: error_code
+        type: Int64
+        nullable: true
+        description: Numeric Trino error code when the query FAILED
+        expr:
+          kind: path
+          path:
+            - errorCode
+            - code
+      - name: scheduled
+        type: Boolean
+        nullable: true
+        description: Whether the query has been scheduled for execution
+        expr:
+          kind: path
+          path:
+            - scheduled
+      - name: retry_policy
+        type: Utf8
+        nullable: true
+        description: "Fault-tolerant execution retry policy: NONE, QUERY, or TASK"
+        expr:
+          kind: path
+          path:
+            - retryPolicy
+      - name: resource_group
+        type: Json
+        nullable: true
+        description: Resource group path the query was assigned to, as a JSON array
+        expr:
+          kind: path
+          path:
+            - resourceGroupId
+      - name: self_uri
+        type: Utf8
+        nullable: true
+        description: Coordinator URI for the full query detail document
+        expr:
+          kind: path
+          path:
+            - self
+      - name: create_time
+        type: Timestamp
+        nullable: true
+        description: Time the query was submitted
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - queryStats
+              - createTime
+      - name: end_time
+        type: Timestamp
+        nullable: true
+        description: Time the query finished; null while still running
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - queryStats
+              - endTime
+      - name: queued_time
+        type: Utf8
+        nullable: true
+        description: Time spent queued, as a human-readable string
+        expr:
+          kind: path
+          path:
+            - queryStats
+            - queuedTime
+      - name: elapsed_time
+        type: Utf8
+        nullable: true
+        description: Total wall-clock time, as a human-readable string
+        expr:
+          kind: path
+          path:
+            - queryStats
+            - elapsedTime
+      - name: execution_time
+        type: Utf8
+        nullable: true
+        description: Time spent executing (excluding queuing), as a string
+        expr:
+          kind: path
+          path:
+            - queryStats
+            - executionTime
+      - name: planning_time
+        type: Utf8
+        nullable: true
+        description: Time spent planning the query, as a string
+        expr:
+          kind: path
+          path:
+            - queryStats
+            - planningTime
+      - name: analysis_time
+        type: Utf8
+        nullable: true
+        description: Time spent in analysis, as a string
+        expr:
+          kind: path
+          path:
+            - queryStats
+            - analysisTime
+      - name: total_cpu_time
+        type: Utf8
+        nullable: true
+        description: Aggregate CPU time across all tasks, as a string
+        expr:
+          kind: path
+          path:
+            - queryStats
+            - totalCpuTime
+      - name: total_scheduled_time
+        type: Utf8
+        nullable: true
+        description: Aggregate scheduled time across all tasks, as a string
+        expr:
+          kind: path
+          path:
+            - queryStats
+            - totalScheduledTime
+      - name: finishing_time
+        type: Utf8
+        nullable: true
+        description: Time spent in the finishing phase, as a string
+        expr:
+          kind: path
+          path:
+            - queryStats
+            - finishingTime
+      - name: total_drivers
+        type: Int64
+        nullable: true
+        description: Total number of drivers (split pipelines) for the query
+        expr:
+          kind: path
+          path:
+            - queryStats
+            - totalDrivers
+      - name: queued_drivers
+        type: Int64
+        nullable: true
+        description: Number of drivers currently queued
+        expr:
+          kind: path
+          path:
+            - queryStats
+            - queuedDrivers
+      - name: running_drivers
+        type: Int64
+        nullable: true
+        description: Number of drivers currently running
+        expr:
+          kind: path
+          path:
+            - queryStats
+            - runningDrivers
+      - name: completed_drivers
+        type: Int64
+        nullable: true
+        description: Number of drivers that have completed
+        expr:
+          kind: path
+          path:
+            - queryStats
+            - completedDrivers
+      - name: blocked_drivers
+        type: Int64
+        nullable: true
+        description: Number of drivers currently blocked
+        expr:
+          kind: path
+          path:
+            - queryStats
+            - blockedDrivers
+      - name: failed_tasks
+        type: Int64
+        nullable: true
+        description: Number of failed tasks for the query
+        expr:
+          kind: path
+          path:
+            - queryStats
+            - failedTasks
+      - name: processed_input_positions
+        type: Int64
+        nullable: true
+        description: Number of input rows processed
+        expr:
+          kind: path
+          path:
+            - queryStats
+            - processedInputPositions
+      - name: physical_input_data_size
+        type: Utf8
+        nullable: true
+        description: Physical input data size, as a human-readable string
+        expr:
+          kind: path
+          path:
+            - queryStats
+            - physicalInputDataSize
+      - name: spilled_data_size
+        type: Utf8
+        nullable: true
+        description: Data spilled to disk, as a human-readable string
+        expr:
+          kind: path
+          path:
+            - queryStats
+            - spilledDataSize
+      - name: user_memory_reservation
+        type: Utf8
+        nullable: true
+        description: Current user memory reservation, as a string
+        expr:
+          kind: path
+          path:
+            - queryStats
+            - userMemoryReservation
+      - name: total_memory_reservation
+        type: Utf8
+        nullable: true
+        description: Current total memory reservation, as a string
+        expr:
+          kind: path
+          path:
+            - queryStats
+            - totalMemoryReservation
+      - name: peak_user_memory_reservation
+        type: Utf8
+        nullable: true
+        description: Peak user memory reservation, as a string
+        expr:
+          kind: path
+          path:
+            - queryStats
+            - peakUserMemoryReservation
+      - name: peak_total_memory_reservation
+        type: Utf8
+        nullable: true
+        description: Peak total memory reservation, as a string
+        expr:
+          kind: path
+          path:
+            - queryStats
+            - peakTotalMemoryReservation
+      - name: cumulative_user_memory
+        type: Float64
+        nullable: true
+        description: Cumulative user memory (byte-seconds)
+        expr:
+          kind: path
+          path:
+            - queryStats
+            - cumulativeUserMemory
+      - name: progress_percentage
+        type: Float64
+        nullable: true
+        description: Execution progress percentage; null before execution starts
+        expr:
+          kind: path
+          path:
+            - queryStats
+            - progressPercentage
+      - name: fully_blocked
+        type: Boolean
+        nullable: true
+        description: Whether all running drivers are currently blocked
+        expr:
+          kind: path
+          path:
+            - queryStats
+            - fullyBlocked

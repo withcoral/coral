@@ -3,8 +3,10 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::common::{
-    BodySpec, ColumnSpec, ExprSpec, FilterSpec, FunctionArgBinding, PaginationSpec,
-    RequestRouteSpec, RequestSpec, SourceTableFunctionSpec, ValueSourceSpec,
+    BodySpec, ColumnSpec, DetailHintSpec, ExprSpec, FilterSpec, FunctionArgBinding,
+    MAX_SEARCH_CALLS_PER_QUERY, MAX_SEARCH_CANDIDATES_PER_QUERY, MAX_SEARCH_TOP_K, PaginationSpec,
+    RequestRouteSpec, RequestSpec, SearchLimitsSpec, SourceTableFunctionKind,
+    SourceTableFunctionSpec, ValueSourceSpec,
 };
 use crate::{ManifestError, ParsedTemplate, Result, TemplateNamespace};
 
@@ -26,6 +28,10 @@ pub(crate) fn validate_table_names<'a>(
     Ok(())
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "HTTP table validation mirrors the source-spec fields it validates."
+)]
 pub(crate) fn validate_http_table(
     schema: &str,
     table_name: &str,
@@ -34,6 +40,8 @@ pub(crate) fn validate_http_table(
     request: &RequestSpec,
     requests: &[RequestRouteSpec],
     pagination: &PaginationSpec,
+    search_limits: Option<&SearchLimitsSpec>,
+    detail_hints: &[DetailHintSpec],
 ) -> Result<()> {
     if request.path.raw().trim().is_empty() {
         return Err(ManifestError::validation(format!(
@@ -43,6 +51,16 @@ pub(crate) fn validate_http_table(
 
     validate_columns(columns, schema, table_name)?;
     let known_filters = validate_filters_and_column_exprs(filters, columns, schema, table_name)?;
+    // Deprecated compatibility tables already use mode: search; new metadata is
+    // validated when present, but not forced onto every existing manifest here.
+    validate_search_metadata(
+        schema,
+        table_name,
+        false,
+        search_limits,
+        detail_hints,
+        columns,
+    )?;
 
     validate_request_bindings(schema, table_name, request, &known_filters)?;
 
@@ -149,6 +167,14 @@ pub(crate) fn validate_http_function(
         source_name,
         &format!("function '{}'", function.name),
     )?;
+    validate_search_metadata(
+        source_name,
+        &format!("function '{}'", function.name),
+        function.kind == SourceTableFunctionKind::Search,
+        function.search_limits.as_ref(),
+        &function.detail_hints,
+        &function.columns,
+    )?;
     validate_function_request_bindings(source_name, function, &request_arg_names)?;
     function
         .pagination
@@ -171,6 +197,7 @@ pub(crate) fn validate_filters_and_column_exprs(
                 filter.name
             )));
         }
+        filter.manifest_data_type()?;
     }
 
     for col in columns {
@@ -184,6 +211,195 @@ pub(crate) fn validate_filters_and_column_exprs(
     }
 
     Ok(known_filters)
+}
+
+pub(crate) struct DetailHintTargetTable<'a> {
+    pub(crate) name: &'a str,
+    pub(crate) filters: &'a [FilterSpec],
+}
+
+pub(crate) struct DetailHintDeclaringSurface<'a> {
+    pub(crate) surface_kind: &'static str,
+    pub(crate) surface_name: &'a str,
+    pub(crate) hints: &'a [DetailHintSpec],
+    pub(crate) columns: &'a [ColumnSpec],
+}
+
+pub(crate) fn validate_detail_hint_references(
+    schema: &str,
+    targets: &[DetailHintTargetTable<'_>],
+    sources: &[DetailHintDeclaringSurface<'_>],
+) -> Result<()> {
+    for source in sources {
+        for hint in source.hints {
+            let context = format!(
+                "{schema}.{} '{}' detail_hints",
+                source.surface_kind, source.surface_name
+            );
+            let Some(target) = resolve_detail_hint_target(schema, targets, &hint.table) else {
+                return Err(ManifestError::validation(format!(
+                    "{context} target table '{}' does not match any table in source '{schema}'",
+                    hint.table
+                )));
+            };
+            let Some(search_result_column) = source
+                .columns
+                .iter()
+                .find(|column| column.name == hint.search_result_column)
+            else {
+                return Err(ManifestError::validation(format!(
+                    "{context} references unknown search_result_column '{}'",
+                    hint.search_result_column
+                )));
+            };
+            let Some(detail_filter) = target
+                .filters
+                .iter()
+                .find(|filter| filter.name == hint.detail_filter)
+            else {
+                return Err(ManifestError::validation(format!(
+                    "{context} target table '{}' does not declare detail_filter '{}'",
+                    hint.table, hint.detail_filter
+                )));
+            };
+            let search_result_type = search_result_column.manifest_data_type()?;
+            let detail_filter_type = detail_filter.manifest_data_type()?;
+            if search_result_type != detail_filter_type {
+                return Err(ManifestError::validation(format!(
+                    "{context} search_result_column '{}' type '{}' does not match target table '{}' detail_filter '{}' type '{}'",
+                    hint.search_result_column,
+                    search_result_column.data_type,
+                    hint.table,
+                    hint.detail_filter,
+                    detail_filter.data_type
+                )));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn resolve_detail_hint_target<'a>(
+    schema: &str,
+    targets: &'a [DetailHintTargetTable<'a>],
+    hint_table: &str,
+) -> Option<&'a DetailHintTargetTable<'a>> {
+    let qualified_prefix = format!("{schema}.");
+    let unqualified = hint_table
+        .strip_prefix(&qualified_prefix)
+        .unwrap_or(hint_table);
+
+    targets.iter().find(|target| target.name == unqualified)
+}
+
+fn validate_search_metadata(
+    schema: &str,
+    table: &str,
+    require_search_limits: bool,
+    search_limits: Option<&SearchLimitsSpec>,
+    detail_hints: &[DetailHintSpec],
+    columns: &[ColumnSpec],
+) -> Result<()> {
+    if require_search_limits && search_limits.is_none() {
+        return Err(ManifestError::validation(format!(
+            "{schema}.{table} is a search surface and must define search_limits"
+        )));
+    }
+    if let Some(limits) = search_limits {
+        validate_search_limits(limits, &format!("{schema}.{table} search_limits"))?;
+    }
+    validate_detail_hints(
+        detail_hints,
+        columns,
+        &format!("{schema}.{table} detail_hints"),
+    )
+}
+
+fn validate_search_limits(limits: &SearchLimitsSpec, context: &str) -> Result<()> {
+    if limits.default_top_k == 0 {
+        return Err(ManifestError::validation(format!(
+            "{context}.default_top_k must be > 0"
+        )));
+    }
+    if limits.max_top_k == 0 {
+        return Err(ManifestError::validation(format!(
+            "{context}.max_top_k must be > 0"
+        )));
+    }
+    if limits.max_top_k > MAX_SEARCH_TOP_K {
+        return Err(ManifestError::validation(format!(
+            "{context}.max_top_k must be <= {MAX_SEARCH_TOP_K}"
+        )));
+    }
+    if limits.default_top_k > limits.max_top_k {
+        return Err(ManifestError::validation(format!(
+            "{context}.default_top_k must be <= max_top_k"
+        )));
+    }
+    if limits.max_calls_per_query == 0 {
+        return Err(ManifestError::validation(format!(
+            "{context}.max_calls_per_query must be > 0"
+        )));
+    }
+    if limits.max_calls_per_query > MAX_SEARCH_CALLS_PER_QUERY {
+        return Err(ManifestError::validation(format!(
+            "{context}.max_calls_per_query must be <= {MAX_SEARCH_CALLS_PER_QUERY}"
+        )));
+    }
+    let Some(candidate_budget) = limits.max_top_k.checked_mul(limits.max_calls_per_query) else {
+        return Err(ManifestError::validation(format!(
+            "{context}.max_top_k * max_calls_per_query exceeds supported range"
+        )));
+    };
+    if candidate_budget > MAX_SEARCH_CANDIDATES_PER_QUERY {
+        return Err(ManifestError::validation(format!(
+            "{context}.max_top_k * max_calls_per_query must be <= {MAX_SEARCH_CANDIDATES_PER_QUERY}"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_detail_hints(
+    detail_hints: &[DetailHintSpec],
+    columns: &[ColumnSpec],
+    context: &str,
+) -> Result<()> {
+    let column_names = columns
+        .iter()
+        .map(|column| column.name.as_str())
+        .collect::<HashSet<_>>();
+
+    for hint in detail_hints {
+        if hint.table.trim().is_empty() {
+            return Err(ManifestError::validation(format!(
+                "{context} must not contain an empty table"
+            )));
+        }
+        if hint.search_result_column.trim().is_empty() {
+            return Err(ManifestError::validation(format!(
+                "{context} must not contain an empty search_result_column"
+            )));
+        }
+        if !column_names.contains(hint.search_result_column.as_str()) {
+            return Err(ManifestError::validation(format!(
+                "{context} references unknown search_result_column '{}'",
+                hint.search_result_column
+            )));
+        }
+        if hint.detail_filter.trim().is_empty() {
+            return Err(ManifestError::validation(format!(
+                "{context} must not contain an empty detail_filter"
+            )));
+        }
+        if hint.purpose.trim().is_empty() {
+            return Err(ManifestError::validation(format!(
+                "{context} must not contain an empty purpose"
+            )));
+        }
+    }
+
+    Ok(())
 }
 
 pub(crate) fn validate_unique_values(values: &[String], context: &str) -> Result<()> {
@@ -292,7 +508,9 @@ fn validate_value_source(
         }
         ValueSourceSpec::Arg { key, .. }
         | ValueSourceSpec::ArgInt { key, .. }
-        | ValueSourceSpec::ArgBool { key, .. } => {
+        | ValueSourceSpec::ArgBool { key, .. }
+        | ValueSourceSpec::ArgSplit { key, .. }
+        | ValueSourceSpec::ArgSplitInt { key, .. } => {
             return Err(ManifestError::validation(format!(
                 "{context} uses function argument '{key}' outside a function request"
             )));
@@ -396,6 +614,8 @@ fn validate_arg_value_source(
         ValueSourceSpec::Arg { key, .. }
         | ValueSourceSpec::ArgInt { key, .. }
         | ValueSourceSpec::ArgBool { key, .. }
+        | ValueSourceSpec::ArgSplit { key, .. }
+        | ValueSourceSpec::ArgSplitInt { key, .. }
             if !request_arg_names.contains(key.as_str()) =>
         {
             return Err(ManifestError::validation(format!(
@@ -598,11 +818,14 @@ mod tests {
         validate_http_table, validate_table_names,
     };
     use crate::common::{
-        ColumnSpec, ExprSpec, FilterMode, FilterSpec, FunctionArgBinding, PaginationSpec,
-        QueryParamSpec, RequestRouteSpec, RequestSpec, SourceTableFunctionSpec,
-        TableFunctionArgSpec, ValueSourceSpec,
+        ColumnSpec, ExprSpec, FilterMode, FilterSpec, FunctionArgBinding,
+        MAX_SEARCH_CANDIDATES_PER_QUERY, MAX_SEARCH_TOP_K, PaginationSpec, QueryParamSpec,
+        RequestRouteSpec, RequestSpec, SearchLimitsSpec, SourceTableFunctionKind,
+        SourceTableFunctionSpec, TableFunctionArgSpec, ValueSourceSpec,
     };
+    use crate::parse_source_manifest_value;
     use crate::template::ParsedTemplate;
+    use serde_json::{Value, json};
 
     fn test_column() -> ColumnSpec {
         ColumnSpec {
@@ -618,8 +841,10 @@ mod tests {
     fn test_filters() -> Vec<FilterSpec> {
         vec![FilterSpec {
             name: "id".to_string(),
+            data_type: "Utf8".to_string(),
             required: false,
             mode: FilterMode::Equality,
+            description: String::new(),
         }]
     }
 
@@ -636,11 +861,93 @@ mod tests {
         }
     }
 
+    fn table_detail_hint_manifest(target_table: &str, detail_filter: &str) -> Value {
+        json!({
+            "name": "demo",
+            "version": "0.1.0",
+            "dsl_version": 3,
+            "backend": "http",
+            "base_url": "https://example.com",
+            "tables": [
+                {
+                    "name": "search",
+                    "description": "Search candidates",
+                    "filters": [{ "name": "query", "mode": "search" }],
+                    "search_limits": {
+                        "default_top_k": 10,
+                        "max_top_k": 100,
+                        "max_calls_per_query": 1
+                    },
+                    "detail_hints": [{
+                        "table": target_table,
+                        "search_result_column": "id",
+                        "detail_filter": detail_filter,
+                        "purpose": "Fetch full item details."
+                    }],
+                    "request": { "path": "/search" },
+                    "columns": [{ "name": "id", "type": "Utf8" }]
+                },
+                {
+                    "name": "items",
+                    "description": "Item details",
+                    "filters": [{ "name": "item_id", "required": true }],
+                    "request": { "path": "/items/{{filter.item_id}}" },
+                    "columns": [{ "name": "id", "type": "Utf8" }]
+                }
+            ]
+        })
+    }
+
+    fn function_detail_hint_manifest(detail_filter: &str) -> Value {
+        json!({
+            "name": "demo",
+            "version": "0.1.0",
+            "dsl_version": 3,
+            "backend": "http",
+            "base_url": "https://example.com",
+            "tables": [{
+                "name": "items",
+                "description": "Item details",
+                "filters": [{ "name": "item_id", "required": true }],
+                "request": { "path": "/items/{{filter.item_id}}" },
+                "columns": [{ "name": "id", "type": "Utf8" }]
+            }],
+            "functions": [{
+                "name": "search_items",
+                "kind": "search",
+                "search_limits": {
+                    "default_top_k": 10,
+                    "max_top_k": 100,
+                    "max_calls_per_query": 1
+                },
+                "detail_hints": [{
+                    "table": "demo.items",
+                    "search_result_column": "id",
+                    "detail_filter": detail_filter,
+                    "purpose": "Fetch full item details."
+                }],
+                "args": [{
+                    "name": "query",
+                    "required": true,
+                    "bind": { "arg": "query" }
+                }],
+                "request": {
+                    "path": "/search",
+                    "query": [{ "name": "q", "from": "arg", "key": "query" }]
+                },
+                "columns": [{ "name": "id", "type": "Utf8" }]
+            }]
+        })
+    }
+
     fn function_with_request_value(value: ValueSourceSpec) -> SourceTableFunctionSpec {
         SourceTableFunctionSpec {
             name: "search".to_string(),
+            kind: SourceTableFunctionKind::Table,
             description: String::new(),
             fetch_limit_default: None,
+            search_limits: None,
+            detail_hints: Vec::new(),
             args: vec![TableFunctionArgSpec {
                 name: "query".to_string(),
                 required: true,
@@ -699,6 +1006,8 @@ mod tests {
             &request,
             &[],
             &PaginationSpec::default(),
+            None,
+            &[],
         )
         .expect_err("default request should reject unknown filters");
 
@@ -733,6 +1042,8 @@ mod tests {
             &base_request(),
             &[route],
             &PaginationSpec::default(),
+            None,
+            &[],
         )
         .expect_err("route request should reject unknown filters");
 
@@ -765,6 +1076,8 @@ mod tests {
             &request,
             &[],
             &PaginationSpec::default(),
+            None,
+            &[],
         )
         .expect_err("filter_split should reject unknown filters");
 
@@ -797,6 +1110,8 @@ mod tests {
             &request,
             &[],
             &PaginationSpec::default(),
+            None,
+            &[],
         )
         .expect_err("filter_split_int should reject unknown filters");
 
@@ -822,6 +1137,16 @@ mod tests {
                 key: "archived".to_string(),
                 default: None,
             },
+            ValueSourceSpec::ArgSplit {
+                key: "issue_key".to_string(),
+                separator: "-".to_string(),
+                part: 0,
+            },
+            ValueSourceSpec::ArgSplitInt {
+                key: "issue_key".to_string(),
+                separator: "-".to_string(),
+                part: 1,
+            },
         ];
 
         for value in cases {
@@ -841,6 +1166,8 @@ mod tests {
                 &request,
                 &[],
                 &PaginationSpec::default(),
+                None,
+                &[],
             )
             .expect_err("table requests should reject function arguments");
 
@@ -866,6 +1193,8 @@ mod tests {
             &request,
             &[],
             &PaginationSpec::default(),
+            None,
+            &[],
         )
         .expect_err("table request templates should reject function arguments");
 
@@ -916,11 +1245,41 @@ mod tests {
     }
 
     #[test]
+    fn validate_http_function_rejects_unknown_arg_split_bindings() {
+        for value in [
+            ValueSourceSpec::ArgSplit {
+                key: "missing".to_string(),
+                separator: "-".to_string(),
+                part: 0,
+            },
+            ValueSourceSpec::ArgSplitInt {
+                key: "missing".to_string(),
+                separator: "-".to_string(),
+                part: 1,
+            },
+        ] {
+            let function = function_with_request_value(value);
+            let error = validate_http_function("demo", &function)
+                .expect_err("function requests should reject unknown split args");
+
+            assert!(
+                error
+                    .to_string()
+                    .contains("references unknown request arg 'missing'"),
+                "unexpected error: {error}"
+            );
+        }
+    }
+
+    #[test]
     fn validate_http_function_names_rejects_table_name_collisions() {
         let function = SourceTableFunctionSpec {
             name: "messages".to_string(),
+            kind: SourceTableFunctionKind::Table,
             description: String::new(),
             fetch_limit_default: None,
+            search_limits: None,
+            detail_hints: Vec::new(),
             args: vec![],
             request: base_request(),
             response: crate::ResponseSpec::default(),
@@ -935,6 +1294,332 @@ mod tests {
             error
                 .to_string()
                 .contains("declares both a table and function named 'messages'")
+        );
+    }
+
+    #[test]
+    fn validate_http_table_allows_deprecated_search_filters_without_search_limits() {
+        let filters = vec![FilterSpec {
+            name: "query".to_string(),
+            data_type: "Utf8".to_string(),
+            required: false,
+            mode: FilterMode::Search,
+            description: String::new(),
+        }];
+
+        validate_http_table(
+            "demo",
+            "search",
+            &filters,
+            &[test_column()],
+            &base_request(),
+            &[],
+            &PaginationSpec::default(),
+            None,
+            &[],
+        )
+        .expect("deprecated compatibility search filters should not force new metadata");
+    }
+
+    #[test]
+    fn validate_http_function_requires_search_limits_for_search_kind() {
+        let mut function = function_with_request_value(ValueSourceSpec::Arg {
+            key: "q".to_string(),
+            default: None,
+        });
+        function.kind = SourceTableFunctionKind::Search;
+        function.columns = vec![test_column()];
+
+        let error = validate_http_function("demo", &function)
+            .expect_err("search function should require bounded search metadata");
+
+        assert!(
+            error.to_string().contains("must define search_limits"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn validate_search_metadata_accepts_limits_and_detail_hints() {
+        let search_limits = SearchLimitsSpec {
+            default_top_k: 10,
+            max_top_k: 100,
+            max_calls_per_query: 1,
+        };
+        let detail_hints = [crate::DetailHintSpec {
+            table: "demo.items".to_string(),
+            search_result_column: "id".to_string(),
+            detail_filter: "item_id".to_string(),
+            purpose: "Fetch full item details.".to_string(),
+        }];
+        let filters = vec![FilterSpec {
+            name: "query".to_string(),
+            data_type: "Utf8".to_string(),
+            required: false,
+            mode: FilterMode::Search,
+            description: String::new(),
+        }];
+
+        validate_http_table(
+            "demo",
+            "search",
+            &filters,
+            &[test_column()],
+            &base_request(),
+            &[],
+            &PaginationSpec::default(),
+            Some(&search_limits),
+            &detail_hints,
+        )
+        .expect("search metadata should validate");
+    }
+
+    #[test]
+    fn validate_search_limits_rejects_default_above_max() {
+        let mut function = function_with_request_value(ValueSourceSpec::Arg {
+            key: "q".to_string(),
+            default: None,
+        });
+        function.kind = SourceTableFunctionKind::Search;
+        function.search_limits = Some(SearchLimitsSpec {
+            default_top_k: 101,
+            max_top_k: 100,
+            max_calls_per_query: 1,
+        });
+        function.columns = vec![test_column()];
+
+        let error = validate_http_function("demo", &function)
+            .expect_err("invalid search limits should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("default_top_k must be <= max_top_k"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn validate_search_limits_rejects_max_top_k_above_cap() {
+        let mut function = function_with_request_value(ValueSourceSpec::Arg {
+            key: "q".to_string(),
+            default: None,
+        });
+        function.kind = SourceTableFunctionKind::Search;
+        function.search_limits = Some(SearchLimitsSpec {
+            default_top_k: 10,
+            max_top_k: MAX_SEARCH_TOP_K + 1,
+            max_calls_per_query: 1,
+        });
+        function.columns = vec![test_column()];
+
+        let error = validate_http_function("demo", &function)
+            .expect_err("overlarge search top-k cap should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("max_top_k must be <= {MAX_SEARCH_TOP_K}")),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn validate_search_limits_rejects_aggregate_candidate_budget_above_cap() {
+        let mut function = function_with_request_value(ValueSourceSpec::Arg {
+            key: "q".to_string(),
+            default: None,
+        });
+        function.kind = SourceTableFunctionKind::Search;
+        function.search_limits = Some(SearchLimitsSpec {
+            default_top_k: 10,
+            max_top_k: 1_000,
+            max_calls_per_query: (MAX_SEARCH_CANDIDATES_PER_QUERY / 1_000) + 1,
+        });
+        function.columns = vec![test_column()];
+
+        let error = validate_http_function("demo", &function)
+            .expect_err("overlarge aggregate search budget should fail");
+
+        assert!(
+            error.to_string().contains(&format!(
+                "max_top_k * max_calls_per_query must be <= {MAX_SEARCH_CANDIDATES_PER_QUERY}"
+            )),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn validate_detail_hints_rejects_unknown_result_column() {
+        let detail_hints = [crate::DetailHintSpec {
+            table: "demo.items".to_string(),
+            search_result_column: "missing".to_string(),
+            detail_filter: "item_id".to_string(),
+            purpose: "Fetch full item details.".to_string(),
+        }];
+
+        let error = validate_http_table(
+            "demo",
+            "messages",
+            &test_filters(),
+            &[test_column()],
+            &base_request(),
+            &[],
+            &PaginationSpec::default(),
+            None,
+            &detail_hints,
+        )
+        .expect_err("unknown detail hint result column should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("references unknown search_result_column 'missing'"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn validate_detail_hints_reject_empty_fields() {
+        let cases = [
+            (
+                "table",
+                crate::DetailHintSpec {
+                    table: String::new(),
+                    search_result_column: "id".to_string(),
+                    detail_filter: "item_id".to_string(),
+                    purpose: "Fetch full item details.".to_string(),
+                },
+            ),
+            (
+                "search_result_column",
+                crate::DetailHintSpec {
+                    table: "demo.items".to_string(),
+                    search_result_column: String::new(),
+                    detail_filter: "item_id".to_string(),
+                    purpose: "Fetch full item details.".to_string(),
+                },
+            ),
+            (
+                "detail_filter",
+                crate::DetailHintSpec {
+                    table: "demo.items".to_string(),
+                    search_result_column: "id".to_string(),
+                    detail_filter: String::new(),
+                    purpose: "Fetch full item details.".to_string(),
+                },
+            ),
+            (
+                "purpose",
+                crate::DetailHintSpec {
+                    table: "demo.items".to_string(),
+                    search_result_column: "id".to_string(),
+                    detail_filter: "item_id".to_string(),
+                    purpose: String::new(),
+                },
+            ),
+        ];
+
+        for (field_name, detail_hint) in cases {
+            let error = validate_http_table(
+                "demo",
+                "messages",
+                &test_filters(),
+                &[test_column()],
+                &base_request(),
+                &[],
+                &PaginationSpec::default(),
+                None,
+                &[detail_hint],
+            )
+            .expect_err("empty detail hint fields should fail");
+
+            assert!(
+                error.to_string().contains(&format!("empty {field_name}")),
+                "unexpected error for {field_name}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_http_manifest_accepts_qualified_detail_hint_target() {
+        parse_source_manifest_value(table_detail_hint_manifest("demo.items", "item_id"))
+            .expect("qualified detail hint target should validate");
+    }
+
+    #[test]
+    fn parse_http_manifest_accepts_unqualified_detail_hint_target() {
+        parse_source_manifest_value(table_detail_hint_manifest("items", "item_id"))
+            .expect("unqualified same-source detail hint target should validate");
+    }
+
+    #[test]
+    fn parse_http_manifest_rejects_detail_hint_unknown_target_table() {
+        let error =
+            parse_source_manifest_value(table_detail_hint_manifest("demo.missing", "item_id"))
+                .expect_err("unknown target table should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("target table 'demo.missing' does not match any table"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn parse_http_manifest_rejects_detail_hint_unknown_target_filter() {
+        let error =
+            parse_source_manifest_value(table_detail_hint_manifest("demo.items", "missing_filter"))
+                .expect_err("unknown target filter should fail");
+
+        assert!(
+            error.to_string().contains(
+                "target table 'demo.items' does not declare detail_filter 'missing_filter'"
+            ),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn parse_http_manifest_rejects_detail_hint_type_mismatch() {
+        let mut manifest = table_detail_hint_manifest("demo.items", "item_id");
+        let tables = manifest
+            .get_mut("tables")
+            .and_then(Value::as_array_mut)
+            .expect("manifest tables");
+        let detail_table = tables.get_mut(1).expect("detail table");
+        let filters = detail_table
+            .get_mut("filters")
+            .and_then(Value::as_array_mut)
+            .expect("detail filters");
+        let detail_filter = filters.get_mut(0).expect("detail filter");
+        detail_filter
+            .as_object_mut()
+            .expect("detail filter object")
+            .insert("type".to_string(), json!("Int64"));
+
+        let error = parse_source_manifest_value(manifest)
+            .expect_err("detail hint type mismatch should fail");
+
+        assert!(
+            error.to_string().contains(
+                "search_result_column 'id' type 'Utf8' does not match target table 'demo.items' detail_filter 'item_id' type 'Int64'"
+            ),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn parse_http_manifest_rejects_function_detail_hint_unknown_target_filter() {
+        let error = parse_source_manifest_value(function_detail_hint_manifest("missing_filter"))
+            .expect_err("unknown function detail target filter should fail");
+
+        assert!(
+            error.to_string().contains(
+                "target table 'demo.items' does not declare detail_filter 'missing_filter'"
+            ),
+            "unexpected error: {error}"
         );
     }
 

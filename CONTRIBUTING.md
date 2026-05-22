@@ -59,6 +59,8 @@ update the relevant docs in the same pull request.
 
 - Rust stable toolchain
 - Git
+- cargo-nextest, installed with `brew install cargo-nextest` or
+  `cargo install cargo-nextest --locked`
 - any source-specific local dependencies needed for the part you are working on
 
 ### Common commands
@@ -70,7 +72,7 @@ If you prefer to run steps individually, the equivalent commands are:
 ```bash
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-cargo test --workspace --all-targets --all-features --locked
+cargo nextest run --workspace --all-targets --all-features --locked --no-fail-fast
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps --locked
 ```
 
@@ -214,9 +216,11 @@ This project follows the rules in [`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md).
 By contributing to Coral, you agree that your contributions will be licensed
 under the project licence.
 
-If you are contributing to Coral for the first time, please email
-[legal@withcoral.com](mailto:legal@withcoral.com), including your Github
-username and confirming that you agree to our
-[Individual Contributor Licensing Agreement](https://withcoral.com/docs/legal/cla-individual). To agree to
-the CLA on behalf of a corporation, please see the
-[Corporate CLA](https://withcoral.com/docs/legal/cla-corporate).
+When you open your first pull request, an automated CLA check will comment on
+the PR with a link to sign the Contributor Licence Agreement. Follow the link
+to accept; the check will pass once you have signed, and subsequent PRs will
+not need to sign again.
+
+To agree to the CLA on behalf of a corporation, please see the
+[Corporate CLA](https://withcoral.com/docs/legal/cla-corporate) and email
+[legal@withcoral.com](mailto:legal@withcoral.com).

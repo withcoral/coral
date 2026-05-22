@@ -2,12 +2,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use coral_api::v1::{
-    ExecuteSqlRequest, ImportSourceRequest, ListSourcesRequest, ListTablesRequest, Source,
-    SourceSecret, SourceVariable, Table, ValidateSourceRequest, ValidateSourceResponse,
+    ExecuteSqlRequest, ImportSourceRequest, ListCatalogRequest, ListSourcesRequest,
+    PaginationRequest, Source, SourceSecret, SourceVariable, TableSummary, ValidateSourceRequest,
+    ValidateSourceResponse, catalog_item,
 };
 use coral_client::{
-    AppClient, QueryClient, SourceClient, batches_to_json_rows, decode_execute_sql_response,
-    default_workspace,
+    AppClient, CatalogClient, QueryClient, SourceClient, batches_to_json_rows,
+    decode_execute_sql_response, default_workspace,
     local::{RunningServer, ServerBuilder},
 };
 use serde_json::{Value, json};
@@ -67,6 +68,10 @@ impl GrpcHarness {
         self.app.source_client()
     }
 
+    pub(crate) fn catalog_client(&self) -> CatalogClient {
+        self.app.catalog_client()
+    }
+
     pub(crate) fn query_client(&self) -> QueryClient {
         self.app.query_client()
     }
@@ -102,19 +107,27 @@ impl GrpcHarness {
             .sources
     }
 
-    pub(crate) async fn list_tables(&self) -> Vec<Table> {
-        self.query_client()
-            .list_tables(Request::new(ListTablesRequest {
+    pub(crate) async fn list_tables(&self) -> Vec<TableSummary> {
+        self.catalog_client()
+            .list_catalog(Request::new(ListCatalogRequest {
                 workspace: Some(default_workspace()),
                 schema_name: String::new(),
-                table_name: String::new(),
-                pagination: None,
-                omit_columns: false,
+                kind: 1,
+                pagination: Some(PaginationRequest {
+                    limit: 0,
+                    offset: 0,
+                }),
             }))
             .await
-            .expect("list tables")
+            .expect("list catalog")
             .into_inner()
-            .tables
+            .items
+            .into_iter()
+            .filter_map(|item| match item.item {
+                Some(catalog_item::Item::Table(table)) => Some(table),
+                Some(catalog_item::Item::TableFunction(_)) | None => None,
+            })
+            .collect()
     }
 
     pub(crate) async fn validate_source(&self, source_name: &str) -> ValidateSourceResponse {
@@ -248,6 +261,140 @@ pub(crate) fn fixture_manifest_with_multiple_tables_yaml(root: &Path) -> String 
                 "columns": table_columns,
             },
         ],
+    }))
+}
+
+pub(crate) fn fixture_manifest_with_required_filter_yaml() -> String {
+    manifest_yaml(&json!({
+        "name": "filtered_messages",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": "https://example.com",
+        "tables": [{
+            "name": "messages",
+            "description": "Filtered messages",
+            "request": {
+                "method": "GET",
+                "path": "/messages",
+                "query": [
+                    { "name": "channel", "from": "filter", "key": "channel" }
+                ],
+            },
+            "response": {},
+            "columns": [
+                {"name": "channel", "type": "Utf8"},
+                {"name": "text", "type": "Utf8"},
+            ],
+            "filters": [
+                { "name": "channel", "required": true }
+            ],
+        }],
+    }))
+}
+
+pub(crate) fn fixture_manifest_with_functions_yaml() -> String {
+    manifest_yaml(&json!({
+        "name": "searchy",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": "https://example.com",
+        "tables": [{
+            "name": "placeholder",
+            "description": "Placeholder table",
+            "request": {
+                "method": "GET",
+                "path": "/placeholder",
+            },
+            "columns": [
+                { "name": "id", "type": "Utf8" },
+            ],
+        }],
+        "functions": [
+            {
+                "name": "lookup_issue",
+                "description": "Lookup issue",
+                "args": [
+                    {
+                        "name": "number",
+                        "required": true,
+                        "bind": { "arg": "number" },
+                    },
+                ],
+                "request": {
+                    "method": "GET",
+                    "path": "/issues/{{arg.number}}",
+                },
+                "response": {},
+                "columns": [
+                    { "name": "title", "type": "Utf8", "description": "Issue title" },
+                ],
+            },
+            {
+                "name": "search_issues",
+                "description": "Search issues",
+                "args": [
+                    {
+                        "name": "q",
+                        "required": true,
+                        "bind": { "arg": "q" },
+                    },
+                    {
+                        "name": "mode",
+                        "values": ["lexical", "semantic", "hybrid"],
+                        "bind": { "arg": "search_type" },
+                    },
+                ],
+                "request": {
+                    "method": "GET",
+                    "path": "/search/issues",
+                    "query": [
+                        { "name": "q", "from": "arg", "key": "q" },
+                        { "name": "search_type", "from": "arg", "key": "search_type" },
+                    ],
+                },
+                "response": {
+                    "rows_path": ["items"],
+                },
+                "columns": [
+                    { "name": "title", "type": "Utf8", "description": "Issue title" },
+                    { "name": "score", "type": "Float64" },
+                ],
+            },
+        ],
+    }))
+}
+
+pub(crate) fn fixture_function_only_manifest_yaml() -> String {
+    manifest_yaml(&json!({
+        "name": "searchy",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": "https://example.com",
+        "functions": [{
+            "name": "search_issues",
+            "description": "Search issues",
+            "args": [{
+                "name": "q",
+                "required": true,
+                "bind": { "arg": "q" },
+            }],
+            "request": {
+                "method": "GET",
+                "path": "/search/issues",
+                "query": [
+                    { "name": "q", "from": "arg", "key": "q" },
+                ],
+            },
+            "response": {
+                "rows_path": ["items"],
+            },
+            "columns": [
+                { "name": "title", "type": "Utf8", "description": "Issue title" },
+            ],
+        }],
     }))
 }
 

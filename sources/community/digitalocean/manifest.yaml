@@ -1,0 +1,1210 @@
+name: digitalocean
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Droplets, domains, volumes, databases, apps, Kubernetes clusters,
+  projects, SSH keys, regions, sizes, and account data from DigitalOcean.
+inputs:
+  DIGITALOCEAN_TOKEN:
+    kind: secret
+    hint: |
+      DigitalOcean personal access token. Generate one at
+      https://cloud.digitalocean.com/account/api/tokens with read-only
+      scope for safe querying.
+base_url: https://api.digitalocean.com
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.DIGITALOCEAN_TOKEN}}
+test_queries:
+  - SELECT * FROM digitalocean.account LIMIT 1
+  - SELECT * FROM digitalocean.regions LIMIT 1
+tables:
+  - name: account
+    description: Authenticated DigitalOcean account information
+    guide: |
+      Singleton table — always returns one row for the authenticated
+      account. Use `uuid` as the canonical account identifier. Check
+      `droplet_limit` and `floating_ip_limit` to understand provisioning
+      quotas. `status` shows the account standing (active, warning, locked).
+      `team__name` and `team__uuid` are set when the token belongs to a
+      team.
+    request:
+      method: GET
+      path: /v2/account
+    response:
+      rows_path:
+        - account
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: uuid
+        type: Utf8
+        nullable: false
+        description: Unique account identifier
+        expr:
+          kind: path
+          path:
+            - uuid
+      - name: email
+        type: Utf8
+        nullable: false
+        description: Account email address
+        expr:
+          kind: path
+          path:
+            - email
+      - name: email_verified
+        type: Boolean
+        nullable: true
+        description: Whether the email address has been verified
+        expr:
+          kind: path
+          path:
+            - email_verified
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Account status (active, warning, locked)
+        expr:
+          kind: path
+          path:
+            - status
+      - name: status_message
+        type: Utf8
+        nullable: true
+        description: Human-readable status message
+        expr:
+          kind: path
+          path:
+            - status_message
+      - name: droplet_limit
+        type: Int64
+        nullable: true
+        description: Maximum number of Droplets allowed
+        expr:
+          kind: path
+          path:
+            - droplet_limit
+      - name: floating_ip_limit
+        type: Int64
+        nullable: true
+        description: Maximum number of floating IPs allowed
+        expr:
+          kind: path
+          path:
+            - floating_ip_limit
+      - name: team__name
+        type: Utf8
+        nullable: true
+        description: Team name if the token belongs to a team
+        expr:
+          kind: path
+          path:
+            - team
+            - name
+      - name: team__uuid
+        type: Utf8
+        nullable: true
+        description: Team UUID if the token belongs to a team
+        expr:
+          kind: path
+          path:
+            - team
+            - uuid
+
+  - name: droplets
+    description: Virtual machine instances (Droplets)
+    guide: |
+      Each row is one Droplet. `status` is one of `new`, `active`, `off`,
+      or `archive`. Key nested objects like `region` and `image` are
+      flattened into separate columns (e.g. `region__slug`, `image__name`).
+      Complex structures like `networks` and `tags` are kept as Json.
+      Use `id` to identify specific Droplets. `size_slug` links to the
+      `sizes` table for pricing and spec details.
+    request:
+      method: GET
+      path: /v2/droplets
+    response:
+      rows_path:
+        - droplets
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      page_size:
+        default: 20
+        max: 200
+        query_param: per_page
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Unique Droplet identifier
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Human-readable hostname
+        expr:
+          kind: path
+          path:
+            - name
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Current state (new, active, off, archive)
+        expr:
+          kind: path
+          path:
+            - status
+      - name: memory
+        type: Int64
+        nullable: true
+        description: RAM in megabytes
+        expr:
+          kind: path
+          path:
+            - memory
+      - name: vcpus
+        type: Int64
+        nullable: true
+        description: Number of virtual CPUs
+        expr:
+          kind: path
+          path:
+            - vcpus
+      - name: disk
+        type: Int64
+        nullable: true
+        description: Disk size in gigabytes
+        expr:
+          kind: path
+          path:
+            - disk
+      - name: locked
+        type: Boolean
+        nullable: true
+        description: Whether the Droplet is locked (preventing actions)
+        expr:
+          kind: path
+          path:
+            - locked
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the Droplet was created
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: size_slug
+        type: Utf8
+        nullable: true
+        description: Size plan slug (e.g. s-1vcpu-1gb)
+        expr:
+          kind: path
+          path:
+            - size_slug
+      - name: region__slug
+        type: Utf8
+        nullable: true
+        description: Region slug (e.g. nyc1, sfo3)
+        expr:
+          kind: path
+          path:
+            - region
+            - slug
+      - name: region__name
+        type: Utf8
+        nullable: true
+        description: Region display name (e.g. New York 1)
+        expr:
+          kind: path
+          path:
+            - region
+            - name
+      - name: image__id
+        type: Int64
+        nullable: true
+        description: Image ID used to create the Droplet
+        expr:
+          kind: path
+          path:
+            - image
+            - id
+      - name: image__name
+        type: Utf8
+        nullable: true
+        description: Image name
+        expr:
+          kind: path
+          path:
+            - image
+            - name
+      - name: image__distribution
+        type: Utf8
+        nullable: true
+        description: OS distribution (e.g. Ubuntu, Fedora)
+        expr:
+          kind: path
+          path:
+            - image
+            - distribution
+      - name: vpc_uuid
+        type: Utf8
+        nullable: true
+        description: VPC UUID the Droplet belongs to
+        expr:
+          kind: path
+          path:
+            - vpc_uuid
+      - name: networks
+        type: Json
+        nullable: true
+        description: Network interfaces (v4 and v6) as JSON
+        expr:
+          kind: path
+          path:
+            - networks
+      - name: tags
+        type: Json
+        nullable: true
+        description: Resource tags as a JSON array
+        expr:
+          kind: path
+          path:
+            - tags
+
+  - name: domains
+    description: DNS domains managed by DigitalOcean
+    guide: |
+      Each row is one domain. `name` is the FQDN (e.g. example.com).
+      `ttl` is the default time-to-live for records in this zone.
+      `zone_file` contains the raw BIND zone file content when available.
+    request:
+      method: GET
+      path: /v2/domains
+    response:
+      rows_path:
+        - domains
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      page_size:
+        default: 20
+        max: 200
+        query_param: per_page
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Domain name (e.g. example.com)
+        expr:
+          kind: path
+          path:
+            - name
+      - name: ttl
+        type: Int64
+        nullable: true
+        description: Default TTL for DNS records in seconds
+        expr:
+          kind: path
+          path:
+            - ttl
+      - name: zone_file
+        type: Utf8
+        nullable: true
+        description: Raw BIND zone file content
+        expr:
+          kind: path
+          path:
+            - zone_file
+
+  - name: volumes
+    description: Block storage volumes
+    guide: |
+      Each row is one block storage volume. `size_gigabytes` is the
+      provisioned size. `droplet_ids` is a JSON array of attached
+      Droplet IDs — an empty array means the volume is unattached.
+      Join `region__slug` with `regions.slug` for region details.
+    request:
+      method: GET
+      path: /v2/volumes
+    response:
+      rows_path:
+        - volumes
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      page_size:
+        default: 20
+        max: 200
+        query_param: per_page
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique volume identifier
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Volume name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Human-readable volume description
+        expr:
+          kind: path
+          path:
+            - description
+      - name: size_gigabytes
+        type: Int64
+        nullable: true
+        description: Volume size in gigabytes
+        expr:
+          kind: path
+          path:
+            - size_gigabytes
+      - name: region__slug
+        type: Utf8
+        nullable: true
+        description: Region slug where the volume is located
+        expr:
+          kind: path
+          path:
+            - region
+            - slug
+      - name: region__name
+        type: Utf8
+        nullable: true
+        description: Region display name
+        expr:
+          kind: path
+          path:
+            - region
+            - name
+      - name: droplet_ids
+        type: Json
+        nullable: true
+        description: Attached Droplet IDs as a JSON array
+        expr:
+          kind: path
+          path:
+            - droplet_ids
+      - name: filesystem_type
+        type: Utf8
+        nullable: true
+        description: Filesystem type (e.g. ext4)
+        expr:
+          kind: path
+          path:
+            - filesystem_type
+      - name: filesystem_label
+        type: Utf8
+        nullable: true
+        description: Filesystem label
+        expr:
+          kind: path
+          path:
+            - filesystem_label
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the volume was created
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: tags
+        type: Json
+        nullable: true
+        description: Resource tags as a JSON array
+        expr:
+          kind: path
+          path:
+            - tags
+
+  - name: databases
+    description: Managed database clusters
+    guide: |
+      Each row is one managed database cluster. `engine` is the database
+      type (pg, mysql, redis, mongodb, kafka, opensearch). `status` shows
+      cluster health (online, creating, migrating, forking, resizing).
+      Connection details are flattened from the `connection` object.
+      `db_names` is a JSON array of database names within the cluster.
+    request:
+      method: GET
+      path: /v2/databases
+    response:
+      rows_path:
+        - databases
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      page_size:
+        default: 20
+        max: 200
+        query_param: per_page
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique database cluster identifier
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Cluster name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: engine
+        type: Utf8
+        nullable: true
+        description: Database engine (pg, mysql, redis, mongodb, kafka, opensearch)
+        expr:
+          kind: path
+          path:
+            - engine
+      - name: version
+        type: Utf8
+        nullable: true
+        description: Engine version
+        expr:
+          kind: path
+          path:
+            - version
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Cluster status (online, creating, migrating, forking, resizing)
+        expr:
+          kind: path
+          path:
+            - status
+      - name: size
+        type: Utf8
+        nullable: true
+        description: Cluster size slug
+        expr:
+          kind: path
+          path:
+            - size
+      - name: region
+        type: Utf8
+        nullable: true
+        description: Region slug where the cluster is located
+        expr:
+          kind: path
+          path:
+            - region
+      - name: num_nodes
+        type: Int64
+        nullable: true
+        description: Number of nodes in the cluster
+        expr:
+          kind: path
+          path:
+            - num_nodes
+      - name: connection__host
+        type: Utf8
+        nullable: true
+        description: Connection hostname
+        expr:
+          kind: path
+          path:
+            - connection
+            - host
+      - name: connection__port
+        type: Int64
+        nullable: true
+        description: Connection port
+        expr:
+          kind: path
+          path:
+            - connection
+            - port
+      - name: connection__database
+        type: Utf8
+        nullable: true
+        description: Default database name
+        expr:
+          kind: path
+          path:
+            - connection
+            - database
+      - name: db_names
+        type: Json
+        nullable: true
+        description: Database names within the cluster as a JSON array
+        expr:
+          kind: path
+          path:
+            - db_names
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the cluster was created
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: tags
+        type: Json
+        nullable: true
+        description: Resource tags as a JSON array
+        expr:
+          kind: path
+          path:
+            - tags
+
+  - name: apps
+    description: App Platform applications
+    guide: |
+      Each row is one App Platform application. `live_url` is the
+      public URL. `active_deployment__phase` shows the current
+      deployment state (e.g. ACTIVE, DEPLOYING, ERROR). The
+      top-level `region__slug` uses App Platform region slugs
+      (e.g. `nyc`, `fra`, `sfo`) which differ from datacenter
+      slugs in the `regions` table (e.g. `nyc1`, `fra1`). The app
+      spec details are partially flattened — `spec__name` and
+      `spec__region` are extracted, with the full spec available
+      in the `spec` Json column.
+    request:
+      method: GET
+      path: /v2/apps
+    response:
+      rows_path:
+        - apps
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      page_size:
+        default: 20
+        max: 200
+        query_param: per_page
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique app identifier
+        expr:
+          kind: path
+          path:
+            - id
+      - name: default_ingress
+        type: Utf8
+        nullable: true
+        description: Default ingress URL
+        expr:
+          kind: path
+          path:
+            - default_ingress
+      - name: live_url
+        type: Utf8
+        nullable: true
+        description: Public live URL
+        expr:
+          kind: path
+          path:
+            - live_url
+      - name: region__slug
+        type: Utf8
+        nullable: true
+        description: >-
+          App Platform region slug (e.g. nyc, fra, sfo). Note: these
+          differ from datacenter slugs in the regions table (nyc1, fra1).
+        expr:
+          kind: path
+          path:
+            - region
+            - slug
+      - name: region__label
+        type: Utf8
+        nullable: true
+        description: App Platform region display name
+        expr:
+          kind: path
+          path:
+            - region
+            - label
+      - name: spec__name
+        type: Utf8
+        nullable: true
+        description: App name from the spec
+        expr:
+          kind: path
+          path:
+            - spec
+            - name
+      - name: spec__region
+        type: Utf8
+        nullable: true
+        description: Desired region from the app spec (may differ from runtime region)
+        expr:
+          kind: path
+          path:
+            - spec
+            - region
+      - name: active_deployment__id
+        type: Utf8
+        nullable: true
+        description: Active deployment ID
+        expr:
+          kind: path
+          path:
+            - active_deployment
+            - id
+      - name: active_deployment__phase
+        type: Utf8
+        nullable: true
+        description: Active deployment phase (ACTIVE, DEPLOYING, ERROR, etc.)
+        expr:
+          kind: path
+          path:
+            - active_deployment
+            - phase
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the app was created
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the app was last updated
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at
+      - name: spec
+        type: Json
+        nullable: true
+        description: Full app spec as JSON
+        expr:
+          kind: path
+          path:
+            - spec
+
+  - name: kubernetes_clusters
+    description: Managed Kubernetes clusters
+    guide: |
+      Each row is one Kubernetes cluster. `version` is the K8s version
+      slug. `status__state` shows cluster health (running, provisioning,
+      degraded, error, deleted, upgrading). `node_pools` is a JSON array
+      containing pool configurations (size, count, names, etc.).
+    request:
+      method: GET
+      path: /v2/kubernetes/clusters
+    response:
+      rows_path:
+        - kubernetes_clusters
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      page_size:
+        default: 20
+        max: 200
+        query_param: per_page
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique cluster identifier
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Cluster name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: region
+        type: Utf8
+        nullable: true
+        description: Region slug where the cluster is located
+        expr:
+          kind: path
+          path:
+            - region
+      - name: version
+        type: Utf8
+        nullable: true
+        description: Kubernetes version slug
+        expr:
+          kind: path
+          path:
+            - version
+      - name: status__state
+        type: Utf8
+        nullable: true
+        description: Cluster state (running, provisioning, degraded, error, deleted, upgrading)
+        expr:
+          kind: path
+          path:
+            - status
+            - state
+      - name: status__message
+        type: Utf8
+        nullable: true
+        description: Human-readable status message
+        expr:
+          kind: path
+          path:
+            - status
+            - message
+      - name: cluster_subnet
+        type: Utf8
+        nullable: true
+        description: CIDR range for pod networking
+        expr:
+          kind: path
+          path:
+            - cluster_subnet
+      - name: service_subnet
+        type: Utf8
+        nullable: true
+        description: CIDR range for service networking
+        expr:
+          kind: path
+          path:
+            - service_subnet
+      - name: vpc_uuid
+        type: Utf8
+        nullable: true
+        description: VPC UUID the cluster belongs to
+        expr:
+          kind: path
+          path:
+            - vpc_uuid
+      - name: node_pools
+        type: Json
+        nullable: true
+        description: Node pool configurations as a JSON array
+        expr:
+          kind: path
+          path:
+            - node_pools
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the cluster was created
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the cluster was last updated
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at
+      - name: tags
+        type: Json
+        nullable: true
+        description: Resource tags as a JSON array
+        expr:
+          kind: path
+          path:
+            - tags
+
+  - name: projects
+    description: Project groupings for organizing resources
+    guide: |
+      Each row is one project. Projects group Droplets, volumes,
+      databases, and other resources. `is_default` marks the default
+      project where ungrouped resources land. `environment` is one of
+      Development, Staging, or Production. `purpose` describes the
+      project's intended use.
+    request:
+      method: GET
+      path: /v2/projects
+    response:
+      rows_path:
+        - projects
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      page_size:
+        default: 20
+        max: 200
+        query_param: per_page
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique project identifier
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Project name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Project description
+        expr:
+          kind: path
+          path:
+            - description
+      - name: purpose
+        type: Utf8
+        nullable: true
+        description: Intended purpose of the project
+        expr:
+          kind: path
+          path:
+            - purpose
+      - name: environment
+        type: Utf8
+        nullable: true
+        description: Environment (Development, Staging, Production)
+        expr:
+          kind: path
+          path:
+            - environment
+      - name: is_default
+        type: Boolean
+        nullable: true
+        description: Whether this is the default project
+        expr:
+          kind: path
+          path:
+            - is_default
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the project was created
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the project was last updated
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at
+
+  - name: ssh_keys
+    description: SSH keys registered on the account
+    guide: |
+      Each row is one SSH key. `fingerprint` is the key's MD5 fingerprint.
+      Use `id` or `fingerprint` when creating Droplets to inject the key.
+    request:
+      method: GET
+      path: /v2/account/keys
+    response:
+      rows_path:
+        - ssh_keys
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      page_size:
+        default: 20
+        max: 200
+        query_param: per_page
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Unique SSH key identifier
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: SSH key name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: fingerprint
+        type: Utf8
+        nullable: true
+        description: MD5 fingerprint of the SSH key
+        expr:
+          kind: path
+          path:
+            - fingerprint
+      - name: public_key
+        type: Utf8
+        nullable: true
+        description: Full public key content
+        expr:
+          kind: path
+          path:
+            - public_key
+
+  - name: regions
+    description: Available datacenter regions
+    guide: |
+      Each row is one datacenter region. `available` indicates whether
+      new resources can be created in the region. `features` lists
+      supported features (e.g. backups, ipv6, metadata). `sizes` is a
+      JSON array of Droplet size slugs available in the region — join
+      with the `sizes` table for pricing details.
+    request:
+      method: GET
+      path: /v2/regions
+    response:
+      rows_path:
+        - regions
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      page_size:
+        default: 20
+        max: 200
+        query_param: per_page
+    columns:
+      - name: slug
+        type: Utf8
+        nullable: false
+        description: Region slug (e.g. nyc1, sfo3, ams3)
+        expr:
+          kind: path
+          path:
+            - slug
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Region display name (e.g. New York 1)
+        expr:
+          kind: path
+          path:
+            - name
+      - name: available
+        type: Boolean
+        nullable: true
+        description: Whether new resources can be created in this region
+        expr:
+          kind: path
+          path:
+            - available
+      - name: sizes
+        type: Json
+        nullable: true
+        description: Available Droplet size slugs as a JSON array
+        expr:
+          kind: path
+          path:
+            - sizes
+      - name: features
+        type: Json
+        nullable: true
+        description: Supported features as a JSON array (e.g. backups, ipv6)
+        expr:
+          kind: path
+          path:
+            - features
+
+  - name: sizes
+    description: Available Droplet size plans
+    guide: |
+      Each row is one Droplet size plan. `slug` is the plan identifier
+      used when creating Droplets (e.g. s-1vcpu-1gb). `price_monthly`
+      and `price_hourly` are the costs. `available` indicates whether the
+      size can currently be used for new Droplets. `regions` is a JSON
+      array of region slugs where the size is offered.
+    request:
+      method: GET
+      path: /v2/sizes
+    response:
+      rows_path:
+        - sizes
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      page_size:
+        default: 20
+        max: 200
+        query_param: per_page
+    columns:
+      - name: slug
+        type: Utf8
+        nullable: false
+        description: Size slug (e.g. s-1vcpu-1gb, s-2vcpu-4gb)
+        expr:
+          kind: path
+          path:
+            - slug
+      - name: memory
+        type: Int64
+        nullable: true
+        description: RAM in megabytes
+        expr:
+          kind: path
+          path:
+            - memory
+      - name: vcpus
+        type: Int64
+        nullable: true
+        description: Number of virtual CPUs
+        expr:
+          kind: path
+          path:
+            - vcpus
+      - name: disk
+        type: Int64
+        nullable: true
+        description: Disk size in gigabytes
+        expr:
+          kind: path
+          path:
+            - disk
+      - name: transfer
+        type: Float64
+        nullable: true
+        description: Transfer bandwidth in terabytes
+        expr:
+          kind: path
+          path:
+            - transfer
+      - name: price_monthly
+        type: Float64
+        nullable: true
+        description: Monthly price in USD
+        expr:
+          kind: path
+          path:
+            - price_monthly
+      - name: price_hourly
+        type: Float64
+        nullable: true
+        description: Hourly price in USD
+        expr:
+          kind: path
+          path:
+            - price_hourly
+      - name: available
+        type: Boolean
+        nullable: true
+        description: Whether this size is available for new Droplets
+        expr:
+          kind: path
+          path:
+            - available
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Human-readable size description
+        expr:
+          kind: path
+          path:
+            - description
+      - name: regions
+        type: Json
+        nullable: true
+        description: Available region slugs as a JSON array
+        expr:
+          kind: path
+          path:
+            - regions

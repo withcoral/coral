@@ -3,8 +3,8 @@
 ## Repo Map
 
 - `crates/coral-api`: protobuf contract and generated Rust bindings.
-- `crates/coral-app`: local server composition, state, workspaces, and source
-  lifecycle.
+- `crates/coral-app`: local server composition, state, workspaces, source
+  lifecycle, and workspace-scoped catalog discovery behavior.
 - `crates/coral-cli`: terminal adapter.
 - `crates/coral-client`: intentionally thin local transport bootstrap plus
   Arrow IPC decode/render helpers.
@@ -13,6 +13,8 @@
 - `crates/coral-mcp`: MCP stdio adapter over `coral-client`.
 - `crates/coral-spec`: declarative source-spec parsing, validation,
   input discovery, and normalized source-definition models.
+- `plugins/coral`: Agent plugin packaging. `plugins/coral/skills` is the
+  canonical in-repo home for maintained Coral agent skills.
 
 ## Rules
 
@@ -32,6 +34,24 @@
   ambient process environment directly.
 - Changes to CLI or MCP surfaces must include corresponding documentation
   updates under `docs/` in the same change.
+- Source-only changes under `sources/community/**` do not need to update the
+  aggregate community source catalog page; keep docs freshness strict for
+  generator changes, docs changes, and bundled sources under `sources/core/**`.
+- Source inputs that carry credentials must be `kind: secret`, never
+  `kind: variable`. This includes API keys, bearer tokens, access tokens,
+  passwords, private keys, authorization header values, and admin/read keys,
+  even when the credential is read-only or the source also supports anonymous
+  access.
+- Keep maintained Coral agent skills in `plugins/coral/skills`. External
+  distribution repos or packages should mirror from that directory rather than
+  becoming a separate source of truth. Use
+  `cargo run --locked -p xtask -- export-skills --dest <path>` for local
+  export checks and distribution syncs.
+- Coral skills must include `agents/openai.yaml`. Keep
+  `interface.display_name` in the form `Coral` or `Coral <Title Case Suffix>`,
+  keep the top-level `SKILL.md` heading equal to that display name, and set
+  non-empty `short_description` and `default_prompt` values. The default prompt
+  should mention the skill token, such as `$coral-create-source-spec`.
 - When proposing or updating a PR title, use Conventional Commits:
   `type(scope): summary`.
 - When using a scope, prefer one that matches the primary area changed,

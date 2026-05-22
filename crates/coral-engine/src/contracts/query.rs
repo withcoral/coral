@@ -160,6 +160,8 @@ impl QueryTestResult {
 pub struct SourceValidationReport {
     /// Tables exposed by the validated source.
     pub tables: Vec<super::TableInfo>,
+    /// Table functions exposed by the validated source.
+    pub table_functions: Vec<super::TableFunctionInfo>,
     /// One result per declared validation query, in manifest order.
     pub query_tests: Vec<QueryTestResult>,
 }
@@ -167,9 +169,14 @@ pub struct SourceValidationReport {
 impl SourceValidationReport {
     #[must_use]
     /// Builds one structured source-validation report.
-    pub fn new(tables: Vec<super::TableInfo>, query_tests: Vec<QueryTestResult>) -> Self {
+    pub fn new(
+        tables: Vec<super::TableInfo>,
+        table_functions: Vec<super::TableFunctionInfo>,
+        query_tests: Vec<QueryTestResult>,
+    ) -> Self {
         Self {
             tables,
+            table_functions,
             query_tests,
         }
     }

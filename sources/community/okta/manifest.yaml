@@ -1,0 +1,649 @@
+name: okta
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: Query Okta users, groups, apps, app assignments, and system log events.
+base_url: "{{input.OKTA_ORG_URL}}"
+
+inputs:
+  OKTA_ORG_URL:
+    kind: variable
+    hint: |
+      Base URL for your Okta org, for example `https://dev-123456.okta.com`
+      or `https://example.okta.com`. Do not include a trailing slash.
+  OKTA_API_TOKEN:
+    kind: secret
+    hint: |
+      Okta API token. Create one in the Okta Admin Console under Security >
+      API > Tokens. The token inherits the permissions of the user who created
+      it; use a read-only admin role where possible.
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: SSWS {{input.OKTA_API_TOKEN}}
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+  - name: Content-Type
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT id, login, email, status FROM okta.current_user LIMIT 1
+
+tables:
+  - name: current_user
+    description: Current Okta user associated with the API token.
+    fetch_limit_default: 1
+    request:
+      method: GET
+      path: /api/v1/users/me
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Okta user ID.
+        expr: {kind: path, path: [id]}
+      - name: status
+        type: Utf8
+        nullable: true
+        description: User lifecycle status.
+        expr: {kind: path, path: [status]}
+      - name: login
+        type: Utf8
+        nullable: true
+        description: User login.
+        expr: {kind: path, path: [profile, login]}
+      - name: email
+        type: Utf8
+        nullable: true
+        description: User email.
+        expr: {kind: path, path: [profile, email]}
+      - name: first_name
+        type: Utf8
+        nullable: true
+        description: User first name.
+        expr: {kind: path, path: [profile, firstName]}
+      - name: last_name
+        type: Utf8
+        nullable: true
+        description: User last name.
+        expr: {kind: path, path: [profile, lastName]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: User creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created]}
+      - name: activated_at
+        type: Timestamp
+        nullable: true
+        description: User activation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [activated]}
+      - name: last_login_at
+        type: Timestamp
+        nullable: true
+        description: Last login time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [lastLogin]}
+      - name: last_updated_at
+        type: Timestamp
+        nullable: true
+        description: Last update time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [lastUpdated]}
+      - name: profile
+        type: Json
+        nullable: true
+        description: Full user profile.
+        expr: {kind: path, path: [profile]}
+      - name: credentials
+        type: Json
+        nullable: true
+        description: User credential metadata.
+        expr: {kind: path, path: [credentials]}
+
+  - name: users
+    description: Okta users visible to the API token.
+    filters:
+      - name: q
+        mode: search
+      - name: search
+        mode: search
+      - name: filter
+    request:
+      method: GET
+      path: /api/v1/users
+      query:
+        - name: q
+          from: filter
+          key: q
+        - name: search
+          from: filter
+          key: search
+        - name: filter
+          from: filter
+          key: filter
+    response:
+      row_strategy: direct
+    pagination:
+      mode: link_header
+      page_size:
+        default: 200
+        max: 200
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Okta user ID.
+        expr: {kind: path, path: [id]}
+      - name: status
+        type: Utf8
+        nullable: true
+        description: User lifecycle status.
+        expr: {kind: path, path: [status]}
+      - name: login
+        type: Utf8
+        nullable: true
+        description: User login.
+        expr: {kind: path, path: [profile, login]}
+      - name: email
+        type: Utf8
+        nullable: true
+        description: User email.
+        expr: {kind: path, path: [profile, email]}
+      - name: first_name
+        type: Utf8
+        nullable: true
+        description: User first name.
+        expr: {kind: path, path: [profile, firstName]}
+      - name: last_name
+        type: Utf8
+        nullable: true
+        description: User last name.
+        expr: {kind: path, path: [profile, lastName]}
+      - name: mobile_phone
+        type: Utf8
+        nullable: true
+        description: User mobile phone.
+        expr: {kind: path, path: [profile, mobilePhone]}
+      - name: second_email
+        type: Utf8
+        nullable: true
+        description: User secondary email.
+        expr: {kind: path, path: [profile, secondEmail]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: User creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created]}
+      - name: activated_at
+        type: Timestamp
+        nullable: true
+        description: User activation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [activated]}
+      - name: status_changed_at
+        type: Timestamp
+        nullable: true
+        description: Status change time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [statusChanged]}
+      - name: last_login_at
+        type: Timestamp
+        nullable: true
+        description: Last login time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [lastLogin]}
+      - name: last_updated_at
+        type: Timestamp
+        nullable: true
+        description: Last update time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [lastUpdated]}
+      - name: password_changed_at
+        type: Timestamp
+        nullable: true
+        description: Last password change time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [passwordChanged]}
+      - name: type__id
+        type: Utf8
+        nullable: true
+        description: User type ID.
+        expr: {kind: path, path: [type, id]}
+      - name: profile
+        type: Json
+        nullable: true
+        description: Full user profile.
+        expr: {kind: path, path: [profile]}
+      - name: credentials
+        type: Json
+        nullable: true
+        description: User credential metadata.
+        expr: {kind: path, path: [credentials]}
+
+  - name: groups
+    description: Okta groups visible to the API token.
+    filters:
+      - name: q
+        mode: search
+      - name: search
+        mode: search
+      - name: filter
+    request:
+      method: GET
+      path: /api/v1/groups
+      query:
+        - name: q
+          from: filter
+          key: q
+        - name: search
+          from: filter
+          key: search
+        - name: filter
+          from: filter
+          key: filter
+    response:
+      row_strategy: direct
+    pagination:
+      mode: link_header
+      page_size:
+        default: 200
+        max: 200
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Group ID.
+        expr: {kind: path, path: [id]}
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Group type.
+        expr: {kind: path, path: [type]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Group profile name.
+        expr: {kind: path, path: [profile, name]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Group profile description.
+        expr: {kind: path, path: [profile, description]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Group creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created]}
+      - name: last_updated_at
+        type: Timestamp
+        nullable: true
+        description: Last update time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [lastUpdated]}
+      - name: last_membership_updated_at
+        type: Timestamp
+        nullable: true
+        description: Last membership update time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [lastMembershipUpdated]}
+      - name: profile
+        type: Json
+        nullable: true
+        description: Full group profile.
+        expr: {kind: path, path: [profile]}
+
+  - name: apps
+    description: Okta applications visible to the API token.
+    filters:
+      - name: q
+        mode: search
+      - name: filter
+    request:
+      method: GET
+      path: /api/v1/apps
+      query:
+        - name: q
+          from: filter
+          key: q
+        - name: filter
+          from: filter
+          key: filter
+    response:
+      row_strategy: direct
+    pagination:
+      mode: link_header
+      page_size:
+        default: 200
+        max: 200
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Application ID.
+        expr: {kind: path, path: [id]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Application integration key.
+        expr: {kind: path, path: [name]}
+      - name: label
+        type: Utf8
+        nullable: true
+        description: Application label.
+        expr: {kind: path, path: [label]}
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Application status.
+        expr: {kind: path, path: [status]}
+      - name: sign_on_mode
+        type: Utf8
+        nullable: true
+        description: Application sign-on mode.
+        expr: {kind: path, path: [signOnMode]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Application creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created]}
+      - name: last_updated_at
+        type: Timestamp
+        nullable: true
+        description: Last update time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [lastUpdated]}
+      - name: features
+        type: Json
+        nullable: true
+        description: Application features.
+        expr: {kind: path, path: [features]}
+      - name: credentials
+        type: Json
+        nullable: true
+        description: Application credential settings.
+        expr: {kind: path, path: [credentials]}
+      - name: settings
+        type: Json
+        nullable: true
+        description: Application settings.
+        expr: {kind: path, path: [settings]}
+      - name: visibility
+        type: Json
+        nullable: true
+        description: Application visibility settings.
+        expr: {kind: path, path: [visibility]}
+
+  - name: app_users
+    description: Users assigned to an Okta application.
+    filters:
+      - name: app_id
+        required: true
+      - name: q
+        mode: search
+    request:
+      method: GET
+      path: /api/v1/apps/{{filter.app_id}}/users
+      query:
+        - name: q
+          from: filter
+          key: q
+    response:
+      row_strategy: direct
+    pagination:
+      mode: link_header
+      page_size:
+        default: 200
+        max: 200
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: App user assignment ID.
+        expr: {kind: path, path: [id]}
+      - name: app_id
+        type: Utf8
+        nullable: false
+        description: Application ID used for the request.
+        expr:
+          kind: from_filter
+          key: app_id
+      - name: external_id
+        type: Utf8
+        nullable: true
+        description: External user ID for the app assignment.
+        expr: {kind: path, path: [externalId]}
+      - name: scope
+        type: Utf8
+        nullable: true
+        description: Assignment scope.
+        expr: {kind: path, path: [scope]}
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Assignment status.
+        expr: {kind: path, path: [status]}
+      - name: sync_state
+        type: Utf8
+        nullable: true
+        description: Assignment sync state.
+        expr: {kind: path, path: [syncState]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Assignment creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created]}
+      - name: last_updated_at
+        type: Timestamp
+        nullable: true
+        description: Assignment update time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [lastUpdated]}
+      - name: status_changed_at
+        type: Timestamp
+        nullable: true
+        description: Assignment status change time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [statusChanged]}
+      - name: password_changed_at
+        type: Timestamp
+        nullable: true
+        description: Assignment password change time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [passwordChanged]}
+      - name: profile
+        type: Json
+        nullable: true
+        description: App-specific user profile.
+        expr: {kind: path, path: [profile]}
+      - name: credentials
+        type: Json
+        nullable: true
+        description: App assignment credential metadata.
+        expr: {kind: path, path: [credentials]}
+
+  - name: system_log
+    description: Recent Okta System Log events.
+    filters:
+      - name: since
+      - name: until
+      - name: filter
+      - name: q
+        mode: search
+    request:
+      method: GET
+      path: /api/v1/logs
+      query:
+        - name: since
+          from: filter
+          key: since
+        - name: until
+          from: filter
+          key: until
+        - name: filter
+          from: filter
+          key: filter
+        - name: q
+          from: filter
+          key: q
+    response:
+      row_strategy: direct
+    pagination:
+      mode: link_header
+      max_pages: 1
+      page_size:
+        default: 100
+        max: 1000
+        query_param: limit
+    columns:
+      - name: uuid
+        type: Utf8
+        nullable: false
+        description: System Log event UUID.
+        expr: {kind: path, path: [uuid]}
+      - name: published_at
+        type: Timestamp
+        nullable: true
+        description: Event publication time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [published]}
+      - name: event_type
+        type: Utf8
+        nullable: true
+        description: Okta event type.
+        expr: {kind: path, path: [eventType]}
+      - name: display_message
+        type: Utf8
+        nullable: true
+        description: Human-readable event message.
+        expr: {kind: path, path: [displayMessage]}
+      - name: severity
+        type: Utf8
+        nullable: true
+        description: Event severity.
+        expr: {kind: path, path: [severity]}
+      - name: outcome__result
+        type: Utf8
+        nullable: true
+        description: Outcome result.
+        expr: {kind: path, path: [outcome, result]}
+      - name: outcome__reason
+        type: Utf8
+        nullable: true
+        description: Outcome reason.
+        expr: {kind: path, path: [outcome, reason]}
+      - name: actor__id
+        type: Utf8
+        nullable: true
+        description: Actor ID.
+        expr: {kind: path, path: [actor, id]}
+      - name: actor__type
+        type: Utf8
+        nullable: true
+        description: Actor type.
+        expr: {kind: path, path: [actor, type]}
+      - name: actor__display_name
+        type: Utf8
+        nullable: true
+        description: Actor display name.
+        expr: {kind: path, path: [actor, displayName]}
+      - name: actor__alternate_id
+        type: Utf8
+        nullable: true
+        description: Actor alternate ID, often a login.
+        expr: {kind: path, path: [actor, alternateId]}
+      - name: client__ip_address
+        type: Utf8
+        nullable: true
+        description: Client IP address.
+        expr: {kind: path, path: [client, ipAddress]}
+      - name: client__user_agent__raw
+        type: Utf8
+        nullable: true
+        description: Raw user-agent string.
+        expr: {kind: path, path: [client, userAgent, rawUserAgent]}
+      - name: request__ip_chain
+        type: Json
+        nullable: true
+        description: Request IP chain.
+        expr: {kind: path, path: [request, ipChain]}
+      - name: target
+        type: Json
+        nullable: true
+        description: Event targets.
+        expr: {kind: path, path: [target]}
+      - name: debug_context
+        type: Json
+        nullable: true
+        description: Debug context payload.
+        expr: {kind: path, path: [debugContext]}
+      - name: authentication_context
+        type: Json
+        nullable: true
+        description: Authentication context payload.
+        expr: {kind: path, path: [authenticationContext]}
+      - name: security_context
+        type: Json
+        nullable: true
+        description: Security context payload.
+        expr: {kind: path, path: [securityContext]}

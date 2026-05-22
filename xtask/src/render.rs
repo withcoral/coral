@@ -1,13 +1,52 @@
-//! MDX rendering for the bundled-sources index.
+//! MDX rendering for generator-owned docs pages.
 //!
-//! Produces the exact byte-for-byte contents written to
-//! `docs/reference/bundled-sources.mdx`. The single page contains the
-//! at-a-glance source table followed by one deep-linkable sub-section per
-//! source surfacing its declared inputs and hints.
+//! Produces the exact byte-for-byte contents written to generated Mintlify
+//! pages, including source catalog references and changelog.
 
 use std::fmt::Write as _;
 
 use coral_spec::{ManifestInputSpec, ValidatedSourceManifest};
+
+/// Render the `changelog.mdx` page from a raw `CHANGELOG.md`.
+///
+/// release-please writes `CHANGELOG.md` from conventional commits, so the
+/// body already has structured `## [version](url) (date)` headers and
+/// `### Features` / `### Bug Fixes` subsections that Mintlify renders
+/// cleanly. The only transformation needed is to:
+///
+/// - drop the leading `# Changelog` H1 (it would collide with the
+///   frontmatter title), and
+/// - run the rest through [`escape_mdx`] so future commit subjects that
+///   legally contain `<T>` or `{value}` in prose don't get parsed as JSX
+///   by Mintlify.
+pub(crate) fn changelog_page(raw: &str) -> String {
+    let body = strip_leading_changelog_heading(raw);
+    let escaped = escape_mdx(body.trim_start_matches('\n'));
+
+    let mut out = String::with_capacity(escaped.len() + 256);
+    out.push_str(CHANGELOG_FRONTMATTER);
+    out.push_str("{/* AUTO-GENERATED — DO NOT EDIT. Run `make docs-generate` to update. */}\n\n");
+    out.push_str(&escaped);
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out
+}
+
+/// Strip a leading `# Changelog` H1 if present. Tolerates surrounding
+/// blank lines and trailing whitespace on the heading line.
+fn strip_leading_changelog_heading(raw: &str) -> &str {
+    let trimmed = raw.trim_start_matches('\n');
+    let mut lines = trimmed.splitn(2, '\n');
+    let Some(first) = lines.next() else {
+        return raw;
+    };
+    if first.trim_end() == "# Changelog" {
+        lines.next().unwrap_or("")
+    } else {
+        trimmed
+    }
+}
 
 /// Render the `bundled-sources.mdx` index page.
 pub(crate) fn index_page(manifests: &[ValidatedSourceManifest]) -> String {
@@ -57,6 +96,58 @@ pub(crate) fn index_page(manifests: &[ValidatedSourceManifest]) -> String {
     }
 
     out.push_str(INDEX_OUTRO);
+    out
+}
+
+/// Render the `community-sources.mdx` catalog page.
+pub(crate) fn community_sources_page(manifests: &[ValidatedSourceManifest]) -> String {
+    let mut out = String::new();
+    out.push_str(COMMUNITY_FRONTMATTER);
+    out.push_str("{/* AUTO-GENERATED — DO NOT EDIT. Run `make docs-generate` to update. */}\n\n");
+    out.push_str(COMMUNITY_INTRO);
+
+    out.push_str("\n## Install a community source\n\n");
+    out.push_str("Clone the Coral repository so you have the source specs locally:\n\n");
+    out.push_str("```shellscript\n");
+    out.push_str("git clone https://github.com/withcoral/coral.git\n");
+    out.push_str("cd coral\n");
+    out.push_str("```\n\n");
+    out.push_str(
+        "Review the source's manifest and README when one exists, then add it from its manifest file:\n\n",
+    );
+    out.push_str("```shellscript\n");
+    out.push_str("coral source add --file sources/community/hn/manifest.yaml\n");
+    out.push_str("coral source test hn\n");
+    out.push_str("```\n\n");
+    out.push_str(
+        "If a source declares inputs, Coral reads them from environment variables by default. Add `--interactive` to be prompted instead:\n\n",
+    );
+    out.push_str("```shellscript\n");
+    out.push_str("coral source add --interactive --file sources/community/fly/manifest.yaml\n");
+    out.push_str("```\n\n");
+    out.push_str(
+        "After importing, the source behaves like any other installed source. It appears in `coral source list`, works with `coral source info <name> --verbose`, and exposes tables through `coral.tables`, `coral.columns`, the CLI, and MCP.\n",
+    );
+
+    out.push_str("\n## Available community sources\n\n");
+    out.push_str("| Source | Description |\n");
+    out.push_str("| --- | --- |\n");
+    for manifest in manifests {
+        let name = manifest.schema_name();
+        let description = manifest.description();
+        let description = if description.is_empty() {
+            format!("Coral community source: {name}")
+        } else {
+            escape_mdx(&flatten_for_table_cell(description))
+        };
+        writeln!(
+            out,
+            "| [{name}](https://github.com/withcoral/coral/tree/main/sources/community/{name}) | {description} |",
+        )
+        .expect("writing to String is infallible");
+    }
+
+    out.push_str(COMMUNITY_OUTRO);
     out
 }
 
@@ -265,6 +356,20 @@ fn escape_prose_into(slice: &str, out: &mut String) {
 const INDEX_FRONTMATTER: &str =
     "---\ntitle: \"Bundled sources\"\ndescription: \"Data sources that ship with Coral.\"\n---\n\n";
 
+const COMMUNITY_FRONTMATTER: &str = concat!(
+    "---\n",
+    "title: \"Community sources\"\n",
+    "description: \"Discover community-maintained Coral source specs and import them into your workspace.\"\n",
+    "---\n\n",
+);
+
+const CHANGELOG_FRONTMATTER: &str = concat!(
+    "---\n",
+    "title: \"Changelog\"\n",
+    "description: \"Release notes for the Coral CLI, generated from [CHANGELOG.md](https://github.com/withcoral/coral/blob/main/CHANGELOG.md).\"\n",
+    "---\n\n",
+);
+
 const INDEX_INTRO: &str = concat!(
     "Coral supports connecting to some data sources out of the box. These bundled specs live in [sources/core](https://github.com/withcoral/coral/tree/main/sources/core).<br />\n",
     "If the source you need is not available, you can extend Coral by [writing a custom source spec](/guides/write-a-custom-source).\n",
@@ -297,9 +402,29 @@ const INDEX_OUTRO: &str = concat!(
     "[Discord](https://discord.gg/h9aun8KpFF) or [GitHub](https://github.com/withcoral/coral/issues).\n",
 );
 
+const COMMUNITY_INTRO: &str = concat!(
+    "Community sources are source specs built and maintained by our community. These are kept in the Coral repository under\n",
+    "[sources/community](https://github.com/withcoral/coral/tree/main/sources/community).\n",
+    "\n",
+    "<Note>\n",
+    "  Community sources are not included in `coral source discover`, and `coral\n",
+    "  source add <name>` only installs [bundled sources](/reference/bundled-sources).\n",
+    "  Import community sources\n",
+    "  with `coral source add --file`.\n",
+    "</Note>\n",
+);
+
+const COMMUNITY_OUTRO: &str = concat!(
+    "\n## If a source is missing\n\n",
+    "If the source you need is not bundled and does not have a community spec yet, ",
+    "[write a custom source spec](/guides/write-a-custom-source). If the source is ",
+    "generally useful, open a pull request that adds it under `sources/community` ",
+    "with a `manifest.yaml` and source-specific README.\n",
+);
+
 #[cfg(test)]
 mod tests {
-    use super::{escape_mdx, index_page};
+    use super::{changelog_page, community_sources_page, escape_mdx, index_page};
     use coral_spec::parse_source_manifest_yaml;
 
     const SAMPLE_MANIFEST: &str = r#"
@@ -451,9 +576,65 @@ tables:
     }
 
     #[test]
+    fn changelog_page_renders_release_please_format() {
+        let raw = "# Changelog\n\n\
+                   ## [0.1.5](https://github.com/withcoral/coral/compare/v0.1.4...v0.1.5) (2026-04-27)\n\n\n\
+                   ### Features\n\n\
+                   * **cli:** add `coral completion` for shell completions ([#205](https://github.com/withcoral/coral/issues/205))\n\
+                   * custom authenticators ([#173](https://github.com/withcoral/coral/issues/173))\n\n\n\
+                   ### Bug Fixes\n\n\
+                   * **engine:** retry github 403 reset-based rate limits ([#110](https://github.com/withcoral/coral/issues/110))\n";
+        insta::assert_snapshot!("changelog_page_release_please_format", changelog_page(raw));
+    }
+
+    #[test]
+    fn changelog_page_escapes_mdx_hostile_commit_subjects() {
+        // A future commit subject could legally contain `<T>` or `{value}`
+        // in prose. Mintlify/MDX would otherwise parse `<T>` as a JSX tag
+        // and `{value}` as an expression. `escape_mdx` neutralizes both.
+        let raw = "# Changelog\n\n\
+                   ## [9.9.9](https://example.com) (2099-01-01)\n\n\
+                   ### Bug Fixes\n\n\
+                   * fix: handle <T> in queries when {value} is unset\n";
+        let rendered = changelog_page(raw);
+        assert!(
+            rendered.contains("\\<T\\>"),
+            "expected <T> to be escaped: {rendered}"
+        );
+        assert!(
+            rendered.contains("\\{value\\}"),
+            "expected {{value}} to be escaped: {rendered}"
+        );
+        assert!(
+            !rendered.contains("handle <T> in queries"),
+            "raw <T> still present: {rendered}"
+        );
+    }
+
+    #[test]
+    fn changelog_page_handles_missing_h1_heading() {
+        let raw =
+            "## [0.1.0](https://example.com) (2026-01-01)\n\n### Features\n\n* initial release\n";
+        let rendered = changelog_page(raw);
+        assert!(rendered.contains("title: \"Changelog\""));
+        assert!(rendered.contains("## [0.1.0]"));
+        assert!(rendered.ends_with('\n'));
+    }
+
+    #[test]
     fn index_page_renders_table_and_accordions() {
         let demo = parse_source_manifest_yaml(SAMPLE_MANIFEST).expect("parse demo");
         let minimal = parse_source_manifest_yaml(NO_INPUTS_MANIFEST).expect("parse minimal");
         insta::assert_snapshot!("index_page_renders_rows", index_page(&[demo, minimal]));
+    }
+
+    #[test]
+    fn community_sources_page_renders_catalog() {
+        let demo = parse_source_manifest_yaml(SAMPLE_MANIFEST).expect("parse demo");
+        let minimal = parse_source_manifest_yaml(NO_INPUTS_MANIFEST).expect("parse minimal");
+        insta::assert_snapshot!(
+            "community_sources_page_renders_catalog",
+            community_sources_page(&[demo, minimal])
+        );
     }
 }

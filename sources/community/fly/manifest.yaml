@@ -1,0 +1,479 @@
+name: fly
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: Query apps, machines, and volumes from Fly.io.
+
+inputs:
+  FLY_API_TOKEN:
+    kind: secret
+    hint: >
+      Fly.io API token. Create a read-only org token with
+      `fly tokens create readonly -o <org>`, or an app-scoped deploy token
+      with `fly tokens create deploy -a <app-name>` (sufficient for machines
+      and volumes but not for listing apps). Org-scoped tokens can also be
+      created from the Fly.io dashboard under Tokens.
+      See https://fly.io/docs/machines/api/working-with-machines-api/
+
+base_url: https://api.machines.dev/v1
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.FLY_API_TOKEN}}
+
+test_queries:
+  - SELECT name, machine_count, volume_count FROM fly.apps WHERE org_slug = 'personal' LIMIT 1
+
+tables:
+  # ------------------------------------------------------------------
+  # fly.apps — list apps in an organization
+  # GET /v1/apps?org_slug=<org_slug>
+  # ------------------------------------------------------------------
+  - name: apps
+    description: |
+      List Fly Apps in an organization. Use the `org_slug` filter to scope
+      by organization (e.g. `personal`). The `name` column can be used as
+      the `app_name` filter on the `machines` and `volumes` tables.
+    filters:
+      - name: org_slug
+        required: true
+    request:
+      method: GET
+      path: /apps
+      query:
+        - name: org_slug
+          from: filter
+          key: org_slug
+    response:
+      rows_path:
+        - apps
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Fly App ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Fly App name. Use as the `app_name` filter for machines and volumes.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: status
+        type: Utf8
+        nullable: true
+        description: App lifecycle status (e.g. deployed, suspended, pending).
+        expr:
+          kind: path
+          path:
+            - status
+      - name: machine_count
+        type: Int64
+        nullable: true
+        description: Number of machines in the app.
+        expr:
+          kind: path
+          path:
+            - machine_count
+      - name: volume_count
+        type: Int64
+        nullable: true
+        description: Number of volumes in the app.
+        expr:
+          kind: path
+          path:
+            - volume_count
+      - name: network
+        type: Utf8
+        nullable: true
+        description: Network name for the app.
+        expr:
+          kind: path
+          path:
+            - network
+      - name: org_slug
+        type: Utf8
+        nullable: true
+        description: Echoes the `org_slug` filter that produced this row.
+        expr:
+          kind: from_filter
+          key: org_slug
+
+  # ------------------------------------------------------------------
+  # fly.machines — list machines for an app
+  # GET /v1/apps/<app_name>/machines
+  # ------------------------------------------------------------------
+  - name: machines
+    description: |
+      List Fly Machines for an app. Requires `app_name` filter. Discover
+      app names from the `apps` table. Supports optional `state` and `region` filters.
+    filters:
+      - name: app_name
+        required: true
+      - name: state
+      - name: region
+      - name: include_deleted
+    request:
+      method: GET
+      path: /apps/{{filter.app_name}}/machines
+      query:
+        - name: state
+          from: filter
+          key: state
+        - name: region
+          from: filter
+          key: region
+        - name: include_deleted
+          from: filter
+          key: include_deleted
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Machine ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Machine name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: state
+        type: Utf8
+        nullable: true
+        description: Current machine state (started, stopped, suspended, destroyed).
+        expr:
+          kind: path
+          path:
+            - state
+      - name: host_status
+        type: Utf8
+        nullable: true
+        description: Host-level health (ok, unknown, unreachable).
+        expr:
+          kind: path
+          path:
+            - host_status
+      - name: region
+        type: Utf8
+        nullable: true
+        description: Region code where the machine runs (e.g. ord, cdg, nrt).
+        expr:
+          kind: path
+          path:
+            - region
+      - name: instance_id
+        type: Utf8
+        nullable: true
+        description: Identifier for the current running instance version.
+        expr:
+          kind: path
+          path:
+            - instance_id
+      - name: private_ip
+        type: Utf8
+        nullable: true
+        description: 6PN IPv6 private address.
+        expr:
+          kind: path
+          path:
+            - private_ip
+      - name: image_ref__registry
+        type: Utf8
+        nullable: true
+        description: Docker image registry (e.g. registry-1.docker.io, registry.fly.io).
+        expr:
+          kind: path
+          path:
+            - image_ref
+            - registry
+      - name: image_ref__repository
+        type: Utf8
+        nullable: true
+        description: Docker image repository.
+        expr:
+          kind: path
+          path:
+            - image_ref
+            - repository
+      - name: image_ref__tag
+        type: Utf8
+        nullable: true
+        description: Docker image tag.
+        expr:
+          kind: path
+          path:
+            - image_ref
+            - tag
+      - name: image_ref__digest
+        type: Utf8
+        nullable: true
+        description: Docker image digest.
+        expr:
+          kind: path
+          path:
+            - image_ref
+            - digest
+      - name: config
+        type: Json
+        nullable: true
+        description: Full machine configuration object (image, guest, services, env, etc.).
+        expr:
+          kind: path
+          path:
+            - config
+      - name: checks
+        type: Json
+        nullable: true
+        description: Health check status for the machine.
+        expr:
+          kind: path
+          path:
+            - checks
+      - name: events
+        type: Json
+        nullable: true
+        description: Event log for the machine (launch, start, stop events).
+        expr:
+          kind: path
+          path:
+            - events
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the machine was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the machine was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at
+      - name: app_name
+        type: Utf8
+        nullable: true
+        description: Echoes the `app_name` filter that produced this row.
+        expr:
+          kind: from_filter
+          key: app_name
+
+  # ------------------------------------------------------------------
+  # fly.volumes — list volumes for an app
+  # GET /v1/apps/<app_name>/volumes
+  # ------------------------------------------------------------------
+  - name: volumes
+    description: |
+      List Fly Volumes (persistent storage) for an app. Requires `app_name`
+      filter. Discover app names from the `apps` table.
+    filters:
+      - name: app_name
+        required: true
+    request:
+      method: GET
+      path: /apps/{{filter.app_name}}/volumes
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Volume ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Volume name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: state
+        type: Utf8
+        nullable: true
+        description: Volume state (created, destroyed, restoring).
+        expr:
+          kind: path
+          path:
+            - state
+      - name: host_status
+        type: Utf8
+        nullable: true
+        description: Host-level health (ok, unknown, unreachable).
+        expr:
+          kind: path
+          path:
+            - host_status
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Volume type (local for persistent, cache for ephemeral).
+        expr:
+          kind: path
+          path:
+            - type
+      - name: size_gb
+        type: Int64
+        nullable: true
+        description: Volume size in gigabytes.
+        expr:
+          kind: path
+          path:
+            - size_gb
+      - name: bytes_total
+        type: Int64
+        nullable: true
+        description: Total volume size in bytes.
+        expr:
+          kind: path
+          path:
+            - bytes_total
+      - name: bytes_used
+        type: Int64
+        nullable: true
+        description: Used space in bytes.
+        expr:
+          kind: path
+          path:
+            - bytes_used
+      - name: region
+        type: Utf8
+        nullable: true
+        description: Region code where the volume resides.
+        expr:
+          kind: path
+          path:
+            - region
+      - name: zone
+        type: Utf8
+        nullable: true
+        description: Availability zone within the region.
+        expr:
+          kind: path
+          path:
+            - zone
+      - name: encrypted
+        type: Boolean
+        nullable: true
+        description: Whether the volume is encrypted.
+        expr:
+          kind: path
+          path:
+            - encrypted
+      - name: attached_machine_id
+        type: Utf8
+        nullable: true
+        description: ID of the machine this volume is attached to, if any.
+        expr:
+          kind: path
+          path:
+            - attached_machine_id
+      - name: block_size
+        type: Int64
+        nullable: true
+        description: Block size in bytes.
+        expr:
+          kind: path
+          path:
+            - block_size
+      - name: blocks
+        type: Int64
+        nullable: true
+        description: Total number of blocks.
+        expr:
+          kind: path
+          path:
+            - blocks
+      - name: blocks_free
+        type: Int64
+        nullable: true
+        description: Number of free blocks.
+        expr:
+          kind: path
+          path:
+            - blocks_free
+      - name: blocks_avail
+        type: Int64
+        nullable: true
+        description: Number of available blocks.
+        expr:
+          kind: path
+          path:
+            - blocks_avail
+      - name: fstype
+        type: Utf8
+        nullable: true
+        description: Filesystem type (e.g. ext4).
+        expr:
+          kind: path
+          path:
+            - fstype
+      - name: snapshot_retention
+        type: Int64
+        nullable: true
+        description: Number of snapshots retained.
+        expr:
+          kind: path
+          path:
+            - snapshot_retention
+      - name: auto_backup_enabled
+        type: Boolean
+        nullable: true
+        description: Whether automatic backups are enabled.
+        expr:
+          kind: path
+          path:
+            - auto_backup_enabled
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the volume was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: app_name
+        type: Utf8
+        nullable: true
+        description: Echoes the `app_name` filter that produced this row.
+        expr:
+          kind: from_filter
+          key: app_name

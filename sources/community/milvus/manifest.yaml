@@ -1,0 +1,385 @@
+name: milvus
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query databases, collections, partitions, users, roles, and aliases
+  from Milvus (self-hosted or Zilliz Cloud).
+inputs:
+  MILVUS_URL:
+    kind: variable
+    default: "http://localhost:19530"
+    hint: |
+      Base URL of your Milvus instance REST API, for example
+      `http://localhost:19530` or `https://your-cluster.zillizcloud.com`.
+      The REST API is available on port 19530 by default.
+  MILVUS_TOKEN:
+    kind: secret
+    hint: |
+      Authentication token for Milvus. For a default local instance with no
+      auth, set this to any non-empty placeholder value (e.g. `none`).
+      For Milvus with username/password auth, use the plaintext format
+      `username:password` (e.g. `root:milvus`). Do not Base64-encode it.
+      For Zilliz Cloud, use your API key directly.
+      See https://milvus.io/docs/authenticate.md
+
+base_url: "{{input.MILVUS_URL}}"
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.MILVUS_TOKEN}}
+
+test_queries:
+  - SELECT * FROM milvus.databases LIMIT 1
+
+tables:
+  - name: databases
+    description: Databases in the Milvus instance.
+    guide: >
+      Start here to list all databases. The default database is named
+      "default". Use the database_name column as the db_name filter in
+      the collections and partitions tables.
+    request:
+      method: POST
+      path: /v2/vectordb/databases/list
+      headers:
+        - name: Content-Type
+          from: literal
+          value: application/json
+      body:
+        format: text
+        content:
+          from: literal
+          value: "{}"
+    response:
+      rows_path: [data]
+    pagination:
+      mode: none
+    columns:
+      - name: database_name
+        type: Utf8
+        nullable: true
+        description: Database name
+        expr: {kind: current_row}
+
+  - name: collections
+    description: Collections in a Milvus database.
+    guide: >
+      Lists all collection names in the given database. Use db_name filter
+      to scope to a specific database (defaults to "default" if omitted).
+      Collection names can be used as the collection_name filter in the
+      partitions table.
+    request:
+      method: POST
+      path: /v2/vectordb/collections/list
+      body:
+        format: json
+        fields:
+          - path: [dbName]
+            from: filter
+            key: db_name
+            default: default
+    response:
+      rows_path: [data]
+    pagination:
+      mode: none
+    columns:
+      - name: collection_name
+        type: Utf8
+        nullable: true
+        description: Collection name
+        expr: {kind: current_row}
+      - name: db_name
+        type: Utf8
+        nullable: true
+        description: Database name (echoes the db_name filter)
+        expr: {kind: from_filter, key: db_name}
+        virtual: true
+    filters:
+      - name: db_name
+
+  - name: collection_details
+    description: Schema and configuration details for a specific Milvus collection.
+    guide: >
+      Requires collection_name filter. Optionally provide db_name (defaults
+      to "default"). Returns fields, indexes, load state, and collection
+      metadata. Use collection names from the collections table.
+    request:
+      method: POST
+      path: /v2/vectordb/collections/describe
+      body:
+        format: json
+        fields:
+          - path: [collectionName]
+            from: filter
+            key: collection_name
+          - path: [dbName]
+            from: filter
+            key: db_name
+            default: default
+    response:
+      rows_path: [data]
+    pagination:
+      mode: none
+    columns:
+      - name: collection_name
+        type: Utf8
+        nullable: true
+        description: Collection name
+        expr: {kind: path, path: [collectionName]}
+      - name: db_name
+        type: Utf8
+        nullable: true
+        description: Database name
+        expr: {kind: path, path: [dbName]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Collection description
+        expr: {kind: path, path: [description]}
+      - name: fields
+        type: Json
+        nullable: true
+        description: Field definitions (name, type, primary key, vector dimension, etc.)
+        expr: {kind: path, path: [fields]}
+      - name: indexes
+        type: Json
+        nullable: true
+        description: Index configurations for this collection
+        expr: {kind: path, path: [indexes]}
+      - name: load
+        type: Utf8
+        nullable: true
+        description: Load state of the collection (Loaded, NotLoad, Loading)
+        expr: {kind: path, path: [load]}
+      - name: shards_num
+        type: Int64
+        nullable: true
+        description: Number of shards
+        expr: {kind: path, path: [shardsNum]}
+      - name: consistency_level
+        type: Utf8
+        nullable: true
+        description: Consistency level (Strong, Session, Bounded, Eventually)
+        expr: {kind: path, path: [consistencyLevel]}
+      - name: enable_dynamic_field
+        type: Boolean
+        nullable: true
+        description: Whether dynamic fields are enabled
+        expr: {kind: path, path: [enableDynamicField]}
+      - name: collection_id
+        type: Int64
+        nullable: true
+        description: Stable internal ID assigned to the collection upon creation.
+        expr: {kind: path, path: [collectionID]}
+      - name: auto_id
+        type: Boolean
+        nullable: true
+        description: >-
+          Whether the primary key auto-increments (Milvus-generated IDs).
+          False means the application supplies IDs.
+        expr: {kind: path, path: [autoId]}
+      - name: partitions_num
+        type: Int64
+        nullable: true
+        description: >-
+          Number of partitions declared for the collection. Compare with
+          the count from milvus.partitions to audit partition usage.
+        expr: {kind: path, path: [partitionsNum]}
+      - name: aliases
+        type: Json
+        nullable: true
+        description: List of aliases assigned to this collection.
+        expr: {kind: path, path: [aliases]}
+      - name: properties
+        type: Json
+        nullable: true
+        description: Extra collection properties as key-value pairs.
+        expr: {kind: path, path: [properties]}
+    filters:
+      - name: collection_name
+        required: true
+      - name: db_name
+
+  - name: collection_stats
+    description: Row count for a specific Milvus collection.
+    guide: >
+      Requires collection_name filter. Optionally provide db_name (defaults
+      to "default"). Returns a single row with the entity count for the
+      collection. Use this to find the largest collections by row count:
+      query collection_stats for each name from the collections table.
+    request:
+      method: POST
+      path: /v2/vectordb/collections/get_stats
+      body:
+        format: json
+        fields:
+          - path: [collectionName]
+            from: filter
+            key: collection_name
+          - path: [dbName]
+            from: filter
+            key: db_name
+            default: default
+    response:
+      rows_path: [data]
+    pagination:
+      mode: none
+    columns:
+      - name: collection_name
+        type: Utf8
+        nullable: true
+        description: Collection name (echoes the collection_name filter)
+        expr: {kind: from_filter, key: collection_name}
+        virtual: true
+      - name: db_name
+        type: Utf8
+        nullable: true
+        description: Database name (echoes the db_name filter)
+        expr: {kind: from_filter, key: db_name}
+        virtual: true
+      - name: row_count
+        type: Int64
+        nullable: true
+        description: Number of entities in the collection.
+        expr: {kind: path, path: [rowCount]}
+    filters:
+      - name: collection_name
+        required: true
+      - name: db_name
+
+  - name: partitions
+    description: Partitions within a Milvus collection.
+    guide: >
+      Requires collection_name filter. Optionally provide db_name (defaults
+      to "default"). The default partition is named "_default".
+    request:
+      method: POST
+      path: /v2/vectordb/partitions/list
+      body:
+        format: json
+        fields:
+          - path: [collectionName]
+            from: filter
+            key: collection_name
+          - path: [dbName]
+            from: filter
+            key: db_name
+            default: default
+    response:
+      rows_path: [data]
+    pagination:
+      mode: none
+    columns:
+      - name: partition_name
+        type: Utf8
+        nullable: true
+        description: Partition name
+        expr: {kind: current_row}
+      - name: collection_name
+        type: Utf8
+        nullable: true
+        description: Collection name (echoes the collection_name filter)
+        expr: {kind: from_filter, key: collection_name}
+        virtual: true
+      - name: db_name
+        type: Utf8
+        nullable: true
+        description: Database name (echoes the db_name filter)
+        expr: {kind: from_filter, key: db_name}
+        virtual: true
+    filters:
+      - name: collection_name
+        required: true
+      - name: db_name
+
+  - name: users
+    description: Users in the Milvus instance.
+    guide: >
+      Lists all users in the internal authentication database. Requires
+      the authenticated user to have admin privileges.
+    request:
+      method: POST
+      path: /v2/vectordb/users/list
+      headers:
+        - name: Content-Type
+          from: literal
+          value: application/json
+      body:
+        format: text
+        content:
+          from: literal
+          value: "{}"
+    response:
+      rows_path: [data]
+    pagination:
+      mode: none
+    columns:
+      - name: username
+        type: Utf8
+        nullable: true
+        description: Username
+        expr: {kind: current_row}
+
+  - name: roles
+    description: Roles defined in the Milvus instance.
+    guide: >
+      Lists all roles. Default roles are "admin" and "public".
+    request:
+      method: POST
+      path: /v2/vectordb/roles/list
+      headers:
+        - name: Content-Type
+          from: literal
+          value: application/json
+      body:
+        format: text
+        content:
+          from: literal
+          value: "{}"
+    response:
+      rows_path: [data]
+    pagination:
+      mode: none
+    columns:
+      - name: role_name
+        type: Utf8
+        nullable: true
+        description: Role name
+        expr: {kind: current_row}
+
+  - name: aliases
+    description: Aliases for collections in a Milvus database.
+    guide: >
+      Lists all collection aliases. Aliases allow referencing a collection
+      by an alternative name. Optionally filter by db_name.
+    request:
+      method: POST
+      path: /v2/vectordb/aliases/list
+      body:
+        format: json
+        fields:
+          - path: [dbName]
+            from: filter
+            key: db_name
+            default: default
+    response:
+      rows_path: [data]
+    pagination:
+      mode: none
+    columns:
+      - name: alias_name
+        type: Utf8
+        nullable: true
+        description: Alias name
+        expr: {kind: current_row}
+      - name: db_name
+        type: Utf8
+        nullable: true
+        description: Database name (echoes the db_name filter)
+        expr: {kind: from_filter, key: db_name}
+        virtual: true
+    filters:
+      - name: db_name

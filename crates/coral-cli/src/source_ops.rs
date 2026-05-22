@@ -2,13 +2,14 @@ use std::collections::BTreeMap;
 use std::io::{IsTerminal, stdin, stdout};
 use std::path::Path;
 
+use coral_api::CORAL_ERROR_REASON_SOURCE_NOT_FOUND;
 use coral_api::v1::{
     CreateBundledSourceRequest, DeleteSourceRequest, DiscoverSourcesRequest, GetSourceInfoRequest,
     ImportSourceRequest, ListSourcesRequest, QueryTestFailure, QueryTestSuccess, Source,
-    SourceInfo, SourceInputKind, SourceInputSpec, SourceOrigin, SourceSecret, SourceVariable,
-    ValidateSourceRequest, ValidateSourceResponse, query_test_result,
+    SourceInfo, SourceOrigin, SourceSecret, SourceVariable, ValidateSourceRequest,
+    ValidateSourceResponse, query_test_result, source_input_spec::Input as ProtoSourceInput,
 };
-use coral_client::{AppClient, default_workspace};
+use coral_client::{AppClient, DecodedStatusError, decode_status_error, default_workspace};
 use coral_spec::{
     ManifestInputKind, ManifestInputSpec, ValidatedSourceManifest, parse_source_manifest_yaml,
 };
@@ -187,10 +188,12 @@ fn print_source_info_response(source: &SourceInfo, verbose: bool) {
     println!();
     println!("  {}", style("Inputs").bold());
     for input in &source.inputs {
-        let kind_label = match SourceInputKind::try_from(input.kind) {
-            Ok(SourceInputKind::Variable) => "variable",
-            Ok(SourceInputKind::Secret) => "secret",
-            Ok(SourceInputKind::Unspecified) | Err(_) => "unknown",
+        let (kind_label, default_value) = match input.input.as_ref() {
+            Some(ProtoSourceInput::Variable(variable)) => {
+                ("variable", variable.default_value.as_str())
+            }
+            Some(ProtoSourceInput::Secret(_)) => ("secret", ""),
+            None => ("unknown", ""),
         };
         let requirement = if input.required {
             "required"
@@ -202,8 +205,8 @@ fn print_source_info_response(source: &SourceInfo, verbose: bool) {
             style(&input.key).bold(),
             style(format!("({kind_label}, {requirement})")).dim()
         );
-        if !input.default_value.is_empty() {
-            println!("      default: {}", input.default_value);
+        if !default_value.is_empty() {
+            println!("      default: {default_value}");
         }
         if verbose && !input.hint.is_empty() {
             println!("      {}", style(&input.hint).dim());
@@ -330,25 +333,6 @@ fn collect_inputs_with(
     Ok((variables, secrets))
 }
 
-pub(crate) fn manifest_input_from_proto(
-    input: &SourceInputSpec,
-) -> Result<ManifestInputSpec, anyhow::Error> {
-    let kind = match SourceInputKind::try_from(input.kind) {
-        Ok(SourceInputKind::Variable) => ManifestInputKind::Variable,
-        Ok(SourceInputKind::Secret) => ManifestInputKind::Secret,
-        Ok(SourceInputKind::Unspecified) | Err(_) => {
-            return Err(anyhow::anyhow!("unknown input kind for '{}'", input.key));
-        }
-    };
-    Ok(ManifestInputSpec {
-        key: input.key.clone(),
-        kind,
-        required: input.required,
-        default_value: input.default_value.clone(),
-        hint: (!input.hint.is_empty()).then(|| input.hint.clone()),
-    })
-}
-
 pub(crate) fn source_origin_label(origin: i32) -> &'static str {
     match SourceOrigin::try_from(origin) {
         Ok(SourceOrigin::Bundled) => "bundled",
@@ -397,11 +381,12 @@ pub(crate) async fn test_and_print(
     let normalized = source_name_arg(Some(source_name))?;
     let response = match validate_source_request(app, normalized.clone()).await {
         Ok(response) => response,
-        Err(status) if status.code() == tonic::Code::NotFound => {
+        Err(status) if is_source_missing_status(&status) => {
             return source_test_not_found_error(app, &normalized, status).await;
         }
         Err(status) => return Err(anyhow::Error::from(status).into()),
     };
+
     print_validation_pretty(&response, limit)?;
     match validation_follow_up(&response, severity_mode) {
         ValidationFollowUp::None => Ok(()),
@@ -434,6 +419,45 @@ async fn source_test_not_found_error(
     Err(crate::CliError::SourceNotFound {
         source_name: source_name.to_string(),
     })
+}
+
+pub(crate) async fn remove_and_print(
+    app: &AppClient,
+    source_name: &str,
+) -> Result<(), crate::CliError> {
+    let normalized = source_name_arg(Some(source_name))?;
+    match delete_source(app, &normalized).await {
+        Ok(()) => {
+            println!("Removed source {normalized}");
+            Ok(())
+        }
+        Err(err) => {
+            if err
+                .downcast_ref::<tonic::Status>()
+                .is_some_and(is_source_missing_status)
+            {
+                Err(crate::CliError::SourceRemoveNotFound {
+                    source_name: normalized,
+                })
+            } else {
+                Err(err.into())
+            }
+        }
+    }
+}
+
+/// Returns `true` only when the gRPC status carries the server's
+/// `SOURCE_NOT_FOUND` AIP-193 reason. Other `Code::NotFound` causes
+/// (e.g. a missing manifest file mapped from `io::ErrorKind::NotFound`)
+/// have no Coral `ErrorInfo` attached, so they remain diagnosable instead
+/// of being rewritten into the friendly "source not found" message.
+fn is_source_missing_status(status: &tonic::Status) -> bool {
+    match decode_status_error(status) {
+        DecodedStatusError::Structured(error) => {
+            error.reason == CORAL_ERROR_REASON_SOURCE_NOT_FOUND
+        }
+        DecodedStatusError::Plain(_) => false,
+    }
 }
 
 pub(crate) fn print_validation_pretty(
@@ -674,6 +698,7 @@ mod tests {
                 required: false,
                 default_value: "https://api.linear.app".to_string(),
                 hint: None,
+                credential: None,
             },
             ManifestInputSpec {
                 key: "LINEAR_API_KEY".to_string(),
@@ -681,6 +706,7 @@ mod tests {
                 required: true,
                 default_value: String::new(),
                 hint: None,
+                credential: None,
             },
         ];
         let env: HashMap<&str, &str> = [("LINEAR_API_KEY", "lin_token")].into_iter().collect();
@@ -704,6 +730,7 @@ mod tests {
             required: false,
             default_value: "https://example.com".to_string(),
             hint: None,
+            credential: None,
         }];
         let (variables, _) = collect_inputs_with(&inputs, |_| "https://override.test".to_string())
             .expect("env should override default");
@@ -719,6 +746,7 @@ mod tests {
             required: true,
             default_value: "https://example.com".to_string(),
             hint: None,
+            credential: None,
         }];
         let (variables, secrets) = collect_inputs_with(&inputs, |_| String::new())
             .expect("default should satisfy required");
@@ -736,6 +764,7 @@ mod tests {
                 required: true,
                 default_value: String::new(),
                 hint: None,
+                credential: None,
             },
             ManifestInputSpec {
                 key: "OTHER_KEY".to_string(),
@@ -743,6 +772,7 @@ mod tests {
                 required: true,
                 default_value: String::new(),
                 hint: None,
+                credential: None,
             },
         ];
         let error = collect_inputs_with(&inputs, |_| String::new())
@@ -770,6 +800,7 @@ mod tests {
             required: false,
             default_value: String::new(),
             hint: None,
+            credential: None,
         }];
         let (variables, secrets) =
             collect_inputs_with(&inputs, |_| String::new()).expect("optional should be omitted");
@@ -785,6 +816,7 @@ mod tests {
             required: false,
             default_value: "https://example.com".to_string(),
             hint: None,
+            credential: None,
         };
         assert_eq!(
             finalize_input_value(&input, String::new(), "source variable")
@@ -801,6 +833,7 @@ mod tests {
             required: true,
             default_value: String::new(),
             hint: None,
+            credential: None,
         };
         let error = finalize_input_value(&input, String::new(), "source secret")
             .expect_err("required empty input should fail");
@@ -812,6 +845,7 @@ mod tests {
         let response = ValidateSourceResponse {
             source: None,
             tables: Vec::new(),
+            table_functions: Vec::new(),
             query_tests: vec![coral_api::v1::QueryTestResult {
                 sql: "SELECT 1".to_string(),
                 outcome: Some(coral_api::v1::query_test_result::Outcome::Success(
@@ -831,6 +865,7 @@ mod tests {
         let response = ValidateSourceResponse {
             source: None,
             tables: Vec::new(),
+            table_functions: Vec::new(),
             query_tests: vec![
                 coral_api::v1::QueryTestResult {
                     sql: "SELECT 1".to_string(),
@@ -860,6 +895,7 @@ mod tests {
         let response = ValidateSourceResponse {
             source: None,
             tables: Vec::new(),
+            table_functions: Vec::new(),
             query_tests: vec![coral_api::v1::QueryTestResult {
                 sql: "SELECT missing".to_string(),
                 outcome: Some(coral_api::v1::query_test_result::Outcome::Failure(

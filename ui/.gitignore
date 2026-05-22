@@ -1,5 +1,9 @@
 node_modules/
 dist/
-src/generated/
 *.log
 .DS_Store
+tsconfig.tsbuildinfo
+src/generated/
+
+test-results/
+playwright-report/

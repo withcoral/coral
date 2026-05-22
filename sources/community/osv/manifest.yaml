@@ -1,0 +1,499 @@
+name: osv
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query OSV vulnerability records by package version, commit hash, or
+  vulnerability ID from the OSV API.
+base_url: https://api.osv.dev
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+test_queries:
+  - SELECT id, summary FROM osv.vulns WHERE id = 'GHSA-jfh8-c2jp-5v3q' LIMIT 1
+tables:
+  - name: query_by_version
+    description: OSV vulnerability matches for a package + ecosystem + version.
+    guide: >
+      Use this table for package-version lookup in one ecosystem (for example
+      PyPI, npm, Maven). Requires package_name, ecosystem, and version.
+      This maps to POST /v1/query and paginates via nextPageToken when present.
+      For purl-based lookup, use the OSV HTTP API directly; OSV rejects
+      requests that supply both a package name and a purl.
+    filters:
+      - name: package_name
+        required: true
+      - name: ecosystem
+        required: true
+      - name: version
+        required: true
+    request:
+      method: POST
+      path: /v1/query
+      body:
+        - path:
+            - package
+            - name
+          from: filter
+          key: package_name
+        - path:
+            - package
+            - ecosystem
+          from: filter
+          key: ecosystem
+        - path:
+            - version
+          from: filter
+          key: version
+    response:
+      rows_path:
+        - vulns
+      row_strategy: direct
+    pagination:
+      mode: cursor_body
+      cursor_body_path:
+        - pageToken
+      response_cursor_path:
+        - nextPageToken
+      max_pages: 20
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: OSV vulnerability identifier.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: schema_version
+        type: Utf8
+        nullable: true
+        description: OSV schema version for this record.
+        expr:
+          kind: path
+          path:
+            - schemaVersion
+      - name: summary
+        type: Utf8
+        nullable: true
+        description: Short one-line vulnerability summary.
+        expr:
+          kind: path
+          path:
+            - summary
+      - name: details
+        type: Utf8
+        nullable: true
+        description: Detailed vulnerability description.
+        expr:
+          kind: path
+          path:
+            - details
+      - name: published
+        type: Timestamp
+        nullable: true
+        description: Publication timestamp (RFC3339).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - published
+      - name: modified
+        type: Timestamp
+        nullable: true
+        description: Last modified timestamp (RFC3339).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - modified
+      - name: withdrawn
+        type: Timestamp
+        nullable: true
+        description: Withdrawal timestamp when present (RFC3339).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - withdrawn
+      - name: aliases
+        type: Json
+        nullable: true
+        description: Alias identifiers (for example CVE or GHSA).
+        expr:
+          kind: path
+          path:
+            - aliases
+      - name: related
+        type: Json
+        nullable: true
+        description: Related vulnerability identifiers.
+        expr:
+          kind: path
+          path:
+            - related
+      - name: references
+        type: Json
+        nullable: true
+        description: Upstream reference URLs with reference types.
+        expr:
+          kind: path
+          path:
+            - references
+      - name: severity
+        type: Json
+        nullable: true
+        description: Severity entries including type and score.
+        expr:
+          kind: path
+          path:
+            - severity
+      - name: affected
+        type: Json
+        nullable: true
+        description: Affected package/range/version payload from OSV.
+        expr:
+          kind: path
+          path:
+            - affected
+      - name: database_specific
+        type: Json
+        nullable: true
+        description: Database-specific metadata from OSV.
+        expr:
+          kind: path
+          path:
+            - databaseSpecific
+      - name: credits
+        type: Json
+        nullable: true
+        description: Credits for the vulnerability (name, contact, type).
+        expr:
+          kind: path
+          path:
+            - credits
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw OSV vulnerability object.
+        expr:
+          kind: current_row
+      - name: package_name
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Requested package name filter.
+        expr:
+          kind: from_filter
+          key: package_name
+      - name: ecosystem
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Requested ecosystem filter.
+        expr:
+          kind: from_filter
+          key: ecosystem
+      - name: version
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Requested version filter.
+        expr:
+          kind: from_filter
+          key: version
+  - name: query_by_commit
+    description: OSV vulnerability matches for a commit hash.
+    guide: >
+      Use this table when you have a git commit hash and need associated OSV
+      vulnerability records. Requires commit. You may optionally include
+      package_name and ecosystem to narrow results to a specific project.
+      Provide package_name and ecosystem together.
+    filters:
+      - name: commit
+        required: true
+      - name: package_name
+        required: false
+      - name: ecosystem
+        required: false
+    request:
+      method: POST
+      path: /v1/query
+      body:
+        - path:
+            - commit
+          from: filter
+          key: commit
+    requests:
+      - when_filters:
+          - package_name
+          - ecosystem
+        method: POST
+        path: /v1/query
+        body:
+          - path:
+              - commit
+            from: filter
+            key: commit
+          - path:
+              - package
+              - name
+            from: filter
+            key: package_name
+          - path:
+              - package
+              - ecosystem
+            from: filter
+            key: ecosystem
+    response:
+      rows_path:
+        - vulns
+      row_strategy: direct
+    pagination:
+      mode: cursor_body
+      cursor_body_path:
+        - pageToken
+      response_cursor_path:
+        - nextPageToken
+      max_pages: 20
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: OSV vulnerability identifier.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: summary
+        type: Utf8
+        nullable: true
+        description: Short one-line vulnerability summary.
+        expr:
+          kind: path
+          path:
+            - summary
+      - name: details
+        type: Utf8
+        nullable: true
+        description: Detailed vulnerability description.
+        expr:
+          kind: path
+          path:
+            - details
+      - name: modified
+        type: Timestamp
+        nullable: true
+        description: Last modified timestamp (RFC3339).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - modified
+      - name: aliases
+        type: Json
+        nullable: true
+        description: Alias identifiers (for example CVE or GHSA).
+        expr:
+          kind: path
+          path:
+            - aliases
+      - name: affected
+        type: Json
+        nullable: true
+        description: Affected package/range/version payload from OSV.
+        expr:
+          kind: path
+          path:
+            - affected
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw OSV vulnerability object.
+        expr:
+          kind: current_row
+      - name: commit
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Requested commit hash filter.
+        expr:
+          kind: from_filter
+          key: commit
+      - name: package_name
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional requested package name filter.
+        expr:
+          kind: from_filter
+          key: package_name
+      - name: ecosystem
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional requested ecosystem filter.
+        expr:
+          kind: from_filter
+          key: ecosystem
+
+  - name: vulns
+    description: Fetch one OSV vulnerability document by ID.
+    guide: >
+      Requires id and maps to GET /v1/vulns/{id}. Use this for deterministic
+      lookups of known OSV, CVE, or GHSA identifiers.
+    filters:
+      - name: id
+        required: true
+    request:
+      method: GET
+      path: /v1/vulns/{{filter.id}}
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: OSV vulnerability identifier.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: schema_version
+        type: Utf8
+        nullable: true
+        description: OSV schema version for this record.
+        expr:
+          kind: path
+          path:
+            - schemaVersion
+      - name: summary
+        type: Utf8
+        nullable: true
+        description: Short one-line vulnerability summary.
+        expr:
+          kind: path
+          path:
+            - summary
+      - name: details
+        type: Utf8
+        nullable: true
+        description: Detailed vulnerability description.
+        expr:
+          kind: path
+          path:
+            - details
+      - name: published
+        type: Timestamp
+        nullable: true
+        description: Publication timestamp (RFC3339).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - published
+      - name: modified
+        type: Timestamp
+        nullable: true
+        description: Last modified timestamp (RFC3339).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - modified
+      - name: withdrawn
+        type: Timestamp
+        nullable: true
+        description: Withdrawal timestamp when present (RFC3339).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - withdrawn
+      - name: aliases
+        type: Json
+        nullable: true
+        description: Alias identifiers (for example CVE or GHSA).
+        expr:
+          kind: path
+          path:
+            - aliases
+      - name: related
+        type: Json
+        nullable: true
+        description: Related vulnerability identifiers.
+        expr:
+          kind: path
+          path:
+            - related
+      - name: references
+        type: Json
+        nullable: true
+        description: Upstream reference URLs with reference types.
+        expr:
+          kind: path
+          path:
+            - references
+      - name: severity
+        type: Json
+        nullable: true
+        description: Severity entries including type and score.
+        expr:
+          kind: path
+          path:
+            - severity
+      - name: affected
+        type: Json
+        nullable: true
+        description: Affected package/range/version payload from OSV.
+        expr:
+          kind: path
+          path:
+            - affected
+      - name: database_specific
+        type: Json
+        nullable: true
+        description: Database-specific metadata from OSV.
+        expr:
+          kind: path
+          path:
+            - databaseSpecific
+      - name: credits
+        type: Json
+        nullable: true
+        description: Credits for the vulnerability (name, contact, type).
+        expr:
+          kind: path
+          path:
+            - credits
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw OSV vulnerability object.
+        expr:
+          kind: current_row
+      - name: id_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Requested vulnerability ID filter.
+        expr:
+          kind: from_filter
+          key: id

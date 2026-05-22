@@ -1,0 +1,744 @@
+name: resend
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query sent emails, domains, API keys, contacts, segments, topics,
+  broadcasts, webhooks, API request logs, and legacy audiences from Resend.
+base_url: https://api.resend.com
+
+inputs:
+  RESEND_API_KEY:
+    kind: secret
+    hint: >-
+      Resend API key. Create one at https://resend.com/api-keys.
+      Keys start with "re_". Use a key with full access permission
+      to query all tables.
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "Bearer {{input.RESEND_API_KEY}}"
+
+test_queries:
+  - SELECT id, name, status FROM resend.domains LIMIT 1
+
+tables:
+  # ──────────────────────────────────────────────────────────────────────
+  # emails — list sent emails
+  # ──────────────────────────────────────────────────────────────────────
+  - name: emails
+    description: >
+      Lists emails sent by the authenticated team. Returns sender,
+      recipients, subject, delivery status, and timestamps.
+    guide: >
+      Start with `SELECT id, "from", subject, last_event, created_at
+      FROM resend.emails LIMIT 10`. The last_event field shows
+      delivery status (delivered, opened, bounced, etc.). Note: "from"
+      is a reserved SQL keyword and must be double-quoted.
+    request:
+      method: GET
+      path: /emails
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: none
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique email identifier (UUID).
+        expr:
+          kind: path
+          path:
+            - id
+      - name: to
+        type: Json
+        nullable: true
+        description: Array of recipient email addresses.
+        expr:
+          kind: path
+          path:
+            - to
+      - name: from
+        type: Utf8
+        nullable: true
+        description: >-
+          Sender email address with optional display name.
+        expr:
+          kind: path
+          path:
+            - from
+      - name: subject
+        type: Utf8
+        nullable: true
+        description: Email subject line.
+        expr:
+          kind: path
+          path:
+            - subject
+      - name: cc
+        type: Json
+        nullable: true
+        description: Array of CC recipient email addresses.
+        expr:
+          kind: path
+          path:
+            - cc
+      - name: bcc
+        type: Json
+        nullable: true
+        description: Array of BCC recipient email addresses.
+        expr:
+          kind: path
+          path:
+            - bcc
+      - name: reply_to
+        type: Json
+        nullable: true
+        description: Reply-to address or addresses.
+        expr:
+          kind: path
+          path:
+            - reply_to
+      - name: last_event
+        type: Utf8
+        nullable: true
+        description: >-
+          Status of the last delivery event (e.g. delivered, opened,
+          clicked, bounced, complained).
+        expr:
+          kind: path
+          path:
+            - last_event
+      - name: scheduled_at
+        type: Utf8
+        nullable: true
+        description: >-
+          Scheduled send time (ISO 8601), or null if sent immediately.
+        expr:
+          kind: path
+          path:
+            - scheduled_at
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: When the email was created (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - created_at
+
+  # ──────────────────────────────────────────────────────────────────────
+  # domains — list all domains
+  # ──────────────────────────────────────────────────────────────────────
+  - name: domains
+    description: >
+      Lists all domains registered in the Resend account. Returns domain
+      name, verification status, region, and capabilities.
+    guide: >
+      Start with `SELECT id, name, status, region, created_at
+      FROM resend.domains LIMIT 10`. Use the domain name as context
+      when reviewing emails or setting up contacts.
+    request:
+      method: GET
+      path: /domains
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: none
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique domain identifier (UUID).
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Fully qualified domain name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: status
+        type: Utf8
+        nullable: true
+        description: >-
+          Domain verification status (e.g. not_started, pending,
+          verified, failed, temporary_failure).
+        expr:
+          kind: path
+          path:
+            - status
+      - name: region
+        type: Utf8
+        nullable: true
+        description: >-
+          AWS region where the domain is hosted (e.g. us-east-1,
+          eu-west-1, sa-east-1).
+        expr:
+          kind: path
+          path:
+            - region
+      - name: capabilities
+        type: Json
+        nullable: true
+        description: >-
+          Domain capabilities object showing sending and receiving
+          status (e.g. {"sending": "enabled", "receiving": "disabled"}).
+        expr:
+          kind: path
+          path:
+            - capabilities
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: When the domain was created (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - created_at
+
+  # ──────────────────────────────────────────────────────────────────────
+  # api_keys — list API keys
+  # ──────────────────────────────────────────────────────────────────────
+  - name: api_keys
+    description: >
+      Lists all API keys for the authenticated user. Returns key name,
+      creation time, and last usage timestamp. The actual key value is
+      never returned after creation.
+    guide: >
+      Start with `SELECT id, name, created_at, last_used_at
+      FROM resend.api_keys`. Useful for auditing API key usage and
+      identifying unused keys.
+    request:
+      method: GET
+      path: /api-keys
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique API key identifier (UUID).
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Display name assigned to the API key.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: When the API key was created (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - created_at
+      - name: last_used_at
+        type: Utf8
+        nullable: true
+        description: >-
+          When the API key was last used (ISO 8601), or null if
+          never used.
+        expr:
+          kind: path
+          path:
+            - last_used_at
+
+  # ──────────────────────────────────────────────────────────────────────
+  # audiences — list all audiences
+  # ──────────────────────────────────────────────────────────────────────
+  - name: audiences
+    description: >
+      Lists legacy audiences for the authenticated account. Resend's
+      current Contacts API uses global contacts plus segments; this table
+      is kept for accounts that still have audience resources.
+    guide: >
+      Start with `SELECT id, name, created_at
+      FROM resend.audiences`. For current contact grouping, use
+      resend.segments instead.
+    request:
+      method: GET
+      path: /audiences
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique audience identifier (UUID).
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Audience display name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: When the audience was created (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - created_at
+
+  # ──────────────────────────────────────────────────────────────────────
+  # segments — list all segments
+  # ──────────────────────────────────────────────────────────────────────
+  - name: segments
+    description: >
+      Lists all segments for the authenticated account. Segments group
+      contacts for broadcast targeting.
+    guide: >
+      Start with `SELECT id, name, created_at
+      FROM resend.segments`. Use segment IDs to understand broadcast
+      targeting through resend.broadcasts.segment_id.
+    request:
+      method: GET
+      path: /segments
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: none
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique segment identifier (UUID).
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Segment display name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: When the segment was created (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - created_at
+
+  # ──────────────────────────────────────────────────────────────────────
+  # contacts — list contacts
+  # ──────────────────────────────────────────────────────────────────────
+  - name: contacts
+    description: >
+      Lists all contacts for the authenticated account. Returns email
+      address, name, subscription status, and creation timestamp.
+    guide: >
+      Start with `SELECT id, email, first_name, last_name,
+      unsubscribed FROM resend.contacts LIMIT 20`. Contacts can
+      belong to segments; use resend.segments and
+      resend.broadcasts.segment_id for campaign targeting context.
+    request:
+      method: GET
+      path: /contacts
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: none
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique contact identifier (UUID).
+        expr:
+          kind: path
+          path:
+            - id
+      - name: email
+        type: Utf8
+        nullable: false
+        description: Contact email address.
+        expr:
+          kind: path
+          path:
+            - email
+      - name: first_name
+        type: Utf8
+        nullable: true
+        description: Contact first name.
+        expr:
+          kind: path
+          path:
+            - first_name
+      - name: last_name
+        type: Utf8
+        nullable: true
+        description: Contact last name.
+        expr:
+          kind: path
+          path:
+            - last_name
+      - name: unsubscribed
+        type: Boolean
+        nullable: true
+        description: Whether the contact has unsubscribed.
+        expr:
+          kind: path
+          path:
+            - unsubscribed
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: When the contact was created (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - created_at
+
+  # ──────────────────────────────────────────────────────────────────────
+  # broadcasts — list all broadcasts
+  # ──────────────────────────────────────────────────────────────────────
+  - name: broadcasts
+    description: >
+      Lists all broadcasts (bulk email campaigns) for the authenticated
+      account. Returns broadcast status, audience/segment targeting,
+      schedule, and send timestamps.
+    guide: >
+      Start with `SELECT id, status, audience_id, segment_id,
+      created_at, sent_at FROM resend.broadcasts`. Filter by status
+      in SQL to find drafts or sent broadcasts. Use resend.segments
+      to resolve segment_id values.
+    request:
+      method: GET
+      path: /broadcasts
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique broadcast identifier (UUID).
+        expr:
+          kind: path
+          path:
+            - id
+      - name: audience_id
+        type: Utf8
+        nullable: true
+        description: Legacy target audience ID for the broadcast.
+        expr:
+          kind: path
+          path:
+            - audience_id
+      - name: segment_id
+        type: Utf8
+        nullable: true
+        description: >-
+          Target segment ID for the broadcast. Replaces audience_id
+          in newer API versions.
+        expr:
+          kind: path
+          path:
+            - segment_id
+      - name: status
+        type: Utf8
+        nullable: true
+        description: >-
+          Broadcast status (e.g. draft, queued, sending, sent).
+        expr:
+          kind: path
+          path:
+            - status
+      - name: topic_id
+        type: Utf8
+        nullable: true
+        description: >-
+          Associated topic ID for subscription management.
+        expr:
+          kind: path
+          path:
+            - topic_id
+      - name: scheduled_at
+        type: Utf8
+        nullable: true
+        description: >-
+          Scheduled send time (ISO 8601), or null if not scheduled.
+        expr:
+          kind: path
+          path:
+            - scheduled_at
+      - name: sent_at
+        type: Utf8
+        nullable: true
+        description: >-
+          Actual send time (ISO 8601), or null if not yet sent.
+        expr:
+          kind: path
+          path:
+            - sent_at
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: When the broadcast was created (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - created_at
+
+  # ──────────────────────────────────────────────────────────────────────
+  # topics — list all topics
+  # ──────────────────────────────────────────────────────────────────────
+  - name: topics
+    description: >
+      Lists all topics for the authenticated account. Topics let contacts
+      manage subscription preferences for different kinds of email.
+    guide: >
+      Start with `SELECT id, name, default_subscription, visibility
+      FROM resend.topics`. Broadcasts may reference a topic_id when
+      sending to a specific subscription topic.
+    request:
+      method: GET
+      path: /topics
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: none
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique topic identifier (UUID).
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Topic display name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Topic description shown to subscribers.
+        expr:
+          kind: path
+          path:
+            - description
+      - name: default_subscription
+        type: Utf8
+        nullable: true
+        description: Default subscription state for new contacts.
+        expr:
+          kind: path
+          path:
+            - default_subscription
+      - name: visibility
+        type: Utf8
+        nullable: true
+        description: Topic visibility, such as public or private.
+        expr:
+          kind: path
+          path:
+            - visibility
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: When the topic was created (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - created_at
+
+  # ──────────────────────────────────────────────────────────────────────
+  # webhooks — list all webhooks
+  # ──────────────────────────────────────────────────────────────────────
+  - name: webhooks
+    description: >
+      Lists all webhooks configured for the authenticated account.
+      Returns endpoint URL, status, subscribed events, and
+      creation timestamp.
+    guide: >
+      Start with `SELECT id, endpoint, status, events, created_at
+      FROM resend.webhooks`. Use this to audit webhook integrations
+      and identify disabled endpoints.
+    request:
+      method: GET
+      path: /webhooks
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique webhook identifier (UUID).
+        expr:
+          kind: path
+          path:
+            - id
+      - name: endpoint
+        type: Utf8
+        nullable: true
+        description: Webhook destination URL.
+        expr:
+          kind: path
+          path:
+            - endpoint
+      - name: status
+        type: Utf8
+        nullable: true
+        description: >-
+          Webhook status (enabled or disabled).
+        expr:
+          kind: path
+          path:
+            - status
+      - name: events
+        type: Json
+        nullable: true
+        description: >-
+          Array of subscribed event types (e.g. email.sent,
+          email.delivered, email.bounced, email.received).
+        expr:
+          kind: path
+          path:
+            - events
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: When the webhook was created (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - created_at
+
+  # ──────────────────────────────────────────────────────────────────────
+  # logs — API request logs
+  # ──────────────────────────────────────────────────────────────────────
+  - name: logs
+    description: >
+      Lists API request logs for the authenticated account. Returns
+      endpoint, HTTP method, response status, user agent, and
+      timestamp for each request.
+    guide: >
+      Start with `SELECT id, endpoint, method, response_status,
+      created_at FROM resend.logs LIMIT 20`. Useful for debugging
+      API integrations and auditing request patterns.
+    request:
+      method: GET
+      path: /logs
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique log entry identifier (UUID).
+        expr:
+          kind: path
+          path:
+            - id
+      - name: endpoint
+        type: Utf8
+        nullable: true
+        description: API endpoint path (e.g. /emails, /domains).
+        expr:
+          kind: path
+          path:
+            - endpoint
+      - name: method
+        type: Utf8
+        nullable: true
+        description: HTTP method (GET, POST, PATCH, DELETE).
+        expr:
+          kind: path
+          path:
+            - method
+      - name: response_status
+        type: Int64
+        nullable: true
+        description: HTTP response status code (e.g. 200, 400, 401).
+        expr:
+          kind: path
+          path:
+            - response_status
+      - name: user_agent
+        type: Utf8
+        nullable: true
+        description: >-
+          User-Agent string of the API client (e.g.
+          resend-node:6.0.3, curl/8.7.1).
+        expr:
+          kind: path
+          path:
+            - user_agent
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: When the API request was made (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - created_at

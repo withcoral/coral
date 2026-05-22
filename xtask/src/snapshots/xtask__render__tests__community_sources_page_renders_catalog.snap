@@ -1,0 +1,55 @@
+---
+source: xtask/src/render.rs
+expression: "community_sources_page(&[demo, minimal])"
+---
+---
+title: "Community sources"
+description: "Discover community-maintained Coral source specs and import them into your workspace."
+---
+
+{/* AUTO-GENERATED — DO NOT EDIT. Run `make docs-generate` to update. */}
+
+Community sources are source specs built and maintained by our community. These are kept in the Coral repository under
+[sources/community](https://github.com/withcoral/coral/tree/main/sources/community).
+
+<Note>
+  Community sources are not included in `coral source discover`, and `coral
+  source add <name>` only installs [bundled sources](/reference/bundled-sources).
+  Import community sources
+  with `coral source add --file`.
+</Note>
+
+## Install a community source
+
+Clone the Coral repository so you have the source specs locally:
+
+```shellscript
+git clone https://github.com/withcoral/coral.git
+cd coral
+```
+
+Review the source's manifest and README when one exists, then add it from its manifest file:
+
+```shellscript
+coral source add --file sources/community/hn/manifest.yaml
+coral source test hn
+```
+
+If a source declares inputs, Coral reads them from environment variables by default. Add `--interactive` to be prompted instead:
+
+```shellscript
+coral source add --interactive --file sources/community/fly/manifest.yaml
+```
+
+After importing, the source behaves like any other installed source. It appears in `coral source list`, works with `coral source info <name> --verbose`, and exposes tables through `coral.tables`, `coral.columns`, the CLI, and MCP.
+
+## Available community sources
+
+| Source | Description |
+| --- | --- |
+| [demo](https://github.com/withcoral/coral/tree/main/sources/community/demo) | A small demo source used in snapshot tests |
+| [minimal](https://github.com/withcoral/coral/tree/main/sources/community/minimal) | Coral community source: minimal |
+
+## If a source is missing
+
+If the source you need is not bundled and does not have a community spec yet, [write a custom source spec](/guides/write-a-custom-source). If the source is generally useful, open a pull request that adds it under `sources/community` with a `manifest.yaml` and source-specific README.

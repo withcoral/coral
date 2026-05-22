@@ -14,12 +14,14 @@ use std::task::{Context, Poll};
 use axum::body::Body as AxumBody;
 use axum::extract::Request as AxumRequest;
 use axum::response::Response as AxumResponse;
+use coral_api::v1::catalog_service_server::CatalogServiceServer;
 use coral_api::v1::feedback_service_server::FeedbackServiceServer;
 use coral_api::v1::query_service_server::QueryServiceServer;
 use coral_api::v1::source_service_server::SourceServiceServer;
 use coral_api::v1::trace_service_server::TraceServiceServer;
 use coral_api::{
-    HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE, TRACE_RESPONSE_MAX_MESSAGE_SIZE,
+    CATALOG_RESPONSE_MAX_MESSAGE_SIZE, HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE,
+    TRACE_RESPONSE_MAX_MESSAGE_SIZE,
 };
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
@@ -35,6 +37,8 @@ use tower::{Layer, Service};
 use super::env::AppEnvironment;
 use super::error::AppError;
 use crate::EngineExtensionsProvider;
+use crate::catalog::service::CatalogService;
+use crate::credentials::{CredentialManager, CredentialStore};
 use crate::feedback::manager::FeedbackManager;
 use crate::feedback::publisher::{
     FeedbackPublisher, HostedFeedbackPublisher, NoopFeedbackPublisher,
@@ -44,7 +48,7 @@ use crate::query::manager::QueryManager;
 use crate::query::service::QueryService;
 use crate::sources::manager::SourceManager;
 use crate::sources::service::SourceService;
-use crate::state::{AppStateLayout, ConfigStore, SecretStore};
+use crate::state::{AppStateLayout, ConfigStore};
 use crate::telemetry::TelemetryConfig;
 use crate::telemetry::service::TraceService;
 use crate::transport::GrpcMethodAnnotatedService;
@@ -236,7 +240,7 @@ impl ServerBuilder {
     /// # Errors
     ///
     /// Returns [`AppError`] if the config directory cannot be determined,
-    /// required directories cannot be created, the config or secrets backends
+    /// required directories cannot be created, the config or credential backends
     /// fail to initialize, or the gRPC server cannot be started.
     pub async fn start(self) -> Result<RunningServer, AppError> {
         let env = AppEnvironment::discover();
@@ -257,14 +261,18 @@ impl ServerBuilder {
             internal_trace_store_dir.clone(),
         )?;
         let config_store = ConfigStore::new(layout.clone());
-        let secret_store = SecretStore::new(layout.clone());
-        let source_manager =
-            SourceManager::new(config_store.clone(), secret_store.clone(), layout.clone());
+        let credential_store = CredentialStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(credential_store);
+        let source_manager = SourceManager::new(
+            config_store.clone(),
+            credential_manager.clone(),
+            layout.clone(),
+        );
         let feedback_manager =
             FeedbackManager::with_publisher(layout.clone(), self.config.feedback_publisher);
         let query_manager = QueryManager::new(
             config_store,
-            secret_store,
+            credential_manager,
             env.query_runtime_context(),
             layout,
             self.config.engine_extensions_providers,
@@ -363,12 +371,17 @@ async fn start_server(
     mode: ServerMode,
 ) -> Result<RunningServer, AppError> {
     let source_service = SourceService::new(source_manager, query_manager.clone());
+    let catalog_service = CatalogService::new(query_manager.clone());
     let query_service = QueryService::new(query_manager);
     let feedback_service = FeedbackService::new(feedback_manager);
     let mut routes = Routes::default()
         .add_service(GrpcMethodAnnotatedService::new(SourceServiceServer::new(
             source_service,
         )))
+        .add_service(GrpcMethodAnnotatedService::new(
+            CatalogServiceServer::new(catalog_service)
+                .max_encoding_message_size(CATALOG_RESPONSE_MAX_MESSAGE_SIZE),
+        ))
         .add_service(GrpcMethodAnnotatedService::new(FeedbackServiceServer::new(
             feedback_service,
         )))
@@ -616,10 +629,11 @@ mod tests {
         ServerBuilder, ServerMode, StaticAsset, StaticAssetsProvider, is_grpc_web_content_type,
         is_native_grpc_content_type, start_server,
     };
+    use crate::credentials::{CredentialManager, CredentialStore};
     use crate::feedback::manager::FeedbackManager;
     use crate::query::manager::QueryManager;
     use crate::sources::manager::SourceManager;
-    use crate::state::{AppStateLayout, ConfigStore, SecretStore};
+    use crate::state::{AppStateLayout, ConfigStore};
     use crate::telemetry::service::TraceService;
     use crate::transport::workspace_to_proto;
     use crate::workspaces::WorkspaceName;
@@ -679,13 +693,17 @@ enabled = false
         let layout = AppStateLayout::discover(Some(config_dir)).expect("layout");
         layout.ensure().expect("layout dirs");
         let config_store = ConfigStore::new(layout.clone());
-        let secret_store = SecretStore::new(layout.clone());
-        let source_manager =
-            SourceManager::new(config_store.clone(), secret_store.clone(), layout.clone());
+        let credential_store = CredentialStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(credential_store);
+        let source_manager = SourceManager::new(
+            config_store.clone(),
+            credential_manager.clone(),
+            layout.clone(),
+        );
         let feedback_manager = FeedbackManager::new(layout.clone());
         let query_manager = QueryManager::new(
             config_store,
-            secret_store,
+            credential_manager,
             QueryRuntimeContext::default(),
             layout,
             vec![Arc::new(NoopEngineExtensionsProvider)],
@@ -956,15 +974,18 @@ enabled = false
         .expect("write fixture");
 
         let layout = AppStateLayout::discover(Some(config_dir.clone())).expect("layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let credential_store = CredentialStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(credential_store);
         let source_manager = SourceManager::new(
-            ConfigStore::new(layout.clone()),
-            SecretStore::new(layout.clone()),
+            config_store.clone(),
+            credential_manager.clone(),
             layout.clone(),
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
         let query_manager = QueryManager::new(
-            ConfigStore::new(layout.clone()),
-            SecretStore::new(layout.clone()),
+            config_store,
+            credential_manager,
             QueryRuntimeContext {
                 home_dir: Some(fake_home.clone()),
             },
@@ -1041,16 +1062,19 @@ tables:
         let config_dir = temp.path().join("coral-config");
 
         let layout = AppStateLayout::discover(Some(config_dir.clone())).expect("layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let credential_store = CredentialStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(credential_store);
         let source_manager = SourceManager::new(
-            ConfigStore::new(layout.clone()),
-            SecretStore::new(layout.clone()),
+            config_store.clone(),
+            credential_manager.clone(),
             layout.clone(),
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
         let query_manager = QueryManager::new(
-            ConfigStore::new(layout.clone()),
-            SecretStore::new(layout.clone()),
-            QueryRuntimeContext::default(),
+            config_store,
+            credential_manager,
+            QueryRuntimeContext { home_dir: None },
             layout,
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
@@ -1136,16 +1160,19 @@ tables:
         }
 
         let layout = AppStateLayout::discover(Some(config_dir.clone())).expect("layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let credential_store = CredentialStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(credential_store);
         let source_manager = SourceManager::new(
-            ConfigStore::new(layout.clone()),
-            SecretStore::new(layout.clone()),
+            config_store.clone(),
+            credential_manager.clone(),
             layout.clone(),
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
         let query_manager = QueryManager::new(
-            ConfigStore::new(layout.clone()),
-            SecretStore::new(layout.clone()),
-            QueryRuntimeContext::default(),
+            config_store,
+            credential_manager,
+            QueryRuntimeContext { home_dir: None },
             layout,
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
