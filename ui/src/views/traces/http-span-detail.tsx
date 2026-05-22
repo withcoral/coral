@@ -51,7 +51,8 @@ function looksLikeJson(value: string) {
   )
 }
 
-function parseMaybeJson(value: unknown): JsonValue {
+function parseMaybeJson(value: unknown): JsonValue | undefined {
+  if (value === undefined || value === null) return undefined
   if (typeof value !== 'string') return value as JsonValue
   try {
     const parsed = JSON.parse(value) as JsonValue
@@ -285,10 +286,10 @@ function activeBodyState(
   activeTab: HttpDetailTab,
   attrs: Record<string, unknown>,
   paramsValue: Record<string, string | string[]> | undefined,
-  requestBody: JsonValue,
+  requestBody: JsonValue | undefined,
   rawRequestBody: unknown,
   requestBodyTruncated: boolean,
-  responseBody: JsonValue,
+  responseBody: JsonValue | undefined,
   rawResponseBody: unknown,
   responseBodyTruncated: boolean,
 ): ActiveBodyState {
@@ -348,7 +349,11 @@ function bodyEmptyText(kind: BodyKind, attrs: Record<string, unknown>, truncated
   return `No ${kind} body was recorded for this request.`
 }
 
-function preferredHttpDetailTab(responseBody: JsonValue, requestBody: JsonValue, paramsValue: Record<string, string | string[]> | undefined): HttpDetailTab {
+function preferredHttpDetailTab(
+  responseBody: JsonValue | undefined,
+  requestBody: JsonValue | undefined,
+  paramsValue: Record<string, string | string[]> | undefined,
+): HttpDetailTab {
   if (responseBody) return 'response'
   if (requestBody) return 'request'
   if (paramsValue) return 'params'
