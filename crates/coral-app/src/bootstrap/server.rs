@@ -1191,7 +1191,7 @@ tables:
         let query_manager = QueryManager::new(
             config_store,
             credential_manager,
-            QueryRuntimeContext { home_dir: None },
+            QueryRuntimeContext::default(),
             layout,
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
@@ -1289,7 +1289,7 @@ tables:
         let query_manager = QueryManager::new(
             config_store,
             credential_manager,
-            QueryRuntimeContext { home_dir: None },
+            QueryRuntimeContext::default(),
             layout,
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );

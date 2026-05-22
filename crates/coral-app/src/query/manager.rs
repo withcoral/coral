@@ -400,6 +400,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+    use crate::credentials::CredentialStore;
 
     struct QueryManagerFixture {
         _temp: TempDir,
@@ -415,7 +416,7 @@ mod tests {
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
         let manager = QueryManager::new(
             ConfigStore::new(layout.clone()),
-            SecretStore::new(layout.clone()),
+            CredentialManager::new(CredentialStore::new(layout.clone())),
             runtime_context,
             layout,
             providers,
