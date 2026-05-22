@@ -17,7 +17,7 @@ inputs:
               type: authorization_code
               pkce: required
             redirect_uri: http://localhost:53682/oauth/callback
-            redirect_uri_port: fixed
+            redirect_uri_port_mode: fixed
             endpoints:
               authorization_url: https://slack.com/oauth/v2_user/authorize
               token_url: https://slack.com/api/oauth.v2.user.access
