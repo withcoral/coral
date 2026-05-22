@@ -36,6 +36,7 @@ export const navbar = recipe({
 
 export const header = recipe({
   base: {
+    alignItems: 'center',
     display: 'flex',
     minHeight: '32px',
     paddingBlockStart: '10px',
@@ -47,15 +48,13 @@ export const header = recipe({
   variants: {
     isCollapsed: {
       false: {
-        alignItems: 'center',
         flexDirection: 'row',
         justifyContent: 'space-between',
       },
       true: {
-        alignItems: 'center',
+        gap: '8px',
         flexDirection: 'column',
         justifyContent: 'flex-start',
-        gap: '8px',
       },
     },
   },

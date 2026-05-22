@@ -19,6 +19,8 @@ const PRIMARY_NAVIGATION_ID = 'primary-navigation'
 export function Navbar() {
   const [isCollapsed, setIsCollapsed] = useState(false)
   const toggleLabel = isCollapsed ? EXPAND_SIDEBAR_LABEL : COLLAPSE_SIDEBAR_LABEL
+  const toggleIconName = isCollapsed ? 'ChevronRight' : 'ChevronLeft'
+  const toggleSidebar = () => setIsCollapsed((value) => !value)
 
   return (
     <nav className={styles.navbar({ isCollapsed })} aria-label="Coral">
@@ -37,8 +39,8 @@ export function Navbar() {
           aria-controls={PRIMARY_NAVIGATION_ID}
           aria-expanded={!isCollapsed}
           ariaLabel={toggleLabel}
-          name={isCollapsed ? 'ChevronRight' : 'ChevronLeft'}
-          onClick={() => setIsCollapsed((value) => !value)}
+          name={toggleIconName}
+          onClick={toggleSidebar}
           size="22"
           tooltipText={toggleLabel}
           variant="bare"
