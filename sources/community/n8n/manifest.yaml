@@ -567,12 +567,7 @@ functions:
   # GET /executions?workflowId=<id>
   # ------------------------------------------------------------------
   - name: executions_by_workflow
-    kind: search
     description: Search executions for a specific workflow.
-    search_limits:
-      default_top_k: 50
-      max_top_k: 250
-      max_calls_per_query: 1
     args:
       - name: workflow_id
         required: true
