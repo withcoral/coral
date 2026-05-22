@@ -21,7 +21,7 @@ inputs:
     hint: >-
       n8n API key. Create one in your n8n instance under
       Settings > API > Generate API Key. Requires read scopes for
-      workflows, executions, credentials, tags, and variables.
+      workflows, executions, tags, and variables.
 
 base_url: "{{input.N8N_BASE_URL}}"
 
@@ -36,6 +36,7 @@ test_queries:
   - SELECT id, name, active FROM n8n.workflows LIMIT 5
   - SELECT id, finished, workflow_id, started_at FROM n8n.executions LIMIT 5
   - SELECT id, name FROM n8n.tags LIMIT 5
+  - SELECT id, status, workflow_id FROM n8n.executions WHERE status = 'error' LIMIT 5
 
 tables:
   # ------------------------------------------------------------------
