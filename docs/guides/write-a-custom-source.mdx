@@ -35,8 +35,24 @@ Source authoring works well as an agent-driven workflow. Point your coding agent
 2. Lints the file with `coral source lint ./my-source.yaml` to catch errors before installing
 3. Adds it with `coral source add --file ./my-source.yaml`
 4. Validates with `coral source test my_source`
-5. Inspects `coral.tables`, `coral.columns` and `coral.inputs` to check the shape
+5. Inspects `coral.tables`, `coral.table_functions`, `coral.columns`, `coral.filters` and `coral.inputs` to check the shape
 6. Refines and repeats until the tables look right
+
+## Search and retrieval endpoints
+
+Model provider-native search as a source-scoped table function, not as a normal table filter. If an API endpoint accepts a query string and returns provider-ranked candidates, declare it under `functions` with `kind: search`, `search_limits`, explicit arguments, and result columns. Search functions are called from SQL with named arguments:
+
+```sql
+SELECT id, title, url
+FROM github.search_issues(q => 'repo:withcoral/coral source functions')
+LIMIT 10
+```
+
+Search functions are retrieval surfaces, not exhaustive tables. They preserve provider ranking and may return only the best candidates for a query. Use result columns such as `id`, `url`, `title`, `score`, `rank`, or provider timestamps so users and agents can decide which candidate to inspect next. If the search row is intentionally thin, expose enough stable identifiers for follow-up queries against ordinary detail tables.
+
+Table functions are more general than search. Use the default table function kind for parameterized non-retrieval operations, such as scoped child collections, time-range logs, metrics queries, or detail operations that do not map cleanly to a stable table.
+
+Use ordinary table filters for exact lookup, required scoping, or provider-side filtering on list endpoints. Use `mode: contains` only when the provider has normal substring matching for a table filter. Provider-ranked retrieval belongs in a `kind: search` function with `search_limits`; table filters are not retrieval surfaces.
 
 ## Column naming for nested fields
 
@@ -201,5 +217,5 @@ For the full set of HTTP response, pagination, auth, and column fields, see [HTT
 
 - **Lint before installing.** `coral source lint ./my-source.yaml` is a fast local precheck because it does not install the source or require credentials.
 - **Start small.** Begin with one table and a few columns. Validate with `coral source test`, check `coral.columns` and `coral.inputs`, then expand.
-- **Use `coral.tables`, `coral.columns`, and `coral.inputs`.** They show you exactly what Coral sees after adding a source — including required filters and column metadata.
+- **Use `coral.tables`, `coral.table_functions`, `coral.columns`, `coral.filters`, and `coral.inputs`.** They show you exactly what Coral sees after adding a source — including required filters, search functions, and column metadata.
 - **Look at bundled sources for patterns.** The bundled source specs in the repo under `sources/core/` are working examples of HTTP pagination, response parsing, auth, and inputs.

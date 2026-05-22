@@ -1,4 +1,4 @@
-//! Build hints for optional CLI assets and embedded version metadata.
+//! Build hints for embedded CLI assets and version metadata.
 
 #![allow(
     clippy::disallowed_methods,

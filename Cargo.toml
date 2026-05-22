@@ -4,7 +4,7 @@ resolver = "2"
 
 [workspace.package]
 edition = "2024"
-version = "0.2.1" # x-release-please-version
+version = "0.3.0" # x-release-please-version
 license = "Apache-2.0"
 rust-version = "1.95"
 
@@ -74,11 +74,13 @@ parquet = { version = "58.1.0", features = ["arrow"] }
 prost = "0.14.1"
 reqwest = { version = "0.12", default-features = false, features = ["charset", "http2", "json", "rustls-tls-native-roots", "system-proxy"] }
 regex = "1"
-rmcp = { version = "1.3.0", features = ["client"] }
+rmcp = { version = "1.6.0", features = ["client", "transport-child-process"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
 rust-embed = { version = "8", features = ["mime-guess"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 serde_yaml = "0.9"
+sha2 = "0.10"
 sqlparser = "0.59.0"
 strsim = "0.11"
 thiserror = "2"

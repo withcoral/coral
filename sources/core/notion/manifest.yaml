@@ -34,13 +34,226 @@ request_headers:
     value: "2026-03-11"
 test_queries:
   - SELECT * FROM notion.search LIMIT 1
+  - SELECT * FROM notion.search_objects(query => 'Coral') LIMIT 1
+functions:
+  - name: search_objects
+    kind: search
+    description: Provider-ranked search results for pages and data sources shared with the integration
+    fetch_limit_default: 10
+    search_limits:
+      default_top_k: 10
+      max_top_k: 100
+      max_calls_per_query: 1
+    args:
+      - name: query
+        required: true
+        bind:
+          arg: query
+      - name: object
+        values:
+          - page
+          - data_source
+        bind:
+          arg: object
+    request:
+      method: POST
+      path: /v1/search
+      body:
+        - path:
+            - query
+          from: arg
+          key: query
+        - path:
+            - filter
+            - property
+          when_arg: object
+          from: literal
+          value: object
+        - path:
+            - filter
+            - value
+          from: arg
+          key: object
+    response:
+      rows_path:
+        - results
+    pagination:
+      mode: cursor_body
+      cursor_body_path:
+        - start_cursor
+      response_cursor_path:
+        - next_cursor
+      page_size:
+        default: 10
+        max: 100
+        body_path:
+          - page_size
+    columns:
+      - name: object
+        type: Utf8
+        nullable: false
+        description: Result object type (page or data_source)
+        expr:
+          kind: path
+          path:
+            - object
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Notion object ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: created_time
+        type: Timestamp
+        nullable: true
+        description: Creation timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_time
+      - name: last_edited_time
+        type: Timestamp
+        nullable: true
+        description: Last edit timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - last_edited_time
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Notion URL for page results
+        expr:
+          kind: path
+          path:
+            - url
+      - name: public_url
+        type: Utf8
+        nullable: true
+        description: Public URL for page results, when available
+        expr:
+          kind: path
+          path:
+            - public_url
+      - name: in_trash
+        type: Boolean
+        nullable: true
+        description: Whether the result is in trash
+        expr:
+          kind: path
+          path:
+            - in_trash
+      - name: parent
+        type: Json
+        nullable: true
+        description: Parent object
+        expr:
+          kind: path
+          path:
+            - parent
+      - name: properties
+        type: Json
+        nullable: true
+        description: Page or data source properties object
+        expr:
+          kind: path
+          path:
+            - properties
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw Notion search result
+        expr:
+          kind: current_row
+  - name: search_data_source_templates
+    kind: search
+    description: Provider-native search for Notion data source templates using the name parameter.
+    fetch_limit_default: 10
+    search_limits:
+      default_top_k: 10
+      max_top_k: 100
+      max_calls_per_query: 1
+    args:
+      - name: name
+        required: true
+        bind:
+          arg: name
+      - name: data_source_id
+        required: true
+        bind:
+          arg: data_source_id
+    request:
+      method: GET
+      path: /v1/data_sources/{{arg.data_source_id}}/templates
+      query:
+        - name: name
+          from: arg
+          key: name
+    response:
+      rows_path:
+        - templates
+    pagination:
+      mode: cursor_query
+      cursor_param: start_cursor
+      response_cursor_path:
+        - next_cursor
+      page_size:
+        default: 100
+        max: 100
+        query_param: page_size
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Template page ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: data_source_id
+        type: Utf8
+        nullable: false
+        description: Data source ID used for the request
+        expr:
+          kind: from_arg
+          key: data_source_id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Template name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: is_default
+        type: Boolean
+        nullable: false
+        description: Whether this template is the data source default
+        expr:
+          kind: path
+          path:
+            - is_default
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw data source templates search result.
+        expr:
+          kind: current_row
 tables:
   - name: search
     description: Pages and data sources shared with the integration
     guide: |
-      Start here to discover `page_id`, `database_id`, and `data_source_id`
-      values. Use `query` for title search and `object` with `page` or
-      `data_source` to narrow result types.
+      Compatibility table for discovering `page_id`, `database_id`, and
+      `data_source_id` values. Prefer `notion.search_objects(query => ...)`
+      for provider-ranked retrieval.
     filters:
       - name: query
         required: false

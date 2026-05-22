@@ -7,7 +7,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use coral_api::v1::ImportSourceRequest;
+use coral_api::v1::{ImportSourceRequest, import_source_response};
 use coral_client::{
     AppClient, SourceClient, default_workspace,
     local::{RunningServer, ServerBuilder},
@@ -165,15 +165,26 @@ fn json_object(value: &Value) -> Map<String, Value> {
 }
 
 async fn add_demo_source(source_client: &mut SourceClient, manifest_yaml: String) {
-    source_client
+    let mut stream = source_client
         .import_source(Request::new(ImportSourceRequest {
             workspace: Some(default_workspace()),
             manifest_yaml,
             variables: Vec::new(),
             secrets: Vec::new(),
+            oauth_credential_retrievals: Vec::new(),
         }))
         .await
-        .expect("add source");
+        .expect("add source")
+        .into_inner();
+    stream
+        .message()
+        .await
+        .expect("add source stream")
+        .and_then(|response| match response.event {
+            Some(import_source_response::Event::Source(source)) => Some(source),
+            _ => None,
+        })
+        .expect("add source response");
 }
 
 struct TestSession {
