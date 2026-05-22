@@ -40,8 +40,10 @@ If the refresh token ever expires, re-run the command above to re-auth.
 coral source add --file sources/community/clickhouse_mcp/manifest.yaml
 ```
 
-This spawns the MCP child process to confirm connectivity, then prints the
-registered tables.
+This registers the source and prints its catalog. The MCP child process is
+not spawned here — `mcp-remote` runs (and any cached OAuth tokens are read
+or refreshed) on the first real `coral sql` query. Run the `Verify` query
+below to exercise the end-to-end path.
 
 ### Verify
 
