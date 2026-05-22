@@ -64,6 +64,7 @@ pub enum SourceBackend {
     Http,
     Parquet,
     Jsonl,
+    Mcp,
 }
 
 /// Normalized scalar data types supported by the source-spec DSL.

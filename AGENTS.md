@@ -43,6 +43,8 @@
 - Source-only changes under `sources/community/**` do not need to update the
   aggregate community source catalog page; keep docs freshness strict for
   generator changes, docs changes, and bundled sources under `sources/core/**`.
+- Keep checked-in generated files marked in `.gitattributes` with
+  `linguist-generated` so GitHub collapses them by default in PR diffs.
 - Source inputs that carry credentials must be `kind: secret`, never
   `kind: variable`. This includes API keys, bearer tokens, access tokens,
   passwords, private keys, authorization header values, and admin/read keys,
