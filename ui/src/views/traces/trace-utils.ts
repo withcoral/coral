@@ -129,13 +129,22 @@ export function spanOperation(span: TraceSpan): string {
   return table ?? span.name
 }
 
-export function spanRequestLine(span: TraceSpan): string {
+export function spanRequestOperation(span: TraceSpan): string {
   const attrs = parseJsonObject(span.attributesJson)
   const method = attrFrom(attrs, 'http.request.method')
-  const url = attrFrom(attrs, 'url.full') ?? attrFrom(attrs, 'http.url') ?? ''
-  const endpoint = endpointLine(url)
   const target = sourceTableLabel(attrs)
-  const operation = method && target ? `${method} ${target}` : method ?? target
+
+  if (method && target) return `${method} ${target}`
+  return method ?? target ?? ''
+}
+
+export function spanRequestEndpoint(span: TraceSpan): string {
+  return endpointLine(spanUrl(span))
+}
+
+export function spanRequestLine(span: TraceSpan): string {
+  const operation = spanRequestOperation(span)
+  const endpoint = spanRequestEndpoint(span)
 
   if (!operation && !endpoint) return spanDisplayLabel(span)
   if (!operation) return endpoint

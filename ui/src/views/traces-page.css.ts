@@ -88,7 +88,10 @@ export const searchField = style({
     [`screen and (max-width: ${breakpoints.mobile})`]: {
       display: 'none',
       selectors: {
-        [`${inlineSearch}[data-searching="true"] &`]: { display: 'block', flex: 1 },
+        [`${inlineSearch}[data-searching="true"] &`]: {
+          display: 'block',
+          flex: 1,
+        },
       },
     },
   },
@@ -123,7 +126,9 @@ export const fullRow = style({
   paddingInline: 24,
   textAlign: 'left',
   width: '100%',
-  selectors: { '&:hover': { backgroundColor: theme.surface.onMainContentSubtle } },
+  selectors: {
+    '&:hover': { backgroundColor: theme.surface.onMainContentSubtle },
+  },
 })
 export const statusDot = style({
   borderRadius: '50%',
@@ -182,8 +187,16 @@ export const statusBar = style({
   justifyContent: 'space-between',
   paddingInline: 12,
 })
-export const statusLeft = style({ alignItems: 'center', display: 'flex', gap: 6 })
-export const statusRight = style({ alignItems: 'center', display: 'flex', gap: 6 })
+export const statusLeft = style({
+  alignItems: 'center',
+  display: 'flex',
+  gap: 6,
+})
+export const statusRight = style({
+  alignItems: 'center',
+  display: 'flex',
+  gap: 6,
+})
 export const statusBarDot = style({
   borderRadius: '50%',
   flexShrink: 0,
@@ -250,7 +263,12 @@ export const detailHeaderActions = style({
   flexShrink: 0,
   gap: 4,
 })
-export const scrollBody = style({ display: 'flex', flex: 1, minHeight: 0, overflow: 'auto' })
+export const scrollBody = style({
+  display: 'flex',
+  flex: 1,
+  minHeight: 0,
+  overflow: 'auto',
+})
 export const content = style({
   display: 'flex',
   flex: 1,
@@ -312,8 +330,11 @@ export const tabContent = style({
 export const waterfallRoot = style({
   alignItems: 'stretch',
   display: 'flex',
+  flex: 1,
   gap: 8,
   minHeight: 280,
+  height: '100%',
+  overflow: 'hidden',
   paddingBlock: 8,
   paddingInline: 12,
 })
@@ -331,7 +352,11 @@ export const waterfallTickRow = style({
   flexShrink: 0,
   gridTemplateColumns: '320px minmax(0, 1fr)',
 })
-export const waterfallLabel = style({ height: 24, minWidth: 0, paddingBlockEnd: 4 })
+export const waterfallLabel = style({
+  height: 24,
+  minWidth: 0,
+  paddingBlockEnd: 4,
+})
 export const waterfallTimeline = style({
   borderBlockEnd: `1px solid ${theme.stroke.primary}`,
   height: 24,
@@ -430,7 +455,9 @@ export const waterfallRowButton = style({
     '&[role="button"]': { cursor: 'pointer' },
   },
 })
-export const waterfallRowHover = style({ backgroundColor: theme.surface.onMainContentSubtle })
+export const waterfallRowHover = style({
+  backgroundColor: theme.surface.onMainContentSubtle,
+})
 export const waterfallRowActive = style({
   backgroundColor: theme.pill.blue.background,
   color: theme.content.primary,
@@ -470,7 +497,10 @@ export const waterfallTreeToggle = style({
   padding: 0,
   paddingInlineEnd: 2,
   selectors: {
-    '&:hover': { backgroundColor: theme.button.bare.hover, color: theme.content.primary },
+    '&:hover': {
+      backgroundColor: theme.button.bare.hover,
+      color: theme.content.primary,
+    },
   },
 })
 export const waterfallTreeTogglePlaceholder = style({
@@ -514,7 +544,11 @@ export const waterfallPluginDot = style({
     '&[data-tone="error"]': { backgroundColor: theme.pill.red.color },
   },
 })
-export const waterfallLabelText = style({ display: 'flex', flexDirection: 'column', minWidth: 0 })
+export const waterfallLabelText = style({
+  display: 'flex',
+  flexDirection: 'column',
+  minWidth: 0,
+})
 export const waterfallBarSlot = style({
   alignItems: 'center',
   borderRadius: 4,
@@ -628,6 +662,11 @@ export const waterfallHttpDetailHeaderActions = style({
   flexShrink: 0,
   gap: 2,
 })
+export const waterfallHttpDetailScroll = style({
+  flex: 1,
+  minHeight: 0,
+  minWidth: 0,
+})
 export const waterfallHttpDetailContent = style({
   display: 'flex',
   flexDirection: 'column',
@@ -676,7 +715,11 @@ export const bodyViewer = style({
   minHeight: 0,
   minWidth: 0,
 })
-export const bodyViewerHeader = style({ display: 'flex', flexDirection: 'column', gap: 6 })
+export const bodyViewerHeader = style({
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 6,
+})
 export const bodyMetaRow = style({ display: 'flex', flexWrap: 'wrap', gap: 6 })
 export const bodyViewerSection = style({
   display: 'flex',
@@ -686,7 +729,11 @@ export const bodyViewerSection = style({
   minWidth: 0,
 })
 export const bodyViewerSectionLabel = style({ color: theme.content.tertiary })
-export const bodyViewerRawDetails = style({ display: 'flex', flexDirection: 'column', gap: 4 })
+export const bodyViewerRawDetails = style({
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 4,
+})
 
 export const statusBadge = style({
   borderRadius: 999,
@@ -719,7 +766,11 @@ export const emptyPanel = style({
   padding: 24,
   textAlign: 'center',
 })
-export const externalCallsList = style({ display: 'flex', flexDirection: 'column', gap: 8 })
+export const externalCallsList = style({
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 8,
+})
 export const apiCallsSummary = style({
   color: theme.content.tertiary,
   fontSize: 14,
@@ -745,7 +796,9 @@ export const externalCallButton = style({
   paddingInline: 12,
   textAlign: 'left',
   width: '100%',
-  selectors: { '&:hover': { backgroundColor: theme.surface.onMainContentSubtle } },
+  selectors: {
+    '&:hover': { backgroundColor: theme.surface.onMainContentSubtle },
+  },
 })
 export const externalCallTableName = style({ fontWeight: 500 })
 export const externalCallUrl = style({
@@ -756,19 +809,46 @@ export const externalCallUrl = style({
   whiteSpace: 'nowrap',
 })
 export const externalCallMeta = style({ flexShrink: 0 })
-export const externalCallExpanded = style({ backgroundColor: theme.surface.onMainContentSubtle, borderBlockStart: `1px solid ${theme.stroke.primary}`, display: 'flex', flexDirection: 'column', gap: 8, paddingBlock: 8, paddingInline: 12 })
-export const requestLine = style({ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' })
-export const detailsSummary = style({ color: theme.content.tertiary, cursor: 'pointer' })
+export const externalCallExpanded = style({
+  backgroundColor: theme.surface.onMainContentSubtle,
+  borderBlockStart: `1px solid ${theme.stroke.primary}`,
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 8,
+  paddingBlock: 8,
+  paddingInline: 12,
+})
+export const requestLine = style({
+  alignItems: 'baseline',
+  display: 'flex',
+  flex: 1,
+  gap: 6,
+  minWidth: 0,
+  overflow: 'hidden',
+  whiteSpace: 'nowrap',
+})
+export const methodBadge = style({ flexShrink: 0 })
+export const requestEndpoint = style({
+  flex: 1,
+  minWidth: 0,
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+})
+export const detailsSummary = style({
+  color: theme.content.tertiary,
+  cursor: 'pointer',
+})
 export const detailsPre = style({
   backgroundColor: theme.surface.main,
   borderRadius: 6,
+  flex: 1,
   fontFamily: fontFamily.dmMono,
   fontSize: 12,
   lineHeight: '18px',
   margin: 0,
   marginBlockStart: 4,
   minHeight: 0,
-  maxHeight: 240,
   overflow: 'auto',
   padding: 8,
   whiteSpace: 'pre-wrap',

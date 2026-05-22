@@ -2,11 +2,20 @@ import { useEffect, useState } from 'react'
 import classNames from 'classnames'
 
 import * as Button from '@/wax/components/button'
+import * as ScrollArea from '@/wax/components/scroll-area'
 import { Typography } from '@/wax/components/typography'
 import type { TraceSpan } from '@/generated/coral/v1/traces_pb'
 
 import * as s from '../traces-page.css'
-import { formatDuration, formatDurationFromNanos, parseJsonObject, spanRequestLine, spanUrl } from './trace-utils'
+import {
+  formatDuration,
+  formatDurationFromNanos,
+  parseJsonObject,
+  spanRequestEndpoint,
+  spanRequestLine,
+  spanRequestOperation,
+  spanUrl,
+} from './trace-utils'
 
 type JsonValue = Record<string, unknown> | unknown[] | string | number | boolean | null
 type BodyKind = 'request' | 'response'
@@ -22,10 +31,7 @@ const REQUEST_BODY_PRESENT_ATTR = 'http.request.body.present'
 const RESPONSE_BODY_PRESENT_ATTR = 'http.response.body.present'
 const REQUEST_BODY_SIZE_ATTR = 'http.request.body.size'
 const RESPONSE_BODY_SIZE_ATTR = 'http.response.body.size'
-const BODY_ATTRIBUTE_KEYS = new Set([
-  REQUEST_BODY_ATTR,
-  RESPONSE_BODY_ATTR,
-])
+const BODY_ATTRIBUTE_KEYS = new Set([REQUEST_BODY_ATTR, RESPONSE_BODY_ATTR])
 const BODY_DETAILS = {
   request: {
     label: 'Request body',
@@ -90,6 +96,7 @@ function formatDetailValue(value: JsonValue | undefined): string {
   if (value === undefined || value === null || value === '') return ''
   if (typeof value === 'string') {
     const parsedValue = parseMaybeJson(value)
+    if (parsedValue === undefined) return ''
     return typeof parsedValue === 'string' ? value : formatJsonValue(parsedValue)
   }
   return formatJsonValue(value)
@@ -98,6 +105,10 @@ function formatDetailValue(value: JsonValue | undefined): string {
 function formatRawValue(value: unknown, formatted: string): string {
   if (value === undefined || value === null || value === '') return ''
   return typeof value === 'string' ? value : formatted
+}
+
+function hasBodyValue(value: JsonValue | undefined): boolean {
+  return value !== undefined && value !== null && value !== ''
 }
 
 interface GraphqlBodyPreview {
@@ -152,6 +163,7 @@ function bodyPreview(kind: BodyKind, value: unknown, rawValue: unknown): BodyPre
 
   if (typeof value === 'string') {
     const parsedValue = parseMaybeJson(value)
+    if (parsedValue === undefined) return undefined
     if (typeof parsedValue === 'string') {
       return {
         formattedText: value,
@@ -198,7 +210,7 @@ function BodyViewer({
   emptyText: string
   kind: BodyKind
   rawValue: unknown
-  value: unknown
+  value: JsonValue | undefined
 }) {
   const preview = bodyPreview(kind, value, rawValue)
 
@@ -232,7 +244,9 @@ function BodyViewer({
   return (
     <div className={s.bodyViewer}>
       <div className={s.bodyViewerHeader}>
-        <Typography.BodySmallStrong as="span">{graphqlBodyTitle(bodyKind)}</Typography.BodySmallStrong>
+        <Typography.BodySmallStrong as="span">
+          {graphqlBodyTitle(bodyKind)}
+        </Typography.BodySmallStrong>
         <div className={s.bodyMetaRow}>
           {operationName && metaChip('Operation', operationName)}
           {operationType && metaChip('Type', operationType)}
@@ -354,8 +368,8 @@ function preferredHttpDetailTab(
   requestBody: JsonValue | undefined,
   paramsValue: Record<string, string | string[]> | undefined,
 ): HttpDetailTab {
-  if (responseBody) return 'response'
-  if (requestBody) return 'request'
+  if (hasBodyValue(responseBody)) return 'response'
+  if (hasBodyValue(requestBody)) return 'request'
   if (paramsValue) return 'params'
   return 'response'
 }
@@ -445,6 +459,8 @@ export function HttpSpanDetail({
   const source = attrText(attrs['coral.source'])
   const table = attrText(attrs['coral.table'])
   const requestLine = spanRequestLine(span)
+  const requestOperation = spanRequestOperation(span)
+  const requestEndpoint = spanRequestEndpoint(span)
 
   useEffect(() => setActiveTab(preferredTab), [preferredTab, span.spanId])
   useEffect(() => setCopyState('idle'), [activeTab, span.spanId])
@@ -472,7 +488,30 @@ export function HttpSpanDetail({
     >
       <div className={s.waterfallHttpDetailHeader}>
         <div className={s.waterfallHttpDetailTitle}>
-          <Typography.CodeSmallInlineStrong as="span" className={s.requestLine} truncate>{requestLine || 'No URL recorded'}</Typography.CodeSmallInlineStrong>
+          {requestOperation || requestEndpoint ? (
+            <span className={s.requestLine}>
+              {requestOperation && (
+                <Typography.CodeSmallInlineStrong as="span" className={s.methodBadge}>
+                  {requestOperation}
+                </Typography.CodeSmallInlineStrong>
+              )}
+              {requestEndpoint && (
+                <Typography.BodySmall
+                  as="span"
+                  className={s.requestEndpoint}
+                  data-request-endpoint="true"
+                  variant="tertiary"
+                  truncate
+                >
+                  {requestEndpoint}
+                </Typography.BodySmall>
+              )}
+            </span>
+          ) : (
+            <Typography.CodeSmallInlineStrong as="span" className={s.requestLine} truncate>
+              {requestLine || 'No URL recorded'}
+            </Typography.CodeSmallInlineStrong>
+          )}
         </div>
         <div className={s.waterfallHttpDetailHeaderActions}>
           <Button.IconButton
@@ -500,57 +539,84 @@ export function HttpSpanDetail({
           />
         </div>
       </div>
-      <div className={s.waterfallHttpDetailContent}>
-
-        <div className={s.httpMetaRow}>
-          {statusCode && metaChip('Status', statusCode)}
-          {metaChip('Duration', formatDurationFromNanos(span.durationNanos))}
-          {metaChip('Start', `+${formatDuration(offsetMs)}`)}
-          {requestId && metaChip('Request', `#${requestId}`)}
-          {attempt && metaChip('Attempt', attempt)}
-          {source && metaChip('Source', table ? `${source}.${table}` : source)}
-        </div>
-        <div className={s.waterfallHttpTabRow}>
-          <div className={s.tabList} role="tablist" aria-label="HTTP span details">
-            {tabs.map((tab) => (
-              <button
-                aria-controls={`http-detail-${span.spanId}-${tab.id}`}
-                aria-selected={activeTab === tab.id}
-                className={classNames(s.tabTrigger, { [s.tabTriggerActive]: activeTab === tab.id })}
-                id={`http-detail-tab-${span.spanId}-${tab.id}`}
-                key={tab.id}
-                onClick={() => setActiveTab(tab.id)}
-                role="tab"
-                type="button"
+      <ScrollArea.Container
+        className={s.waterfallHttpDetailScroll}
+        constrainWidth
+        fade="bottom"
+        height="100%"
+      >
+        <div className={s.waterfallHttpDetailContent}>
+          <div className={s.httpMetaRow}>
+            {statusCode && metaChip('Status', statusCode)}
+            {metaChip('Duration', formatDurationFromNanos(span.durationNanos))}
+            {metaChip('Start', `${formatDuration(offsetMs)}`)}
+            {requestId && metaChip('Request', `#${requestId}`)}
+            {attempt && metaChip('Attempt', attempt)}
+            {source && metaChip('Source', table ? `${source}.${table}` : source)}
+          </div>
+          <div className={s.waterfallHttpTabRow}>
+            <div className={s.tabList} role="tablist" aria-label="HTTP span details">
+              {tabs.map((tab) => (
+                <button
+                  aria-controls={`http-detail-${span.spanId}-${tab.id}`}
+                  aria-selected={activeTab === tab.id}
+                  className={classNames(s.tabTrigger, {
+                    [s.tabTriggerActive]: activeTab === tab.id,
+                  })}
+                  id={`http-detail-tab-${span.spanId}-${tab.id}`}
+                  key={tab.id}
+                  onClick={() => setActiveTab(tab.id)}
+                  role="tab"
+                  type="button"
+                >
+                  <Typography.BodySmallStrong as="span">{tab.label}</Typography.BodySmallStrong>
+                </button>
+              ))}
+            </div>
+            <div className={s.copyButtonGroup}>
+              {hasSeparateRawCopy && (
+                <Button.TextButton
+                  disabled={!rawCopyValue}
+                  onClick={() => copyValueToClipboard(rawCopyValue, 'raw')}
+                  size="22"
+                  variant="secondary"
+                >
+                  {copyState === 'raw' ? 'Raw copied' : 'Copy raw'}
+                </Button.TextButton>
+              )}
+              <Button.TextButton
+                disabled={!copyValue}
+                onClick={() => copyValueToClipboard(copyValue, 'formatted')}
+                size="22"
+                variant="secondary"
               >
-                <Typography.BodySmallStrong as="span">{tab.label}</Typography.BodySmallStrong>
-              </button>
-            ))}
-          </div>
-          <div className={s.copyButtonGroup}>
-            {hasSeparateRawCopy && (
-              <Button.TextButton disabled={!rawCopyValue} onClick={() => copyValueToClipboard(rawCopyValue, 'raw')} size="22" variant="secondary">
-                {copyState === 'raw' ? 'Raw copied' : 'Copy raw'}
+                {formattedCopyLabel(copyState)}
               </Button.TextButton>
-            )}
-            <Button.TextButton disabled={!copyValue} onClick={() => copyValueToClipboard(copyValue, 'formatted')} size="22" variant="secondary">
-              {formattedCopyLabel(copyState)}
-            </Button.TextButton>
+            </div>
           </div>
+          <section
+            aria-labelledby={`http-detail-tab-${span.spanId}-${activeTab}`}
+            className={s.waterfallHttpDetailSection}
+            id={`http-detail-${span.spanId}-${activeTab}`}
+            role="tabpanel"
+          >
+            <BodyViewer
+              emptyText={activeBody.emptyText}
+              kind={activeBody.kind}
+              rawValue={activeBody.rawValue}
+              value={activeBody.value}
+            />
+          </section>
+          <details>
+            <summary className={s.detailsSummary}>
+              <Typography.Body as="span" variant="tertiary">
+                Span attributes
+              </Typography.Body>
+            </summary>
+            <pre className={s.detailsPre}>{JSON.stringify(visibleAttrs, null, 2)}</pre>
+          </details>
         </div>
-        <section
-          aria-labelledby={`http-detail-tab-${span.spanId}-${activeTab}`}
-          className={s.waterfallHttpDetailSection}
-          id={`http-detail-${span.spanId}-${activeTab}`}
-          role="tabpanel"
-        >
-          <BodyViewer emptyText={activeBody.emptyText} kind={activeBody.kind} rawValue={activeBody.rawValue} value={activeBody.value} />
-        </section>
-        <details>
-          <summary className={s.detailsSummary}><Typography.Body as="span" variant="tertiary">Span attributes</Typography.Body></summary>
-          <pre className={s.detailsPre}>{JSON.stringify(visibleAttrs, null, 2)}</pre>
-        </details>
-      </div>
+      </ScrollArea.Container>
     </div>
   )
 }
