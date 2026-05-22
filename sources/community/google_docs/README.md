@@ -9,7 +9,7 @@ ranges, and lists as queryable tables.
 Use Coral's interactive OAuth flow to connect Google Docs:
 
 ```bash
-coral source add --interactive --file manifest.yaml
+coral source add --interactive --file sources/community/google_docs/manifest.yaml
 ```
 
 Choose **Connect Google Docs** when Coral asks for the
@@ -30,7 +30,7 @@ To add the source with an existing access token instead:
 
 ```bash
 export GOOGLE_DOCS_ACCESS_TOKEN="<access-token>"
-coral source add --file manifest.yaml
+coral source add --file sources/community/google_docs/manifest.yaml
 ```
 
 ## Start querying
@@ -48,7 +48,7 @@ WHERE document_id = '<document-id>';
 Read top-level structural body elements from the first tab:
 
 ```sql
-SELECT start_index, end_index, paragraph_text, table
+SELECT start_index, end_index, list_id, paragraph_text, table
 FROM google_docs.body_content
 WHERE document_id = '<document-id>'
 ORDER BY start_index
@@ -95,7 +95,8 @@ Document-level metadata and raw structure for one document. Requires
 ### body_content
 
 Top-level structural body elements for one document's first tab. Requires
-`document_id`. Optional filter: `suggestions_view_mode`.
+`document_id`. Optional filter: `suggestions_view_mode`. Exposes `list_id`
+for joining bullet and numbered-list paragraphs to `google_docs.lists`.
 
 ### tabs
 

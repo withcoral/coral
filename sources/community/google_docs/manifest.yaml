@@ -73,6 +73,12 @@ tables:
       method: GET
       path: /documents/{{filter.document_id}}
       query:
+        - name: fields
+          from: literal
+          value: >-
+            documentId,title,revisionId,body,documentStyle,namedStyles,headers,
+            footers,footnotes,lists,namedRanges,inlineObjects,
+            positionedObjects
         - name: suggestionsViewMode
           from: filter
           key: suggestions_view_mode
@@ -192,6 +198,11 @@ tables:
       method: GET
       path: /documents/{{filter.document_id}}
       query:
+        - name: fields
+          from: literal
+          value: >-
+            body(content(startIndex,endIndex,paragraph,sectionBreak,table,
+            tableOfContents))
         - name: suggestionsViewMode
           from: filter
           key: suggestions_view_mode
@@ -243,6 +254,16 @@ tables:
             - textRun
             - content
           separator: ""
+      - name: list_id
+        type: Utf8
+        nullable: true
+        description: Google Docs list ID when this paragraph is a list item.
+        expr:
+          kind: path
+          path:
+            - paragraph
+            - bullet
+            - listId
       - name: section_break
         type: Json
         nullable: true
@@ -296,6 +317,11 @@ tables:
         - name: includeTabsContent
           from: literal
           value: true
+        - name: fields
+          from: literal
+          value: >-
+            tabs(tabProperties,documentTab(body,headers,footers,footnotes),
+            childTabs)
         - name: suggestionsViewMode
           from: filter
           key: suggestions_view_mode
@@ -437,6 +463,10 @@ tables:
     request:
       method: GET
       path: /documents/{{filter.document_id}}
+      query:
+        - name: fields
+          from: literal
+          value: namedRanges
     response:
       rows_path:
         - namedRanges
@@ -486,6 +516,10 @@ tables:
     request:
       method: GET
       path: /documents/{{filter.document_id}}
+      query:
+        - name: fields
+          from: literal
+          value: lists
     response:
       rows_path:
         - lists
