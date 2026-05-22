@@ -26,11 +26,14 @@ https://www.googleapis.com/auth/drive.readonly
 See Google's [Drive API scope guide](https://developers.google.com/workspace/drive/api/guides/api-specific-auth)
 for the data that scope can read.
 
+The OAuth authorization request also asks for offline access so Google can
+return a refresh token when consent is granted.
+
 To add the source with an existing access token instead:
 
 ```bash
 export GOOGLE_DRIVE_ACCESS_TOKEN="<access-token>"
-coral source add --file manifest.yaml
+coral source add --file sources/community/google_drive/manifest.yaml
 ```
 
 ## Start querying
@@ -40,7 +43,8 @@ Find recently modified files:
 ```sql
 SELECT id, name, mime_type, modified_time, web_view_link
 FROM google_drive.files
-ORDER BY modified_time DESC
+WHERE q = 'trashed = false'
+  AND order_by = 'modifiedTime desc'
 LIMIT 20;
 ```
 
@@ -84,6 +88,7 @@ SELECT id, name, mime_type, modified_time
 FROM google_drive.files
 WHERE corpora = 'drive'
   AND drive_id = '<shared-drive-id>'
+  AND q = 'trashed = false'
 LIMIT 50;
 ```
 
@@ -128,7 +133,7 @@ Authenticated user, Drive quota, and system capability metadata. Maps to
 
 Files and folders visible to the authenticated user. No filter required. Maps
 to `GET /files`. Optional filters: `q`, `corpora`, `drive_id`, `spaces`, and
-`order_by`. Paginates via `nextPageToken` with up to 1000 items per page.
+`order_by`. Paginates via `nextPageToken` with up to 100 items per page.
 
 ### file
 
@@ -162,6 +167,8 @@ Revision history for a specific file. Requires `file_id`. Maps to
   Drive content.
 - Google Drive access tokens expire. Coral stores OAuth refresh metadata when
   Google returns it, but automatic token refresh is not implemented yet.
+- Drive returns trashed files from `google_drive.files` unless the `q` filter
+  excludes them, for example `q = 'trashed = false'`.
 - Use file IDs from `google_drive.files` with `permissions`, `comments`, and
   `revisions`.
 - Google may reject `google_drive.permissions` for readable files whose sharing

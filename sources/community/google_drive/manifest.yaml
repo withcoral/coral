@@ -30,7 +30,7 @@ inputs:
             redirect_uri: http://127.0.0.1/oauth/callback
             redirect_uri_port_mode: random
             endpoints:
-              authorization_url: https://accounts.google.com/o/oauth2/v2/auth
+              authorization_url: https://accounts.google.com/o/oauth2/v2/auth?access_type=offline&prompt=consent
               token_url: https://oauth2.googleapis.com/token
             client:
               id:
@@ -242,7 +242,9 @@ tables:
       Start here to discover file IDs for permissions, comments, and revisions.
       The optional `q` filter accepts Google Drive file query syntax. Use the
       optional `drive_id` filter with `corpora = 'drive'` when you want to scan
-      one shared drive.
+      one shared drive. Drive returns trashed files by default, so include
+      `q = 'trashed = false'` unless you intentionally want deleted items. Use
+      `order_by` for provider-side ordering before Coral fetches bounded pages.
     fetch_limit_default: 100
     filters:
       - name: q
@@ -300,7 +302,7 @@ tables:
         - nextPageToken
       page_size:
         default: 100
-        max: 1000
+        max: 100
         query_param: pageSize
     columns:
       - name: id
