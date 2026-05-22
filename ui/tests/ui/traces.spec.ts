@@ -69,8 +69,8 @@ test('lists 10 traces, searches one, opens its details, and opens a span inspect
   )
   await page.getByRole('button', { name: /GET github\.pull_requests/ }).click()
 
-  await expect(page.getByText('Span details')).toBeVisible()
   await expect(page.getByText('GET github.pull_requests')).toBeVisible()
+  await expect(page.getByText('Span details')).toHaveCount(0)
   await expect(page.getByText('Response body')).toBeVisible()
   await expect(page.getByText('"title": "Add MSW Playwright trace fixtures"')).toBeVisible()
   await expect(page.getByText('Raw body')).toBeVisible()

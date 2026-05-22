@@ -617,8 +617,9 @@ export const waterfallHttpDetailHeader = style({
   paddingInline: 12,
 })
 export const waterfallHttpDetailTitle = style({
+  alignItems: 'center',
   display: 'flex',
-  flexDirection: 'column',
+  gap: 8,
   minWidth: 0,
 })
 export const waterfallHttpDetailHeaderActions = style({
