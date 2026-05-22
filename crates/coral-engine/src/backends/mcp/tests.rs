@@ -746,7 +746,7 @@ async fn limit_binding_pushes_sql_limit_into_tool_arg() {
 }
 
 #[tokio::test]
-async fn limit_binding_caps_sql_limit_at_manifest_max() {
+async fn limit_binding_caps_pushdown_value_at_manifest_max() {
     let ctx = SessionContext::new();
     let caller = Arc::new(FakeMcpTableCaller {
         calls: Mutex::new(Vec::new()),
@@ -772,7 +772,7 @@ async fn limit_binding_caps_sql_limit_at_manifest_max() {
     assert_eq!(
         call.1.get("page_size"),
         Some(&Value::from(2u64)),
-        "expected SQL LIMIT to be capped at manifest max"
+        "expected pushed page_size to be capped at manifest max"
     );
 
     let total_rows: usize = batches
@@ -780,8 +780,8 @@ async fn limit_binding_caps_sql_limit_at_manifest_max() {
         .map(datafusion::arrow::array::RecordBatch::num_rows)
         .sum();
     assert_eq!(
-        total_rows, 2,
-        "post-response truncation should still apply at the manifest cap"
+        total_rows, 3,
+        "limit_binding.max must not cap the final row count — only the pushdown value"
     );
 }
 
@@ -877,6 +877,81 @@ async fn cursor_pagination_stops_when_sql_limit_is_satisfied() {
 
     let calls = caller.calls.lock().expect("calls lock");
     assert_eq!(calls.len(), 1);
+}
+
+fn mcp_table_with_pagination_and_limit_binding_manifest() -> coral_spec::ValidatedSourceManifest {
+    coral_spec::parse_source_manifest_value(json!({
+        "dsl_version": 3,
+        "name": "test_mcp",
+        "version": "0.1.0",
+        "backend": "mcp",
+        "server": { "transport": "stdio", "command": "unused" },
+        "tables": [{
+            "name": "issues",
+            "description": "paginated issues with a per-page cap",
+            "tool": "list_issues",
+            "limit_binding": { "tool_arg": "page_size", "max": 1 },
+            "pagination": {
+                "cursor_arg": "cursor",
+                "response_cursor_path": ["meta", "nextCursor"],
+                "max_pages": 5,
+            },
+            "response": { "rows_path": ["issues"] },
+            "columns": [
+                { "name": "id", "type": "Utf8" },
+                { "name": "title", "type": "Utf8" },
+                { "name": "state", "type": "Utf8" },
+            ],
+        }],
+    }))
+    .expect("paginated limit-binding manifest should parse")
+}
+
+#[tokio::test]
+async fn limit_binding_max_does_not_cap_final_rows_in_paginated_table() {
+    let ctx = SessionContext::new();
+    let caller = Arc::new(FakePaginatedMcpTableCaller {
+        calls: Mutex::new(Vec::new()),
+    });
+    register_test_sources(
+        &ctx,
+        compile_sources(
+            mcp_table_with_pagination_and_limit_binding_manifest(),
+            caller.clone(),
+        ),
+    );
+
+    let batches = ctx
+        .sql("SELECT id FROM test_mcp.issues ORDER BY id LIMIT 3")
+        .await
+        .expect("paginated limit query should plan")
+        .collect()
+        .await
+        .expect("paginated limit query should execute");
+
+    let total_rows: usize = batches
+        .iter()
+        .map(datafusion::arrow::array::RecordBatch::num_rows)
+        .sum();
+    assert_eq!(
+        total_rows, 3,
+        "rows past limit_binding.max must remain reachable via pagination"
+    );
+
+    let calls = caller.calls.lock().expect("calls lock");
+    assert_eq!(calls.len(), 2, "must paginate past max to reach later rows");
+    let first_call = calls.first().expect("first call");
+    let second_call = calls.get(1).expect("second call");
+    assert_eq!(
+        first_call.1.get("page_size"),
+        Some(&Value::from(1u64)),
+        "page_size on first call must be capped at limit_binding.max"
+    );
+    assert_eq!(
+        second_call.1.get("page_size"),
+        Some(&Value::from(1u64)),
+        "page_size on subsequent pages must stay at limit_binding.max"
+    );
 }
 
 #[tokio::test]

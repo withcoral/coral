@@ -142,14 +142,14 @@ impl TableProvider for McpTableProvider {
             }
         }
 
-        let effective_limit = effective_limit(
+        let limits = resolve_limits(
             limit,
             self.table.fetch_limit_default(),
             self.table.limit_binding.as_ref().and_then(|b| b.max),
         );
 
-        if let (Some(binding), Some(limit)) = (self.table.limit_binding.as_ref(), effective_limit) {
-            arguments.insert(binding.tool_arg.clone(), Value::from(limit));
+        if let (Some(binding), Some(push)) = (self.table.limit_binding.as_ref(), limits.push) {
+            arguments.insert(binding.tool_arg.clone(), Value::from(push));
         }
 
         let fetcher = Arc::new(McpFetchPlan {
@@ -160,7 +160,7 @@ impl TableProvider for McpTableProvider {
             arguments,
             response: self.table.response.clone(),
             pagination: self.table.pagination.clone(),
-            limit: effective_limit,
+            limit: limits.truncate,
         });
         let columns: Arc<[coral_spec::ColumnSpec]> = Arc::from(self.table.columns().to_vec());
         let schema = self.schema.clone();
@@ -186,20 +186,32 @@ impl TableProvider for McpTableProvider {
     }
 }
 
-/// Combines SQL `LIMIT`, the manifest's `fetch_limit_default`, and an
-/// optional `limit_binding.max` cap into a single effective row count.
-fn effective_limit(
+/// Per-request pushdown vs. final row-count truncation for an MCP table scan.
+///
+/// `push` is the value to send via `limit_binding.tool_arg` (a per-request
+/// cap or page size). `truncate` is the upper bound on the total rows the
+/// scan returns, applied after accumulating across pages. `limit_binding.max`
+/// only enters `push` — it must not cap the final row count, otherwise a
+/// paginated table with `max = N` would make row `N + 1` unreachable even
+/// when the server returns a next cursor.
+struct ResolvedLimits {
+    push: Option<usize>,
+    truncate: Option<usize>,
+}
+
+fn resolve_limits(
     sql_limit: Option<usize>,
     fetch_limit_default: Option<usize>,
     binding_max: Option<usize>,
-) -> Option<usize> {
-    let base = sql_limit.or(fetch_limit_default);
-    match (base, binding_max) {
+) -> ResolvedLimits {
+    let truncate = sql_limit.or(fetch_limit_default);
+    let push = match (truncate, binding_max) {
         (Some(base), Some(max)) => Some(base.min(max)),
         (Some(base), None) => Some(base),
         (None, Some(max)) => Some(max),
         (None, None) => None,
-    }
+    };
+    ResolvedLimits { push, truncate }
 }
 
 fn classify_filter(
