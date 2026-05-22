@@ -16,7 +16,6 @@ use serde_json::Value;
 
 use crate::backends::http::HttpSourceClient;
 use crate::backends::http::ProviderQueryError;
-use crate::backends::http::filter_usage::request_filter_names;
 use crate::backends::http::target::HttpFetchTarget;
 use crate::backends::schema_from_columns;
 use crate::backends::shared::filter_expr::{
@@ -236,7 +235,7 @@ impl TableProvider for HttpSourceTableProvider {
         let filter_values = extract_filter_values(&filter_exprs, self.table.filters());
         let filter_value_keys: HashSet<String> = filter_values.keys().cloned().collect();
         let active_request = self.table.resolve_request(&filter_value_keys);
-        let consumed_filters = request_filter_names(active_request);
+        let consumed_filters = self.backend.request_filter_names(active_request);
 
         Ok(classify_filter_pushdown_for_consumed(
             filters,
@@ -274,30 +273,20 @@ impl TableProvider for HttpSourceTableProvider {
 
         let filter_value_keys: HashSet<String> = filter_values.keys().cloned().collect();
         let active_request = self.table.resolve_request(&filter_value_keys).clone();
-        let consumed_filters = request_filter_names(&active_request);
+        let consumed_filters = self.backend.request_filter_names(&active_request);
         let request_filter_values = filter_values
             .iter()
             .filter(|(filter, _)| consumed_filters.contains(*filter))
             .map(|(filter, value)| (filter.clone(), value.clone()))
             .collect();
-        let allowed: HashSet<&str> = self
-            .table
-            .filters()
-            .iter()
-            .map(|f| f.name.as_str())
-            .collect();
-        let filter_modes: HashMap<&str, FilterMode> = self
-            .table
-            .filters()
-            .iter()
-            .map(|f| (f.name.as_str(), f.mode))
-            .collect();
-        let has_residual_filters = filters.iter().any(|expr| {
-            !matches!(
-                classify_filter(expr, &allowed, &filter_modes, &consumed_filters),
-                TableProviderFilterPushDown::Exact
-            )
-        });
+        let filter_refs = filters.iter().collect::<Vec<_>>();
+        let has_residual_filters = classify_filter_pushdown_for_consumed(
+            &filter_refs,
+            self.table.filters(),
+            &consumed_filters,
+        )
+        .iter()
+        .any(|pushdown| !matches!(pushdown, TableProviderFilterPushDown::Exact));
         let local_filter_values =
             match extract_exact_filter_values_checked(filters, self.table.filters()) {
                 FilterExtraction::Values(values) => values

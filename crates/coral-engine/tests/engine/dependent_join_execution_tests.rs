@@ -1308,6 +1308,59 @@ async fn dependent_join_falls_back_when_route_does_not_consume_binding_filter() 
 }
 
 #[tokio::test]
+async fn dependent_join_accepts_binding_filter_consumed_by_source_header() {
+    let temp = TempDir::new().expect("temp dir");
+    write_jsonl_file(
+        temp.path(),
+        "issues.jsonl",
+        &[issue_row("First", "withcoral", "coral", 123)],
+    );
+
+    let mut manifest = github_manifest("http://127.0.0.1:9");
+    manifest
+        .as_object_mut()
+        .expect("manifest should be an object")
+        .insert(
+            "request_headers".to_string(),
+            json!([{
+                "name": "X-Repo",
+                "from": "filter",
+                "key": "repo"
+            }]),
+        );
+    first_table_object_mut(&mut manifest).insert(
+        "requests".to_string(),
+        json!([{
+            "when_filters": ["owner", "repo", "number"],
+            "method": "GET",
+            "path": "/repos/{{filter.owner}}/pulls/{{filter.number}}"
+        }]),
+    );
+
+    let execution = CoralQuery::execute_sql(
+        &[
+            build_source(issues_manifest(temp.path())),
+            build_source(manifest),
+        ],
+        test_runtime(),
+        "
+        EXPLAIN
+        SELECT i.title AS issue_title, pr.state AS pr_state
+        FROM issues.items AS i
+        JOIN github.pull_requests AS pr
+          ON pr.owner = i.github_owner
+         AND pr.repo = i.github_repo
+         AND pr.number = i.github_pr_number
+        ",
+    )
+    .await
+    .expect("explain should succeed");
+
+    let explain = execution_text(&execution);
+    assert!(explain.contains("DependentJoinExec"), "{explain}");
+}
+
+#[tokio::test]
 async fn unsupported_join_shape_falls_back_to_regular_join_execution() {
     let temp = TempDir::new().expect("temp dir");
     write_jsonl_file(

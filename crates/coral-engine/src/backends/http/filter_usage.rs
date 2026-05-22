@@ -2,28 +2,69 @@
 
 use std::collections::HashSet;
 
-use coral_spec::{BodySpec, ParsedTemplate, RequestSpec, TemplateNamespace, ValueSourceSpec};
+use coral_spec::{
+    BodySpec, HeaderSpec, ParsedTemplate, RequestSpec, TemplateNamespace, ValueSourceSpec,
+};
 
-pub(crate) fn request_filter_names(request: &RequestSpec) -> HashSet<String> {
+#[derive(Clone)]
+pub(crate) struct HttpRequestFilterUsage {
+    base_url: ParsedTemplate,
+    source_headers: Vec<HeaderSpec>,
+}
+
+impl HttpRequestFilterUsage {
+    pub(crate) fn new(base_url: ParsedTemplate, source_headers: Vec<HeaderSpec>) -> Self {
+        Self {
+            base_url,
+            source_headers,
+        }
+    }
+
+    pub(crate) fn request_filter_names(&self, request: &RequestSpec) -> HashSet<String> {
+        http_request_filter_names(&self.base_url, &self.source_headers, request)
+    }
+}
+
+pub(crate) fn http_request_filter_names(
+    base_url: &ParsedTemplate,
+    source_headers: &[HeaderSpec],
+    request: &RequestSpec,
+) -> HashSet<String> {
     let mut filters = HashSet::new();
 
-    collect_template_filters(&request.path, &mut filters);
+    collect_source_filters(base_url, source_headers, &mut filters);
+    collect_request_filters(request, &mut filters);
+
+    filters
+}
+
+fn collect_source_filters(
+    base_url: &ParsedTemplate,
+    source_headers: &[HeaderSpec],
+    filters: &mut HashSet<String>,
+) {
+    collect_template_filters(base_url, filters);
+    for header in source_headers {
+        collect_value_source_filters(&header.value, filters);
+    }
+}
+
+fn collect_request_filters(request: &RequestSpec, filters: &mut HashSet<String>) {
+    collect_template_filters(&request.path, filters);
     for param in &request.query {
-        collect_value_source_filters(&param.value, &mut filters);
+        collect_value_source_filters(&param.value, filters);
     }
     for header in &request.headers {
-        collect_value_source_filters(&header.value, &mut filters);
+        collect_value_source_filters(&header.value, filters);
     }
     match &request.body {
         BodySpec::Json { fields } => {
             for field in fields {
-                collect_value_source_filters(&field.value, &mut filters);
+                collect_value_source_filters(&field.value, filters);
             }
         }
-        BodySpec::Text { content } => collect_value_source_filters(content, &mut filters),
+        BodySpec::Text { content } => collect_value_source_filters(content, filters),
     }
-
-    filters
 }
 
 fn collect_template_filters(template: &ParsedTemplate, filters: &mut HashSet<String>) {
@@ -57,11 +98,12 @@ fn collect_value_source_filters(source: &ValueSourceSpec, filters: &mut HashSet<
 #[cfg(test)]
 mod tests {
     use coral_spec::{
-        BodyFieldSpec, BodySpec, ParsedTemplate, QueryParamSpec, RequestSpec, ValueSourceSpec,
+        BodyFieldSpec, BodySpec, HeaderSpec, ParsedTemplate, QueryParamSpec, RequestSpec,
+        ValueSourceSpec,
     };
     use serde_json::json;
 
-    use super::request_filter_names;
+    use super::http_request_filter_names;
 
     #[test]
     fn finds_filters_consumed_by_request_templates_and_fields() {
@@ -88,12 +130,47 @@ mod tests {
             ..RequestSpec::default()
         };
 
-        let filters = request_filter_names(&request);
+        let base_url = ParsedTemplate::parse("https://example.com").expect("base url");
+        let filters = http_request_filter_names(&base_url, &[], &request);
 
         assert!(filters.contains("owner"));
         assert!(filters.contains("repo"));
         assert!(filters.contains("state"));
         assert!(filters.contains("labels"));
+        assert_eq!(filters.len(), 4);
+    }
+
+    #[test]
+    fn finds_filters_consumed_by_source_level_render_sites() {
+        let base_url =
+            ParsedTemplate::parse("https://{{filter.region}}.example.com").expect("base url");
+        let source_headers = vec![
+            HeaderSpec {
+                name: "X-Tenant".to_string(),
+                value: ValueSourceSpec::Filter {
+                    key: "tenant".to_string(),
+                    default: None,
+                },
+            },
+            HeaderSpec {
+                name: "X-Route".to_string(),
+                value: ValueSourceSpec::Template {
+                    template: ParsedTemplate::parse("route-{{filter.route}}")
+                        .expect("header template"),
+                },
+            },
+        ];
+        let request = RequestSpec {
+            path: ParsedTemplate::parse("/items/{{filter.item}}").expect("path template"),
+            ..RequestSpec::default()
+        };
+
+        let filters = http_request_filter_names(&base_url, &source_headers, &request);
+
+        assert!(filters.contains("region"));
+        assert!(filters.contains("tenant"));
+        assert!(filters.contains("route"));
+        assert!(filters.contains("item"));
         assert_eq!(filters.len(), 4);
     }
 }

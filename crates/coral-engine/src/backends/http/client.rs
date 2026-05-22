@@ -1,6 +1,6 @@
 //! HTTP client orchestration for manifest-driven HTTP sources.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -10,6 +10,7 @@ use serde_json::Value;
 
 use crate::backends::BackendRegistrationContext;
 use crate::backends::http::fetch::fetch_rows;
+use crate::backends::http::filter_usage::{HttpRequestFilterUsage, http_request_filter_names};
 use crate::backends::http::registration_checks::validate_source_scoped_http_config;
 use crate::backends::http::target::HttpFetchTarget;
 use crate::backends::http::trace::HttpBodyCapture;
@@ -18,7 +19,7 @@ use crate::{
     SourceInputResolverError,
 };
 use coral_spec::backends::http::{HttpSourceManifest, RateLimitSpec};
-use coral_spec::{AuthSpec, HeaderSpec, ParsedTemplate};
+use coral_spec::{AuthSpec, HeaderSpec, ParsedTemplate, RequestSpec as ManifestRequestSpec};
 
 const DEFAULT_HTTP_REQUEST_TIMEOUT_SECS: u64 = 30;
 const DEFAULT_HTTP_USER_AGENT: &str = concat!("coral/", env!("CARGO_PKG_VERSION"));
@@ -110,6 +111,14 @@ pub(super) fn default_http_client(
 }
 
 impl HttpSourceClient {
+    pub(crate) fn request_filter_names(&self, request: &ManifestRequestSpec) -> HashSet<String> {
+        http_request_filter_names(&self.base_url, &self.request_headers, request)
+    }
+
+    pub(crate) fn filter_usage(&self) -> HttpRequestFilterUsage {
+        HttpRequestFilterUsage::new(self.base_url.clone(), self.request_headers.clone())
+    }
+
     pub(crate) fn max_concurrency(&self) -> Option<usize> {
         self.rate_limit.max_concurrency
     }

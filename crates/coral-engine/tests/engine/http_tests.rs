@@ -731,6 +731,69 @@ async fn unconsumed_search_filter_does_not_populate_from_filter_column() {
 }
 
 #[tokio::test]
+async fn source_request_header_filter_is_sent_to_http_client() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .and(header("X-Tenant", "acme"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{ "id": 1, "name": "Ada" }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let manifest = json!({
+        "name": "http_source_header_filter",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": &server.uri(),
+        "request_headers": [{
+            "name": "X-Tenant",
+            "from": "filter",
+            "key": "tenant"
+        }],
+        "tables": [{
+            "name": "users",
+            "description": "HTTP users",
+            "filters": [
+                { "name": "tenant", "required": true }
+            ],
+            "request": {
+                "method": "GET",
+                "path": "/api/users"
+            },
+            "response": {
+                "rows_path": ["data"]
+            },
+            "columns": [
+                { "name": "id", "type": "Int64" },
+                { "name": "name", "type": "Utf8" },
+                {
+                    "name": "tenant",
+                    "type": "Utf8",
+                    "expr": { "kind": "from_filter", "key": "tenant" }
+                }
+            ]
+        }]
+    });
+    let source = build_source(manifest);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT id, name FROM http_source_header_filter.users WHERE tenant = 'acme'",
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(rows, vec![json!({ "id": 1, "name": "Ada" })]);
+}
+
+#[tokio::test]
 async fn unconsumed_like_filter_is_applied_before_limit() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))

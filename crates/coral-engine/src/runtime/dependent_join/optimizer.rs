@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt;
 use std::sync::Arc;
 
@@ -14,7 +14,7 @@ use datafusion::logical_expr::{
 use datafusion::optimizer::{ApplyOrder, OptimizerConfig, OptimizerRule};
 
 use crate::backends::http::HttpSourceTableProvider;
-use crate::backends::http::filter_usage::request_filter_names;
+use crate::backends::http::filter_usage::HttpRequestFilterUsage;
 use crate::backends::shared::filter_expr::literal_to_string;
 use crate::runtime::dependent_join::logical::{BindingKey, DependentJoinNode};
 
@@ -92,6 +92,7 @@ struct PeeledDependentScan {
     literal_filters: BTreeMap<String, String>,
     dependent_projection: Vec<usize>,
     max_concurrency: Option<usize>,
+    filter_usage: Arc<HttpRequestFilterUsage>,
 }
 
 enum PeelOutcome {
@@ -275,9 +276,9 @@ fn analyze_dependent_bindings(
         .keys()
         .chain(binding_filters.iter())
         .cloned()
-        .collect::<std::collections::HashSet<_>>();
+        .collect::<HashSet<_>>();
     let active_request = dependent.table.resolve_request(&provided_filters);
-    let consumed_filters = request_filter_names(active_request);
+    let consumed_filters = dependent.filter_usage.request_filter_names(active_request);
     if provided_filters
         .iter()
         .any(|filter| !consumed_filters.contains(filter))
@@ -528,6 +529,7 @@ fn peel_dependent_side(plan: &LogicalPlan) -> PeelOutcome {
                     .clone()
                     .unwrap_or_else(|| (0..provider.table_spec().columns().len()).collect()),
                 max_concurrency: provider.client().max_concurrency(),
+                filter_usage: Arc::new(provider.client().filter_usage()),
             })
         }
         LogicalPlan::Filter(filter) => match peel_dependent_side(filter.input.as_ref()) {
