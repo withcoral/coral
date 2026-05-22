@@ -3,7 +3,7 @@ version: 0.1.0
 dsl_version: 3
 backend: http
 description: >-
-  Query n8n workflows, executions, credentials, tags, and variables through
+  Query n8n workflows, executions, tags, and variables through
   Coral SQL using the n8n Public REST API.
 
 inputs:
@@ -342,95 +342,6 @@ tables:
           kind: path
           path:
             - retrySuccessId
-
-  # ------------------------------------------------------------------
-  # n8n.credentials — list credential definitions (no secrets)
-  # GET /credentials
-  # ------------------------------------------------------------------
-  - name: credentials
-    description: |
-      List n8n credential definitions. Secrets are never returned by the
-      API. Use to audit which integrations are configured. Join `type` to
-      understand which services are connected.
-    request:
-      method: GET
-      path: /credentials
-    response:
-      rows_path:
-        - data
-      row_strategy: direct
-    pagination:
-      mode: cursor_query
-      cursor_param: cursor
-      response_cursor_path:
-        - nextCursor
-      page_size:
-        default: 100
-        max: 250
-        query_param: limit
-    columns:
-      - name: id
-        type: Utf8
-        nullable: false
-        description: Credential ID.
-        expr:
-          kind: path
-          path:
-            - id
-      - name: name
-        type: Utf8
-        nullable: true
-        description: Credential display name.
-        expr:
-          kind: path
-          path:
-            - name
-      - name: type
-        type: Utf8
-        nullable: true
-        description: Credential type (e.g. slackApi, githubApi, openAiApi).
-        expr:
-          kind: path
-          path:
-            - type
-      - name: is_managed
-        type: Boolean
-        nullable: true
-        description: Whether the credential is managed (enterprise feature).
-        expr:
-          kind: path
-          path:
-            - isManaged
-      - name: scoped
-        type: Boolean
-        nullable: true
-        description: Whether the credential is project-scoped.
-        expr:
-          kind: path
-          path:
-            - scoped
-      - name: created_at
-        type: Timestamp
-        nullable: true
-        description: When the credential was created.
-        expr:
-          kind: format_timestamp
-          input: iso8601
-          expr:
-            kind: path
-            path:
-              - createdAt
-      - name: updated_at
-        type: Timestamp
-        nullable: true
-        description: When the credential was last updated.
-        expr:
-          kind: format_timestamp
-          input: iso8601
-          expr:
-            kind: path
-            path:
-              - updatedAt
 
   # ------------------------------------------------------------------
   # n8n.tags — list workflow tags

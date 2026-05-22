@@ -1,6 +1,6 @@
 # n8n Community Source
 
-Query n8n workflows, executions, credentials, tags, and variables through Coral
+Query n8n workflows, executions, tags, and variables through Coral
 SQL using the [n8n Public REST API](https://docs.n8n.io/api/).
 
 ## Setup
@@ -83,20 +83,6 @@ List workflow execution runs.
 
 **Optional filters:** `status`, `workflow_id`, `project_id`
 
-### `n8n.credentials`
-
-List credential definitions (secrets are never exposed).
-
-| Column | Type | Description |
-|---|---|---|
-| `id` | Utf8 | Credential ID |
-| `name` | Utf8 | Credential display name |
-| `type` | Utf8 | Credential type (e.g. slackApi, githubApi) |
-| `is_managed` | Boolean | Whether managed (enterprise) |
-| `scoped` | Boolean | Whether project-scoped |
-| `created_at` | Timestamp | Creation time |
-| `updated_at` | Timestamp | Last update time |
-
 ### `n8n.tags`
 
 List workflow tags.
@@ -176,12 +162,6 @@ WHERE started_at > NOW() - INTERVAL '30 days'
 GROUP BY workflow_name, status
 ORDER BY execution_count DESC;
 
--- Audit credentials by type
-SELECT type, COUNT(*) AS count
-FROM n8n.credentials
-GROUP BY type
-ORDER BY count DESC;
-
 -- Find workflows using a specific tag
 SELECT name, tag_names, active
 FROM n8n.workflows
@@ -210,7 +190,7 @@ coral source lint sources/community/n8n/manifest.yaml
 coral source add --file sources/community/n8n/manifest.yaml
 coral source test n8n
 coral sql "SELECT * FROM coral.tables WHERE schema_name = 'n8n'"
-coral sql "SELECT * FROM coral.columns WHERE schema_name = 'n8n'"
+coral sql "SELECT column_name, data_type FROM coral.columns WHERE schema_name = 'n8n' AND table_name = 'workflows'"
 coral sql "SELECT id, name, active FROM n8n.workflows LIMIT 5"
 ```
 
@@ -223,14 +203,15 @@ coral sql "SELECT id, name, active FROM n8n.workflows LIMIT 5"
   errors) is available.
 - **API availability.** The n8n Public API requires a paid or self-hosted
   instance. It is not available during the n8n Cloud free trial.
-- **Credential secrets.** The n8n API never returns credential secrets;
-  only metadata (name, type, dates) is exposed.
+- **Credentials endpoint.** The `/credentials` endpoint is not included because
+  it returns `405 Method Not Allowed` on standard n8n self-hosted instances.
+  Credential metadata may be added in a future version if the API behavior
+  changes.
 
 ## Out of scope for v1
 
 - Workflow create/update/delete operations
 - Execution retry or stop operations
-- Credential create/update/delete operations
 - Tag management
 - Variable create/update/delete operations
 - Source control operations
