@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useCallback, useState } from 'react'
 
 import type { IconName } from '@/wax/components/icon'
 import { IconButton } from '@/wax/components/button'
@@ -19,7 +19,11 @@ const PRIMARY_NAVIGATION_ID = 'primary-navigation'
 export function Navbar() {
   const [isCollapsed, setIsCollapsed] = useState(false)
   const toggleLabel = isCollapsed ? EXPAND_SIDEBAR_LABEL : COLLAPSE_SIDEBAR_LABEL
-  const toggleSidebar = () => setIsCollapsed((value) => !value)
+  const toggleSidebar = useCallback(() => setIsCollapsed((value) => !value), [])
+  const handleSidebarShortcut = useCallback((event: KeyboardEvent) => {
+    event.preventDefault()
+    toggleSidebar()
+  }, [toggleSidebar])
 
   return (
     <nav className={styles.navbar({ isCollapsed })} aria-label="Coral">
@@ -28,10 +32,7 @@ export function Navbar() {
           <CoralIcon aria-hidden="true" size={22} />
         </span>
         <KeyboardShortcut
-          handler={(event) => {
-            event.preventDefault()
-            toggleSidebar()
-          }}
+          handler={handleSidebarShortcut}
           shortcut="mod+b"
           tooltipContent={toggleLabel}
           tooltipSide="right"

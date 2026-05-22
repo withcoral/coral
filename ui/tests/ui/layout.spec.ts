@@ -1,7 +1,9 @@
 import { traceHandlers } from './support/trace-handlers'
 import { expect, test } from './playwright.setup'
 
-const sidebarToggleShortcut = process.platform === 'darwin' ? 'Meta+b' : 'Control+b'
+const isMacOs = process.platform === 'darwin'
+const sidebarToggleShortcut = isMacOs ? 'Meta+b' : 'Control+b'
+const sidebarToggleHint = isMacOs ? '⌘' : 'Ctrl'
 
 test('sidebar collapses, expands, and exposes the sidebar toggle tooltip', async ({ network, page, review }, testInfo) => {
   network.use(...traceHandlers.empty)
@@ -27,7 +29,7 @@ test('sidebar collapses, expands, and exposes the sidebar toggle tooltip', async
   await review.chapter('Show the sidebar tooltip', 'Hover the toggle button and confirm the shortcut hint')
   await expect(brandMark).toBeVisible()
   await collapseButton.hover()
-  await expect(page.getByText(/Collapse sidebar.*Ctrl.*B/)).toBeVisible()
+  await expect(page.getByText(new RegExp(`Collapse sidebar.*${sidebarToggleHint}.*B`))).toBeVisible()
   await review.pause()
 
   await review.chapter('Collapse the sidebar with the shortcut', 'Press mod+b and verify the sidebar narrows')
