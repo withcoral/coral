@@ -69,16 +69,16 @@ List workflow execution runs.
 
 | Column | Type | Description |
 |---|---|---|
-| `id` | Utf8 | Execution ID |
+| `id` | Int64 | Execution ID |
 | `finished` | Boolean | Whether the execution finished |
 | `mode` | Utf8 | Execution mode (cli, error, integrated, internal, manual, retry, trigger, webhook, evaluation, chat) |
 | `status` | Utf8 | Status (canceled, crashed, error, new, running, success, unknown, waiting) |
-| `workflow_id` | Utf8 | Executed workflow ID |
+| `workflow_id` | Int64 | Executed workflow ID |
 | `started_at` | Timestamp | Start time |
 | `stopped_at` | Timestamp | Stop time (NULL if running) |
 | `wait_till` | Timestamp | When a waiting execution should resume |
-| `retry_of` | Utf8 | Original execution ID if this is a retry |
-| `retry_success_id` | Utf8 | Successful retry execution ID |
+| `retry_of` | Int64 | Original execution ID if this is a retry |
+| `retry_success_id` | Int64 | Successful retry execution ID |
 
 **Optional filters:** `status`, `workflow_id`, `project_id`
 
@@ -108,20 +108,6 @@ List instance variables.
 
 > **Note:** Variables require a paid n8n license. Self-hosted free instances
 > will return a `403` error for this table.
-
-## Functions
-
-### `n8n.executions_by_workflow`
-
-Search executions for a specific workflow.
-
-```sql
-SELECT id, finished, mode, started_at
-FROM n8n.executions_by_workflow(
-  workflow_id => 'YOUR_WORKFLOW_ID_HERE'
-)
-LIMIT 10;
-```
 
 ## Example queries
 

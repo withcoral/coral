@@ -241,7 +241,7 @@ tables:
         query_param: limit
     columns:
       - name: id
-        type: Utf8
+        type: Int64
         nullable: false
         description: Execution ID.
         expr:
@@ -273,7 +273,7 @@ tables:
           path:
             - status
       - name: workflow_id
-        type: Utf8
+        type: Int64
         nullable: true
         description: ID of the executed workflow. Join to `n8n.workflows.id`.
         expr:
@@ -314,7 +314,7 @@ tables:
             path:
               - waitTill
       - name: retry_of
-        type: Utf8
+        type: Int64
         nullable: true
         description: ID of the original execution if this is a retry.
         expr:
@@ -322,7 +322,7 @@ tables:
           path:
             - retryOf
       - name: retry_success_id
-        type: Utf8
+        type: Int64
         nullable: true
         description: ID of the successful retry execution.
         expr:
@@ -459,110 +459,3 @@ tables:
           path:
             - type
 
-functions:
-  # ------------------------------------------------------------------
-  # n8n.executions_by_workflow — search executions for a workflow
-  # GET /executions?workflowId=<id>
-  # ------------------------------------------------------------------
-  - name: executions_by_workflow
-    description: Search executions for a specific workflow.
-    args:
-      - name: workflow_id
-        required: true
-        bind:
-          arg: workflow_id
-      - name: status
-        bind:
-          arg: status
-    request:
-      method: GET
-      path: /executions
-      query:
-        - name: workflowId
-          from: arg
-          key: workflow_id
-        - name: status
-          from: arg
-          key: status
-        - name: includeData
-          from: literal
-          value: "false"
-    response:
-      rows_path:
-        - data
-      row_strategy: direct
-    pagination:
-      mode: cursor_query
-      cursor_param: cursor
-      response_cursor_path:
-        - nextCursor
-      page_size:
-        default: 50
-        max: 250
-        query_param: limit
-    columns:
-      - name: id
-        type: Utf8
-        nullable: false
-        description: Execution ID.
-        expr:
-          kind: path
-          path:
-            - id
-      - name: finished
-        type: Boolean
-        nullable: true
-        description: Whether the execution finished.
-        expr:
-          kind: path
-          path:
-            - finished
-      - name: mode
-        type: Utf8
-        nullable: true
-        description: Execution mode.
-        expr:
-          kind: path
-          path:
-            - mode
-      - name: workflow_id
-        type: Utf8
-        nullable: true
-        description: Workflow ID.
-        expr:
-          kind: path
-          path:
-            - workflowId
-      - name: started_at
-        type: Timestamp
-        nullable: true
-        description: When the execution started.
-        expr:
-          kind: format_timestamp
-          input: iso8601
-          expr:
-            kind: path
-            path:
-              - startedAt
-      - name: stopped_at
-        type: Timestamp
-        nullable: true
-        description: When the execution stopped.
-        expr:
-          kind: format_timestamp
-          input: iso8601
-          expr:
-            kind: path
-            path:
-              - stoppedAt
-      - name: wait_till
-        type: Timestamp
-        nullable: true
-        description: When a waiting execution should resume.
-        expr:
-          kind: format_timestamp
-          input: iso8601
-          expr:
-            kind: path
-            path:
-              - waitTill
