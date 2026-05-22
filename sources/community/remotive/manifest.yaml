@@ -112,9 +112,13 @@ tables:
           kind: format_timestamp
           input: iso8601
           expr:
-            kind: path
-            path:
-              - publication_date
+            kind: template
+            template: "{{expr.val}}Z"
+            values:
+              val:
+                kind: path
+                path:
+                  - publication_date
       - name: candidate_required_location
         type: Utf8
         nullable: true
