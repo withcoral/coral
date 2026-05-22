@@ -317,7 +317,7 @@ fn http_manifest_with_function() -> Value {
                     "name": "query",
                     "type": "Utf8",
                     "description": "Provider-native placeholder search text",
-                    "mode": "search"
+                    "mode": "contains"
                 }],
                 "search_limits": {
                     "default_top_k": 10,
@@ -576,7 +576,7 @@ async fn coral_filters_lists_filter_metadata() {
             &sources,
             test_runtime(),
             "SELECT table_name, filter_name, filter_mode, is_required, data_type, description \
-             FROM coral.filters WHERE schema_name = 'searchy' AND filter_mode = 'search'",
+             FROM coral.filters WHERE schema_name = 'searchy' AND filter_mode = 'contains'",
         )
         .await
         .expect("filters catalog query should succeed"),
@@ -587,7 +587,7 @@ async fn coral_filters_lists_filter_metadata() {
         vec![json!({
             "table_name": "placeholder",
             "filter_name": "query",
-            "filter_mode": "search",
+            "filter_mode": "contains",
             "is_required": false,
             "data_type": "Utf8",
             "description": "Provider-native placeholder search text",
@@ -617,7 +617,7 @@ async fn coral_columns_exposes_filter_mode_for_virtual_filters() {
             "column_name": "query",
             "is_virtual": true,
             "is_required_filter": false,
-            "filter_mode": "search",
+            "filter_mode": "contains",
         })]
     );
 }

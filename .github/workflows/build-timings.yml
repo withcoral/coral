@@ -24,6 +24,22 @@ jobs:
       - name: Install Rust toolchain
         run: rustup show
 
+      - name: Set up Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version-file: ui/.node-version
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install UI dependencies
+        run: npm ci --prefix ui
+
+      - name: Build UI
+        run: npm run build --prefix ui
+
+      - name: Verify UI entrypoint
+        run: test -s ui/dist/index.html
+
       - name: Cache Rust artifacts
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
