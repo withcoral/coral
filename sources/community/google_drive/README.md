@@ -9,7 +9,7 @@ queryable tables.
 Use Coral's interactive OAuth flow to connect Google Drive:
 
 ```bash
-coral source add --interactive --file manifest.yaml
+coral source add --interactive --file sources/community/google_drive/manifest.yaml
 ```
 
 Choose **Connect Google Drive** when Coral asks for the
