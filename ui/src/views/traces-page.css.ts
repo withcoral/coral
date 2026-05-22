@@ -765,7 +765,6 @@ export const externalCallExpanded = style({
   paddingBlock: 8,
   paddingInline: 12,
 })
-export const requestUrlRow = style({ alignItems: 'center', display: 'flex', gap: 8 })
 export const methodBadge = style({ flexShrink: 0 })
 export const requestUrl = style({
   flex: 1,
