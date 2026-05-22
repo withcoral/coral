@@ -38,7 +38,8 @@ tables:
           from: input
           key: VERCEL_TEAM_ID
     response:
-      row_strategy: direct
+      rows_path:
+        - projects
     columns:
       - name: id
         type: Utf8
