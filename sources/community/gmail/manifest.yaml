@@ -1,0 +1,204 @@
+name: gmail
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Gmail messages, threads, and labels using the Gmail REST API v1.
+
+inputs:
+  GMAIL_ACCESS_TOKEN:
+    kind: secret
+    hint: |
+      OAuth 2.0 access token for the Gmail API.
+      Create credentials at https://console.cloud.google.com/apis/credentials.
+      Enable the Gmail API and generate an OAuth 2.0 token with the scope
+      https://www.googleapis.com/auth/gmail.readonly.
+
+base_url: "https://gmail.googleapis.com"
+
+auth:
+  type: BearerToken
+  token: "{{input.GMAIL_ACCESS_TOKEN}}"
+
+test_queries:
+  - SELECT * FROM gmail.labels WHERE user_id = 'me' LIMIT 5
+
+tables:
+  - name: labels
+    description: Gmail labels (folders and categories) for a user.
+    guide: >
+      Requires user_id filter. Use 'me' for the authenticated user.
+      Returns one row per label. label_id is the stable identifier used
+      as a filter in the messages table. System labels include INBOX,
+      SENT, DRAFT, SPAM, TRASH, UNREAD, STARRED, and IMPORTANT.
+    filters:
+      - name: user_id
+        required: true
+    request:
+      method: GET
+      path: /gmail/v1/users/{{filter.user_id}}/labels
+    response:
+      rows_path: [labels]
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: label_id
+        type: Utf8
+        nullable: false
+        description: >-
+          Unique label ID. Use as the label_id filter in the messages table.
+        expr: {kind: path, path: [id]}
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Display name of the label (e.g. INBOX, SENT, or a custom name).
+        expr: {kind: path, path: [name]}
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Label type. system for built-in labels, user for custom labels.
+        expr: {kind: path, path: [type]}
+      - name: user_id
+        type: Utf8
+        nullable: true
+        description: User ID (echoes the user_id filter).
+        expr: {kind: from_filter, key: user_id}
+        virtual: true
+
+  - name: messages
+    description: Gmail messages for a user.
+    guide: >
+      Requires user_id filter. Use 'me' for the authenticated user.
+      Optionally filter by label_id (from the labels table) to list messages
+      in a specific label such as INBOX or SENT.
+      Returns one row per message with message_id and thread_id.
+      Use message_id as a filter in the message_detail table to fetch full
+      message content.
+    filters:
+      - name: user_id
+        required: true
+      - name: label_id
+        required: false
+    request:
+      method: GET
+      path: /gmail/v1/users/{{filter.user_id}}/messages?labelIds={{filter.label_id}}
+    response:
+      rows_path: [messages]
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: message_id
+        type: Utf8
+        nullable: false
+        description: >-
+          Unique message ID. Use as the message_id filter in message_detail.
+        expr: {kind: path, path: [id]}
+      - name: thread_id
+        type: Utf8
+        nullable: true
+        description: Thread ID this message belongs to.
+        expr: {kind: path, path: [threadId]}
+      - name: user_id
+        type: Utf8
+        nullable: true
+        description: User ID (echoes the user_id filter).
+        expr: {kind: from_filter, key: user_id}
+        virtual: true
+
+  - name: message_detail
+    description: Full metadata for a single Gmail message.
+    guide: >
+      Requires user_id and message_id filters. Get message_id values from
+      the messages table. Returns one row with the message snippet, thread ID,
+      history ID, and internal date.
+      Use user_id = 'me' for the authenticated user.
+    filters:
+      - name: user_id
+        required: true
+      - name: message_id
+        required: true
+    request:
+      method: GET
+      path: /gmail/v1/users/{{filter.user_id}}/messages/{{filter.message_id}}
+    response:
+      rows_path: []
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: message_id
+        type: Utf8
+        nullable: false
+        description: Unique message ID.
+        expr: {kind: path, path: [id]}
+      - name: thread_id
+        type: Utf8
+        nullable: true
+        description: Thread ID this message belongs to.
+        expr: {kind: path, path: [threadId]}
+      - name: snippet
+        type: Utf8
+        nullable: true
+        description: Short plain-text preview of the message body.
+        expr: {kind: path, path: [snippet]}
+      - name: history_id
+        type: Utf8
+        nullable: true
+        description: History record ID for this message.
+        expr: {kind: path, path: [historyId]}
+      - name: internal_date
+        type: Utf8
+        nullable: true
+        description: Message timestamp in milliseconds since epoch.
+        expr: {kind: path, path: [internalDate]}
+      - name: user_id
+        type: Utf8
+        nullable: true
+        description: User ID (echoes the user_id filter).
+        expr: {kind: from_filter, key: user_id}
+        virtual: true
+
+  - name: threads
+    description: Gmail conversation threads for a user.
+    guide: >
+      Requires user_id filter. Use 'me' for the authenticated user.
+      Optionally filter by label_id to list threads in a specific label.
+      Returns one row per thread. snippet is a preview of the most recent
+      message in the thread.
+    filters:
+      - name: user_id
+        required: true
+      - name: label_id
+        required: false
+    request:
+      method: GET
+      path: /gmail/v1/users/{{filter.user_id}}/threads?labelIds={{filter.label_id}}
+    response:
+      rows_path: [threads]
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: thread_id
+        type: Utf8
+        nullable: false
+        description: Unique thread ID.
+        expr: {kind: path, path: [id]}
+      - name: snippet
+        type: Utf8
+        nullable: true
+        description: Short plain-text preview of the most recent message in the thread.
+        expr: {kind: path, path: [snippet]}
+      - name: history_id
+        type: Utf8
+        nullable: true
+        description: History record ID for the thread.
+        expr: {kind: path, path: [historyId]}
+      - name: user_id
+        type: Utf8
+        nullable: true
+        description: User ID (echoes the user_id filter).
+        expr: {kind: from_filter, key: user_id}
+        virtual: true
