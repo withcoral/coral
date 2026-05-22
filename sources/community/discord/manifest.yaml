@@ -309,6 +309,9 @@ tables:
       method: GET
       path: /channels/{{filter.channel_id}}/messages
       query:
+        - name: limit
+          from: literal
+          value: "100"
         - name: after
           from: filter
           key: after
@@ -635,6 +638,9 @@ tables:
       method: GET
       path: /guilds/{{filter.guild_id}}/members
       query:
+        - name: limit
+          from: literal
+          value: "1000"
         - name: after
           from: filter
           key: after
