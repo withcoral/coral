@@ -49,9 +49,11 @@ List automation workflows.
 |---|---|---|
 | `id` | Utf8 | Workflow ID |
 | `name` | Utf8 | Workflow name |
+| `description` | Utf8 | Workflow description |
 | `active` | Boolean | Whether the workflow is published/active |
+| `is_archived` | Boolean | Whether the workflow is archived |
 | `version_id` | Utf8 | Current version ID |
-| `node_count` | Int64 | Number of nodes in the workflow |
+| `trigger_count` | Int64 | Number of active trigger nodes |
 | `tag_names` | Utf8 | Comma-separated tag names |
 | `project_id` | Utf8 | Owning project ID |
 | `project_name` | Utf8 | Owning project name |
@@ -69,7 +71,8 @@ List workflow execution runs.
 |---|---|---|
 | `id` | Utf8 | Execution ID |
 | `finished` | Boolean | Whether the execution finished |
-| `mode` | Utf8 | Execution mode (trigger, manual, integrated) |
+| `mode` | Utf8 | Execution mode (cli, error, integrated, internal, manual, retry, trigger, webhook, evaluation, chat) |
+| `status` | Utf8 | Status (canceled, crashed, error, new, running, success, unknown, waiting) |
 | `workflow_id` | Utf8 | Executed workflow ID |
 | `started_at` | Timestamp | Start time |
 | `stopped_at` | Timestamp | Stop time (NULL if running) |
@@ -124,7 +127,7 @@ LIMIT 10;
 
 ```sql
 -- List active workflows with their tags
-SELECT name, tag_names, node_count, updated_at
+SELECT name, tag_names, trigger_count, updated_at
 FROM n8n.workflows
 WHERE active = true
 ORDER BY updated_at DESC;
@@ -164,7 +167,7 @@ ORDER BY execution_count DESC;
 -- Find workflows using a specific tag
 SELECT name, tag_names, active
 FROM n8n.workflows
-WHERE tag_names ILIKE '%production%';
+WHERE tags = 'production';
 
 -- Cross-source join: correlate n8n failures with PagerDuty incidents
 SELECT

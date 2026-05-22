@@ -9,7 +9,7 @@ description: >-
 inputs:
   N8N_BASE_URL:
     kind: variable
-    default: https://<your-n8n-instance>.n8n.cloud/api/v1
+    required: true
     hint: >-
       Base URL for your n8n instance API. For n8n Cloud use
       https://<account>.n8n.cloud/api/v1. For self-hosted use
@@ -30,11 +30,6 @@ auth:
     - name: X-N8N-API-KEY
       from: template
       template: "{{input.N8N_API_KEY}}"
-
-request_headers:
-  - name: Accept
-    from: literal
-    value: application/json
 
 test_queries:
   - SELECT id, name, active FROM n8n.workflows LIMIT 5
@@ -118,14 +113,30 @@ tables:
           kind: path
           path:
             - versionId
-      - name: node_count
+      - name: trigger_count
         type: Int64
         nullable: true
-        description: Number of nodes in the workflow.
+        description: Number of active trigger nodes in the workflow.
         expr:
           kind: path
           path:
-            - nodes
+            - triggerCount
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Workflow description.
+        expr:
+          kind: path
+          path:
+            - description
+      - name: is_archived
+        type: Boolean
+        nullable: true
+        description: Whether the workflow is archived.
+        expr:
+          kind: path
+          path:
+            - isArchived
       - name: tag_names
         type: Utf8
         nullable: true
@@ -193,9 +204,8 @@ tables:
   - name: executions
     description: |
       List n8n workflow execution runs. Filter by `status`, `workflow_id`,
-      or `project_id`. The `status` filter is accepted by the API but the
-      status value is not included in list responses; use `finished` to
-      determine completion state. Join `workflow_id` to `n8n.workflows.id`.
+      or `project_id`. Valid status values: canceled, crashed, error, new,
+      running, success, unknown, waiting. Join `workflow_id` to `n8n.workflows.id`.
     filters:
       - name: status
       - name: workflow_id
@@ -249,11 +259,19 @@ tables:
       - name: mode
         type: Utf8
         nullable: true
-        description: Execution mode (trigger, manual, integrated).
+        description: Execution mode (cli, error, integrated, internal, manual, retry, trigger, webhook, evaluation, chat).
         expr:
           kind: path
           path:
             - mode
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Execution status (canceled, crashed, error, new, running, success, unknown, waiting).
+        expr:
+          kind: path
+          path:
+            - status
       - name: workflow_id
         type: Utf8
         nullable: true
@@ -319,7 +337,7 @@ tables:
   - name: tags
     description: |
       List n8n workflow tags. Use to categorize and filter workflows.
-      Join `name` to `n8n.workflows.tag_names` for workflow categorization.
+      Match against `tag_names` using a substring filter (e.g. `tag_names ILIKE '%name%'`).
     request:
       method: GET
       path: /tags
