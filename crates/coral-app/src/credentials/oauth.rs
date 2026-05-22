@@ -12,7 +12,7 @@ use base64::engine::general_purpose::{
 use chrono::{DateTime, Utc};
 use coral_spec::{
     ManifestOAuthClientSecretTransport, ManifestOAuthCredentialSpec, ManifestOAuthPkceMode,
-    ManifestOAuthRedirectUriPortMode, ManifestOAuthScopeDelimiter,
+    ManifestOAuthRedirectBindPort, ManifestOAuthScopeDelimiter,
 };
 use reqwest::header::{ACCEPT, AUTHORIZATION};
 use serde_json::Value;
@@ -154,9 +154,9 @@ impl OAuthCredentialManager {
         reject_unknown_credential_inputs(oauth, &credential_inputs)?;
         let _client_id = resolve_client_id(oauth, &credential_inputs)?;
         let _client_secret = resolve_client_secret(oauth, &credential_inputs)?;
-        Url::parse(&oauth.redirect_uri).map_err(|error| {
-            AppError::InvalidInput(format!("invalid OAuth redirect URI: {error}"))
-        })?;
+        oauth
+            .redirect_bind_port()
+            .map_err(|error| AppError::InvalidInput(error.to_string()))?;
         Ok(())
     }
 
@@ -292,21 +292,17 @@ fn resolve_client_secret(
 async fn bind_redirect_listener(
     oauth: &ManifestOAuthCredentialSpec,
 ) -> Result<(TcpListener, String, String), AppError> {
+    let bind_port = oauth
+        .redirect_bind_port()
+        .map_err(|error| AppError::InvalidInput(error.to_string()))?;
     let redirect_uri = Url::parse(&oauth.redirect_uri)
         .map_err(|error| AppError::InvalidInput(format!("invalid OAuth redirect URI: {error}")))?;
     let host = redirect_uri
         .host_str()
         .ok_or_else(|| AppError::InvalidInput("OAuth redirect URI is missing host".to_string()))?;
-    if host != "127.0.0.1" && host != "localhost" {
-        return Err(AppError::InvalidInput(
-            "OAuth redirect URI must use a loopback host".to_string(),
-        ));
-    }
-    let port = match oauth.redirect_uri_port_mode {
-        ManifestOAuthRedirectUriPortMode::Fixed => {
-            fixed_redirect_port(&oauth.redirect_uri, &redirect_uri)?
-        }
-        ManifestOAuthRedirectUriPortMode::Random => {
+    let port = match bind_port {
+        ManifestOAuthRedirectBindPort::Fixed(port) => port,
+        ManifestOAuthRedirectBindPort::Random => {
             // Binding port 0 asks the OS to assign a free loopback port.
             0
         }
@@ -322,7 +318,7 @@ async fn bind_redirect_listener(
         ))
     })?;
     let mut effective_redirect_uri = redirect_uri;
-    if oauth.redirect_uri_port_mode == ManifestOAuthRedirectUriPortMode::Random {
+    if bind_port == ManifestOAuthRedirectBindPort::Random {
         let assigned_port = listener.local_addr()?.port();
         effective_redirect_uri
             .set_port(Some(assigned_port))
@@ -330,46 +326,12 @@ async fn bind_redirect_listener(
                 AppError::InvalidInput("OAuth redirect URI port is invalid".to_string())
             })?;
     }
-    let provider_redirect_uri = match oauth.redirect_uri_port_mode {
-        ManifestOAuthRedirectUriPortMode::Fixed => oauth.redirect_uri.clone(),
-        ManifestOAuthRedirectUriPortMode::Random => effective_redirect_uri.to_string(),
+    let provider_redirect_uri = match bind_port {
+        ManifestOAuthRedirectBindPort::Fixed(_) => oauth.redirect_uri.clone(),
+        ManifestOAuthRedirectBindPort::Random => effective_redirect_uri.to_string(),
     };
     let callback_path = effective_redirect_uri.path().to_string();
     Ok((listener, callback_path, provider_redirect_uri))
-}
-
-fn fixed_redirect_port(raw: &str, redirect_uri: &Url) -> Result<u16, AppError> {
-    if !redirect_uri_has_explicit_port(raw) {
-        return Err(AppError::InvalidInput(
-            "OAuth redirect URI is missing explicit port".to_string(),
-        ));
-    }
-    let port = redirect_uri.port_or_known_default().ok_or_else(|| {
-        AppError::InvalidInput("OAuth redirect URI is missing explicit port".to_string())
-    })?;
-    if port == 0 {
-        return Err(AppError::InvalidInput(
-            "OAuth redirect URI fixed port must be non-zero".to_string(),
-        ));
-    }
-    Ok(port)
-}
-
-fn redirect_uri_has_explicit_port(raw: &str) -> bool {
-    let Some((_, after_scheme)) = raw.split_once("://") else {
-        return false;
-    };
-    let authority = after_scheme
-        .split(['/', '?', '#'])
-        .next()
-        .unwrap_or_default();
-    let host_and_port = authority
-        .rsplit_once('@')
-        .map_or(authority, |(_, host_and_port)| host_and_port);
-    let Some((_, port)) = host_and_port.rsplit_once(':') else {
-        return false;
-    };
-    !port.is_empty() && port.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 fn build_authorization_url(
@@ -855,9 +817,8 @@ mod tests {
 
     use super::{
         OAuthCredentialManager, OAuthSessionConfig, StartOAuthCredentialRequest,
-        basic_client_authorization, fixed_redirect_port, join_scope_values,
-        material_key_belongs_to_input, oauth_metadata_prefix, parse_token_response, pkce_challenge,
-        receive_callback,
+        basic_client_authorization, join_scope_values, material_key_belongs_to_input,
+        oauth_metadata_prefix, parse_token_response, pkce_challenge, receive_callback,
     };
     use coral_spec::{
         ManifestOAuthClientIdSpec, ManifestOAuthClientSecretSpec,
@@ -1354,32 +1315,6 @@ mod tests {
             captured.form.get("redirect_uri").map(String::as_str),
             Some(redirect_uri.as_str())
         );
-    }
-
-    #[test]
-    fn fixed_redirect_port_accepts_explicit_default_http_port() {
-        let raw = "http://127.0.0.1:80/oauth/callback";
-        let redirect_uri = Url::parse(raw).expect("redirect uri");
-
-        assert_eq!(fixed_redirect_port(raw, &redirect_uri).expect("port"), 80);
-    }
-
-    #[test]
-    fn fixed_redirect_port_rejects_portless_uri() {
-        let raw = "http://127.0.0.1/oauth/callback";
-        let redirect_uri = Url::parse(raw).expect("redirect uri");
-
-        let error = fixed_redirect_port(raw, &redirect_uri).expect_err("missing explicit port");
-        assert!(error.to_string().contains("missing explicit port"));
-    }
-
-    #[test]
-    fn fixed_redirect_port_rejects_zero_port() {
-        let raw = "http://127.0.0.1:0/oauth/callback";
-        let redirect_uri = Url::parse(raw).expect("redirect uri");
-
-        let error = fixed_redirect_port(raw, &redirect_uri).expect_err("zero fixed port");
-        assert!(error.to_string().contains("fixed port must be non-zero"));
     }
 
     async fn callback(authorization_url: &str) {
