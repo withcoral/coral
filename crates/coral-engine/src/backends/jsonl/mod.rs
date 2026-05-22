@@ -456,7 +456,13 @@ impl JsonlTableProvider {
         let table = Arc::clone(&self.table);
         let filter_values = extract_filter_values(filters, table.filters());
         Arc::new(move |items: &[Value]| {
-            convert_items(table.columns(), schema.clone(), &filter_values, items)
+            convert_items(
+                table.columns(),
+                schema.clone(),
+                &filter_values,
+                &HashMap::new(),
+                items,
+            )
         })
     }
 }

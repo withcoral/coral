@@ -161,9 +161,15 @@ pub(crate) fn validate_http_function(
         )?;
     }
 
-    validate_filters_and_column_exprs(
-        &[],
+    validate_columns(
         &function.columns,
+        source_name,
+        &format!("function '{}'", function.name),
+    )?;
+    validate_column_exprs(
+        &function.columns,
+        &HashSet::new(),
+        &request_arg_names,
         source_name,
         &format!("function '{}'", function.name),
     )?;
@@ -200,17 +206,29 @@ pub(crate) fn validate_filters_and_column_exprs(
         filter.manifest_data_type()?;
     }
 
+    validate_column_exprs(columns, &known_filters, &HashSet::new(), schema, table)?;
+
+    Ok(known_filters)
+}
+
+fn validate_column_exprs(
+    columns: &[ColumnSpec],
+    known_filters: &HashSet<String>,
+    known_args: &HashSet<&str>,
+    schema: &str,
+    table: &str,
+) -> Result<()> {
     for col in columns {
         if let Some(expr) = &col.expr {
             validate_expr(
                 expr,
-                &known_filters,
+                known_filters,
+                known_args,
                 &format!("{schema}.{table} column '{}'", col.name),
             )?;
         }
     }
-
-    Ok(known_filters)
+    Ok(())
 }
 
 pub(crate) struct DetailHintTargetTable<'a> {
@@ -464,6 +482,12 @@ fn validate_request_bindings(
     match &request.body {
         BodySpec::Json { fields } => {
             for field in fields {
+                if let Some(arg) = &field.when_arg {
+                    return Err(ManifestError::validation(format!(
+                        "{schema}.{table_name} request body path '{}' uses function argument condition '{arg}' outside a function request",
+                        field.path.join(".")
+                    )));
+                }
                 validate_value_source(
                     &field.value,
                     known_filters,
@@ -579,6 +603,15 @@ fn validate_function_request_bindings(
     match &function.request.body {
         BodySpec::Json { fields } => {
             for field in fields {
+                if let Some(arg) = &field.when_arg
+                    && !request_arg_names.contains(arg.as_str())
+                {
+                    return Err(ManifestError::validation(format!(
+                        "source '{source_name}' function '{}' request body path '{}' references unknown request arg '{arg}' in when_arg",
+                        function.name,
+                        field.path.join(".")
+                    )));
+                }
                 validate_arg_value_source(
                     &field.value,
                     request_arg_names,
@@ -687,20 +720,30 @@ fn validate_identifier(value: &str, context: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_expr(expr: &ExprSpec, known_filters: &HashSet<String>, context: &str) -> Result<()> {
+fn validate_expr(
+    expr: &ExprSpec,
+    known_filters: &HashSet<String>,
+    known_args: &HashSet<&str>,
+    context: &str,
+) -> Result<()> {
     match expr {
         ExprSpec::FromFilter { key } if !known_filters.contains(key) => {
             return Err(ManifestError::validation(format!(
                 "{context} references unknown filter '{key}'"
             )));
         }
+        ExprSpec::FromArg { key } if !known_args.contains(key.as_str()) => {
+            return Err(ManifestError::validation(format!(
+                "{context} references unknown request arg '{key}'"
+            )));
+        }
         ExprSpec::Coalesce { exprs } => {
             for nested in exprs {
-                validate_expr(nested, known_filters, context)?;
+                validate_expr(nested, known_filters, known_args, context)?;
             }
         }
         ExprSpec::IfPresent { check, .. } => {
-            validate_expr(check, known_filters, context)?;
+            validate_expr(check, known_filters, known_args, context)?;
         }
         ExprSpec::ObjectFilterPath { filter_key, .. } if !known_filters.contains(filter_key) => {
             return Err(ManifestError::validation(format!(
@@ -708,7 +751,7 @@ fn validate_expr(expr: &ExprSpec, known_filters: &HashSet<String>, context: &str
             )));
         }
         ExprSpec::FormatTimestamp { expr, .. } | ExprSpec::Base64Decode { expr } => {
-            validate_expr(expr, known_filters, context)?;
+            validate_expr(expr, known_filters, known_args, context)?;
         }
         ExprSpec::Replace { expr, from, .. } => {
             if from.is_empty() {
@@ -716,13 +759,14 @@ fn validate_expr(expr: &ExprSpec, known_filters: &HashSet<String>, context: &str
                     "{context} has replace expression with empty 'from' value"
                 )));
             }
-            validate_expr(expr, known_filters, context)?;
+            validate_expr(expr, known_filters, known_args, context)?;
         }
         ExprSpec::Template { template, values } => {
             for (key, value_expr) in values {
                 validate_expr(
                     value_expr,
                     known_filters,
+                    known_args,
                     &format!("{context} template value '{key}'"),
                 )?;
             }

@@ -1114,6 +1114,13 @@ fn build_request_body(
             }
             let mut root = Value::Object(Map::new());
             for field in fields {
+                if field
+                    .when_arg
+                    .as_ref()
+                    .is_some_and(|arg| !render_context.args.contains_key(arg))
+                {
+                    continue;
+                }
                 if let Some(value) = resolve_value_source(&field.value, render_context)? {
                     set_path_value(&mut root, &field.path, value)?;
                 }

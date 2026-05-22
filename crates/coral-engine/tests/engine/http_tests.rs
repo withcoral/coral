@@ -149,6 +149,64 @@ fn split_function_manifest(name: &str, base_url: &str) -> Value {
     })
 }
 
+fn notionish_search_function_manifest(base_url: &str) -> Value {
+    json!({
+        "name": "notionish",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": base_url,
+        "functions": [{
+            "name": "search_objects",
+            "kind": "search",
+            "description": "Search objects",
+            "search_limits": {
+                "default_top_k": 10,
+                "max_top_k": 100,
+                "max_calls_per_query": 1
+            },
+            "args": [
+                {
+                    "name": "query",
+                    "required": true,
+                    "bind": { "arg": "query" }
+                },
+                {
+                    "name": "object",
+                    "values": ["page", "data_source"],
+                    "bind": { "arg": "object" }
+                }
+            ],
+            "request": {
+                "method": "POST",
+                "path": "/v1/search",
+                "body": [
+                    { "path": ["query"], "from": "arg", "key": "query" },
+                    {
+                        "path": ["filter", "property"],
+                        "when_arg": "object",
+                        "from": "literal",
+                        "value": "object"
+                    },
+                    { "path": ["filter", "value"], "from": "arg", "key": "object" }
+                ]
+            },
+            "response": {
+                "rows_path": ["results"]
+            },
+            "columns": [
+                { "name": "object", "type": "Utf8" },
+                { "name": "id", "type": "Utf8" },
+                {
+                    "name": "requested_object",
+                    "type": "Utf8",
+                    "expr": { "kind": "from_arg", "key": "object" }
+                }
+            ]
+        }]
+    })
+}
+
 fn internal_table_function_name(schema: &str, function: &str) -> String {
     // PR #306 only registers DataFusion's flat internal UDTF. The public
     // source-scoped planner in the next stack PR owns this mapping for users.
@@ -543,6 +601,80 @@ async fn source_scoped_table_function_omits_optional_named_arg() {
         vec![json!({
             "title": "Flaky workspace cleanup",
             "score": 9.5
+        })]
+    );
+}
+
+#[tokio::test]
+async fn source_scoped_table_function_conditionally_emits_arg_body_fields() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/search"))
+        .and(body_json(json!({ "query": "Coral" })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "results": [{
+                "object": "page",
+                "id": "page_1"
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/search"))
+        .and(body_json(json!({
+            "query": "Coral",
+            "filter": {
+                "property": "object",
+                "value": "data_source"
+            }
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "results": [{
+                "object": "data_source",
+                "id": "data_source_1"
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let source = build_source(notionish_search_function_manifest(&server.uri()));
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            std::slice::from_ref(&source),
+            test_runtime(),
+            "SELECT object, id, requested_object \
+             FROM notionish.search_objects(query => 'Coral')",
+        )
+        .await
+        .expect("optional body fields should be omitted when the arg is absent"),
+    );
+    assert_eq!(
+        rows,
+        vec![json!({
+            "object": "page",
+            "id": "page_1"
+        })]
+    );
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT object, id, requested_object \
+             FROM notionish.search_objects(query => 'Coral', object => 'data_source')",
+        )
+        .await
+        .expect("optional body fields should be emitted when the arg is present"),
+    );
+    assert_eq!(
+        rows,
+        vec![json!({
+            "object": "data_source",
+            "id": "data_source_1",
+            "requested_object": "data_source"
         })]
     );
 }

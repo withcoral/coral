@@ -116,7 +116,7 @@ pub(crate) fn http_json_exec(request: HttpJsonExecRequest<'_>) -> Result<Arc<dyn
         backend,
         target: target.clone(),
         filter_values: filter_values.clone(),
-        arg_values,
+        arg_values: arg_values.clone(),
         limit,
     });
 
@@ -124,8 +124,15 @@ pub(crate) fn http_json_exec(request: HttpJsonExecRequest<'_>) -> Result<Arc<dyn
         let target = target.clone();
         let schema = schema.clone();
         let filter_values = filter_values.clone();
+        let arg_values = arg_values.clone();
         Arc::new(move |items: &[Value]| {
-            convert_items(target.columns(), schema.clone(), &filter_values, items)
+            convert_items(
+                target.columns(),
+                schema.clone(),
+                &filter_values,
+                &arg_values,
+                items,
+            )
         })
     };
 

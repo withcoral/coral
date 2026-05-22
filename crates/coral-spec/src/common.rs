@@ -322,6 +322,8 @@ pub struct QueryParamSpec {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct BodyFieldSpec {
     pub path: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub when_arg: Option<String>,
     #[serde(flatten)]
     pub value: ValueSourceSpec,
 }
@@ -830,6 +832,9 @@ pub enum ExprSpec {
         exprs: Vec<ExprSpec>,
     },
     FromFilter {
+        key: String,
+    },
+    FromArg {
         key: String,
     },
     Literal {

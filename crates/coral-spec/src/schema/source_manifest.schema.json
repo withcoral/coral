@@ -594,6 +594,7 @@
           "minItems": 1,
           "items": { "type": "string", "minLength": 1 }
         },
+        "when_arg": { "type": "string", "minLength": 1 },
         "from": { "type": "string" },
         "template": { "type": "string" },
         "value": {},
@@ -876,6 +877,15 @@
           "required": ["kind", "key"],
           "properties": {
             "kind": { "const": "from_filter" },
+            "key": { "type": "string", "minLength": 1 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "key"],
+          "properties": {
+            "kind": { "const": "from_arg" },
             "key": { "type": "string", "minLength": 1 }
           }
         },

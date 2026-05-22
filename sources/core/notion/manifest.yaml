@@ -49,6 +49,12 @@ functions:
         required: true
         bind:
           arg: query
+      - name: object
+        values:
+          - page
+          - data_source
+        bind:
+          arg: object
     request:
       method: POST
       path: /v1/search
@@ -57,6 +63,17 @@ functions:
             - query
           from: arg
           key: query
+        - path:
+            - filter
+            - property
+          when_arg: object
+          from: literal
+          value: object
+        - path:
+            - filter
+            - value
+          from: arg
+          key: object
     response:
       rows_path:
         - results
