@@ -43,15 +43,18 @@ Coral uses stdio transport. If a client supports a command-based install flow, p
   Use [add-mcp](https://github.com/neondatabase/add-mcp) to add the Coral MCP server to all your favorite coding agents with a single command.
 
 
-  ```shellscript
-  npx add-mcp -n coral -g "$(which coral) mcp-stdio"
-  ```
-
-  On Windows PowerShell:
-
-  ```powershell
-  npx add-mcp -n coral -g "$((Get-Command coral).Source) mcp-stdio"
-  ```
+  <Tabs>
+    <Tab title="macOS / Linux">
+    ```shellscript
+    npx add-mcp -n coral -g "$(which coral) mcp-stdio"
+    ```
+    </Tab>
+    <Tab title="Windows PowerShell">
+    ```powershell
+    npx add-mcp -n coral -g "$((Get-Command coral).Source) mcp-stdio"
+    ```
+    </Tab>
+  </Tabs>
 
   (To install only in the current project, omit the `-g` flag.)
 
