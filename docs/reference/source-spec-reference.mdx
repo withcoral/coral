@@ -760,6 +760,13 @@ used. `credential.methods` only controls how the secret is collected; runtime
 request authentication is still defined by `auth` or request headers that
 reference the input.
 
+Use `type: oauth` when the provider should issue the source secret through a
+browser-based OAuth authorization-code flow instead of asking the user to paste a
+token. The OAuth method populates the same secret input that `auth` references at
+runtime, so the request configuration does not change after setup. If you want to
+support both flows, list the OAuth method first and add a `source_config`
+fallback for users who already have a token.
+
 ```yaml
 inputs:
   GITHUB_TOKEN:
