@@ -55,6 +55,16 @@ impl RowFetcher for McpFetchPlan {
                 .backend
                 .call_tool(&self.relation, &self.tool_name, arguments)
                 .await?;
+            if let Some(detail) = detect_payload_error(&self.response, &payload) {
+                return Err(DataFusionError::External(Box::new(
+                    McpProviderQueryError::ToolReturnedError {
+                        source_schema: self.source_schema.clone(),
+                        relation: self.relation.clone(),
+                        tool: self.tool_name.clone(),
+                        detail,
+                    },
+                )));
+            }
             let mut rows = extract_rows(&self.response, &payload);
             all_rows.append(&mut rows);
             if let Some(limit) = self.limit
@@ -85,6 +95,25 @@ impl McpFetchPlan {
         arguments.insert(pagination.cursor_arg.clone(), cursor.clone());
         arguments
     }
+}
+
+/// Returns the error detail when `response.error_path` resolves to a non-null
+/// value in `payload`. Lets a tool that signals failure inside a successful
+/// MCP response (e.g. `ClickHouse`'s `{ "result": { "status": "error",
+/// "message": "..." } }` shape) be surfaced as a structured engine error
+/// instead of being silently extracted as zero rows.
+fn detect_payload_error(response: &ResponseSpec, payload: &Value) -> Option<String> {
+    if response.error_path.is_empty() {
+        return None;
+    }
+    let value = get_path_value(payload, &response.error_path)?;
+    if value.is_null() {
+        return None;
+    }
+    Some(match value {
+        Value::String(text) => text.clone(),
+        other => other.to_string(),
+    })
 }
 
 fn next_page_cursor(pagination: &McpPaginationSpec, payload: &Value) -> Option<Value> {

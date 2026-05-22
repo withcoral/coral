@@ -245,7 +245,7 @@ OAuth-token-read + connect handshake (~1s overhead). Fine for interactive
 use; less ideal for many small queries in a loop. Tracked in
 the MCP backend follow-up plan.
 
-### Error responses produce zero rows
+### Error responses surface as `MCP_TOOL_RETURNED_ERROR`
 
 `run_select_query` and most other tools return a success/error union:
 
@@ -253,7 +253,7 @@ the MCP backend follow-up plan.
 { "result": { "status": "error", "message": "..." } }
 ```
 
-Coral's `rows_path: [result, data]` (or similar) silently extracts nothing
-from the error branch, so a failed query looks like an empty result.
-Inspect the underlying tool by adding a `raw: Json` column with
-`expr.kind: current_row` if you need to see error payloads.
+Each table and function in this manifest sets
+`response.error_path: [result, message]`, so an error branch is converted
+into a structured `MCP_TOOL_RETURNED_ERROR` carrying the upstream message
+instead of silently producing zero rows.

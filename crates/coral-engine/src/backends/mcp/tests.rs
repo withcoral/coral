@@ -530,6 +530,136 @@ async fn applies_projection_and_limit_to_mcp_table_scan() {
     assert_eq!(schema.field(0).name(), "title");
 }
 
+/// Returns the ClickHouse-style success/error union and records each MCP
+/// tool call.
+#[derive(Debug)]
+struct FakeMcpUnionCaller {
+    payload: Value,
+    calls: Mutex<Vec<(String, JsonObject)>>,
+}
+
+#[async_trait]
+impl McpToolCaller for FakeMcpUnionCaller {
+    async fn call_tool(
+        &self,
+        _relation: &str,
+        tool_name: &str,
+        arguments: JsonObject,
+    ) -> Result<Value> {
+        self.calls
+            .lock()
+            .expect("calls lock")
+            .push((tool_name.to_string(), arguments));
+        Ok(self.payload.clone())
+    }
+}
+
+fn mcp_table_with_error_path_manifest() -> coral_spec::ValidatedSourceManifest {
+    coral_spec::parse_source_manifest_value(json!({
+        "dsl_version": 3,
+        "name": "test_mcp",
+        "version": "0.1.0",
+        "backend": "mcp",
+        "server": { "transport": "stdio", "command": "unused" },
+        "tables": [{
+            "name": "issues",
+            "description": "Open issues",
+            "tool": "list_issues",
+            "response": {
+                "rows_path": ["result", "data"],
+                "error_path": ["result", "message"],
+            },
+            "columns": [
+                { "name": "id", "type": "Utf8" },
+                { "name": "title", "type": "Utf8" },
+            ],
+        }],
+    }))
+    .expect("error-path manifest should parse")
+}
+
+#[tokio::test]
+async fn error_path_surfaces_tool_returned_error_when_present() {
+    let ctx = SessionContext::new();
+    let caller = Arc::new(FakeMcpUnionCaller {
+        payload: json!({
+            "result": { "status": "error", "message": "Code: 62. Syntax error" }
+        }),
+        calls: Mutex::new(Vec::new()),
+    });
+    register_test_sources(
+        &ctx,
+        compile_sources(mcp_table_with_error_path_manifest(), caller.clone()),
+    );
+
+    let error = ctx
+        .sql("SELECT id FROM test_mcp.issues")
+        .await
+        .expect("planning succeeds before scan")
+        .collect()
+        .await
+        .expect_err("error payload should surface as engine error");
+
+    let root = error.find_root();
+    match root {
+        DataFusionError::External(inner) => {
+            let provider = inner
+                .downcast_ref::<McpProviderQueryError>()
+                .expect("error should downcast to McpProviderQueryError");
+            match provider {
+                McpProviderQueryError::ToolReturnedError {
+                    source_schema,
+                    relation,
+                    tool,
+                    detail,
+                } => {
+                    assert_eq!(source_schema, "test_mcp");
+                    assert_eq!(relation, "issues");
+                    assert_eq!(tool, "list_issues");
+                    assert_eq!(detail, "Code: 62. Syntax error");
+                }
+                other => panic!("unexpected MCP error variant: {other:?}"),
+            }
+            assert_eq!(provider.to_structured().reason(), "MCP_TOOL_RETURNED_ERROR");
+        }
+        other => panic!("expected External error, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn error_path_does_not_trigger_on_success_payload() {
+    let ctx = SessionContext::new();
+    let caller = Arc::new(FakeMcpUnionCaller {
+        payload: json!({
+            "result": {
+                "data": [
+                    { "id": "1", "title": "Bug A" },
+                    { "id": "2", "title": "Bug B" }
+                ]
+            }
+        }),
+        calls: Mutex::new(Vec::new()),
+    });
+    register_test_sources(
+        &ctx,
+        compile_sources(mcp_table_with_error_path_manifest(), caller.clone()),
+    );
+
+    let batches = ctx
+        .sql("SELECT id, title FROM test_mcp.issues ORDER BY id")
+        .await
+        .expect("query should plan")
+        .collect()
+        .await
+        .expect("query should execute");
+
+    let rendered = pretty_format_batches(&batches)
+        .expect("batches should render")
+        .to_string();
+    assert!(rendered.contains("| Bug A"));
+    assert!(rendered.contains("| Bug B"));
+}
+
 fn mcp_table_with_limit_binding_manifest(
     max: Option<usize>,
 ) -> coral_spec::ValidatedSourceManifest {

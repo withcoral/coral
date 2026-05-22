@@ -24,6 +24,7 @@ tables:
     tool: get_organizations
     response:
       rows_path: [result]
+      error_path: [result, message]
     columns:
       - name: id
         type: Utf8
@@ -48,6 +49,7 @@ tables:
         tool_arg: organizationId
     response:
       rows_path: [result]
+      error_path: [result, message]
     columns:
       - name: organization_id
         type: Utf8
@@ -104,6 +106,7 @@ tables:
         tool_arg: serviceId
     response:
       rows_path: [result]
+      error_path: [result, message]
     columns:
       - name: organization_id
         type: Utf8
@@ -156,6 +159,7 @@ tables:
         tool_arg: serviceId
     response:
       rows_path: [result, backups]
+      error_path: [result, message]
     columns:
       - name: organization_id
         type: Utf8
@@ -211,6 +215,7 @@ tables:
         tool_arg: to_date
     response:
       rows_path: [result, costs]
+      error_path: [result, message]
     columns:
       - name: organization_id
         type: Utf8
@@ -246,6 +251,7 @@ tables:
         tool_arg: serviceId
     response:
       rows_path: [result]
+      error_path: [result, message]
     columns:
       - name: service_id
         type: Utf8
@@ -277,6 +283,7 @@ tables:
         tool_arg: notLike
     response:
       rows_path: [result]
+      error_path: [result, message]
     columns:
       - name: service_id
         type: Utf8
@@ -350,6 +357,7 @@ functions:
           arg: organizationId
     response:
       rows_path: [result]
+      error_path: [result, message]
     columns:
       - name: id
         type: Utf8
@@ -382,6 +390,7 @@ functions:
           arg: serviceId
     response:
       rows_path: [result]
+      error_path: [result, message]
     columns:
       - name: id
         type: Utf8
@@ -439,6 +448,7 @@ functions:
           arg: clickPipeId
     response:
       rows_path: [result]
+      error_path: [result, message]
     columns:
       - name: id
         type: Utf8
@@ -486,6 +496,7 @@ functions:
           arg: backupId
     response:
       rows_path: [result]
+      error_path: [result, message]
     columns:
       - name: id
         type: Utf8
@@ -527,6 +538,7 @@ functions:
           arg: serviceId
     response:
       rows_path: [result]
+      error_path: [result, message]
     columns:
       - name: backupPeriodInHours
         type: Float64
@@ -554,6 +566,7 @@ functions:
           arg: serviceId
     response:
       rows_path: [result, data]
+      error_path: [result, message]
     columns:
       - name: row
         type: Json
