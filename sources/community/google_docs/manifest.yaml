@@ -1,0 +1,525 @@
+name: google_docs
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query document metadata, structural content, tabs, named ranges, and lists
+  from Google Docs.
+inputs:
+  GOOGLE_DOCS_ACCESS_TOKEN:
+    kind: secret
+    hint: |
+      Google Docs OAuth 2.0 access token with the Docs read-only scope.
+      Paste the access token value itself, without a `Bearer ` prefix.
+      For interactive setup, choose "Connect Google Docs" and provide a
+      Google OAuth Desktop app client ID and client secret from a Google Cloud
+      project with the Google Docs API enabled.
+
+      The OAuth flow requests:
+      https://www.googleapis.com/auth/documents.readonly
+      See https://developers.google.com/workspace/docs/api/auth.
+    credential:
+      methods:
+        - type: oauth
+          label: Connect Google Docs
+          description: Use Google OAuth to retrieve a Docs access token.
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: required
+            redirect_uri: http://127.0.0.1/oauth/callback
+            redirect_uri_port_mode: random
+            endpoints:
+              authorization_url: https://accounts.google.com/o/oauth2/v2/auth
+              token_url: https://oauth2.googleapis.com/token
+            client:
+              id:
+                input: GOOGLE_DOCS_OAUTH_CLIENT_ID
+              secret:
+                input: GOOGLE_DOCS_OAUTH_CLIENT_SECRET
+                transport: request_body
+            scopes:
+              scope:
+                delimiter: space
+                values:
+                  - https://www.googleapis.com/auth/documents.readonly
+        - type: source_config
+          label: Paste access token
+          description: Paste an existing Google Docs OAuth access token.
+base_url: https://docs.googleapis.com/v1
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.GOOGLE_DOCS_ACCESS_TOKEN}}
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+tables:
+  - name: documents
+    description: Metadata and raw structure for one Google Docs document
+    guide: |
+      Requires `document_id`, which is the stable ID in a Google Docs URL.
+      Use this table to inspect document-level metadata before reading
+      `body_content`, `tabs`, `named_ranges`, or `lists`.
+    filters:
+      - name: document_id
+        required: true
+      - name: suggestions_view_mode
+        required: false
+    request:
+      method: GET
+      path: /documents/{{filter.document_id}}
+      query:
+        - name: suggestionsViewMode
+          from: filter
+          key: suggestions_view_mode
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: document_id
+        type: Utf8
+        nullable: false
+        description: Google Docs document ID.
+        expr:
+          kind: path
+          path:
+            - documentId
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Document title.
+      - name: revision_id
+        type: Utf8
+        nullable: true
+        description: Opaque document revision ID.
+        expr:
+          kind: path
+          path:
+            - revisionId
+      - name: body
+        type: Json
+        nullable: true
+        description: Body content for the document's first tab.
+      - name: document_style
+        type: Json
+        nullable: true
+        description: Document-level style configuration.
+        expr:
+          kind: path
+          path:
+            - documentStyle
+      - name: named_styles
+        type: Json
+        nullable: true
+        description: Named text and paragraph styles used by the document.
+        expr:
+          kind: path
+          path:
+            - namedStyles
+      - name: headers
+        type: Json
+        nullable: true
+        description: Header objects keyed by header ID.
+      - name: footers
+        type: Json
+        nullable: true
+        description: Footer objects keyed by footer ID.
+      - name: footnotes
+        type: Json
+        nullable: true
+        description: Footnote objects keyed by footnote ID.
+      - name: lists
+        type: Json
+        nullable: true
+        description: List definitions keyed by list ID.
+      - name: named_ranges
+        type: Json
+        nullable: true
+        description: Named ranges keyed by range name.
+        expr:
+          kind: path
+          path:
+            - namedRanges
+      - name: inline_objects
+        type: Json
+        nullable: true
+        description: Inline objects keyed by object ID.
+        expr:
+          kind: path
+          path:
+            - inlineObjects
+      - name: positioned_objects
+        type: Json
+        nullable: true
+        description: Positioned objects keyed by object ID.
+        expr:
+          kind: path
+          path:
+            - positionedObjects
+      - name: suggestions_view_mode
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Suggestions view mode requested for the document.
+        expr:
+          kind: from_filter
+          key: suggestions_view_mode
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw Google Docs document object.
+        expr:
+          kind: current_row
+
+  - name: body_content
+    description: Top-level structural body elements for one Google Docs document
+    guide: |
+      Requires `document_id`. Google returns first-tab body content here when
+      `includeTabsContent` is false. Use `google_docs.tabs` for tab-aware reads.
+      Paragraphs, tables, section breaks, and tables of contents are exposed as
+      JSON because each structural element can take a different shape.
+    filters:
+      - name: document_id
+        required: true
+      - name: suggestions_view_mode
+        required: false
+    request:
+      method: GET
+      path: /documents/{{filter.document_id}}
+      query:
+        - name: suggestionsViewMode
+          from: filter
+          key: suggestions_view_mode
+    response:
+      rows_path:
+        - body
+        - content
+    pagination:
+      mode: none
+    columns:
+      - name: document_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Google Docs document ID used for this scan.
+        expr:
+          kind: from_filter
+          key: document_id
+      - name: start_index
+        type: Int64
+        nullable: true
+        description: Start index of the structural element in UTF-16 code units.
+        expr:
+          kind: path
+          path:
+            - startIndex
+      - name: end_index
+        type: Int64
+        nullable: true
+        description: Exclusive end index in UTF-16 code units.
+        expr:
+          kind: path
+          path:
+            - endIndex
+      - name: paragraph
+        type: Json
+        nullable: true
+        description: Paragraph content and style when this element is a paragraph.
+      - name: paragraph_text
+        type: Utf8
+        nullable: true
+        description: Joined text-run content when this element is a paragraph.
+        expr:
+          kind: join_array_path
+          path:
+            - paragraph
+            - elements
+          item_path:
+            - textRun
+            - content
+          separator: ""
+      - name: section_break
+        type: Json
+        nullable: true
+        description: Section break data when this element is a section break.
+        expr:
+          kind: path
+          path:
+            - sectionBreak
+      - name: table
+        type: Json
+        nullable: true
+        description: Table content and style when this element is a table.
+      - name: table_of_contents
+        type: Json
+        nullable: true
+        description: Table of contents content when this element is a table of contents.
+        expr:
+          kind: path
+          path:
+            - tableOfContents
+      - name: suggestions_view_mode
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Suggestions view mode requested for the body content.
+        expr:
+          kind: from_filter
+          key: suggestions_view_mode
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw structural element.
+        expr:
+          kind: current_row
+
+  - name: tabs
+    description: Top-level tabs and tab content for one Google Docs document
+    guide: |
+      Requires `document_id`. This request enables `includeTabsContent`, so
+      each row exposes one top-level tab plus nested `child_tabs` JSON for
+      multi-tab documents.
+    filters:
+      - name: document_id
+        required: true
+      - name: suggestions_view_mode
+        required: false
+    request:
+      method: GET
+      path: /documents/{{filter.document_id}}
+      query:
+        - name: includeTabsContent
+          from: literal
+          value: true
+        - name: suggestionsViewMode
+          from: filter
+          key: suggestions_view_mode
+    response:
+      rows_path:
+        - tabs
+    pagination:
+      mode: none
+    columns:
+      - name: document_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Google Docs document ID used for this scan.
+        expr:
+          kind: from_filter
+          key: document_id
+      - name: tab_id
+        type: Utf8
+        nullable: true
+        description: Stable tab ID.
+        expr:
+          kind: path
+          path:
+            - tabProperties
+            - tabId
+      - name: title
+        type: Utf8
+        nullable: true
+        description: User-visible tab title.
+        expr:
+          kind: path
+          path:
+            - tabProperties
+            - title
+      - name: parent_tab_id
+        type: Utf8
+        nullable: true
+        description: Parent tab ID when this tab is nested.
+        expr:
+          kind: path
+          path:
+            - tabProperties
+            - parentTabId
+      - name: tab_index
+        type: Int64
+        nullable: true
+        description: Zero-based tab index within its parent.
+        expr:
+          kind: path
+          path:
+            - tabProperties
+            - index
+      - name: nesting_level
+        type: Int64
+        nullable: true
+        description: Tab nesting depth when Google returns one.
+        expr:
+          kind: path
+          path:
+            - tabProperties
+            - nestingLevel
+      - name: icon_emoji
+        type: Utf8
+        nullable: true
+        description: Tab emoji icon when one is configured.
+        expr:
+          kind: path
+          path:
+            - tabProperties
+            - iconEmoji
+      - name: body
+        type: Json
+        nullable: true
+        description: Body content for this document tab.
+        expr:
+          kind: path
+          path:
+            - documentTab
+            - body
+      - name: headers
+        type: Json
+        nullable: true
+        description: Header objects for this document tab.
+        expr:
+          kind: path
+          path:
+            - documentTab
+            - headers
+      - name: footers
+        type: Json
+        nullable: true
+        description: Footer objects for this document tab.
+        expr:
+          kind: path
+          path:
+            - documentTab
+            - footers
+      - name: footnotes
+        type: Json
+        nullable: true
+        description: Footnote objects for this document tab.
+        expr:
+          kind: path
+          path:
+            - documentTab
+            - footnotes
+      - name: child_tabs
+        type: Json
+        nullable: true
+        description: Nested child tabs for this top-level tab.
+        expr:
+          kind: path
+          path:
+            - childTabs
+      - name: suggestions_view_mode
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Suggestions view mode requested for the tab payload.
+        expr:
+          kind: from_filter
+          key: suggestions_view_mode
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw Google Docs tab object.
+        expr:
+          kind: current_row
+
+  - name: named_ranges
+    description: Named range groups for one Google Docs document
+    guide: |
+      Requires `document_id`. Named range names become rows while the provider
+      range payload stays as JSON for callers that need all segment details.
+    filters:
+      - name: document_id
+        required: true
+    request:
+      method: GET
+      path: /documents/{{filter.document_id}}
+    response:
+      rows_path:
+        - namedRanges
+      row_strategy: dict_entries
+    pagination:
+      mode: none
+    columns:
+      - name: document_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Google Docs document ID used for this scan.
+        expr:
+          kind: from_filter
+          key: document_id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Named range name.
+        expr:
+          kind: path
+          path:
+            - _key
+      - name: named_ranges
+        type: Json
+        nullable: true
+        description: Named range entries returned for this name.
+        expr:
+          kind: path
+          path:
+            - namedRanges
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw named range group.
+        expr:
+          kind: current_row
+
+  - name: lists
+    description: List definitions for one Google Docs document
+    guide: |
+      Requires `document_id`. Use list IDs from paragraph JSON to inspect
+      the document-level list properties returned here.
+    filters:
+      - name: document_id
+        required: true
+    request:
+      method: GET
+      path: /documents/{{filter.document_id}}
+    response:
+      rows_path:
+        - lists
+      row_strategy: dict_entries
+    pagination:
+      mode: none
+    columns:
+      - name: document_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Google Docs document ID used for this scan.
+        expr:
+          kind: from_filter
+          key: document_id
+      - name: list_id
+        type: Utf8
+        nullable: false
+        description: Google Docs list ID.
+        expr:
+          kind: path
+          path:
+            - _key
+      - name: list_properties
+        type: Json
+        nullable: true
+        description: Nesting and glyph properties for the list.
+        expr:
+          kind: path
+          path:
+            - listProperties
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw Google Docs list object.
+        expr:
+          kind: current_row
