@@ -97,12 +97,44 @@ impl McpFetchPlan {
     }
 }
 
-/// Returns the error detail when `response.error_path` resolves to a non-null
-/// value in `payload`. Lets a tool that signals failure inside a successful
-/// MCP response (e.g. `ClickHouse`'s `{ "result": { "status": "error",
-/// "message": "..." } }` shape) be surfaced as a structured engine error
-/// instead of being silently extracted as zero rows.
+/// Returns an error detail string when the payload signals failure.
+///
+/// Two manifest conventions are supported, matching the shared `ResponseSpec`
+/// shape used by HTTP sources:
+///
+/// 1. **`ok_path` discriminator** — when `ok_path` is set, its boolean value
+///    decides success/failure. The same semantics HTTP uses: a non-`true`
+///    value (including missing, non-bool, or `false`) triggers a failure,
+///    and `error_path` is read only to populate the detail. Manifests that
+///    declare both `ok_path` and a permanently-present `error_path` field
+///    therefore do not misclassify successful responses.
+/// 2. **`error_path`-only sentinel** — when `ok_path` is empty, the presence
+///    of a non-null value at `error_path` is itself the failure signal. This
+///    is the shape `ClickHouse`'s MCP server uses (`{ "result": { "status":
+///    "error", "message": "..." } }`), where `message` only appears on the
+///    error branch.
 fn detect_payload_error(response: &ResponseSpec, payload: &Value) -> Option<String> {
+    if !response.ok_path.is_empty() {
+        let ok = get_path_value(payload, &response.ok_path)
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if ok {
+            return None;
+        }
+        return Some(error_path_detail(response, payload).unwrap_or_else(|| {
+            "tool reported failure via ok_path but no error_path detail was provided".to_string()
+        }));
+    }
+    if response.error_path.is_empty() {
+        return None;
+    }
+    error_path_detail(response, payload)
+}
+
+/// Returns the value at `response.error_path` rendered as a string, if it is
+/// present and non-null. Returns `None` when `error_path` is empty, missing
+/// from the payload, or explicitly null.
+fn error_path_detail(response: &ResponseSpec, payload: &Value) -> Option<String> {
     if response.error_path.is_empty() {
         return None;
     }

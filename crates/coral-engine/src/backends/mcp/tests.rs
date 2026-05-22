@@ -672,6 +672,31 @@ fn mcp_table_with_error_path_manifest() -> coral_spec::ValidatedSourceManifest {
     .expect("error-path manifest should parse")
 }
 
+fn mcp_table_with_ok_path_manifest() -> coral_spec::ValidatedSourceManifest {
+    coral_spec::parse_source_manifest_value(json!({
+        "dsl_version": 3,
+        "name": "test_mcp",
+        "version": "0.1.0",
+        "backend": "mcp",
+        "server": { "transport": "stdio", "command": "unused" },
+        "tables": [{
+            "name": "issues",
+            "description": "Open issues",
+            "tool": "list_issues",
+            "response": {
+                "rows_path": ["data"],
+                "ok_path": ["ok"],
+                "error_path": ["error"],
+            },
+            "columns": [
+                { "name": "id", "type": "Utf8" },
+                { "name": "title", "type": "Utf8" },
+            ],
+        }],
+    }))
+    .expect("ok-path manifest should parse")
+}
+
 #[tokio::test]
 async fn error_path_surfaces_tool_returned_error_when_present() {
     let ctx = SessionContext::new();
@@ -715,6 +740,81 @@ async fn error_path_surfaces_tool_returned_error_when_present() {
                 other => panic!("unexpected MCP error variant: {other:?}"),
             }
             assert_eq!(provider.to_structured().reason(), "MCP_TOOL_RETURNED_ERROR");
+        }
+        other => panic!("expected External error, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn ok_path_true_skips_error_path_even_when_present() {
+    let ctx = SessionContext::new();
+    let caller = Arc::new(FakeMcpUnionCaller {
+        payload: json!({
+            "ok": true,
+            "error": "",
+            "data": [
+                { "id": "1", "title": "Bug A" },
+                { "id": "2", "title": "Bug B" }
+            ]
+        }),
+        calls: Mutex::new(Vec::new()),
+    });
+    register_test_sources(
+        &ctx,
+        compile_sources(mcp_table_with_ok_path_manifest(), caller.clone()),
+    );
+
+    let batches = ctx
+        .sql("SELECT id, title FROM test_mcp.issues ORDER BY id")
+        .await
+        .expect("query should plan")
+        .collect()
+        .await
+        .expect("ok_path=true must not be misclassified by non-null error_path");
+
+    let rendered = pretty_format_batches(&batches)
+        .expect("batches should render")
+        .to_string();
+    assert!(rendered.contains("| Bug A"));
+    assert!(rendered.contains("| Bug B"));
+}
+
+#[tokio::test]
+async fn ok_path_false_surfaces_tool_returned_error_with_error_path_detail() {
+    let ctx = SessionContext::new();
+    let caller = Arc::new(FakeMcpUnionCaller {
+        payload: json!({
+            "ok": false,
+            "error": "rate_limited",
+            "data": []
+        }),
+        calls: Mutex::new(Vec::new()),
+    });
+    register_test_sources(
+        &ctx,
+        compile_sources(mcp_table_with_ok_path_manifest(), caller.clone()),
+    );
+
+    let error = ctx
+        .sql("SELECT id FROM test_mcp.issues")
+        .await
+        .expect("planning succeeds before scan")
+        .collect()
+        .await
+        .expect_err("ok_path=false should surface as engine error");
+
+    let root = error.find_root();
+    match root {
+        DataFusionError::External(inner) => {
+            let provider = inner
+                .downcast_ref::<McpProviderQueryError>()
+                .expect("error should downcast to McpProviderQueryError");
+            match provider {
+                McpProviderQueryError::ToolReturnedError { detail, .. } => {
+                    assert_eq!(detail, "rate_limited");
+                }
+                other => panic!("unexpected MCP error variant: {other:?}"),
+            }
         }
         other => panic!("expected External error, got {other:?}"),
     }
