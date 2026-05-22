@@ -30,7 +30,7 @@ inputs:
             redirect_uri: http://127.0.0.1/oauth/callback
             redirect_uri_port_mode: random
             endpoints:
-              authorization_url: https://accounts.google.com/o/oauth2/v2/auth
+              authorization_url: https://accounts.google.com/o/oauth2/v2/auth?access_type=offline&prompt=consent
               token_url: https://oauth2.googleapis.com/token
             client:
               id:
@@ -63,7 +63,9 @@ tables:
     guide: |
       Requires `document_id`, which is the stable ID in a Google Docs URL.
       Use this table to inspect document-level metadata before reading
-      `body_content`, `tabs`, `named_ranges`, or `lists`.
+      `body_content`, `tabs`, `named_ranges`, or `lists`. Legacy first-tab
+      fields such as `body`, `named_ranges`, and `lists` are also exposed here;
+      use `google_docs.tabs` for tab-aware named range and list maps.
     filters:
       - name: document_id
         required: true
@@ -75,10 +77,7 @@ tables:
       query:
         - name: fields
           from: literal
-          value: >-
-            documentId,title,revisionId,body,documentStyle,namedStyles,headers,
-            footers,footnotes,lists,namedRanges,inlineObjects,
-            positionedObjects
+          value: documentId,title,revisionId,body,documentStyle,namedStyles,headers,footers,footnotes,lists,namedRanges,inlineObjects,positionedObjects
         - name: suggestionsViewMode
           from: filter
           key: suggestions_view_mode
@@ -186,7 +185,8 @@ tables:
     description: Top-level structural body elements for one Google Docs document
     guide: |
       Requires `document_id`. Google returns first-tab body content here when
-      `includeTabsContent` is false. Use `google_docs.tabs` for tab-aware reads.
+      `includeTabsContent` is false. Use `google_docs.tabs` for tab-aware
+      named range and list maps.
       Paragraphs, tables, section breaks, and tables of contents are exposed as
       JSON because each structural element can take a different shape.
     filters:
@@ -200,9 +200,7 @@ tables:
       query:
         - name: fields
           from: literal
-          value: >-
-            body(content(startIndex,endIndex,paragraph,sectionBreak,table,
-            tableOfContents))
+          value: body(content(startIndex,endIndex,paragraph,sectionBreak,table,tableOfContents))
         - name: suggestionsViewMode
           from: filter
           key: suggestions_view_mode
@@ -300,11 +298,13 @@ tables:
           kind: current_row
 
   - name: tabs
-    description: Top-level tabs and tab content for one Google Docs document
+    description: Top-level tabs and tab-scoped named range and list maps
     guide: |
       Requires `document_id`. This request enables `includeTabsContent`, so
       each row exposes one top-level tab plus nested `child_tabs` JSON for
-      multi-tab documents.
+      multi-tab documents. Tab-scoped named ranges and list definitions are
+      exposed as JSON because the provider nests them under each tab. Use
+      `google_docs.body_content` for first-tab structural body content.
     filters:
       - name: document_id
         required: true
@@ -319,9 +319,7 @@ tables:
           value: true
         - name: fields
           from: literal
-          value: >-
-            tabs(tabProperties,documentTab(body,headers,footers,footnotes),
-            childTabs)
+          value: tabs(tabProperties,documentTab(namedRanges,lists),childTabs(tabProperties,documentTab(namedRanges,lists)))
         - name: suggestionsViewMode
           from: filter
           key: suggestions_view_mode
@@ -393,42 +391,24 @@ tables:
           path:
             - tabProperties
             - iconEmoji
-      - name: body
+      - name: named_ranges
         type: Json
         nullable: true
-        description: Body content for this document tab.
+        description: Named ranges scoped to this document tab.
         expr:
           kind: path
           path:
             - documentTab
-            - body
-      - name: headers
+            - namedRanges
+      - name: lists
         type: Json
         nullable: true
-        description: Header objects for this document tab.
+        description: List definitions scoped to this document tab.
         expr:
           kind: path
           path:
             - documentTab
-            - headers
-      - name: footers
-        type: Json
-        nullable: true
-        description: Footer objects for this document tab.
-        expr:
-          kind: path
-          path:
-            - documentTab
-            - footers
-      - name: footnotes
-        type: Json
-        nullable: true
-        description: Footnote objects for this document tab.
-        expr:
-          kind: path
-          path:
-            - documentTab
-            - footnotes
+            - lists
       - name: child_tabs
         type: Json
         nullable: true
@@ -453,10 +433,12 @@ tables:
           kind: current_row
 
   - name: named_ranges
-    description: Named range groups for one Google Docs document
+    description: First-tab named range groups for one Google Docs document
     guide: |
-      Requires `document_id`. Named range names become rows while the provider
-      range payload stays as JSON for callers that need all segment details.
+      Requires `document_id`. This table uses the legacy document-level
+      `namedRanges` field, which Google scopes to the first tab when
+      `includeTabsContent` is false. Use `google_docs.tabs.named_ranges` for
+      tab-aware named range payloads.
     filters:
       - name: document_id
         required: true
@@ -506,10 +488,13 @@ tables:
           kind: current_row
 
   - name: lists
-    description: List definitions for one Google Docs document
+    description: First-tab list definitions for one Google Docs document
     guide: |
-      Requires `document_id`. Use list IDs from paragraph JSON to inspect
-      the document-level list properties returned here.
+      Requires `document_id`. This table uses the legacy document-level
+      `lists` field, which Google scopes to the first tab when
+      `includeTabsContent` is false. Use list IDs from `body_content.list_id`
+      to inspect first-tab list properties, or `google_docs.tabs.lists` for
+      tab-aware list payloads.
     filters:
       - name: document_id
         required: true

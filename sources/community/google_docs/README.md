@@ -26,6 +26,9 @@ https://www.googleapis.com/auth/documents.readonly
 See Google's [Docs API scope guide](https://developers.google.com/workspace/docs/api/auth)
 for the data that scope can read.
 
+The OAuth authorization request also asks for offline access so Google can
+return a refresh token when consent is granted.
+
 To add the source with an existing access token instead:
 
 ```bash
@@ -55,10 +58,10 @@ ORDER BY start_index
 LIMIT 100;
 ```
 
-Inspect tab-aware document content:
+Inspect tab-aware named ranges and list maps:
 
 ```sql
-SELECT tab_id, title, nesting_level, body, child_tabs
+SELECT tab_id, title, nesting_level, named_ranges, lists, child_tabs
 FROM google_docs.tabs
 WHERE document_id = '<document-id>'
 ORDER BY tab_index;
@@ -90,7 +93,9 @@ WHERE document_id = '<document-id>'
 ### documents
 
 Document-level metadata and raw structure for one document. Requires
-`document_id`. Optional filter: `suggestions_view_mode`.
+`document_id`. Optional filter: `suggestions_view_mode`. Legacy document-level
+content fields are first-tab fields; use `tabs` for tab-aware named range and
+list maps.
 
 ### body_content
 
@@ -100,24 +105,28 @@ for joining bullet and numbered-list paragraphs to `google_docs.lists`.
 
 ### tabs
 
-Top-level document tabs with tab content and nested child tab JSON. Requires
-`document_id`. Optional filter: `suggestions_view_mode`.
+Top-level document tabs with tab-scoped named ranges and lists, plus nested
+child tab JSON. Requires `document_id`. Optional filter:
+`suggestions_view_mode`. Use `body_content` for first-tab structural body
+content.
 
 ### named_ranges
 
-Named range groups for one document. Requires `document_id`.
+First-tab named range groups for one document. Requires `document_id`.
 
 ### lists
 
-Document list definitions keyed by list ID. Requires `document_id`.
+First-tab list definitions keyed by list ID. Requires `document_id`.
 
 ## Notes
 
 - This source is read-only. It does not create, edit, or delete Docs content.
 - Google Docs API reads require a document ID; this API does not provide a
   document listing endpoint.
-- `google_docs.body_content` reads the body fields Google returns for the first
-  tab. Use `google_docs.tabs` for documents with tab content.
+- `google_docs.body_content`, `google_docs.named_ranges`, and
+  `google_docs.lists` read the legacy document-level fields Google returns for
+  the first tab. Use `google_docs.tabs` for tab-aware named ranges and list
+  maps.
 - Rich Docs structures such as paragraphs, tables, list properties, and child
   tabs stay in JSON columns so callers can inspect the provider payload without
   losing layout-specific fields.
