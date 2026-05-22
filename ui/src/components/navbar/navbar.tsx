@@ -31,18 +31,14 @@ function useMediaQuery(query: string) {
   )
 
   useEffect(() => {
+    if (typeof window === 'undefined') return
+
     const mediaQuery = window.matchMedia(query)
     const handleChange = () => setMatches(mediaQuery.matches)
 
     handleChange()
-
-    if ('addEventListener' in mediaQuery) {
-      mediaQuery.addEventListener('change', handleChange)
-      return () => mediaQuery.removeEventListener('change', handleChange)
-    }
-
-    mediaQuery.addListener(handleChange)
-    return () => mediaQuery.removeListener(handleChange)
+    mediaQuery.addEventListener('change', handleChange)
+    return () => mediaQuery.removeEventListener('change', handleChange)
   }, [query])
 
   return matches
