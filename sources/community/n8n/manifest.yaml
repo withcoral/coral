@@ -46,6 +46,13 @@ tables:
       List n8n automation workflows. Use `active` filter to scope by
       published status. Use `name` for partial matching. Discover workflow
       IDs to filter executions.
+    guide: |
+      Each row is one workflow. `id` is the stable identifier used to
+      join to `n8n.executions.workflow_id`. `tag_names` is a
+      comma-separated string built from the `tags` array — use substring
+      matching (e.g. `tag_names ILIKE '%prod%'`) rather than equality.
+      The `tags` filter sends a server-side request and is more efficient
+      than filtering on `tag_names`.
     filters:
       - name: active
       - name: tags
@@ -206,6 +213,13 @@ tables:
       List n8n workflow execution runs. Filter by `status`, `workflow_id`,
       or `project_id`. Valid status values: canceled, crashed, error, new,
       running, success, unknown, waiting. Join `workflow_id` to `n8n.workflows.id`.
+    guide: |
+      Each row is one execution run. `status` is one of: canceled,
+      crashed, error, new, running, success, unknown, waiting. Use
+      `status = 'error'` to find failures — not `finished = false`,
+      which also matches running executions. `mode` describes how the
+      execution was triggered (e.g. trigger, webhook, manual).
+      `workflow_id` joins to `n8n.workflows.id`.
     filters:
       - name: status
       - name: workflow_id
@@ -241,7 +255,7 @@ tables:
         query_param: limit
     columns:
       - name: id
-        type: Int64
+        type: Utf8
         nullable: false
         description: Execution ID.
         expr:
@@ -273,7 +287,7 @@ tables:
           path:
             - status
       - name: workflow_id
-        type: Int64
+        type: Utf8
         nullable: true
         description: ID of the executed workflow. Join to `n8n.workflows.id`.
         expr:
@@ -314,7 +328,7 @@ tables:
             path:
               - waitTill
       - name: retry_of
-        type: Int64
+        type: Utf8
         nullable: true
         description: ID of the original execution if this is a retry.
         expr:
@@ -322,7 +336,7 @@ tables:
           path:
             - retryOf
       - name: retry_success_id
-        type: Int64
+        type: Utf8
         nullable: true
         description: ID of the successful retry execution.
         expr:

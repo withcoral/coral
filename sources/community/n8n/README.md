@@ -49,11 +49,11 @@ List automation workflows.
 |---|---|---|
 | `id` | Utf8 | Workflow ID |
 | `name` | Utf8 | Workflow name |
-| `description` | Utf8 | Workflow description |
 | `active` | Boolean | Whether the workflow is published/active |
-| `is_archived` | Boolean | Whether the workflow is archived |
 | `version_id` | Utf8 | Current version ID |
 | `trigger_count` | Int64 | Number of active trigger nodes |
+| `description` | Utf8 | Workflow description |
+| `is_archived` | Boolean | Whether the workflow is archived |
 | `tag_names` | Utf8 | Comma-separated tag names |
 | `project_id` | Utf8 | Owning project ID |
 | `project_name` | Utf8 | Owning project name |
@@ -63,22 +63,26 @@ List automation workflows.
 
 **Optional filters:** `active`, `tags`, `name`, `project_id`
 
+> **Note:** `tags` is a server-side request filter (efficient), while `tag_names`
+> is a response column containing comma-separated names. Use `WHERE tags = 'x'`
+> for exact tag filtering; use `tag_names ILIKE '%x%'` for substring matching.
+
 ### `n8n.executions`
 
 List workflow execution runs.
 
 | Column | Type | Description |
 |---|---|---|
-| `id` | Int64 | Execution ID |
+| `id` | Utf8 | Execution ID |
 | `finished` | Boolean | Whether the execution finished |
 | `mode` | Utf8 | Execution mode (cli, error, integrated, internal, manual, retry, trigger, webhook, evaluation, chat) |
 | `status` | Utf8 | Status (canceled, crashed, error, new, running, success, unknown, waiting) |
-| `workflow_id` | Int64 | Executed workflow ID |
+| `workflow_id` | Utf8 | Executed workflow ID |
 | `started_at` | Timestamp | Start time |
 | `stopped_at` | Timestamp | Stop time (NULL if running) |
 | `wait_till` | Timestamp | When a waiting execution should resume |
-| `retry_of` | Int64 | Original execution ID if this is a retry |
-| `retry_success_id` | Int64 | Successful retry execution ID |
+| `retry_of` | Utf8 | Original execution ID if this is a retry |
+| `retry_success_id` | Utf8 | Successful retry execution ID |
 
 **Optional filters:** `status`, `workflow_id`, `project_id`
 
