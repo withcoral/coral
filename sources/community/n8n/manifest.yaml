@@ -38,7 +38,7 @@ request_headers:
 
 test_queries:
   - SELECT id, name, active FROM n8n.workflows LIMIT 5
-  - SELECT id, status, workflow_id, started_at FROM n8n.executions LIMIT 5
+  - SELECT id, finished, workflow_id, started_at FROM n8n.executions LIMIT 5
   - SELECT id, name FROM n8n.tags LIMIT 5
 
 tables:
@@ -193,8 +193,9 @@ tables:
   - name: executions
     description: |
       List n8n workflow execution runs. Filter by `status`, `workflow_id`,
-      or `project_id`. Join `workflow_id` to `n8n.workflows.id` for workflow
-      metadata. Use `started_at` for time-based analysis.
+      or `project_id`. The `status` filter is accepted by the API but the
+      status value is not included in list responses; use `finished` to
+      determine completion state. Join `workflow_id` to `n8n.workflows.id`.
     filters:
       - name: status
       - name: workflow_id
@@ -253,14 +254,6 @@ tables:
           kind: path
           path:
             - mode
-      - name: status
-        type: Utf8
-        nullable: true
-        description: Execution status (success, error, running, waiting, canceled, crashed, new, unknown).
-        expr:
-          kind: path
-          path:
-            - status
       - name: workflow_id
         type: Utf8
         nullable: true
@@ -269,14 +262,6 @@ tables:
           kind: path
           path:
             - workflowId
-      - name: workflow_name
-        type: Utf8
-        nullable: true
-        description: Name of the executed workflow at runtime.
-        expr:
-          kind: path
-          path:
-            - workflowName
       - name: started_at
         type: Timestamp
         nullable: true
@@ -299,33 +284,17 @@ tables:
             kind: path
             path:
               - stoppedAt
-      - name: last_node_executed
-        type: Utf8
+      - name: wait_till
+        type: Timestamp
         nullable: true
-        description: Name of the last node that executed.
+        description: When a waiting execution should resume.
         expr:
-          kind: path
-          path:
-            - lastNodeExecuted
-      - name: execution_error_message
-        type: Utf8
-        nullable: true
-        description: Error message if the execution failed.
-        expr:
-          kind: path
-          path:
-            - executionError
-            - message
-      - name: execution_error_node
-        type: Utf8
-        nullable: true
-        description: Name of the node that caused the error.
-        expr:
-          kind: path
-          path:
-            - executionError
-            - node
-            - name
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - waitTill
       - name: retry_of
         type: Utf8
         nullable: true
@@ -522,14 +491,22 @@ functions:
           kind: path
           path:
             - id
-      - name: status
-        type: Utf8
+      - name: finished
+        type: Boolean
         nullable: true
-        description: Execution status.
+        description: Whether the execution finished.
         expr:
           kind: path
           path:
-            - status
+            - finished
+      - name: mode
+        type: Utf8
+        nullable: true
+        description: Execution mode.
+        expr:
+          kind: path
+          path:
+            - mode
       - name: workflow_id
         type: Utf8
         nullable: true
@@ -538,14 +515,6 @@ functions:
           kind: path
           path:
             - workflowId
-      - name: workflow_name
-        type: Utf8
-        nullable: true
-        description: Workflow name.
-        expr:
-          kind: path
-          path:
-            - workflowName
       - name: started_at
         type: Timestamp
         nullable: true
@@ -568,12 +537,14 @@ functions:
             kind: path
             path:
               - stoppedAt
-      - name: execution_error_message
-        type: Utf8
+      - name: wait_till
+        type: Timestamp
         nullable: true
-        description: Error message if failed.
+        description: When a waiting execution should resume.
         expr:
-          kind: path
-          path:
-            - executionError
-            - message
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - waitTill

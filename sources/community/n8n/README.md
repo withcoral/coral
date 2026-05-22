@@ -70,14 +70,10 @@ List workflow execution runs.
 | `id` | Utf8 | Execution ID |
 | `finished` | Boolean | Whether the execution finished |
 | `mode` | Utf8 | Execution mode (trigger, manual, integrated) |
-| `status` | Utf8 | Status (success, error, running, waiting, canceled, crashed, new, unknown) |
 | `workflow_id` | Utf8 | Executed workflow ID |
-| `workflow_name` | Utf8 | Workflow name at runtime |
 | `started_at` | Timestamp | Start time |
 | `stopped_at` | Timestamp | Stop time (NULL if running) |
-| `last_node_executed` | Utf8 | Last executed node name |
-| `execution_error_message` | Utf8 | Error message if failed |
-| `execution_error_node` | Utf8 | Node that caused the error |
+| `wait_till` | Timestamp | When a waiting execution should resume |
 | `retry_of` | Utf8 | Original execution ID if this is a retry |
 | `retry_success_id` | Utf8 | Successful retry execution ID |
 
@@ -114,10 +110,9 @@ List instance variables.
 Search executions for a specific workflow.
 
 ```sql
-SELECT id, status, started_at
+SELECT id, finished, mode, started_at
 FROM n8n.executions_by_workflow(
-  workflow_id => 'abc123',
-  status => 'error'
+  workflow_id => 'YOUR_WORKFLOW_ID_HERE'
 )
 LIMIT 10;
 ```
@@ -131,10 +126,10 @@ FROM n8n.workflows
 WHERE active = true
 ORDER BY updated_at DESC;
 
--- Find failed executions in the last 24 hours
-SELECT id, workflow_name, status, started_at, execution_error_message
+-- Find executions that did not finish in the last 24 hours
+SELECT id, workflow_id, mode, started_at
 FROM n8n.executions
-WHERE status = 'error'
+WHERE finished = false
   AND started_at > NOW() - INTERVAL '24 hours'
 ORDER BY started_at DESC;
 
@@ -142,24 +137,25 @@ ORDER BY started_at DESC;
 SELECT
   w.name AS workflow_name,
   w.active AS workflow_active,
-  e.status,
-  e.started_at,
-  e.execution_error_message
+  e.finished,
+  e.mode,
+  e.started_at
 FROM n8n.workflows w
 JOIN n8n.executions e ON w.id = e.workflow_id
-WHERE e.status = 'error'
+WHERE e.finished = false
   AND e.started_at > NOW() - INTERVAL '7 days'
 ORDER BY e.started_at DESC
 LIMIT 20;
 
--- Count executions by status per workflow
+-- Count executions by finished state per workflow
 SELECT
-  workflow_name,
-  status,
+  w.name AS workflow_name,
+  e.finished,
   COUNT(*) AS execution_count
-FROM n8n.executions
-WHERE started_at > NOW() - INTERVAL '30 days'
-GROUP BY workflow_name, status
+FROM n8n.workflows w
+JOIN n8n.executions e ON w.id = e.workflow_id
+WHERE e.started_at > NOW() - INTERVAL '30 days'
+GROUP BY w.name, e.finished
 ORDER BY execution_count DESC;
 
 -- Find workflows using a specific tag
@@ -169,15 +165,14 @@ WHERE tag_names ILIKE '%production%';
 
 -- Cross-source join: correlate n8n failures with PagerDuty incidents
 SELECT
-  e.workflow_name,
+  w.name AS workflow_name,
   e.started_at,
-  e.execution_error_message,
-  p.title AS incident_title,
-  p.status AS incident_status
-FROM n8n.executions e
+  e.mode
+FROM n8n.workflows w
+JOIN n8n.executions e ON w.id = e.workflow_id
 LEFT JOIN pagerduty.incidents p
   ON p.created_at BETWEEN e.started_at AND e.started_at + INTERVAL '5 minutes'
-WHERE e.status = 'error'
+WHERE e.finished = false
   AND e.started_at > NOW() - INTERVAL '24 hours';
 ```
 
