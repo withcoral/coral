@@ -36,7 +36,7 @@ pub(crate) struct CreateBundledSourceCommand {
     pub(crate) bindings: SourceBindings,
 }
 
-pub(crate) struct CreateBundledSourceWithCredentialsCommand {
+pub(crate) struct CreateBundledSourceWithOAuthCommand {
     pub(crate) name: SourceName,
     pub(crate) bindings: SourceBindings,
     pub(crate) oauth_credential_retrievals: Vec<SourceOAuthCredentialRetrieval>,
@@ -239,10 +239,10 @@ impl SourceManager {
         )
     }
 
-    pub(crate) async fn create_bundled_source_with_credentials(
+    pub(crate) async fn create_bundled_source_with_oauth(
         &self,
         workspace_name: &WorkspaceName,
-        command: CreateBundledSourceWithCredentialsCommand,
+        command: CreateBundledSourceWithOAuthCommand,
         events: ImportSourceEventSender,
     ) -> Result<InstalledSource, AppError> {
         let bundled = load_bundled_source(&command.name)?;

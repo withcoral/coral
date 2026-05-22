@@ -17,8 +17,8 @@ use coral_api::v1::query_service_server::{QueryService, QueryServiceServer};
 use coral_api::v1::source_service_server::{SourceService, SourceServiceServer};
 use coral_api::v1::{
     CatalogItem, CatalogSearchResult, Column, ColumnSearchResult, CreateBundledSourceRequest,
-    CreateBundledSourceResponse, CreateBundledSourceWithCredentialsRequest,
-    CreateBundledSourceWithCredentialsResponse, DeleteSourceRequest, DeleteSourceResponse,
+    CreateBundledSourceResponse, CreateBundledSourceWithOAuthRequest,
+    CreateBundledSourceWithOAuthResponse, DeleteSourceRequest, DeleteSourceResponse,
     DescribeTableRequest, DescribeTableResponse, DiscoverSourcesRequest, DiscoverSourcesResponse,
     ExecuteSqlRequest, ExecuteSqlResponse, ExplainSqlRequest, ExplainSqlResponse,
     GetSourceInfoRequest, GetSourceInfoResponse, GetSourceRequest, GetSourceResponse,
@@ -27,7 +27,7 @@ use coral_api::v1::{
     PaginationRequest, PaginationResponse, QueryPlan, SearchCatalogRequest, SearchCatalogResponse,
     Source, SourceInfo, SourceInputSpec, SourceOrigin, SourceSecretInput, Table, TableSummary,
     ValidateSourceRequest, ValidateSourceResponse, Workspace, catalog_item,
-    create_bundled_source_with_credentials_response, import_source_response,
+    create_bundled_source_with_o_auth_response, import_source_response,
     source_input_spec::Input as ProtoSourceInput,
 };
 use coral_api::{CORAL_ERROR_DOMAIN, CORAL_ERROR_REASON_SOURCE_NOT_FOUND};
@@ -557,7 +557,7 @@ struct Captured {
     get_source: Mutex<Vec<GetSourceRequest>>,
     get_source_info: Mutex<Vec<GetSourceInfoRequest>>,
     create_bundled_source: Mutex<Vec<CreateBundledSourceRequest>>,
-    create_bundled_source_with_credentials: Mutex<Vec<CreateBundledSourceWithCredentialsRequest>>,
+    create_bundled_source_with_oauth: Mutex<Vec<CreateBundledSourceWithOAuthRequest>>,
     import_source: Mutex<Vec<ImportSourceRequest>>,
     delete_source: Mutex<Vec<DeleteSourceRequest>>,
     validate_source: Mutex<Vec<ValidateSourceRequest>>,
@@ -790,15 +790,17 @@ struct MockSourceService {
 }
 
 type MockBundledSourceStream =
-    Pin<Box<dyn Stream<Item = Result<CreateBundledSourceWithCredentialsResponse, Status>> + Send>>;
+    Pin<Box<dyn Stream<Item = Result<CreateBundledSourceWithOAuthResponse, Status>> + Send>>;
 type MockImportSourceStream =
     Pin<Box<dyn Stream<Item = Result<ImportSourceResponse, Status>> + Send>>;
 
 fn mock_bundled_source_stream() -> MockBundledSourceStream {
     let (tx, rx) =
-        tokio::sync::mpsc::channel::<Result<CreateBundledSourceWithCredentialsResponse, Status>>(1);
-    tx.try_send(Ok(CreateBundledSourceWithCredentialsResponse {
-        event: Some(create_bundled_source_with_credentials_response::Event::Source(mock_source())),
+        tokio::sync::mpsc::channel::<Result<CreateBundledSourceWithOAuthResponse, Status>>(1);
+    tx.try_send(Ok(CreateBundledSourceWithOAuthResponse {
+        event: Some(create_bundled_source_with_o_auth_response::Event::Source(
+            mock_source(),
+        )),
     }))
     .expect("send mock bundled source credential event");
     Box::pin(ReceiverStream::new(rx))
@@ -815,7 +817,7 @@ fn mock_import_source_stream() -> MockImportSourceStream {
 
 #[tonic::async_trait]
 impl SourceService for MockSourceService {
-    type CreateBundledSourceWithCredentialsStream = MockBundledSourceStream;
+    type CreateBundledSourceWithOAuthStream = MockBundledSourceStream;
     type ImportSourceStream = MockImportSourceStream;
 
     async fn discover_sources(
@@ -889,14 +891,14 @@ impl SourceService for MockSourceService {
         }))
     }
 
-    async fn create_bundled_source_with_credentials(
+    async fn create_bundled_source_with_o_auth(
         &self,
-        request: Request<CreateBundledSourceWithCredentialsRequest>,
-    ) -> Result<Response<Self::CreateBundledSourceWithCredentialsStream>, Status> {
+        request: Request<CreateBundledSourceWithOAuthRequest>,
+    ) -> Result<Response<Self::CreateBundledSourceWithOAuthStream>, Status> {
         self.captured
-            .create_bundled_source_with_credentials
+            .create_bundled_source_with_oauth
             .lock()
-            .expect("create_bundled_source_with_credentials capture")
+            .expect("create_bundled_source_with_oauth capture")
             .push(request.into_inner());
         Ok(Response::new(mock_bundled_source_stream()))
     }

@@ -4,13 +4,13 @@ use std::path::Path;
 
 use coral_api::CORAL_ERROR_REASON_SOURCE_NOT_FOUND;
 use coral_api::v1::{
-    CreateBundledSourceRequest, CreateBundledSourceWithCredentialsRequest,
-    CreateBundledSourceWithCredentialsResponse, DeleteSourceRequest, DiscoverSourcesRequest,
+    CreateBundledSourceRequest, CreateBundledSourceWithOAuthRequest,
+    CreateBundledSourceWithOAuthResponse, DeleteSourceRequest, DiscoverSourcesRequest,
     GetSourceInfoRequest, ImportSourceRequest, ImportSourceResponse, ListSourcesRequest,
     OAuthCredentialInput, OAuthCredentialRetrieval, QueryTestFailure, QueryTestSuccess, Source,
     SourceInfo, SourceOrigin, SourceSecret, SourceVariable, ValidateSourceRequest,
-    ValidateSourceResponse, create_bundled_source_with_credentials_response,
-    import_source_response, query_test_result, source_input_spec::Input as ProtoSourceInput,
+    ValidateSourceResponse, create_bundled_source_with_o_auth_response, import_source_response,
+    query_test_result, source_input_spec::Input as ProtoSourceInput,
 };
 use coral_client::{AppClient, DecodedStatusError, decode_status_error, default_workspace};
 use coral_spec::{
@@ -154,15 +154,13 @@ pub(crate) async fn add_bundled_source_with_credentials(
     }
     let response = app
         .source_client()
-        .create_bundled_source_with_credentials(Request::new(
-            CreateBundledSourceWithCredentialsRequest {
-                workspace: Some(default_workspace()),
-                name: name.to_string(),
-                variables: inputs.variables,
-                secrets: inputs.secrets,
-                oauth_credential_retrievals: inputs.oauth_credential_retrievals,
-            },
-        ))
+        .create_bundled_source_with_o_auth(Request::new(CreateBundledSourceWithOAuthRequest {
+            workspace: Some(default_workspace()),
+            name: name.to_string(),
+            variables: inputs.variables,
+            secrets: inputs.secrets,
+            oauth_credential_retrievals: inputs.oauth_credential_retrievals,
+        }))
         .await?;
     source_from_bundled_credential_stream(response.into_inner(), &inputs.oauth_labels).await
 }
@@ -189,7 +187,7 @@ pub(crate) async fn import_source_with_credentials(
 }
 
 async fn source_from_bundled_credential_stream(
-    mut stream: tonic::Streaming<CreateBundledSourceWithCredentialsResponse>,
+    mut stream: tonic::Streaming<CreateBundledSourceWithOAuthResponse>,
     oauth_labels: &BTreeMap<String, String>,
 ) -> Result<Source, anyhow::Error> {
     while let Some(response) = stream
@@ -235,19 +233,19 @@ enum CredentialStreamEvent {
     OAuthCompleted,
 }
 
-impl From<create_bundled_source_with_credentials_response::Event> for CredentialStreamEvent {
-    fn from(event: create_bundled_source_with_credentials_response::Event) -> Self {
+impl From<create_bundled_source_with_o_auth_response::Event> for CredentialStreamEvent {
+    fn from(event: create_bundled_source_with_o_auth_response::Event) -> Self {
         match event {
-            create_bundled_source_with_credentials_response::Event::Source(source) => {
+            create_bundled_source_with_o_auth_response::Event::Source(source) => {
                 Self::Source(source)
             }
-            create_bundled_source_with_credentials_response::Event::OauthAuthorization(
+            create_bundled_source_with_o_auth_response::Event::OauthAuthorization(
                 authorization,
             ) => Self::OAuthAuthorization {
                 input_key: authorization.input_key,
                 authorization_url: authorization.authorization_url,
             },
-            create_bundled_source_with_credentials_response::Event::OauthCompleted(_) => {
+            create_bundled_source_with_o_auth_response::Event::OauthCompleted(_) => {
                 Self::OAuthCompleted
             }
         }

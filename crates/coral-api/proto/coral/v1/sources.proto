@@ -244,8 +244,8 @@ message CreateBundledSourceResponse {
   Source source = 1;
 }
 
-// Installs one bundled source with app-owned credential retrieval.
-message CreateBundledSourceWithCredentialsRequest {
+// Installs one bundled source with app-owned OAuth credential retrieval.
+message CreateBundledSourceWithOAuthRequest {
   // Owning workspace resource.
   Workspace workspace = 1;
   // Canonical bundled source name.
@@ -258,8 +258,8 @@ message CreateBundledSourceWithCredentialsRequest {
   repeated OAuthCredentialRetrieval oauth_credential_retrievals = 5;
 }
 
-// Streaming event emitted while installing a bundled source with credentials.
-message CreateBundledSourceWithCredentialsResponse {
+// Streaming event emitted while installing a bundled source with OAuth.
+message CreateBundledSourceWithOAuthResponse {
   // Installation progress or completion event.
   oneof event {
     // Bundled source installation completed.
@@ -451,9 +451,9 @@ service SourceService {
   rpc GetSourceInfo(GetSourceInfoRequest) returns (GetSourceInfoResponse);
   // Installs one bundled source.
   rpc CreateBundledSource(CreateBundledSourceRequest) returns (CreateBundledSourceResponse);
-  // Installs one bundled source with app-owned credential retrieval.
-  rpc CreateBundledSourceWithCredentials(CreateBundledSourceWithCredentialsRequest)
-      returns (stream CreateBundledSourceWithCredentialsResponse);
+  // Installs one bundled source with app-owned OAuth credential retrieval.
+  rpc CreateBundledSourceWithOAuth(CreateBundledSourceWithOAuthRequest)
+      returns (stream CreateBundledSourceWithOAuthResponse);
   // Imports one user-provided source manifest, streaming credential retrieval
   // progress before the final source event when credentials are app-owned.
   rpc ImportSource(ImportSourceRequest) returns (stream ImportSourceResponse);
