@@ -54,21 +54,21 @@ GROUP BY job_id
 ORDER BY failures DESC;
 ```
 
-Longest-running jobs:
+Longest-running runs by duration:
 
 ```sql
-SELECT id, duration, status, started_at
+SELECT id, duration_seconds, status, started_at
 FROM dbt_cloud.runs
-ORDER BY duration DESC
+ORDER BY duration_seconds DESC
 LIMIT 20;
 ```
 
 Runs for a specific job:
 
 ```sql
-SELECT id, status, duration, started_at, finished_at
+SELECT id, status, duration_seconds, started_at, finished_at
 FROM dbt_cloud.runs
-WHERE job_id = '<job_id>'
+WHERE job_id = 123
 ORDER BY started_at DESC
 LIMIT 50;
 ```
@@ -108,10 +108,12 @@ cargo run -p coral-cli -- sql "SELECT table_name, column_name FROM coral.columns
 ## Notes
 
 - Uses the dbt Cloud Administrative API v2.
-- The base URL is `https://cloud.getdbt.com`. Enterprise or single-tenant
-  deployments may use a different base URL.
-- Run status codes: 1 = Queued, 3 = Running, 10 = Success, 20 = Error,
-  30 = Cancelled.
+- The base URL defaults to `https://cloud.getdbt.com`. For EMEA use
+  `https://emea.dbt.com` and for APAC use `https://au.dbt.com`.
+- Run status codes: 1 = Queued, 2 = Starting, 3 = Running, 10 = Success,
+  20 = Error, 30 = Cancelled.
 - Nested fields are preserved as JSON in the `raw` column for each table.
+- The `environments` table uses the v2 list endpoint; dbt Cloud v3 introduces
+  project-scoped endpoints which may be preferred in future revisions.
 - The Discovery API (GraphQL) is not used in this source. Models, tests,
   and sources metadata require the Discovery API and are out of scope for v1.

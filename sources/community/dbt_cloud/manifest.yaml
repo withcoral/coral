@@ -4,18 +4,19 @@ dsl_version: 3
 backend: http
 description: >-
   Query dbt Cloud jobs, runs, and environments through the dbt Cloud
-  Administrative API.
+  Administrative API v2.
 inputs:
   DBT_CLOUD_ACCOUNT_ID:
-    kind: secret
+    kind: variable
     hint: |
       Your dbt Cloud account ID. Found in the URL when logged in:
       https://cloud.getdbt.com/#/accounts/<account_id>/
+      For EMEA use https://emea.dbt.com and for APAC use https://au.dbt.com
   DBT_CLOUD_API_TOKEN:
     kind: secret
     hint: |
       Create a service token in dbt Cloud under
-      Account Settings -> Service Tokens with read access to jobs and runs.
+      Account Settings -> Service Tokens with read access.
       See https://docs.getdbt.com/docs/dbt-apis/service-tokens
 base_url: https://cloud.getdbt.com
 auth:
@@ -32,11 +33,18 @@ tables:
     description: dbt Cloud jobs with schedules, execution state, and orchestration metadata.
     guide: >
       Use this table to discover job_id values before querying runs.
-      Returns all jobs for the authenticated account.
+      Returns up to 100 jobs per page for the authenticated account.
     fetch_limit_default: 100
     request:
       method: GET
       path: /api/v2/accounts/{{input.DBT_CLOUD_ACCOUNT_ID}}/jobs/
+      query:
+        - name: limit
+          from: literal
+          value: "100"
+        - name: offset
+          from: literal
+          value: "0"
     response:
       rows_path:
         - data
@@ -104,11 +112,15 @@ tables:
   - name: runs
     description: dbt Cloud job runs with execution state, duration, and status metadata.
     guide: >
-      Use job_id filter to narrow runs to a specific job.
-      Returns runs ordered by most recent first.
+      Use job_id, status, project_id, or environment_id filters to push
+      filtering to the dbt Cloud API. Returns runs ordered by most recent
+      first.
     fetch_limit_default: 100
     filters:
       - name: job_id
+      - name: status
+      - name: project_id
+      - name: environment_id
     request:
       method: GET
       path: /api/v2/accounts/{{input.DBT_CLOUD_ACCOUNT_ID}}/runs/
@@ -116,6 +128,24 @@ tables:
         - name: job_definition_id
           from: filter
           key: job_id
+        - name: status
+          from: filter
+          key: status
+        - name: project_id
+          from: filter
+          key: project_id
+        - name: environment_id
+          from: filter
+          key: environment_id
+        - name: limit
+          from: literal
+          value: "100"
+        - name: offset
+          from: literal
+          value: "0"
+        - name: order_by
+          from: literal
+          value: "-id"
     response:
       rows_path:
         - data
@@ -146,15 +176,21 @@ tables:
       - name: status
         type: Int64
         nullable: true
-        description: Run status code.
+        description: >-
+          Run status code. 1=Queued, 2=Starting, 3=Running,
+          10=Success, 20=Error, 30=Cancelled.
       - name: status_message
         type: Utf8
         nullable: true
         description: Human-readable status message.
-      - name: duration
-        type: Utf8
+      - name: duration_seconds
+        type: Int64
         nullable: true
-        description: Total run duration.
+        description: Total run duration in seconds.
+        expr:
+          kind: path
+          path:
+            - duration
       - name: started_at
         type: Timestamp
         nullable: true
@@ -185,6 +221,30 @@ tables:
         expr:
           kind: from_filter
           key: job_id
+      - name: status_filter
+        type: Int64
+        nullable: true
+        virtual: true
+        description: Echoes the status filter used for this scan.
+        expr:
+          kind: from_filter
+          key: status
+      - name: project_id_filter
+        type: Int64
+        nullable: true
+        virtual: true
+        description: Echoes the project_id filter used for this scan.
+        expr:
+          kind: from_filter
+          key: project_id
+      - name: environment_id_filter
+        type: Int64
+        nullable: true
+        virtual: true
+        description: Echoes the environment_id filter used for this scan.
+        expr:
+          kind: from_filter
+          key: environment_id
       - name: raw
         type: Json
         nullable: false
@@ -193,11 +253,22 @@ tables:
           kind: current_row
 
   - name: environments
-    description: dbt Cloud environments with deployment metadata and execution configuration.
+    description: >-
+      dbt Cloud environments with deployment metadata and execution
+      configuration. Uses the v2 list endpoint; note that dbt Cloud v3
+      introduces project-scoped endpoints which may be preferred in future
+      revisions.
     fetch_limit_default: 100
     request:
       method: GET
       path: /api/v2/accounts/{{input.DBT_CLOUD_ACCOUNT_ID}}/environments/
+      query:
+        - name: limit
+          from: literal
+          value: "100"
+        - name: offset
+          from: literal
+          value: "0"
     response:
       rows_path:
         - data
