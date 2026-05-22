@@ -2,16 +2,32 @@ name: remotive
 version: 0.1.0
 dsl_version: 3
 backend: http
-description: Remote job listings from Remotive.com. Data is delayed 24 hours. Max 4 requests/day recommended.
+description: >-
+  Remote job listings from Remotive.com. No authentication required.
+  Data is delayed 24 hours. The API recommends at most 4 requests per day.
 base_url: "https://remotive.com/api"
 test_queries:
   - SELECT * FROM remotive.jobs LIMIT 1
-  - SELECT title, company_name, category FROM remotive.jobs WHERE candidate_required_location = 'Worldwide' LIMIT 5
+  - SELECT title, company_name, category FROM remotive.jobs WHERE category = 'software-dev' LIMIT 5
 tables:
   - name: jobs
     description: |
       Remote job listings from Remotive. Filter by category (e.g. software-dev,
       marketing) or keyword search. Data updates approximately every 24 hours.
+    guide: |
+      Each row is one remote job listing. Use `category` to filter by job
+      category slug (e.g. 'software-dev', 'marketing', 'design', 'data',
+      'product', 'customer-support', 'sales', 'devops', 'finance',
+      'human-resources', 'qa', 'writing', 'all-others') and `search` for
+      full-text keyword matching. Both filters push down to the API.
+
+      The API returns all matching jobs in a single response (no pagination).
+      Results are bounded locally by `fetch_limit_default`.
+
+      `publication_date` is a Timestamp delayed 24 hours from the actual
+      posting time. The HTML job `description` field is intentionally
+      excluded to keep response payloads compact for downstream agent
+      workflows; use the `url` column to link to the full listing.
     fetch_limit_default: 20
     filters:
       - name: category
@@ -63,7 +79,7 @@ tables:
         expr:
           kind: path
           path:
-            - company_logo_url
+            - company_logo
       - name: category
         type: Utf8
         nullable: true
@@ -89,13 +105,16 @@ tables:
           path:
             - job_type
       - name: publication_date
-        type: Utf8
+        type: Timestamp
         nullable: true
-        description: ISO 8601 timestamp when the job was published (delayed 24h).
+        description: When the job was published (delayed 24h from actual posting).
         expr:
-          kind: path
-          path:
-            - publication_date
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - publication_date
       - name: candidate_required_location
         type: Utf8
         nullable: true
@@ -120,10 +139,17 @@ tables:
           kind: path
           path:
             - url
-      - name: search
+      - name: category_filter
         type: Utf8
         nullable: true
-        description: Echoes the search keyword filter used to query this result set.
+        description: Echoes the category filter that produced this row.
+        expr:
+          kind: from_filter
+          key: category
+      - name: search_filter
+        type: Utf8
+        nullable: true
+        description: Echoes the search keyword filter that produced this row.
         expr:
           kind: from_filter
           key: search
