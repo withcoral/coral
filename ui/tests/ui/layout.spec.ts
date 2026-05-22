@@ -58,7 +58,7 @@ test('sidebar collapses, expands, and exposes the sidebar toggle tooltip', async
   await page.screenshot({ path: testInfo.outputPath('layout-expanded.png'), fullPage: true })
   await review.pause()
 
-  await review.chapter('Shrink to a small screen', 'Resize below 963px and confirm the sidebar collapses automatically')
+  await review.chapter('Shrink to a small screen', 'Resize below the sidebar breakpoint and confirm the sidebar collapses automatically')
   await page.setViewportSize(smallViewport)
   await expect.poll(sidebarWidth).toBeLessThan(expandedWidth)
   await expect(page.getByRole('button', { name: 'Expand sidebar' })).toBeVisible()
@@ -66,7 +66,7 @@ test('sidebar collapses, expands, and exposes the sidebar toggle tooltip', async
   await page.screenshot({ path: testInfo.outputPath('layout-small-screen.png'), fullPage: true })
   await review.pause()
 
-  await review.chapter('Shrink to mobile', 'Resize below 640px and confirm the sidebar toggle is hidden')
+  await review.chapter('Shrink to mobile', 'Resize below the mobile breakpoint and confirm the sidebar toggle is hidden')
   await page.setViewportSize(mobileViewport)
   await expect.poll(sidebarWidth).toBeLessThan(expandedWidth)
   await expect(page.getByRole('button', { name: 'Collapse sidebar' })).toHaveCount(0)

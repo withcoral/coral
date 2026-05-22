@@ -26,7 +26,9 @@ const SIDEBAR_COLLAPSE_QUERY = `(max-width: ${breakpoints.sidebarCollapse})`
 const MOBILE_QUERY = `(max-width: ${breakpoints.mobile})`
 
 function useMediaQuery(query: string) {
-  const [matches, setMatches] = useState(() => typeof window !== 'undefined' && window.matchMedia(query).matches)
+  const [matches, setMatches] = useState(() =>
+    typeof window !== 'undefined' && window.matchMedia(query).matches
+  )
 
   useEffect(() => {
     const mediaQuery = window.matchMedia(query)
@@ -47,13 +49,13 @@ function useMediaQuery(query: string) {
 }
 
 export function Navbar() {
-  const isSmallScreen = useMediaQuery(SIDEBAR_COLLAPSE_QUERY)
-  const isMobile = useMediaQuery(MOBILE_QUERY)
-  const [isCollapsed, setIsCollapsed] = useState(() => isSmallScreen)
+  const shouldCollapseForViewport = useMediaQuery(SIDEBAR_COLLAPSE_QUERY)
+  const shouldHideSidebarToggle = useMediaQuery(MOBILE_QUERY)
+  const [isCollapsed, setIsCollapsed] = useState(() => shouldCollapseForViewport)
 
   useEffect(() => {
-    if (isSmallScreen) setIsCollapsed(true)
-  }, [isSmallScreen])
+    if (shouldCollapseForViewport) setIsCollapsed(true)
+  }, [shouldCollapseForViewport])
 
   const toggleLabel = isCollapsed ? EXPAND_SIDEBAR_LABEL : COLLAPSE_SIDEBAR_LABEL
   const toggleSidebar = useCallback(() => setIsCollapsed((value) => !value), [])
@@ -68,7 +70,7 @@ export function Navbar() {
         <span aria-label={QUERY_STREAM_LABEL} className={styles.brandMark} role="img">
           <CoralIcon aria-hidden="true" size={22} />
         </span>
-        {!isMobile && (
+        {!shouldHideSidebarToggle && (
           <KeyboardShortcut
             handler={handleSidebarShortcut}
             shortcut="mod+b"
