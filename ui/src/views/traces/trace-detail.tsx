@@ -398,7 +398,7 @@ function TimelineWaterfall({ expandedHttpSpanId, onExpandedHttpSpanIdChange, onN
     }
     // Keep the animation target stable during a single open/close transition.
     // Drag resizing updates both detailPanelRatio and animatedDetailPanelRatio directly.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, [expandedHttpSpanId])
   useEffect(() => {
     onNavigableSpanIdsChange(rows.filter((row) => isHttpSpan(row.span)).map((row) => row.span.spanId))
