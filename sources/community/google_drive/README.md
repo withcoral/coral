@@ -1,8 +1,8 @@
 # Google Drive Connector
 
 This source queries the [Google Drive API](https://developers.google.com/workspace/drive/api/reference/rest/v3)
-to expose files, shared drives, permissions, comments, and revisions as
-queryable tables.
+to expose files, file metadata, shared drives, permissions, comments,
+revisions, and account metadata as queryable tables.
 
 ## Auth
 
@@ -44,6 +44,13 @@ ORDER BY modified_time DESC
 LIMIT 20;
 ```
 
+Inspect the connected Drive account and capabilities:
+
+```sql
+SELECT user__email, storage_quota_usage_in_drive, can_create_drives
+FROM google_drive.about;
+```
+
 Use Google Drive file query syntax to list folders:
 
 ```sql
@@ -51,6 +58,14 @@ SELECT id, name, parent_ids
 FROM google_drive.files
 WHERE q = 'trashed = false and mimeType = ''application/vnd.google-apps.folder'''
 LIMIT 50;
+```
+
+Read metadata for one file ID directly:
+
+```sql
+SELECT id, name, mime_type, version, modified_time, shared
+FROM google_drive.file
+WHERE file_id = '<file-id>';
 ```
 
 Discover shared drives:
@@ -104,11 +119,21 @@ LIMIT 50;
 
 ## Tables
 
+### about
+
+Authenticated user, Drive quota, and system capability metadata. Maps to
+`GET /about`. No filter required.
+
 ### files
 
 Files and folders visible to the authenticated user. No filter required. Maps
 to `GET /files`. Optional filters: `q`, `corpora`, `drive_id`, `spaces`, and
 `order_by`. Paginates via `nextPageToken` with up to 1000 items per page.
+
+### file
+
+Metadata for a specific file or folder. Requires `file_id`. Maps to
+`GET /files/{file_id}`.
 
 ### shared_drives
 
