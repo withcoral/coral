@@ -3,9 +3,8 @@ import { useState } from 'react'
 import type { IconName } from '@/wax/components/icon'
 import { IconButton } from '@/wax/components/button'
 import { CoralIcon } from '@/wax/components/icon/custom-icons/coral'
-import { KeyboardHint } from '@/wax/components/keyboard-hint'
+import { KeyboardShortcut } from '@/wax/components/keyboard-shortcut'
 import { SidebarButton } from '@/wax/components/sidebar-button/sidebar-button'
-import { Tooltip } from '@/wax/components/tooltip'
 import * as styles from './navbar.css'
 
 const NAV_ITEMS: { icon: IconName; label: string; active?: boolean }[] = [
@@ -28,13 +27,14 @@ export function Navbar() {
         <span aria-label={QUERY_STREAM_LABEL} className={styles.brandMark} role="img">
           <CoralIcon aria-hidden="true" size={22} />
         </span>
-        <Tooltip
-          content={
-            <>
-              {toggleLabel} <KeyboardHint shortcut="mod+b" />
-            </>
-          }
-          side="right"
+        <KeyboardShortcut
+          handler={(event) => {
+            event.preventDefault()
+            toggleSidebar()
+          }}
+          shortcut="mod+b"
+          tooltipContent={toggleLabel}
+          tooltipSide="right"
         >
           <IconButton
             aria-controls={PRIMARY_NAVIGATION_ID}
@@ -45,7 +45,7 @@ export function Navbar() {
             size="32"
             variant="bare"
           />
-        </Tooltip>
+        </KeyboardShortcut>
       </div>
       <div className={styles.nav} aria-label="Primary navigation" id={PRIMARY_NAVIGATION_ID}>
         {NAV_ITEMS.map((item) => (

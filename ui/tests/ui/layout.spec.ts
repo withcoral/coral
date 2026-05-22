@@ -1,6 +1,8 @@
 import { traceHandlers } from './support/trace-handlers'
 import { expect, test } from './playwright.setup'
 
+const sidebarToggleShortcut = process.platform === 'darwin' ? 'Meta+b' : 'Control+b'
+
 test('sidebar collapses, expands, and exposes the sidebar toggle tooltip', async ({ network, page, review }, testInfo) => {
   network.use(...traceHandlers.empty)
 
@@ -28,8 +30,8 @@ test('sidebar collapses, expands, and exposes the sidebar toggle tooltip', async
   await expect(page.getByText(/Collapse sidebar.*Ctrl.*B/)).toBeVisible()
   await review.pause()
 
-  await review.chapter('Collapse the sidebar', 'Use the dedicated toggle button and verify the sidebar narrows')
-  await collapseButton.click()
+  await review.chapter('Collapse the sidebar with the shortcut', 'Press mod+b and verify the sidebar narrows')
+  await page.keyboard.press(sidebarToggleShortcut)
   await expect(page.getByRole('button', { name: 'Expand sidebar' })).toBeVisible()
   await expect.poll(sidebarWidth).toBeLessThan(expandedWidth)
   await expect(tracesLabel).toHaveCount(0)
@@ -39,8 +41,8 @@ test('sidebar collapses, expands, and exposes the sidebar toggle tooltip', async
 
   const collapsedWidth = await sidebarWidth()
 
-  await review.chapter('Expand the sidebar', 'Use the dedicated toggle button again and confirm the item stays active')
-  await page.getByRole('button', { name: 'Expand sidebar' }).click()
+  await review.chapter('Expand the sidebar with the shortcut', 'Press mod+b again and confirm the item stays active')
+  await page.keyboard.press(sidebarToggleShortcut)
   await expect(page.getByRole('button', { name: 'Collapse sidebar' })).toBeVisible()
   await expect.poll(sidebarWidth).toBeGreaterThan(collapsedWidth)
   await expect(tracesButton).toHaveAttribute('aria-current', 'page')
