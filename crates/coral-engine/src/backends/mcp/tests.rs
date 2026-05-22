@@ -420,6 +420,91 @@ async fn scans_mcp_table_with_manifest_tool_args_and_no_filters() {
     );
 }
 
+fn mcp_typed_filters_manifest() -> coral_spec::ValidatedSourceManifest {
+    coral_spec::parse_source_manifest_value(json!({
+        "dsl_version": 3,
+        "name": "test_mcp",
+        "version": "0.1.0",
+        "backend": "mcp",
+        "server": { "transport": "stdio", "command": "unused" },
+        "tables": [{
+            "name": "issues",
+            "description": "Issues filtered by typed scalar values",
+            "tool": "list_issues",
+            "filters": [
+                { "name": "limit", "type": "Int64", "tool_arg": "limit" },
+                { "name": "include_archived", "type": "Boolean", "tool_arg": "include_archived" },
+                { "name": "threshold", "type": "Float64", "tool_arg": "threshold" },
+                { "name": "state", "type": "Utf8", "tool_arg": "state" },
+            ],
+            "response": { "rows_path": ["issues"] },
+            "columns": [
+                { "name": "limit", "type": "Int64", "virtual": true,
+                  "expr": { "kind": "from_filter", "key": "limit" } },
+                { "name": "include_archived", "type": "Boolean", "virtual": true,
+                  "expr": { "kind": "from_filter", "key": "include_archived" } },
+                { "name": "threshold", "type": "Float64", "virtual": true,
+                  "expr": { "kind": "from_filter", "key": "threshold" } },
+                { "name": "state", "type": "Utf8", "virtual": true,
+                  "expr": { "kind": "from_filter", "key": "state" } },
+                { "name": "id", "type": "Utf8" },
+                { "name": "title", "type": "Utf8" },
+            ],
+        }],
+    }))
+    .expect("typed-filter manifest should parse")
+}
+
+#[tokio::test]
+async fn pushes_typed_filter_values_with_declared_json_scalar_types() {
+    let ctx = SessionContext::new();
+    let caller = Arc::new(FakeMcpTableCaller {
+        calls: Mutex::new(Vec::new()),
+    });
+    register_test_sources(
+        &ctx,
+        compile_sources(mcp_typed_filters_manifest(), caller.clone()),
+    );
+
+    let _ = ctx
+        .sql(
+            "SELECT id FROM test_mcp.issues \
+             WHERE \"limit\" = 10 \
+             AND include_archived = true \
+             AND threshold = 0.75 \
+             AND state = 'open'",
+        )
+        .await
+        .expect("typed-filter query should plan")
+        .collect()
+        .await
+        .expect("typed-filter query should execute");
+
+    let calls = caller.calls.lock().expect("calls lock");
+    assert_eq!(calls.len(), 1);
+    let call = calls.first().expect("one MCP call");
+    assert_eq!(
+        call.1.get("limit"),
+        Some(&Value::from(10)),
+        "Int64 filter must push as a JSON number, not a string"
+    );
+    assert_eq!(
+        call.1.get("include_archived"),
+        Some(&Value::Bool(true)),
+        "Boolean filter must push as a JSON bool, not a string"
+    );
+    assert_eq!(
+        call.1.get("threshold"),
+        Some(&json!(0.75)),
+        "Float64 filter must push as a JSON number, not a string"
+    );
+    assert_eq!(
+        call.1.get("state"),
+        Some(&Value::String("open".to_string())),
+        "Utf8 filter must still push as a JSON string"
+    );
+}
+
 #[tokio::test]
 async fn pushes_equality_filter_into_mcp_tool_arg() {
     let ctx = SessionContext::new();

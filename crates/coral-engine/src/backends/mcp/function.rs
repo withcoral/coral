@@ -160,11 +160,14 @@ impl TableProvider for McpFunctionCallTableProvider {
             pagination: self.state.pagination.clone(),
             limit: limit.or(self.state.fetch_limit_default),
         });
+        let arg_strings: Arc<HashMap<String, String>> =
+            Arc::new(arg_values_as_strings(&self.arg_values));
         let converter = {
             let columns = Arc::clone(&self.state.columns);
             let schema = self.state.schema.clone();
+            let args = Arc::clone(&arg_strings);
             Arc::new(move |items: &[Value]| {
-                convert_items(&columns, schema.clone(), &HashMap::new(), items)
+                convert_items(&columns, schema.clone(), &HashMap::new(), &args, items)
             })
         };
         let exec = JsonExec::new(
@@ -273,6 +276,23 @@ fn literal_to_json_value(expr: &Expr) -> Option<Value> {
         Expr::TryCast(cast) => literal_to_json_value(cast.expr.as_ref()),
         _ => None,
     }
+}
+
+/// Renders the typed function call args as the `String` map `convert_items`
+/// expects when resolving `expr.kind: from_arg`. Strings pass through as-is;
+/// other JSON scalars are stringified so a column reading `from_arg` sees the
+/// same surface text the user typed in SQL.
+fn arg_values_as_strings(arg_values: &HashMap<String, Value>) -> HashMap<String, String> {
+    arg_values
+        .iter()
+        .map(|(key, value)| {
+            let text = match value {
+                Value::String(text) => text.clone(),
+                other => other.to_string(),
+            };
+            (key.clone(), text)
+        })
+        .collect()
 }
 
 fn scalar_value_to_json(value: &ScalarValue) -> Option<Value> {

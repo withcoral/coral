@@ -3,8 +3,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use coral_spec::FilterMode;
 use coral_spec::backends::mcp::McpTableSpec;
+use coral_spec::{FilterMode, ManifestDataType};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::datasource::TableProvider;
 use datafusion::error::{DataFusionError, Result};
@@ -127,7 +127,16 @@ impl TableProvider for McpTableProvider {
                                     filter.name
                                 ))
                             })?;
-                    arguments.insert(tool_arg.to_string(), Value::String(value.clone()));
+                    let typed = coerce_filter_value(
+                        &self.source_schema,
+                        self.table.name(),
+                        &filter.name,
+                        filter
+                            .manifest_data_type()
+                            .map_err(|error| DataFusionError::Plan(error.to_string()))?,
+                        value,
+                    )?;
+                    arguments.insert(tool_arg.to_string(), typed);
                 }
                 None if filter.required => {
                     return Err(DataFusionError::External(Box::new(
@@ -165,12 +174,14 @@ impl TableProvider for McpTableProvider {
         let columns: Arc<[coral_spec::ColumnSpec]> = Arc::from(self.table.columns().to_vec());
         let schema = self.schema.clone();
         let filter_values_arc = Arc::new(filter_values);
+        let empty_args: Arc<HashMap<String, String>> = Arc::new(HashMap::new());
         let converter = {
             let columns = Arc::clone(&columns);
             let schema = schema.clone();
             let filter_values = Arc::clone(&filter_values_arc);
+            let args = Arc::clone(&empty_args);
             Arc::new(move |items: &[Value]| {
-                convert_items(&columns, schema.clone(), &filter_values, items)
+                convert_items(&columns, schema.clone(), &filter_values, &args, items)
             })
         };
 
@@ -212,6 +223,66 @@ fn resolve_limits(
         (None, None) => None,
     };
     ResolvedLimits { push, truncate }
+}
+
+/// Parses the stringified filter value back into a JSON scalar that matches
+/// the manifest's declared filter type. MCP tools whose `inputSchema` requires
+/// `integer`, `boolean`, or `number` arguments reject string-wrapped values
+/// like `"10"` or `"true"` — function args already preserve JSON scalar
+/// types, and pushed table filters should too.
+fn coerce_filter_value(
+    source_schema: &str,
+    table_name: &str,
+    filter_name: &str,
+    data_type: ManifestDataType,
+    value: &str,
+) -> Result<Value> {
+    match data_type {
+        ManifestDataType::Utf8 | ManifestDataType::Timestamp | ManifestDataType::Json => {
+            Ok(Value::String(value.to_string()))
+        }
+        ManifestDataType::Int64 => value.parse::<i64>().map(Value::from).map_err(|_unused| {
+            invalid_filter_value_plan_error(source_schema, table_name, filter_name, "Int64", value)
+        }),
+        ManifestDataType::Float64 => value
+            .parse::<f64>()
+            .ok()
+            .and_then(serde_json::Number::from_f64)
+            .map(Value::Number)
+            .ok_or_else(|| {
+                invalid_filter_value_plan_error(
+                    source_schema,
+                    table_name,
+                    filter_name,
+                    "Float64",
+                    value,
+                )
+            }),
+        ManifestDataType::Boolean => match value {
+            "true" => Ok(Value::Bool(true)),
+            "false" => Ok(Value::Bool(false)),
+            _ => Err(invalid_filter_value_plan_error(
+                source_schema,
+                table_name,
+                filter_name,
+                "Boolean",
+                value,
+            )),
+        },
+    }
+}
+
+fn invalid_filter_value_plan_error(
+    source_schema: &str,
+    table_name: &str,
+    filter_name: &str,
+    declared: &str,
+    value: &str,
+) -> DataFusionError {
+    DataFusionError::Plan(format!(
+        "{source_schema}.{table_name} filter '{filter_name}' is declared as {declared} but value \
+         '{value}' could not be parsed as {declared}"
+    ))
 }
 
 fn classify_filter(
