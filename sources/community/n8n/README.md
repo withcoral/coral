@@ -122,10 +122,10 @@ FROM n8n.workflows
 WHERE active = true
 ORDER BY updated_at DESC;
 
--- Find executions that did not finish in the last 24 hours
-SELECT id, workflow_id, mode, started_at
+-- Find failed executions in the last 24 hours
+SELECT id, workflow_id, mode, status, started_at
 FROM n8n.executions
-WHERE finished = false
+WHERE status = 'error'
   AND started_at > NOW() - INTERVAL '24 hours'
 ORDER BY started_at DESC;
 
@@ -133,25 +133,25 @@ ORDER BY started_at DESC;
 SELECT
   w.name AS workflow_name,
   w.active AS workflow_active,
-  e.finished,
+  e.status,
   e.mode,
   e.started_at
 FROM n8n.workflows w
 JOIN n8n.executions e ON w.id = e.workflow_id
-WHERE e.finished = false
+WHERE e.status = 'error'
   AND e.started_at > NOW() - INTERVAL '7 days'
 ORDER BY e.started_at DESC
 LIMIT 20;
 
--- Count executions by finished state per workflow
+-- Count executions by status per workflow
 SELECT
   w.name AS workflow_name,
-  e.finished,
+  e.status,
   COUNT(*) AS execution_count
 FROM n8n.workflows w
 JOIN n8n.executions e ON w.id = e.workflow_id
 WHERE e.started_at > NOW() - INTERVAL '30 days'
-GROUP BY w.name, e.finished
+GROUP BY w.name, e.status
 ORDER BY execution_count DESC;
 
 -- Find workflows using a specific tag
@@ -162,13 +162,14 @@ WHERE tags = 'production';
 -- Cross-source join: correlate n8n failures with PagerDuty incidents
 SELECT
   w.name AS workflow_name,
+  e.status,
   e.started_at,
   e.mode
 FROM n8n.workflows w
 JOIN n8n.executions e ON w.id = e.workflow_id
 LEFT JOIN pagerduty.incidents p
   ON p.created_at BETWEEN e.started_at AND e.started_at + INTERVAL '5 minutes'
-WHERE e.finished = false
+WHERE e.status = 'error'
   AND e.started_at > NOW() - INTERVAL '24 hours';
 ```
 
