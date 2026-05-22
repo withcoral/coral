@@ -238,9 +238,12 @@ fn coerce_filter_value(
     value: &str,
 ) -> Result<Value> {
     match data_type {
-        ManifestDataType::Utf8 | ManifestDataType::Timestamp | ManifestDataType::Json => {
+        ManifestDataType::Utf8 | ManifestDataType::Timestamp => {
             Ok(Value::String(value.to_string()))
         }
+        ManifestDataType::Json => serde_json::from_str(value).map_err(|_unused| {
+            invalid_filter_value_plan_error(source_schema, table_name, filter_name, "Json", value)
+        }),
         ManifestDataType::Int64 => value.parse::<i64>().map(Value::from).map_err(|_unused| {
             invalid_filter_value_plan_error(source_schema, table_name, filter_name, "Int64", value)
         }),

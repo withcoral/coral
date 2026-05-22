@@ -436,6 +436,7 @@ fn mcp_typed_filters_manifest() -> coral_spec::ValidatedSourceManifest {
                 { "name": "include_archived", "type": "Boolean", "tool_arg": "include_archived" },
                 { "name": "threshold", "type": "Float64", "tool_arg": "threshold" },
                 { "name": "state", "type": "Utf8", "tool_arg": "state" },
+                { "name": "metadata", "type": "Json", "tool_arg": "metadata" },
             ],
             "response": { "rows_path": ["issues"] },
             "columns": [
@@ -447,6 +448,8 @@ fn mcp_typed_filters_manifest() -> coral_spec::ValidatedSourceManifest {
                   "expr": { "kind": "from_filter", "key": "threshold" } },
                 { "name": "state", "type": "Utf8", "virtual": true,
                   "expr": { "kind": "from_filter", "key": "state" } },
+                { "name": "metadata", "type": "Json", "virtual": true,
+                  "expr": { "kind": "from_filter", "key": "metadata" } },
                 { "name": "id", "type": "Utf8" },
                 { "name": "title", "type": "Utf8" },
             ],
@@ -472,7 +475,8 @@ async fn pushes_typed_filter_values_with_declared_json_scalar_types() {
              WHERE \"limit\" = 10 \
              AND include_archived = true \
              AND threshold = 0.75 \
-             AND state = 'open'",
+             AND state = 'open' \
+             AND metadata = '{\"tag\":\"alpha\",\"ids\":[1,2]}'",
         )
         .await
         .expect("typed-filter query should plan")
@@ -502,6 +506,11 @@ async fn pushes_typed_filter_values_with_declared_json_scalar_types() {
         call.1.get("state"),
         Some(&Value::String("open".to_string())),
         "Utf8 filter must still push as a JSON string"
+    );
+    assert_eq!(
+        call.1.get("metadata"),
+        Some(&json!({ "tag": "alpha", "ids": [1, 2] })),
+        "Json filter must push the parsed JSON value, not a quoted string"
     );
 }
 
