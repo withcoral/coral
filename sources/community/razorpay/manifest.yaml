@@ -1,0 +1,779 @@
+name: razorpay
+version: 0.1.0
+dsl_version: 3
+backend: http
+
+inputs:
+  RAZORPAY_KEY_ID:
+    kind: secret
+    hint: >
+      Your Razorpay API Key ID (starts with rzp_live_ or rzp_test_).
+      Generate from Dashboard → Settings → API Keys.
+  RAZORPAY_KEY_SECRET:
+    kind: secret
+    hint: >
+      Your Razorpay API Key Secret. Shown once on creation — store it securely.
+      Generate from Dashboard → Settings → API Keys.
+
+base_url: "https://api.razorpay.com/v1"
+
+auth:
+  type: BasicAuth
+  username: "{{input.RAZORPAY_KEY_ID}}"
+  password: "{{input.RAZORPAY_KEY_SECRET}}"
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+  - name: Content-Type
+    from: literal
+    value: application/json
+
+rate_limit:
+  retry_after_header: Retry-After
+  remaining_header: X-RateLimit-Remaining
+  reset_header: X-RateLimit-Reset
+
+test_queries:
+  - SELECT id, status, amount, currency FROM razorpay.payments LIMIT 1
+  - SELECT id, status, amount FROM razorpay.orders LIMIT 1
+  - SELECT id, status, amount FROM razorpay.refunds LIMIT 1
+
+tables:
+  # -----------------------------------------------------------------------
+  # razorpay.payments
+  # GET /v1/payments
+  # Fetch all payments for the account. Supports from/to epoch filters.
+  # -----------------------------------------------------------------------
+  - name: payments
+    description: >
+      All payments processed through your Razorpay account.
+      Use `from` and `to` filters (Unix epoch seconds) to scope the time range.
+      Each row is one payment attempt — authorized, captured, failed, or refunded.
+    request:
+      method: GET
+      path: /payments
+      query:
+        - name: from
+          from: filter
+          key: from
+          required: false
+        - name: to
+          from: filter
+          key: to
+          required: false
+        - name: count
+          from: literal
+          value: 100
+    response:
+      rows_path:
+        - items
+      row_strategy: direct
+      allow_404_empty: true
+    pagination:
+      mode: offset
+      offset_param: skip
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 100
+        query_param: count
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique payment ID (pay_XXXXXXXXXXXXXXXX)
+      - name: entity
+        type: Utf8
+        description: Always "payment"
+      - name: amount
+        type: Int64
+        description: Payment amount in smallest currency unit (paise for INR)
+      - name: currency
+        type: Utf8
+        description: ISO 4217 currency code (e.g. INR, USD)
+      - name: status
+        type: Utf8
+        description: >
+          Payment status: created, authorized, captured, refunded, or failed
+      - name: order_id
+        type: Utf8
+        description: Associated order ID if the payment was made against an order
+      - name: invoice_id
+        type: Utf8
+        description: Associated invoice ID for subscription or invoice payments
+      - name: international
+        type: Boolean
+        description: Whether the payment is from an international card
+      - name: method
+        type: Utf8
+        description: >
+          Payment method: card, netbanking, wallet, emi, upi, oder
+      - name: amount_refunded
+        type: Int64
+        description: Amount already refunded in smallest currency unit
+      - name: refund_status
+        type: Utf8
+        description: "Refund state: null, partial, or full"
+      - name: captured
+        type: Boolean
+        description: Whether the payment has been captured
+      - name: description
+        type: Utf8
+        description: Payment description as set by the merchant
+      - name: card_id
+        type: Utf8
+        description: Card ID if payment method is card
+      - name: bank
+        type: Utf8
+        description: Bank code for netbanking payments
+      - name: wallet
+        type: Utf8
+        description: Wallet provider name for wallet payments
+      - name: vpa
+        type: Utf8
+        description: UPI Virtual Payment Address used for the transaction
+      - name: email
+        type: Utf8
+        description: Customer email address
+      - name: contact
+        type: Utf8
+        description: Customer phone number
+      - name: fee
+        type: Int64
+        description: Razorpay fee charged in smallest currency unit
+      - name: tax
+        type: Int64
+        description: GST on the Razorpay fee in smallest currency unit
+      - name: error_code
+        type: Utf8
+        description: Error code if the payment failed
+      - name: error_description
+        type: Utf8
+        description: Human-readable error description for failed payments
+      - name: error_source
+        type: Utf8
+        description: Source of the error (customer, business, or gateway)
+      - name: error_step
+        type: Utf8
+        description: Step at which the payment failed (payment_initiation, etc.)
+      - name: error_reason
+        type: Utf8
+        description: Machine-readable reason code for the failure
+      - name: acquirer_data__rrn
+        type: Utf8
+        description: Retrieval Reference Number from the acquiring bank
+      - name: acquirer_data__auth_code
+        type: Utf8
+        description: Authorization code from the acquiring bank
+      - name: created_at
+        type: Timestamp
+        description: Unix epoch timestamp when the payment was created
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr:
+            kind: path
+            path:
+              - created_at
+
+  # -----------------------------------------------------------------------
+  # razorpay.orders
+  # GET /v1/orders
+  # Fetch all orders. Orders are created before a payment is initiated.
+  # -----------------------------------------------------------------------
+  - name: orders
+    description: >
+      All orders created in your Razorpay account. An order represents a
+      merchant-created payment session before the customer initiates payment.
+      Use `from` and `to` filters (Unix epoch seconds) to scope the time range.
+    request:
+      method: GET
+      path: /orders
+      query:
+        - name: from
+          from: filter
+          key: from
+          required: false
+        - name: to
+          from: filter
+          key: to
+          required: false
+        - name: authorized
+          from: filter_bool
+          key: authorized
+          required: false
+        - name: receipt
+          from: filter
+          key: receipt
+          required: false
+        - name: count
+          from: literal
+          value: 100
+    response:
+      rows_path:
+        - items
+      row_strategy: direct
+      allow_404_empty: true
+    pagination:
+      mode: offset
+      offset_param: skip
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 100
+        query_param: count
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique order ID (order_XXXXXXXXXXXXXXXX)
+      - name: entity
+        type: Utf8
+        description: Always "order"
+      - name: amount
+        type: Int64
+        description: Order amount in smallest currency unit (paise for INR)
+      - name: amount_paid
+        type: Int64
+        description: Amount paid against this order so far
+      - name: amount_due
+        type: Int64
+        description: Outstanding amount yet to be paid
+      - name: currency
+        type: Utf8
+        description: ISO 4217 currency code
+      - name: receipt
+        type: Utf8
+        description: Merchant-assigned receipt/reference number for the order
+      - name: offer_id
+        type: Utf8
+        description: Offer ID applied to the order, if any
+      - name: status
+        type: Utf8
+        description: "Order status: created, attempted, or paid"
+      - name: attempts
+        type: Int64
+        description: Number of payment attempts made against this order
+      - name: created_at
+        type: Timestamp
+        description: Unix epoch timestamp when the order was created
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr:
+            kind: path
+            path:
+              - created_at
+
+  # -----------------------------------------------------------------------
+  # razorpay.refunds
+  # GET /v1/refunds
+  # Fetch all refunds across all payments.
+  # -----------------------------------------------------------------------
+  - name: refunds
+    description: >
+      All refunds issued on your Razorpay account, across all payments.
+      Use `from` and `to` filters (Unix epoch seconds) to scope the time range.
+      To see refunds for a specific payment, join with razorpay.payments
+      on payment_id = payments.id.
+    request:
+      method: GET
+      path: /refunds
+      query:
+        - name: from
+          from: filter
+          key: from
+          required: false
+        - name: to
+          from: filter
+          key: to
+          required: false
+        - name: count
+          from: literal
+          value: 100
+    response:
+      rows_path:
+        - items
+      row_strategy: direct
+      allow_404_empty: true
+    pagination:
+      mode: offset
+      offset_param: skip
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 100
+        query_param: count
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique refund ID (rfnd_XXXXXXXXXXXXXXXX)
+      - name: entity
+        type: Utf8
+        description: Always "refund"
+      - name: amount
+        type: Int64
+        description: Refunded amount in smallest currency unit
+      - name: currency
+        type: Utf8
+        description: ISO 4217 currency code
+      - name: payment_id
+        type: Utf8
+        description: Payment ID against which this refund was issued
+      - name: notes
+        type: Json
+        description: Key-value notes attached to the refund (JSON object)
+      - name: receipt
+        type: Utf8
+        description: Merchant-assigned identifier for the refund
+      - name: acquirer_data__rrn
+        type: Utf8
+        description: Retrieval Reference Number from the acquirer, if available
+      - name: status
+        type: Utf8
+        description: "Refund status: pending, processed, or failed"
+      - name: speed_processed
+        type: Utf8
+        description: >
+          Actual refund processing speed: normal or optimum (instant)
+      - name: speed_requested
+        type: Utf8
+        description: Refund speed requested at the time of issue
+      - name: created_at
+        type: Timestamp
+        description: Unix epoch timestamp when the refund was initiated
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr:
+            kind: path
+            path:
+              - created_at
+
+  # -----------------------------------------------------------------------
+  # razorpay.settlements
+  # GET /v1/settlements
+  # Fetch all settlement records (money transferred to your bank account).
+  # -----------------------------------------------------------------------
+  - name: settlements
+    description: >
+      All settlements transferred from Razorpay to your linked bank account.
+      Each row represents one settlement batch. Use `from` and `to` filters
+      (Unix epoch seconds) to scope the time range.
+    request:
+      method: GET
+      path: /settlements
+      query:
+        - name: from
+          from: filter
+          key: from
+          required: false
+        - name: to
+          from: filter
+          key: to
+          required: false
+        - name: count
+          from: literal
+          value: 100
+    response:
+      rows_path:
+        - items
+      row_strategy: direct
+      allow_404_empty: true
+    pagination:
+      mode: offset
+      offset_param: skip
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 100
+        query_param: count
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique settlement ID (setl_XXXXXXXXXXXXXXXX)
+      - name: entity
+        type: Utf8
+        description: Always "settlement"
+      - name: amount
+        type: Int64
+        description: Settlement amount in smallest currency unit
+      - name: status
+        type: Utf8
+        description: "Settlement status: created or processed"
+      - name: fees
+        type: Int64
+        description: Total Razorpay fees deducted in smallest currency unit
+      - name: tax
+        type: Int64
+        description: GST on fees in smallest currency unit
+      - name: utr
+        type: Utf8
+        description: Unique Transaction Reference number from your bank
+      - name: created_at
+        type: Timestamp
+        description: Unix epoch timestamp when the settlement was created
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr:
+            kind: path
+            path:
+              - created_at
+
+  # -----------------------------------------------------------------------
+  # razorpay.plans
+  # GET /v1/plans
+  # Fetch all subscription plans.
+  # -----------------------------------------------------------------------
+  - name: plans
+    description: >
+      All billing plans defined in your Razorpay account. Plans are the
+      templates for recurring subscriptions — they define the interval,
+      amount, and currency.
+    request:
+      method: GET
+      path: /plans
+      query:
+        - name: count
+          from: literal
+          value: 100
+    response:
+      rows_path:
+        - items
+      row_strategy: direct
+      allow_404_empty: true
+    pagination:
+      mode: offset
+      offset_param: skip
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 100
+        query_param: count
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique plan ID (plan_XXXXXXXXXXXXXXXX)
+      - name: entity
+        type: Utf8
+        description: Always "plan"
+      - name: interval
+        type: Int64
+        description: >
+          Number of billing-period units between charges
+          (e.g. 1 for monthly, 3 for quarterly)
+      - name: period
+        type: Utf8
+        description: >
+          Billing frequency unit: daily, weekly, monthly, or yearly
+      - name: item__id
+        type: Utf8
+        description: Item ID associated with this plan
+      - name: item__active
+        type: Boolean
+        description: Whether the plan item is active
+      - name: item__amount
+        type: Int64
+        description: Plan price in smallest currency unit per billing cycle
+      - name: item__unit_amount
+        type: Int64
+        description: Unit amount (same as item__amount for most plans)
+      - name: item__currency
+        type: Utf8
+        description: ISO 4217 currency code for the plan price
+      - name: item__name
+        type: Utf8
+        description: Display name of the plan
+      - name: item__description
+        type: Utf8
+        description: Description of the plan
+      - name: created_at
+        type: Timestamp
+        description: Unix epoch timestamp when the plan was created
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr:
+            kind: path
+            path:
+              - created_at
+
+  # -----------------------------------------------------------------------
+  # razorpay.subscriptions
+  # GET /v1/subscriptions
+  # Fetch all recurring subscriptions.
+  # -----------------------------------------------------------------------
+  - name: subscriptions
+    description: >
+      All recurring subscriptions on your Razorpay account.
+      Each row represents one subscription to a billing plan.
+      Join with razorpay.plans on plan_id = plans.id to enrich with
+      pricing details.
+    request:
+      method: GET
+      path: /subscriptions
+      query:
+        - name: plan_id
+          from: filter
+          key: plan_id
+          required: false
+        - name: from
+          from: filter
+          key: from
+          required: false
+        - name: to
+          from: filter
+          key: to
+          required: false
+        - name: count
+          from: literal
+          value: 100
+    response:
+      rows_path:
+        - items
+      row_strategy: direct
+      allow_404_empty: true
+    pagination:
+      mode: offset
+      offset_param: skip
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 100
+        query_param: count
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique subscription ID (sub_XXXXXXXXXXXXXXXX)
+      - name: entity
+        type: Utf8
+        description: Always "subscription"
+      - name: plan_id
+        type: Utf8
+        description: ID of the plan this subscription belongs to
+      - name: status
+        type: Utf8
+        description: >
+          Subscription status: created, authenticated, active, pending,
+          halted, cancelled, completed, or expired
+      - name: current_start
+        type: Timestamp
+        description: Start of the current billing cycle
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr:
+            kind: path
+            path:
+              - current_start
+      - name: current_end
+        type: Timestamp
+        description: End of the current billing cycle
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr:
+            kind: path
+            path:
+              - current_end
+      - name: ended_at
+        type: Timestamp
+        description: When the subscription was cancelled or expired
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr:
+            kind: path
+            path:
+              - ended_at
+      - name: quantity
+        type: Int64
+        description: Number of units subscribed
+      - name: total_count
+        type: Int64
+        description: Total number of billing cycles for this subscription
+      - name: paid_count
+        type: Int64
+        description: Number of billing cycles that have been successfully charged
+      - name: remaining_count
+        type: Int64
+        description: Number of billing cycles remaining
+      - name: customer_id
+        type: Utf8
+        description: Razorpay customer ID associated with this subscription
+      - name: customer_notify
+        type: Boolean
+        description: Whether Razorpay sends notifications to the customer
+      - name: has_scheduled_changes
+        type: Boolean
+        description: Whether there are pending plan/quantity changes scheduled
+      - name: change_scheduled_at
+        type: Timestamp
+        description: When the scheduled changes will take effect
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr:
+            kind: path
+            path:
+              - change_scheduled_at
+      - name: source
+        type: Utf8
+        description: How the subscription was created (api, dashboard, etc.)
+      - name: payment_method
+        type: Utf8
+        description: Payment method used for recurring charges
+      - name: created_at
+        type: Timestamp
+        description: Unix epoch timestamp when the subscription was created
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr:
+            kind: path
+            path:
+              - created_at
+
+  # -----------------------------------------------------------------------
+  # razorpay.payment_links
+  # GET /v1/payment_links
+  # Fetch all payment links created in the account.
+  # -----------------------------------------------------------------------
+  - name: payment_links
+    description: >
+      All payment links created in your Razorpay account.
+      Payment links let you collect payments without a checkout page.
+      Use `from` and `to` filters (Unix epoch seconds) to scope the time range.
+    request:
+      method: GET
+      path: /payment_links
+      query:
+        - name: payment_id
+          from: filter
+          key: payment_id
+          required: false
+        - name: reference_id
+          from: filter
+          key: reference_id
+          required: false
+        - name: from
+          from: filter
+          key: from
+          required: false
+        - name: to
+          from: filter
+          key: to
+          required: false
+        - name: count
+          from: literal
+          value: 100
+    response:
+      rows_path:
+        - payment_links
+      row_strategy: direct
+      allow_404_empty: true
+    pagination:
+      mode: offset
+      offset_param: skip
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 100
+        query_param: count
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique payment link ID (plink_XXXXXXXXXXXXXXXX)
+      - name: amount
+        type: Int64
+        description: Payment link amount in smallest currency unit (0 if amount is flexible)
+      - name: amount_paid
+        type: Int64
+        description: Total amount collected through this payment link so far
+      - name: currency
+        type: Utf8
+        description: ISO 4217 currency code
+      - name: accept_partial
+        type: Boolean
+        description: Whether the link accepts partial payments
+      - name: first_min_partial_amount
+        type: Int64
+        description: Minimum partial payment amount in smallest currency unit
+      - name: status
+        type: Utf8
+        description: "Payment link status: created, partially_paid, paid, cancelled, or expired"
+      - name: description
+        type: Utf8
+        description: Description displayed on the payment page
+      - name: short_url
+        type: Utf8
+        description: Short URL that customers open to pay
+      - name: reference_id
+        type: Utf8
+        description: Merchant-assigned reference number for the payment link
+      - name: customer__name
+        type: Utf8
+        description: Customer name if pre-filled on the link
+      - name: customer__email
+        type: Utf8
+        description: Customer email if pre-filled on the link
+      - name: customer__contact
+        type: Utf8
+        description: Customer phone number if pre-filled on the link
+      - name: notify__sms
+        type: Boolean
+        description: Whether Razorpay sends an SMS notification to the customer
+      - name: notify__email
+        type: Boolean
+        description: Whether Razorpay sends an email notification to the customer
+      - name: reminder_enable
+        type: Boolean
+        description: Whether automatic payment reminders are enabled
+      - name: expire_by
+        type: Timestamp
+        description: Expiry time of the payment link
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr:
+            kind: path
+            path:
+              - expire_by
+      - name: expired_at
+        type: Timestamp
+        description: When the link actually expired
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr:
+            kind: path
+            path:
+              - expired_at
+      - name: created_at
+        type: Timestamp
+        description: Unix epoch timestamp when the payment link was created
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        description: Unix epoch timestamp when the payment link was last updated
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr:
+            kind: path
+            path:
+              - updated_at
