@@ -49,6 +49,7 @@ export function SidebarButton<T extends ElementType = 'button'>(
     isMinimized = false,
     ref,
     variant = 'default',
+    'aria-label': ariaLabel,
     ...rest
   } = props
 
@@ -56,10 +57,11 @@ export function SidebarButton<T extends ElementType = 'button'>(
   const isNativeButton = Component === 'button'
   const type = 'type' in props ? props.type! : 'button'
   const childrenLabel = typeof children === 'string' ? children : undefined
-  const ariaLabel = (rest as { 'aria-label'?: string })['aria-label']
-  const minimizedLabelProps = isMinimized && childrenLabel && ariaLabel === undefined
-    ? { 'aria-label': childrenLabel }
-    : {}
+  let resolvedAriaLabel = ariaLabel
+
+  if (resolvedAriaLabel === undefined && isMinimized) {
+    resolvedAriaLabel = childrenLabel
+  }
 
   const componentProps = {
     className: classNames(
@@ -69,7 +71,7 @@ export function SidebarButton<T extends ElementType = 'button'>(
     ),
     ref,
     ...rest,
-    ...minimizedLabelProps,
+    ...(resolvedAriaLabel !== undefined && { 'aria-label': resolvedAriaLabel }),
     onClick: !isNativeButton && disabled ? handleDisabledClick : rest.onClick,
     ...(isNativeButton && { disabled, type }),
     ...(!isNativeButton && disabled && { 'aria-disabled': true, href: undefined, tabIndex: -1 }),
