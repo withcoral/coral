@@ -239,6 +239,33 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --clobber
 
+      - name: Promote GitHub release
+        id: promote-release
+        env:
+          GH_TOKEN: ${{ steps.github-app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG_NAME}")"
+          release_id="$(printf '%s' "$release_json" | jq -r '.id')"
+          was_prerelease="$(printf '%s' "$release_json" | jq -r '.prerelease')"
+
+          if [ "$was_prerelease" = "true" ]; then
+            release_json="$(gh api \
+              --method PATCH \
+              "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
+              -F prerelease=false)"
+          fi
+
+          {
+            echo "was_prerelease=${was_prerelease}"
+            echo "tag_name=$(printf '%s' "$release_json" | jq -r '.tag_name')"
+            echo "release_name=$(printf '%s' "$release_json" | jq -r '.name // ""')"
+            echo "release_url=$(printf '%s' "$release_json" | jq -r '.html_url')"
+            echo "body<<__RELEASE_BODY__"
+            printf '%s' "$release_json" | jq -r '.body // ""'
+            echo "__RELEASE_BODY__"
+          } >> "$GITHUB_OUTPUT"
+
       # Dispatch the tap workflow after publishing the release:
       # https://octokit.github.io/rest.js/v22/#repos-create-dispatch-event
       - name: Trigger Homebrew tap bump
@@ -255,3 +282,38 @@ jobs:
               event_type: "coral-release",
               client_payload: { version },
             });
+
+      - name: Post promoted release to Discord
+        if: steps.promote-release.outputs.was_prerelease == 'true'
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_CHANGELOG_WEBHOOK }}
+          TAG_NAME: ${{ steps.promote-release.outputs.tag_name }}
+          RELEASE_NAME: ${{ steps.promote-release.outputs.release_name }}
+          RELEASE_BODY: ${{ steps.promote-release.outputs.body }}
+          RELEASE_URL: ${{ steps.promote-release.outputs.release_url }}
+        run: |
+          MAX_LEN=3500
+          BODY="$RELEASE_BODY"
+          if [ ${#BODY} -gt $MAX_LEN ]; then
+            BODY="${BODY:0:$MAX_LEN}..."
+          fi
+
+          TITLE_MAX_LEN=256
+          TITLE="🪸 ${RELEASE_NAME:-$TAG_NAME}"
+          if [ ${#TITLE} -gt $TITLE_MAX_LEN ]; then
+            TITLE="${TITLE:0:$((TITLE_MAX_LEN - 3))}..."
+          fi
+
+          jq -n \
+            --arg title "$TITLE" \
+            --arg desc "$BODY" \
+            --arg url "$RELEASE_URL" \
+            '{
+              embeds: [{
+                title: $title,
+                description: $desc,
+                url: $url,
+                color: 16744272,
+                footer: { text: "Fresh from the reef" }
+              }]
+            }' | curl -sf -H "Content-Type: application/json" -d @- "$DISCORD_WEBHOOK"

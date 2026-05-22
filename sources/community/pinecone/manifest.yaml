@@ -1,0 +1,453 @@
+name: pinecone
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query indexes, collections, and backups from Pinecone (serverless and
+  pod-based). Covers vector index inventory, embedding model configuration,
+  spec details, and backup history via the Pinecone Control Plane API.
+inputs:
+  PINECONE_API_KEY:
+    kind: secret
+    hint: >-
+      Pinecone API key. Generate one in the Pinecone console under
+      API Keys. The key is a string starting with "pcsk_".
+      Requires at least read access to the project.
+      See https://docs.pinecone.io/guides/get-started/authentication.
+base_url: https://api.pinecone.io
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Api-Key
+      from: template
+      template: "{{input.PINECONE_API_KEY}}"
+request_headers:
+  - name: X-Pinecone-Api-Version
+    from: literal
+    value: "2026-04"
+  - name: Accept
+    from: literal
+    value: application/json
+test_queries:
+  - SELECT * FROM pinecone.indexes LIMIT 5
+  - SELECT * FROM pinecone.collections LIMIT 5
+  - SELECT * FROM pinecone.backups LIMIT 1
+tables:
+  - name: indexes
+    description: >-
+      Pinecone vector indexes -- inventory of all indexes in the project
+      with metric, dimension, embedding model, spec, and readiness state.
+    guide: |
+      Each row is one index. `name` is the stable identifier used to
+      target an index. `host` is the data-plane endpoint for that index
+      (unique per index). `metric` is the similarity metric (cosine,
+      euclidean, dotproduct). `dimension` is the vector dimension.
+      `status_state` is one of: Initializing, ScalingUp, ScalingDown,
+      Terminating, Ready. `spec_type` is "serverless" or "pod".
+      `embed_model` is set when the index was created with integrated
+      embedding; NULL for bring-your-own-vector indexes.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /indexes
+    response:
+      rows_path:
+        - indexes
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Unique index name within the project.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: metric
+        type: Utf8
+        nullable: true
+        description: Similarity metric -- cosine, euclidean, or dotproduct.
+        expr:
+          kind: path
+          path:
+            - metric
+      - name: dimension
+        type: Int64
+        nullable: true
+        description: Vector dimension for this index.
+        expr:
+          kind: path
+          path:
+            - dimension
+      - name: vector_type
+        type: Utf8
+        nullable: true
+        description: Vector type -- dense or sparse.
+        expr:
+          kind: path
+          path:
+            - vector_type
+      - name: status_ready
+        type: Boolean
+        nullable: true
+        description: Whether the index is ready to serve requests.
+        expr:
+          kind: path
+          path:
+            - status
+            - ready
+      - name: status_state
+        type: Utf8
+        nullable: true
+        description: Index lifecycle state -- Initializing, ScalingUp, ScalingDown, Terminating, Ready.
+        expr:
+          kind: path
+          path:
+            - status
+            - state
+      - name: host
+        type: Utf8
+        nullable: true
+        description: Data-plane host URL for this index (unique per index).
+        expr:
+          kind: path
+          path:
+            - host
+      - name: private_host
+        type: Utf8
+        nullable: true
+        description: >-
+          Private host URL for this index when private networking (VPC) is
+          enabled. NULL for standard public indexes.
+        expr:
+          kind: path
+          path:
+            - private_host
+      - name: spec_cloud
+        type: Utf8
+        nullable: true
+        description: Cloud provider for serverless indexes (aws, gcp, azure).
+        expr:
+          kind: path
+          path:
+            - spec
+            - serverless
+            - cloud
+      - name: spec_region
+        type: Utf8
+        nullable: true
+        description: Cloud region for serverless indexes.
+        expr:
+          kind: path
+          path:
+            - spec
+            - serverless
+            - region
+      - name: deletion_protection
+        type: Utf8
+        nullable: true
+        description: Whether deletion protection is enabled -- enabled or disabled.
+        expr:
+          kind: path
+          path:
+            - deletion_protection
+      - name: embed_model
+        type: Utf8
+        nullable: true
+        description: Integrated embedding model name. NULL for bring-your-own-vector indexes.
+        expr:
+          kind: path
+          path:
+            - embed
+            - model
+      - name: embed_dimension
+        type: Int64
+        nullable: true
+        description: Output dimension of the integrated embedding model.
+        expr:
+          kind: path
+          path:
+            - embed
+            - dimension
+      - name: embed_metric
+        type: Utf8
+        nullable: true
+        description: Similarity metric used by the integrated embedding model.
+        expr:
+          kind: path
+          path:
+            - embed
+            - metric
+      - name: embed_field_map
+        type: Json
+        nullable: true
+        description: >-
+          Field mapping for integrated embedding -- which source field gets
+          embedded (e.g. {"text": "text"}). NULL for bring-your-own-vector indexes.
+        expr:
+          kind: path
+          path:
+            - embed
+            - field_map
+      - name: embed_vector_type
+        type: Utf8
+        nullable: true
+        description: Vector type produced by the integrated embedding model (dense or sparse).
+        expr:
+          kind: path
+          path:
+            - embed
+            - vector_type
+      - name: embed_write_parameters
+        type: Json
+        nullable: true
+        description: >-
+          Embedding parameters used at write/upsert time
+          (e.g. input_type, truncate, dimension).
+        expr:
+          kind: path
+          path:
+            - embed
+            - write_parameters
+      - name: embed_read_parameters
+        type: Json
+        nullable: true
+        description: >-
+          Embedding parameters used at query/read time
+          (e.g. input_type, truncate, dimension).
+        expr:
+          kind: path
+          path:
+            - embed
+            - read_parameters
+      - name: tags
+        type: Json
+        nullable: true
+        description: >-
+          User-defined tags on the index as a key/value map
+          (e.g. environment, team, cost-center). NULL if no tags are set.
+        expr:
+          kind: path
+          path:
+            - tags
+
+  - name: collections
+    description: >-
+      Pinecone collections -- static snapshots of pod-based indexes that
+      can be used to create new indexes or archive data.
+    guide: |
+      Each row is one collection. Collections are only available for
+      pod-based indexes. `source_index` is the index the collection was
+      created from. `status` is one of: Initializing, Ready, Terminating.
+      `size` is the storage size in bytes. `dimension` is the vector
+      dimension of the source index.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /collections
+    response:
+      rows_path:
+        - collections
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Unique collection name within the project.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Collection status -- Initializing, Ready, or Terminating.
+        expr:
+          kind: path
+          path:
+            - status
+      - name: size
+        type: Int64
+        nullable: true
+        description: Storage size of the collection in bytes.
+        expr:
+          kind: path
+          path:
+            - size
+      - name: dimension
+        type: Int64
+        nullable: true
+        description: Vector dimension of the source index.
+        expr:
+          kind: path
+          path:
+            - dimension
+      - name: vector_count
+        type: Int64
+        nullable: true
+        description: Number of vectors stored in the collection.
+        expr:
+          kind: path
+          path:
+            - vector_count
+      - name: source_index
+        type: Utf8
+        nullable: true
+        description: Name of the index this collection was created from.
+        expr:
+          kind: path
+          path:
+            - source_index
+      - name: environment
+        type: Utf8
+        nullable: true
+        description: Pod environment the collection was created in.
+        expr:
+          kind: path
+          path:
+            - environment
+
+  - name: backups
+    description: >-
+      Pinecone index backups -- point-in-time snapshots of serverless indexes
+      with status, size, and source index metadata.
+    guide: |
+      Each row is one backup. `index_name` is the source index. `status`
+      is one of: Initializing, Ready, Terminating, Failed. `cloud` and
+      `region` identify where the backup is stored. `dimension` and
+      `metric` reflect the source index configuration at backup time.
+      Backups are paginated via cursor. Use `backup_id` to reference a
+      specific backup.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /backups
+      query:
+        - name: limit
+          from: literal
+          value: 100
+    response:
+      rows_path:
+        - data
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: paginationToken
+      response_cursor_path:
+        - pagination
+        - next
+    columns:
+      - name: backup_id
+        type: Utf8
+        nullable: false
+        description: Unique backup identifier.
+        expr:
+          kind: path
+          path:
+            - backup_id
+      - name: index_name
+        type: Utf8
+        nullable: true
+        description: Name of the source index this backup was taken from.
+        expr:
+          kind: path
+          path:
+            - index_name
+      - name: index_id
+        type: Utf8
+        nullable: true
+        description: ID of the source index.
+        expr:
+          kind: path
+          path:
+            - index_id
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Backup status -- Initializing, Ready, Terminating, or Failed.
+        expr:
+          kind: path
+          path:
+            - status
+      - name: cloud
+        type: Utf8
+        nullable: true
+        description: Cloud provider where the backup is stored.
+        expr:
+          kind: path
+          path:
+            - cloud
+      - name: region
+        type: Utf8
+        nullable: true
+        description: Cloud region where the backup is stored.
+        expr:
+          kind: path
+          path:
+            - region
+      - name: dimension
+        type: Int64
+        nullable: true
+        description: Vector dimension of the source index at backup time.
+        expr:
+          kind: path
+          path:
+            - dimension
+      - name: metric
+        type: Utf8
+        nullable: true
+        description: Similarity metric of the source index at backup time.
+        expr:
+          kind: path
+          path:
+            - metric
+      - name: record_count
+        type: Int64
+        nullable: true
+        description: Number of records in the backup.
+        expr:
+          kind: path
+          path:
+            - record_count
+      - name: size_bytes
+        type: Int64
+        nullable: true
+        description: Storage size of the backup in bytes.
+        expr:
+          kind: path
+          path:
+            - size_bytes
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the backup was created (UTC).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Optional user-provided description for the backup.
+        expr:
+          kind: path
+          path:
+            - description
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Optional user-provided name for the backup.
+        expr:
+          kind: path
+          path:
+            - name
