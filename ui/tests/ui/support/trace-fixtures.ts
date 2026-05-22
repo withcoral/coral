@@ -314,7 +314,7 @@ const detailSpans: SpanFixture[] = [
     responseBodyTruncated: true,
     responseBodySize: 4096,
   },
-  {
+    {
     source: 'linear',
     table: 'issue_request_preview',
     method: 'POST',
@@ -323,6 +323,33 @@ const detailSpans: SpanFixture[] = [
     requestBodyPresent: true,
     requestBodySize: 2048,
     responseBody: { data: { issues: { nodes: [{ identifier: 'CORAL-201', title: 'Request body present fallback', priorityLabel: 'Low' }] } } },
+  },
+
+  // New spans for falsy JSON response body regression test
+    // New spans for falsy JSON response body regression test
+  {
+    source: 'github',
+    table: 'falsy_json_false',
+    method: 'GET',
+    path: '/repos/oxide/coral/falsy-false',
+    durationMs: 33,
+    responseBody: false,
+  },
+  {
+    source: 'github',
+    table: 'falsy_json_zero',
+    method: 'GET',
+    path: '/repos/oxide/coral/falsy-zero',
+    durationMs: 33,
+    responseBody: 0,
+  },
+  {
+    source: 'github',
+    table: 'falsy_json_null',
+    method: 'GET',
+    path: '/repos/oxide/coral/falsy-null',
+    durationMs: 33,
+    responseBody: null,
   },
 ]
 

@@ -142,3 +142,30 @@ test('shows trace storage unavailable errors from TraceService', async ({ networ
   await expect(page.getByText('0 queries')).toBeVisible()
   await review.pause()
 })
+test('defaults to response tab when response body is a falsy JSON value', async ({ network, page, review }) => {
+  network.use(...traceHandlers.tenTraceDetailFlow)
+
+  await review.chapter('Open the trace with falsy JSON body spans', 'Load the selected trace so falsy body tab selection can be inspected')
+  await page.goto('/')
+  await page.getByPlaceholder('Search queries...').fill('playwright')
+  await page.getByText(/linear\.issues WHERE team_key = 'CORAL' AND title ILIKE '%playwright%'/).click()
+  await review.pause()
+
+  await review.chapter('Falsy JSON false body defaults to response tab', 'Open a span whose response body is JSON false and confirm response tab is active')
+  await page.getByRole('button', { name: /GET github\.falsy_json_false/ }).click()
+
+  await expect(page.getByText('Span details')).toBeVisible()
+  await expect(page.getByRole('tab', { name: 'Response body' })).toHaveAttribute('aria-selected', 'true')
+  await review.pause()
+
+  await review.chapter('Falsy JSON zero body defaults to response tab', 'Open a span whose response body is JSON 0 and confirm response tab is active')
+  await page.getByRole('button', { name: /GET github\.falsy_json_zero/ }).click()
+
+  await expect(page.getByRole('tab', { name: 'Response body' })).toHaveAttribute('aria-selected', 'true')
+  await review.pause()
+  await review.chapter('Falsy JSON null body defaults to response tab', 'Open a span whose response body is JSON null and confirm response tab is active')
+  await page.getByRole('button', { name: /GET github\.falsy_json_null/ }).click()
+
+  await expect(page.getByRole('tab', { name: 'Response body' })).toHaveAttribute('aria-selected', 'true')
+  await review.pause()
+})
