@@ -6,11 +6,12 @@ description: >-
   Query Vercel projects, deployments, domains, environment variables,
   and teams from the Vercel REST API.
 inputs:
-  API_TOKEN:
+  VERCEL_API_TOKEN:
     kind: secret
     hint: Vercel API bearer token.
-  TEAM_ID:
+  VERCEL_TEAM_ID:
     kind: variable
+    default: ""
     hint: Optional Vercel team ID for team-scoped endpoints.
 base_url: https://api.vercel.com
 auth:
@@ -18,7 +19,7 @@ auth:
   headers:
     - name: Authorization
       from: template
-      template: Bearer {{input.API_TOKEN}}
+      template: Bearer {{input.VERCEL_API_TOKEN}}
 request_headers:
   - name: Accept
     from: literal
@@ -31,24 +32,13 @@ tables:
     description: Vercel projects
     request:
       method: GET
-      path: /v9/projects
+      path: /v10/projects
       query:
         - name: teamId
           from: input
-          key: TEAM_ID
+          key: VERCEL_TEAM_ID
     response:
-      rows_path:
-        - projects
-    pagination:
-      mode: cursor_query
-      cursor_param: until
-      response_cursor_path:
-        - pagination
-        - next
-      page_size:
-        default: 20
-        max: 100
-        query_param: limit
+      row_strategy: direct
     columns:
       - name: id
         type: Utf8
@@ -133,7 +123,7 @@ tables:
       query:
         - name: teamId
           from: input
-          key: TEAM_ID
+          key: VERCEL_TEAM_ID
         - name: projectId
           from: filter
           key: project_id
@@ -242,7 +232,7 @@ tables:
       query:
         - name: teamId
           from: input
-          key: TEAM_ID
+          key: VERCEL_TEAM_ID
     response:
       rows_path:
         - domains
@@ -323,21 +313,10 @@ tables:
       query:
         - name: teamId
           from: input
-          key: TEAM_ID
+          key: VERCEL_TEAM_ID
     response:
-      rows_path:
-        - envs
+      row_strategy: direct
       allow_404_empty: true
-    pagination:
-      mode: cursor_query
-      cursor_param: until
-      response_cursor_path:
-        - pagination
-        - next
-      page_size:
-        default: 20
-        max: 100
-        query_param: limit
     columns:
       - name: id
         type: Utf8
@@ -384,7 +363,7 @@ tables:
       - name: updated_at
         type: Timestamp
         nullable: true
-        description: Last update timestamp
+        description: Update timestamp
         expr:
           kind: format_timestamp
           input: milliseconds

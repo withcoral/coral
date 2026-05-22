@@ -6,7 +6,7 @@ description: >-
   Query Supabase projects, organizations, branches, edge functions,
   and storage buckets from the Supabase Management API.
 inputs:
-  API_TOKEN:
+  SUPABASE_API_TOKEN:
     kind: secret
     hint: Supabase personal access token for the Management API.
 base_url: https://api.supabase.com
@@ -15,7 +15,7 @@ auth:
   headers:
     - name: Authorization
       from: template
-      template: Bearer {{input.API_TOKEN}}
+      template: Bearer {{input.SUPABASE_API_TOKEN}}
 request_headers:
   - name: Accept
     from: literal
@@ -295,7 +295,7 @@ tables:
         description: Function creation timestamp
         expr:
           kind: format_timestamp
-          input: iso8601
+          input: seconds
           expr:
             kind: path
             path:
@@ -306,7 +306,7 @@ tables:
         description: Function update timestamp
         expr:
           kind: format_timestamp
-          input: iso8601
+          input: seconds
           expr:
             kind: path
             path:
