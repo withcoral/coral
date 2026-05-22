@@ -25,6 +25,7 @@ Open an issue or discussion before starting work on:
 - new core sources shipped with the binary (in sources/core)
 - major source-spec or source-authoring changes
 - major scope expansions beyond the current product surface
+- the UI
 
 ## Ground rules
 
