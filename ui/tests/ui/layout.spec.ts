@@ -1,7 +1,7 @@
 import { traceHandlers } from './support/trace-handlers'
 import { expect, test } from './playwright.setup'
 
-test('sidebar collapses, expands, and exposes the Query stream tooltip', async ({ network, page, review }, testInfo) => {
+test('sidebar collapses, expands, and exposes the sidebar toggle tooltip', async ({ network, page, review }, testInfo) => {
   network.use(...traceHandlers.empty)
 
   await review.chapter('Load the shell', 'Render the query stream with the sidebar visible')
@@ -22,9 +22,10 @@ test('sidebar collapses, expands, and exposes the Query stream tooltip', async (
   await expect(tracesButton).toHaveAttribute('aria-current', 'page')
   await expect(tracesLabel).toBeVisible()
 
-  await review.chapter('Show the brand tooltip', 'Hover the Coral icon and confirm the exact tooltip copy')
-  await brandMark.hover()
-  await expect(page.getByText('Query stream', { exact: true })).toBeVisible()
+  await review.chapter('Show the sidebar tooltip', 'Hover the toggle button and confirm the shortcut hint')
+  await expect(brandMark).toBeVisible()
+  await collapseButton.hover()
+  await expect(page.getByText(/Collapse sidebar.*Ctrl.*B/)).toBeVisible()
   await review.pause()
 
   await review.chapter('Collapse the sidebar', 'Use the dedicated toggle button and verify the sidebar narrows')

@@ -49,11 +49,13 @@ export const header = recipe({
     isCollapsed: {
       false: {
         flexDirection: 'row',
-        justifyContent: 'space-between',
+        gap: '8px',
+        justifyContent: 'flex-start',
       },
       true: {
         gap: '8px',
         flexDirection: 'column',
+        alignItems: 'flex-start',
         justifyContent: 'flex-start',
       },
     },
