@@ -1,0 +1,129 @@
+name: remotive
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: Remote job listings from Remotive.com. Data is delayed 24 hours. Max 4 requests/day recommended.
+base_url: "https://remotive.com/api"
+test_queries:
+  - SELECT * FROM remotive.jobs LIMIT 1
+  - SELECT title, company_name, category FROM remotive.jobs WHERE candidate_required_location = 'Worldwide' LIMIT 5
+tables:
+  - name: jobs
+    description: |
+      Remote job listings from Remotive. Filter by category (e.g. software-dev,
+      marketing) or keyword search. Data updates approximately every 24 hours.
+    fetch_limit_default: 20
+    filters:
+      - name: category
+      - name: search
+    request:
+      method: GET
+      path: /remote-jobs
+      query:
+        - name: category
+          from: filter
+          key: category
+        - name: search
+          from: filter
+          key: search
+    response:
+      rows_path:
+        - jobs
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Unique job identifier.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: title
+        type: Utf8
+        nullable: false
+        description: Job title.
+        expr:
+          kind: path
+          path:
+            - title
+      - name: company_name
+        type: Utf8
+        nullable: false
+        description: Name of the hiring company.
+        expr:
+          kind: path
+          path:
+            - company_name
+      - name: company_logo_url
+        type: Utf8
+        nullable: true
+        description: URL to the company logo image.
+        expr:
+          kind: path
+          path:
+            - company_logo_url
+      - name: category
+        type: Utf8
+        nullable: true
+        description: Job category (e.g. Software Development, Marketing, Design).
+        expr:
+          kind: path
+          path:
+            - category
+      - name: tags
+        type: Utf8
+        nullable: true
+        description: Comma-joined skill and technology tags for the job.
+        expr:
+          kind: join_array
+          path:
+            - tags
+      - name: job_type
+        type: Utf8
+        nullable: true
+        description: Employment type (full_time, contract, freelance, part_time).
+        expr:
+          kind: path
+          path:
+            - job_type
+      - name: publication_date
+        type: Utf8
+        nullable: true
+        description: ISO 8601 timestamp when the job was published (delayed 24h).
+        expr:
+          kind: path
+          path:
+            - publication_date
+      - name: candidate_required_location
+        type: Utf8
+        nullable: true
+        description: Required candidate location (e.g. Worldwide, USA, Europe).
+        expr:
+          kind: path
+          path:
+            - candidate_required_location
+      - name: salary
+        type: Utf8
+        nullable: true
+        description: Salary range as free text if provided by employer.
+        expr:
+          kind: path
+          path:
+            - salary
+      - name: url
+        type: Utf8
+        nullable: false
+        description: Direct link to the job listing on Remotive.
+        expr:
+          kind: path
+          path:
+            - url
+      - name: search
+        type: Utf8
+        nullable: true
+        description: Echoes the search keyword filter used to query this result set.
+        expr:
+          kind: from_filter
+          key: search
