@@ -30,7 +30,7 @@ inputs:
             redirect_uri: http://127.0.0.1/oauth/callback
             redirect_uri_port_mode: random
             endpoints:
-              authorization_url: https://accounts.google.com/o/oauth2/v2/auth
+              authorization_url: https://accounts.google.com/o/oauth2/v2/auth?access_type=offline&prompt=consent
               token_url: https://oauth2.googleapis.com/token
             client:
               id:
@@ -63,7 +63,9 @@ tables:
     guide: |
       Requires `document_id`, which is the stable ID in a Google Docs URL.
       Use this table to inspect document-level metadata before reading
-      `body_content`, `tabs`, `named_ranges`, or `lists`.
+      `body_content`, `tabs`, `named_ranges`, or `lists`. Legacy first-tab
+      fields such as `body`, `named_ranges`, and `lists` are also exposed here;
+      use `google_docs.tabs` for tab-aware content.
     filters:
       - name: document_id
         required: true
@@ -304,7 +306,8 @@ tables:
     guide: |
       Requires `document_id`. This request enables `includeTabsContent`, so
       each row exposes one top-level tab plus nested `child_tabs` JSON for
-      multi-tab documents.
+      multi-tab documents. Tab-scoped named ranges and list definitions are
+      exposed as JSON because the provider nests them under each tab.
     filters:
       - name: document_id
         required: true
@@ -320,8 +323,8 @@ tables:
         - name: fields
           from: literal
           value: >-
-            tabs(tabProperties,documentTab(body,headers,footers,footnotes),
-            childTabs)
+            tabs(tabProperties,documentTab(body,headers,footers,footnotes,
+            namedRanges,lists),childTabs)
         - name: suggestionsViewMode
           from: filter
           key: suggestions_view_mode
@@ -429,6 +432,24 @@ tables:
           path:
             - documentTab
             - footnotes
+      - name: named_ranges
+        type: Json
+        nullable: true
+        description: Named ranges scoped to this document tab.
+        expr:
+          kind: path
+          path:
+            - documentTab
+            - namedRanges
+      - name: lists
+        type: Json
+        nullable: true
+        description: List definitions scoped to this document tab.
+        expr:
+          kind: path
+          path:
+            - documentTab
+            - lists
       - name: child_tabs
         type: Json
         nullable: true
@@ -453,10 +474,12 @@ tables:
           kind: current_row
 
   - name: named_ranges
-    description: Named range groups for one Google Docs document
+    description: First-tab named range groups for one Google Docs document
     guide: |
-      Requires `document_id`. Named range names become rows while the provider
-      range payload stays as JSON for callers that need all segment details.
+      Requires `document_id`. This table uses the legacy document-level
+      `namedRanges` field, which Google scopes to the first tab when
+      `includeTabsContent` is false. Use `google_docs.tabs.named_ranges` for
+      tab-aware named range payloads.
     filters:
       - name: document_id
         required: true
@@ -506,10 +529,13 @@ tables:
           kind: current_row
 
   - name: lists
-    description: List definitions for one Google Docs document
+    description: First-tab list definitions for one Google Docs document
     guide: |
-      Requires `document_id`. Use list IDs from paragraph JSON to inspect
-      the document-level list properties returned here.
+      Requires `document_id`. This table uses the legacy document-level
+      `lists` field, which Google scopes to the first tab when
+      `includeTabsContent` is false. Use list IDs from `body_content.list_id`
+      to inspect first-tab list properties, or `google_docs.tabs.lists` for
+      tab-aware list payloads.
     filters:
       - name: document_id
         required: true
