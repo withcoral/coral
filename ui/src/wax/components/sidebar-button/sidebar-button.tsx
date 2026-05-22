@@ -56,7 +56,8 @@ export function SidebarButton<T extends ElementType = 'button'>(
   const isNativeButton = Component === 'button'
   const type = 'type' in props ? props.type! : 'button'
   const childrenLabel = typeof children === 'string' ? children : undefined
-  const minimizedLabelProps = isMinimized && childrenLabel && rest['aria-label'] === undefined
+  const ariaLabel = (rest as { 'aria-label'?: string })['aria-label']
+  const minimizedLabelProps = isMinimized && childrenLabel && ariaLabel === undefined
     ? { 'aria-label': childrenLabel }
     : {}
 
