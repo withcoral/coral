@@ -39,7 +39,7 @@ coral source add --file ./manifest.yaml
 coral source test razorpay
 ```
 
-Coral runs the declared `test_queries` and confirms all seven tables return rows. If you see authentication errors, re-check your Key ID and Secret.
+Coral runs the declared `test_queries` and confirms the tested tables return rows. If you see authentication errors, re-check your Key ID and Secret.
 
 ## Example queries
 
