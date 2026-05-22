@@ -316,7 +316,8 @@ tables:
           from: input
           key: VERCEL_TEAM_ID
     response:
-      row_strategy: direct
+      rows_path:
+        - envs
       allow_404_empty: true
     columns:
       - name: id
@@ -342,6 +343,14 @@ tables:
           kind: path
           path:
             - key
+      - name: value
+        type: Utf8
+        nullable: true
+        description: Environment variable value
+        expr:
+          kind: path
+          path:
+            - value
       - name: target
         type: Json
         nullable: true
