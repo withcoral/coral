@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/withcoral/coral/security/policy
+    about: Please report security vulnerabilities privately by email to security@withcoral.com — do not file a public issue. See SECURITY.md for what to include.
+  - name: Chat on Discord
+    url: https://withcoral.com/discord
+    about: Quick questions, real-time help, and community chat. For anything that should be searchable later, please open an issue instead.
+  - name: Contributing guide
+    url: https://github.com/withcoral/coral/blob/main/CONTRIBUTING.md
+    about: How to set up the project, what we welcome, and what to discuss before starting work.

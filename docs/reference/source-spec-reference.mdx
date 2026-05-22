@@ -315,20 +315,33 @@ In this minimal example:
 
 - `response: {}` means "use the default response rules" for an HTTP table
 - with the default response rules, Coral treats the selected response value directly as rows unless you configure a different `row_strategy`
-- `inputs` declares the install-time variables and secrets for this source in stable authored order. At install time, `coral source add` reads each key from an environment variable of the same name (or prompts for them when run with `--interactive`). At runtime, installed inputs are surfaced through `coral.inputs`.
-- `{{input.API_TOKEN}}` is resolved from the store implied by the declared input kind
+- `inputs` declares values Coral collects and stores when the source is added
+- `auth` declares how stored values are used to authenticate outgoing HTTP requests
+- `{{input.API_TOKEN}}` is resolved from the secret store because `API_TOKEN` is declared as `kind: secret`
 
 ### HTTP table functions
 
 HTTP sources can declare source-scoped table functions for provider-native
-operations that return rows, such as search endpoints. A function adds
+operations that return rows and need invocation arguments. A function adds
 invocation arguments, but it still owns the same execution shape as an HTTP
 table: request, response mapping, pagination, and result columns. It does not
 need a backing table.
 
+Table functions are not only for search. Use the default `kind: table` for
+parameterized non-retrieval operations, such as scoped child collections,
+time-range log queries, metrics queries, or detail operations that do not map
+cleanly to a stable table. Use `kind: search` only for provider-ranked
+retrieval surfaces.
+
 ```yaml
 functions:
   - name: search_issues
+    kind: search
+    description: Search provider issues
+    search_limits:
+      default_top_k: 10
+      max_top_k: 100
+      max_calls_per_query: 1
     args:
       - name: q
         required: true
@@ -364,6 +377,8 @@ functions:
       offset_start: 0
       link_header_require_results: false
     columns:
+      - name: id
+        type: Utf8
       - name: title
         type: Utf8
       - name: html_url
@@ -376,17 +391,46 @@ Use `bind.arg` when a SQL argument should populate a differently named request
 argument. Function request values can then reference those bound arguments with
 `from: arg`.
 
+`kind: search` marks a provider-ranked retrieval surface. Search functions
+return provider-ranked candidate rows, not exhaustive SQL-filtered tables.
+Other table functions keep the default `kind: table`. Use named SQL arguments
+when calling table functions:
+
+```sql
+SELECT id, title, html_url
+FROM github.search_issues(q => 'repo:withcoral/coral source functions')
+LIMIT 10;
+```
+
+`mode: contains` remains available for ordinary table filters whose provider
+API supports substring matching. It is not a retrieval marker and should not be
+used as a replacement for `kind: search`:
+
+```yaml
+filters:
+  - name: title
+    type: Utf8
+    description: Provider-side title substring.
+    mode: contains
+```
+
+Provider-ranked retrieval surfaces must be declared as `kind: search`
+functions. Table filters are for exact lookup, required scoping, or ordinary
+provider-side filtering on list/detail tables.
+
+`search_limits` values must be positive. `default_top_k` and `max_top_k` are
+capped at 1000, `max_calls_per_query` is capped at 100, and
+`max_top_k * max_calls_per_query` cannot exceed 10000 candidates.
+
 ### HTTP authentication
 
-The top-level `auth` block declares how Coral authenticates outgoing requests. Pick one of three `type` values:
+The top-level `auth` block declares how Coral authenticates outgoing requests. It does not collect or store credentials; reference values declared under [Source inputs](/reference/source-spec-reference#source-inputs) when auth needs API keys, bearer tokens, usernames, passwords, or signing material. Pick one of three `type` values:
 
 | `type` | Purpose |
 | ------ | ------- |
 | `HeaderAuth` | Attach one or more declarative auth headers (Bearer tokens, API keys, pre-signed headers). |
 | `BasicAuth` | HTTP Basic. Coral base64-encodes `username:password` into `Authorization: Basic ...`. |
 | `CustomAuth` | Use a named authenticator for auth schemes that need request signing, such as AWS SigV4. |
-
-Credentials for authentication are declared in [Source inputs](/reference/source-spec-reference#source-inputs).
 
 #### `HeaderAuth`
 
@@ -525,15 +569,17 @@ Request query params, body fields, and headers support these `from` values:
 | `arg` | Read a source function argument captured from the function call and serialize it as a string |
 | `arg_int` | Read a source function argument captured from the function call and serialize it as a JSON integer |
 | `arg_bool` | Read a source function argument captured from the function call and serialize it as a JSON boolean |
+| `arg_split` | Split a source function argument string and serialize one part as a string |
+| `arg_split_int` | Split a source function argument string and serialize one part as a JSON integer |
 | `input` | Read a manifest-declared source input (variable/secret) by key |
 | `state` | Read pagination/runtime state |
 | `now_epoch_minus_seconds` | Emit the current Unix epoch seconds minus the configured offset |
 
-`filter*`, `filter_split`, and `filter_split_int` differ from `arg*` by where
-the value comes from. Table requests use filter value sources because their
-request values come from SQL predicates such as `WHERE id = 123`. Source
-function requests use arg value sources because their request values come from
-named function arguments such as `github.search_issues(q => 'flaky')`.
+`filter*` value sources differ from `arg*` value sources by where the value
+comes from. Table requests use filter value sources because their request values
+come from SQL predicates such as `WHERE id = 123`. Source function requests use
+arg value sources because their request values come from named function
+arguments such as `github.search_issues(q => 'flaky')`.
 
 The suffix controls the value type sent to the provider. Use the bare form for a
 string request value, `_int` for a JSON integer, and `_bool` for a JSON boolean.
@@ -557,6 +603,29 @@ request fields but users naturally have one compound identifier. For example,
   key: issue_identifier
   separator: "-"
   part: 1
+```
+
+Use `arg_split` and `arg_split_int` the same way for source-scoped table
+functions:
+
+```yaml
+args:
+  - name: issue
+    required: true
+    bind:
+      arg: issue
+request:
+  body:
+    - path: [variables, teamKey]
+      from: arg_split
+      key: issue
+      separator: "-"
+      part: 0
+    - path: [variables, issueNumber]
+      from: arg_split_int
+      key: issue
+      separator: "-"
+      part: 1
 ```
 
 ### HTTP response fields
@@ -646,7 +715,9 @@ pagination:
 
 ## Source inputs
 
-HTTP source specs can declare the variables and secrets this source needs under a top-level `inputs` map. At install time, `coral source add` collects each input from an environment variable matching the key, or prompts interactively when you pass `--interactive`.
+HTTP source specs can declare the variables and secrets this source needs under a top-level `inputs` map. Inputs are where credentials and other configuration values are set up. They are not where those values are sent. Runtime request fields, such as `auth`, `request_headers`, table request headers, query params, and body fields, decide where stored inputs are used.
+
+At install time, `coral source add` collects each input from an environment variable matching the key, or prompts interactively when you pass `--interactive`.
 
 - **Variables**: non-secret configuration like base URLs or organization IDs
 - **Secrets**: API keys or bearer tokens
@@ -678,6 +749,84 @@ Rules:
 - `hint` is optional and shown alongside the input during `coral source add --interactive`
 - references elsewhere in the manifest use `{{input.KEY}}` templates or `from: input`
 - credential-like inputs such as API keys, tokens, passwords, secrets, private keys, and bearer or authorization values must be `kind: secret`; Coral rejects those names as variables because variable values are visible through source APIs and `coral.inputs`
+- input keys must not start with Coral's reserved internal prefix `__coral`
+- declaring an input does not add it to any request by itself; reference it from `auth`, headers, query params, body fields, or other runtime request configuration where it should be used
+
+Secret inputs can also declare `credential.methods` metadata for install-time
+credential retrieval choices. When `credential` is omitted, Coral collects the
+secret the same way as `type: source_config`: from an environment variable by
+default, or from an interactive prompt when `coral source add --interactive` is
+used. `credential.methods` only controls how the secret is collected; runtime
+request authentication is still defined by `auth` or request headers that
+reference the input.
+
+```yaml
+inputs:
+  GITHUB_TOKEN:
+    kind: secret
+    credential:
+      methods:
+        - type: oauth
+          label: Connect with GitHub
+          description: Use OAuth instead of pasting a token.
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: required
+            redirect_uri: http://127.0.0.1:53682/oauth/callback
+            redirect_uri_port_mode: fixed
+            endpoints:
+              authorization_url: https://github.com/login/oauth/authorize
+              token_url: https://github.com/login/oauth/access_token
+            client:
+              id:
+                default: coral-owned-client-id
+                input: GITHUB_OAUTH_CLIENT_ID
+            scopes:
+              scope:
+                delimiter: space
+                values:
+                  - repo
+                  - read:org
+        - type: source_config
+          label: Paste token
+```
+
+Supported credential method types are `source_config` and `oauth`.
+`source_config` uses the normal source input path: an environment variable by
+default, or an interactive prompt when `coral source add --interactive` is
+used. OAuth currently supports authorization-code flow with a loopback HTTP
+callback URI: `http://127.0.0.1[:<port>]/<path>` or
+`http://localhost[:<port>]/<path>`.
+
+`redirect_uri_port_mode` controls how Coral binds the loopback port. When this
+field is omitted, Coral treats `redirect_uri` port `0` as `random`; otherwise it
+defaults to `fixed`.
+
+- `fixed` binds the exact non-zero port authored in `redirect_uri`; if that port
+  is busy, install fails.
+- `random` binds a free port at install time. In this mode `redirect_uri` must
+  omit the port or use port `0`; Coral sends the effective URI with the assigned
+  port in both the authorization request and the token exchange.
+
+When users provide their own OAuth client ID, they must configure the matching
+loopback redirect behavior in the OAuth app. For OAuth methods, Coral starts
+the loopback flow and returns the provider authorization URL. After the
+callback, Coral exchanges the code, stores the access token as the source
+secret, and stores any refresh token as internal credential metadata.
+
+`flow.type` and `pkce` are required. Unspecified protobuf enum values are
+invalid and are rejected rather than treated as defaults. `pkce` is either
+`required` or `disabled`. Public clients can declare
+`client.id.default`, `client.id.input`, or both; an interactive `input` value
+overrides `default`. Confidential clients add `client.secret.input` and a
+required `transport` of `basic_auth` or `request_body`. Client secrets are sent
+only to the token endpoint and are never included in the authorization URL.
+
+Scopes are declared under `scopes.scope`; `delimiter: space` represents
+`scope=a b`, and `delimiter: comma` represents `scope=a,b`. Coral may store
+refresh tokens and OAuth metadata alongside the source secret, but automatic
+token refresh is not implemented yet.
 
 At runtime, installed source inputs are also surfaced through `coral.inputs`.
 This is useful when agents or scripts need to inspect non-secret source config

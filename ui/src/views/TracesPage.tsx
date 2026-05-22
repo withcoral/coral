@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import * as Button from '@/wax/components/button'
 import { Icon } from '@/wax/components/icon'
 import { TextInput } from '@/wax/components/inputs/text'
+import { KeyboardShortcut } from '@/wax/components/keyboard-shortcut'
 import { Typography } from '@/wax/components/typography'
 import { listTraces } from '@/lib/coral-traces-client'
 import type { TraceSummary } from '@/generated/coral/v1/traces_pb'
@@ -61,32 +62,45 @@ function useTraceList(enabled: boolean) {
   return { error, loading, traces }
 }
 
-function HeaderActions({ onClearSearch, searchText, setSearchText, setShowSearch, showSearch }: {
-  onClearSearch: () => void
+function HeaderActions({ searchOpen, searchText, searchVisible, setSearchOpen, setSearchText }: {
+  searchOpen: boolean
   searchText: string
+  searchVisible: boolean
+  setSearchOpen: (value: boolean) => void
   setSearchText: (value: string) => void
-  setShowSearch: (value: boolean) => void
-  showSearch: boolean
 }) {
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (searchOpen) inputRef.current?.focus()
+  }, [searchOpen])
+
   return (
     <div className={s.headerActions}>
-      {showSearch ? (
-        <div className={s.inlineSearch}>
-          <div className={s.inlineSearchField}>
-            <TextInput
-              autoFocus
-              icon="Search"
-              onChange={setSearchText}
-              placeholder="Search queries..."
-              type="search"
-              value={searchText}
-            />
-          </div>
-          <Button.IconButton name="X" onClick={onClearSearch} size="32" tooltipText="Close search" variant="bare" />
+      <KeyboardShortcut
+        handler={(e) => {
+          e.preventDefault()
+          setSearchOpen(true)
+          inputRef.current?.select()
+        }}
+        shortcut="$mod+f"
+      />
+      <div className={s.inlineSearch} data-searching={searchVisible ? 'true' : undefined}>
+        <div className={s.searchTrigger}>
+          <Button.IconButton name="Search" onClick={() => setSearchOpen(true)} size="32" tooltipText="Search" variant="bare" />
         </div>
-      ) : (
-        <Button.IconButton name="Search" onClick={() => setShowSearch(true)} size="32" tooltipText="Search queries" variant="bare" />
-      )}
+        <div className={s.searchField}>
+          <TextInput
+            icon="Search"
+            onBlur={() => setSearchOpen(false)}
+            onChange={setSearchText}
+            onKeyDown={(e) => { if (e.key === 'Escape') { setSearchText(''); setSearchOpen(false); inputRef.current?.blur() } }}
+            placeholder="Search queries..."
+            ref={inputRef}
+            value={searchText}
+          />
+        </div>
+      </div>
     </div>
   )
 }
@@ -99,7 +113,8 @@ export function TracesPage() {
   const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null)
   const { error, loading, traces } = useTraceList(selectedTraceId === null)
   const [searchText, setSearchText] = useState('')
-  const [showSearch, setShowSearch] = useState(false)
+  const [searchOpen, setSearchOpen] = useState(false)
+  const searchVisible = searchOpen || searchText.trim().length > 0
 
   const filtered = traces.filter((trace) => {
     const needle = searchText.trim().toLowerCase()
@@ -126,13 +141,13 @@ export function TracesPage() {
   const connected = !error
   return (
     <section className={s.root} aria-label="Coral traces">
-      <PageHeader title="Query Stream">
+      <PageHeader title="Query stream" isSearching={searchVisible}>
         <HeaderActions
-          onClearSearch={() => { setShowSearch(false); setSearchText('') }}
+          searchOpen={searchOpen}
           searchText={searchText}
+          searchVisible={searchVisible}
+          setSearchOpen={setSearchOpen}
           setSearchText={setSearchText}
-          setShowSearch={setShowSearch}
-          showSearch={showSearch}
         />
       </PageHeader>
       {error && <DisconnectedBanner message={error} />}

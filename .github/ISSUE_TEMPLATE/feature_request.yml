@@ -1,0 +1,56 @@
+name: Feature request
+description: Suggest a small, well-scoped improvement to Coral.
+title: "feat: <short description>"
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template for focused improvements (a flag, a quality-of-life change, a small new capability in an existing surface).
+
+        For larger changes — new public CLI commands, new public config formats, new bundled sources, or major source-spec changes — please use the **Design proposal** template instead. See [CONTRIBUTING.md](https://github.com/withcoral/coral/blob/main/CONTRIBUTING.md#please-discuss-first).
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Describe the use case and what's awkward or impossible today. Concrete examples help.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: What should Coral do differently? CLI shape, config keys, output, etc.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds you've tried, or other shapes this could take.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which area does this affect?
+      options:
+        - CLI ergonomics
+        - Source spec / source authoring
+        - Bundled source
+        - Query engine
+        - MCP adapter
+        - Docs / examples
+        - Other
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: Contribution
+      options:
+        - label: I'd be willing to open a PR for this if the direction is agreed.
+          required: false

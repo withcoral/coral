@@ -40,6 +40,28 @@ impl<'a> RenderContext<'a> {
     }
 }
 
+#[derive(Clone, Copy)]
+enum RuntimeValueNamespace {
+    Filter,
+    FunctionArgument,
+}
+
+impl RuntimeValueNamespace {
+    fn values<'a>(self, context: &'a RenderContext<'_>) -> &'a HashMap<String, String> {
+        match self {
+            Self::Filter => context.filters,
+            Self::FunctionArgument => context.args,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Filter => "filter",
+            Self::FunctionArgument => "function argument",
+        }
+    }
+}
+
 /// Resolve one declarative value source into an optional JSON value.
 pub(crate) fn resolve_value_source(
     value: &ValueSourceSpec,
@@ -51,70 +73,128 @@ pub(crate) fn resolve_value_source(
             Ok(Some(Value::String(rendered)))
         }
         ValueSourceSpec::Literal { value } => Ok(Some(value.clone())),
-        ValueSourceSpec::Filter { key, default } => Ok(context
-            .filters
-            .get(key)
-            .map(|v| Value::String(v.clone()))
-            .or_else(|| default.clone())),
-        ValueSourceSpec::Arg { key, default } => Ok(context
-            .args
-            .get(key)
-            .map(|v| Value::String(v.clone()))
-            .or_else(|| default.clone())),
+        ValueSourceSpec::Filter { key, default } => Ok(string_runtime_value(
+            context,
+            RuntimeValueNamespace::Filter,
+            key,
+            default.as_ref(),
+        )),
+        ValueSourceSpec::Arg { key, default } => Ok(string_runtime_value(
+            context,
+            RuntimeValueNamespace::FunctionArgument,
+            key,
+            default.as_ref(),
+        )),
         ValueSourceSpec::FilterInt { key, default } => {
-            parse_i64_value(context.filters, key, *default, "filter")
+            parse_i64_value(context, RuntimeValueNamespace::Filter, key, *default)
         }
-        ValueSourceSpec::ArgInt { key, default } => {
-            parse_i64_value(context.args, key, *default, "function argument")
-        }
+        ValueSourceSpec::ArgInt { key, default } => parse_i64_value(
+            context,
+            RuntimeValueNamespace::FunctionArgument,
+            key,
+            *default,
+        ),
         ValueSourceSpec::FilterBool { key, default } => {
-            parse_bool_value(context.filters, key, *default, "filter")
+            parse_bool_value(context, RuntimeValueNamespace::Filter, key, *default)
         }
         ValueSourceSpec::FilterSplit {
             key,
             separator,
             part,
-        } => split_filter_part(context.filters, key, separator, *part)
-            .map(|value| value.map(Value::String)),
+        } => split_value_part(
+            context,
+            RuntimeValueNamespace::Filter,
+            key,
+            separator,
+            *part,
+        )
+        .map(|value| value.map(Value::String)),
         ValueSourceSpec::FilterSplitInt {
             key,
             separator,
             part,
-        } => parse_split_i64_value(context.filters, key, separator, *part),
-        ValueSourceSpec::ArgBool { key, default } => {
-            parse_bool_value(context.args, key, *default, "function argument")
-        }
+        } => parse_split_i64_value(
+            context,
+            RuntimeValueNamespace::Filter,
+            key,
+            separator,
+            *part,
+        ),
+        ValueSourceSpec::ArgBool { key, default } => parse_bool_value(
+            context,
+            RuntimeValueNamespace::FunctionArgument,
+            key,
+            *default,
+        ),
+        ValueSourceSpec::ArgSplit {
+            key,
+            separator,
+            part,
+        } => split_value_part(
+            context,
+            RuntimeValueNamespace::FunctionArgument,
+            key,
+            separator,
+            *part,
+        )
+        .map(|value| value.map(Value::String)),
+        ValueSourceSpec::ArgSplitInt {
+            key,
+            separator,
+            part,
+        } => parse_split_i64_value(
+            context,
+            RuntimeValueNamespace::FunctionArgument,
+            key,
+            separator,
+            *part,
+        ),
         ValueSourceSpec::Input { key } => {
             Ok(context.resolved_inputs.get(key).cloned().map(Value::String))
         }
         ValueSourceSpec::State { key } => {
             Ok(context.state.get(key).map(|v| Value::String(v.clone())))
         }
-        ValueSourceSpec::NowEpochMinusSeconds { seconds } => {
-            #[expect(
-                clippy::cast_possible_wrap,
-                reason = "Current Unix epoch seconds fit within i64 for centuries"
-            )]
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs() as i64;
-            let value = now.saturating_sub(*seconds);
-            Ok(Some(json!(value)))
-        }
+        ValueSourceSpec::NowEpochMinusSeconds { seconds } => Ok(Some(now_minus_seconds(*seconds))),
     }
 }
 
+fn string_runtime_value(
+    context: &RenderContext<'_>,
+    namespace: RuntimeValueNamespace,
+    key: &str,
+    default: Option<&Value>,
+) -> Option<Value> {
+    namespace
+        .values(context)
+        .get(key)
+        .map(|value| Value::String(value.clone()))
+        .or_else(|| default.cloned())
+}
+
+fn now_minus_seconds(seconds: i64) -> Value {
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "Current Unix epoch seconds fit within i64 for centuries"
+    )]
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    json!(now.saturating_sub(seconds))
+}
+
 fn parse_i64_value(
-    values: &HashMap<String, String>,
+    context: &RenderContext<'_>,
+    namespace: RuntimeValueNamespace,
     key: &str,
     default: Option<i64>,
-    label: &str,
 ) -> Result<Option<Value>> {
-    let Some(raw) = values.get(key) else {
+    let Some(raw) = namespace.values(context).get(key) else {
         return Ok(default.map(|value| json!(value)));
     };
     let parsed = raw.parse::<i64>().map_err(|error| {
+        let label = namespace.label();
         DataFusionError::Execution(format!(
             "{label} '{key}' value '{raw}' is not a valid i64: {error}"
         ))
@@ -123,15 +203,16 @@ fn parse_i64_value(
 }
 
 fn parse_bool_value(
-    values: &HashMap<String, String>,
+    context: &RenderContext<'_>,
+    namespace: RuntimeValueNamespace,
     key: &str,
     default: Option<bool>,
-    label: &str,
 ) -> Result<Option<Value>> {
-    let Some(raw) = values.get(key) else {
+    let Some(raw) = namespace.values(context).get(key) else {
         return Ok(default.map(|value| json!(value)));
     };
     let parsed = raw.parse::<bool>().map_err(|error| {
+        let label = namespace.label();
         DataFusionError::Execution(format!(
             "{label} '{key}' value '{raw}' is not a valid bool: {error}"
         ))
@@ -140,37 +221,41 @@ fn parse_bool_value(
 }
 
 fn parse_split_i64_value(
-    filters: &HashMap<String, String>,
+    context: &RenderContext<'_>,
+    namespace: RuntimeValueNamespace,
     key: &str,
     separator: &str,
     part: usize,
 ) -> Result<Option<Value>> {
-    let Some(raw) = split_filter_part(filters, key, separator, part)? else {
+    let Some(raw) = split_value_part(context, namespace, key, separator, part)? else {
         return Ok(None);
     };
     let parsed = raw.parse::<i64>().map_err(|error| {
+        let label = namespace.label();
         DataFusionError::Execution(format!(
-            "filter '{key}' split part {part} value '{raw}' is not a valid i64: {error}"
+            "{label} '{key}' split part {part} value '{raw}' is not a valid i64: {error}"
         ))
     })?;
     Ok(Some(json!(parsed)))
 }
 
-fn split_filter_part(
-    filters: &HashMap<String, String>,
+fn split_value_part(
+    context: &RenderContext<'_>,
+    namespace: RuntimeValueNamespace,
     key: &str,
     separator: &str,
     part: usize,
 ) -> Result<Option<String>> {
-    let Some(filter) = filters.get(key) else {
+    let Some(value) = namespace.values(context).get(key) else {
         return Ok(None);
     };
-    filter
+    value
         .split(separator)
         .nth(part)
         .map_or_else(|| {
+            let label = namespace.label();
             Err(DataFusionError::Execution(format!(
-                "filter '{key}' value '{filter}' does not contain split part {part} using separator '{separator}'"
+                "{label} '{key}' value '{value}' does not contain split part {part} using separator '{separator}'"
             )))
         }, |value| Ok(Some(value.to_string())))
 }
@@ -306,6 +391,8 @@ pub(crate) fn validate_value_source_inputs(
         | ValueSourceSpec::Arg { .. }
         | ValueSourceSpec::ArgInt { .. }
         | ValueSourceSpec::ArgBool { .. }
+        | ValueSourceSpec::ArgSplit { .. }
+        | ValueSourceSpec::ArgSplitInt { .. }
         | ValueSourceSpec::State { .. }
         | ValueSourceSpec::NowEpochMinusSeconds { .. } => Ok(()),
     }

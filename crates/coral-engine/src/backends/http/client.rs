@@ -19,6 +19,7 @@ use crate::backends::http::auth::{resolve_auth_headers, validate_auth_inputs};
 use crate::backends::http::rate_limit::{RateLimitDecision, check_rate_limit};
 use crate::backends::http::target::HttpFetchTarget;
 use crate::backends::shared::json_path::get_path_value;
+use crate::backends::shared::response_rows::extract_rows as shared_extract_rows;
 use crate::backends::shared::template::{
     RenderContext, render_template, resolve_value_source, validate_input_dependencies,
     validate_value_source_inputs, value_to_string,
@@ -26,7 +27,7 @@ use crate::backends::shared::template::{
 use coral_spec::backends::http::{HttpSourceManifest, RateLimitSpec};
 use coral_spec::{
     AuthSpec, BodySpec, HeaderSpec, HttpMethod, PageSizeSpec, ParsedTemplate, RequestRouteSpec,
-    RequestSpec as ManifestRequestSpec, ResponseBodyFormat, RowStrategy, ValidatedPagination,
+    RequestSpec as ManifestRequestSpec, ResponseBodyFormat, ValidatedPagination,
     ValidatedPaginationMode,
 };
 
@@ -74,6 +75,13 @@ struct PageState {
 enum RequestBody {
     Json(Value),
     Text(String),
+}
+
+#[derive(Debug, Clone, Copy)]
+struct FetchLimits {
+    effective_limit: Option<usize>,
+    page_size_limit: Option<usize>,
+    max_search_calls: Option<usize>,
 }
 
 struct OutgoingHttpRequest<'a> {
@@ -169,7 +177,7 @@ impl HttpSourceClient {
         sql_limit: Option<usize>,
     ) -> Result<Vec<Value>> {
         let mut all_rows = Vec::new();
-        let effective_limit = sql_limit.or(target.fetch_limit_default());
+        let limits = resolve_fetch_limits(target, sql_limit);
         let pagination = target
             .pagination()
             .validated(&self.source_schema, target.name())
@@ -182,7 +190,7 @@ impl HttpSourceClient {
                     detail: error.to_string(),
                 })
             })?;
-        let page_size = resolve_page_size(pagination.page_size.as_ref(), sql_limit);
+        let page_size = resolve_page_size(pagination.page_size.as_ref(), limits.page_size_limit);
 
         let active_request = target.resolved_request();
 
@@ -320,14 +328,21 @@ impl HttpSourceClient {
                 }
             }
 
-            let mut rows = extract_rows(target, &payload)?;
+            let mut rows = extract_rows(target, &payload);
             let rows_on_page = rows.len();
             all_rows.append(&mut rows);
 
-            if let Some(limit) = effective_limit
+            if let Some(limit) = limits.effective_limit
                 && all_rows.len() >= limit
             {
                 all_rows.truncate(limit);
+                break;
+            }
+
+            if limits
+                .max_search_calls
+                .is_some_and(|max_calls| page_count >= max_calls)
+            {
                 break;
             }
 
@@ -1100,6 +1115,13 @@ fn build_request_body(
             }
             let mut root = Value::Object(Map::new());
             for field in fields {
+                if field
+                    .when_arg
+                    .as_ref()
+                    .is_some_and(|arg| !render_context.args.contains_key(arg))
+                {
+                    continue;
+                }
                 if let Some(value) = resolve_value_source(&field.value, render_context)? {
                     set_path_value(&mut root, &field.path, value)?;
                 }
@@ -1168,9 +1190,30 @@ fn apply_pagination_body_fields(
     Ok(())
 }
 
-fn resolve_page_size(spec: Option<&PageSizeSpec>, sql_limit: Option<usize>) -> Option<usize> {
+fn resolve_fetch_limits(target: &HttpFetchTarget, sql_limit: Option<usize>) -> FetchLimits {
+    let Some(search_limits) = target.search_limits() else {
+        return FetchLimits {
+            effective_limit: sql_limit.or(target.fetch_limit_default()),
+            page_size_limit: sql_limit,
+            max_search_calls: None,
+        };
+    };
+
+    let requested_top_k = sql_limit.unwrap_or(search_limits.default_top_k);
+    let max_candidates = search_limits
+        .max_top_k
+        .saturating_mul(search_limits.max_calls_per_query);
+
+    FetchLimits {
+        effective_limit: Some(requested_top_k.min(max_candidates)),
+        page_size_limit: Some(requested_top_k.min(search_limits.max_top_k)),
+        max_search_calls: Some(search_limits.max_calls_per_query),
+    }
+}
+
+fn resolve_page_size(spec: Option<&PageSizeSpec>, requested_limit: Option<usize>) -> Option<usize> {
     let spec = spec?;
-    let base = sql_limit.unwrap_or(spec.default);
+    let base = requested_limit.unwrap_or(spec.default);
     Some(base.min(spec.max).max(1))
 }
 
@@ -1358,95 +1401,8 @@ fn set_path_value_at(cursor: &mut Value, path: &[String], value: Value) -> Resul
     set_path_value_at(next, tail, value)
 }
 
-#[expect(
-    clippy::unnecessary_wraps,
-    reason = "Keeping a Result return type preserves a uniform extraction interface for callers"
-)]
-fn extract_rows(target: &HttpFetchTarget, payload: &Value) -> Result<Vec<Value>> {
-    match target.response().row_strategy {
-        RowStrategy::Direct => {
-            let root = if target.response().rows_path.is_empty() {
-                payload
-            } else {
-                get_path_value(payload, &target.response().rows_path).unwrap_or(&Value::Null)
-            };
-            match root {
-                Value::Array(items) => Ok(items.clone()),
-                Value::Null => Ok(Vec::new()),
-                other => Ok(vec![other.clone()]),
-            }
-        }
-        RowStrategy::SeriesPointList => {
-            let mut rows = Vec::new();
-            let series = get_path_value(payload, &["series".to_string()])
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default();
-
-            for item in series {
-                let metric = item
-                    .get("metric")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string();
-                let scope = item
-                    .get("scope")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string();
-                if let Some(pointlist) = item.get("pointlist").and_then(Value::as_array) {
-                    for point in pointlist {
-                        if let Some(pair) = point.as_array() {
-                            let Some(raw_timestamp) = pair.first().and_then(Value::as_f64) else {
-                                continue;
-                            };
-                            let Some(value) = pair.get(1).and_then(Value::as_f64) else {
-                                continue;
-                            };
-                            #[expect(
-                                clippy::cast_possible_truncation,
-                                reason = "Series timestamps are integral epoch values that fit in i64"
-                            )]
-                            let timestamp = raw_timestamp as i64;
-                            rows.push(json!({
-                                "metric": metric,
-                                "scope": scope,
-                                "timestamp": timestamp,
-                                "value": value
-                            }));
-                        }
-                    }
-                }
-            }
-
-            Ok(rows)
-        }
-        RowStrategy::DictEntries => {
-            let root = if target.response().rows_path.is_empty() {
-                payload
-            } else {
-                get_path_value(payload, &target.response().rows_path).unwrap_or(&Value::Null)
-            };
-            match root {
-                Value::Object(map) => {
-                    let mut rows = Vec::with_capacity(map.len());
-                    for (key, value) in map {
-                        let mut row = if let Value::Object(obj) = value {
-                            obj.clone()
-                        } else {
-                            let mut row = serde_json::Map::new();
-                            row.insert("_value".to_string(), value.clone());
-                            row
-                        };
-                        row.insert("_key".to_string(), Value::String(key.clone()));
-                        rows.push(Value::Object(row));
-                    }
-                    Ok(rows)
-                }
-                _ => Ok(Vec::new()),
-            }
-        }
-    }
+fn extract_rows(target: &HttpFetchTarget, payload: &Value) -> Vec<Value> {
+    shared_extract_rows(target.response(), payload)
 }
 
 fn extract_next_link_url(
@@ -1705,6 +1661,26 @@ mod tests {
                 "key": key,
                 "default": default,
             }),
+            ValueSourceSpec::ArgSplit {
+                key,
+                separator,
+                part,
+            } => json!({
+                "from": "arg_split",
+                "key": key,
+                "separator": separator,
+                "part": part,
+            }),
+            ValueSourceSpec::ArgSplitInt {
+                key,
+                separator,
+                part,
+            } => json!({
+                "from": "arg_split_int",
+                "key": key,
+                "separator": separator,
+                "part": part,
+            }),
             ValueSourceSpec::Input { key } => json!({
                 "from": "input",
                 "key": key,
@@ -1929,6 +1905,33 @@ mod tests {
     }
 
     #[test]
+    fn resolve_value_source_splits_function_argument_parts() {
+        let args = HashMap::from([("issue".to_string(), "SOURCE-496".to_string())]);
+
+        let team = resolve_value_source(
+            &ValueSourceSpec::ArgSplit {
+                key: "issue".to_string(),
+                separator: "-".to_string(),
+                part: 0,
+            },
+            &test_render_context(&HashMap::new(), &args, &BTreeMap::new()),
+        )
+        .expect("split function argument should resolve");
+        let number = resolve_value_source(
+            &ValueSourceSpec::ArgSplitInt {
+                key: "issue".to_string(),
+                separator: "-".to_string(),
+                part: 1,
+            },
+            &test_render_context(&HashMap::new(), &args, &BTreeMap::new()),
+        )
+        .expect("split integer function argument should resolve");
+
+        assert_eq!(team, Some(json!("SOURCE")));
+        assert_eq!(number, Some(json!(496)));
+    }
+
+    #[test]
     fn resolve_value_source_rejects_missing_filter_split_part() {
         let filters = HashMap::from([("issue_identifier".to_string(), "SOURCE496".to_string())]);
 
@@ -1945,6 +1948,27 @@ mod tests {
         assert!(
             error.to_string().contains(
                 "filter 'issue_identifier' value 'SOURCE496' does not contain split part 1"
+            )
+        );
+    }
+
+    #[test]
+    fn resolve_value_source_rejects_missing_function_argument_split_part() {
+        let args = HashMap::from([("issue".to_string(), "SOURCE496".to_string())]);
+
+        let error = resolve_value_source(
+            &ValueSourceSpec::ArgSplit {
+                key: "issue".to_string(),
+                separator: "-".to_string(),
+                part: 1,
+            },
+            &test_render_context(&HashMap::new(), &args, &BTreeMap::new()),
+        )
+        .expect_err("missing split function argument part should fail");
+
+        assert!(
+            error.to_string().contains(
+                "function argument 'issue' value 'SOURCE496' does not contain split part 1"
             )
         );
     }
@@ -1967,6 +1991,27 @@ mod tests {
             error.to_string().contains(
                 "filter 'issue_identifier' value 'SOURCE496' does not contain split part 1"
             )
+        );
+    }
+
+    #[test]
+    fn resolve_value_source_rejects_invalid_function_argument_split_int_part() {
+        let args = HashMap::from([("issue".to_string(), "SOURCE-abc".to_string())]);
+
+        let error = resolve_value_source(
+            &ValueSourceSpec::ArgSplitInt {
+                key: "issue".to_string(),
+                separator: "-".to_string(),
+                part: 1,
+            },
+            &test_render_context(&HashMap::new(), &args, &BTreeMap::new()),
+        )
+        .expect_err("invalid split function argument int should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("function argument 'issue' split part 1 value 'abc' is not a valid i64")
         );
     }
 
@@ -2482,7 +2527,7 @@ mod tests {
             }
         });
 
-        let rows = extract_rows(&test_http_request_target(&table), &payload).unwrap();
+        let rows = extract_rows(&test_http_request_target(&table), &payload);
         assert_eq!(rows.len(), 2);
         for row in &rows {
             assert!(row.get("_key").is_some());
@@ -2509,7 +2554,7 @@ mod tests {
             }
         });
 
-        let rows = extract_rows(&test_http_request_target(&table), &payload).unwrap();
+        let rows = extract_rows(&test_http_request_target(&table), &payload);
         assert_eq!(rows.len(), 2);
         for row in &rows {
             assert!(row.get("_key").is_some());
@@ -2523,7 +2568,7 @@ mod tests {
             make_table_with_row_strategy(RowStrategy::DictEntries, vec!["result".to_string()]);
         let payload = json!({ "result": null });
 
-        let rows = extract_rows(&test_http_request_target(&table), &payload).unwrap();
+        let rows = extract_rows(&test_http_request_target(&table), &payload);
         assert!(rows.is_empty());
     }
 
@@ -2533,7 +2578,7 @@ mod tests {
             make_table_with_row_strategy(RowStrategy::DictEntries, vec!["missing".to_string()]);
         let payload = json!({ "result": { "a": 1 } });
 
-        let rows = extract_rows(&test_http_request_target(&table), &payload).unwrap();
+        let rows = extract_rows(&test_http_request_target(&table), &payload);
         assert!(rows.is_empty());
     }
 
@@ -2543,7 +2588,7 @@ mod tests {
             make_table_with_row_strategy(RowStrategy::DictEntries, vec!["result".to_string()]);
         let payload = json!({ "result": [1, 2, 3] });
 
-        let rows = extract_rows(&test_http_request_target(&table), &payload).unwrap();
+        let rows = extract_rows(&test_http_request_target(&table), &payload);
         assert!(rows.is_empty());
     }
 
@@ -2553,7 +2598,7 @@ mod tests {
             make_table_with_row_strategy(RowStrategy::DictEntries, vec!["result".to_string()]);
         let payload = json!({ "result": {} });
 
-        let rows = extract_rows(&test_http_request_target(&table), &payload).unwrap();
+        let rows = extract_rows(&test_http_request_target(&table), &payload);
         assert!(rows.is_empty());
     }
 
@@ -2575,7 +2620,7 @@ mod tests {
             }]
         });
 
-        let rows = extract_rows(&test_http_request_target(&table), &payload).unwrap();
+        let rows = extract_rows(&test_http_request_target(&table), &payload);
 
         assert_eq!(
             rows,

@@ -29,3 +29,11 @@ registration, and query execution.
   policy or transport concerns.
 - Keep this crate transport-neutral. Arrow IPC, CLI formatting, and MCP-facing
   shaping belong outside `coral-engine`.
+
+## Adding or restructuring a backend
+
+If you are adding a new backend under `src/backends/<name>/` or changing the
+module layout of an existing one, read the module-layout conventions in the
+top-of-file doc-comment on `src/backends/mod.rs` first. It defines which files
+a backend module should have, what each one is responsible for, and where the
+shared cross-backend helpers live.

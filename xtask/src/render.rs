@@ -1,7 +1,7 @@
 //! MDX rendering for generator-owned docs pages.
 //!
 //! Produces the exact byte-for-byte contents written to generated Mintlify
-//! pages, including the bundled-sources reference and changelog.
+//! pages, including source catalog references and changelog.
 
 use std::fmt::Write as _;
 
@@ -96,6 +96,58 @@ pub(crate) fn index_page(manifests: &[ValidatedSourceManifest]) -> String {
     }
 
     out.push_str(INDEX_OUTRO);
+    out
+}
+
+/// Render the `community-sources.mdx` catalog page.
+pub(crate) fn community_sources_page(manifests: &[ValidatedSourceManifest]) -> String {
+    let mut out = String::new();
+    out.push_str(COMMUNITY_FRONTMATTER);
+    out.push_str("{/* AUTO-GENERATED — DO NOT EDIT. Run `make docs-generate` to update. */}\n\n");
+    out.push_str(COMMUNITY_INTRO);
+
+    out.push_str("\n## Install a community source\n\n");
+    out.push_str("Clone the Coral repository so you have the source specs locally:\n\n");
+    out.push_str("```shellscript\n");
+    out.push_str("git clone https://github.com/withcoral/coral.git\n");
+    out.push_str("cd coral\n");
+    out.push_str("```\n\n");
+    out.push_str(
+        "Review the source's manifest and README when one exists, then add it from its manifest file:\n\n",
+    );
+    out.push_str("```shellscript\n");
+    out.push_str("coral source add --file sources/community/hn/manifest.yaml\n");
+    out.push_str("coral source test hn\n");
+    out.push_str("```\n\n");
+    out.push_str(
+        "If a source declares inputs, Coral reads them from environment variables by default. Add `--interactive` to be prompted instead:\n\n",
+    );
+    out.push_str("```shellscript\n");
+    out.push_str("coral source add --interactive --file sources/community/fly/manifest.yaml\n");
+    out.push_str("```\n\n");
+    out.push_str(
+        "After importing, the source behaves like any other installed source. It appears in `coral source list`, works with `coral source info <name> --verbose`, and exposes tables through `coral.tables`, `coral.columns`, the CLI, and MCP.\n",
+    );
+
+    out.push_str("\n## Available community sources\n\n");
+    out.push_str("| Source | Description |\n");
+    out.push_str("| --- | --- |\n");
+    for manifest in manifests {
+        let name = manifest.schema_name();
+        let description = manifest.description();
+        let description = if description.is_empty() {
+            format!("Coral community source: {name}")
+        } else {
+            escape_mdx(&flatten_for_table_cell(description))
+        };
+        writeln!(
+            out,
+            "| [{name}](https://github.com/withcoral/coral/tree/main/sources/community/{name}) | {description} |",
+        )
+        .expect("writing to String is infallible");
+    }
+
+    out.push_str(COMMUNITY_OUTRO);
     out
 }
 
@@ -304,6 +356,13 @@ fn escape_prose_into(slice: &str, out: &mut String) {
 const INDEX_FRONTMATTER: &str =
     "---\ntitle: \"Bundled sources\"\ndescription: \"Data sources that ship with Coral.\"\n---\n\n";
 
+const COMMUNITY_FRONTMATTER: &str = concat!(
+    "---\n",
+    "title: \"Community sources\"\n",
+    "description: \"Discover community-maintained Coral source specs and import them into your workspace.\"\n",
+    "---\n\n",
+);
+
 const CHANGELOG_FRONTMATTER: &str = concat!(
     "---\n",
     "title: \"Changelog\"\n",
@@ -343,9 +402,29 @@ const INDEX_OUTRO: &str = concat!(
     "[Discord](https://discord.gg/h9aun8KpFF) or [GitHub](https://github.com/withcoral/coral/issues).\n",
 );
 
+const COMMUNITY_INTRO: &str = concat!(
+    "Community sources are source specs built and maintained by our community. These are kept in the Coral repository under\n",
+    "[sources/community](https://github.com/withcoral/coral/tree/main/sources/community).\n",
+    "\n",
+    "<Note>\n",
+    "  Community sources are not included in `coral source discover`, and `coral\n",
+    "  source add <name>` only installs [bundled sources](/reference/bundled-sources).\n",
+    "  Import community sources\n",
+    "  with `coral source add --file`.\n",
+    "</Note>\n",
+);
+
+const COMMUNITY_OUTRO: &str = concat!(
+    "\n## If a source is missing\n\n",
+    "If the source you need is not bundled and does not have a community spec yet, ",
+    "[write a custom source spec](/guides/write-a-custom-source). If the source is ",
+    "generally useful, open a pull request that adds it under `sources/community` ",
+    "with a `manifest.yaml` and source-specific README.\n",
+);
+
 #[cfg(test)]
 mod tests {
-    use super::{changelog_page, escape_mdx, index_page};
+    use super::{changelog_page, community_sources_page, escape_mdx, index_page};
     use coral_spec::parse_source_manifest_yaml;
 
     const SAMPLE_MANIFEST: &str = r#"
@@ -547,5 +626,15 @@ tables:
         let demo = parse_source_manifest_yaml(SAMPLE_MANIFEST).expect("parse demo");
         let minimal = parse_source_manifest_yaml(NO_INPUTS_MANIFEST).expect("parse minimal");
         insta::assert_snapshot!("index_page_renders_rows", index_page(&[demo, minimal]));
+    }
+
+    #[test]
+    fn community_sources_page_renders_catalog() {
+        let demo = parse_source_manifest_yaml(SAMPLE_MANIFEST).expect("parse demo");
+        let minimal = parse_source_manifest_yaml(NO_INPUTS_MANIFEST).expect("parse minimal");
+        insta::assert_snapshot!(
+            "community_sources_page_renders_catalog",
+            community_sources_page(&[demo, minimal])
+        );
     }
 }

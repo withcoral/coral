@@ -1,0 +1,340 @@
+name: kafka
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query clusters, brokers, topics, consumer groups, and per-partition lag
+  from Apache Kafka via the Confluent Kafka REST Proxy (open source).
+
+inputs:
+  KAFKA_REST_URL:
+    kind: variable
+    default: "http://localhost:8082"
+    hint: |
+      Base URL of your Confluent Kafka REST Proxy instance.
+      Default is `http://localhost:8082` for a local instance.
+      See https://github.com/confluentinc/kafka-rest for setup instructions.
+  KAFKA_REST_USER:
+    kind: variable
+    default: ""
+    hint: |
+      Username for HTTP Basic authentication against the REST Proxy.
+      Leave blank when running an unauthenticated local instance.
+      Required when the REST Proxy is fronted by Confluent RBAC or a
+      reverse proxy with Basic auth enabled.
+  KAFKA_REST_PASSWORD:
+    kind: secret
+    hint: |
+      Password for HTTP Basic authentication against the REST Proxy.
+      Pair with KAFKA_REST_USER. Required when authentication is enabled.
+
+base_url: "{{input.KAFKA_REST_URL}}"
+
+auth:
+  type: BasicAuth
+  username: "{{input.KAFKA_REST_USER}}"
+  password: "{{input.KAFKA_REST_PASSWORD}}"
+
+test_queries:
+  - SELECT * FROM kafka.cluster LIMIT 1
+
+tables:
+  - name: cluster
+    description: The Kafka cluster connected to this REST Proxy instance.
+    guide: >
+      Returns a single row with the cluster_id. Start here — the cluster_id
+      value is required by all other tables as a required filter. REST Proxy
+      is always connected to exactly one cluster.
+    request:
+      method: GET
+      path: /v3/clusters
+    response:
+      rows_path: [data]
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: cluster_id
+        type: Utf8
+        nullable: false
+        description: >-
+          Unique cluster ID. Use this as the cluster_id filter in all
+          other tables.
+        expr: {kind: path, path: [cluster_id]}
+
+  - name: brokers
+    description: Brokers in the Kafka cluster.
+    guide: >
+      Requires cluster_id filter. Use the cluster_id from the cluster table.
+      Each row is one broker. broker_id is the Kafka broker ID. host and port
+      are the advertised listener address.
+    filters:
+      - name: cluster_id
+        required: true
+    request:
+      method: GET
+      path: /v3/clusters/{{filter.cluster_id}}/brokers
+    response:
+      rows_path: [data]
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: broker_id
+        type: Int64
+        nullable: false
+        description: Kafka broker ID.
+        expr: {kind: path, path: [broker_id]}
+      - name: host
+        type: Utf8
+        nullable: true
+        description: Broker advertised hostname.
+        expr: {kind: path, path: [host]}
+      - name: port
+        type: Int64
+        nullable: true
+        description: Broker advertised port.
+        expr: {kind: path, path: [port]}
+      - name: rack
+        type: Utf8
+        nullable: true
+        description: Rack ID for rack-aware replication (null if not configured).
+        expr: {kind: path, path: [rack]}
+      - name: cluster_id
+        type: Utf8
+        nullable: true
+        description: Cluster ID (echoes the cluster_id filter).
+        expr: {kind: from_filter, key: cluster_id}
+        virtual: true
+
+  - name: topics
+    description: Topics in the Kafka cluster.
+    guide: >
+      Requires cluster_id filter. Each row is one topic. topic_name is the
+      stable identifier used in topic_configs. is_internal is true for
+      internal Kafka topics such as __consumer_offsets. partitions_count is
+      the number of partitions. replication_factor is the replication factor.
+    filters:
+      - name: cluster_id
+        required: true
+    request:
+      method: GET
+      path: /v3/clusters/{{filter.cluster_id}}/topics
+    response:
+      rows_path: [data]
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: topic_name
+        type: Utf8
+        nullable: false
+        description: Topic name. Use as the topic_name filter in topic_configs.
+        expr: {kind: path, path: [topic_name]}
+      - name: is_internal
+        type: Boolean
+        nullable: true
+        description: Whether this is an internal Kafka topic (e.g. __consumer_offsets).
+        expr: {kind: path, path: [is_internal]}
+      - name: replication_factor
+        type: Int64
+        nullable: true
+        description: Replication factor for this topic.
+        expr: {kind: path, path: [replication_factor]}
+      - name: partitions_count
+        type: Int64
+        nullable: true
+        description: Number of partitions for this topic.
+        expr: {kind: path, path: [partitions_count]}
+      - name: cluster_id
+        type: Utf8
+        nullable: true
+        description: Cluster ID (echoes the cluster_id filter).
+        expr: {kind: from_filter, key: cluster_id}
+        virtual: true
+
+  - name: topic_configs
+    description: Configuration key-value pairs for a specific Kafka topic.
+    guide: >
+      Requires cluster_id and topic_name filters. Use topic names from the
+      topics table. Each row is one configuration entry. source indicates
+      where the value originates (DEFAULT_CONFIG, DYNAMIC_TOPIC_CONFIG,
+      DYNAMIC_DEFAULT_BROKER_CONFIG, etc.). is_default is true when the
+      value matches the broker default. Topic names containing URL-reserved
+      characters (e.g. /, ?, #) are not supported as filter values.
+    filters:
+      - name: cluster_id
+        required: true
+      - name: topic_name
+        required: true
+    request:
+      method: GET
+      path: /v3/clusters/{{filter.cluster_id}}/topics/{{filter.topic_name}}/configs
+    response:
+      rows_path: [data]
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Configuration key name (e.g. retention.ms, cleanup.policy).
+        expr: {kind: path, path: [name]}
+      - name: value
+        type: Utf8
+        nullable: true
+        description: Current configuration value.
+        expr: {kind: path, path: [value]}
+      - name: is_default
+        type: Boolean
+        nullable: true
+        description: Whether the value equals the broker default.
+        expr: {kind: path, path: [is_default]}
+      - name: is_read_only
+        type: Boolean
+        nullable: true
+        description: Whether this configuration is read-only.
+        expr: {kind: path, path: [is_read_only]}
+      - name: is_sensitive
+        type: Boolean
+        nullable: true
+        description: Whether the value is sensitive (masked).
+        expr: {kind: path, path: [is_sensitive]}
+      - name: source
+        type: Utf8
+        nullable: true
+        description: >-
+          Configuration source (DEFAULT_CONFIG, DYNAMIC_TOPIC_CONFIG,
+          DYNAMIC_DEFAULT_BROKER_CONFIG, STATIC_BROKER_CONFIG, etc.).
+        expr: {kind: path, path: [source]}
+      - name: topic_name
+        type: Utf8
+        nullable: true
+        description: Topic name (echoes the topic_name filter).
+        expr: {kind: from_filter, key: topic_name}
+        virtual: true
+      - name: cluster_id
+        type: Utf8
+        nullable: true
+        description: Cluster ID (echoes the cluster_id filter).
+        expr: {kind: from_filter, key: cluster_id}
+        virtual: true
+
+  - name: consumer_groups
+    description: Consumer groups in the Kafka cluster.
+    guide: >
+      Requires cluster_id filter. Each row is one consumer group.
+      consumer_group_id is the group identifier — use it as the
+      consumer_group_id filter in consumer_group_lags. state is one of STABLE, EMPTY, DEAD,
+      PREPARING_REBALANCE, COMPLETING_REBALANCE, or UNKNOWN.
+      is_simple is true for simple (non-coordinated) consumers.
+    filters:
+      - name: cluster_id
+        required: true
+    request:
+      method: GET
+      path: /v3/clusters/{{filter.cluster_id}}/consumer-groups
+    response:
+      rows_path: [data]
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: consumer_group_id
+        type: Utf8
+        nullable: false
+        description: >-
+          Consumer group ID. Use as the consumer_group_id filter in
+          consumer_group_lags.
+        expr: {kind: path, path: [consumer_group_id]}
+      - name: state
+        type: Utf8
+        nullable: true
+        description: >-
+          Group state (STABLE, EMPTY, DEAD, PREPARING_REBALANCE,
+          COMPLETING_REBALANCE, UNKNOWN).
+        expr: {kind: path, path: [state]}
+      - name: partition_assignor
+        type: Utf8
+        nullable: true
+        description: Partition assignment strategy used by the group.
+        expr: {kind: path, path: [partition_assignor]}
+      - name: is_simple
+        type: Boolean
+        nullable: true
+        description: Whether this is a simple (non-coordinated) consumer group.
+        expr: {kind: path, path: [is_simple]}
+      - name: cluster_id
+        type: Utf8
+        nullable: true
+        description: Cluster ID (echoes the cluster_id filter).
+        expr: {kind: from_filter, key: cluster_id}
+        virtual: true
+
+  - name: consumer_group_lags
+    description: Per-partition lag for a specific consumer group.
+    guide: >
+      Requires cluster_id and consumer_group_id filters. Use
+      consumer_group_id values from the consumer_groups table. Each row is
+      one topic-partition assignment. lag is the difference between
+      log_end_offset and current_offset. consumer_id identifies which
+      consumer instance holds the partition. Consumer group IDs containing
+      URL-reserved characters (e.g. /, ?, #) are not supported as filter
+      values.
+    filters:
+      - name: cluster_id
+        required: true
+      - name: consumer_group_id
+        required: true
+    request:
+      method: GET
+      path: /v3/clusters/{{filter.cluster_id}}/consumer-groups/{{filter.consumer_group_id}}/lags
+    response:
+      rows_path: [data]
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: topic_name
+        type: Utf8
+        nullable: false
+        description: Topic name for this partition assignment.
+        expr: {kind: path, path: [topic_name]}
+      - name: partition_id
+        type: Int64
+        nullable: false
+        description: Partition number.
+        expr: {kind: path, path: [partition_id]}
+      - name: consumer_id
+        type: Utf8
+        nullable: true
+        description: ID of the consumer instance assigned to this partition.
+        expr: {kind: path, path: [consumer_id]}
+      - name: current_offset
+        type: Int64
+        nullable: true
+        description: Last committed offset for this partition.
+        expr: {kind: path, path: [current_offset]}
+      - name: log_end_offset
+        type: Int64
+        nullable: true
+        description: Latest available offset (high watermark) for this partition.
+        expr: {kind: path, path: [log_end_offset]}
+      - name: lag
+        type: Int64
+        nullable: true
+        description: Messages behind (log_end_offset - current_offset).
+        expr: {kind: path, path: [lag]}
+      - name: consumer_group_id
+        type: Utf8
+        nullable: true
+        description: Consumer group ID (echoes the consumer_group_id filter).
+        expr: {kind: from_filter, key: consumer_group_id}
+        virtual: true
+      - name: cluster_id
+        type: Utf8
+        nullable: true
+        description: Cluster ID (echoes the cluster_id filter).
+        expr: {kind: from_filter, key: cluster_id}
+        virtual: true

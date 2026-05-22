@@ -1,26 +1,15 @@
-use coral_api::v1::{PaginationResponse, Table, TableSummary};
-use serde_json::{Map, Value, json};
+use coral_api::v1::{PaginationResponse, TableSummary};
+use serde::Serialize;
+use serde_json::{Map, Value};
 
 pub(crate) fn queryable_table_summary_value(table: &TableSummary) -> Value {
-    json!({
-        "schema_name": table.schema_name,
-        "table_name": table.name,
-        "name": format!("{}.{}", table.schema_name, table.name),
-        "sql_reference": format_schema_table_equivalent(&table.schema_name, &table.name),
-        "description": table.description,
-        "guide": table.guide,
-        "required_filters": table.required_filters,
-    })
+    serde_json::to_value(QueryableTableSummaryValue::from(table))
+        .expect("queryable table summary value serializes")
 }
 
 pub(crate) fn missing_table_summary_value(table: &TableSummary) -> Value {
-    json!({
-        "schema_name": table.schema_name,
-        "table_name": table.name,
-        "name": format!("{}.{}", table.schema_name, table.name),
-        "description": table.description,
-        "required_filters": table.required_filters,
-    })
+    serde_json::to_value(MissingTableSummaryValue::from(table))
+        .expect("missing table summary value serializes")
 }
 
 pub(crate) fn queryable_table_summary_values(tables: &[TableSummary]) -> Vec<Value> {
@@ -34,17 +23,6 @@ pub(crate) fn queryable_table_summary_values(tables: &[TableSummary]) -> Vec<Val
             .cmp(&right.get("name").and_then(Value::as_str))
     });
     summaries
-}
-
-pub(crate) fn table_to_summary(table: &Table) -> TableSummary {
-    TableSummary {
-        workspace: table.workspace.clone(),
-        schema_name: table.schema_name.clone(),
-        name: table.name.clone(),
-        description: table.description.clone(),
-        required_filters: table.required_filters.clone(),
-        guide: table.guide.clone(),
-    }
 }
 
 pub(crate) fn paged_collection_value(
@@ -61,24 +39,73 @@ pub(crate) fn insert_pagination_fields(
     value: &mut Map<String, Value>,
     pagination: &PaginationResponse,
 ) {
-    value.insert("total".to_string(), json!(pagination.total_count));
-    value.insert("limit".to_string(), json!(pagination.limit));
-    value.insert("offset".to_string(), json!(pagination.offset));
-    value.insert("has_more".to_string(), json!(pagination.has_more));
+    value.insert("total".to_string(), Value::from(pagination.total_count));
+    value.insert("limit".to_string(), Value::from(pagination.limit));
+    value.insert("offset".to_string(), Value::from(pagination.offset));
+    value.insert("has_more".to_string(), Value::from(pagination.has_more));
     if pagination.has_more {
-        value.insert("next_offset".to_string(), json!(pagination.next_offset));
+        value.insert(
+            "next_offset".to_string(),
+            Value::from(pagination.next_offset),
+        );
+    }
+}
+
+#[derive(Serialize)]
+struct QueryableTableSummaryValue<'a> {
+    schema_name: &'a str,
+    table_name: &'a str,
+    name: String,
+    sql_reference: String,
+    description: &'a str,
+    guide: &'a str,
+    required_filters: &'a [String],
+}
+
+impl<'a> From<&'a TableSummary> for QueryableTableSummaryValue<'a> {
+    fn from(table: &'a TableSummary) -> Self {
+        Self {
+            schema_name: &table.schema_name,
+            table_name: &table.name,
+            name: format!("{}.{}", table.schema_name, table.name),
+            sql_reference: format_schema_table_equivalent(&table.schema_name, &table.name),
+            description: &table.description,
+            guide: &table.guide,
+            required_filters: &table.required_filters,
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct MissingTableSummaryValue<'a> {
+    schema_name: &'a str,
+    table_name: &'a str,
+    name: String,
+    description: &'a str,
+    required_filters: &'a [String],
+}
+
+impl<'a> From<&'a TableSummary> for MissingTableSummaryValue<'a> {
+    fn from(table: &'a TableSummary) -> Self {
+        Self {
+            schema_name: &table.schema_name,
+            table_name: &table.name,
+            name: format!("{}.{}", table.schema_name, table.name),
+            description: &table.description,
+            required_filters: &table.required_filters,
+        }
     }
 }
 
 pub(crate) fn format_schema_table_equivalent(schema_name: &str, table_name: &str) -> String {
     format!(
         "{}.{}",
-        quote_identifier_if_needed(schema_name),
-        quote_identifier_if_needed(table_name)
+        format_sql_identifier(schema_name),
+        format_sql_identifier(table_name)
     )
 }
 
-fn quote_identifier_if_needed(identifier: &str) -> String {
+pub(crate) fn format_sql_identifier(identifier: &str) -> String {
     if identifier_needs_quotes(identifier) {
         format!("\"{}\"", identifier.replace('"', "\"\""))
     } else {

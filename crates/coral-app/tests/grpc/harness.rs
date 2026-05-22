@@ -2,8 +2,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use coral_api::v1::{
-    ExecuteSqlRequest, ImportSourceRequest, ListSourcesRequest, ListTablesRequest, Source,
-    SourceSecret, SourceVariable, Table, ValidateSourceRequest, ValidateSourceResponse,
+    ExecuteSqlRequest, ImportSourceRequest, ListCatalogRequest, ListSourcesRequest,
+    PaginationRequest, Source, SourceSecret, SourceVariable, TableSummary, ValidateSourceRequest,
+    ValidateSourceResponse, catalog_item, import_source_response,
 };
 use coral_client::{
     AppClient, CatalogClient, QueryClient, SourceClient, batches_to_json_rows,
@@ -81,17 +82,26 @@ impl GrpcHarness {
         variables: Vec<SourceVariable>,
         secrets: Vec<SourceSecret>,
     ) -> Source {
-        self.source_client()
+        let mut stream = self
+            .source_client()
             .import_source(Request::new(ImportSourceRequest {
                 workspace: Some(default_workspace()),
                 manifest_yaml,
                 variables,
                 secrets,
+                oauth_credential_retrievals: Vec::new(),
             }))
             .await
             .expect("import source")
-            .into_inner()
-            .source
+            .into_inner();
+        stream
+            .message()
+            .await
+            .expect("import source stream")
+            .and_then(|response| match response.event {
+                Some(import_source_response::Event::Source(source)) => Some(source),
+                _ => None,
+            })
             .expect("import source response")
     }
 
@@ -106,19 +116,27 @@ impl GrpcHarness {
             .sources
     }
 
-    pub(crate) async fn list_tables(&self) -> Vec<Table> {
+    pub(crate) async fn list_tables(&self) -> Vec<TableSummary> {
         self.catalog_client()
-            .list_tables(Request::new(ListTablesRequest {
+            .list_catalog(Request::new(ListCatalogRequest {
                 workspace: Some(default_workspace()),
                 schema_name: String::new(),
-                table_name: String::new(),
-                pagination: None,
-                omit_columns: false,
+                kind: 1,
+                pagination: Some(PaginationRequest {
+                    limit: 0,
+                    offset: 0,
+                }),
             }))
             .await
-            .expect("list tables")
+            .expect("list catalog")
             .into_inner()
-            .tables
+            .items
+            .into_iter()
+            .filter_map(|item| match item.item {
+                Some(catalog_item::Item::Table(table)) => Some(table),
+                Some(catalog_item::Item::TableFunction(_)) | None => None,
+            })
+            .collect()
     }
 
     pub(crate) async fn validate_source(&self, source_name: &str) -> ValidateSourceResponse {
@@ -279,6 +297,111 @@ pub(crate) fn fixture_manifest_with_required_filter_yaml() -> String {
             ],
             "filters": [
                 { "name": "channel", "required": true }
+            ],
+        }],
+    }))
+}
+
+pub(crate) fn fixture_manifest_with_functions_yaml() -> String {
+    manifest_yaml(&json!({
+        "name": "searchy",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": "https://example.com",
+        "tables": [{
+            "name": "placeholder",
+            "description": "Placeholder table",
+            "request": {
+                "method": "GET",
+                "path": "/placeholder",
+            },
+            "columns": [
+                { "name": "id", "type": "Utf8" },
+            ],
+        }],
+        "functions": [
+            {
+                "name": "lookup_issue",
+                "description": "Lookup issue",
+                "args": [
+                    {
+                        "name": "number",
+                        "required": true,
+                        "bind": { "arg": "number" },
+                    },
+                ],
+                "request": {
+                    "method": "GET",
+                    "path": "/issues/{{arg.number}}",
+                },
+                "response": {},
+                "columns": [
+                    { "name": "title", "type": "Utf8", "description": "Issue title" },
+                ],
+            },
+            {
+                "name": "search_issues",
+                "description": "Search issues",
+                "args": [
+                    {
+                        "name": "q",
+                        "required": true,
+                        "bind": { "arg": "q" },
+                    },
+                    {
+                        "name": "mode",
+                        "values": ["lexical", "semantic", "hybrid"],
+                        "bind": { "arg": "search_type" },
+                    },
+                ],
+                "request": {
+                    "method": "GET",
+                    "path": "/search/issues",
+                    "query": [
+                        { "name": "q", "from": "arg", "key": "q" },
+                        { "name": "search_type", "from": "arg", "key": "search_type" },
+                    ],
+                },
+                "response": {
+                    "rows_path": ["items"],
+                },
+                "columns": [
+                    { "name": "title", "type": "Utf8", "description": "Issue title" },
+                    { "name": "score", "type": "Float64" },
+                ],
+            },
+        ],
+    }))
+}
+
+pub(crate) fn fixture_function_only_manifest_yaml() -> String {
+    manifest_yaml(&json!({
+        "name": "searchy",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": "https://example.com",
+        "functions": [{
+            "name": "search_issues",
+            "description": "Search issues",
+            "args": [{
+                "name": "q",
+                "required": true,
+                "bind": { "arg": "q" },
+            }],
+            "request": {
+                "method": "GET",
+                "path": "/search/issues",
+                "query": [
+                    { "name": "q", "from": "arg", "key": "q" },
+                ],
+            },
+            "response": {
+                "rows_path": ["items"],
+            },
+            "columns": [
+                { "name": "title", "type": "Utf8", "description": "Issue title" },
             ],
         }],
     }))
