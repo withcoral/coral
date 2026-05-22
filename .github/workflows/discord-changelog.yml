@@ -8,6 +8,7 @@ permissions: {}
 
 jobs:
   notify-discord:
+    if: ${{ !github.event.release.prerelease }}
     runs-on: ubuntu-latest
     environment: release
     steps:
