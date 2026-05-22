@@ -10,6 +10,7 @@ use serde_json::Value;
 
 use crate::backends::file::{JsonlSourceManifest, ParquetSourceManifest};
 use crate::backends::http::HttpSourceManifest;
+use crate::backends::mcp::McpSourceManifest;
 use crate::schema::validate_manifest_schema;
 use crate::{ManifestError, ManifestInputSpec, Result, SourceBackend};
 
@@ -28,6 +29,7 @@ enum ValidatedManifestKind {
     Http(Box<HttpSourceManifest>),
     Parquet(ParquetSourceManifest),
     Jsonl(JsonlSourceManifest),
+    Mcp(McpSourceManifest),
 }
 
 impl ValidatedSourceManifest {
@@ -42,6 +44,7 @@ impl ValidatedSourceManifest {
             ValidatedManifestKind::Http(_) => SourceBackend::Http,
             ValidatedManifestKind::Parquet(_) => SourceBackend::Parquet,
             ValidatedManifestKind::Jsonl(_) => SourceBackend::Jsonl,
+            ValidatedManifestKind::Mcp(_) => SourceBackend::Mcp,
         }
     }
 
@@ -52,6 +55,7 @@ impl ValidatedSourceManifest {
             ValidatedManifestKind::Http(manifest) => &manifest.common.name,
             ValidatedManifestKind::Parquet(manifest) => &manifest.common.name,
             ValidatedManifestKind::Jsonl(manifest) => &manifest.common.name,
+            ValidatedManifestKind::Mcp(manifest) => &manifest.common.name,
         }
     }
 
@@ -62,6 +66,7 @@ impl ValidatedSourceManifest {
             ValidatedManifestKind::Http(manifest) => &manifest.common.version,
             ValidatedManifestKind::Parquet(manifest) => &manifest.common.version,
             ValidatedManifestKind::Jsonl(manifest) => &manifest.common.version,
+            ValidatedManifestKind::Mcp(manifest) => &manifest.common.version,
         }
     }
 
@@ -72,6 +77,7 @@ impl ValidatedSourceManifest {
             ValidatedManifestKind::Http(manifest) => &manifest.common.description,
             ValidatedManifestKind::Parquet(manifest) => &manifest.common.description,
             ValidatedManifestKind::Jsonl(manifest) => &manifest.common.description,
+            ValidatedManifestKind::Mcp(manifest) => &manifest.common.description,
         }
     }
 
@@ -82,6 +88,7 @@ impl ValidatedSourceManifest {
             ValidatedManifestKind::Http(manifest) => &manifest.common.test_queries,
             ValidatedManifestKind::Parquet(manifest) => &manifest.common.test_queries,
             ValidatedManifestKind::Jsonl(manifest) => &manifest.common.test_queries,
+            ValidatedManifestKind::Mcp(manifest) => &manifest.common.test_queries,
         }
     }
 
@@ -93,6 +100,7 @@ impl ValidatedSourceManifest {
             ValidatedManifestKind::Http(manifest) => manifest.required_secret_names(),
             ValidatedManifestKind::Parquet(manifest) => manifest.required_secret_names(),
             ValidatedManifestKind::Jsonl(manifest) => manifest.required_secret_names(),
+            ValidatedManifestKind::Mcp(manifest) => manifest.required_secret_names(),
         }
     }
 
@@ -103,6 +111,7 @@ impl ValidatedSourceManifest {
             ValidatedManifestKind::Http(manifest) => &manifest.declared_inputs,
             ValidatedManifestKind::Parquet(manifest) => &manifest.declared_inputs,
             ValidatedManifestKind::Jsonl(manifest) => &manifest.declared_inputs,
+            ValidatedManifestKind::Mcp(manifest) => &manifest.declared_inputs,
         }
     }
 
@@ -129,6 +138,15 @@ impl ValidatedSourceManifest {
     pub fn as_jsonl(&self) -> Option<&JsonlSourceManifest> {
         match &self.inner {
             ValidatedManifestKind::Jsonl(manifest) => Some(manifest),
+            _ => None,
+        }
+    }
+
+    /// Returns the validated MCP source spec when `backend: mcp`.
+    #[must_use]
+    pub fn as_mcp(&self) -> Option<&McpSourceManifest> {
+        match &self.inner {
+            ValidatedManifestKind::Mcp(manifest) => Some(manifest),
             _ => None,
         }
     }
@@ -171,6 +189,9 @@ pub fn parse_source_manifest_value(value: Value) -> Result<ValidatedSourceManife
         }),
         SourceBackend::Jsonl => Ok(ValidatedSourceManifest {
             inner: ValidatedManifestKind::Jsonl(JsonlSourceManifest::parse_manifest_value(value)?),
+        }),
+        SourceBackend::Mcp => Ok(ValidatedSourceManifest {
+            inner: ValidatedManifestKind::Mcp(McpSourceManifest::parse_manifest_value(value)?),
         }),
     }
 }

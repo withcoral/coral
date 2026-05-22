@@ -15,6 +15,8 @@ use url::Url;
 
 use crate::{ManifestError, ParsedTemplate, Result, TemplateNamespace};
 
+const RESERVED_INPUT_KEY_PREFIXES: &[&str] = &["__coral"];
+
 /// The kind of interactive input required by one validated source spec.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ManifestInputKind {
@@ -80,6 +82,8 @@ pub struct ManifestOAuthCredentialSpec {
     pub flow: ManifestOAuthFlowSpec,
     /// Loopback callback URI Coral binds during the OAuth session.
     pub redirect_uri: String,
+    /// Whether Coral binds the authored redirect URI port exactly or chooses a free port.
+    pub redirect_uri_port_mode: ManifestOAuthRedirectUriPortMode,
     /// Provider authorization endpoint URL.
     pub authorization_url: String,
     /// Provider token endpoint URL.
@@ -88,6 +92,35 @@ pub struct ManifestOAuthCredentialSpec {
     pub client: ManifestOAuthClientSpec,
     /// Optional OAuth scope parameter configuration.
     pub scopes: Option<ManifestOAuthScopesSpec>,
+}
+
+impl ManifestOAuthCredentialSpec {
+    /// Resolve the local listener port behavior for this OAuth redirect URI.
+    pub fn redirect_bind_port(&self) -> Result<ManifestOAuthRedirectBindPort> {
+        redirect_bind_port(
+            &self.redirect_uri,
+            self.redirect_uri_port_mode,
+            "OAuth redirect URI",
+        )
+    }
+}
+
+/// Supported loopback redirect URI port binding modes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManifestOAuthRedirectUriPortMode {
+    /// Bind the exact port authored in `redirect_uri`.
+    Fixed,
+    /// Bind a random free port and use it in OAuth authorization and token exchange.
+    Random,
+}
+
+/// Resolved loopback listener port behavior for an OAuth redirect URI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManifestOAuthRedirectBindPort {
+    /// Bind the exact fixed port authored in `redirect_uri`.
+    Fixed(u16),
+    /// Bind port 0 and let the OS choose a free port.
+    Random,
 }
 
 /// Supported OAuth credential retrieval flow settings.
@@ -422,7 +455,12 @@ fn parse_oauth(
         })
         .and_then(|flow| parse_oauth_flow(input_key, flow))?;
     let redirect_uri = required_string(oauth, "redirect_uri", input_key, "oauth")?;
-    validate_loopback_redirect_uri(input_key, &redirect_uri)?;
+    let redirect_uri_port_mode = oauth
+        .get("redirect_uri_port_mode")
+        .map(|value| parse_redirect_uri_port_mode(input_key, value))
+        .transpose()?
+        .unwrap_or_else(|| default_redirect_uri_port_mode(&redirect_uri));
+    validate_loopback_redirect_uri(input_key, &redirect_uri, redirect_uri_port_mode)?;
     let endpoints = oauth
         .get("endpoints")
         .and_then(Value::as_object)
@@ -451,11 +489,36 @@ fn parse_oauth(
     Ok(ManifestOAuthCredentialSpec {
         flow,
         redirect_uri,
+        redirect_uri_port_mode,
         authorization_url,
         token_url,
         client,
         scopes,
     })
+}
+
+fn default_redirect_uri_port_mode(raw: &str) -> ManifestOAuthRedirectUriPortMode {
+    if Url::parse(raw).ok().and_then(|url| url.port()) == Some(0) {
+        ManifestOAuthRedirectUriPortMode::Random
+    } else {
+        ManifestOAuthRedirectUriPortMode::Fixed
+    }
+}
+
+fn parse_redirect_uri_port_mode(
+    input_key: &str,
+    value: &Value,
+) -> Result<ManifestOAuthRedirectUriPortMode> {
+    match value.as_str() {
+        Some("fixed") => Ok(ManifestOAuthRedirectUriPortMode::Fixed),
+        Some("random") => Ok(ManifestOAuthRedirectUriPortMode::Random),
+        Some(other) => Err(ManifestError::validation(format!(
+            "manifest input '{input_key}' oauth.redirect_uri_port_mode has unsupported value '{other}'"
+        ))),
+        None => Err(ManifestError::validation(format!(
+            "manifest input '{input_key}' oauth.redirect_uri_port_mode must be a string"
+        ))),
+    }
 }
 
 fn parse_oauth_flow(input_key: &str, value: &Value) -> Result<ManifestOAuthFlowSpec> {
@@ -652,29 +715,58 @@ fn required_string(
         })
 }
 
-fn validate_loopback_redirect_uri(input_key: &str, raw: &str) -> Result<()> {
-    let url = Url::parse(raw).map_err(|error| {
-        ManifestError::validation(format!(
-            "manifest input '{input_key}' oauth.redirect_uri is invalid: {error}"
-        ))
-    })?;
+fn validate_loopback_redirect_uri(
+    input_key: &str,
+    raw: &str,
+    port_mode: ManifestOAuthRedirectUriPortMode,
+) -> Result<()> {
+    let context = format!("manifest input '{input_key}' oauth.redirect_uri");
+    redirect_bind_port(raw, port_mode, &context).map(|_| ())
+}
+
+fn redirect_bind_port(
+    raw: &str,
+    port_mode: ManifestOAuthRedirectUriPortMode,
+    context: &str,
+) -> Result<ManifestOAuthRedirectBindPort> {
+    let url = Url::parse(raw)
+        .map_err(|error| ManifestError::validation(format!("{context} is invalid: {error}")))?;
     if url.scheme() != "http" {
         return Err(ManifestError::validation(format!(
-            "manifest input '{input_key}' oauth.redirect_uri must use http"
+            "{context} must use http"
         )));
     }
     let host = url.host_str().unwrap_or_default();
     if host != "127.0.0.1" && host != "localhost" {
         return Err(ManifestError::validation(format!(
-            "manifest input '{input_key}' oauth.redirect_uri must use a loopback host"
+            "{context} must use a loopback host"
         )));
     }
-    if !redirect_uri_has_explicit_port(raw) {
-        return Err(ManifestError::validation(format!(
-            "manifest input '{input_key}' oauth.redirect_uri must include an explicit port"
-        )));
+    let has_explicit_port = redirect_uri_has_explicit_port(raw);
+    match port_mode {
+        ManifestOAuthRedirectUriPortMode::Fixed if has_explicit_port => {
+            let port = url.port_or_known_default().ok_or_else(|| {
+                ManifestError::validation(format!(
+                    "{context} must include an explicit non-zero port when redirect_uri_port_mode is fixed"
+                ))
+            })?;
+            if port == 0 {
+                return Err(ManifestError::validation(format!(
+                    "{context} must include an explicit non-zero port when redirect_uri_port_mode is fixed"
+                )));
+            }
+            Ok(ManifestOAuthRedirectBindPort::Fixed(port))
+        }
+        ManifestOAuthRedirectUriPortMode::Fixed => Err(ManifestError::validation(format!(
+            "{context} must include an explicit non-zero port when redirect_uri_port_mode is fixed"
+        ))),
+        ManifestOAuthRedirectUriPortMode::Random if !has_explicit_port || url.port() == Some(0) => {
+            Ok(ManifestOAuthRedirectBindPort::Random)
+        }
+        ManifestOAuthRedirectUriPortMode::Random => Err(ManifestError::validation(format!(
+            "{context} must omit the port or use port 0 when redirect_uri_port_mode is random"
+        ))),
     }
-    Ok(())
 }
 
 fn redirect_uri_has_explicit_port(raw: &str) -> bool {
@@ -726,6 +818,14 @@ fn validate_input_key(label: &str, value: &str) -> Result<()> {
     if trimmed.starts_with('#') {
         return Err(ManifestError::validation(format!(
             "{label} must not start with '#'"
+        )));
+    }
+    if let Some(prefix) = RESERVED_INPUT_KEY_PREFIXES
+        .iter()
+        .find(|prefix| trimmed.starts_with(**prefix))
+    {
+        return Err(ManifestError::validation(format!(
+            "{label} must not start with reserved prefix '{prefix}'"
         )));
     }
     Ok(())
@@ -811,8 +911,8 @@ mod tests {
 
     use super::{
         ManifestCredentialMethodKind, ManifestInputKind, ManifestInputSpec,
-        ManifestOAuthClientSecretTransport, ManifestOAuthPkceMode, ManifestOAuthScopeDelimiter,
-        collect_source_inputs_value,
+        ManifestOAuthClientSecretTransport, ManifestOAuthPkceMode, ManifestOAuthRedirectBindPort,
+        ManifestOAuthRedirectUriPortMode, ManifestOAuthScopeDelimiter, collect_source_inputs_value,
     };
     use crate::{ManifestError, Result};
 
@@ -916,6 +1016,23 @@ tables: []
     }
 
     #[test]
+    fn reserved_input_key_prefix_is_rejected() {
+        let error = collect(&manifest_with_input(
+            r"
+  __coral.API_TOKEN:
+    kind: secret
+",
+        ))
+        .expect_err("reserved input key");
+
+        assert!(
+            error
+                .to_string()
+                .contains("must not start with reserved prefix '__coral'")
+        );
+    }
+
+    #[test]
     fn parses_source_config_credential_method() {
         let inputs = collect(&manifest_with_input(
             r"
@@ -952,10 +1069,76 @@ tables: []
         assert_eq!(method.kind, ManifestCredentialMethodKind::OAuth);
         let oauth = method.oauth.as_ref().expect("oauth");
         assert_eq!(oauth.flow.pkce, ManifestOAuthPkceMode::Required);
+        assert_eq!(
+            oauth.redirect_uri_port_mode,
+            ManifestOAuthRedirectUriPortMode::Fixed
+        );
+        assert_eq!(
+            oauth.redirect_bind_port().expect("bind port"),
+            ManifestOAuthRedirectBindPort::Fixed(53682)
+        );
         assert_eq!(oauth.client.id.default.as_deref(), Some("default-client"));
         assert_eq!(
             oauth.scopes.as_ref().expect("scopes").scope.delimiter,
             ManifestOAuthScopeDelimiter::Space
+        );
+    }
+
+    #[test]
+    fn parses_random_redirect_uri_port_mode_without_explicit_port() {
+        let inputs = collect(
+            &oauth_input(
+                r"
+              id:
+                default: default-client
+",
+            )
+            .replace(
+                "            redirect_uri: http://127.0.0.1:53682/oauth/callback\n",
+                "            redirect_uri: http://127.0.0.1/oauth/callback\n            redirect_uri_port_mode: random\n",
+            ),
+        )
+        .expect("inputs");
+        let oauth = inputs[0].credential.as_ref().expect("credential").methods[0]
+            .oauth
+            .as_ref()
+            .expect("oauth");
+        assert_eq!(
+            oauth.redirect_uri_port_mode,
+            ManifestOAuthRedirectUriPortMode::Random
+        );
+        assert_eq!(
+            oauth.redirect_bind_port().expect("bind port"),
+            ManifestOAuthRedirectBindPort::Random
+        );
+    }
+
+    #[test]
+    fn infers_random_redirect_uri_port_mode_from_explicit_zero_port() {
+        let inputs = collect(
+            &oauth_input(
+                r"
+              id:
+                default: default-client
+",
+            )
+            .replace(
+                "http://127.0.0.1:53682/oauth/callback",
+                "http://127.0.0.1:0/oauth/callback",
+            ),
+        )
+        .expect("inputs");
+        let oauth = inputs[0].credential.as_ref().expect("credential").methods[0]
+            .oauth
+            .as_ref()
+            .expect("oauth");
+        assert_eq!(
+            oauth.redirect_uri_port_mode,
+            ManifestOAuthRedirectUriPortMode::Random
+        );
+        assert_eq!(
+            oauth.redirect_bind_port().expect("bind port"),
+            ManifestOAuthRedirectBindPort::Random
         );
     }
 
@@ -1121,6 +1304,10 @@ tables: []
             .as_ref()
             .expect("oauth");
         assert_eq!(oauth.redirect_uri, "http://127.0.0.1:80/oauth/callback");
+        assert_eq!(
+            oauth.redirect_bind_port().expect("bind port"),
+            ManifestOAuthRedirectBindPort::Fixed(80)
+        );
     }
 
     #[test]
@@ -1138,7 +1325,61 @@ tables: []
             ),
         )
         .expect_err("missing port should fail");
-        assert!(error.to_string().contains("explicit port"));
+        assert!(error.to_string().contains("explicit non-zero port"));
+    }
+
+    #[test]
+    fn rejects_random_redirect_uri_port_mode_with_explicit_nonzero_port() {
+        let error = collect(
+            &oauth_input(
+                r"
+              id:
+                default: default-client
+",
+            )
+            .replace(
+                "            redirect_uri: http://127.0.0.1:53682/oauth/callback\n",
+                "            redirect_uri: http://127.0.0.1:53682/oauth/callback\n            redirect_uri_port_mode: random\n",
+            ),
+        )
+        .expect_err("random port with explicit nonzero port should fail");
+        assert!(error.to_string().contains("must omit the port"));
+    }
+
+    #[test]
+    fn rejects_random_redirect_uri_port_mode_with_explicit_default_http_port() {
+        let error = collect(
+            &oauth_input(
+                r"
+              id:
+                default: default-client
+",
+            )
+            .replace(
+                "            redirect_uri: http://127.0.0.1:53682/oauth/callback\n",
+                "            redirect_uri: http://127.0.0.1:80/oauth/callback\n            redirect_uri_port_mode: random\n",
+            ),
+        )
+        .expect_err("random port with explicit default port should fail");
+        assert!(error.to_string().contains("must omit the port"));
+    }
+
+    #[test]
+    fn rejects_fixed_redirect_uri_port_mode_with_explicit_zero_port() {
+        let error = collect(
+            &oauth_input(
+                r"
+              id:
+                default: default-client
+",
+            )
+            .replace(
+                "            redirect_uri: http://127.0.0.1:53682/oauth/callback\n",
+                "            redirect_uri: http://127.0.0.1:0/oauth/callback\n            redirect_uri_port_mode: fixed\n",
+            ),
+        )
+        .expect_err("fixed port with explicit zero port should fail");
+        assert!(error.to_string().contains("explicit non-zero port"));
     }
 
     #[test]

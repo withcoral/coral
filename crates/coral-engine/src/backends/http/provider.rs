@@ -116,7 +116,7 @@ pub(crate) fn http_json_exec(request: HttpJsonExecRequest<'_>) -> Result<Arc<dyn
         backend,
         target: target.clone(),
         filter_values: filter_values.clone(),
-        arg_values,
+        arg_values: arg_values.clone(),
         limit,
     });
 
@@ -124,8 +124,15 @@ pub(crate) fn http_json_exec(request: HttpJsonExecRequest<'_>) -> Result<Arc<dyn
         let target = target.clone();
         let schema = schema.clone();
         let filter_values = filter_values.clone();
+        let arg_values = arg_values.clone();
         Arc::new(move |items: &[Value]| {
-            convert_items(target.columns(), schema.clone(), &filter_values, items)
+            convert_items(
+                target.columns(),
+                schema.clone(),
+                &filter_values,
+                &arg_values,
+                items,
+            )
         })
     };
 
@@ -254,7 +261,7 @@ fn classify_filter(
     {
         let mode = filter_modes.get(col.name()).copied().unwrap_or_default();
         if matches!(mode, FilterMode::Search | FilterMode::Contains) {
-            // Inexact: the API receives the stripped search term (performance
+            // Inexact: the API receives the stripped search/contains term (performance
             // win) but DataFusion keeps a residual filter to enforce exact
             // LIKE/ILIKE semantics client-side (correctness win).
             return TableProviderFilterPushDown::Inexact;
@@ -311,23 +318,33 @@ mod tests {
         let pushdown = classify_filter(
             &like_expr("q", "%deploy runbook%"),
             &allowed(&["q"]),
-            &modes(&[("q", FilterMode::Search)]),
+            &modes(&[("q", FilterMode::Contains)]),
         );
         assert_eq!(pushdown, TableProviderFilterPushDown::Inexact);
     }
 
     #[test]
-    fn search_filter_also_accepts_equality() {
+    fn contains_filter_also_accepts_equality() {
         let pushdown = classify_filter(
             &binary_expr(col("query"), Operator::Eq, lit("deploy")),
             &allowed(&["query"]),
-            &modes(&[("query", FilterMode::Search)]),
+            &modes(&[("query", FilterMode::Contains)]),
         );
         assert_eq!(pushdown, TableProviderFilterPushDown::Exact);
     }
 
     #[test]
-    fn extracts_like_value_for_search_mode_filter() {
+    fn extracts_like_value_for_contains_mode_filter() {
+        let pushdown = classify_filter(
+            &like_expr("query", "%deploy%"),
+            &allowed(&["query"]),
+            &modes(&[("query", FilterMode::Contains)]),
+        );
+        assert_eq!(pushdown, TableProviderFilterPushDown::Inexact);
+    }
+
+    #[test]
+    fn extracts_like_value_for_legacy_search_mode_filter() {
         let pushdown = classify_filter(
             &like_expr("query", "%deploy%"),
             &allowed(&["query"]),

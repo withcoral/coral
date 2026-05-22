@@ -2,8 +2,8 @@
 
 use coral_api::v1::{
     OAuthAuthorizationCodeCredentialMethod, OauthCredentialClientSecretTransport,
-    OauthCredentialPkceMode, OauthCredentialScopeDelimiter, SourceCredential,
-    SourceCredentialMethod, SourceInputSpec,
+    OauthCredentialPkceMode, OauthCredentialRedirectUriPortMode, OauthCredentialScopeDelimiter,
+    SourceCredential, SourceCredentialMethod, SourceInputSpec,
     source_credential_method::Method as ProtoCredentialMethod,
     source_input_spec::Input as ProtoSourceInput,
 };
@@ -12,7 +12,8 @@ use coral_spec::{
     ManifestInputKind, ManifestInputSpec, ManifestOAuthClientIdSpec, ManifestOAuthClientSecretSpec,
     ManifestOAuthClientSecretTransport, ManifestOAuthClientSpec, ManifestOAuthCredentialSpec,
     ManifestOAuthFlowKind, ManifestOAuthFlowSpec, ManifestOAuthPkceMode,
-    ManifestOAuthScopeDelimiter, ManifestOAuthScopeSpec, ManifestOAuthScopesSpec,
+    ManifestOAuthRedirectUriPortMode, ManifestOAuthScopeDelimiter, ManifestOAuthScopeSpec,
+    ManifestOAuthScopesSpec,
 };
 
 /// Errors returned while decoding source input metadata from the gRPC API.
@@ -30,6 +31,9 @@ pub enum SourceInputDecodeError {
     /// The OAuth PKCE mode was missing or unknown.
     #[error("unknown oauth pkce mode")]
     UnknownOAuthPkceMode,
+    /// The OAuth redirect URI port mode was missing or unknown.
+    #[error("unknown oauth redirect URI port mode")]
+    UnknownOAuthRedirectUriPortMode,
     /// The OAuth credential method did not include provider endpoints.
     #[error("oauth credential method is missing endpoints")]
     MissingOAuthEndpoints,
@@ -141,6 +145,7 @@ fn oauth_authorization_code_from_proto(
             pkce: oauth_pkce_from_proto(oauth.pkce)?,
         },
         redirect_uri: oauth.redirect_uri.clone(),
+        redirect_uri_port_mode: redirect_uri_port_mode_from_proto(oauth.redirect_uri_port_mode)?,
         authorization_url: endpoints.authorization_url.clone(),
         token_url: endpoints.token_url.clone(),
         client,
@@ -161,6 +166,21 @@ fn oauth_pkce_from_proto(pkce: i32) -> Result<ManifestOAuthPkceMode, SourceInput
         }
     };
     Ok(pkce)
+}
+
+fn redirect_uri_port_mode_from_proto(
+    mode: i32,
+) -> Result<ManifestOAuthRedirectUriPortMode, SourceInputDecodeError> {
+    match OauthCredentialRedirectUriPortMode::try_from(mode) {
+        Ok(
+            OauthCredentialRedirectUriPortMode::Fixed
+            | OauthCredentialRedirectUriPortMode::Unspecified,
+        ) => Ok(ManifestOAuthRedirectUriPortMode::Fixed),
+        Ok(OauthCredentialRedirectUriPortMode::Random) => {
+            Ok(ManifestOAuthRedirectUriPortMode::Random)
+        }
+        Err(_) => Err(SourceInputDecodeError::UnknownOAuthRedirectUriPortMode),
+    }
 }
 
 fn oauth_client_from_proto(
@@ -272,6 +292,8 @@ mod tests {
                                         }),
                                         secret: None,
                                     }),
+                                    redirect_uri_port_mode:
+                                        OauthCredentialRedirectUriPortMode::Random as i32,
                                     scopes: None,
                                 },
                             )),
@@ -296,6 +318,14 @@ mod tests {
             ManifestCredentialMethodKind::OAuth
         );
         assert_eq!(credential.methods[0].label.as_deref(), Some("Connect"));
+        assert_eq!(
+            credential.methods[0]
+                .oauth
+                .as_ref()
+                .expect("oauth")
+                .redirect_uri_port_mode,
+            ManifestOAuthRedirectUriPortMode::Random
+        );
         assert_eq!(
             credential.methods[0]
                 .oauth
@@ -340,6 +370,8 @@ mod tests {
                                     }),
                                     secret: None,
                                 }),
+                                redirect_uri_port_mode: OauthCredentialRedirectUriPortMode::Fixed
+                                    as i32,
                                 scopes: None,
                             },
                         )),
