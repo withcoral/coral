@@ -4,9 +4,14 @@ import { expect, test } from './playwright.setup'
 const isMacOs = process.platform === 'darwin'
 const sidebarToggleShortcut = isMacOs ? 'Meta+b' : 'Control+b'
 const sidebarToggleHint = isMacOs ? '⌘' : 'Ctrl'
+const desktopViewport = { height: 900, width: 1280 }
+const smallViewport = { height: 900, width: 960 }
+const mobileViewport = { height: 900, width: 600 }
 
 test('sidebar collapses, expands, and exposes the sidebar toggle tooltip', async ({ network, page, review }, testInfo) => {
+  test.setTimeout(60_000)
   network.use(...traceHandlers.empty)
+  await page.setViewportSize(desktopViewport)
 
   await review.chapter('Load the shell', 'Render the query stream with the sidebar visible')
   await page.goto('/')
@@ -51,5 +56,29 @@ test('sidebar collapses, expands, and exposes the sidebar toggle tooltip', async
   await expect(tracesButton).toBeDisabled()
 
   await page.screenshot({ path: testInfo.outputPath('layout-expanded.png'), fullPage: true })
+  await review.pause()
+
+  await review.chapter('Shrink to a small screen', 'Resize below 963px and confirm the sidebar collapses automatically')
+  await page.setViewportSize(smallViewport)
+  await expect.poll(sidebarWidth).toBeLessThan(expandedWidth)
+  await expect(page.getByRole('button', { name: 'Expand sidebar' })).toBeVisible()
+
+  await page.screenshot({ path: testInfo.outputPath('layout-small-screen.png'), fullPage: true })
+  await review.pause()
+
+  await review.chapter('Shrink to mobile', 'Resize below 640px and confirm the sidebar toggle is hidden')
+  await page.setViewportSize(mobileViewport)
+  await expect.poll(sidebarWidth).toBeLessThan(expandedWidth)
+  await expect(page.getByRole('button', { name: 'Collapse sidebar' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Expand sidebar' })).toHaveCount(0)
+
+  await page.screenshot({ path: testInfo.outputPath('layout-mobile.png'), fullPage: true })
+  await review.pause()
+
+  await review.chapter('Return to desktop', 'Grow back above the breakpoint and verify the sidebar stays collapsed')
+  await page.setViewportSize(desktopViewport)
+  await expect(page.getByRole('button', { name: 'Expand sidebar' })).toBeVisible()
+  await expect.poll(sidebarWidth).toBeLessThan(expandedWidth)
+  await expect(tracesLabel).toHaveCount(0)
   await review.pause()
 })

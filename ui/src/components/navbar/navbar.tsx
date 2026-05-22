@@ -1,5 +1,6 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 
+import { breakpoints } from '@/styles/theme'
 import type { IconName } from '@/wax/components/icon'
 import { IconButton } from '@/wax/components/button'
 import { CoralIcon } from '@/wax/components/icon/custom-icons/coral'
@@ -21,9 +22,39 @@ const QUERY_STREAM_LABEL = 'Query stream'
 const COLLAPSE_SIDEBAR_LABEL = 'Collapse sidebar'
 const EXPAND_SIDEBAR_LABEL = 'Expand sidebar'
 const PRIMARY_NAVIGATION_ID = 'primary-navigation'
+const SIDEBAR_COLLAPSE_QUERY = `(max-width: ${breakpoints.sidebarCollapse})`
+const MOBILE_QUERY = `(max-width: ${breakpoints.mobile})`
+
+function useMediaQuery(query: string) {
+  const [matches, setMatches] = useState(() => typeof window !== 'undefined' && window.matchMedia(query).matches)
+
+  useEffect(() => {
+    const mediaQuery = window.matchMedia(query)
+    const handleChange = () => setMatches(mediaQuery.matches)
+
+    handleChange()
+
+    if ('addEventListener' in mediaQuery) {
+      mediaQuery.addEventListener('change', handleChange)
+      return () => mediaQuery.removeEventListener('change', handleChange)
+    }
+
+    mediaQuery.addListener(handleChange)
+    return () => mediaQuery.removeListener(handleChange)
+  }, [query])
+
+  return matches
+}
 
 export function Navbar() {
-  const [isCollapsed, setIsCollapsed] = useState(false)
+  const isSmallScreen = useMediaQuery(SIDEBAR_COLLAPSE_QUERY)
+  const isMobile = useMediaQuery(MOBILE_QUERY)
+  const [isCollapsed, setIsCollapsed] = useState(() => isSmallScreen)
+
+  useEffect(() => {
+    if (isSmallScreen) setIsCollapsed(true)
+  }, [isSmallScreen])
+
   const toggleLabel = isCollapsed ? EXPAND_SIDEBAR_LABEL : COLLAPSE_SIDEBAR_LABEL
   const toggleSidebar = useCallback(() => setIsCollapsed((value) => !value), [])
   const handleSidebarShortcut = useCallback((event: KeyboardEvent) => {
@@ -37,22 +68,24 @@ export function Navbar() {
         <span aria-label={QUERY_STREAM_LABEL} className={styles.brandMark} role="img">
           <CoralIcon aria-hidden="true" size={22} />
         </span>
-        <KeyboardShortcut
-          handler={handleSidebarShortcut}
-          shortcut="mod+b"
-          tooltipContent={toggleLabel}
-          tooltipSide="right"
-        >
-          <IconButton
-            aria-controls={PRIMARY_NAVIGATION_ID}
-            aria-expanded={!isCollapsed}
-            ariaLabel={toggleLabel}
-            name="PanelLeft"
-            onClick={toggleSidebar}
-            size="32"
-            variant="bare"
-          />
-        </KeyboardShortcut>
+        {!isMobile && (
+          <KeyboardShortcut
+            handler={handleSidebarShortcut}
+            shortcut="mod+b"
+            tooltipContent={toggleLabel}
+            tooltipSide="right"
+          >
+            <IconButton
+              aria-controls={PRIMARY_NAVIGATION_ID}
+              aria-expanded={!isCollapsed}
+              ariaLabel={toggleLabel}
+              name="PanelLeft"
+              onClick={toggleSidebar}
+              size="32"
+              variant="bare"
+            />
+          </KeyboardShortcut>
+        )}
       </div>
       <div className={styles.nav} aria-label="Primary navigation" id={PRIMARY_NAVIGATION_ID}>
         {NAV_ITEMS.map((item) => (
