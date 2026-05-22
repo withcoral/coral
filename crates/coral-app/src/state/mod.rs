@@ -3,5 +3,5 @@
 mod config;
 mod layout;
 
-pub(crate) use config::ConfigStore;
+pub(crate) use config::{CacheConfig, ConfigStore};
 pub(crate) use layout::AppStateLayout;

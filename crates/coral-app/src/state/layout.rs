@@ -62,6 +62,14 @@ impl AppStateLayout {
         self.config_dir.join("telemetry").join("traces")
     }
 
+    pub(crate) fn cache_dir(&self) -> PathBuf {
+        self.config_dir.join("cache")
+    }
+
+    pub(crate) fn cache_entries_dir(&self) -> PathBuf {
+        self.cache_dir().join("entries")
+    }
+
     pub(crate) fn workspaces_root(&self) -> PathBuf {
         self.config_dir.join("workspaces")
     }

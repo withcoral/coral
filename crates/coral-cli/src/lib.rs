@@ -60,6 +60,8 @@ enum Command {
     Sql(SqlArgs),
     /// Manage data sources
     Source(SourceArgs),
+    /// Manage the local query cache
+    Cache(CacheArgs),
     /// Interactive wizard to set up Coral and explore use cases
     Onboard,
     /// Start the MCP server over stdio
@@ -120,6 +122,27 @@ struct McpStdioArgs {
 struct SourceArgs {
     #[command(subcommand)]
     command: SourceCommand,
+}
+
+#[derive(Debug, Args)]
+/// Manage the local query cache
+struct CacheArgs {
+    #[command(subcommand)]
+    command: CacheCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum CacheCommand {
+    /// Clear cached query and metadata results
+    Clear(ClearCacheArgs),
+}
+
+#[derive(Debug, Args)]
+/// Clear cached query and metadata results
+struct ClearCacheArgs {
+    /// Restrict cache invalidation to a single source name.
+    #[arg(long)]
+    source: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -243,7 +266,7 @@ impl Command {
             Command::Sql(_) | Command::Source(_) | Command::Onboard | Command::McpStdio(_) => {
                 RequiredRuntime::AppClient
             }
-            Command::Completion(_) => RequiredRuntime::None,
+            Command::Cache(_) | Command::Completion(_) => RequiredRuntime::None,
             #[cfg(feature = "embedded-ui")]
             Command::Ui(_) => RequiredRuntime::None,
         }
@@ -412,6 +435,7 @@ async fn run_no_runtime_command(command: Command) -> Result<(), CliError> {
             generate(args.shell, &mut cmd, bin_name, &mut std::io::stdout());
             Ok(())
         }
+        Command::Cache(args) => run_cache(args).await,
         #[cfg(feature = "embedded-ui")]
         Command::Ui(args) => run_ui(args).await.map_err(Into::into),
         Command::Sql(_) | Command::Source(_) | Command::Onboard | Command::McpStdio(_) => {
@@ -448,6 +472,9 @@ async fn run_app_command(
             print_batches(result.batches(), args.format)?;
         }
         Command::Source(args) => run_source(&app, args).await?,
+        Command::Cache(_) => {
+            unreachable!("no-runtime cache commands are routed without an app client")
+        }
         Command::Onboard => {
             onboard::run(&app).await?;
         }
@@ -555,6 +582,17 @@ fn print_text_table<const COLUMNS: usize>(
     for row in rows {
         println!("{}", format_table_row(row.each_ref(), &widths));
     }
+}
+
+async fn run_cache(args: CacheArgs) -> Result<(), CliError> {
+    match args.command {
+        CacheCommand::Clear(clear_args) => {
+            coral_app::clear_query_cache(clear_args.source.as_deref())
+                .map_err(anyhow::Error::from)?;
+            println!("Query cache cleared");
+        }
+    }
+    Ok(())
 }
 
 fn compute_column_widths<const COLUMNS: usize>(

@@ -10,6 +10,8 @@ pub(crate) struct Metrics {
     pub(crate) count: Counter<u64>,
     pub(crate) duration: Histogram<f64>,
     pub(crate) rows: Histogram<u64>,
+    pub(crate) cache_hits: Counter<u64>,
+    pub(crate) cache_misses: Counter<u64>,
 }
 
 pub(crate) fn status_attr(ok: bool) -> KeyValue {
@@ -34,6 +36,16 @@ fn build_metrics(meter: &Meter) -> Metrics {
             .u64_histogram("coral.query.rows")
             .with_unit("{rows}")
             .with_description("Rows returned per query")
+            .build(),
+        cache_hits: meter
+            .u64_counter("coral.query.cache.hit")
+            .with_unit("{events}")
+            .with_description("Query cache hits")
+            .build(),
+        cache_misses: meter
+            .u64_counter("coral.query.cache.miss")
+            .with_unit("{events}")
+            .with_description("Query cache misses")
             .build(),
     }
 }
@@ -217,12 +229,16 @@ mod tests {
         metrics.duration.record(0.5, std::slice::from_ref(&ok));
         metrics.duration.record(0.1, std::slice::from_ref(&err));
         metrics.rows.record(7, std::slice::from_ref(&ok));
+        metrics.cache_hits.add(3, std::slice::from_ref(&ok));
+        metrics.cache_misses.add(2, std::slice::from_ref(&err));
 
         super::test_support::flush_metrics();
         let finished = exporter.get_finished_metrics().expect("finished metrics");
         assert_eq!(counter_total(&finished, "coral.query.count"), 3);
         assert_eq!(histogram_total_count(&finished, "coral.query.duration"), 2);
         assert_eq!(histogram_total_count(&finished, "coral.query.rows"), 1);
+        assert_eq!(counter_total(&finished, "coral.query.cache.hit"), 3);
+        assert_eq!(counter_total(&finished, "coral.query.cache.miss"), 2);
         assert!(histogram_has_status(&finished, "coral.query.rows", "ok"));
     }
 }

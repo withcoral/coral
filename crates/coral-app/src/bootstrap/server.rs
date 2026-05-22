@@ -270,12 +270,14 @@ impl ServerBuilder {
         );
         let feedback_manager =
             FeedbackManager::with_publisher(layout.clone(), self.config.feedback_publisher);
+        let cache_config = config_store.cache_config()?;
         let query_manager = QueryManager::new(
             config_store,
             credential_manager,
             env.query_runtime_context(),
             layout,
             self.config.engine_extensions_providers,
+            cache_config,
         );
         let trace_service = if telemetry_config.trace_history.enabled {
             installed_trace_store.map(|store| TraceService::new(store.dir, store.retention))
@@ -701,12 +703,14 @@ enabled = false
             layout.clone(),
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
+        let cache_config = config_store.cache_config()?;
         let query_manager = QueryManager::new(
             config_store,
             credential_manager,
             QueryRuntimeContext::default(),
             layout,
             vec![Arc::new(NoopEngineExtensionsProvider)],
+            cache_config,
         );
         let trace_service =
             TraceService::new(temp.path().join("trace-store"), Duration::from_mins(1));
@@ -983,6 +987,7 @@ enabled = false
             layout.clone(),
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
+        let cache_config = config_store.cache_config()?;
         let query_manager = QueryManager::new(
             config_store,
             credential_manager,
@@ -991,6 +996,7 @@ enabled = false
             },
             layout,
             vec![Arc::new(NoopEngineExtensionsProvider)],
+            cache_config,
         );
         let running = start_server(
             source_manager,

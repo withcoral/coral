@@ -23,6 +23,21 @@ JSON output is an array of row objects. Selected nullable columns are included w
 
 Manage configured sources, either the bundled ones, or your custom source specs.
 
+## `coral cache`
+
+Manage the local query cache.
+
+### `coral cache clear`
+
+Clear cached query results and metadata lookups from the local persistent cache.
+
+```shellscript
+coral cache clear
+coral cache clear --source github
+```
+
+Use `--source` to remove cache entries associated with one source name only.
+
 ### `coral source discover`
 
 List the [bundled sources](/reference/bundled-sources) available in your current Coral build.

@@ -56,6 +56,7 @@
 )]
 
 mod backends;
+pub mod cache;
 mod composition;
 pub mod contracts;
 mod runtime;
@@ -65,6 +66,7 @@ pub use composition::{
     RequestAuthenticatorError, SourceDecorator, SourceDecoratorError, SourceFailurePolicy,
     SourceTables,
 };
+pub use cache::{QueryCacheInput, QueryCacheOperation, normalize_sql, query_cache_fingerprint};
 pub use contracts::{
     CatalogInfo, ColumnInfo, CoreError, QueryExecution, QueryPlan, QueryRuntimeConfig,
     QueryRuntimeContext, QuerySource, QueryTestFailure, QueryTestResult, QueryTestSuccess,

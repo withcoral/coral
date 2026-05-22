@@ -8,6 +8,7 @@ use std::time::Instant;
 use coral_engine::{
     CatalogInfo, CoralQuery, CoreError, QueryExecution, QueryPlan, QueryRuntimeConfig,
     QueryRuntimeContext, QuerySource, SourceValidationReport, StatusCode, TableInfo,
+    QueryCacheInput, QueryCacheOperation, query_cache_fingerprint,
 };
 use coral_spec::{ManifestInputKind, ManifestInputSpec};
 use opentelemetry::{KeyValue, trace::Status as OtelStatus};
@@ -20,7 +21,12 @@ use crate::query::extensions::{EngineExtensionsProvider, engine_extensions_for_p
 use crate::sources::SourceName;
 use crate::sources::catalog::resolve_installed_manifest;
 use crate::sources::model::InstalledSource;
+use crate::state::CacheConfig;
 use crate::state::{AppStateLayout, ConfigStore};
+use crate::storage::cache::{
+    CacheScope, CacheValueKind, QueryCache, cache_fingerprint_digest, cache_scope,
+    cache_settings_from_config,
+};
 use crate::workspaces::WorkspaceName;
 
 #[derive(Debug)]
@@ -41,6 +47,7 @@ pub(crate) struct QueryManager {
     runtime_context: QueryRuntimeContext,
     layout: AppStateLayout,
     engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+    cache: Arc<QueryCache>,
 }
 
 impl QueryManager {
@@ -50,13 +57,19 @@ impl QueryManager {
         runtime_context: QueryRuntimeContext,
         layout: AppStateLayout,
         engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+        cache_config: CacheConfig,
     ) -> Self {
+        let cache = Arc::new(QueryCache::new(
+            layout.clone(),
+            cache_settings_from_config(cache_config),
+        ));
         Self {
             config_store,
             credential_manager,
             runtime_context,
             layout,
             engine_extensions_providers,
+            cache,
         }
     }
 
@@ -70,9 +83,35 @@ impl QueryManager {
             .load_query_sources(workspace_name)
             .map_err(QueryManagerError::App)?;
         let runtime = self.runtime_config(&sources);
+        let cache_key = self.cache_key_for_list_tables(
+            workspace_name,
+            schema_filter,
+            table_filter,
+            &sources,
+        );
+        if let Some(cached) = self
+            .cache
+            .get_json::<Vec<TableInfo>>(&cache_key, CacheValueKind::TableInfoList)
+            .map_err(QueryManagerError::App)?
+        {
+            record_cache_event("list_tables", true);
+            return Ok(cached);
+        }
+        record_cache_event("list_tables", false);
         CoralQuery::list_tables(&sources, runtime, schema_filter, table_filter)
             .await
             .map_err(QueryManagerError::Core)
+            .inspect(|result| {
+                let _ = self.cache.put_json(
+                    &cache_key,
+                    cache_scope(
+                        workspace_name.as_str(),
+                        source_names(&sources),
+                    ),
+                    CacheValueKind::TableInfoList,
+                    result,
+                );
+            })
     }
 
     pub(crate) async fn list_catalog(
@@ -84,9 +123,27 @@ impl QueryManager {
             .load_query_sources(workspace_name)
             .map_err(QueryManagerError::App)?;
         let runtime = self.runtime_config(&sources);
+        let cache_key = self.cache_key_for_list_catalog(workspace_name, schema_filter, &sources);
+        if let Some(cached) = self
+            .cache
+            .get_json::<CatalogInfo>(&cache_key, CacheValueKind::CatalogInfo)
+            .map_err(QueryManagerError::App)?
+        {
+            record_cache_event("list_catalog", true);
+            return Ok(cached);
+        }
+        record_cache_event("list_catalog", false);
         CoralQuery::list_catalog(&sources, runtime, schema_filter)
             .await
             .map_err(QueryManagerError::Core)
+            .inspect(|result| {
+                let _ = self.cache.put_json(
+                    &cache_key,
+                    cache_scope(workspace_name.as_str(), source_names(&sources)),
+                    CacheValueKind::CatalogInfo,
+                    result,
+                );
+            })
     }
 
     pub(crate) async fn execute_sql(
@@ -94,6 +151,12 @@ impl QueryManager {
         workspace_name: &WorkspaceName,
         sql: &str,
     ) -> Result<QueryExecution, QueryManagerError> {
+        let cache_key = self.cache_key_for_sql(
+            workspace_name,
+            QueryCacheOperation::ExecuteSql,
+            sql,
+            &[],
+        );
         run_query_operation(
             QueryOperation::ExecuteSql,
             workspace_name,
@@ -103,9 +166,25 @@ impl QueryManager {
                     .load_query_sources(workspace_name)
                     .map_err(QueryManagerError::App)?;
                 let runtime = self.runtime_config(&sources);
+                if let Some(cached) = self
+                    .cache
+                    .get_query_execution(&cache_key)
+                    .map_err(QueryManagerError::App)?
+                {
+                    record_cache_event("execute_sql", true);
+                    return Ok(cached);
+                }
+                record_cache_event("execute_sql", false);
                 CoralQuery::execute_sql(&sources, runtime, sql)
                     .await
                     .map_err(QueryManagerError::Core)
+                    .inspect(|result| {
+                        let _ = self.cache.put_query_execution(
+                            &cache_key,
+                            cache_scope(workspace_name.as_str(), source_names(&sources)),
+                            result,
+                        );
+                    })
             },
             |execution| Some(u64::try_from(execution.row_count()).unwrap_or(u64::MAX)),
         )
@@ -117,6 +196,12 @@ impl QueryManager {
         workspace_name: &WorkspaceName,
         sql: &str,
     ) -> Result<QueryPlan, QueryManagerError> {
+        let cache_key = self.cache_key_for_sql(
+            workspace_name,
+            QueryCacheOperation::ExplainSql,
+            sql,
+            &[],
+        );
         run_query_operation(
             QueryOperation::ExplainSql,
             workspace_name,
@@ -126,9 +211,26 @@ impl QueryManager {
                     .load_query_sources(workspace_name)
                     .map_err(QueryManagerError::App)?;
                 let runtime = self.runtime_config(&sources);
+                if let Some(cached) = self
+                    .cache
+                    .get_json::<QueryPlan>(&cache_key, CacheValueKind::QueryPlan)
+                    .map_err(QueryManagerError::App)?
+                {
+                    record_cache_event("explain_sql", true);
+                    return Ok(cached);
+                }
+                record_cache_event("explain_sql", false);
                 CoralQuery::explain_sql(&sources, runtime, sql)
                     .await
                     .map_err(QueryManagerError::Core)
+                    .inspect(|result| {
+                        let _ = self.cache.put_json(
+                            &cache_key,
+                            cache_scope(workspace_name.as_str(), source_names(&sources)),
+                            CacheValueKind::QueryPlan,
+                            result,
+                        );
+                    })
             },
             |_| None,
         )
@@ -148,6 +250,18 @@ impl QueryManager {
             .load_query_source(workspace_name, &source)
             .map_err(QueryManagerError::App)?;
         let runtime = self.runtime_config(std::slice::from_ref(&query_source));
+        let cache_key = self.cache_key_for_validate_source(workspace_name, &source, &query_source);
+        if let Some(cached) = self
+            .cache
+            .get_json::<SourceValidationReport>(&cache_key, CacheValueKind::SourceValidationReport)
+            .map_err(QueryManagerError::App)?
+        {
+            record_cache_event("validate_source", true);
+            let mut source = source;
+            source.version = Some(version);
+            return Ok(ValidatedSource { source, report: cached });
+        }
+        record_cache_event("validate_source", false);
         let report = CoralQuery::validate_source(
             &query_source,
             runtime,
@@ -157,6 +271,13 @@ impl QueryManager {
         .map_err(QueryManagerError::Core)?;
         let mut source = source;
         source.version = Some(version);
+
+        let _ = self.cache.put_json(
+            &cache_key,
+            cache_scope(workspace_name.as_str(), vec![source.name.as_str().to_string()]),
+            CacheValueKind::SourceValidationReport,
+            &report,
+        );
 
         Ok(ValidatedSource { source, report })
     }
@@ -231,6 +352,105 @@ impl QueryManager {
             self.runtime_context.clone(),
             engine_extensions_for_providers(&self.engine_extensions_providers, selected_sources),
         )
+    }
+
+    fn cache_key_for_list_tables(
+        &self,
+        workspace_name: &WorkspaceName,
+        schema_filter: Option<&str>,
+        table_filter: Option<&str>,
+        sources: &[QuerySource],
+    ) -> String {
+        let source_fingerprint = source_fingerprint(sources);
+        query_cache_fingerprint(QueryCacheInput {
+            operation: QueryCacheOperation::ListTables,
+            workspace_name: workspace_name.as_str(),
+            sql: None,
+            source_fingerprint: &source_fingerprint,
+            execution_settings: &[
+                schema_filter.unwrap_or(""),
+                table_filter.unwrap_or(""),
+                self.runtime_context
+                    .home_dir
+                    .as_ref()
+                    .map(|path| path.to_string_lossy())
+                    .as_deref()
+                    .unwrap_or(""),
+            ],
+        })
+    }
+
+    fn cache_key_for_list_catalog(
+        &self,
+        workspace_name: &WorkspaceName,
+        schema_filter: Option<&str>,
+        sources: &[QuerySource],
+    ) -> String {
+        let source_fingerprint = source_fingerprint(sources);
+        query_cache_fingerprint(QueryCacheInput {
+            operation: QueryCacheOperation::ListCatalog,
+            workspace_name: workspace_name.as_str(),
+            sql: None,
+            source_fingerprint: &source_fingerprint,
+            execution_settings: &[
+                schema_filter.unwrap_or(""),
+                self.runtime_context
+                    .home_dir
+                    .as_ref()
+                    .map(|path| path.to_string_lossy())
+                    .as_deref()
+                    .unwrap_or(""),
+            ],
+        })
+    }
+
+    fn cache_key_for_sql(
+        &self,
+        workspace_name: &WorkspaceName,
+        operation: QueryCacheOperation,
+        sql: &str,
+        sources: &[QuerySource],
+    ) -> String {
+        let source_fingerprint = source_fingerprint(sources);
+        query_cache_fingerprint(QueryCacheInput {
+            operation,
+            workspace_name: workspace_name.as_str(),
+            sql: Some(sql),
+            source_fingerprint: &source_fingerprint,
+            execution_settings: &[
+                self.runtime_context
+                    .home_dir
+                    .as_ref()
+                    .map(|path| path.to_string_lossy())
+                    .as_deref()
+                    .unwrap_or(""),
+            ],
+        })
+    }
+
+    fn cache_key_for_validate_source(
+        &self,
+        workspace_name: &WorkspaceName,
+        source: &InstalledSource,
+        query_source: &QuerySource,
+    ) -> String {
+        let source_fingerprint = query_source_fingerprint(query_source);
+        query_cache_fingerprint(QueryCacheInput {
+            operation: QueryCacheOperation::ValidateSource,
+            workspace_name: workspace_name.as_str(),
+            sql: None,
+            source_fingerprint: &source_fingerprint,
+            execution_settings: &[
+                source.name.as_str(),
+                query_source.version(),
+                self.runtime_context
+                    .home_dir
+                    .as_ref()
+                    .map(|path| path.to_string_lossy())
+                    .as_deref()
+                    .unwrap_or(""),
+            ],
+        })
     }
 }
 
@@ -394,4 +614,36 @@ fn validate_required_variables(
         )));
     }
     Ok(())
+}
+
+fn source_fingerprint(sources: &[QuerySource]) -> String {
+    let mut parts = Vec::with_capacity(sources.len());
+    for source in sources {
+        parts.push(query_source_fingerprint(source));
+    }
+    parts.sort();
+    parts.join(";")
+}
+
+fn query_source_fingerprint(source: &QuerySource) -> String {
+    let mut fields = Vec::new();
+    fields.push(source.source_name().to_string());
+    fields.push(source.version().to_string());
+    for (key, value) in source.variables() {
+        fields.push(format!("var:{key}={value}"));
+    }
+    for (key, value) in source.secrets() {
+        fields.push(format!("secret:{key}={value}"));
+    }
+    cache_fingerprint_digest(&fields.iter().map(String::as_str).collect::<Vec<_>>())
+}
+
+fn record_cache_event(operation: &str, hit: bool) {
+    let metrics = crate::telemetry::metrics::metrics();
+    let attributes = [KeyValue::new("operation", operation)];
+    if hit {
+        metrics.cache_hits.add(1, &attributes);
+    } else {
+        metrics.cache_misses.add(1, &attributes);
+    }
 }

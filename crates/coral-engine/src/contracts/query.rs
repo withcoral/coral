@@ -67,14 +67,14 @@ impl QuerySource {
 }
 
 /// One source-spec validation query executed during source validation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct QueryTestResult {
     sql: String,
     result: Result<QueryTestSuccess, QueryTestFailure>,
 }
 
 /// Success metadata for one validation query execution.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct QueryTestSuccess {
     row_count: u64,
 }
@@ -88,7 +88,7 @@ impl QueryTestSuccess {
 }
 
 /// Failure details for one validation query execution.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct QueryTestFailure {
     error_message: String,
 }
@@ -156,7 +156,7 @@ impl QueryTestResult {
 }
 
 /// Structured report for validating one source and its optional test queries.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SourceValidationReport {
     /// Tables exposed by the validated source.
     pub tables: Vec<super::TableInfo>,
@@ -210,7 +210,7 @@ impl QueryRuntimeConfig {
 }
 
 /// Query-engine plan renderings for one `SQL` statement.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct QueryPlan {
     unoptimized_logical: String,
     optimized_logical: String,
@@ -285,6 +285,21 @@ impl QueryExecution {
             batches,
             row_count,
         }
+    }
+
+    #[must_use]
+    /// Rebuilds one fully materialized query result from an `Arrow` IPC stream.
+    pub fn from_arrow_ipc_stream(bytes: &[u8]) -> Result<Self, arrow::error::ArrowError> {
+        use arrow::ipc::reader::StreamReader;
+
+        let cursor = std::io::Cursor::new(bytes);
+        let mut reader = StreamReader::try_new(cursor, None)?;
+        let arrow_schema = Arc::new(reader.schema().as_ref().clone());
+        let mut batches = Vec::new();
+        for batch in &mut reader {
+            batches.push(batch?);
+        }
+        Ok(Self::new(arrow_schema, batches))
     }
 
     #[must_use]

@@ -16,6 +16,7 @@ use crate::workspaces::WorkspaceName;
 struct AppConfig {
     version: u32,
     catalog: SourceCatalog,
+    cache: CacheConfig,
 }
 
 impl Default for AppConfig {
@@ -23,6 +24,7 @@ impl Default for AppConfig {
         Self {
             version: default_config_version(),
             catalog: SourceCatalog::default(),
+            cache: CacheConfig::default(),
         }
     }
 }
@@ -31,12 +33,63 @@ fn default_config_version() -> u32 {
     1
 }
 
+fn default_cache_max_entries() -> usize {
+    512
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct CacheConfig {
+    ttl_seconds: Option<u64>,
+    persistent: bool,
+    max_entries: usize,
+}
+
+impl Default for CacheConfig {
+    fn default() -> Self {
+        Self {
+            ttl_seconds: None,
+            persistent: false,
+            max_entries: default_cache_max_entries(),
+        }
+    }
+}
+
+impl CacheConfig {
+    pub(crate) fn ttl_seconds(&self) -> Option<u64> {
+        self.ttl_seconds
+    }
+
+    pub(crate) fn persistent(&self) -> bool {
+        self.persistent
+    }
+
+    pub(crate) fn max_entries(&self) -> usize {
+        self.max_entries
+    }
+
+    pub(crate) fn is_enabled(&self) -> bool {
+        self.ttl_seconds.is_some_and(|ttl| ttl > 0)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct PersistedCacheConfig {
+    #[serde(default)]
+    ttl_seconds: Option<u64>,
+    #[serde(default)]
+    persistent: bool,
+    #[serde(default = "default_cache_max_entries")]
+    max_entries: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct PersistedAppConfig {
     #[serde(default = "default_config_version")]
     version: u32,
     #[serde(default)]
     workspaces: BTreeMap<String, PersistedWorkspaceConfig>,
+    #[serde(default)]
+    cache: PersistedCacheConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -190,6 +243,11 @@ impl ConfigStore {
         self.load_unlocked().map(|config| config.catalog)
     }
 
+    pub(crate) fn cache_config(&self) -> Result<CacheConfig, AppError> {
+        let _lock = self.lock_shared()?;
+        self.load_unlocked().map(|config| config.cache)
+    }
+
     fn update_catalog<T>(
         &self,
         update: impl FnOnce(&mut SourceCatalog) -> T,
@@ -251,6 +309,7 @@ fn render_config(config: &PersistedAppConfig, existing_raw: Option<&str>) -> Str
 
     // Remove and fully rebuild the workspaces section so removed sources don't linger.
     doc.remove("workspaces");
+    doc.remove("cache");
 
     for (workspace_name, workspace) in &config.workspaces {
         for (source_name, source) in &workspace.sources {
@@ -275,6 +334,24 @@ fn render_config(config: &PersistedAppConfig, existing_raw: Option<&str>) -> Str
             source_item["secrets"] = Item::Value(render_string_array(&source.secrets));
             source_item["origin"] = value(source.origin.as_config_value());
         }
+    }
+
+    if config.cache.ttl_seconds.is_some()
+        || config.cache.persistent
+        || config.cache.max_entries != default_cache_max_entries()
+    {
+        ensure_implicit_table(&mut doc["cache"]);
+        if let Some(ttl_seconds) = config.cache.ttl_seconds {
+            doc["cache"]["ttl_seconds"] = value(i64::try_from(ttl_seconds).unwrap_or(i64::MAX));
+        } else {
+            doc["cache"]
+                .as_table_mut()
+                .expect("cache table")
+                .remove("ttl_seconds");
+        }
+        doc["cache"]["persistent"] = value(config.cache.persistent);
+        doc["cache"]["max_entries"] =
+            value(i64::try_from(config.cache.max_entries).unwrap_or(i64::MAX));
     }
 
     doc.to_string()
@@ -304,6 +381,11 @@ impl TryFrom<PersistedAppConfig> for AppConfig {
         Ok(Self {
             version: value.version,
             catalog,
+            cache: CacheConfig {
+                ttl_seconds: value.cache.ttl_seconds,
+                persistent: value.cache.persistent,
+                max_entries: value.cache.max_entries,
+            },
         })
     }
 }
@@ -325,6 +407,11 @@ impl From<&AppConfig> for PersistedAppConfig {
         Self {
             version: value.version,
             workspaces,
+            cache: PersistedCacheConfig {
+                ttl_seconds: value.cache.ttl_seconds,
+                persistent: value.cache.persistent,
+                max_entries: value.cache.max_entries,
+            },
         }
     }
 }

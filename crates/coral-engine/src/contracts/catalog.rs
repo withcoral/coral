@@ -1,7 +1,7 @@
 //! Typed query-visible catalog metadata.
 
 /// Describes one queryable column.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ColumnInfo {
     /// Column name.
     pub name: String,
@@ -20,7 +20,7 @@ pub struct ColumnInfo {
 }
 
 /// Describes one queryable table.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TableInfo {
     /// `SQL` schema name.
     pub schema_name: String,
@@ -37,7 +37,7 @@ pub struct TableInfo {
 }
 
 /// Describes the queryable catalog exposed by one runtime snapshot.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CatalogInfo {
     /// Queryable tables.
     pub tables: Vec<TableInfo>,
@@ -46,7 +46,7 @@ pub struct CatalogInfo {
 }
 
 /// Describes one argument accepted by a source-scoped table function.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TableFunctionArgumentInfo {
     /// Argument name as used in a named SQL function call.
     pub name: String,
@@ -57,7 +57,7 @@ pub struct TableFunctionArgumentInfo {
 }
 
 /// Describes one result column returned by a source-scoped table function.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TableFunctionResultColumnInfo {
     /// Column name returned by the table function.
     pub name: String,
@@ -70,7 +70,7 @@ pub struct TableFunctionResultColumnInfo {
 }
 
 /// Describes one source-scoped table function.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TableFunctionInfo {
     /// `SQL` schema name.
     pub schema_name: String,

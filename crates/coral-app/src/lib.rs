@@ -56,3 +56,20 @@ pub use query::extensions::{
 };
 pub use telemetry::{RunContext, RunErrorTelemetry, run_with_context, shutdown_tracing};
 pub use workspaces::DEFAULT_WORKSPACE_ID;
+
+/// Clears the persistent query cache for the current Coral config directory.
+pub fn clear_query_cache(source_name: Option<&str>) -> Result<(), AppError> {
+    let env = bootstrap::env::AppEnvironment::discover();
+    let layout = state::AppStateLayout::discover(env.coral_config_dir_override())?;
+    layout.ensure()?;
+    let config_store = state::ConfigStore::new(layout.clone());
+    let cache = storage::cache::QueryCache::new(
+        layout,
+        storage::cache::cache_settings_from_config(config_store.cache_config()?),
+    );
+    match source_name {
+        Some(source_name) => cache.clear_source(source_name)?,
+        None => cache.clear_all()?,
+    }
+    Ok(())
+}
