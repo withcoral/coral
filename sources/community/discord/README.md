@@ -6,10 +6,12 @@ Query guilds, channels, messages, members, and roles from a Discord server via t
 
 1. Create a Discord application at https://discord.com/developers/applications
 2. Navigate to the **Bot** section and click **Reset Token** to generate a bot token
-3. Under **Privileged Gateway Intents**, enable **Server Members Intent** if you want to query the `members` table for guilds with 250k+ members
-4. Invite the bot to your server using the OAuth2 URL Generator with `bot` scope and the required permissions:
+3. Enable the **Privileged Gateway Intents** your queries need:
+   - **`GUILD_MEMBERS`** — required for the `members` table. Without this intent, the endpoint returns an empty member list for guilds with 250k+ members and may be restricted in smaller guilds.
+   - **`MESSAGE_CONTENT`** — required to read `content`, `embeds`, `attachments`, and `components` from the `messages` table. Without this intent, those fields will be empty (`""` or `[]`).
+4. Invite the bot to your server using the OAuth2 URL Generator with the `bot` scope and the required bot permissions:
    - `Read Messages / View Channels` — channels, messages
-   - `Read Message History` — message content
+   - `Read Message History` — message `content`, `embeds`, `attachments`
    - `Request Server Members` — members
 
 ## Tables
@@ -34,7 +36,7 @@ coral source test discord
 
 ```sql
 -- List all guilds with member counts
-SELECT id, name, member_count, premium_tier FROM discord.guilds;
+SELECT id, name, member_count FROM discord.guilds;
 
 --- List text channels in a specific guild
 SELECT id, name, position, topic

@@ -11,11 +11,10 @@ inputs:
     hint: |
       Discord bot token. Create a bot application at
       https://discord.com/developers/applications, go to Bot settings, and
-      copy the token. Required scopes: `bot`. Required permissions depend
-      on which tables you query — `Read Messages / View Channels` for
-      channels and messages, `Read Message History` for message content,
-      and `Request Server Members` (under Privileged Gateway Intents) for
-      the members table.
+      copy the token. The bot must be invited to target servers with the
+      `bot` scope. Required privileged intents depend on which tables you
+      query: `GUILD_MEMBERS` (privileged) for the members table, and
+      `MESSAGE_CONTENT` (privileged) for message content.
 
       See https://discord.com/developers/docs/getting-started.
 base_url: https://discord.com/api/v10
@@ -26,7 +25,7 @@ auth:
       from: template
       template: Bot {{input.DISCORD_BOT_TOKEN}}
 test_queries:
-  - SELECT id, name, owner_id, member_count FROM discord.guilds LIMIT 1
+  - SELECT id, name, member_count FROM discord.guilds LIMIT 1
 rate_limit:
   remaining_header: X-RateLimit-Remaining
   reset_header: X-RateLimit-Reset
@@ -53,12 +52,7 @@ tables:
       rows_path:
         - body
     pagination:
-      mode: page
-      page_param: None
-      page_size:
-        default: 200
-        max: 200
-        query_param: limit
+      mode: none
     columns:
       - name: id
         type: Utf8
@@ -84,38 +78,14 @@ tables:
           kind: path
           path:
             - icon
-      - name: icon_hash
-        type: Utf8
-        nullable: true
-        description: Icon hash, possibly animated.
-        expr:
-          kind: path
-          path:
-            - icon_hash
-      - name: splash
-        type: Utf8
-        nullable: true
-        description: Splash hash for the guild invite splash.
-        expr:
-          kind: path
-          path:
-            - splash
-      - name: discovery_splash
-        type: Utf8
-        nullable: true
-        description: Discovery splash hash.
-        expr:
-          kind: path
-          path:
-            - discovery_splash
-      - name: owner_id
-        type: Utf8
+      - name: owner
+        type: Boolean
         nullable: false
-        description: ID of the guild owner.
+        description: Whether the bot user is the guild owner.
         expr:
           kind: path
           path:
-            - owner_id
+            - owner
       - name: permissions
         type: Utf8
         nullable: true
@@ -124,86 +94,6 @@ tables:
           kind: path
           path:
             - permissions
-      - name: region
-        type: Utf8
-        nullable: true
-        description: Voice region (deprecated, may be null).
-        expr:
-          kind: path
-          path:
-            - region
-      - name: afk_channel_id
-        type: Utf8
-        nullable: true
-        description: AFK voice channel ID.
-        expr:
-          kind: path
-          path:
-            - afk_channel_id
-      - name: afk_timeout
-        type: Int64
-        nullable: true
-        description: AFK timeout in seconds.
-        expr:
-          kind: path
-          path:
-            - afk_timeout
-      - name: widget_enabled
-        type: Boolean
-        nullable: true
-        description: Whether the guild has a widget enabled.
-        expr:
-          kind: path
-          path:
-            - widget_enabled
-      - name: widget_channel_id
-        type: Utf8
-        nullable: true
-        description: Channel ID for the widget.
-        expr:
-          kind: path
-          path:
-            - widget_channel_id
-      - name: verification_level
-        type: Int64
-        nullable: true
-        description: Verification level (0 none, 1 low, 2 medium, 3 high, 4 very high).
-        expr:
-          kind: path
-          path:
-            - verification_level
-      - name: default_message_notifications
-        type: Int64
-        nullable: true
-        description: Default message notification level.
-        expr:
-          kind: path
-          path:
-            - default_message_notifications
-      - name: explicit_content_filter
-        type: Int64
-        nullable: true
-        description: Explicit content filter level.
-        expr:
-          kind: path
-          path:
-            - explicit_content_filter
-      - name: roles
-        type: Json
-        nullable: true
-        description: Array of role objects in the guild.
-        expr:
-          kind: path
-          path:
-            - roles
-      - name: emojis
-        type: Json
-        nullable: true
-        description: Array of emoji objects.
-        expr:
-          kind: path
-          path:
-            - emojis
       - name: features
         type: Utf8
         nullable: true
@@ -212,134 +102,6 @@ tables:
           kind: join_array
           path:
             - features
-      - name: mfa_level
-        type: Int64
-        nullable: true
-        description: MFA level (0 none, 1 elevated).
-        expr:
-          kind: path
-          path:
-            - mfa_level
-      - name: application_id
-        type: Utf8
-        nullable: true
-        description: Application ID of the guild creator (null if community-created).
-        expr:
-          kind: path
-          path:
-            - application_id
-      - name: system_channel_id
-        type: Utf8
-        nullable: true
-        description: Channel ID for system notifications.
-        expr:
-          kind: path
-          path:
-            - system_channel_id
-      - name: system_channel_flags
-        type: Int64
-        nullable: true
-        description: System channel flags.
-        expr:
-          kind: path
-          path:
-            - system_channel_flags
-      - name: rules_channel_id
-        type: Utf8
-        nullable: true
-        description: Channel ID for community rules/guidelines.
-        expr:
-          kind: path
-          path:
-            - rules_channel_id
-      - name: max_presences
-        type: Int64
-        nullable: true
-        description: Maximum number of presences the guild can have.
-        expr:
-          kind: path
-          path:
-            - max_presences
-      - name: max_members
-        type: Int64
-        nullable: true
-        description: Maximum member capacity.
-        expr:
-          kind: path
-          path:
-            - max_members
-      - name: vanity_url_code
-        type: Utf8
-        nullable: true
-        description: Vanity URL code for the guild.
-        expr:
-          kind: path
-          path:
-            - vanity_url_code
-      - name: description
-        type: Utf8
-        nullable: true
-        description: Guild description.
-        expr:
-          kind: path
-          path:
-            - description
-      - name: banner
-        type: Utf8
-        nullable: true
-        description: Banner hash.
-        expr:
-          kind: path
-          path:
-            - banner
-      - name: premium_tier
-        type: Int64
-        nullable: true
-        description: Server boost tier (0 none, 1, 2, 3).
-        expr:
-          kind: path
-          path:
-            - premium_tier
-      - name: premium_subscription_count
-        type: Int64
-        nullable: true
-        description: Number of active boosts.
-        expr:
-          kind: path
-          path:
-            - premium_subscription_count
-      - name: preferred_locale
-        type: Utf8
-        nullable: true
-        description: Preferred locale of the guild.
-        expr:
-          kind: path
-          path:
-            - preferred_locale
-      - name: public_updates_channel_id
-        type: Utf8
-        nullable: true
-        description: Channel ID for public updates.
-        expr:
-          kind: path
-          path:
-            - public_updates_channel_id
-      - name: max_video_channel_users
-        type: Int64
-        nullable: true
-        description: Maximum video channel users.
-        expr:
-          kind: path
-          path:
-            - max_video_channel_users
-      - name: max_stage_video_channel_users
-        type: Int64
-        nullable: true
-        description: Maximum stage video channel users.
-        expr:
-          kind: path
-          path:
-            - max_stage_video_channel_users
       - name: approximate_member_count
         type: Int64
         nullable: true
@@ -560,12 +322,7 @@ tables:
       rows_path:
         - body
     pagination:
-      mode: page
-      page_param: None
-      page_size:
-        default: 100
-        max: 100
-        query_param: limit
+      mode: none
     columns:
       - name: channel_id
         type: Utf8
@@ -600,21 +357,27 @@ tables:
           path:
             - type
       - name: timestamp
-        type: Utf8
+        type: Timestamp
         nullable: false
         description: Message creation timestamp (ISO 8601).
         expr:
-          kind: path
-          path:
-            - timestamp
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - timestamp
       - name: edited_timestamp
-        type: Utf8
+        type: Timestamp
         nullable: true
         description: Message edit timestamp (ISO 8601), null if never edited.
         expr:
-          kind: path
-          path:
-            - edited_timestamp
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - edited_timestamp
       - name: tts
         type: Boolean
         nullable: false
@@ -879,12 +642,7 @@ tables:
       rows_path:
         - body
     pagination:
-      mode: page
-      page_param: None
-      page_size:
-        default: 100
-        max: 1000
-        query_param: limit
+      mode: none
     columns:
       - name: guild_id
         type: Utf8
@@ -982,21 +740,27 @@ tables:
           path:
             - roles
       - name: joined_at
-        type: Utf8
+        type: Timestamp
         nullable: true
         description: Timestamp the member joined the guild (ISO 8601).
         expr:
-          kind: path
-          path:
-            - joined_at
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - joined_at
       - name: premium_since
-        type: Utf8
+        type: Timestamp
         nullable: true
         description: Timestamp when the member started boosting (ISO 8601), null if not boosting.
         expr:
-          kind: path
-          path:
-            - premium_since
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - premium_since
       - name: deaf
         type: Boolean
         nullable: true
@@ -1030,13 +794,16 @@ tables:
           path:
             - pending
       - name: communication_disabled_until
-        type: Utf8
+        type: Timestamp
         nullable: true
         description: Timestamp when the member's timeout expires (ISO 8601), null if not timed out.
         expr:
-          kind: path
-          path:
-            - communication_disabled_until
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - communication_disabled_until
       - name: permissions
         type: Utf8
         nullable: true
