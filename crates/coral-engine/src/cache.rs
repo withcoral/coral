@@ -1,8 +1,6 @@
 //! Deterministic query cache fingerprinting for app-side result caching.
 
 use sha2::{Digest, Sha256};
-use datafusion::sql::sqlparser::dialect::GenericDialect;
-use datafusion::sql::sqlparser::parser::Parser;
 
 /// Query operation categories that participate in cache fingerprinting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,15 +52,108 @@ pub fn normalize_sql(sql: &str) -> String {
         return String::new();
     }
 
-    let dialect = GenericDialect {};
-    match Parser::parse_sql(&dialect, trimmed) {
-        Ok(statements) => statements
-            .into_iter()
-            .map(|statement| statement.to_string())
-            .collect::<Vec<_>>()
-            .join("; "),
-        Err(_) => trimmed.to_string(),
+    let mut normalized = String::with_capacity(trimmed.len());
+    let mut chars = trimmed.chars().peekable();
+    let mut pending_space = false;
+    enum Mode {
+        Normal,
+        SingleQuote,
+        DoubleQuote,
+        Backtick,
+        LineComment,
+        BlockComment,
     }
+    let mut mode = Mode::Normal;
+
+    while let Some(ch) = chars.next() {
+        match mode {
+            Mode::Normal => match ch {
+                '\'' => {
+                    if pending_space && !normalized.is_empty() {
+                        normalized.push(' ');
+                    }
+                    pending_space = false;
+                    normalized.push(ch);
+                    mode = Mode::SingleQuote;
+                }
+                '"' => {
+                    if pending_space && !normalized.is_empty() {
+                        normalized.push(' ');
+                    }
+                    pending_space = false;
+                    normalized.push(ch);
+                    mode = Mode::DoubleQuote;
+                }
+                '`' => {
+                    if pending_space && !normalized.is_empty() {
+                        normalized.push(' ');
+                    }
+                    pending_space = false;
+                    normalized.push(ch);
+                    mode = Mode::Backtick;
+                }
+                '-' if chars.peek().is_some_and(|next| *next == '-') => {
+                    chars.next();
+                    mode = Mode::LineComment;
+                }
+                '/' if chars.peek().is_some_and(|next| *next == '*') => {
+                    chars.next();
+                    mode = Mode::BlockComment;
+                }
+                ch if ch.is_whitespace() => {
+                    pending_space = true;
+                }
+                _ => {
+                    if pending_space && !normalized.is_empty() {
+                        normalized.push(' ');
+                    }
+                    pending_space = false;
+                    normalized.push(ch);
+                }
+            },
+            Mode::SingleQuote => {
+                normalized.push(ch);
+                if ch == '\'' {
+                    if chars.peek().is_some_and(|next| *next == '\'') {
+                        normalized.push(chars.next().expect("peeked next char"));
+                    } else {
+                        mode = Mode::Normal;
+                    }
+                }
+            }
+            Mode::DoubleQuote => {
+                normalized.push(ch);
+                if ch == '"' {
+                    if chars.peek().is_some_and(|next| *next == '"') {
+                        normalized.push(chars.next().expect("peeked next char"));
+                    } else {
+                        mode = Mode::Normal;
+                    }
+                }
+            }
+            Mode::Backtick => {
+                normalized.push(ch);
+                if ch == '`' {
+                    mode = Mode::Normal;
+                }
+            }
+            Mode::LineComment => {
+                if ch == '\n' {
+                    pending_space = true;
+                    mode = Mode::Normal;
+                }
+            }
+            Mode::BlockComment => {
+                if ch == '*' && chars.peek().is_some_and(|next| *next == '/') {
+                    chars.next();
+                    pending_space = true;
+                    mode = Mode::Normal;
+                }
+            }
+        }
+    }
+
+    normalized.trim().to_string()
 }
 
 /// Builds a deterministic fingerprint for one cacheable query or metadata request.
@@ -95,8 +186,14 @@ mod tests {
         let with_double_space = "select 'a  b' as value";
         let with_single_space = "select 'a b' as value";
 
-        assert_eq!(normalize_sql(with_double_space), "SELECT 'a  b' AS value");
-        assert_eq!(normalize_sql(with_single_space), "SELECT 'a b' AS value");
+        assert_eq!(normalize_sql(with_double_space), "select 'a  b' as value");
+        assert_eq!(normalize_sql(with_single_space), "select 'a b' as value");
         assert_ne!(normalize_sql(with_double_space), normalize_sql(with_single_space));
+    }
+
+    #[test]
+    fn normalize_sql_collapses_formatting_outside_literals() {
+        let sql = "  select   *   from   foo  where  id = 1  -- comment\n";
+        assert_eq!(normalize_sql(sql), "select * from foo where id = 1");
     }
 }

@@ -241,7 +241,9 @@ impl QueryCache {
             .lock()
             .expect("cache lock poisoned during corruption eviction")
             .remove(key);
-        let _ = self.remove_entry_file(key);
+        if let Err(error) = self.remove_entry_file(key) {
+            tracing::warn!(key, ?error, "failed to remove corrupt cache entry file");
+        }
     }
 
     fn cache_dir(&self) -> PathBuf {
