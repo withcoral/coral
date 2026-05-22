@@ -34,15 +34,34 @@ export const navbar = recipe({
   },
 })
 
-export const header = style({
-  alignItems: 'center',
-  display: 'flex',
-  justifyContent: 'flex-start',
-  minHeight: '32px',
-  paddingBlockStart: '10px',
+export const header = recipe({
+  base: {
+    display: 'flex',
+    minHeight: '32px',
+    paddingBlockStart: '10px',
+    width: '100%',
+  },
+  defaultVariants: {
+    isCollapsed: false,
+  },
+  variants: {
+    isCollapsed: {
+      false: {
+        alignItems: 'center',
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+      },
+      true: {
+        alignItems: 'center',
+        flexDirection: 'column',
+        justifyContent: 'flex-start',
+        gap: '8px',
+      },
+    },
+  },
 })
 
-export const brandButton = style({
+export const brandMark = style({
   alignItems: 'center',
   background: 'transparent',
   border: 'none',

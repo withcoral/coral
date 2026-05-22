@@ -9,25 +9,27 @@ test('sidebar collapses, expands, and exposes the Query stream tooltip', async (
 
   await expect(page.getByText('No queries yet')).toBeVisible()
 
-  const brandButton = page.getByRole('button', { name: 'Query stream' })
+  const brandMark = page.getByRole('img', { name: 'Query stream' })
   const sidebar = page.getByRole('navigation', { name: 'Coral' })
   const tracesButton = page.getByRole('button', { name: 'Traces' })
   const tracesLabel = page.getByText('Traces', { exact: true })
+  const collapseButton = page.getByRole('button', { name: 'Collapse sidebar' })
   const sidebarWidth = () => sidebar.evaluate((element) => element.getBoundingClientRect().width)
 
   const expandedWidth = await sidebarWidth()
-  await expect(brandButton).toHaveAttribute('aria-expanded', 'true')
+  await expect(brandMark).toBeVisible()
+  await expect(collapseButton).toBeVisible()
   await expect(tracesButton).toHaveAttribute('aria-current', 'page')
   await expect(tracesLabel).toBeVisible()
 
   await review.chapter('Show the brand tooltip', 'Hover the Coral icon and confirm the exact tooltip copy')
-  await brandButton.hover()
+  await brandMark.hover()
   await expect(page.getByText('Query stream', { exact: true })).toBeVisible()
   await review.pause()
 
-  await review.chapter('Collapse the sidebar', 'Toggle the brand button and verify the sidebar narrows')
-  await brandButton.click()
-  await expect(brandButton).toHaveAttribute('aria-expanded', 'false')
+  await review.chapter('Collapse the sidebar', 'Use the dedicated toggle button and verify the sidebar narrows')
+  await collapseButton.click()
+  await expect(page.getByRole('button', { name: 'Expand sidebar' })).toBeVisible()
   await expect.poll(sidebarWidth).toBeLessThan(expandedWidth)
   await expect(tracesLabel).toHaveCount(0)
 
@@ -36,9 +38,9 @@ test('sidebar collapses, expands, and exposes the Query stream tooltip', async (
 
   const collapsedWidth = await sidebarWidth()
 
-  await review.chapter('Expand the sidebar', 'Toggle the brand button again and confirm the item stays active')
-  await brandButton.click()
-  await expect(brandButton).toHaveAttribute('aria-expanded', 'true')
+  await review.chapter('Expand the sidebar', 'Use the dedicated toggle button again and confirm the item stays active')
+  await page.getByRole('button', { name: 'Expand sidebar' }).click()
+  await expect(page.getByRole('button', { name: 'Collapse sidebar' })).toBeVisible()
   await expect.poll(sidebarWidth).toBeGreaterThan(collapsedWidth)
   await expect(tracesButton).toHaveAttribute('aria-current', 'page')
   await expect(tracesButton).toBeDisabled()

@@ -21,12 +21,14 @@ export type IconName =
   | 'ArrowDown'
   | 'ArrowUp'
   | 'ChevronDown'
+  | 'ChevronLeft'
   | 'ChevronRight'
   | 'CircleAlert'
   | 'Coral'
   | 'Loader'
   | 'Search'
   | 'X'
+
 export interface IconProps {
   className?: string
   color?: IconColor

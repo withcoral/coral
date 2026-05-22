@@ -1,6 +1,7 @@
 import { useState } from 'react'
 
 import type { IconName } from '@/wax/components/icon'
+import { IconButton } from '@/wax/components/button'
 import { CoralIcon } from '@/wax/components/icon/custom-icons/coral'
 import { SidebarButton } from '@/wax/components/sidebar-button/sidebar-button'
 import { Tooltip } from '@/wax/components/tooltip'
@@ -11,26 +12,37 @@ const NAV_ITEMS: { icon: IconName; label: string; active?: boolean }[] = [
 ]
 
 const QUERY_STREAM_LABEL = 'Query stream'
+const COLLAPSE_SIDEBAR_LABEL = 'Collapse sidebar'
+const EXPAND_SIDEBAR_LABEL = 'Expand sidebar'
 const PRIMARY_NAVIGATION_ID = 'primary-navigation'
 
 export function Navbar() {
   const [isCollapsed, setIsCollapsed] = useState(false)
+  const toggleLabel = isCollapsed ? EXPAND_SIDEBAR_LABEL : COLLAPSE_SIDEBAR_LABEL
 
   return (
     <nav className={styles.navbar({ isCollapsed })} aria-label="Coral">
-      <div className={styles.header}>
+      <div className={styles.header({ isCollapsed })}>
         <Tooltip content={QUERY_STREAM_LABEL}>
-          <button
-            aria-controls={PRIMARY_NAVIGATION_ID}
-            aria-expanded={!isCollapsed}
+          <span
             aria-label={QUERY_STREAM_LABEL}
-            className={styles.brandButton}
-            onClick={() => setIsCollapsed((value) => !value)}
-            type="button"
+            className={styles.brandMark}
+            role="img"
+            tabIndex={0}
           >
-            <CoralIcon size={22} />
-          </button>
+            <CoralIcon aria-hidden="true" size={22} />
+          </span>
         </Tooltip>
+        <IconButton
+          aria-controls={PRIMARY_NAVIGATION_ID}
+          aria-expanded={!isCollapsed}
+          ariaLabel={toggleLabel}
+          name={isCollapsed ? 'ChevronRight' : 'ChevronLeft'}
+          onClick={() => setIsCollapsed((value) => !value)}
+          size="22"
+          tooltipText={toggleLabel}
+          variant="bare"
+        />
       </div>
       <div className={styles.nav} aria-label="Primary navigation" id={PRIMARY_NAVIGATION_ID}>
         {NAV_ITEMS.map((item) => (
