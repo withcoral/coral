@@ -9,10 +9,10 @@ use coral_api::v1::{
     CreateBundledSourceRequest, CreateBundledSourceResponse, CredentialMetadata,
     DeleteSourceRequest, DeleteSourceResponse, DiscoverSourcesRequest, DiscoverSourcesResponse,
     GetSourceInfoRequest, GetSourceInfoResponse, GetSourceRequest, GetSourceResponse,
-    ImportSourceOAuthCredential, ImportSourceRequest, ImportSourceResponse, ListSourcesRequest,
-    ListSourcesResponse, OAuthAuthorizationCodeCredentialMethod, OAuthCredentialAuthorization,
-    OAuthCredentialClient, OAuthCredentialClientId, OAuthCredentialClientSecret,
-    OAuthCredentialCompleted, OAuthCredentialEndpoints, OAuthCredentialInput, OAuthCredentialScope,
+    ImportSourceRequest, ImportSourceResponse, ListSourcesRequest, ListSourcesResponse,
+    OAuthAuthorizationCodeCredentialMethod, OAuthCredentialAuthorization, OAuthCredentialClient,
+    OAuthCredentialClientId, OAuthCredentialClientSecret, OAuthCredentialCompleted,
+    OAuthCredentialEndpoints, OAuthCredentialInput, OAuthCredentialRetrieval, OAuthCredentialScope,
     OAuthCredentialScopes, OauthCredentialClientSecretTransport, OauthCredentialPkceMode,
     OauthCredentialScopeDelimiter, Source, SourceConfigCredentialMethod, SourceCredential,
     SourceCredentialMethod, SourceInfo, SourceInputSpec, SourceOrigin as ProtoSourceOrigin,
@@ -35,7 +35,7 @@ use crate::sources::manager::{
     CreateBundledSourceCommand, ImportSourceCommand, ImportSourceEventSender,
     ImportSourceWithCredentialsCommand, ImportSourceWithCredentialsEvent,
     PendingImportSourceWithCredentialsEvent, SourceBinding, SourceBindings, SourceManager,
-    SourceOAuthCredentialRequest,
+    SourceOAuthCredentialRetrieval,
 };
 use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
 use crate::transport::{
@@ -180,7 +180,7 @@ impl SourceServiceApi for SourceService {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
             let response_workspace_name = workspace_name.clone();
-            if request.oauth_credentials.is_empty() {
+            if request.oauth_credential_retrievals.is_empty() {
                 let command = ImportSourceCommand {
                     manifest_yaml: request.manifest_yaml,
                     bindings: source_bindings_from_proto(request.variables, request.secrets),
@@ -200,10 +200,10 @@ impl SourceServiceApi for SourceService {
             let command = ImportSourceWithCredentialsCommand {
                 manifest_yaml: request.manifest_yaml,
                 bindings: source_bindings_from_proto(request.variables, request.secrets),
-                oauth_credentials: request
-                    .oauth_credentials
+                oauth_credential_retrievals: request
+                    .oauth_credential_retrievals
                     .into_iter()
-                    .map(source_oauth_credential_from_proto)
+                    .map(oauth_credential_retrieval_from_proto)
                     .collect::<Result<Vec<_>, _>>()
                     .map_err(app_status)?,
             };
@@ -363,19 +363,19 @@ fn oauth_credential_input_from_proto(input: OAuthCredentialInput) -> SourceBindi
     }
 }
 
-fn source_oauth_credential_from_proto(
-    credential: ImportSourceOAuthCredential,
-) -> Result<SourceOAuthCredentialRequest, AppError> {
-    let input_key = credential.input_key;
-    let method_index = credential.method_index.ok_or_else(|| {
+fn oauth_credential_retrieval_from_proto(
+    retrieval: OAuthCredentialRetrieval,
+) -> Result<SourceOAuthCredentialRetrieval, AppError> {
+    let input_key = retrieval.input_key;
+    let method_index = retrieval.method_index.ok_or_else(|| {
         AppError::InvalidInput(format!(
-            "missing OAuth credential method_index for source input '{input_key}'"
+            "missing OAuth credential retrieval method_index for source input '{input_key}'"
         ))
     })?;
-    Ok(SourceOAuthCredentialRequest {
+    Ok(SourceOAuthCredentialRetrieval {
         input_key,
         method_index: usize::try_from(method_index).unwrap_or(usize::MAX),
-        credential_inputs: credential
+        credential_inputs: retrieval
             .credential_inputs
             .into_iter()
             .map(oauth_credential_input_from_proto)
@@ -665,8 +665,8 @@ mod tests {
     }
 
     #[test]
-    fn converts_oauth_credential_request_from_proto() {
-        let request = source_oauth_credential_from_proto(ImportSourceOAuthCredential {
+    fn converts_oauth_credential_retrieval_from_proto() {
+        let request = oauth_credential_retrieval_from_proto(OAuthCredentialRetrieval {
             input_key: "API_TOKEN".to_string(),
             method_index: Some(1),
             credential_inputs: vec![
@@ -680,7 +680,7 @@ mod tests {
                 },
             ],
         })
-        .expect("convert OAuth credential request");
+        .expect("convert OAuth credential retrieval");
 
         assert_eq!(request.input_key, "API_TOKEN");
         assert_eq!(request.method_index, 1);
@@ -692,8 +692,8 @@ mod tests {
     }
 
     #[test]
-    fn rejects_oauth_credential_request_without_method_index() {
-        let result = source_oauth_credential_from_proto(ImportSourceOAuthCredential {
+    fn rejects_oauth_credential_retrieval_without_method_index() {
+        let result = oauth_credential_retrieval_from_proto(OAuthCredentialRetrieval {
             input_key: "API_TOKEN".to_string(),
             method_index: None,
             credential_inputs: Vec::new(),
@@ -706,7 +706,9 @@ mod tests {
             panic!("unexpected error: {error}");
         };
         assert!(
-            message.contains("missing OAuth credential method_index for source input 'API_TOKEN'"),
+            message.contains(
+                "missing OAuth credential retrieval method_index for source input 'API_TOKEN'"
+            ),
             "unexpected error message: {message}"
         );
     }

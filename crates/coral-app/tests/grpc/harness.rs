@@ -89,7 +89,7 @@ impl GrpcHarness {
                 manifest_yaml,
                 variables,
                 secrets,
-                oauth_credentials: Vec::new(),
+                oauth_credential_retrievals: Vec::new(),
             }))
             .await
             .expect("import source")

@@ -117,7 +117,7 @@ async fn import_duplicate_source_overwrites_existing_source() {
             manifest_yaml: manifest_yaml.replace("0.1.0", "0.2.0"),
             variables: Vec::new(),
             secrets: Vec::new(),
-            oauth_credentials: Vec::new(),
+            oauth_credential_retrievals: Vec::new(),
         }))
         .await
         .expect("duplicate import should overwrite")
@@ -158,7 +158,7 @@ async fn import_invalid_manifest_returns_invalid_argument() {
             manifest_yaml: invalid_manifest_yaml(),
             variables: Vec::new(),
             secrets: Vec::new(),
-            oauth_credentials: Vec::new(),
+            oauth_credential_retrievals: Vec::new(),
         }))
         .await
         .expect_err("invalid manifest should fail");
@@ -567,7 +567,7 @@ async fn import_source_missing_required_secret_returns_invalid_argument() {
                 value: "https://example.com".to_string(),
             }],
             secrets: Vec::new(),
-            oauth_credentials: Vec::new(),
+            oauth_credential_retrievals: Vec::new(),
         }))
         .await
         .expect_err("missing required secret should fail");
@@ -593,7 +593,7 @@ async fn import_source_missing_required_variable_returns_invalid_argument() {
                 key: "API_TOKEN".to_string(),
                 value: "secret-token".to_string(),
             }],
-            oauth_credentials: Vec::new(),
+            oauth_credential_retrievals: Vec::new(),
         }))
         .await
         .expect_err("missing required variable should fail");
@@ -622,7 +622,7 @@ async fn import_source_unknown_variable_returns_invalid_argument() {
                 key: "API_TOKEN".to_string(),
                 value: "secret-token".to_string(),
             }],
-            oauth_credentials: Vec::new(),
+            oauth_credential_retrievals: Vec::new(),
         }))
         .await
         .expect_err("unknown variable should fail");
@@ -653,7 +653,7 @@ async fn import_source_unknown_secret_returns_invalid_argument() {
                     value: "unused".to_string(),
                 },
             ],
-            oauth_credentials: Vec::new(),
+            oauth_credential_retrievals: Vec::new(),
         }))
         .await
         .expect_err("unknown secret should fail");
@@ -688,7 +688,7 @@ async fn import_source_repeated_variable_returns_invalid_argument() {
                 key: "API_TOKEN".to_string(),
                 value: "secret-token".to_string(),
             }],
-            oauth_credentials: Vec::new(),
+            oauth_credential_retrievals: Vec::new(),
         }))
         .await
         .expect_err("repeated variable should fail");
@@ -723,7 +723,7 @@ async fn import_source_repeated_secret_returns_invalid_argument() {
                     value: "shadow-token".to_string(),
                 },
             ],
-            oauth_credentials: Vec::new(),
+            oauth_credential_retrievals: Vec::new(),
         }))
         .await
         .expect_err("repeated secret should fail");
@@ -1276,7 +1276,7 @@ async fn import_rolls_back_on_config_write_failure() {
                 key: "API_TOKEN".to_string(),
                 value: "secret-token".to_string(),
             }],
-            oauth_credentials: Vec::new(),
+            oauth_credential_retrievals: Vec::new(),
         }))
         .await
         .expect_err("config write should fail");

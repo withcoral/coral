@@ -110,7 +110,7 @@ pub(crate) async fn import_source(
             manifest_yaml,
             variables,
             secrets,
-            oauth_credentials: Vec::new(),
+            oauth_credential_retrievals: Vec::new(),
         }))
         .await?
         .into_inner();

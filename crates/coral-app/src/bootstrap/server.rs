@@ -898,7 +898,7 @@ tables:
                 .to_string(),
                 variables: Vec::new(),
                 secrets: Vec::new(),
-                oauth_credentials: Vec::new(),
+                oauth_credential_retrievals: Vec::new(),
             }))
             .send()
             .await
@@ -1131,7 +1131,7 @@ tables:
                 .to_string(),
                 variables: Vec::new(),
                 secrets: Vec::new(),
-                oauth_credentials: Vec::new(),
+                oauth_credential_retrievals: Vec::new(),
             }))
             .await
             .expect("create source")
@@ -1310,7 +1310,7 @@ tables:
                 manifest_yaml: manifest,
                 variables: Vec::new(),
                 secrets: Vec::new(),
-                oauth_credentials: Vec::new(),
+                oauth_credential_retrievals: Vec::new(),
             }))
             .await
             .expect("import wide source")

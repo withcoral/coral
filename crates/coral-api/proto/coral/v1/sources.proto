@@ -254,8 +254,8 @@ message ImportSourceRequest {
   repeated SourceVariable variables = 3;
   // Source-owned secret values.
   repeated SourceSecret secrets = 4;
-  // OAuth credentials the app should retrieve before validation and import.
-  repeated ImportSourceOAuthCredential oauth_credentials = 5;
+  // OAuth credential retrievals the app should run before validation and import.
+  repeated OAuthCredentialRetrieval oauth_credential_retrievals = 5;
 }
 
 // Streaming event emitted while importing a source.
@@ -289,7 +289,7 @@ message OAuthCredentialInput {
 }
 
 // OAuth credential retrieval selected for one source secret input.
-message ImportSourceOAuthCredential {
+message OAuthCredentialRetrieval {
   // Secret input key being retrieved.
   string input_key = 1;
   // Zero-based selected credential method index.

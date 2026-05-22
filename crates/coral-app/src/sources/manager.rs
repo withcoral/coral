@@ -44,7 +44,7 @@ pub(crate) struct ImportSourceCommand {
 pub(crate) struct ImportSourceWithCredentialsCommand {
     pub(crate) manifest_yaml: String,
     pub(crate) bindings: SourceBindings,
-    pub(crate) oauth_credentials: Vec<SourceOAuthCredentialRequest>,
+    pub(crate) oauth_credential_retrievals: Vec<SourceOAuthCredentialRetrieval>,
 }
 
 #[derive(Default)]
@@ -58,7 +58,7 @@ pub(crate) struct SourceBinding {
     pub(crate) value: String,
 }
 
-pub(crate) struct SourceOAuthCredentialRequest {
+pub(crate) struct SourceOAuthCredentialRetrieval {
     pub(crate) input_key: String,
     pub(crate) method_index: usize,
     pub(crate) credential_inputs: Vec<SourceBinding>,
@@ -269,7 +269,7 @@ impl SourceManager {
             describe_manifest(&command.manifest_yaml, SourceOrigin::Imported, false)?;
         candidate.installed = self.source_exists(workspace_name, &candidate.name)?;
         let oauth_input_keys = command
-            .oauth_credentials
+            .oauth_credential_retrievals
             .iter()
             .map(|credential| credential.input_key.clone())
             .collect::<BTreeSet<_>>();
@@ -283,10 +283,10 @@ impl SourceManager {
             &candidate,
             &command.bindings,
             &stored_material,
-            &command.oauth_credentials,
+            &command.oauth_credential_retrievals,
         )?;
         let oauth_material = self
-            .retrieve_oauth_material(&candidate, command.oauth_credentials, events)
+            .retrieve_oauth_material(&candidate, command.oauth_credential_retrievals, events)
             .await?;
         let mut validation_material = stored_material;
         for material in &oauth_material {
@@ -487,20 +487,20 @@ impl SourceManager {
         candidate: &CandidateSource,
         bindings: &SourceBindings,
         stored_material: &BTreeMap<String, String>,
-        oauth_credentials: &[SourceOAuthCredentialRequest],
+        oauth_credential_retrievals: &[SourceOAuthCredentialRetrieval],
     ) -> Result<(), AppError> {
         let mut seen = BTreeSet::new();
         let mut validation_material = stored_material.clone();
-        for credential in oauth_credentials {
-            if !seen.insert(credential.input_key.clone()) {
+        for retrieval in oauth_credential_retrievals {
+            if !seen.insert(retrieval.input_key.clone()) {
                 return Err(AppError::InvalidInput(format!(
-                    "OAuth credential for source input '{}' is repeated",
-                    credential.input_key
+                    "OAuth credential retrieval for source input '{}' is repeated",
+                    retrieval.input_key
                 )));
             }
             let config =
-                source_oauth_config(candidate, &credential.input_key, credential.method_index)?;
-            let credential_inputs = credential
+                source_oauth_config(candidate, &retrieval.input_key, retrieval.method_index)?;
+            let credential_inputs = retrieval
                 .credential_inputs
                 .iter()
                 .map(|input| (input.key.clone(), input.value.clone()))
@@ -523,22 +523,22 @@ impl SourceManager {
     async fn retrieve_oauth_material(
         &self,
         candidate: &CandidateSource,
-        oauth_credentials: Vec<SourceOAuthCredentialRequest>,
+        oauth_credential_retrievals: Vec<SourceOAuthCredentialRetrieval>,
         events: ImportSourceEventSender,
     ) -> Result<Vec<OAuthCredentialMaterial>, AppError> {
         let mut seen = BTreeSet::new();
         let mut materials = Vec::new();
-        for credential in oauth_credentials {
-            if !seen.insert(credential.input_key.clone()) {
+        for retrieval in oauth_credential_retrievals {
+            if !seen.insert(retrieval.input_key.clone()) {
                 return Err(AppError::InvalidInput(format!(
-                    "OAuth credential for source input '{}' is repeated",
-                    credential.input_key
+                    "OAuth credential retrieval for source input '{}' is repeated",
+                    retrieval.input_key
                 )));
             }
             let config =
-                source_oauth_config(candidate, &credential.input_key, credential.method_index)?;
+                source_oauth_config(candidate, &retrieval.input_key, retrieval.method_index)?;
             let input_key = config.input_key.to_string();
-            let credential_inputs = credential
+            let credential_inputs = retrieval
                 .credential_inputs
                 .into_iter()
                 .map(|input| (input.key, input.value))
@@ -972,7 +972,7 @@ mod tests {
     use super::{
         ImportSourceCommand, ImportSourceEventSender, ImportSourceWithCredentialsCommand,
         ImportSourceWithCredentialsEvent, PendingImportSourceWithCredentialsEvent, SourceBinding,
-        SourceBindings, SourceManager, SourceOAuthCredentialRequest, normalize_binding_key,
+        SourceBindings, SourceManager, SourceOAuthCredentialRetrieval, normalize_binding_key,
     };
     use crate::credentials::{CredentialManager, CredentialSetId, CredentialStore};
     use crate::sources::SourceName;
@@ -1476,7 +1476,7 @@ tables:
                     }],
                     secrets: Vec::new(),
                 },
-                oauth_credentials: vec![SourceOAuthCredentialRequest {
+                oauth_credential_retrievals: vec![SourceOAuthCredentialRetrieval {
                     input_key: "API_TOKEN".to_string(),
                     method_index: 0,
                     credential_inputs: Vec::new(),
@@ -1574,7 +1574,7 @@ tables:
                         redirect_port,
                     ),
                     bindings: SourceBindings::default(),
-                    oauth_credentials: vec![SourceOAuthCredentialRequest {
+                    oauth_credential_retrievals: vec![SourceOAuthCredentialRetrieval {
                         input_key: "API_TOKEN".to_string(),
                         method_index: 0,
                         credential_inputs: Vec::new(),
@@ -1637,7 +1637,7 @@ tables:
                             value: "manual-token".to_string(),
                         }],
                     },
-                    oauth_credentials: vec![SourceOAuthCredentialRequest {
+                    oauth_credential_retrievals: vec![SourceOAuthCredentialRetrieval {
                         input_key: "API_TOKEN".to_string(),
                         method_index: 0,
                         credential_inputs: Vec::new(),
