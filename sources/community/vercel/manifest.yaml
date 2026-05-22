@@ -43,7 +43,7 @@ tables:
     columns:
       - name: id
         type: Utf8
-        nullable: false
+        nullable: true
         description: Project ID
         expr:
           kind: path
