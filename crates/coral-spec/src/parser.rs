@@ -196,7 +196,6 @@ fn parse_source_backend(value: &Value) -> Result<SourceBackend> {
 #[cfg(test)]
 mod tests {
     use super::parse_source_manifest_yaml;
-    use crate::schema::validate_manifest_schema;
 
     #[test]
     fn parse_source_manifest_preserves_test_query_order() {
@@ -226,8 +225,8 @@ tables:
     }
 
     #[test]
-    fn bindable_on_non_http_accepts_at_spec_layer() {
-        let manifest: serde_json::Value = serde_yaml::from_str(
+    fn bindable_on_file_jsonl_rejects_at_spec_layer() {
+        let error = parse_source_manifest_yaml(
             r"
 name: demo
 version: 1.0.0
@@ -247,10 +246,44 @@ tables:
         type: Utf8
 ",
         )
-        .expect("manifest fixture should parse as YAML");
+        .expect_err("spec layer should reject bindable filters on file sources");
 
-        validate_manifest_schema(&manifest)
-            .expect("schema layer should accept bindable filters on non-http sources");
+        assert!(
+            error.to_string().contains(
+                "demo.messages filter 'id': backend=file does not support bindable filters"
+            )
+        );
+    }
+
+    #[test]
+    fn bindable_on_file_parquet_rejects_at_spec_layer() {
+        let error = parse_source_manifest_yaml(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: file
+tables:
+  - name: messages
+    description: Demo messages
+    format: parquet
+    filters:
+      - name: id
+        bindable: true
+    source:
+      location: file:///tmp/demo/
+    columns:
+      - name: id
+        type: Utf8
+",
+        )
+        .expect_err("spec layer should reject bindable filters on file sources");
+
+        assert!(
+            error.to_string().contains(
+                "demo.messages filter 'id': backend=file does not support bindable filters"
+            )
+        );
     }
 
     #[test]

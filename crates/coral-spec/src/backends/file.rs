@@ -560,6 +560,13 @@ fn validate_native_file_table_features(
     filters: &[FilterSpec],
     columns: &[ColumnSpec],
 ) -> Result<()> {
+    if let Some(filter) = filters.iter().find(|filter| filter.bindable) {
+        return Err(ManifestError::validation(format!(
+            "{schema}.{table} filter '{}': backend=file does not support bindable filters",
+            filter.name
+        )));
+    }
+
     if !filters.is_empty() {
         return Err(ManifestError::validation(format!(
             "{schema}.{table} uses backend=file and does not support declared filters; use SQL WHERE predicates instead"
