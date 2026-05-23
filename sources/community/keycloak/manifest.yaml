@@ -423,7 +423,9 @@ tables:
         description: Error message when the operation failed.
         expr: {kind: path, path: [error]}
       - name: representation
-        type: Json
+        type: Utf8
         nullable: true
-        description: Serialized resource representation when present.
+        description: >-
+          Serialized resource representation as returned by Keycloak (JSON text
+          string when present).
         expr: {kind: path, path: [representation]}

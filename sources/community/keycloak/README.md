@@ -78,20 +78,41 @@ test -n "$KEYCLOAK_ACCESS_TOKEN" && echo "Token acquired"
 
 **Client credentials (service account, production-friendly):**
 
-1. In the Keycloak Admin Console, create a **confidential** client.
-2. Enable **Service accounts**.
-3. Under **Service account roles**, assign `realm-management` roles needed for
-   your queries, for example:
-   - `view-realm` — `realms`, realm metadata
-   - `view-users` — `users`, `groups`
-   - `view-clients` — `clients`
-   - `view-events` — `admin_events`
-   - `view-realm` (includes role listing) — `roles`
-4. Exchange credentials for a token:
+Keycloak has two common setups. Roles are **not** assigned on the client
+itself — they are assigned to the client's **service account user** under
+**Clients → {your client} → Service account roles → Assign role**.
+
+| Setup | Where to create the client | Where to assign roles | Token endpoint |
+| --- | --- | --- | --- |
+| **Single-realm** | Target realm (for example `my-app`) | That realm's built-in **`realm-management`** client | `/realms/my-app/protocol/openid-connect/token` |
+| **Cross-realm** | **`master`** realm | **`master-realm`** for master data, plus each target realm's **`realm-management`** client for that realm's inventory | `/realms/master/protocol/openid-connect/token` |
+
+**Single-realm (simplest first success):**
+
+1. In the target realm, create a **confidential** client and enable **Service
+   accounts**.
+2. Open **Service account roles → Assign role**, filter by clients, choose
+   **`realm-management`** (within a realm) or **`{realm}-realm`** (when assigning
+   from a master-realm client to a target realm), and assign the read roles you
+   need:
+
+   Keycloak has no `view-groups` role. Use `query-groups` to list/search groups;
+   add `view-users` if you need full group representations from the API.
+
+   | Role | Tables |
+   | --- | --- |
+   | `query-realms` / `view-realm` | `realms` (lists realms the token can view) |
+   | `query-users` / `view-users` | `users` |
+   | `query-groups` (add `view-users` to read group details) | `groups` |
+   | `query-clients` / `view-clients` | `clients` |
+   | `view-realm` | `roles` |
+   | `view-events` | `admin_events` |
+
+3. Request a token from the **same realm** that hosts the client:
 
 ```bash
 export KEYCLOAK_BASE_URL=https://auth.example.com
-export KEYCLOAK_REALM=master          # realm that hosts the client
+export KEYCLOAK_REALM=my-app              # realm that hosts the client
 export KEYCLOAK_CLIENT_ID=my-admin-client
 export KEYCLOAK_CLIENT_SECRET=<secret>
 
@@ -105,6 +126,23 @@ export KEYCLOAK_ACCESS_TOKEN=$(
   | jq -r .access_token
 )
 ```
+
+**Cross-realm (master client):**
+
+1. Create the confidential client in the **`master`** realm with **Service
+   accounts** enabled.
+2. Under **Service account roles**, assign:
+   - From client **`master-realm`**: `view-realm` and `query-realms` so
+     `GET /admin/realms` (the `realms` table) returns realms you can access.
+   - From each target realm's **`realm-management`** client (for example
+     `my-app-realm` in the role picker): the same `view-*` / `query-*` roles
+     listed above for that realm's tables.
+3. Request the token from **`master`** (`KEYCLOAK_REALM=master`).
+
+`keycloak.realms` calls `GET /admin/realms`, which returns **only realms the
+token can view**. A single-realm service account typically sees just that
+realm; a cross-realm master client needs `query-realms` / `view-realm` on
+`master-realm` plus per-realm `realm-management` roles for each target realm.
 
 Grant only the roles required for read-only inventory and audit use cases.
 
@@ -165,8 +203,11 @@ fetch (or may not be supported).
 | `auth_user` | `authUser` | `admin_events` |
 | `auth_ip_address` | `authIpAddress` | `admin_events` |
 
-Use ISO-8601 timestamps for `date_from` and `date_to` when your Keycloak
-version accepts them (for example `2026-05-01T00:00:00Z`).
+For `date_from` and `date_to` on `admin_events`, Coral forwards the filter
+values directly to Keycloak's `dateFrom` / `dateTo` query parameters. Use
+**`yyyy-MM-dd`** (for example `2026-05-01`) or **epoch milliseconds** (for
+example `1746057600000`). Full ISO-8601 timestamps such as
+`2026-05-01T00:00:00Z` are **not** accepted and can return `400 Bad Request`.
 
 Always use `LIMIT` on large realms. Paginated tables use `max` (default 100,
 cap 100 per request); Coral follows pages with `first` until the SQL `LIMIT`
@@ -271,7 +312,7 @@ Admin audit events for a realm.
 | `resource_type` | Utf8 | Affected resource type |
 | `resource_path` | Utf8 | Affected resource path |
 | `error` | Utf8 | Error message when the operation failed |
-| `representation` | Json | Resource representation when present |
+| `representation` | Utf8 | Serialized resource JSON when present (Keycloak returns a string; parse in SQL if needed) |
 
 **Required filter:** `realm`
 
@@ -358,8 +399,20 @@ LIMIT 20;
 SELECT operation_type, resource_path, representation
 FROM keycloak.admin_events
 WHERE realm = 'my-app'
-  AND date_from = '2026-05-01T00:00:00Z'
-  AND date_to = '2026-05-20T23:59:59Z'
+  AND date_from = '2026-05-01'
+  AND date_to = '2026-05-20'
+ORDER BY time DESC
+LIMIT 100;
+```
+
+Epoch-millisecond bounds are also valid:
+
+```sql
+SELECT operation_type, resource_path
+FROM keycloak.admin_events
+WHERE realm = 'my-app'
+  AND date_from = '1746057600000'
+  AND date_to = '1747785599000'
 ORDER BY time DESC
 LIMIT 100;
 ```
@@ -376,7 +429,8 @@ make lint-sources
 coral source lint sources/community/keycloak/manifest.yaml
 ```
 
-Live smoke test against a running Keycloak:
+Live smoke test against a running Keycloak (tested with
+`quay.io/keycloak/keycloak:latest`, dev mode):
 
 ```bash
 export KEYCLOAK_BASE_URL=http://localhost:8080
@@ -391,6 +445,58 @@ coral sql "SELECT operation_type, resource_path FROM keycloak.admin_events WHERE
 
 coral source info keycloak --verbose
 coral sql "SELECT table_name, required_filters FROM coral.tables WHERE schema_name = 'keycloak'"
+```
+
+Sanitized output from a local run (password grant against `admin-cli` in
+`master`; admin events empty until **Realm settings → Events** is enabled):
+
+```text
+$ coral source test keycloak
+
+  ✓ keycloak connected successfully
+
+    keycloak (6 tables)
+    ├─ admin_events
+    ├─ clients
+    ├─ groups
+    ├─ realms
+    ├─ roles
+    └─ users
+    Query tests
+    1 declared · 1 passed · 0 failed
+
+    ✓ SELECT realm, enabled FROM keycloak.realms LIMIT 1
+      1 row
+
+$ coral sql "SELECT realm, enabled FROM keycloak.realms LIMIT 5"
++--------+---------+
+| realm  | enabled |
++--------+---------+
+| master | true    |
++--------+---------+
+
+$ coral sql "SELECT username, email FROM keycloak.users WHERE realm = 'master' LIMIT 5"
++----------+-------+
+| username | email |
++----------+-------+
+| admin    |       |
++----------+-------+
+
+$ coral sql "SELECT operation_type, resource_path FROM keycloak.admin_events WHERE realm = 'master' ORDER BY time DESC LIMIT 5"
+++
+++
+
+$ coral sql "SELECT table_name, required_filters FROM coral.tables WHERE schema_name = 'keycloak'"
++--------------+------------------+
+| table_name   | required_filters |
++--------------+------------------+
+| admin_events | realm            |
+| clients      | realm            |
+| groups       | realm            |
+| realms       |                  |
+| roles        | realm            |
+| users        | realm            |
++--------------+------------------+
 ```
 
 ## Agent and SQL workflow tips
