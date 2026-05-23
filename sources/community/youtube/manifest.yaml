@@ -1,6 +1,6 @@
 dsl_version: 3
 name: youtube
-version: 1.1.0
+version: 1.2.0
 description: >-
   Query channels, videos, playlist items, search results, and comments from
   YouTube Data API v3.
@@ -20,26 +20,23 @@ auth:
       from: template
       template: "{{input.YOUTUBE_API_KEY}}"
 test_queries:
-  - SELECT * FROM youtube.channels WHERE handle = '@DynamoGaming' LIMIT 1
+  - SELECT * FROM youtube.channels_by_handle WHERE handle = '@DynamoGaming' LIMIT 1
 tables:
   - name: channels
-    description: YouTube channel metadata, statistics, and content details
+    description: Look up YouTube channels by ID
     guide: |
       Returns metadata, statistics, and content details for one or more YouTube
-      channels. Provide either `handle` (the @-prefixed channel handle, e.g.
-      `@DynamoGaming`) or `channel_id` (a UC-prefixed ID, or comma-separated
-      list of up to 50). At least one filter is required — omitting both will
-      produce a 400 API error. Note: YouTube returns statistics counts as
-      strings (viewCount, subscriberCount, videoCount).
+      channels looked up by ID. `channel_id` is required and accepts a single
+      UC-prefixed ID or a comma-separated list of up to 50.
 
-      Use `content_details__related_playlists__uploads` to get the channel's
-      uploads playlist ID directly. To list all videos, copy that value into
-      a second query: SELECT * FROM youtube.playlist_items WHERE playlist_id = '<value>'
+      To look up by @-handle instead, use `youtube.channels_by_handle`.
+
+      Note: YouTube returns statistics counts as strings (viewCount,
+      subscriberCount, videoCount). Use `content_details__related_playlists__uploads`
+      to get the uploads playlist ID directly for `youtube.playlist_items`.
     filters:
       - name: channel_id
-        required: false
-      - name: handle
-        required: false
+        required: true
     request:
       method: GET
       path: /channels
@@ -50,18 +47,150 @@ tables:
         - name: id
           from: filter
           key: channel_id
-    requests:
-      - when_filters:
-          - handle
-        method: GET
-        path: /channels
-        query:
-          - name: part
-            from: literal
-            value: snippet,statistics,contentDetails
-          - name: forHandle
-            from: filter
-            key: handle
+    response:
+      rows_path:
+        - items
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: channel_id
+        type: Utf8
+        nullable: true
+        description: Channel ID filter used to look up the channel
+        expr:
+          kind: from_filter
+          key: channel_id
+      - name: id
+        type: Utf8
+        nullable: false
+        description: YouTube channel ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: snippet__title
+        type: Utf8
+        nullable: true
+        description: Channel display name
+        expr:
+          kind: path
+          path:
+            - snippet
+            - title
+      - name: snippet__description
+        type: Utf8
+        nullable: true
+        description: Channel description
+        expr:
+          kind: path
+          path:
+            - snippet
+            - description
+      - name: snippet__custom_url
+        type: Utf8
+        nullable: true
+        description: "Channel's unique handle (e.g. @channelname)"
+        expr:
+          kind: path
+          path:
+            - snippet
+            - customUrl
+      - name: snippet__published_at
+        type: Timestamp
+        nullable: true
+        description: Date and time the channel was created
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - snippet
+              - publishedAt
+      - name: snippet__country
+        type: Utf8
+        nullable: true
+        description: Country with which the channel is associated
+        expr:
+          kind: path
+          path:
+            - snippet
+            - country
+      - name: statistics__view_count
+        type: Utf8
+        nullable: true
+        description: Total number of times the channel has been viewed
+        expr:
+          kind: path
+          path:
+            - statistics
+            - viewCount
+      - name: statistics__subscriber_count
+        type: Utf8
+        nullable: true
+        description: Number of subscribers (hidden when hiddenSubscriberCount is true)
+        expr:
+          kind: path
+          path:
+            - statistics
+            - subscriberCount
+      - name: statistics__video_count
+        type: Utf8
+        nullable: true
+        description: Number of public videos uploaded to the channel
+        expr:
+          kind: path
+          path:
+            - statistics
+            - videoCount
+      - name: statistics__hidden_subscriber_count
+        type: Boolean
+        nullable: true
+        description: Whether the channel's subscriber count is publicly visible
+        expr:
+          kind: path
+          path:
+            - statistics
+            - hiddenSubscriberCount
+      - name: content_details__related_playlists__uploads
+        type: Utf8
+        nullable: true
+        description: Uploads playlist ID — pass directly to youtube.playlist_items to list all videos
+        expr:
+          kind: path
+          path:
+            - contentDetails
+            - relatedPlaylists
+            - uploads
+
+  - name: channels_by_handle
+    description: Look up a YouTube channel by @-handle
+    guide: |
+      Returns metadata, statistics, and content details for a single YouTube
+      channel looked up by @-handle. `handle` is required and must be the
+      @-prefixed handle (e.g. `@DynamoGaming`). Returns exactly one row.
+
+      To look up by channel ID instead (or multiple channels at once),
+      use `youtube.channels`.
+
+      Note: YouTube returns statistics counts as strings (viewCount,
+      subscriberCount, videoCount). Use `content_details__related_playlists__uploads`
+      to get the uploads playlist ID directly for `youtube.playlist_items`.
+    filters:
+      - name: handle
+        required: true
+    request:
+      method: GET
+      path: /channels
+      query:
+        - name: part
+          from: literal
+          value: snippet,statistics,contentDetails
+        - name: forHandle
+          from: filter
+          key: handle
     response:
       rows_path:
         - items
@@ -77,13 +206,6 @@ tables:
         expr:
           kind: from_filter
           key: handle
-      - name: channel_id
-        type: Utf8
-        nullable: true
-        description: Channel ID filter used to look up the channel
-        expr:
-          kind: from_filter
-          key: channel_id
       - name: id
         type: Utf8
         nullable: false
@@ -593,31 +715,31 @@ tables:
             - publicStatsViewable
 
   - name: search
-    description: Search YouTube for videos, channels, or playlists
+    description: Search YouTube for videos, channels, or playlists by keyword
     guide: |
-      Returns search results matching the given query. All filters are
-      optional per the YouTube API — only `part` is required, and Coral sets
-      that automatically. Use `q` for keyword search, `channel_id` to scope
-      results to a specific channel, and `type` to restrict to `video`,
-      `channel`, or `playlist` (default: all three). `order` accepts
-      `relevance` (default), `date`, `rating`, `title`, `videoCount`, or
-      `viewCount`. `published_after` and `published_before` accept RFC 3339
-      timestamps (e.g. `2024-01-01T00:00:00Z`).
+      Returns search results for the given keyword query. `q` is required —
+      it is the search term and the primary scoping input for this table.
+      Optionally add `channel_id` to restrict results to a specific channel,
+      and `type` to restrict to `video`, `channel`, or `playlist` (default:
+      all three). `order` accepts `relevance` (default), `date`, `rating`,
+      `title`, `videoCount`, or `viewCount`. `published_after` and
+      `published_before` accept RFC 3339 timestamps (e.g.
+      `2024-01-01T00:00:00Z`).
 
-      WARNING: each search call costs 100 quota units vs. 1 unit for every
-      other endpoint. The default daily quota is 10,000 units (~100 calls).
-      This table defaults to 50 results to limit accidental quota drain —
-      add an explicit LIMIT for larger scans.
+      WARNING: each search call costs 100 quota units regardless of result
+      count — 100× more expensive than every other table. The default daily
+      quota is 10,000 units (~100 search calls/day). This table defaults to
+      50 results to limit accidental drain; add an explicit LIMIT for larger
+      scans. To browse a channel's videos cheaply (1 unit/call), use
+      `youtube.playlist_items` instead.
 
       The result `id__video_id`, `id__channel_id`, or `id__playlist_id`
       column will be populated depending on the result type; the others will
       be null. Use `youtube.videos` to enrich video results with full metadata.
-
-      Omitting both `q` and `channel_id` returns 0 rows silently.
     fetch_limit_default: 50
     filters:
       - name: q
-        required: false
+        required: true
       - name: channel_id
         required: false
       - name: type
