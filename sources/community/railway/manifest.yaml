@@ -422,11 +422,16 @@ tables:
   - name: deployments
     description: Deployments for a Railway project
     guide: |
-      Lists deployments scoped to a specific project. Use the `status`
-      column to find active, failed, or building deployments.
+      Lists deployments scoped to a project. Optionally narrow results
+      with `environment_id`, `service_id`, or `status` filters.
+      Common status values: BUILDING, DEPLOYING, SUCCESS, FAILED,
+      CRASHED, REMOVED, SLEEPING, SKIPPED, WAITING, QUEUED.
     filters:
       - name: project_id
         required: true
+      - name: environment_id
+      - name: service_id
+      - name: status
     request:
       method: POST
       path: /
@@ -436,9 +441,9 @@ tables:
             - query
           from: literal
           value: |
-            query Deployments($projectId: String!, $first: Int!, $after: String) {
+            query Deployments($projectId: String!, $environmentId: String, $serviceId: String, $status: String, $first: Int!, $after: String) {
               deployments(
-                input: {projectId: $projectId}
+                input: {projectId: $projectId, environmentId: $environmentId, serviceId: $serviceId, status: $status}
                 first: $first
                 after: $after
               ) {
@@ -466,6 +471,21 @@ tables:
             - projectId
           from: filter
           key: project_id
+        - path:
+            - variables
+            - environmentId
+          from: filter
+          key: environment_id
+        - path:
+            - variables
+            - serviceId
+          from: filter
+          key: service_id
+        - path:
+            - variables
+            - status
+          from: filter
+          key: status
         - path:
             - variables
             - first
@@ -589,11 +609,13 @@ tables:
   # variables – environment variables for a service
   # ─────────────────────────────────────────────────────────────
   - name: variables
-    description: Environment variables for a project, environment, and service
+    description: Environment variables for a project and environment
     guide: |
-      Returns key-value pairs for a given project + environment +
-      service combination. All three filters are required. Values may
-      contain Railway variable references (e.g. `${{shared.DB_URL}}`).
+      Returns key-value pairs for a given project + environment.
+      When `service_id` is provided, returns variables scoped to that
+      service. When `service_id` is omitted, returns shared environment
+      variables (not scoped to any service). Values may contain Railway
+      variable references (e.g. `${{shared.DB_URL}}`).
 
       **Warning:** Querying the `value` column can expose secret
       environment variables in plain text. Avoid querying it in shared
@@ -604,7 +626,6 @@ tables:
       - name: environment_id
         required: true
       - name: service_id
-        required: true
     request:
       method: POST
       path: /
@@ -614,7 +635,7 @@ tables:
             - query
           from: literal
           value: |
-            query Variables($projectId: String!, $environmentId: String!, $serviceId: String!) {
+            query Variables($projectId: String!, $environmentId: String!, $serviceId: String) {
               variables(
                 projectId: $projectId
                 environmentId: $environmentId
@@ -662,9 +683,9 @@ tables:
           key: environment_id
       - name: service_id
         type: Utf8
-        nullable: false
+        nullable: true
         virtual: true
-        description: Service ID filter
+        description: Service ID filter (omit for shared variables)
         expr:
           kind: from_filter
           key: service_id
@@ -949,15 +970,19 @@ tables:
             - query
           from: literal
           value: |
-            query Volumes($projectId: String!) {
+            query Volumes($projectId: String!, $first: Int!, $after: String) {
               project(id: $projectId) {
-                volumes {
+                volumes(first: $first, after: $after) {
                   edges {
                     node {
                       id
                       name
                       createdAt
                     }
+                  }
+                  pageInfo {
+                    hasNextPage
+                    endCursor
                   }
                 }
               }
@@ -967,6 +992,11 @@ tables:
             - projectId
           from: filter
           key: project_id
+        - path:
+            - variables
+            - first
+          from: literal
+          value: 50
     response:
       rows_path:
         - data
@@ -974,7 +1004,22 @@ tables:
         - volumes
         - edges
     pagination:
-      mode: none
+      mode: cursor_body
+      cursor_body_path:
+        - variables
+        - after
+      response_cursor_path:
+        - data
+        - project
+        - volumes
+        - pageInfo
+        - endCursor
+      page_size:
+        default: 50
+        max: 100
+        body_path:
+          - variables
+          - first
     columns:
       - name: project_id
         type: Utf8

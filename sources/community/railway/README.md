@@ -5,16 +5,16 @@ Railway's [public GraphQL API](https://docs.railway.com/integrations/api).
 
 ## Tables
 
-| Table            | Description                        | Required filters                                      |
-| ---------------- | ---------------------------------- | ----------------------------------------------------- |
-| `projects`       | Projects accessible by the token   | —                                                     |
-| `services`       | Services within a project          | `project_id`                                          |
-| `environments`   | Environments within a project      | `project_id`                                          |
-| `deployments`    | Deployments scoped to a project    | `project_id`                                          |
-| `variables`      | Environment variables for a service| `project_id`, `environment_id`, `service_id`          |
-| `domains`        | Railway-generated service domains  | `project_id`, `service_id`, `environment_id`          |
-| `custom_domains` | Custom domains for a service       | `project_id`, `service_id`, `environment_id`          |
-| `volumes`        | Persistent volumes in a project    | `project_id`                                          |
+| Table            | Description                        | Required filters                             | Optional filters                          |
+| ---------------- | ---------------------------------- | -------------------------------------------- | ----------------------------------------- |
+| `projects`       | Projects accessible by the token   | —                                            | —                                         |
+| `services`       | Services within a project          | `project_id`                                 | —                                         |
+| `environments`   | Environments within a project      | `project_id`                                 | —                                         |
+| `deployments`    | Deployments scoped to a project    | `project_id`                                 | `environment_id`, `service_id`, `status`  |
+| `variables`      | Environment variables              | `project_id`, `environment_id`               | `service_id` (omit for shared variables)  |
+| `domains`        | Railway-generated service domains  | `project_id`, `service_id`, `environment_id` | —                                         |
+| `custom_domains` | Custom domains for a service       | `project_id`, `service_id`, `environment_id` | —                                         |
+| `volumes`        | Persistent volumes in a project    | `project_id`                                 | —                                         |
 
 ## Authentication
 
@@ -29,16 +29,20 @@ Account tokens provide access to all projects across all workspaces.
 > (`Project-Access-Token`) and are **not supported** by this source.
 > Use an account token instead.
 
-Set the token as `RAILWAY_API_TOKEN` when adding this source.
-
 ## Setup
 
 ```bash
-coral source add --file sources/community/railway/manifest.yaml
+RAILWAY_API_TOKEN=<token> coral source add --file sources/community/railway/manifest.yaml
 ```
 
-Then configure your token when prompted, or set the `RAILWAY_API_TOKEN`
-environment variable.
+Or interactively:
+
+```bash
+coral source add --file sources/community/railway/manifest.yaml --interactive
+```
+
+When using `--interactive`, you will be prompted for `RAILWAY_API_TOKEN`.
+Otherwise, set it as an environment variable before running the command.
 
 ## Example queries
 
@@ -59,11 +63,21 @@ SELECT *
 ### Recent deployments
 
 ```sql
-SELECT id, status, created_at
+SELECT id, status, service_id, created_at
   FROM railway.deployments
  WHERE project_id = 'your-project-id'
  ORDER BY created_at DESC
  LIMIT 10;
+```
+
+### Failed deployments for a specific service
+
+```sql
+SELECT id, status, environment_id, created_at
+  FROM railway.deployments
+ WHERE project_id = 'your-project-id'
+   AND service_id = 'your-service-id'
+   AND status = 'FAILED';
 ```
 
 ### Environments for a project
@@ -74,7 +88,7 @@ SELECT id, name, is_ephemeral
  WHERE project_id = 'your-project-id';
 ```
 
-### Variables for a service
+### Service-scoped variables
 
 > **Warning:** Querying `railway.variables.value` can expose secret environment variables
 > or credentials in plain text. Railway account tokens can access all resources across
@@ -86,6 +100,18 @@ SELECT name
  WHERE project_id     = 'your-project-id'
    AND environment_id = 'your-env-id'
    AND service_id     = 'your-service-id';
+```
+
+### Shared environment variables
+
+Omit `service_id` to retrieve variables shared across all services in an
+environment:
+
+```sql
+SELECT name
+  FROM railway.variables
+ WHERE project_id     = 'your-project-id'
+   AND environment_id = 'your-env-id';
 ```
 
 ### Railway-generated domains
@@ -123,10 +149,11 @@ implements `cursor_body` mode with `endCursor` / `after` semantics,
 matching the pattern used by the Linear core source. Pages default to
 50 items with a maximum of 100.
 
-The `variables`, `domains`, `custom_domains`, and `volumes` tables do
-not use pagination. `volumes` is a Relay connection but the manifest
-currently reads it without `first`/`after` to keep the query simple;
-most projects have only a handful of volumes.
+Paginated tables: `projects`, `services`, `environments`, `deployments`,
+`volumes`.
+
+The `variables`, `domains`, and `custom_domains` tables do not use
+pagination because the API returns all items in a single response.
 
 ## Known limitations
 
