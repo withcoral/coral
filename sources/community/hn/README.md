@@ -43,7 +43,7 @@ Both tables expose the same columns and filters. Use `search` for relevance-rank
 | `poll` | Polls only |
 | `job` | Job posts only |
 | `author_<username>` | Items by a specific author (e.g. `author_pg`) |
-| `story_<id>` | Comments under a specific story |
+| `story_<id>` | Items under a specific story (includes the story itself — combine with `comment` for comments only) |
 | `(story,poll)` | OR logic — stories or polls |
 
 #### Columns
@@ -156,11 +156,11 @@ coral sql "
   LIMIT 10
 "
 
-# Comments on a specific story
+# Comments on a specific story (comma = AND, so 'comment,story_8863' returns only comments)
 coral sql "
   SELECT author, comment_text, created_at
   FROM hn.search_by_date
-  WHERE tags = 'story_8863'
+  WHERE tags = 'comment,story_8863'
   LIMIT 20
 "
 
