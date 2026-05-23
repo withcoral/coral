@@ -1,15 +1,13 @@
 # Prometheus Connector (Community)
 
-**Version:** 0.1.0
-**Backend:** HTTP (Prometheus query API)
-**Tables:** 3
+**Version:** 0.1.1
+**Backend:** HTTP (Prometheus query and alerts APIs)
+**Tables:** 2
 **Default base URL:** `http://127.0.0.1:9090` (override with `PROMETHEUS_BASE_URL`)
 
-Query Prometheus scrape health, firing alerts, and instant PromQL results with SQL.
-Read-only v1 uses unauthenticated HTTP against a base URL that already handles
-auth (typically a local Prometheus server or an authenticating gateway). Pairs
-with the community **k8s** source for alert-to-pod triage when rules expose
-`pod` and `namespace` labels.
+Query Prometheus scrape health and active alerts with SQL. Read-only v1 uses
+unauthenticated HTTP against a base URL that already handles auth (typically a
+local Prometheus server or an authenticating gateway).
 
 ## Install
 
@@ -50,47 +48,19 @@ your behalf. Bearer-token support in the manifest is a potential follow-on.
 Register one Coral source per server (for example `prometheus_dev`,
 `prometheus_prod`), each with its own `PROMETHEUS_BASE_URL`.
 
-## Table categories
-
-### Instant queries
+## Tables
 
 | Table | Description |
 | --- | --- |
-| `query_up` | Scrape health via fixed PromQL `up` |
-| `query_custom` | Instant-vector PromQL via required `promql` filter (not scalar/matrix) |
+| `query_up` | Scrape health via PromQL `up` (`limit=500` on the query API) |
+| `alerts` | Active alerts from `GET /api/v1/alerts` |
 
-### Alerts
+## Load control
 
-| Table | Description |
-| --- | --- |
-| `alerts` | Firing and pending alerts from PromQL `ALERTS` |
-
-## Filters and pagination
-
-`query_custom` requires a `promql` filter with PromQL that evaluates to an
-instant vector (selectors, `rate(...)`, `sum(...) by (...)`). Scalar literals and
-matrix/range results are not supported in v1. `query_up` and `alerts` use fixed
-queries. Each table has a conservative default fetch cap (`query_up` 500,
-`alerts` 200, `query_custom` 100); use SQL `LIMIT` as well.
-
-Example:
-
-```sql
-SELECT metric_name, instance, sample_value
-FROM prometheus.query_custom
-WHERE promql = 'kube_pod_status_phase{phase="Pending"}'
-LIMIT 20;
-```
-
-Each table calls `GET /api/v1/query` once. Pagination is `none`; use `LIMIT` and
-aggregations in PromQL to control load.
-
-## Example relationships
-
-| From | To | Join hint |
-| --- | --- | --- |
-| `prometheus.alerts.pod` | `k8s.pods.name` | When alert rules set `pod` |
-| `prometheus.alerts.namespace` | `k8s.pods.namespace` | Scope alerts to a namespace |
+Each instant-query table sends Prometheus’s native `limit` query parameter so the
+server does not return unbounded series before Coral applies `fetch_limit_default`
+or SQL `LIMIT`. Treat SQL `LIMIT` as a secondary cap, not a substitute for the
+API `limit`.
 
 ## Example queries
 
@@ -107,26 +77,31 @@ LIMIT 20;
 ```sql
 SELECT instance, job, sample_value
 FROM prometheus.query_up
-WHERE sample_value != '1'
+WHERE sample_value < 1
 LIMIT 20;
 ```
 
 ### Firing alerts
 
 ```sql
-SELECT alert_name, alert_state, severity, namespace, pod, instance
+SELECT alert_name, alert_state, severity, namespace, pod, summary, active_at
 FROM prometheus.alerts
 WHERE alert_state = 'firing'
 LIMIT 20;
 ```
 
-### Custom PromQL
+### Optional join to a Kubernetes source
+
+If you also install a community `k8s` source (not bundled on Coral `main`), you
+can correlate alert labels to pods:
 
 ```sql
-SELECT promql, metric_name, instance, pod, sample_value
-FROM prometheus.query_custom
-WHERE promql = 'sum(rate(container_cpu_usage_seconds_total[5m])) by (pod, namespace)'
-LIMIT 10;
+SELECT a.alert_name, a.pod, a.namespace, p.status
+FROM prometheus.alerts a
+JOIN k8s.pods p
+  ON a.pod = p.name AND a.namespace = p.namespace
+WHERE a.alert_state = 'firing'
+LIMIT 20;
 ```
 
 ## Validation
@@ -141,14 +116,12 @@ coral source test prometheus
 
 ## Limitations
 
-- Read-only v1; instant queries (`/api/v1/query`) only, not `query_range`.
+- Read-only v1; instant queries (`/api/v1/query`) for `query_up` only, not `query_range`.
+- No arbitrary PromQL table in v1 (`query_custom` removed; use Prometheus directly or a follow-on).
+- `alerts` uses `/api/v1/alerts`, not the internal `ALERTS` time series.
+- Native histogram samples populate `sample_histogram`; classic samples use `sample_at` / `sample_value`.
+- `sample_value_raw` preserves the JSON string for special float encodings.
 - No bearer-token auth in the manifest; use a local server or authenticated gateway.
-- Sample timestamps and values are strings from Prometheus value tuples.
-- `query_custom` supports instant-vector PromQL only; scalar and matrix results
-  return empty or malformed rows.
-- `query_custom` does not validate PromQL; errors surface at query time.
-- Default fetch caps apply per table; high-cardinality PromQL can still overload
-  Prometheus—use aggregations and `LIMIT`.
 
 ## Contributing
 

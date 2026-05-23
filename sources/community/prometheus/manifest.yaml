@@ -1,10 +1,10 @@
 name: prometheus
-version: 0.1.0
+version: 0.1.1
 dsl_version: 3
 backend: http
 description: >-
-  Query Prometheus scrape health, firing alerts, and instant PromQL results from
-  Prometheus (self-hosted). Read-only v1; instant queries via the HTTP query API.
+  Query Prometheus scrape health and active alerts from Prometheus (self-hosted).
+  Read-only v1 via the HTTP query and alerts APIs with provider-side series limits.
 inputs:
   PROMETHEUS_BASE_URL:
     kind: variable
@@ -21,8 +21,9 @@ tables:
   - name: query_up
     description: Instant vector for the `up` metric (target scrape health).
     guide: |
-      Fixed PromQL `up`. No required filters. Coral caps fetched rows at 500;
-      use SQL `LIMIT` on large fleets.
+      Fixed PromQL `up`. Sends Prometheus `limit=500` on the query API. Scalar and
+      matrix results are not returned by this table. Native histogram samples expose
+      `sample_histogram` JSON; classic samples use `sample_at` and `sample_value`.
     fetch_limit_default: 500
     request:
       method: GET
@@ -31,6 +32,9 @@ tables:
         - name: query
           from: literal
           value: "up"
+        - name: limit
+          from: literal
+          value: "500"
     response:
       rows_path:
         - data
@@ -62,24 +66,44 @@ tables:
           path:
             - metric
             - job
-      - name: sample_time_unix
-        type: Utf8
+      - name: sample_at
+        type: Timestamp
         nullable: true
-        description: Sample timestamp from the value tuple (string).
+        description: Sample timestamp (Unix seconds) from the value tuple.
         expr:
-          kind: path
-          path:
-            - value
-            - "0"
+          kind: format_timestamp
+          input: seconds
+          expr:
+            kind: path
+            path:
+              - value
+              - "0"
       - name: sample_value
-        type: Utf8
+        type: Float64
         nullable: true
-        description: Sample value from the value tuple (1 = up).
+        description: Numeric sample value from the value tuple.
         expr:
           kind: path
           path:
             - value
             - "1"
+      - name: sample_value_raw
+        type: Utf8
+        nullable: true
+        description: Raw JSON sample value string (preserves NaN/Inf encoding).
+        expr:
+          kind: path
+          path:
+            - value
+            - "1"
+      - name: sample_histogram
+        type: Json
+        nullable: true
+        description: Native histogram payload when the sample uses `histogram` instead of `value`.
+        expr:
+          kind: path
+          path:
+            - histogram
       - name: metric_labels
         type: Json
         expr:
@@ -88,22 +112,19 @@ tables:
             - metric
 
   - name: alerts
-    description: Firing and pending alert series from the internal `ALERTS` metric.
+    description: Active alerts from the Prometheus alerts API.
     guide: |
-      Fixed PromQL `ALERTS`. Filter on `alert_state`. Join `pod` and `namespace` to
-      k8s.pods when your rules expose those labels. Coral caps fetched rows at 200.
+      Uses `GET /api/v1/alerts` (not the internal `ALERTS` metric). Filter on
+      `alert_state` (`firing`, `pending`, `inactive`). Sends `limit=200` on the API.
+      For custom PromQL, use a follow-on table or query Prometheus directly.
     fetch_limit_default: 200
     request:
       method: GET
-      path: /api/v1/query
-      query:
-        - name: query
-          from: literal
-          value: "ALERTS"
+      path: /api/v1/alerts
     response:
       rows_path:
         - data
-        - result
+        - alerts
     pagination:
       mode: none
     columns:
@@ -113,23 +134,50 @@ tables:
         expr:
           kind: path
           path:
-            - metric
+            - labels
             - alertname
       - name: alert_state
+        type: Utf8
+        nullable: true
+        description: Alert state (`firing`, `pending`, or `inactive`).
+        expr:
+          kind: path
+          path:
+            - state
+      - name: active_at
+        type: Timestamp
+        nullable: true
+        description: When the alert became active.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - activeAt
+      - name: summary
         type: Utf8
         nullable: true
         expr:
           kind: path
           path:
-            - metric
-            - alertstate
+            - annotations
+            - summary
+      - name: description
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - annotations
+            - description
       - name: severity
         type: Utf8
         nullable: true
         expr:
           kind: path
           path:
-            - metric
+            - labels
             - severity
       - name: pod
         type: Utf8
@@ -137,7 +185,7 @@ tables:
         expr:
           kind: path
           path:
-            - metric
+            - labels
             - pod
       - name: namespace
         type: Utf8
@@ -145,7 +193,7 @@ tables:
         expr:
           kind: path
           path:
-            - metric
+            - labels
             - namespace
       - name: instance
         type: Utf8
@@ -153,7 +201,7 @@ tables:
         expr:
           kind: path
           path:
-            - metric
+            - labels
             - instance
       - name: job
         type: Utf8
@@ -161,116 +209,27 @@ tables:
         expr:
           kind: path
           path:
-            - metric
+            - labels
             - job
-      - name: sample_value
-        type: Utf8
+      - name: value
+        type: Float64
         nullable: true
+        description: Alert value when present.
         expr:
           kind: path
           path:
             - value
-            - "1"
-      - name: metric_labels
+      - name: labels
         type: Json
-        expr:
-          kind: path
-          path:
-            - metric
-
-  - name: query_custom
-    description: >-
-      Instant-vector PromQL via the `promql` filter. Scalar and matrix results
-      from `/api/v1/query` are not supported in v1.
-    guide: |
-      Required filter: `promql` with an expression that returns an instant vector
-      (for example `up`, `rate(http_requests_total[5m])`, or `sum(...) by (pod)`).
-      Scalar literals (for example `42`) and range/matrix selectors are not
-      supported. Prefer aggregations and label filters to limit cardinality.
-      Coral caps fetched rows at 100.
-    fetch_limit_default: 100
-    filters:
-      - name: promql
-        required: true
-    request:
-      method: GET
-      path: /api/v1/query
-      query:
-        - name: query
-          from: filter
-          key: promql
-    response:
-      rows_path:
-        - data
-        - result
-    pagination:
-      mode: none
-    columns:
-      - name: promql
-        type: Utf8
-        description: Echoes the promql filter that produced this row.
-        expr:
-          kind: from_filter
-          key: promql
-      - name: metric_name
-        type: Utf8
         nullable: true
         expr:
           kind: path
           path:
-            - metric
-            - "__name__"
-      - name: instance
-        type: Utf8
-        nullable: true
-        expr:
-          kind: path
-          path:
-            - metric
-            - instance
-      - name: pod
-        type: Utf8
-        nullable: true
-        expr:
-          kind: path
-          path:
-            - metric
-            - pod
-      - name: namespace
-        type: Utf8
-        nullable: true
-        expr:
-          kind: path
-          path:
-            - metric
-            - namespace
-      - name: job
-        type: Utf8
-        nullable: true
-        expr:
-          kind: path
-          path:
-            - metric
-            - job
-      - name: sample_time_unix
-        type: Utf8
-        nullable: true
-        expr:
-          kind: path
-          path:
-            - value
-            - "0"
-      - name: sample_value
-        type: Utf8
-        nullable: true
-        expr:
-          kind: path
-          path:
-            - value
-            - "1"
-      - name: metric_labels
+            - labels
+      - name: annotations
         type: Json
+        nullable: true
         expr:
           kind: path
           path:
-            - metric
+            - annotations
