@@ -4,7 +4,8 @@ dsl_version: 3
 backend: http
 description: >-
   Query Prometheus scrape health and active alerts from Prometheus (self-hosted).
-  Read-only v1 via the HTTP query and alerts APIs with provider-side series limits.
+  Read-only v1 tables: query_up, alerts. Uses /api/v1/query (up) and /api/v1/alerts.
+  No arbitrary PromQL table in v1.
 inputs:
   PROMETHEUS_BASE_URL:
     kind: variable
