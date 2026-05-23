@@ -9,11 +9,12 @@ description: >-
 inputs:
   STATUSGATOR_API_TOKEN:
     kind: secret
+    required: true
     hint: |
-      Create a read-only API token from the API menu in your
-      StatusGator dashboard. Only organization admins can generate
-      tokens.
-      See [StatusGator API docs](https://statusgator.com/api/v3/docs).
+      REQUIRED. Create a read-only API token from the API menu in your
+      StatusGator dashboard. A read-only organization API token is
+      sufficient for this source. Only organization admins can generate
+      tokens. See [StatusGator API docs](https://statusgator.com/api/v3/docs).
 base_url: "https://statusgator.com/api/v3"
 auth:
   type: HeaderAuth
@@ -98,6 +99,14 @@ tables:
       method: GET
       path: /boards/{{filter.board_id}}/monitors
       query: []
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_size:
+        default: 25
+        max: 100
+        query_param: per_page
     response:
       rows_path:
         - data
