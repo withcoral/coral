@@ -3,8 +3,8 @@ version: 0.1.0
 dsl_version: 3
 backend: http
 description: >-
-  Query guilds, channels, messages, members, and roles from a Discord server
-  via the Discord REST API v10.
+  Query Discord bot identity, guilds, channels, messages, members, and roles
+  from the Discord REST API.
 inputs:
   DISCORD_BOT_TOKEN:
     kind: secret
@@ -13,10 +13,10 @@ inputs:
       https://discord.com/developers/applications, go to Bot settings, and
       copy the token. The bot must be invited to target servers with the
       `bot` scope. Required privileged intents depend on which tables you
-      query: `GUILD_MEMBERS` (privileged) for the members table, and
-      `MESSAGE_CONTENT` (privileged) for message content.
+      query: GUILD_MEMBERS (privileged) for the members table, and
+      MESSAGE_CONTENT (privileged) for message content fields.
 
-      See https://discord.com/developers/docs/getting-started.
+      See https://discord.com/developers/applications.
 base_url: https://discord.com/api/v10
 auth:
   type: HeaderAuth
@@ -24,40 +24,154 @@ auth:
     - name: Authorization
       from: template
       template: Bot {{input.DISCORD_BOT_TOKEN}}
-test_queries:
-  - SELECT id, name, member_count FROM discord.guilds LIMIT 1
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
 rate_limit:
+  retry_after_header: Retry-After
   remaining_header: X-RateLimit-Remaining
   reset_header: X-RateLimit-Reset
+test_queries:
+  - SELECT * FROM discord.current_user LIMIT 1
 tables:
   # ──────────────────────────────────────────────────────────────────────
-  # guilds
+  # current_user
   # ──────────────────────────────────────────────────────────────────────
-  - name: guilds
-    description: >
-      Discord guilds (servers) that the bot has access to. Lists guild ID,
-      name, owner, icon, features, member count, and presence count.
-    guide: >
-      Start here to discover guild IDs for the other tables. The bot must
-      be a member of the guild for it to appear in this list.
-      `SELECT id, name, member_count FROM discord.guilds`.
+  - name: current_user
+    description: The Discord bot user associated with the configured token
+    guide: |
+      Use this table first to confirm the token works and identify the bot
+      account Coral is querying as. This endpoint returns one row.
     request:
       method: GET
-      path: /users/@me/guilds
-      query:
-        - name: with_counts
-          from: literal
-          value: "true"
+      path: /users/@me
     response:
-      rows_path:
-        - body
-    pagination:
-      mode: none
+      row_strategy: direct
     columns:
       - name: id
         type: Utf8
         nullable: false
-        description: Guild ID (Snowflake).
+        description: Discord user ID for the bot
+        expr:
+          kind: path
+          path:
+            - id
+      - name: username
+        type: Utf8
+        nullable: false
+        description: Bot username
+        expr:
+          kind: path
+          path:
+            - username
+      - name: discriminator
+        type: Utf8
+        nullable: true
+        description: Legacy Discord discriminator
+        expr:
+          kind: path
+          path:
+            - discriminator
+      - name: global_name
+        type: Utf8
+        nullable: true
+        description: Bot global display name
+        expr:
+          kind: path
+          path:
+            - global_name
+      - name: avatar
+        type: Utf8
+        nullable: true
+        description: Bot avatar hash
+        expr:
+          kind: path
+          path:
+            - avatar
+      - name: bot
+        type: Boolean
+        nullable: true
+        description: Whether the user is a bot account
+        expr:
+          kind: path
+          path:
+            - bot
+      - name: mfa_enabled
+        type: Boolean
+        nullable: true
+        description: Whether multi-factor authentication is enabled
+        expr:
+          kind: path
+          path:
+            - mfa_enabled
+      - name: verified
+        type: Boolean
+        nullable: true
+        description: Whether the account email is verified
+        expr:
+          kind: path
+          path:
+            - verified
+      - name: locale
+        type: Utf8
+        nullable: true
+        description: User locale
+        expr:
+          kind: path
+          path:
+            - locale
+      - name: email
+        type: Utf8
+        nullable: true
+        description: User email address when available
+        expr:
+          kind: path
+          path:
+            - email
+
+  # ──────────────────────────────────────────────────────────────────────
+  # guilds
+  # ──────────────────────────────────────────────────────────────────────
+  - name: guilds
+    description: Discord guilds that the configured bot can see
+    guide: |
+      Start here to discover guild_id values for guild-scoped tables such
+      as channels, members, and roles. Use optional before and after filters
+      to page manually by guild ID when a bot belongs to many guilds. Set
+      with_counts to true to request approximate member and presence counts.
+      SELECT id, name, approximate_member_count FROM discord.guilds
+      WHERE with_counts = true.
+    filters:
+      - name: before
+      - name: after
+      - name: with_counts
+    request:
+      method: GET
+      path: /users/@me/guilds
+      query:
+        - name: before
+          from: filter
+          key: before
+        - name: after
+          from: filter
+          key: after
+        - name: with_counts
+          from: filter_bool
+          key: with_counts
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+      page_size:
+        default: 100
+        max: 200
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Discord guild ID
         expr:
           kind: path
           path:
@@ -65,7 +179,7 @@ tables:
       - name: name
         type: Utf8
         nullable: false
-        description: Guild name (2-100 characters).
+        description: Guild name
         expr:
           kind: path
           path:
@@ -73,7 +187,7 @@ tables:
       - name: icon
         type: Utf8
         nullable: true
-        description: Icon hash (compute URL via https://cdn.discordapp.com/icons/{{id}}/{{icon}}.png).
+        description: Guild icon hash
         expr:
           kind: path
           path:
@@ -81,7 +195,7 @@ tables:
       - name: owner
         type: Boolean
         nullable: false
-        description: Whether the bot user is the guild owner.
+        description: Whether the current bot user owns the guild
         expr:
           kind: path
           path:
@@ -89,23 +203,23 @@ tables:
       - name: permissions
         type: Utf8
         nullable: true
-        description: Total permissions of the bot in the guild (bitwise, as string).
+        description: Permission bitset for the current bot user in the guild
         expr:
           kind: path
           path:
             - permissions
       - name: features
-        type: Utf8
+        type: Json
         nullable: true
-        description: Comma-joined guild feature strings (e.g. COMMUNITY, ANIMATED_ICON, BANNER).
+        description: Guild feature flags as a JSON array (e.g. COMMUNITY, ANIMATED_ICON, BANNER)
         expr:
-          kind: join_array
+          kind: path
           path:
             - features
       - name: approximate_member_count
         type: Int64
         nullable: true
-        description: Approximate number of members (requires `with_counts`).
+        description: Approximate member count when requested with with_counts
         expr:
           kind: path
           path:
@@ -113,7 +227,7 @@ tables:
       - name: approximate_presence_count
         type: Int64
         nullable: true
-        description: Approximate number of online members (requires `with_counts`).
+        description: Approximate presence count when requested with with_counts
         expr:
           kind: path
           path:
@@ -121,46 +235,68 @@ tables:
       - name: member_count
         type: Int64
         nullable: true
-        description: Alias for approximate_member_count (requires `with_counts`).
+        description: Alias for approximate_member_count
         expr:
           kind: path
           path:
             - approximate_member_count
+      - name: before
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Guild ID cursor for guilds before that guild
+        expr:
+          kind: from_filter
+          key: before
+      - name: after
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Guild ID cursor for guilds after that guild
+        expr:
+          kind: from_filter
+          key: after
+      - name: with_counts
+        type: Boolean
+        nullable: true
+        virtual: true
+        description: Whether approximate member and presence counts were requested
+        expr:
+          kind: from_filter
+          key: with_counts
 
   # ──────────────────────────────────────────────────────────────────────
   # channels
   # ──────────────────────────────────────────────────────────────────────
   - name: channels
-    description: >
-      Channels in a Discord guild. Returns channel ID, name, type, topic,
-      position, parent category, and permission metadata.
-    guide: >
-      Requires `guild_id` filter. Get guild IDs from `discord.guilds`.
-      Channel types: 0 text, 2 voice, 4 category, 5 announcement, 13
-      stage, 15 forum, 16 media.
-      `SELECT id, name, type, position FROM discord.channels WHERE guild_id = '<id>'`.
-    fetch_limit_default: 200
+    description: Channels in a Discord guild
+    guide: |
+      Requires guild_id from discord.guilds. Use returned id values as
+      channel_id filters for discord.messages. Channel types: 0 text,
+      2 voice, 4 category, 5 announcement, 13 stage, 15 forum, 16 media.
+      SELECT id, name, type, position FROM discord.channels
+      WHERE guild_id = '<id>'.
+    filters:
+      - name: guild_id
+        required: true
     request:
       method: GET
       path: /guilds/{{filter.guild_id}}/channels
     response:
-      rows_path:
-        - body
-    pagination:
-      mode: none
+      row_strategy: direct
     columns:
       - name: guild_id
         type: Utf8
         nullable: false
         virtual: true
-        description: Guild ID from required filter.
+        description: Guild ID from required filter
         expr:
           kind: from_filter
           key: guild_id
       - name: id
         type: Utf8
         nullable: false
-        description: Channel ID (Snowflake).
+        description: Discord channel ID
         expr:
           kind: path
           path:
@@ -168,15 +304,15 @@ tables:
       - name: type
         type: Int64
         nullable: false
-        description: Channel type (0 text, 2 voice, 4 category, 5 announcement, 13 stage, 15 forum, 16 media).
+        description: Discord channel type integer
         expr:
           kind: path
           path:
             - type
       - name: name
         type: Utf8
-        nullable: false
-        description: Channel name (1-100 characters).
+        nullable: true
+        description: Channel name
         expr:
           kind: path
           path:
@@ -184,7 +320,7 @@ tables:
       - name: topic
         type: Utf8
         nullable: true
-        description: Channel topic text (0-4096 characters for GUILD_FORUM and GUILD_MEDIA, 0-1024 for others).
+        description: Channel topic
         expr:
           kind: path
           path:
@@ -192,7 +328,7 @@ tables:
       - name: position
         type: Int64
         nullable: true
-        description: Sorting position of the channel.
+        description: Channel sorting position
         expr:
           kind: path
           path:
@@ -200,7 +336,7 @@ tables:
       - name: parent_id
         type: Utf8
         nullable: true
-        description: Parent category channel ID.
+        description: Parent category or channel ID
         expr:
           kind: path
           path:
@@ -208,15 +344,31 @@ tables:
       - name: nsfw
         type: Boolean
         nullable: true
-        description: Whether the channel is NSFW.
+        description: Whether the channel is age-restricted
         expr:
           kind: path
           path:
             - nsfw
+      - name: last_message_id
+        type: Utf8
+        nullable: true
+        description: Most recent message ID known to Discord
+        expr:
+          kind: path
+          path:
+            - last_message_id
+      - name: rate_limit_per_user
+        type: Int64
+        nullable: true
+        description: Slowmode delay in seconds
+        expr:
+          kind: path
+          path:
+            - rate_limit_per_user
       - name: bitrate
         type: Int64
         nullable: true
-        description: Bitrate for voice channels (in bits).
+        description: Voice bitrate in bits per second
         expr:
           kind: path
           path:
@@ -224,31 +376,39 @@ tables:
       - name: user_limit
         type: Int64
         nullable: true
-        description: User limit for voice channels (0 for no limit).
+        description: Voice channel user limit
         expr:
           kind: path
           path:
             - user_limit
-      - name: rate_limit_per_user
-        type: Int64
-        nullable: true
-        description: Slow mode cooldown in seconds for text channels.
-        expr:
-          kind: path
-          path:
-            - rate_limit_per_user
       - name: flags
         type: Int64
         nullable: true
-        description: Channel flags as a bitfield.
+        description: Channel flags as a bitfield
         expr:
           kind: path
           path:
             - flags
+      - name: permission_overwrites
+        type: Json
+        nullable: true
+        description: Channel permission overwrites as JSON
+        expr:
+          kind: path
+          path:
+            - permission_overwrites
+      - name: thread_metadata
+        type: Json
+        nullable: true
+        description: Thread metadata for thread channels as JSON
+        expr:
+          kind: path
+          path:
+            - thread_metadata
       - name: default_auto_archive_duration
         type: Int64
         nullable: true
-        description: Default auto-archive duration for threads (60, 1440, 4320, 10080 minutes).
+        description: Default auto-archive duration for threads in minutes (60, 1440, 4320, 10080)
         expr:
           kind: path
           path:
@@ -256,7 +416,7 @@ tables:
       - name: default_forum_layout
         type: Int64
         nullable: true
-        description: Default forum layout (0 not set, 1 list view, 2 gallery view).
+        description: Default forum layout (0 not set, 1 list view, 2 gallery view)
         expr:
           kind: path
           path:
@@ -264,7 +424,7 @@ tables:
       - name: default_sort_order
         type: Int64
         nullable: true
-        description: Default sort order for forum channels (0 latest activity, 1 creation date).
+        description: Default sort order for forum channels (0 latest activity, 1 creation date)
         expr:
           kind: path
           path:
@@ -272,7 +432,7 @@ tables:
       - name: default_thread_rate_limit_per_user
         type: Int64
         nullable: true
-        description: Default slow mode for threads in forum/media channels.
+        description: Default slow mode for threads in forum and media channels
         expr:
           kind: path
           path:
@@ -280,73 +440,82 @@ tables:
       - name: video_quality_mode
         type: Int64
         nullable: true
-        description: Video quality mode for voice channels (1 auto, 2 720p).
+        description: Video quality mode for voice channels (1 auto, 2 720p)
         expr:
           kind: path
           path:
             - video_quality_mode
-    filters:
-      - name: guild_id
-        required: true
 
   # ──────────────────────────────────────────────────────────────────────
   # messages
   # ──────────────────────────────────────────────────────────────────────
   - name: messages
-    description: >
-      Messages in a Discord channel. Returns message ID, content, author
-      info, timestamps, attachments, embeds, mentions, reactions, and
-      message type.
-    guide: >
-      Requires `channel_id` filter. Messages are returned newest-first.
-      Use `after` and `before` filters for cursor-based pagination (pass
-      message IDs as Snowflake strings). Use `around` to fetch messages
-      around a specific message ID. Maximum 100 per page.
-      `SELECT id, content, author__id, author__username, timestamp
-      FROM discord.messages WHERE channel_id = '<id>' LIMIT 50`.
-    fetch_limit_default: 100
+    description: Recent messages in a Discord channel
+    guide: |
+      Requires channel_id from discord.channels. Messages are returned
+      newest-first. Use before, after, and around filters for cursor-based
+      pagination (pass message IDs as Snowflake strings). These filters are
+      mutually exclusive. Maximum 100 per request. Requires MESSAGE_CONTENT
+      privileged intent for content, embeds, and attachments.
+      SELECT id, author__username, content, timestamp
+      FROM discord.messages WHERE channel_id = '<id>' ORDER BY timestamp DESC
+      LIMIT 20.
+    filters:
+      - name: channel_id
+        required: true
+      - name: before
+      - name: after
+      - name: around
     request:
       method: GET
       path: /channels/{{filter.channel_id}}/messages
       query:
-        - name: limit
-          from: literal
-          value: "100"
-        - name: after
-          from: filter
-          key: after
         - name: before
           from: filter
           key: before
+        - name: after
+          from: filter
+          key: after
         - name: around
           from: filter
           key: around
     response:
-      rows_path:
-        - body
+      row_strategy: direct
     pagination:
       mode: none
+      page_size:
+        default: 50
+        max: 100
+        query_param: limit
     columns:
       - name: channel_id
         type: Utf8
         nullable: false
         virtual: true
-        description: Channel ID from required filter.
+        description: Channel ID from required filter
         expr:
           kind: from_filter
           key: channel_id
       - name: id
         type: Utf8
         nullable: false
-        description: Message ID (Snowflake).
+        description: Discord message ID
         expr:
           kind: path
           path:
             - id
+      - name: guild_id
+        type: Utf8
+        nullable: true
+        description: Guild ID from the message, used for guild-scoped permalinks
+        expr:
+          kind: path
+          path:
+            - guild_id
       - name: content
         type: Utf8
         nullable: true
-        description: Message content text (up to 2000 characters).
+        description: Message content visible to the bot
         expr:
           kind: path
           path:
@@ -354,7 +523,7 @@ tables:
       - name: type
         type: Int64
         nullable: false
-        description: Message type (0 default, 19 reply, 21 thread starter, etc.).
+        description: Discord message type integer
         expr:
           kind: path
           path:
@@ -362,7 +531,7 @@ tables:
       - name: timestamp
         type: Timestamp
         nullable: false
-        description: Message creation timestamp (ISO 8601).
+        description: Message creation timestamp (ISO 8601)
         expr:
           kind: format_timestamp
           input: iso8601
@@ -373,7 +542,7 @@ tables:
       - name: edited_timestamp
         type: Timestamp
         nullable: true
-        description: Message edit timestamp (ISO 8601), null if never edited.
+        description: Message edit timestamp (ISO 8601), null if never edited
         expr:
           kind: format_timestamp
           input: iso8601
@@ -384,7 +553,7 @@ tables:
       - name: tts
         type: Boolean
         nullable: false
-        description: Whether the message is a text-to-speech message.
+        description: Whether the message is a text-to-speech message
         expr:
           kind: path
           path:
@@ -392,7 +561,7 @@ tables:
       - name: mention_everyone
         type: Boolean
         nullable: false
-        description: Whether the message mentions @everyone or @here.
+        description: Whether the message mentions @everyone or @here
         expr:
           kind: path
           path:
@@ -400,15 +569,23 @@ tables:
       - name: pinned
         type: Boolean
         nullable: false
-        description: Whether the message is pinned.
+        description: Whether the message is pinned
         expr:
           kind: path
           path:
             - pinned
+      - name: flags
+        type: Int64
+        nullable: false
+        description: Message flags bitset
+        expr:
+          kind: path
+          path:
+            - flags
       - name: author__id
         type: Utf8
         nullable: true
-        description: Author user ID.
+        description: Author user ID
         expr:
           kind: path
           path:
@@ -417,7 +594,7 @@ tables:
       - name: author__username
         type: Utf8
         nullable: true
-        description: Author username (not unique).
+        description: Author username
         expr:
           kind: path
           path:
@@ -426,7 +603,7 @@ tables:
       - name: author__global_name
         type: Utf8
         nullable: true
-        description: Author global display name.
+        description: Author global display name
         expr:
           kind: path
           path:
@@ -435,7 +612,7 @@ tables:
       - name: author__discriminator
         type: Utf8
         nullable: true
-        description: Author discriminator (deprecated, may be "0").
+        description: Author discriminator (deprecated, may be "0")
         expr:
           kind: path
           path:
@@ -444,7 +621,7 @@ tables:
       - name: author__avatar
         type: Utf8
         nullable: true
-        description: Author avatar hash.
+        description: Author avatar hash
         expr:
           kind: path
           path:
@@ -453,7 +630,7 @@ tables:
       - name: author__bot
         type: Boolean
         nullable: true
-        description: Whether the author is a bot.
+        description: Whether the author is a bot
         expr:
           kind: path
           path:
@@ -462,7 +639,7 @@ tables:
       - name: author__system
         type: Boolean
         nullable: true
-        description: Whether the author is a Discord system user.
+        description: Whether the author is a Discord system user
         expr:
           kind: path
           path:
@@ -471,23 +648,23 @@ tables:
       - name: mentions
         type: Json
         nullable: true
-        description: Array of user objects mentioned in the message.
+        description: Mentioned users as JSON
         expr:
           kind: path
           path:
             - mentions
       - name: mention_roles
-        type: Utf8
+        type: Json
         nullable: true
-        description: Comma-joined role IDs mentioned in the message.
+        description: Mentioned role IDs as JSON
         expr:
-          kind: join_array
+          kind: path
           path:
             - mention_roles
       - name: attachments
         type: Json
         nullable: true
-        description: Array of attachment objects (id, filename, size, url, proxy_url, etc.).
+        description: Message attachments as JSON
         expr:
           kind: path
           path:
@@ -495,7 +672,7 @@ tables:
       - name: embeds
         type: Json
         nullable: true
-        description: Array of embed objects (type, title, description, url, etc.).
+        description: Message embeds as JSON
         expr:
           kind: path
           path:
@@ -503,7 +680,7 @@ tables:
       - name: reactions
         type: Json
         nullable: true
-        description: Array of reaction objects (emoji, count, me).
+        description: Array of reaction objects (emoji, count, me)
         expr:
           kind: path
           path:
@@ -511,7 +688,7 @@ tables:
       - name: nonce
         type: Utf8
         nullable: true
-        description: Nonce for optimistic message sending (may be Int64 or string).
+        description: Nonce for optimistic message sending (may be Int64 or string)
         expr:
           kind: path
           path:
@@ -519,7 +696,7 @@ tables:
       - name: webhook_id
         type: Utf8
         nullable: true
-        description: Webhook ID if the message was sent by a webhook.
+        description: Webhook ID if sent by a webhook
         expr:
           kind: path
           path:
@@ -527,15 +704,33 @@ tables:
       - name: message_reference
         type: Json
         nullable: true
-        description: Message reference object for replies (message_id, channel_id, guild_id).
+        description: Message reference object for replies (message_id, channel_id, guild_id)
         expr:
           kind: path
           path:
             - message_reference
+      - name: message_reference__message_id
+        type: Utf8
+        nullable: true
+        description: Message reference target message ID
+        expr:
+          kind: path
+          path:
+            - message_reference
+            - message_id
+      - name: referenced_message__id
+        type: Utf8
+        nullable: true
+        description: Referenced message ID when this message is a reply
+        expr:
+          kind: path
+          path:
+            - referenced_message
+            - id
       - name: message_snapshots
         type: Json
         nullable: true
-        description: Array of forwarded message snapshots.
+        description: Array of forwarded message snapshots
         expr:
           kind: path
           path:
@@ -543,7 +738,7 @@ tables:
       - name: interaction_metadata
         type: Json
         nullable: true
-        description: Interaction metadata for application command messages.
+        description: Interaction metadata for application command messages
         expr:
           kind: path
           path:
@@ -551,7 +746,7 @@ tables:
       - name: sticker_items
         type: Json
         nullable: true
-        description: Array of sticker objects (id, name, format_type).
+        description: Array of sticker objects (id, name, format_type)
         expr:
           kind: path
           path:
@@ -559,7 +754,7 @@ tables:
       - name: position
         type: Int64
         nullable: true
-        description: Position in a thread starter message or forum post.
+        description: Position in a thread starter message or forum post
         expr:
           kind: path
           path:
@@ -567,7 +762,7 @@ tables:
       - name: role_subscription_data
         type: Json
         nullable: true
-        description: Role subscription data for role purchase messages.
+        description: Role subscription data for role purchase messages
         expr:
           kind: path
           path:
@@ -575,7 +770,7 @@ tables:
       - name: resolved
         type: Json
         nullable: true
-        description: Resolved data for application command interactions.
+        description: Resolved data for application command interactions
         expr:
           kind: path
           path:
@@ -583,85 +778,95 @@ tables:
       - name: thread
         type: Json
         nullable: true
-        description: Thread channel object if the message starts a thread.
+        description: Thread channel object if the message starts a thread
         expr:
           kind: path
           path:
             - thread
-      - name: after
+      - name: permalink
         type: Utf8
         nullable: true
-        virtual: true
-        description: Get messages after this message ID (Snowflake, for cursor pagination).
+        description: Discord web URL for the message
         expr:
-          kind: from_filter
-          key: after
+          kind: template
+          template: "https://discord.com/channels/{{expr.guild_id|@me}}/{{filter.channel_id}}/{{expr.message_id}}"
+          values:
+            guild_id:
+              kind: path
+              path:
+                - guild_id
+            message_id:
+              kind: path
+              path:
+                - id
       - name: before
         type: Utf8
         nullable: true
         virtual: true
-        description: Get messages before this message ID (Snowflake, for cursor pagination).
+        description: Message ID cursor for messages before that message
         expr:
           kind: from_filter
           key: before
+      - name: after
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Message ID cursor for messages after that message
+        expr:
+          kind: from_filter
+          key: after
       - name: around
         type: Utf8
         nullable: true
         virtual: true
-        description: Get messages around this message ID (Snowflake, single page of 100).
+        description: Message ID cursor for messages around that message
         expr:
           kind: from_filter
           key: around
-    filters:
-      - name: channel_id
-        required: true
-      - name: after
-      - name: before
-      - name: around
 
   # ──────────────────────────────────────────────────────────────────────
   # members
   # ──────────────────────────────────────────────────────────────────────
   - name: members
-    description: >
-      Members of a Discord guild. Returns user info, roles, joined time,
-      nickname, boosting status, timeout, and flags.
-    guide: >
-      Requires `guild_id` filter. Large guilds (250k+) require `Server
-      Members Intent` enabled in the Discord Developer Portal.
-      `SELECT user__id, user__username, nickname, joined_at, roles
-      FROM discord.members WHERE guild_id = '<id>' LIMIT 100`.
-      Supports `after` for cursor-based pagination (pass the last
-      user__id from the previous page).
-    fetch_limit_default: 100
+    description: Members in a Discord guild
+    guide: |
+      Requires guild_id from discord.guilds. This endpoint requires the
+      GUILD_MEMBERS privileged intent. Use optional after filter to page
+      manually by the highest returned user ID. Maximum 1000 per request.
+      SELECT user__id, user__username, nick, joined_at
+      FROM discord.members WHERE guild_id = '<id>' LIMIT 100.
+    filters:
+      - name: guild_id
+        required: true
+      - name: after
     request:
       method: GET
       path: /guilds/{{filter.guild_id}}/members
       query:
-        - name: limit
-          from: literal
-          value: "1000"
         - name: after
           from: filter
           key: after
     response:
-      rows_path:
-        - body
+      row_strategy: direct
     pagination:
       mode: none
+      page_size:
+        default: 1000
+        max: 1000
+        query_param: limit
     columns:
       - name: guild_id
         type: Utf8
         nullable: false
         virtual: true
-        description: Guild ID from required filter.
+        description: Guild ID from required filter
         expr:
           kind: from_filter
           key: guild_id
       - name: user__id
         type: Utf8
         nullable: true
-        description: User ID (Snowflake).
+        description: Member user ID
         expr:
           kind: path
           path:
@@ -670,7 +875,7 @@ tables:
       - name: user__username
         type: Utf8
         nullable: true
-        description: Username (not unique).
+        description: Member username
         expr:
           kind: path
           path:
@@ -679,7 +884,7 @@ tables:
       - name: user__global_name
         type: Utf8
         nullable: true
-        description: Global display name.
+        description: Member global display name
         expr:
           kind: path
           path:
@@ -688,7 +893,7 @@ tables:
       - name: user__discriminator
         type: Utf8
         nullable: true
-        description: Discriminator (deprecated, may be "0").
+        description: Member discriminator (deprecated, may be "0")
         expr:
           kind: path
           path:
@@ -697,7 +902,7 @@ tables:
       - name: user__avatar
         type: Utf8
         nullable: true
-        description: Avatar hash.
+        description: Member user avatar hash
         expr:
           kind: path
           path:
@@ -706,7 +911,7 @@ tables:
       - name: user__bot
         type: Boolean
         nullable: true
-        description: Whether the user is a bot.
+        description: Whether the member user is a bot
         expr:
           kind: path
           path:
@@ -715,16 +920,16 @@ tables:
       - name: user__system
         type: Boolean
         nullable: true
-        description: Whether the user is a Discord system user.
+        description: Whether the member user is a Discord system user
         expr:
           kind: path
           path:
             - user
             - system
-      - name: nickname
+      - name: nick
         type: Utf8
         nullable: true
-        description: Guild-specific nickname (null if none set).
+        description: Guild-specific nickname (null if none set)
         expr:
           kind: path
           path:
@@ -732,23 +937,23 @@ tables:
       - name: avatar
         type: Utf8
         nullable: true
-        description: Guild-specific avatar hash.
+        description: Guild-specific avatar hash
         expr:
           kind: path
           path:
             - avatar
       - name: roles
-        type: Utf8
+        type: Json
         nullable: true
-        description: Comma-joined role IDs the member has.
+        description: Role IDs assigned to the member as JSON array
         expr:
-          kind: join_array
+          kind: path
           path:
             - roles
       - name: joined_at
         type: Timestamp
         nullable: true
-        description: Timestamp the member joined the guild (ISO 8601).
+        description: Timestamp when the member joined the guild (ISO 8601)
         expr:
           kind: format_timestamp
           input: iso8601
@@ -759,7 +964,7 @@ tables:
       - name: premium_since
         type: Timestamp
         nullable: true
-        description: Timestamp when the member started boosting (ISO 8601), null if not boosting.
+        description: Timestamp when the member started boosting (ISO 8601), null if not boosting
         expr:
           kind: format_timestamp
           input: iso8601
@@ -770,7 +975,7 @@ tables:
       - name: deaf
         type: Boolean
         nullable: true
-        description: Whether the member is deafened in voice channels.
+        description: Whether the member is deafened in voice channels
         expr:
           kind: path
           path:
@@ -778,7 +983,7 @@ tables:
       - name: mute
         type: Boolean
         nullable: true
-        description: Whether the member is muted in voice channels.
+        description: Whether the member is muted in voice channels
         expr:
           kind: path
           path:
@@ -786,7 +991,7 @@ tables:
       - name: flags
         type: Int64
         nullable: true
-        description: Member flags as a bitfield.
+        description: Member flags as a bitfield
         expr:
           kind: path
           path:
@@ -794,7 +999,7 @@ tables:
       - name: pending
         type: Boolean
         nullable: true
-        description: Whether the member has not yet passed guild membership screening.
+        description: Whether the member has not passed guild membership screening
         expr:
           kind: path
           path:
@@ -802,7 +1007,7 @@ tables:
       - name: communication_disabled_until
         type: Timestamp
         nullable: true
-        description: Timestamp when the member's timeout expires (ISO 8601), null if not timed out.
+        description: Timestamp when a timeout expires (ISO 8601), null if not timed out
         expr:
           kind: format_timestamp
           input: iso8601
@@ -810,60 +1015,47 @@ tables:
             kind: path
             path:
               - communication_disabled_until
-      - name: permissions
-        type: Utf8
-        nullable: true
-        description: Effective permissions of the member in the guild (bitwise, as string).
-        expr:
-          kind: path
-          path:
-            - permissions
       - name: after
         type: Utf8
         nullable: true
         virtual: true
-        description: Get members after this user ID (Snowflake, for cursor pagination).
+        description: User ID cursor for guild member pagination
         expr:
           kind: from_filter
           key: after
-    filters:
-      - name: guild_id
-        required: true
-      - name: after
 
   # ──────────────────────────────────────────────────────────────────────
   # roles
   # ──────────────────────────────────────────────────────────────────────
   - name: roles
-    description: >
-      Roles in a Discord guild. Returns role ID, name, color, permissions
-      flags, position (lower is higher priority), and display settings.
-    guide: >
-      Requires `guild_id` filter. Role position is 0-based where higher
-      positions are higher in the hierarchy. The @everyone role has the
-      same ID as the guild.
-      `SELECT id, name, color, position, permissions FROM discord.roles WHERE guild_id = '<id>'`.
+    description: Roles in a Discord guild
+    guide: |
+      Requires guild_id from discord.guilds. Role position is 0-based where
+      higher positions are higher in the hierarchy. The @everyone role has
+      the same ID as the guild.
+      SELECT id, name, color, position, permissions FROM discord.roles
+      WHERE guild_id = '<id>' ORDER BY position DESC.
+    filters:
+      - name: guild_id
+        required: true
     request:
       method: GET
       path: /guilds/{{filter.guild_id}}/roles
     response:
-      rows_path:
-        - body
-    pagination:
-      mode: none
+      row_strategy: direct
     columns:
       - name: guild_id
         type: Utf8
         nullable: false
         virtual: true
-        description: Guild ID from required filter.
+        description: Guild ID from required filter
         expr:
           kind: from_filter
           key: guild_id
       - name: id
         type: Utf8
         nullable: false
-        description: Role ID (Snowflake).
+        description: Discord role ID
         expr:
           kind: path
           path:
@@ -871,23 +1063,23 @@ tables:
       - name: name
         type: Utf8
         nullable: false
-        description: Role name (1-100 characters).
+        description: Role name
         expr:
           kind: path
           path:
             - name
       - name: color
         type: Int64
-        nullable: false
-        description: Role color as an integer (RGB, 0 for default).
+        nullable: true
+        description: Integer representation of the role color
         expr:
           kind: path
           path:
             - color
       - name: hoist
         type: Boolean
-        nullable: false
-        description: Whether the role is displayed separately in the member sidebar.
+        nullable: true
+        description: Whether the role is displayed separately in the member list
         expr:
           kind: path
           path:
@@ -895,7 +1087,7 @@ tables:
       - name: icon
         type: Utf8
         nullable: true
-        description: Role icon hash.
+        description: Role icon hash
         expr:
           kind: path
           path:
@@ -903,7 +1095,7 @@ tables:
       - name: unicode_emoji
         type: Utf8
         nullable: true
-        description: Role unicode emoji (overrides icon).
+        description: Role unicode emoji
         expr:
           kind: path
           path:
@@ -911,7 +1103,7 @@ tables:
       - name: position
         type: Int64
         nullable: false
-        description: Role position in the hierarchy (higher = more permissions).
+        description: Role sorting position (higher = more permissions)
         expr:
           kind: path
           path:
@@ -919,23 +1111,23 @@ tables:
       - name: permissions
         type: Utf8
         nullable: false
-        description: Role permissions as a Discord permission bitwise string.
+        description: Role permission bitset
         expr:
           kind: path
           path:
             - permissions
       - name: managed
         type: Boolean
-        nullable: false
-        description: Whether the role is managed by an integration (e.g. bots, Twitch).
+        nullable: true
+        description: Whether the role is managed by an integration
         expr:
           kind: path
           path:
             - managed
       - name: mentionable
         type: Boolean
-        nullable: false
-        description: Whether the role can be @mentioned by anyone.
+        nullable: true
+        description: Whether the role can be @mentioned by anyone
         expr:
           kind: path
           path:
@@ -943,7 +1135,7 @@ tables:
       - name: tags
         type: Json
         nullable: true
-        description: Role tags (bot_id, premium_subscriber, integration_id, etc.).
+        description: Role tags as JSON (bot_id, premium_subscriber, integration_id, etc.)
         expr:
           kind: path
           path:
@@ -951,11 +1143,8 @@ tables:
       - name: flags
         type: Int64
         nullable: true
-        description: Role flags as a bitfield.
+        description: Role flags as a bitfield
         expr:
           kind: path
           path:
             - flags
-    filters:
-      - name: guild_id
-        required: true
