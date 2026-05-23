@@ -6,6 +6,7 @@ use datafusion::dataframe::DataFrame;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::physical_plan::displayable;
+use datafusion::physical_plan::ExecutionPlan as PhysicalExecutionPlan;
 use datafusion::prelude::{SQLOptions, SessionConfig, SessionContext};
 use datafusion_tracing::{InstrumentationOptions, RuleInstrumentationOptions};
 
@@ -211,11 +212,13 @@ impl QueryRuntimeAdapter {
             .set_show_schema(true)
             .indent(true)
             .to_string();
+        let execution_plan = build_execution_plan(physical_plan.as_ref());
 
         Ok(QueryPlan::new(
             unoptimized_logical_plan,
             optimized_logical_plan_display,
             physical_plan,
+            Some(execution_plan),
         ))
     }
 
@@ -226,6 +229,133 @@ impl QueryRuntimeAdapter {
             .map_err(|err| datafusion_to_core_with_sql(&err, &self.tables, Some(sql)))
     }
 }
+
+fn build_execution_plan(plan: &dyn PhysicalExecutionPlan) -> crate::ExecutionPlan {
+    let mut pushdowns = Vec::new();
+    let mut cache = Vec::new();
+    let steps = build_execution_steps(plan, Vec::new(), &mut pushdowns, &mut cache);
+    crate::ExecutionPlan::new(
+        vec![steps],
+        pushdowns,
+        cache,
+        estimated_rows(plan),
+        None,
+    )
+}
+
+fn build_execution_steps(
+    plan: &dyn PhysicalExecutionPlan,
+    step_path: Vec<u32>,
+    pushdowns: &mut Vec<crate::PushdownDecision>,
+    cache: &mut Vec<crate::CacheDecision>,
+) -> crate::ExecutionPlanStep {
+    let kind = classify_step_kind(plan.name());
+    let detail = step_detail(plan);
+    if let Some(scan) = scan_metadata(plan) {
+        if !scan.pushdowns.is_empty() {
+            pushdowns.extend(scan.pushdowns.iter().cloned().map(|predicate| {
+                crate::PushdownDecision::new(
+                    step_path.clone(),
+                    scan.target.clone(),
+                    predicate,
+                    true,
+                    scan.pushdown_detail.clone(),
+                )
+            }));
+        }
+        if !scan.cache.is_empty() {
+            cache.extend(scan.cache.iter().cloned().map(|entry| {
+                crate::CacheDecision::new(
+                    step_path.clone(),
+                    scan.target.clone(),
+                    entry.strategy,
+                    entry.status,
+                    entry.detail,
+                )
+            }));
+        }
+        return crate::ExecutionPlanStep::new(
+            kind,
+            plan.name(),
+            detail.unwrap_or_else(|| scan.detail),
+            estimated_rows(plan),
+            None,
+            Vec::new(),
+        );
+    }
+
+    let children = plan
+        .children()
+        .into_iter()
+        .enumerate()
+        .map(|(idx, child)| {
+            let mut child_path = step_path.clone();
+            child_path.push(u32::try_from(idx).unwrap_or(u32::MAX));
+            build_execution_steps(child.as_ref(), child_path, pushdowns, cache)
+        })
+        .collect::<Vec<_>>();
+
+    crate::ExecutionPlanStep::new(
+        kind,
+        plan.name(),
+        detail.unwrap_or_default(),
+        estimated_rows(plan),
+        None,
+        children,
+    )
+}
+
+fn classify_step_kind(name: &str) -> String {
+    let lower = name.to_ascii_lowercase();
+    if lower.contains("join") {
+        "join".to_string()
+    } else if lower.contains("filter") {
+        "filter".to_string()
+    } else if lower.contains("projection") || lower.contains("project") {
+        "projection".to_string()
+    } else if lower.contains("scan") || lower.contains("exec") {
+        "scan".to_string()
+    } else if lower.contains("sort") || lower.contains("order") {
+        "sort".to_string()
+    } else if lower.contains("limit") {
+        "limit".to_string()
+    } else if lower.contains("aggregate") {
+        "aggregate".to_string()
+    } else {
+        "step".to_string()
+    }
+}
+
+fn step_detail(plan: &dyn PhysicalExecutionPlan) -> Option<String> {
+    if let Some(json_exec) = plan
+        .as_any()
+        .downcast_ref::<crate::backends::shared::json_exec::JsonExec>()
+    {
+        return Some(json_exec.plan_summary());
+    }
+    None
+}
+
+fn scan_metadata(
+    plan: &dyn PhysicalExecutionPlan,
+) -> Option<crate::backends::shared::json_exec::JsonExecExplain> {
+    if let Some(json_exec) = plan
+        .as_any()
+        .downcast_ref::<crate::backends::shared::json_exec::JsonExec>()
+    {
+        return Some(json_exec.explain().clone());
+    }
+    None
+}
+
+fn estimated_rows(plan: &dyn PhysicalExecutionPlan) -> Option<u64> {
+    let stats = plan.partition_statistics(None).ok()?;
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    {
+        stats.num_rows.map(|rows| rows as u64)
+    }
+}
+
 
 fn read_only_sql_options() -> SQLOptions {
     SQLOptions::new()

@@ -18,7 +18,7 @@ use super::client::McpSourceClient;
 use super::error::McpProviderQueryError;
 use super::fetch::McpFetchPlan;
 use crate::backends::schema_from_columns;
-use crate::backends::shared::json_exec::JsonExec;
+use crate::backends::shared::json_exec::{JsonExec, JsonExecCacheEntry, JsonExecExplain};
 use crate::backends::shared::mapping::convert_items;
 
 #[derive(Clone)]
@@ -177,6 +177,28 @@ impl TableProvider for McpFunctionCallTableProvider {
             fetcher,
             converter,
             projection.cloned(),
+            JsonExecExplain {
+                target: format!("{}.{}", self.state.source_schema, self.state.function_name),
+                detail: format!(
+                    "MCP function scan {}.{} reads rows through tool {}",
+                    self.state.source_schema,
+                    self.state.function_name,
+                    self.state.tool_name
+                ),
+                pushdowns: limit
+                    .map(|limit| vec![format!("limit={limit}")])
+                    .unwrap_or_default(),
+                pushdown_detail: if limit.is_some() {
+                    "the per-request limit is pushed into the tool call".to_string()
+                } else {
+                    "no request arguments were pushed down".to_string()
+                },
+                cache: vec![JsonExecCacheEntry {
+                    strategy: "remote tool call".to_string(),
+                    status: "fetched".to_string(),
+                    detail: "rows are fetched from the tool at execution time".to_string(),
+                }],
+            },
         )?;
         Ok(Arc::new(exec))
     }

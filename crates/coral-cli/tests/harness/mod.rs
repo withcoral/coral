@@ -230,6 +230,40 @@ fn mock_sql_response(sql: &str) -> ExecuteSqlResponse {
     }
 }
 
+fn mock_explain_plan() -> QueryPlan {
+    QueryPlan {
+        unoptimized_logical_plan: "LogicalPlan".to_string(),
+        optimized_logical_plan: "OptimizedLogicalPlan".to_string(),
+        physical_plan: "PhysicalPlan".to_string(),
+        execution_plan: Some(coral_api::v1::ExecutionPlan {
+            steps: vec![coral_api::v1::ExecutionPlanStep {
+                kind: "scan".to_string(),
+                name: "JsonExec".to_string(),
+                detail: "local_messages.messages scan".to_string(),
+                estimated_rows: Some(2),
+                actual_rows: None,
+                children: Vec::new(),
+            }],
+            pushdowns: vec![coral_api::v1::PushdownDecision {
+                step_path: vec![0],
+                target: "local_messages.messages".to_string(),
+                predicate: "text = 'hello'".to_string(),
+                applied: true,
+                detail: "predicate pushed into the scan".to_string(),
+            }],
+            cache: vec![coral_api::v1::CacheDecision {
+                step_path: vec![0],
+                target: "local_messages.messages".to_string(),
+                strategy: "filesystem".to_string(),
+                status: "fetched".to_string(),
+                detail: "rows are fetched from local files at execution time".to_string(),
+            }],
+            estimated_rows: Some(2),
+            actual_rows: None,
+        }),
+    }
+}
+
 fn mock_coral_tables_response() -> ExecuteSqlResponse {
     let schema = Schema::new(vec![
         Field::new("schema_name", DataType::Utf8, false),
@@ -548,6 +582,7 @@ fn list_catalog_response(request: &ListCatalogRequest) -> ListCatalogResponse {
 #[derive(Default)]
 struct Captured {
     execute_sql: Mutex<Vec<ExecuteSqlRequest>>,
+    explain_sql: Mutex<Vec<ExplainSqlRequest>>,
     list_catalog: Mutex<Vec<ListCatalogRequest>>,
     search_catalog: Mutex<Vec<SearchCatalogRequest>>,
     describe_table: Mutex<Vec<DescribeTableRequest>>,
@@ -615,14 +650,16 @@ impl QueryService for MockQueryService {
 
     async fn explain_sql(
         &self,
-        _request: Request<ExplainSqlRequest>,
+        request: Request<ExplainSqlRequest>,
     ) -> Result<Response<ExplainSqlResponse>, Status> {
+        let request = request.into_inner();
+        self.captured
+            .explain_sql
+            .lock()
+            .expect("explain_sql capture")
+            .push(request);
         Ok(Response::new(ExplainSqlResponse {
-            plan: Some(QueryPlan {
-                unoptimized_logical_plan: "LogicalPlan".to_string(),
-                optimized_logical_plan: "OptimizedLogicalPlan".to_string(),
-                physical_plan: "PhysicalPlan".to_string(),
-            }),
+            plan: Some(mock_explain_plan()),
         }))
     }
 }
@@ -1013,6 +1050,14 @@ impl MockServer {
             .execute_sql
             .lock()
             .expect("execute_sql capture")
+            .clone()
+    }
+
+    pub(crate) fn explain_sql_requests(&self) -> Vec<ExplainSqlRequest> {
+        self.captured
+            .explain_sql
+            .lock()
+            .expect("explain_sql capture")
             .clone()
     }
 

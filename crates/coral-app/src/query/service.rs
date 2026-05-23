@@ -82,6 +82,64 @@ fn query_plan_to_proto(plan: &coral_engine::QueryPlan) -> QueryPlanProto {
         unoptimized_logical_plan: plan.unoptimized_logical_plan().to_string(),
         optimized_logical_plan: plan.optimized_logical_plan().to_string(),
         physical_plan: plan.physical_plan().to_string(),
+        execution_plan: plan.execution_plan().map(execution_plan_to_proto),
+    }
+}
+
+fn execution_plan_to_proto(plan: &coral_engine::ExecutionPlan) -> coral_api::v1::ExecutionPlan {
+    coral_api::v1::ExecutionPlan {
+        steps: plan
+            .steps()
+            .iter()
+            .map(execution_plan_step_to_proto)
+            .collect(),
+        pushdowns: plan
+            .pushdowns()
+            .iter()
+            .map(pushdown_to_proto)
+            .collect(),
+        cache: plan.cache().iter().map(cache_to_proto).collect(),
+        estimated_rows: plan.estimated_rows(),
+        actual_rows: plan.actual_rows(),
+    }
+}
+
+fn execution_plan_step_to_proto(
+    step: &coral_engine::ExecutionPlanStep,
+) -> coral_api::v1::ExecutionPlanStep {
+    coral_api::v1::ExecutionPlanStep {
+        kind: step.kind().to_string(),
+        name: step.name().to_string(),
+        detail: step.detail().to_string(),
+        estimated_rows: step.estimated_rows(),
+        actual_rows: step.actual_rows(),
+        children: step
+            .children()
+            .iter()
+            .map(execution_plan_step_to_proto)
+            .collect(),
+    }
+}
+
+fn pushdown_to_proto(
+    pushdown: &coral_engine::PushdownDecision,
+) -> coral_api::v1::PushdownDecision {
+    coral_api::v1::PushdownDecision {
+        step_path: pushdown.step_path().to_vec(),
+        target: pushdown.target().to_string(),
+        predicate: pushdown.predicate().to_string(),
+        applied: pushdown.applied(),
+        detail: pushdown.detail().to_string(),
+    }
+}
+
+fn cache_to_proto(plan: &coral_engine::CacheDecision) -> coral_api::v1::CacheDecision {
+    coral_api::v1::CacheDecision {
+        step_path: plan.step_path().to_vec(),
+        target: plan.target().to_string(),
+        strategy: plan.strategy().to_string(),
+        status: plan.status().to_string(),
+        detail: plan.detail().to_string(),
     }
 }
 

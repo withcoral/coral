@@ -15,7 +15,9 @@ use datafusion::physical_plan::ExecutionPlan;
 use serde_json::Value;
 
 use crate::backends::shared::filter_expr::extract_filter_values;
-use crate::backends::shared::json_exec::{Converter, Fetcher, JsonExec, RowFetcher};
+use crate::backends::shared::json_exec::{
+    Converter, Fetcher, JsonExec, JsonExecCacheEntry, JsonExecExplain, RowFetcher,
+};
 use crate::backends::shared::mapping::convert_items;
 use crate::backends::{
     BackendCompileRequest, BackendRegistration, CompiledBackendSource, RegisteredSource,
@@ -449,6 +451,22 @@ impl TableProvider for JsonlTableProvider {
             fetcher,
             converter,
             projection.cloned(),
+            JsonExecExplain {
+                target: format!("{}.{}", self.source_schema, self.table.name()),
+                detail: format!(
+                    "JSONL scan {}.{} reads files from the local filesystem",
+                    self.source_schema,
+                    self.table.name()
+                ),
+                pushdowns: Vec::new(),
+                pushdown_detail: "filters are applied after file reads".to_string(),
+                cache: vec![JsonExecCacheEntry {
+                    strategy: "filesystem".to_string(),
+                    status: "fetched".to_string(),
+                    detail: "rows are read from local files when the query runs"
+                        .to_string(),
+                }],
+            },
         )?;
 
         Ok(Arc::new(exec))

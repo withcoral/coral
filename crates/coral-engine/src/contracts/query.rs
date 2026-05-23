@@ -215,6 +215,48 @@ pub struct QueryPlan {
     unoptimized_logical: String,
     optimized_logical: String,
     physical: String,
+    execution_plan: Option<ExecutionPlan>,
+}
+
+/// Structured execution-plan metadata for one SQL statement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecutionPlan {
+    steps: Vec<ExecutionPlanStep>,
+    pushdowns: Vec<PushdownDecision>,
+    cache: Vec<CacheDecision>,
+    estimated_rows: Option<u64>,
+    actual_rows: Option<u64>,
+}
+
+/// One execution-plan step in tree form.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecutionPlanStep {
+    kind: String,
+    name: String,
+    detail: String,
+    estimated_rows: Option<u64>,
+    actual_rows: Option<u64>,
+    children: Vec<ExecutionPlanStep>,
+}
+
+/// One predicate pushdown decision for a query plan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PushdownDecision {
+    step_path: Vec<u32>,
+    target: String,
+    predicate: String,
+    applied: bool,
+    detail: String,
+}
+
+/// One cache decision for a query plan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CacheDecision {
+    step_path: Vec<u32>,
+    target: String,
+    strategy: String,
+    status: String,
+    detail: String,
 }
 
 impl QueryPlan {
@@ -224,11 +266,13 @@ impl QueryPlan {
         unoptimized_logical_plan: String,
         optimized_logical_plan: String,
         physical_plan: String,
+        execution_plan: Option<ExecutionPlan>,
     ) -> Self {
         Self {
             unoptimized_logical: unoptimized_logical_plan,
             optimized_logical: optimized_logical_plan,
             physical: physical_plan,
+            execution_plan,
         }
     }
 
@@ -248,6 +292,220 @@ impl QueryPlan {
     /// Returns the physical execution plan after physical optimizer rules run.
     pub fn physical_plan(&self) -> &str {
         &self.physical
+    }
+
+    #[must_use]
+    /// Returns the structured execution-plan metadata when available.
+    pub fn execution_plan(&self) -> Option<&ExecutionPlan> {
+        self.execution_plan.as_ref()
+    }
+}
+
+impl ExecutionPlan {
+    #[must_use]
+    /// Builds one structured execution plan.
+    pub fn new(
+        steps: Vec<ExecutionPlanStep>,
+        pushdowns: Vec<PushdownDecision>,
+        cache: Vec<CacheDecision>,
+        estimated_rows: Option<u64>,
+        actual_rows: Option<u64>,
+    ) -> Self {
+        Self {
+            steps,
+            pushdowns,
+            cache,
+            estimated_rows,
+            actual_rows,
+        }
+    }
+
+    #[must_use]
+    /// Returns the root execution-plan steps.
+    pub fn steps(&self) -> &[ExecutionPlanStep] {
+        &self.steps
+    }
+
+    #[must_use]
+    /// Returns the pushdown decisions collected for the plan.
+    pub fn pushdowns(&self) -> &[PushdownDecision] {
+        &self.pushdowns
+    }
+
+    #[must_use]
+    /// Returns the cache decisions collected for the plan.
+    pub fn cache(&self) -> &[CacheDecision] {
+        &self.cache
+    }
+
+    #[must_use]
+    /// Returns the estimated row count when available.
+    pub fn estimated_rows(&self) -> Option<u64> {
+        self.estimated_rows
+    }
+
+    #[must_use]
+    /// Returns the actual row count when available.
+    pub fn actual_rows(&self) -> Option<u64> {
+        self.actual_rows
+    }
+}
+
+impl ExecutionPlanStep {
+    #[must_use]
+    /// Builds one execution-plan step.
+    pub fn new(
+        kind: impl Into<String>,
+        name: impl Into<String>,
+        detail: impl Into<String>,
+        estimated_rows: Option<u64>,
+        actual_rows: Option<u64>,
+        children: Vec<ExecutionPlanStep>,
+    ) -> Self {
+        Self {
+            kind: kind.into(),
+            name: name.into(),
+            detail: detail.into(),
+            estimated_rows,
+            actual_rows,
+            children,
+        }
+    }
+
+    #[must_use]
+    /// Returns the step kind.
+    pub fn kind(&self) -> &str {
+        &self.kind
+    }
+
+    #[must_use]
+    /// Returns the step name.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    #[must_use]
+    /// Returns the step detail text.
+    pub fn detail(&self) -> &str {
+        &self.detail
+    }
+
+    #[must_use]
+    /// Returns the estimated rows for the step when available.
+    pub fn estimated_rows(&self) -> Option<u64> {
+        self.estimated_rows
+    }
+
+    #[must_use]
+    /// Returns the actual rows for the step when available.
+    pub fn actual_rows(&self) -> Option<u64> {
+        self.actual_rows
+    }
+
+    #[must_use]
+    /// Returns the child steps.
+    pub fn children(&self) -> &[ExecutionPlanStep] {
+        &self.children
+    }
+}
+
+impl PushdownDecision {
+    #[must_use]
+    /// Builds one pushdown decision.
+    pub fn new(
+        step_path: Vec<u32>,
+        target: impl Into<String>,
+        predicate: impl Into<String>,
+        applied: bool,
+        detail: impl Into<String>,
+    ) -> Self {
+        Self {
+            step_path,
+            target: target.into(),
+            predicate: predicate.into(),
+            applied,
+            detail: detail.into(),
+        }
+    }
+
+    #[must_use]
+    /// Returns the step path for the pushdown decision.
+    pub fn step_path(&self) -> &[u32] {
+        &self.step_path
+    }
+
+    #[must_use]
+    /// Returns the target relation or function.
+    pub fn target(&self) -> &str {
+        &self.target
+    }
+
+    #[must_use]
+    /// Returns the predicate text.
+    pub fn predicate(&self) -> &str {
+        &self.predicate
+    }
+
+    #[must_use]
+    /// Returns whether the pushdown was applied.
+    pub fn applied(&self) -> bool {
+        self.applied
+    }
+
+    #[must_use]
+    /// Returns additional detail text.
+    pub fn detail(&self) -> &str {
+        &self.detail
+    }
+}
+
+impl CacheDecision {
+    #[must_use]
+    /// Builds one cache decision.
+    pub fn new(
+        step_path: Vec<u32>,
+        target: impl Into<String>,
+        strategy: impl Into<String>,
+        status: impl Into<String>,
+        detail: impl Into<String>,
+    ) -> Self {
+        Self {
+            step_path,
+            target: target.into(),
+            strategy: strategy.into(),
+            status: status.into(),
+            detail: detail.into(),
+        }
+    }
+
+    #[must_use]
+    /// Returns the step path for the cache decision.
+    pub fn step_path(&self) -> &[u32] {
+        &self.step_path
+    }
+
+    #[must_use]
+    /// Returns the target relation or function.
+    pub fn target(&self) -> &str {
+        &self.target
+    }
+
+    #[must_use]
+    /// Returns the cache strategy.
+    pub fn strategy(&self) -> &str {
+        &self.strategy
+    }
+
+    #[must_use]
+    /// Returns the cache status.
+    pub fn status(&self) -> &str {
+        &self.status
+    }
+
+    #[must_use]
+    /// Returns additional detail text.
+    pub fn detail(&self) -> &str {
+        &self.detail
     }
 }
 

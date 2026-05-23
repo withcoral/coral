@@ -24,7 +24,7 @@ use std::sync::Arc;
 
 use clap::{ArgGroup, Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::{Shell, generate};
-use coral_api::v1::ExecuteSqlRequest;
+use coral_api::v1::{ExecuteSqlRequest, ExplainSqlRequest};
 #[cfg(feature = "embedded-ui")]
 use coral_app::StaticAssetsProvider;
 use coral_client::{
@@ -58,6 +58,8 @@ struct Cli {
 enum Command {
     /// Execute a SQL query
     Sql(SqlArgs),
+    /// Explain a SQL query plan
+    Explain(ExplainArgs),
     /// Manage data sources
     Source(SourceArgs),
     /// Interactive wizard to set up Coral and explore use cases
@@ -104,6 +106,16 @@ struct SqlArgs {
     #[arg(long, value_enum, default_value = "table")]
     format: OutputFormat,
     /// SQL query to execute
+    sql: String,
+}
+
+#[derive(Debug, Args)]
+/// Explain a SQL query plan
+struct ExplainArgs {
+    /// Output format for the execution plan
+    #[arg(long, value_enum, default_value = "table")]
+    format: OutputFormat,
+    /// SQL query to explain
     sql: String,
 }
 
@@ -240,7 +252,11 @@ impl CliError {
 impl Command {
     fn required_runtime(&self) -> RequiredRuntime {
         match self {
-            Command::Sql(_) | Command::Source(_) | Command::Onboard | Command::McpStdio(_) => {
+            Command::Sql(_)
+            | Command::Explain(_)
+            | Command::Source(_)
+            | Command::Onboard
+            | Command::McpStdio(_) => {
                 RequiredRuntime::AppClient
             }
             Command::Completion(_) => RequiredRuntime::None,
@@ -414,7 +430,11 @@ async fn run_no_runtime_command(command: Command) -> Result<(), CliError> {
         }
         #[cfg(feature = "embedded-ui")]
         Command::Ui(args) => run_ui(args).await.map_err(Into::into),
-        Command::Sql(_) | Command::Source(_) | Command::Onboard | Command::McpStdio(_) => {
+        Command::Sql(_)
+        | Command::Explain(_)
+        | Command::Source(_)
+        | Command::Onboard
+        | Command::McpStdio(_) => {
             unreachable!("app client commands are routed through app runtime startup")
         }
     }
@@ -446,6 +466,29 @@ async fn run_app_command(
             };
             let result = decode_execute_sql_response(&response).map_err(anyhow::Error::from)?;
             print_batches(result.batches(), args.format)?;
+        }
+        Command::Explain(args) => {
+            let response = match app
+                .query_client()
+                .explain_sql(Request::new(ExplainSqlRequest {
+                    workspace: Some(default_workspace()),
+                    sql: args.sql,
+                }))
+                .await
+            {
+                Ok(response) => response.into_inner(),
+                Err(status) => {
+                    return Err(CliError::Query {
+                        error_message: query_error::telemetry_error_message(&status),
+                        error_type: query_error::telemetry_error_type(&status),
+                        rendered_stderr: query_error::render_query_error(&status),
+                    });
+                }
+            };
+            let plan = response
+                .plan
+                .ok_or_else(|| anyhow::anyhow!("query plan was missing from explain response"))?;
+            print_query_plan(&plan, args.format)?;
         }
         Command::Source(args) => run_source(&app, args).await?,
         Command::Onboard => {
@@ -541,6 +584,91 @@ fn print_batches(
     };
     println!("{output}");
     Ok(())
+}
+
+fn print_query_plan(plan: &coral_api::v1::QueryPlan, format: OutputFormat) -> Result<(), anyhow::Error> {
+    match format {
+        OutputFormat::Json => {
+            println!("{}", serde_json::to_string_pretty(plan)?);
+        }
+        OutputFormat::Table => {
+            println!("Execution plan");
+            if let Some(execution_plan) = &plan.execution_plan {
+                for step in &execution_plan.steps {
+                    render_plan_step(step, 0);
+                }
+                if !execution_plan.pushdowns.is_empty() {
+                    println!();
+                    print_text_table(
+                        ["Path", "Target", "Predicate", "Applied", "Detail"],
+                        execution_plan.pushdowns.iter().map(|pushdown| {
+                            [
+                                format_step_path(&pushdown.step_path),
+                                pushdown.target.clone(),
+                                pushdown.predicate.clone(),
+                                pushdown.applied.to_string(),
+                                pushdown.detail.clone(),
+                            ]
+                        }),
+                    );
+                }
+                if !execution_plan.cache.is_empty() {
+                    println!();
+                    print_text_table(
+                        ["Path", "Target", "Strategy", "Status", "Detail"],
+                        execution_plan.cache.iter().map(|cache| {
+                            [
+                                format_step_path(&cache.step_path),
+                                cache.target.clone(),
+                                cache.strategy.clone(),
+                                cache.status.clone(),
+                                cache.detail.clone(),
+                            ]
+                        }),
+                    );
+                }
+                if let Some(rows) = execution_plan.estimated_rows {
+                    println!();
+                    println!("Estimated rows: {rows}");
+                }
+                if let Some(rows) = execution_plan.actual_rows {
+                    println!("Actual rows: {rows}");
+                }
+            } else {
+                println!("{}", plan.physical_plan);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn render_plan_step(step: &coral_api::v1::ExecutionPlanStep, depth: usize) {
+    let indent = "  ".repeat(depth);
+    let mut line = format!("{indent}- {}: {}", step.kind, step.name);
+    if !step.detail.is_empty() {
+        line.push_str(&format!(" ({})", step.detail));
+    }
+    if let Some(rows) = step.estimated_rows {
+        line.push_str(&format!(" [est rows: {rows}]"));
+    }
+    if let Some(rows) = step.actual_rows {
+        line.push_str(&format!(" [actual rows: {rows}]"));
+    }
+    println!("{line}");
+    for child in &step.children {
+        render_plan_step(child, depth + 1);
+    }
+}
+
+fn format_step_path(step_path: &[u32]) -> String {
+    if step_path.is_empty() {
+        return "root".to_string();
+    }
+    step_path
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(".")
 }
 
 fn print_text_table<const COLUMNS: usize>(

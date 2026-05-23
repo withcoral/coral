@@ -126,6 +126,16 @@ async fn explain_sql_returns_logical_and_physical_plans() {
     assert!(plan.unoptimized_logical_plan().contains("jsonl_plan.users"));
     assert!(plan.optimized_logical_plan().contains("jsonl_plan.users"));
     assert!(plan.physical_plan().contains("Exec"));
+
+    let execution_plan = plan.execution_plan().expect("execution plan");
+    assert!(!execution_plan.steps().is_empty(), "expected structured steps");
+    assert!(
+        execution_plan
+            .steps()
+            .iter()
+            .any(|step| step.detail().contains("jsonl_plan.users")),
+        "expected scan details to mention the source table"
+    );
 }
 
 fn github_pulls_source(dir: &Path) -> coral_engine::QuerySource {

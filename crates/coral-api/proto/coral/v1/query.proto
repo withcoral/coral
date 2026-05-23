@@ -37,6 +37,41 @@ message QueryPlan {
   string optimized_logical_plan = 2;
   // Physical execution plan after physical optimization.
   string physical_plan = 3;
+  // Structured execution-plan metadata for tooling and UI rendering.
+  ExecutionPlan execution_plan = 4;
+}
+
+message ExecutionPlan {
+  repeated ExecutionPlanStep steps = 1;
+  repeated PushdownDecision pushdowns = 2;
+  repeated CacheDecision cache = 3;
+  optional uint64 estimated_rows = 4;
+  optional uint64 actual_rows = 5;
+}
+
+message ExecutionPlanStep {
+  string kind = 1;
+  string name = 2;
+  string detail = 3;
+  optional uint64 estimated_rows = 4;
+  optional uint64 actual_rows = 5;
+  repeated ExecutionPlanStep children = 6;
+}
+
+message PushdownDecision {
+  repeated uint32 step_path = 1;
+  string target = 2;
+  string predicate = 3;
+  bool applied = 4;
+  string detail = 5;
+}
+
+message CacheDecision {
+  repeated uint32 step_path = 1;
+  string target = 2;
+  string strategy = 3;
+  string status = 4;
+  string detail = 5;
 }
 
 // SQL explanation response.

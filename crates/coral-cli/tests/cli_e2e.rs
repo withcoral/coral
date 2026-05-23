@@ -132,6 +132,31 @@ async fn sql_command_renders_json_output() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn explain_command_renders_execution_plan() {
+    let server = MockServer::start().await;
+
+    let assert = server
+        .cmd()
+        .args(["explain", "select text from local_messages.messages where text = 'hello'"])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert!(stdout.contains("Execution plan"), "expected plan heading: {stdout}");
+    assert!(stdout.contains("JsonExec"), "expected scan node name: {stdout}");
+    assert!(stdout.contains("local_messages.messages scan"), "expected scan detail: {stdout}");
+    assert!(stdout.contains("predicate pushed into the scan"), "expected pushdown detail: {stdout}");
+    assert!(stdout.contains("filesystem"), "expected cache strategy: {stdout}");
+
+    let requests = server.explain_sql_requests();
+    assert_eq!(requests.len(), 1, "expected one explain_sql call");
+    assert_eq!(requests[0].sql, "select text from local_messages.messages where text = 'hello'");
+    assert_default_workspace(requests[0].workspace.as_ref());
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn source_discover_renders_available_sources() {
     let server = MockServer::start().await;
 

@@ -42,6 +42,25 @@ pub(crate) struct JsonExec {
     fetcher: Fetcher,
     converter: Converter,
     projection: Option<Vec<usize>>,
+    explain: JsonExecExplain,
+}
+
+/// Structured metadata used by explain output for a JSON-backed execution node.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct JsonExecExplain {
+    pub(crate) target: String,
+    pub(crate) detail: String,
+    pub(crate) pushdowns: Vec<String>,
+    pub(crate) pushdown_detail: String,
+    pub(crate) cache: Vec<JsonExecCacheEntry>,
+}
+
+/// One cache note for a JSON-backed execution node.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct JsonExecCacheEntry {
+    pub(crate) strategy: String,
+    pub(crate) status: String,
+    pub(crate) detail: String,
 }
 
 impl fmt::Debug for JsonExec {
@@ -67,6 +86,7 @@ impl JsonExec {
         fetcher: Fetcher,
         converter: Converter,
         projection: Option<Vec<usize>>,
+        explain: JsonExecExplain,
     ) -> Result<Self> {
         let projected_schema = match &projection {
             Some(indices) => Arc::new(schema.project(indices).map_err(|error| {
@@ -89,7 +109,18 @@ impl JsonExec {
             fetcher,
             converter,
             projection,
+            explain,
         })
+    }
+
+    /// Returns the human-readable plan summary for explain output.
+    pub(crate) fn plan_summary(&self) -> String {
+        self.explain.detail.clone()
+    }
+
+    /// Returns structured explain metadata for this scan node.
+    pub(crate) fn explain(&self) -> &JsonExecExplain {
+        &self.explain
     }
 }
 
@@ -175,7 +206,7 @@ mod tests {
     use datafusion::physical_plan::ExecutionPlan;
     use serde_json::Value;
 
-    use super::{Converter, Fetcher, JsonExec, RowFetcher};
+    use super::{Converter, Fetcher, JsonExec, JsonExecExplain, RowFetcher};
 
     #[derive(Debug)]
     struct NoopFetcher;
@@ -215,6 +246,13 @@ mod tests {
             noop_fetcher(),
             converter_with_schema(schema),
             Some(vec![1]),
+            JsonExecExplain {
+                target: "provider.table".to_string(),
+                detail: "provider.table scan".to_string(),
+                pushdowns: Vec::new(),
+                pushdown_detail: String::new(),
+                cache: Vec::new(),
+            },
         )
         .expect("projection should succeed");
 
@@ -233,6 +271,13 @@ mod tests {
             noop_fetcher(),
             converter_with_schema(schema),
             Some(vec![1]),
+            JsonExecExplain {
+                target: "provider.table".to_string(),
+                detail: "provider.table scan".to_string(),
+                pushdowns: Vec::new(),
+                pushdown_detail: String::new(),
+                cache: Vec::new(),
+            },
         )
         .expect_err("invalid projection should return an error");
 

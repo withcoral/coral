@@ -19,6 +19,16 @@ coral sql "<SQL>"
 
 JSON output is an array of row objects. Selected nullable columns are included with explicit `null` values when the row value is null.
 
+## `coral explain`
+
+Show the query engine's execution plan for one SQL statement without running it.
+
+```shellscript
+coral explain "SELECT * FROM github.issues WHERE state = 'open'"
+```
+
+The default output is a human-readable execution tree plus tables for pushed-down predicates and cache decisions when the engine can derive them. Use `--format json` to emit the full structured plan as JSON for tooling or agents.
+
 ## `coral source`
 
 Manage configured sources, either the bundled ones, or your custom source specs.

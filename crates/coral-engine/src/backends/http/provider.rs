@@ -17,7 +17,9 @@ use crate::backends::http::ProviderQueryError;
 use crate::backends::http::target::HttpFetchTarget;
 use crate::backends::schema_from_columns;
 use crate::backends::shared::filter_expr::{extract_filter_values, literal_to_string};
-use crate::backends::shared::json_exec::{JsonExec, RowFetcher};
+use crate::backends::shared::json_exec::{
+    JsonExec, JsonExecCacheEntry, JsonExecExplain, RowFetcher,
+};
 use crate::backends::shared::mapping::convert_items;
 use coral_spec::FilterMode;
 use coral_spec::backends::http::HttpTableSpec;
@@ -143,6 +145,25 @@ pub(crate) fn http_json_exec(request: HttpJsonExecRequest<'_>) -> Result<Arc<dyn
         fetcher,
         converter,
         projection.cloned(),
+        JsonExecExplain {
+            target: format!("{source_schema}.{}", target.name()),
+            detail: format!("HTTP scan {source_schema}.{} via remote request", target.name()),
+            pushdowns: filter_values
+                .iter()
+                .map(|(key, value)| format!("{key}={value}"))
+                .collect(),
+            pushdown_detail: if limit.is_some() {
+                "filters and limit are pushed into the HTTP request".to_string()
+            } else {
+                "filters are pushed into the HTTP request".to_string()
+            },
+            cache: vec![JsonExecCacheEntry {
+                strategy: "remote http".to_string(),
+                status: "fetched".to_string(),
+                detail: "rows are fetched from the remote service at execution time"
+                    .to_string(),
+            }],
+        },
     )?;
 
     Ok(Arc::new(exec))
