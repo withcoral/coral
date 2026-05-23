@@ -36,6 +36,12 @@ export GOOGLE_DRIVE_ACCESS_TOKEN="<access-token>"
 coral source add --file sources/community/google_drive/manifest.yaml
 ```
 
+Verify the connection and declared smoke queries:
+
+```bash
+coral source test google_drive
+```
+
 ## Start querying
 
 Find recently modified files:
