@@ -1,5 +1,5 @@
 name: k8s
-version: 0.1.1
+version: 0.1.2
 dsl_version: 3
 backend: http
 description: >-
@@ -770,8 +770,9 @@ tables:
   - name: events
     description: Events across all namespaces for operational debugging and audit trails.
     guide: |
-      Join to pods: object_kind = 'Pod' and match object_namespace + object_name to k8s.pods.
-      Join to services: object_kind = 'Service' and match namespace + object_name.
+      Prefer joining on object_uid (involvedObject.uid) when correlating to pods or other
+      resources; names can be reused after deletion. Fallback: object_kind + object_namespace
+      + object_name (for example object_kind = 'Pod' and match k8s.pods.namespace + name).
     filters:
       - name: label_selector
       - name: field_selector
@@ -844,6 +845,12 @@ tables:
         expr:
           kind: path
           path: [involvedObject, namespace]
+      - name: object_uid
+        type: Utf8
+        description: involvedObject.uid; stable join key to resource metadata.uid.
+        expr:
+          kind: path
+          path: [involvedObject, uid]
       - name: involved_object
         type: Json
         expr:

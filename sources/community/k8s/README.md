@@ -1,6 +1,6 @@
 # Kubernetes Connector (Community)
 
-**Version:** 0.1.1
+**Version:** 0.1.2
 **Backend:** HTTP (Kubernetes REST API)
 **Tables:** 16
 **Default base URL:** `http://127.0.0.1:8080` (override with `K8S_BASE_URL`)
@@ -115,7 +115,8 @@ page size of 200. Prefer `LIMIT` and filters on large clusters.
 | From | To | Join hint |
 |---|---|---|
 | `k8s.pods.node_name` | `k8s.nodes.name` | Node scheduling |
-| `k8s.events.object_name` | `k8s.pods.name` | When `object_kind = 'Pod'` |
+| `k8s.events.object_uid` | `k8s.pods.uid` | Preferred when `object_kind = 'Pod'` |
+| `k8s.events.object_name` | `k8s.pods.name` | Fallback; same namespace when kind matches |
 | `k8s.services.name` | `k8s.endpoints.name` | Same namespace |
 
 ## Example queries
