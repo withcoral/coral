@@ -51,10 +51,12 @@ cargo run -p coral-cli -- source add --file sources/community/bitbucket/manifest
 Coral will open your browser to the Bitbucket authorization page. After you
 approve the requested scopes, Coral stores the access token automatically.
 
-To paste a personal access token instead of using the browser flow, run the
-source add command and choose **Paste personal access token** when prompted.
-Generate a token under **Bitbucket profile → Personal settings → App
-passwords** with Repositories, Pull requests, and Pipelines read access.
+To paste a token manually instead of using the browser flow, run the source
+add command and choose **Paste personal access token** when prompted. Paste
+an OAuth access token obtained via the Bitbucket OAuth flow. Note that
+Bitbucket App passwords use HTTP Basic auth and are not compatible with this
+source's Bearer token auth scheme — pasting an App password here will result
+in 401 errors.
 
 ### 4. Verify
 
@@ -169,21 +171,26 @@ ORDER BY updated_on DESC
 LIMIT 20;
 ```
 
-PRs alongside pipelines for the same repository:
+Recent pipeline runs alongside open pull requests for the same repository:
 
 ```sql
 SELECT
-  p.id          AS pr_id,
-  p.title       AS pr_title,
-  p.state       AS pr_state,
-  p.author_nickname,
-  p.created_on  AS pr_opened,
-  p.updated_on  AS pr_updated
-FROM bitbucket.pull_requests p
-WHERE p.workspace = 'my-workspace'
-  AND p.repo_slug = 'my-repo'
-  AND p.state = 'MERGED'
-ORDER BY p.updated_on DESC
+  pr.id                  AS pr_id,
+  pr.title               AS pr_title,
+  pr.author_nickname,
+  pr.created_on          AS pr_opened,
+  pi.build_number,
+  pi.state_name,
+  pi.state_result_name,
+  pi.completed_on        AS pipeline_completed
+FROM bitbucket.pull_requests pr
+JOIN bitbucket.pipelines pi
+  ON pr.workspace = pi.workspace
+  AND pr.repo_slug = pi.repo_slug
+WHERE pr.workspace = 'my-workspace'
+  AND pr.repo_slug = 'my-repo'
+  AND pr.state = 'OPEN'
+ORDER BY pi.build_number DESC
 LIMIT 20;
 ```
 

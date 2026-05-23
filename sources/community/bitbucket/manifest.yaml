@@ -27,8 +27,11 @@ inputs:
       Copy the Key into BITBUCKET_CLIENT_ID and the Secret into
       BITBUCKET_CLIENT_SECRET before running source add.
 
-      To paste a personal access token instead, choose
-      "Paste personal access token" when prompted.
+      To paste a token manually instead of using the browser flow, choose
+      "Paste personal access token" when prompted. Paste an OAuth access
+      token obtained via the Bitbucket OAuth flow. Note that Bitbucket App
+      passwords use HTTP Basic auth and are not compatible with this source's
+      Bearer token auth scheme.
     credential:
       methods:
         - type: oauth
