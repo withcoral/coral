@@ -876,7 +876,7 @@ tables:
       Start with `SELECT id, name, supported_triggers, status
       FROM auth0.actions LIMIT 10`.
     filters:
-      - name: triggerId
+      - name: trigger_id
       - name: deployed
     request:
       method: GET
@@ -884,7 +884,7 @@ tables:
       query:
         - name: triggerId
           from: filter
-          key: triggerId
+          key: trigger_id
         - name: deployed
           from: filter
           key: deployed
@@ -1130,11 +1130,11 @@ tables:
       represents the authorization a user has given to an application
       to access specific scopes on an API.
     guide: >
-      Start with `SELECT id, user_id, clientID, audience
-      FROM auth0.grants LIMIT 10`. Filter by user_id or clientID.
+      Start with `SELECT id, user_id, client_id, audience
+      FROM auth0.grants LIMIT 10`. Filter by user_id or client_id.
     filters:
       - name: user_id
-      - name: clientID
+      - name: client_id
       - name: audience
     request:
       method: GET
@@ -1145,7 +1145,7 @@ tables:
           key: user_id
         - name: clientID
           from: filter
-          key: clientID
+          key: client_id
         - name: audience
           from: filter
           key: audience
@@ -1169,7 +1169,7 @@ tables:
         nullable: true
         description: User who authorized the grant.
         expr: {kind: path, path: [user_id]}
-      - name: clientID
+      - name: client_id
         type: Utf8
         nullable: true
         description: Application that received the grant.

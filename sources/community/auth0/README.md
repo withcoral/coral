@@ -119,7 +119,7 @@ to request for a specific API.
 
 Lists all actions (serverless pipeline functions) in the tenant.
 
-**Optional filters:** `triggerId`, `deployed`
+**Optional filters:** `trigger_id`, `deployed`
 
 ### `auth0.logs`
 
@@ -133,7 +133,7 @@ operations.
 Lists all user grants — authorizations users have given to
 applications.
 
-**Optional filters:** `user_id`, `clientID`, `audience`
+**Optional filters:** `user_id`, `client_id`, `audience`
 
 ### `auth0.custom_domains`
 
