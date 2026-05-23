@@ -1,0 +1,387 @@
+name: elasticsearch
+version: 0.1.0
+dsl_version: 3
+backend: http
+
+test_queries:
+  - SELECT * FROM elasticsearch.cluster_health LIMIT 1
+  - SELECT * FROM elasticsearch.indices LIMIT 5
+  - SELECT * FROM elasticsearch.nodes LIMIT 5
+  - SELECT * FROM elasticsearch.shards LIMIT 5
+  - SELECT * FROM elasticsearch.aliases LIMIT 5
+  - SELECT * FROM elasticsearch.tasks LIMIT 5
+
+inputs:
+  ELASTICSEARCH_BASE_URL:
+    kind: variable
+    default: http://172.22.128.1:9200
+    hint: "Base URL of your Elasticsearch instance (e.g. https://my-cluster.es.io:9200)"
+  ELASTICSEARCH_USERNAME:
+    kind: variable
+    default: elastic
+    hint: Elasticsearch username
+  ELASTICSEARCH_PASSWORD:
+    kind: secret
+    hint: Elasticsearch password
+
+base_url: "{{input.ELASTICSEARCH_BASE_URL}}"
+
+auth:
+  type: BasicAuth
+  username: "{{input.ELASTICSEARCH_USERNAME}}"
+  password: "{{input.ELASTICSEARCH_PASSWORD}}"
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+  - name: Content-Type
+    from: literal
+    value: application/json
+
+tables:
+  # ── 1. Cluster Health ─────────────────────────────────────────────────────
+  - name: cluster_health
+    description: >
+      Overall cluster health status including shard and node counts.
+      Maps to GET /_cluster/health. Returns one row.
+    request:
+      method: GET
+      path: /_cluster/health
+    response:
+      row_strategy: direct
+    columns:
+      - name: cluster_name
+        type: Utf8
+        nullable: false
+        description: Name of the cluster
+      - name: status
+        type: Utf8
+        description: "Cluster health: green, yellow, or red"
+      - name: timed_out
+        type: Boolean
+        description: Whether the request timed out before reaching the expected shard status
+      - name: number_of_nodes
+        type: Int64
+        description: Total number of nodes in the cluster
+      - name: number_of_data_nodes
+        type: Int64
+        description: Number of data nodes
+      - name: active_primary_shards
+        type: Int64
+        description: Number of active primary shards
+      - name: active_shards
+        type: Int64
+        description: Total number of active shards
+      - name: relocating_shards
+        type: Int64
+        description: Number of shards currently relocating
+      - name: initializing_shards
+        type: Int64
+        description: Number of shards currently initializing
+      - name: unassigned_shards
+        type: Int64
+        description: Number of unassigned shards
+      - name: delayed_unassigned_shards
+        type: Int64
+        description: Number of delayed unassigned shards
+      - name: number_of_pending_tasks
+        type: Int64
+        description: Number of pending cluster-level tasks
+      - name: active_shards_percent_as_number
+        type: Float64
+        description: Percentage of active shards across the cluster
+
+  # ── 2. Indices ────────────────────────────────────────────────────────────
+  - name: indices
+    description: >
+      All indices in the cluster with health, status, shard counts, document
+      count, and store size. Maps to GET /_cat/indices?format=json&bytes=b.
+    request:
+      method: GET
+      path: /_cat/indices
+      query:
+        - name: format
+          from: literal
+          value: json
+        - name: bytes
+          from: literal
+          value: b
+        - name: expand_wildcards
+          from: literal
+          value: all
+    response: {}
+    columns:
+      - name: index
+        type: Utf8
+        nullable: false
+        description: Index name
+      - name: health
+        type: Utf8
+        description: "Index health: green, yellow, or red"
+      - name: status
+        type: Utf8
+        description: "Index status: open or close"
+      - name: uuid
+        type: Utf8
+        description: Index UUID
+      - name: pri
+        type: Utf8
+        description: Number of primary shards
+      - name: rep
+        type: Utf8
+        description: Number of replica shards
+      - name: docs__count
+        type: Utf8
+        description: Number of available documents
+        expr:
+          kind: path
+          path: ["docs.count"]
+      - name: docs__deleted
+        type: Utf8
+        description: Number of deleted documents not yet merged
+        expr:
+          kind: path
+          path: ["docs.deleted"]
+      - name: store__size
+        type: Utf8
+        description: Total store size in bytes (primary + replica)
+        expr:
+          kind: path
+          path: ["store.size"]
+      - name: pri__store__size
+        type: Utf8
+        description: Primary shards store size in bytes
+        expr:
+          kind: path
+          path: ["pri.store.size"]
+
+  # ── 3. Nodes ──────────────────────────────────────────────────────────────
+  - name: nodes
+    description: >
+      All nodes in the cluster with roles, heap usage, CPU load, and disk stats.
+      Maps to GET /_cat/nodes?format=json&bytes=b.
+    request:
+      method: GET
+      path: /_cat/nodes
+      query:
+        - name: format
+          from: literal
+          value: json
+        - name: h
+          from: literal
+          value: id,name,ip,role,master,heap.percent,heap.current,heap.max,cpu,load_1m,disk.used_percent,disk.used,disk.total
+        - name: bytes
+          from: literal
+          value: b
+    response: {}
+    columns:
+      - name: id
+        type: Utf8
+        description: Short node ID
+      - name: name
+        type: Utf8
+        description: Node name
+      - name: ip
+        type: Utf8
+        description: Node IP address
+      - name: role
+        type: Utf8
+        description: "Node role flags (d=data, m=master eligible, i=ingest, etc.)"
+      - name: master
+        type: Utf8
+        description: "Elected master indicator: * for master, - otherwise"
+      - name: heap__percent
+        type: Utf8
+        description: Heap memory used as a percentage of max heap
+        expr:
+          kind: path
+          path: ["heap.percent"]
+      - name: heap__current
+        type: Utf8
+        description: Current heap memory used in bytes
+        expr:
+          kind: path
+          path: ["heap.current"]
+      - name: heap__max
+        type: Utf8
+        description: Maximum configured heap size in bytes
+        expr:
+          kind: path
+          path: ["heap.max"]
+      - name: cpu
+        type: Utf8
+        description: CPU usage percentage
+      - name: load_1m
+        type: Utf8
+        description: 1-minute OS load average
+      - name: disk__used_percent
+        type: Utf8
+        description: Percentage of disk space used
+        expr:
+          kind: path
+          path: ["disk.used_percent"]
+      - name: disk__used
+        type: Utf8
+        description: Disk space used in bytes
+        expr:
+          kind: path
+          path: ["disk.used"]
+      - name: disk__total
+        type: Utf8
+        description: Total disk space in bytes
+        expr:
+          kind: path
+          path: ["disk.total"]
+
+  # ── 4. Shards ─────────────────────────────────────────────────────────────
+  - name: shards
+    description: >
+      Shard-level details for all indices including allocation state, node
+      assignment, and store size. Maps to GET /_cat/shards?format=json&bytes=b.
+    request:
+      method: GET
+      path: /_cat/shards
+      query:
+        - name: format
+          from: literal
+          value: json
+        - name: bytes
+          from: literal
+          value: b
+    response: {}
+    columns:
+      - name: index
+        type: Utf8
+        nullable: false
+        description: Index this shard belongs to
+      - name: shard
+        type: Utf8
+        description: Shard number
+      - name: prirep
+        type: Utf8
+        description: "Shard type: p = primary, r = replica"
+      - name: state
+        type: Utf8
+        description: "Shard state: STARTED, UNASSIGNED, RELOCATING, or INITIALIZING"
+      - name: docs
+        type: Utf8
+        nullable: true
+        description: Number of documents in this shard
+      - name: store
+        type: Utf8
+        nullable: true
+        description: Store size in bytes
+      - name: ip
+        type: Utf8
+        nullable: true
+        description: IP address of the node this shard is assigned to
+      - name: node
+        type: Utf8
+        nullable: true
+        description: Name of the node this shard is assigned to
+
+  # ── 5. Aliases ────────────────────────────────────────────────────────────
+  - name: aliases
+    description: >
+      All index aliases with their target index, routing config, and write-index
+      flag. Maps to GET /_cat/aliases?format=json.
+    request:
+      method: GET
+      path: /_cat/aliases
+      query:
+        - name: format
+          from: literal
+          value: json
+    response: {}
+    columns:
+      - name: alias
+        type: Utf8
+        nullable: false
+        description: Alias name
+      - name: index
+        type: Utf8
+        description: Target index name
+      - name: filter
+        type: Utf8
+        nullable: true
+        description: Filter query applied to the alias, if any
+      - name: routing__index
+        type: Utf8
+        nullable: true
+        description: Index routing value
+        expr:
+          kind: path
+          path: ["routing.index"]
+      - name: routing__search
+        type: Utf8
+        nullable: true
+        description: Search routing value
+        expr:
+          kind: path
+          path: ["routing.search"]
+      - name: is_write_index
+        type: Utf8
+        nullable: true
+        description: Whether this index is the designated write target for the alias
+
+  # ── 6. Tasks ──────────────────────────────────────────────────────────────
+  - name: tasks
+    description: >
+      All tasks currently running in the cluster across all nodes.
+      Maps to GET /_tasks?detailed=true&group_by=none.
+      The response is a flat dict of task objects keyed by "nodeId:taskNum".
+    request:
+      method: GET
+      path: /_tasks
+      query:
+        - name: detailed
+          from: literal
+          value: "true"
+        - name: group_by
+          from: literal
+          value: none
+    response:
+      rows_path: [tasks]
+      row_strategy: dict_entries
+    columns:
+      # "key" is the dict key injected by dict_entries: "nodeId:taskNumber"
+      - name: key
+        type: Utf8
+        description: "Task identifier in node:number format (e.g. abc123:42)"
+      - name: node
+        type: Utf8
+        nullable: true
+        description: ID of the node running the task
+      - name: id
+        type: Int64
+        nullable: true
+        description: Numeric task ID within the node
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Task type (e.g. transport, direct)
+      - name: action
+        type: Utf8
+        nullable: true
+        description: "Task action (e.g. indices:data/read/search)"
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Human-readable task description
+      - name: start_time_in_millis
+        type: Int64
+        nullable: true
+        description: Task start time as Unix epoch milliseconds
+      - name: running_time_in_nanos
+        type: Int64
+        nullable: true
+        description: Elapsed running time in nanoseconds
+      - name: cancellable
+        type: Boolean
+        nullable: true
+        description: Whether the task supports cancellation
+      - name: parent_task_id
+        type: Utf8
+        nullable: true
+        description: Parent task ID if this is a child task
