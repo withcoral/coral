@@ -53,7 +53,7 @@ pub(crate) fn sql_tool(sources: &[Source], visible_table_count: usize) -> Tool {
             "properties": {
                 "sql": {
                     "type": "string",
-                    "description": "A single SQL statement to execute."
+                    "description": "One read-only SQL statement to execute against the Coral database."
                 }
             }
         })),
@@ -71,14 +71,14 @@ pub(crate) fn list_catalog_tool(visible_table_count: usize, visible_function_cou
     Tool::new(
         "list_catalog",
         format!(
-            "List queryable catalog items. {visible_table_count} table(s) and {visible_function_count} table function(s) are currently visible."
+            "List database catalog items. {visible_table_count} table(s) and {visible_function_count} table function(s) are currently visible."
         ),
         json_object_schema(&json!({
             "type": "object",
             "properties": {
                 "schema": {
                     "type": "string",
-                    "description": "Optional exact schema/source name to list."
+                    "description": "Optional exact SQL schema name to list."
                 },
                 "kind": {
                     "description": "Optional item kind to list. Omit or pass null to list all catalog items.",
@@ -132,11 +132,11 @@ pub(crate) fn search_catalog_tool(
             "properties": {
                 "pattern": {
                     "type": "string",
-                    "description": "Rust regex pattern to match catalog metadata."
+                    "description": "Rust regex pattern to match database catalog metadata."
                 },
                 "schema": {
                     "type": "string",
-                    "description": "Optional exact schema/source name to search."
+                    "description": "Optional exact SQL schema name to search."
                 },
                 "kind": {
                     "description": "Optional item kind to search. Omit or pass null to search all catalog items.",
@@ -184,18 +184,18 @@ pub(crate) fn search_catalog_tool(
 pub(crate) fn describe_table_tool() -> Tool {
     Tool::new(
         "describe_table",
-        "Describe one queryable table without returning full column definitions.",
+        "Describe one database table without returning full column definitions.",
         json_object_schema(&json!({
             "type": "object",
             "required": ["schema", "table"],
             "properties": {
                 "schema": {
                     "type": "string",
-                    "description": "Exact schema/source name."
+                    "description": "Exact SQL schema name."
                 },
                 "table": {
                     "type": "string",
-                    "description": "Exact table name within the schema."
+                    "description": "Exact table name within the SQL schema."
                 }
             }
         })),
@@ -212,18 +212,18 @@ pub(crate) fn describe_table_tool() -> Tool {
 pub(crate) fn list_columns_tool() -> Tool {
     Tool::new(
         "list_columns",
-        "List columns for one table with optional regex and required-filter narrowing.",
+        "List columns for one database table with optional regex and required-filter narrowing.",
         json_object_schema(&json!({
             "type": "object",
             "required": ["schema", "table"],
             "properties": {
                 "schema": {
                     "type": "string",
-                    "description": "Exact schema/source name."
+                    "description": "Exact SQL schema name."
                 },
                 "table": {
                     "type": "string",
-                    "description": "Exact table name within the schema."
+                    "description": "Exact table name within the SQL schema."
                 },
                 "pattern": {
                     "type": "string",
@@ -379,22 +379,20 @@ pub(crate) fn build_tool_result(value: Value) -> Result<CallToolResult, ErrorDat
     Ok(result)
 }
 
-fn sql_tool_description(sources: &[Source], visible_table_count: usize) -> String {
+fn sql_tool_description(_sources: &[Source], visible_table_count: usize) -> String {
     if visible_table_count == 0 {
-        format!(
-            "Run a SQL query against local Coral sources. {} configured source(s), but no visible SQL tables are currently available.",
-            sources.len()
-        )
+        "Execute read-only SQL against the Coral database. No user tables are currently visible."
+            .to_string()
     } else {
         format!(
-            "Run a SQL query against local Coral sources. {visible_table_count} table(s) are currently visible."
+            "Execute read-only SQL against the Coral database. {visible_table_count} table(s) are currently visible. Use JOIN, CROSS JOIN, CTEs, subqueries, and aggregates to combine tables in one statement."
         )
     }
 }
 
 fn search_catalog_description(visible_table_count: usize, visible_function_count: usize) -> String {
     format!(
-        "Search queryable catalog metadata with a Rust regex. {visible_table_count} table(s) and {visible_function_count} table function(s) are currently visible."
+        "Search database catalog metadata with a Rust regex. {visible_table_count} table(s) and {visible_function_count} table function(s) are currently visible."
     )
 }
 

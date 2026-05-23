@@ -65,7 +65,14 @@ By default, Coral reads each declared input from an environment variable of the 
 GITHUB_TOKEN=ghp_... coral source add github
 ```
 
-Pass `--interactive` to be prompted for variables and secrets instead:
+Pass `--interactive` to be prompted for variables and secrets instead. If a
+missing secret declares credential methods, Coral shows those choices in the
+source spec's authored order. `source_config` methods use the normal source
+input path and prompt for the secret value here; OAuth methods open or print an
+authorization URL, wait for the loopback callback, and store the
+resulting secret without printing token material.
+Environment variables still win, so a secret value already present in the
+environment bypasses the retrieval choice.
 
 ```shellscript
 coral source add --interactive github
@@ -150,13 +157,13 @@ This server exposes:
 
 | Type     | Name             | Description                      |
 | -------- | ---------------- | -------------------------------- |
-| Tool     | `sql`            | Run a SQL query                  |
-| Tool     | `list_catalog`   | List queryable tables and table functions |
-| Tool     | `search_catalog` | Search catalog metadata by regex |
-| Tool     | `describe_table` | Show compact table metadata      |
-| Tool     | `list_columns`   | List columns for one table       |
-| Resource | `coral://guide`  | Usage guide for agents           |
-| Resource | `coral://tables` | Table summaries for all sources  |
+| Tool     | `sql`            | Execute read-only SQL against the Coral database |
+| Tool     | `list_catalog`   | List database tables and table functions |
+| Tool     | `search_catalog` | Search database catalog metadata by regex |
+| Tool     | `describe_table` | Show compact database table metadata |
+| Tool     | `list_columns`   | List columns for one database table |
+| Resource | `coral://guide`  | Database workflow guide for agents |
+| Resource | `coral://tables` | Database table summaries         |
 
 ## `coral completion <SHELL>`
 

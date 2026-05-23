@@ -11,7 +11,7 @@ use coral_api::v1::{
     ExplainSqlRequest, GetSourceInfoRequest, GetSourceRequest, ImportSourceRequest,
     ListCatalogRequest, PaginationRequest, QueryTestFailure, QueryTestSuccess, SourceOrigin,
     SourceSecret, SourceVariable, ValidateSourceRequest, Workspace, catalog_item,
-    query_test_result,
+    import_source_response, query_test_result, source_input_spec::Input as ProtoSourceInput,
 };
 use coral_client::default_workspace;
 use tempfile::TempDir;
@@ -42,6 +42,9 @@ async fn import_source_persists_and_lists() {
     let config_raw =
         fs::read_to_string(harness.config_dir().join("config.toml")).expect("read config");
     assert!(config_raw.contains("[workspaces.default.sources.local_messages]"));
+    assert!(config_raw.contains("secrets = []"));
+    assert!(!config_raw.contains("credential_set_id"));
+    assert!(!config_raw.contains("[workspaces.default.credentials"));
     assert!(!config_raw.contains("manifest_yaml = "));
     assert!(!config_raw.contains("manifest_file = "));
 
@@ -107,18 +110,26 @@ async fn import_duplicate_source_overwrites_existing_source() {
         .import_source(manifest_yaml.clone(), Vec::new(), Vec::new())
         .await;
 
-    let reimported = harness
+    let mut import_stream = harness
         .source_client()
         .import_source(Request::new(ImportSourceRequest {
             workspace: Some(default_workspace()),
             manifest_yaml: manifest_yaml.replace("0.1.0", "0.2.0"),
             variables: Vec::new(),
             secrets: Vec::new(),
+            oauth_credential_retrievals: Vec::new(),
         }))
         .await
         .expect("duplicate import should overwrite")
-        .into_inner()
-        .source
+        .into_inner();
+    let reimported = import_stream
+        .message()
+        .await
+        .expect("duplicate import stream")
+        .and_then(|response| match response.event {
+            Some(import_source_response::Event::Source(source)) => Some(source),
+            _ => None,
+        })
         .expect("import source response");
     assert_eq!(reimported.version, "0.2.0");
 
@@ -147,6 +158,7 @@ async fn import_invalid_manifest_returns_invalid_argument() {
             manifest_yaml: invalid_manifest_yaml(),
             variables: Vec::new(),
             secrets: Vec::new(),
+            oauth_credential_retrievals: Vec::new(),
         }))
         .await
         .expect_err("invalid manifest should fail");
@@ -555,6 +567,7 @@ async fn import_source_missing_required_secret_returns_invalid_argument() {
                 value: "https://example.com".to_string(),
             }],
             secrets: Vec::new(),
+            oauth_credential_retrievals: Vec::new(),
         }))
         .await
         .expect_err("missing required secret should fail");
@@ -580,6 +593,7 @@ async fn import_source_missing_required_variable_returns_invalid_argument() {
                 key: "API_TOKEN".to_string(),
                 value: "secret-token".to_string(),
             }],
+            oauth_credential_retrievals: Vec::new(),
         }))
         .await
         .expect_err("missing required variable should fail");
@@ -608,6 +622,7 @@ async fn import_source_unknown_variable_returns_invalid_argument() {
                 key: "API_TOKEN".to_string(),
                 value: "secret-token".to_string(),
             }],
+            oauth_credential_retrievals: Vec::new(),
         }))
         .await
         .expect_err("unknown variable should fail");
@@ -638,6 +653,7 @@ async fn import_source_unknown_secret_returns_invalid_argument() {
                     value: "unused".to_string(),
                 },
             ],
+            oauth_credential_retrievals: Vec::new(),
         }))
         .await
         .expect_err("unknown secret should fail");
@@ -672,6 +688,7 @@ async fn import_source_repeated_variable_returns_invalid_argument() {
                 key: "API_TOKEN".to_string(),
                 value: "secret-token".to_string(),
             }],
+            oauth_credential_retrievals: Vec::new(),
         }))
         .await
         .expect_err("repeated variable should fail");
@@ -706,6 +723,7 @@ async fn import_source_repeated_secret_returns_invalid_argument() {
                     value: "shadow-token".to_string(),
                 },
             ],
+            oauth_credential_retrievals: Vec::new(),
         }))
         .await
         .expect_err("repeated secret should fail");
@@ -833,7 +851,12 @@ async fn get_source_info_uses_effective_installed_imported_manifest() {
     assert!(info.installed);
     assert_eq!(info.inputs.len(), 2);
     assert_eq!(info.inputs[0].key, "API_BASE");
-    assert_eq!(info.inputs[0].default_value, "https://example.com");
+    match info.inputs[0].input.as_ref().expect("input metadata") {
+        ProtoSourceInput::Variable(variable) => {
+            assert_eq!(variable.default_value, "https://example.com");
+        }
+        ProtoSourceInput::Secret(_) => panic!("expected variable input"),
+    }
     assert_eq!(info.inputs[1].key, "API_TOKEN");
 }
 
@@ -1055,7 +1078,7 @@ origin = "bundled"
     )
     .expect("write config");
 
-    // Write the secret file so the secret store can find it.
+    // Write the source secret file so validation can reach variable checks.
     let secret_dir = config_dir
         .join("workspaces")
         .join("default")
@@ -1253,6 +1276,7 @@ async fn import_rolls_back_on_config_write_failure() {
                 key: "API_TOKEN".to_string(),
                 value: "secret-token".to_string(),
             }],
+            oauth_credential_retrievals: Vec::new(),
         }))
         .await
         .expect_err("config write should fail");

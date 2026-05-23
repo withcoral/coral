@@ -747,6 +747,10 @@ async fn source_add_reports_missing_env_vars_without_interactive() {
         stderr.contains("GITHUB_TOKEN"),
         "expected missing env var to name GITHUB_TOKEN: {stderr}"
     );
+    assert!(
+        stderr.contains("coral source add --interactive github"),
+        "expected exact interactive recovery command: {stderr}"
+    );
 
     server.shutdown().await;
 }

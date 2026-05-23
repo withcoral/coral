@@ -173,6 +173,7 @@ export const theme = createThemeContract({
     bodySmall: typographyContract,
     bodySmallStrong: typographyContract,
     bodyStrong: typographyContract,
+    button: typographyContract,
     buttonStrong: typographyContract,
     code: typographyContract,
     codeInline: typographyContract,

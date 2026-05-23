@@ -1,0 +1,436 @@
+name: novu
+version: 1.0.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Novu notification workflows, subscribers, topics, and activity
+  as SQL tables. Inspect workflow definitions, subscriber rosters, topic
+  segments, and the full notification activity feed. Join with Linear,
+  Freshdesk, or GitHub for cross-source product and support intelligence.
+
+base_url: "{{input.NOVU_BASE_URL}}"
+
+inputs:
+  NOVU_API_KEY:
+    kind: secret
+    hint: |
+      Your Novu API key. Find it in the Novu dashboard under
+      Settings → API Keys.
+      See https://docs.novu.co/api-reference/overview
+  NOVU_BASE_URL:
+    kind: variable
+    default: https://api.novu.co
+    hint: |
+      Base URL for the Novu API. Use the default for Novu Cloud.
+      For self-hosted instances use your own host URL
+      (e.g. https://novu.yourdomain.com). Do not include a trailing slash.
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: ApiKey {{input.NOVU_API_KEY}}
+
+rate_limit:
+  extra_statuses:
+    - 429
+  retry_after_header: Retry-After
+
+test_queries:
+  - SELECT id, name, active FROM novu.workflows LIMIT 1
+
+tables:
+  - name: workflows
+    description: >-
+      Notification workflow templates defined in the Novu project. Each row
+      is one workflow with its name, active/draft status, tags, and
+      timestamps. Use workflow IDs to cross-reference the notifications
+      activity table.
+    guide: |
+      No filters required. Returns all workflows in the project.
+
+      active = true means the workflow is live and can send notifications.
+      draft  = true means the workflow has unpublished changes.
+
+      Example:
+        SELECT id, name, active, draft, tags, created_at
+        FROM novu.workflows
+        ORDER BY created_at DESC
+    request:
+      method: GET
+      path: /v1/workflows
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 0
+      page_step: 1
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Novu-assigned workflow ID
+        expr:
+          kind: path
+          path:
+            - _id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Workflow display name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Workflow description
+        expr:
+          kind: path
+          path:
+            - description
+      - name: active
+        type: Boolean
+        nullable: true
+        description: True if the workflow is active and can send notifications
+        expr:
+          kind: path
+          path:
+            - active
+      - name: draft
+        type: Boolean
+        nullable: true
+        description: True if the workflow has unpublished draft changes
+        expr:
+          kind: path
+          path:
+            - draft
+      - name: critical
+        type: Boolean
+        nullable: true
+        description: True if subscriber preferences cannot disable this workflow
+        expr:
+          kind: path
+          path:
+            - critical
+      - name: tags
+        type: Utf8
+        nullable: true
+        description: Comma-separated list of tags assigned to the workflow
+        expr:
+          kind: join_array
+          path:
+            - tags
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: ISO 8601 timestamp when the workflow was created
+        expr:
+          kind: path
+          path:
+            - createdAt
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: ISO 8601 timestamp when the workflow was last updated
+        expr:
+          kind: path
+          path:
+            - updatedAt
+
+  - name: subscribers
+    description: >-
+      Subscribers registered in the Novu project. Each row is one subscriber
+      with their customer-defined ID, contact details, and online status.
+      Subscribers are the recipients of notifications sent through workflows.
+    guide: |
+      No filters required. Returns all subscribers in the project.
+
+      subscriber_id is your application's identifier for the user.
+      id is Novu's internal identifier — use id to join with novu.notifications
+      (novu.notifications.subscriber_id = novu.subscribers.id).
+
+      Example:
+        SELECT subscriber_id, first_name, last_name, email, created_at
+        FROM novu.subscribers
+        ORDER BY created_at DESC
+        LIMIT 50
+    request:
+      method: GET
+      path: /v1/subscribers
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 0
+      page_step: 1
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Novu-assigned internal subscriber ID
+        expr:
+          kind: path
+          path:
+            - _id
+      - name: subscriber_id
+        type: Utf8
+        nullable: true
+        description: Customer-defined subscriber identifier (your app's user ID)
+        expr:
+          kind: path
+          path:
+            - subscriberId
+      - name: first_name
+        type: Utf8
+        nullable: true
+        description: Subscriber first name
+        expr:
+          kind: path
+          path:
+            - firstName
+      - name: last_name
+        type: Utf8
+        nullable: true
+        description: Subscriber last name
+        expr:
+          kind: path
+          path:
+            - lastName
+      - name: email
+        type: Utf8
+        nullable: true
+        description: Subscriber email address
+        expr:
+          kind: path
+          path:
+            - email
+      - name: phone
+        type: Utf8
+        nullable: true
+        description: Subscriber phone number
+        expr:
+          kind: path
+          path:
+            - phone
+      - name: avatar
+        type: Utf8
+        nullable: true
+        description: URL to subscriber avatar image
+        expr:
+          kind: path
+          path:
+            - avatar
+      - name: is_online
+        type: Boolean
+        nullable: true
+        description: True if the subscriber is currently online in the in-app inbox
+        expr:
+          kind: path
+          path:
+            - isOnline
+      - name: last_online_at
+        type: Utf8
+        nullable: true
+        description: ISO 8601 timestamp when the subscriber was last online
+        expr:
+          kind: path
+          path:
+            - lastOnlineAt
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: ISO 8601 timestamp when the subscriber was created
+        expr:
+          kind: path
+          path:
+            - createdAt
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: ISO 8601 timestamp when the subscriber was last updated
+        expr:
+          kind: path
+          path:
+            - updatedAt
+
+  - name: topics
+    description: >-
+      Topics are named subscriber segments used for bulk notification
+      delivery. Each row is one topic with its unique key and display name.
+      Trigger a notification at the topic level to reach all subscribers
+      in that segment at once.
+    guide: |
+      No filters required. Returns all topics in the project.
+      Uses GET /v2/topics with cursor pagination (after/limit).
+
+      key is the identifier used in SDK/API calls to subscribe users or
+      trigger notifications. Use key values when joining with application data.
+
+      Example:
+        SELECT id, key, name, created_at
+        FROM novu.topics
+        ORDER BY name ASC
+    request:
+      method: GET
+      path: /v2/topics
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: cursor_query
+      cursor_param: after
+      response_cursor_path:
+        - next
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Novu-assigned topic ID
+        expr:
+          kind: path
+          path:
+            - _id
+      - name: key
+        type: Utf8
+        nullable: false
+        description: Customer-defined topic key used in SDK and API calls
+        expr:
+          kind: path
+          path:
+            - key
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Topic display name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: ISO 8601 timestamp when the topic was created
+        expr:
+          kind: path
+          path:
+            - createdAt
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: ISO 8601 timestamp when the topic was last updated
+        expr:
+          kind: path
+          path:
+            - updatedAt
+
+  - name: notifications
+    description: >-
+      Notification activity feed — every notification event triggered in
+      the project. Each row is one delivery record with the workflow,
+      subscriber, transaction ID, and channels used. Use this table to
+      audit notification history, track delivery volume, and diagnose issues.
+    guide: |
+      No filters required. Returns the full notification activity log,
+      most recent first.
+
+      template_id joins to novu.workflows.id.
+      subscriber_id joins to novu.subscribers.id (Novu internal ID).
+      transaction_id is the unique identifier Novu returns when a
+      notification is triggered — useful for correlating with app logs.
+
+      Example:
+        SELECT transaction_id, template_id, subscriber_id, channels, created_at
+        FROM novu.notifications
+        ORDER BY created_at DESC
+        LIMIT 100
+    request:
+      method: GET
+      path: /v1/notifications
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 0
+      page_step: 1
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Novu-assigned notification activity ID
+        expr:
+          kind: path
+          path:
+            - _id
+      - name: transaction_id
+        type: Utf8
+        nullable: true
+        description: Unique transaction identifier returned when the notification was triggered
+        expr:
+          kind: path
+          path:
+            - transactionId
+      - name: subscriber_id
+        type: Utf8
+        nullable: true
+        description: Novu internal ID of the subscriber who received this notification
+        expr:
+          kind: path
+          path:
+            - _subscriberId
+      - name: template_id
+        type: Utf8
+        nullable: true
+        description: Novu internal ID of the workflow that triggered this notification
+        expr:
+          kind: path
+          path:
+            - _templateId
+      - name: channels
+        type: Utf8
+        nullable: true
+        description: Comma-separated list of channels used (email, sms, push, in_app, chat)
+        expr:
+          kind: join_array
+          path:
+            - channels
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: ISO 8601 timestamp when the notification was triggered
+        expr:
+          kind: path
+          path:
+            - createdAt
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: ISO 8601 timestamp when the notification record was last updated
+        expr:
+          kind: path
+          path:
+            - updatedAt

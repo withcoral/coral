@@ -7,7 +7,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use coral_api::v1::ImportSourceRequest;
+use coral_api::v1::{ImportSourceRequest, import_source_response};
 use coral_client::{
     AppClient, SourceClient, default_workspace,
     local::{RunningServer, ServerBuilder},
@@ -165,15 +165,26 @@ fn json_object(value: &Value) -> Map<String, Value> {
 }
 
 async fn add_demo_source(source_client: &mut SourceClient, manifest_yaml: String) {
-    source_client
+    let mut stream = source_client
         .import_source(Request::new(ImportSourceRequest {
             workspace: Some(default_workspace()),
             manifest_yaml,
             variables: Vec::new(),
             secrets: Vec::new(),
+            oauth_credential_retrievals: Vec::new(),
         }))
         .await
-        .expect("add source");
+        .expect("add source")
+        .into_inner();
+    stream
+        .message()
+        .await
+        .expect("add source stream")
+        .and_then(|response| match response.event {
+            Some(import_source_response::Event::Source(source)) => Some(source),
+            _ => None,
+        })
+        .expect("add source response");
 }
 
 struct TestSession {
@@ -299,7 +310,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
             .description
             .as_deref()
             .expect("sql description")
-            .contains("0 configured source")
+            .contains("No user tables are currently visible")
     );
     for tool in &initial_tools {
         let Some(output_schema) = &tool.output_schema else {
@@ -328,7 +339,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
             .description
             .as_deref()
             .expect("guide description")
-            .contains("0 configured source")
+            .contains("0 visible table")
     );
 
     let initial_guide = client
@@ -337,8 +348,10 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
         .expect("initial guide");
     let initial_guide_text = text_content(&initial_guide);
     assert!(initial_guide_text.contains("## Available Schemas"));
-    assert!(initial_guide_text.contains("- coral: System metadata schema."));
-    assert!(initial_guide_text.contains("No source schemas are currently configured."));
+    assert!(initial_guide_text.contains("- coral: System catalog schema."));
+    assert!(initial_guide_text.contains("No user schemas are currently configured."));
+    assert!(initial_guide_text.contains("read-only SQL database"));
+    assert!(initial_guide_text.contains("CROSS JOIN"));
     assert!(initial_guide_text.contains("schema_name = '<schema>'"));
 
     add_demo_source(&mut session.source_client, manifest_yaml).await;
@@ -378,7 +391,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
             .description
             .as_deref()
             .expect("guide description")
-            .contains("1 configured source")
+            .contains("1 configured connection")
     );
 
     let tables_resource = client
@@ -400,8 +413,9 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
         .expect("updated guide");
     let updated_guide_text = text_content(&updated_guide);
     assert!(updated_guide_text.contains("## Available Schemas"));
-    assert!(updated_guide_text.contains("- coral: System metadata schema."));
+    assert!(updated_guide_text.contains("- coral: System catalog schema."));
     assert!(updated_guide_text.contains("- local_messages"));
+    assert!(updated_guide_text.contains("Prefer one SQL statement with `JOIN`, `CROSS JOIN`"));
     assert!(!updated_guide_text.contains("## Visible SQL Schemas"));
     assert!(updated_guide_text.contains(
         "FROM coral.columns WHERE schema_name = 'local_messages' AND table_name = 'events'"
