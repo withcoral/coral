@@ -47,12 +47,12 @@ coral source add --file sources/community/ghost/manifest.yaml --interactive
 
 | Table | Description | Filters | Default ordering | Relation data included |
 |---|---|---|---|---|
-| `posts` | Public posts from the Ghost site. | `filter`, `order` | `published_at DESC` | `tags`, `authors` |
-| `pages` | Public pages from the Ghost site. | `filter`, `order` | `title ASC` | `tags`, `authors` |
+| `posts` | Public posts from the Ghost site. | `nql_filter`, `nql_order` | `published_at DESC` | `tags`, `authors` |
+| `pages` | Public pages from the Ghost site. | `nql_filter`, `nql_order` | `title ASC` | `tags`, `authors` |
 | `tags` | Public tags with at least one published post. Internal tags excluded. | — | — | — |
 | `authors` | Authors who have published content on the site. | — | — | — |
 
-> **Filters:** `posts` and `pages` support optional `filter` and `order` parameters. These map directly to Ghost's NQL `filter` and `order` API parameters, allowing you to narrow results server-side (e.g., `filter = 'tag:news'`, `order = 'published_at ASC'`).
+> **Filters:** `posts` and `pages` support optional `nql_filter` and `nql_order` parameters. Use `nql_filter` with Ghost NQL syntax to narrow results server-side (e.g., `WHERE nql_filter = 'tag:news'`). Use `nql_order` to change the sort order (e.g., `WHERE nql_order = 'published_at ASC'`). These map to Ghost's `filter` and `order` API query parameters.
 
 ## Quick Start
 
@@ -71,6 +71,24 @@ coral sql "SELECT name, location, post_count FROM ghost.authors ORDER BY post_co
 ```
 
 ## Advanced Queries
+
+### Server-side NQL Filtering
+
+Ghost's Content API supports a powerful NQL (Node Query Language) filter syntax. Coral passes `nql_filter` and `nql_order` values directly to the Ghost API so filtering happens server-side.
+
+```sql
+-- Posts tagged "getting-started"
+coral sql "SELECT title, url FROM ghost.posts WHERE nql_filter = 'tag:getting-started' LIMIT 5"
+
+-- Featured posts only
+coral sql "SELECT title, featured, url FROM ghost.posts WHERE nql_filter = 'featured:true' LIMIT 5"
+
+-- Posts ordered by oldest first
+coral sql "SELECT title, published_at FROM ghost.posts WHERE nql_order = 'published_at ASC' LIMIT 5"
+
+-- Combine filter and order
+coral sql "SELECT title, published_at FROM ghost.posts WHERE nql_filter = 'featured:true' AND nql_order = 'published_at ASC' LIMIT 5"
+```
 
 ### Querying Nested Relations
 

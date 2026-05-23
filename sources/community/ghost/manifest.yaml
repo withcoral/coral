@@ -42,13 +42,13 @@ tables:
     description: >-
       All public posts from the Ghost site, ordered by publication date
       (newest first, `published_at DESC`) by default. Includes tags and
-      authors information. Use the optional `filter` parameter with Ghost
+      authors information. Use the optional `nql_filter` parameter with Ghost
       NQL syntax to narrow results server-side (e.g. `tag:news`,
-      `featured:true`, `author:jane`) and `order` to change sort order
+      `featured:true`, `author:jane`) and `nql_order` to change sort order
       (e.g. `published_at ASC`).
     filters:
-      - name: filter
-      - name: order
+      - name: nql_filter
+      - name: nql_order
     request:
       method: GET
       path: /posts/
@@ -61,10 +61,10 @@ tables:
           value: tags,authors
         - name: filter
           from: filter
-          key: filter
+          key: nql_filter
         - name: order
           from: filter
-          key: order
+          key: nql_order
     response:
       rows_path:
         - posts
@@ -214,6 +214,20 @@ tables:
           kind: path
           path:
             - authors
+      - name: nql_filter
+        type: Utf8
+        nullable: true
+        description: Echoes the Ghost NQL filter expression applied to this request.
+        expr:
+          kind: from_filter
+          key: nql_filter
+      - name: nql_order
+        type: Utf8
+        nullable: true
+        description: Echoes the Ghost NQL order expression applied to this request.
+        expr:
+          kind: from_filter
+          key: nql_order
       - name: raw
         type: Json
         nullable: false
@@ -225,12 +239,12 @@ tables:
     description: >-
       All public static pages from the Ghost site, ordered by title
       (ascending, `title ASC`) by default. Includes tags and authors
-      information. Use the optional `filter` parameter with Ghost NQL
-      syntax to narrow results server-side and `order` to change sort
+      information. Use the optional `nql_filter` parameter with Ghost NQL
+      syntax to narrow results server-side and `nql_order` to change sort
       order.
     filters:
-      - name: filter
-      - name: order
+      - name: nql_filter
+      - name: nql_order
     request:
       method: GET
       path: /pages/
@@ -243,10 +257,10 @@ tables:
           value: tags,authors
         - name: filter
           from: filter
-          key: filter
+          key: nql_filter
         - name: order
           from: filter
-          key: order
+          key: nql_order
     response:
       rows_path:
         - pages
@@ -396,6 +410,20 @@ tables:
           kind: path
           path:
             - authors
+      - name: nql_filter
+        type: Utf8
+        nullable: true
+        description: Echoes the Ghost NQL filter expression applied to this request.
+        expr:
+          kind: from_filter
+          key: nql_filter
+      - name: nql_order
+        type: Utf8
+        nullable: true
+        description: Echoes the Ghost NQL order expression applied to this request.
+        expr:
+          kind: from_filter
+          key: nql_order
       - name: raw
         type: Json
         nullable: false
