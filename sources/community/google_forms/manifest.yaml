@@ -1,0 +1,244 @@
+name: google_forms
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Google Forms metadata, questions, and responses using the
+  Google Forms REST API v1.
+inputs:
+  GOOGLE_FORMS_ACCESS_TOKEN:
+    kind: secret
+    hint: |
+      OAuth 2.0 access token for the Google Forms API.
+      Create credentials at https://console.cloud.google.com/apis/credentials.
+      Enable the Google Forms API and generate an OAuth 2.0 token with
+      the scopes https://www.googleapis.com/auth/forms.body.readonly and
+      https://www.googleapis.com/auth/forms.responses.readonly.
+      See https://developers.google.com/forms/api/reference/rest for setup instructions.
+base_url: "https://forms.googleapis.com"
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.GOOGLE_FORMS_ACCESS_TOKEN}}
+test_queries:
+  - SELECT * FROM google_forms.form WHERE form_id = 'your-form-id' LIMIT 1
+  - SELECT * FROM google_forms.questions WHERE form_id = 'your-form-id' LIMIT 5
+tables:
+  - name: form
+    description: Metadata for a Google Forms form.
+    guide: |
+      Singleton table — returns one row for the specified form.
+      Requires form_id filter. The form_id is found in the Google Forms URL:
+      https://docs.google.com/forms/d/{form_id}/edit.
+      Use title and description to understand the form's purpose.
+      Use form_id to query questions and responses tables.
+    filters:
+      - name: form_id
+        required: true
+    request:
+      method: GET
+      path: /v1/forms/{{filter.form_id}}
+      query:
+        - name: fields
+          from: literal
+          value: formId,info,settings
+    response:
+      rows_path: []
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: form_id
+        type: Utf8
+        nullable: false
+        description: Unique form ID.
+        expr:
+          kind: path
+          path:
+            - formId
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Title of the form shown to respondents.
+        expr:
+          kind: path
+          path:
+            - info
+            - title
+      - name: document_title
+        type: Utf8
+        nullable: true
+        description: Title of the underlying Google Docs document for this form.
+        expr:
+          kind: path
+          path:
+            - info
+            - documentTitle
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Description shown at the top of the form.
+        expr:
+          kind: path
+          path:
+            - info
+            - description
+  - name: questions
+    description: Questions (items) in a Google Forms form.
+    guide: |
+      Each row is one question item in the form. Requires form_id filter.
+      item_id is the stable identifier for each question — use it to match
+      answers in the responses table. title is the question text shown to
+      respondents. required indicates whether the question must be answered
+      before the form can be submitted.
+    filters:
+      - name: form_id
+        required: true
+    request:
+      method: GET
+      path: /v1/forms/{{filter.form_id}}
+      query:
+        - name: fields
+          from: literal
+          value: items
+    response:
+      rows_path:
+        - items
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: item_id
+        type: Utf8
+        nullable: false
+        description: Unique item ID for this question. Matches keys in the responses.answers object.
+        expr:
+          kind: path
+          path:
+            - itemId
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Question text shown to respondents.
+        expr:
+          kind: path
+          path:
+            - title
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Optional help text shown below the question.
+        expr:
+          kind: path
+          path:
+            - description
+      - name: required
+        type: Boolean
+        nullable: true
+        description: Whether this question requires a response before submission.
+        expr:
+          kind: path
+          path:
+            - questionItem
+            - question
+            - required
+      - name: form_id
+        type: Utf8
+        nullable: true
+        description: Form ID (echoes the form_id filter).
+        expr:
+          kind: from_filter
+          key: form_id
+        virtual: true
+  - name: responses
+    description: Submitted responses for a Google Forms form.
+    guide: |
+      Each row is one form submission. Requires form_id filter.
+      response_id is the stable identifier for each response.
+      create_time and last_submitted_time are ISO 8601 timestamps.
+      respondent_email is populated only if the form collects email addresses.
+      answers is a JSON object mapping item_id keys (from the questions table)
+      to answer objects containing the submitted values.
+      Use after_timestamp to fetch responses submitted after a given time.
+    filters:
+      - name: form_id
+        required: true
+      - name: after_timestamp
+        required: false
+    request:
+      method: GET
+      path: /v1/forms/{{filter.form_id}}/responses
+      query:
+        - name: filter
+          from: filter
+          key: after_timestamp
+    response:
+      rows_path:
+        - responses
+      allow_404_empty: true
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: pageToken
+      response_cursor_path:
+        - nextPageToken
+      page_size:
+        default: 50
+        max: 5000
+        query_param: pageSize
+    columns:
+      - name: response_id
+        type: Utf8
+        nullable: false
+        description: Unique response ID.
+        expr:
+          kind: path
+          path:
+            - responseId
+      - name: create_time
+        type: Utf8
+        nullable: true
+        description: ISO 8601 timestamp when the response was first submitted.
+        expr:
+          kind: path
+          path:
+            - createTime
+      - name: last_submitted_time
+        type: Utf8
+        nullable: true
+        description: ISO 8601 timestamp of the most recent submission or edit.
+        expr:
+          kind: path
+          path:
+            - lastSubmittedTime
+      - name: respondent_email
+        type: Utf8
+        nullable: true
+        description: Email of the respondent if the form collects email addresses.
+        expr:
+          kind: path
+          path:
+            - respondentEmail
+      - name: answers
+        type: Utf8
+        nullable: true
+        description: >-
+          JSON object mapping item_id keys to answer objects. Each answer
+          contains the question ID and submitted values. Join item_id keys
+          to questions.item_id to resolve question titles.
+        expr:
+          kind: path
+          path:
+            - answers
+      - name: form_id
+        type: Utf8
+        nullable: true
+        description: Form ID (echoes the form_id filter).
+        expr:
+          kind: from_filter
+          key: form_id
+        virtual: true
