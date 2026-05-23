@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use coral_api::v1::{
     ExecuteSqlRequest, ImportSourceRequest, ListCatalogRequest, ListSourcesRequest,
     PaginationRequest, Source, SourceSecret, SourceVariable, TableSummary, ValidateSourceRequest,
-    ValidateSourceResponse, catalog_item,
+    ValidateSourceResponse, catalog_item, import_source_response,
 };
 use coral_client::{
     AppClient, CatalogClient, QueryClient, SourceClient, batches_to_json_rows,
@@ -82,17 +82,26 @@ impl GrpcHarness {
         variables: Vec<SourceVariable>,
         secrets: Vec<SourceSecret>,
     ) -> Source {
-        self.source_client()
+        let mut stream = self
+            .source_client()
             .import_source(Request::new(ImportSourceRequest {
                 workspace: Some(default_workspace()),
                 manifest_yaml,
                 variables,
                 secrets,
+                oauth_credential_retrievals: Vec::new(),
             }))
             .await
             .expect("import source")
-            .into_inner()
-            .source
+            .into_inner();
+        stream
+            .message()
+            .await
+            .expect("import source stream")
+            .and_then(|response| match response.event {
+                Some(import_source_response::Event::Source(source)) => Some(source),
+                _ => None,
+            })
             .expect("import source response")
     }
 

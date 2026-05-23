@@ -1,7 +1,12 @@
-.PHONY: install rust-checks license-check lint-proto lint-sources fix-sources docs-generate docs-check
+.PHONY: install ui-build rust-checks license-check lint-proto lint-sources fix-sources docs-generate docs-check
 
-install:
+install: ui-build
 	cargo install --path crates/coral-cli --locked
+
+ui-build:
+	npm ci --prefix ui
+	npm run build --prefix ui
+	test -s ui/dist/index.html
 
 rust-checks:
 	cargo fmt --all -- --check

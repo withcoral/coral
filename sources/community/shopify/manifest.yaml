@@ -43,6 +43,921 @@ request_headers:
 test_queries:
   - SELECT id, name, myshopify_domain FROM shopify.shop LIMIT 1
   - SELECT id, title, status FROM shopify.products LIMIT 1
+functions:
+  - name: search_products
+    kind: search
+    description: Provider-native search for Shopify products using the query parameter.
+    fetch_limit_default: 10
+    search_limits:
+      default_top_k: 10
+      max_top_k: 100
+      max_calls_per_query: 1
+    args:
+      - name: query
+        required: true
+        bind:
+          arg: query
+    request:
+      method: POST
+      path: /graphql.json
+      body:
+        - path:
+            - query
+          from: literal
+          value: |
+            query ShopifyProducts($first: Int!, $after: String, $query: String) {
+              products(first: $first, after: $after, query: $query) {
+                nodes {
+                  id
+                  title
+                  handle
+                  status
+                  vendor
+                  productType
+                  tags
+                  totalInventory
+                  hasOnlyDefaultVariant
+                  createdAt
+                  updatedAt
+                  publishedAt
+                  priceRangeV2 {
+                    minVariantPrice {
+                      amount
+                      currencyCode
+                    }
+                    maxVariantPrice {
+                      amount
+                      currencyCode
+                    }
+                  }
+                }
+                pageInfo {
+                  endCursor
+                  hasNextPage
+                }
+              }
+            }
+        - path:
+            - variables
+            - first
+          from: literal
+          value: 100
+        - path: [variables, query]
+          from: arg
+          key: query
+    response:
+      rows_path: [data, products, nodes]
+      row_strategy: direct
+    pagination:
+      mode: cursor_body
+      cursor_body_path: [variables, after]
+      response_cursor_path: [data, products, pageInfo, endCursor]
+      page_size:
+        default: 100
+        max: 250
+        body_path: [variables, first]
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Globally unique Shopify product ID.
+        expr:
+          kind: path
+          path: [id]
+      - name: title
+        type: Utf8
+        nullable: false
+        description: Product title.
+        expr:
+          kind: path
+          path: [title]
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Product status such as ACTIVE, DRAFT, or ARCHIVED.
+        expr:
+          kind: path
+          path: [status]
+      - name: handle
+        type: Utf8
+        nullable: true
+        description: Product handle.
+        expr:
+          kind: path
+          path: [handle]
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Product creation timestamp from Shopify.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [createdAt]
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Product last updated timestamp from Shopify.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [updatedAt]
+      - name: published_at
+        type: Timestamp
+        nullable: true
+        description: Product publication timestamp, when present.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [publishedAt]
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw products search result.
+        expr:
+          kind: current_row
+  - name: search_product_variants
+    kind: search
+    description: Provider-native search for Shopify product variants using the query parameter.
+    fetch_limit_default: 10
+    search_limits:
+      default_top_k: 10
+      max_top_k: 100
+      max_calls_per_query: 1
+    args:
+      - name: query
+        required: true
+        bind:
+          arg: query
+    request:
+      method: POST
+      path: /graphql.json
+      body:
+        - path:
+            - query
+          from: literal
+          value: |
+            query ShopifyProductVariants($first: Int!, $after: String, $query: String) {
+              productVariants(first: $first, after: $after, query: $query) {
+                nodes {
+                  id
+                  title
+                  displayName
+                  sku
+                  barcode
+                  price
+                  compareAtPrice
+                  availableForSale
+                  inventoryQuantity
+                  inventoryPolicy
+                  selectedOptions {
+                    name
+                    value
+                  }
+                  createdAt
+                  updatedAt
+                  product {
+                    id
+                    title
+                    handle
+                  }
+                  inventoryItem {
+                    id
+                    sku
+                    tracked
+                    requiresShipping
+                  }
+                }
+                pageInfo {
+                  endCursor
+                  hasNextPage
+                }
+              }
+            }
+        - path:
+            - variables
+            - first
+          from: literal
+          value: 100
+        - path: [variables, query]
+          from: arg
+          key: query
+    response:
+      rows_path: [data, productVariants, nodes]
+      row_strategy: direct
+    pagination:
+      mode: cursor_body
+      cursor_body_path: [variables, after]
+      response_cursor_path: [data, productVariants, pageInfo, endCursor]
+      page_size:
+        default: 100
+        max: 250
+        body_path: [variables, first]
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Globally unique Shopify product variant ID.
+        expr:
+          kind: path
+          path: [id]
+      - name: title
+        type: Utf8
+        nullable: false
+        description: Variant title.
+        expr:
+          kind: path
+          path: [title]
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: Display name combining product and variant context.
+        expr:
+          kind: path
+          path: [displayName]
+      - name: sku
+        type: Utf8
+        nullable: true
+        description: Variant SKU.
+        expr:
+          kind: path
+          path: [sku]
+      - name: barcode
+        type: Utf8
+        nullable: true
+        description: Variant barcode.
+        expr:
+          kind: path
+          path: [barcode]
+      - name: product_id
+        type: Utf8
+        nullable: true
+        description: Parent product ID.
+        expr:
+          kind: path
+          path: [product, id]
+      - name: product_title
+        type: Utf8
+        nullable: true
+        description: Parent product title.
+        expr:
+          kind: path
+          path: [product, title]
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Variant creation timestamp from Shopify.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [createdAt]
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Variant last updated timestamp from Shopify.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [updatedAt]
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw product variants search result.
+        expr:
+          kind: current_row
+  - name: search_collections
+    kind: search
+    description: Provider-native search for Shopify collections using the query parameter.
+    fetch_limit_default: 10
+    search_limits:
+      default_top_k: 10
+      max_top_k: 100
+      max_calls_per_query: 1
+    args:
+      - name: query
+        required: true
+        bind:
+          arg: query
+    request:
+      method: POST
+      path: /graphql.json
+      body:
+        - path:
+            - query
+          from: literal
+          value: |
+            query ShopifyCollections($first: Int!, $after: String, $query: String) {
+              collections(first: $first, after: $after, query: $query) {
+                nodes {
+                  id
+                  title
+                  handle
+                  description
+                  descriptionHtml
+                  sortOrder
+                  templateSuffix
+                  updatedAt
+                  productsCount {
+                    count
+                    precision
+                  }
+                  seo {
+                    title
+                    description
+                  }
+                  ruleSet {
+                    appliedDisjunctively
+                    rules {
+                      column
+                      relation
+                      condition
+                    }
+                  }
+                }
+                pageInfo {
+                  endCursor
+                  hasNextPage
+                }
+              }
+            }
+        - path:
+            - variables
+            - first
+          from: literal
+          value: 100
+        - path: [variables, query]
+          from: arg
+          key: query
+    response:
+      rows_path: [data, collections, nodes]
+      row_strategy: direct
+    pagination:
+      mode: cursor_body
+      cursor_body_path: [variables, after]
+      response_cursor_path: [data, collections, pageInfo, endCursor]
+      page_size:
+        default: 100
+        max: 250
+        body_path: [variables, first]
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Globally unique Shopify collection ID.
+        expr:
+          kind: path
+          path: [id]
+      - name: title
+        type: Utf8
+        nullable: false
+        description: Collection title.
+        expr:
+          kind: path
+          path: [title]
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Plain-text collection description.
+        expr:
+          kind: path
+          path: [description]
+      - name: handle
+        type: Utf8
+        nullable: true
+        description: Collection handle.
+        expr:
+          kind: path
+          path: [handle]
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Collection last updated timestamp from Shopify.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [updatedAt]
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw collections search result.
+        expr:
+          kind: current_row
+  - name: search_orders
+    kind: search
+    description: Provider-native search for Shopify orders using the query parameter.
+    fetch_limit_default: 10
+    search_limits:
+      default_top_k: 10
+      max_top_k: 100
+      max_calls_per_query: 1
+    args:
+      - name: query
+        required: true
+        bind:
+          arg: query
+    request:
+      method: POST
+      path: /graphql.json
+      body:
+        - path:
+            - query
+          from: literal
+          value: |
+            query ShopifyOrders($first: Int!, $after: String, $query: String) {
+              orders(first: $first, after: $after, query: $query) {
+                nodes {
+                  id
+                  name
+                  createdAt
+                  updatedAt
+                  processedAt
+                  cancelledAt
+                  displayFinancialStatus
+                  displayFulfillmentStatus
+                  currencyCode
+                  currentTotalPriceSet {
+                    shopMoney {
+                      amount
+                      currencyCode
+                    }
+                  }
+                  currentSubtotalPriceSet {
+                    shopMoney {
+                      amount
+                      currencyCode
+                    }
+                  }
+                  currentTotalTaxSet {
+                    shopMoney {
+                      amount
+                      currencyCode
+                    }
+                  }
+                  subtotalLineItemsQuantity
+                  tags
+                  test
+                  customer {
+                    id
+                    displayName
+                    firstName
+                    lastName
+                    defaultEmailAddress {
+                      emailAddress
+                    }
+                  }
+                }
+                pageInfo {
+                  endCursor
+                  hasNextPage
+                }
+              }
+            }
+        - path:
+            - variables
+            - first
+          from: literal
+          value: 100
+        - path: [variables, query]
+          from: arg
+          key: query
+    response:
+      rows_path: [data, orders, nodes]
+      row_strategy: direct
+    pagination:
+      mode: cursor_body
+      cursor_body_path: [variables, after]
+      response_cursor_path: [data, orders, pageInfo, endCursor]
+      page_size:
+        default: 100
+        max: 250
+        body_path: [variables, first]
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Globally unique Shopify order ID.
+        expr:
+          kind: path
+          path: [id]
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Merchant-facing order name, such as order 1001.
+        expr:
+          kind: path
+          path: [name]
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Order creation timestamp from Shopify.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [createdAt]
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Order last updated timestamp from Shopify.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [updatedAt]
+      - name: processed_at
+        type: Timestamp
+        nullable: true
+        description: Order processed timestamp from Shopify.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [processedAt]
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw orders search result.
+        expr:
+          kind: current_row
+  - name: search_customers
+    kind: search
+    description: Provider-native search for Shopify customers using the query parameter.
+    fetch_limit_default: 10
+    search_limits:
+      default_top_k: 10
+      max_top_k: 100
+      max_calls_per_query: 1
+    args:
+      - name: query
+        required: true
+        bind:
+          arg: query
+    request:
+      method: POST
+      path: /graphql.json
+      body:
+        - path:
+            - query
+          from: literal
+          value: |
+            query ShopifyCustomers($first: Int!, $after: String, $query: String) {
+              customers(first: $first, after: $after, query: $query) {
+                nodes {
+                  id
+                  displayName
+                  firstName
+                  lastName
+                  createdAt
+                  updatedAt
+                  state
+                  numberOfOrders
+                  verifiedEmail
+                  taxExempt
+                  tags
+                  amountSpent {
+                    amount
+                    currencyCode
+                  }
+                  defaultEmailAddress {
+                    emailAddress
+                    marketingState
+                  }
+                  defaultPhoneNumber {
+                    phoneNumber
+                    marketingState
+                  }
+                }
+                pageInfo {
+                  endCursor
+                  hasNextPage
+                }
+              }
+            }
+        - path:
+            - variables
+            - first
+          from: literal
+          value: 100
+        - path: [variables, query]
+          from: arg
+          key: query
+    response:
+      rows_path: [data, customers, nodes]
+      row_strategy: direct
+    pagination:
+      mode: cursor_body
+      cursor_body_path: [variables, after]
+      response_cursor_path: [data, customers, pageInfo, endCursor]
+      page_size:
+        default: 100
+        max: 250
+        body_path: [variables, first]
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Globally unique Shopify customer ID.
+        expr:
+          kind: path
+          path: [id]
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: Customer display name.
+        expr:
+          kind: path
+          path: [displayName]
+      - name: state
+        type: Utf8
+        nullable: true
+        description: Customer account state.
+        expr:
+          kind: path
+          path: [state]
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Customer creation timestamp from Shopify.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [createdAt]
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Customer last updated timestamp from Shopify.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [updatedAt]
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw customers search result.
+        expr:
+          kind: current_row
+  - name: search_locations
+    kind: search
+    description: Provider-native search for Shopify locations using the query parameter.
+    fetch_limit_default: 10
+    search_limits:
+      default_top_k: 10
+      max_top_k: 100
+      max_calls_per_query: 1
+    args:
+      - name: query
+        required: true
+        bind:
+          arg: query
+      - name: include_inactive
+        bind:
+          arg: include_inactive
+      - name: include_legacy
+        bind:
+          arg: include_legacy
+    request:
+      method: POST
+      path: /graphql.json
+      body:
+        - path:
+            - query
+          from: literal
+          value: |
+            query ShopifyLocations(
+              $first: Int!,
+              $after: String,
+              $query: String,
+              $includeInactive: Boolean,
+              $includeLegacy: Boolean
+            ) {
+              locations(
+                first: $first,
+                after: $after,
+                query: $query,
+                includeInactive: $includeInactive,
+                includeLegacy: $includeLegacy
+              ) {
+                nodes {
+                  id
+                  name
+                  isActive
+                  isFulfillmentService
+                  fulfillsOnlineOrders
+                  hasActiveInventory
+                  shipsInventory
+                  createdAt
+                  updatedAt
+                  address {
+                    address1
+                    address2
+                    city
+                    country
+                    countryCode
+                    province
+                    provinceCode
+                    zip
+                  }
+                  fulfillmentService {
+                    handle
+                    serviceName
+                  }
+                }
+                pageInfo {
+                  endCursor
+                  hasNextPage
+                }
+              }
+            }
+        - path:
+            - variables
+            - first
+          from: literal
+          value: 100
+        - path: [variables, query]
+          from: arg
+          key: query
+        - path: [variables, includeInactive]
+          from: arg_bool
+          key: include_inactive
+        - path: [variables, includeLegacy]
+          from: arg_bool
+          key: include_legacy
+    response:
+      rows_path: [data, locations, nodes]
+      row_strategy: direct
+    pagination:
+      mode: cursor_body
+      cursor_body_path: [variables, after]
+      response_cursor_path: [data, locations, pageInfo, endCursor]
+      page_size:
+        default: 100
+        max: 250
+        body_path: [variables, first]
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Globally unique Shopify location ID.
+        expr:
+          kind: path
+          path: [id]
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Location name.
+        expr:
+          kind: path
+          path: [name]
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Location creation timestamp from Shopify.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [createdAt]
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Location last updated timestamp from Shopify.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [updatedAt]
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw locations search result.
+        expr:
+          kind: current_row
+  - name: search_inventory_items
+    kind: search
+    description: Provider-native search for Shopify inventory items using the query parameter.
+    fetch_limit_default: 10
+    search_limits:
+      default_top_k: 10
+      max_top_k: 100
+      max_calls_per_query: 1
+    args:
+      - name: query
+        required: true
+        bind:
+          arg: query
+    request:
+      method: POST
+      path: /graphql.json
+      body:
+        - path:
+            - query
+          from: literal
+          value: |
+            query ShopifyInventoryItems($first: Int!, $after: String, $query: String) {
+              inventoryItems(first: $first, after: $after, query: $query) {
+                nodes {
+                  id
+                  sku
+                  tracked
+                  requiresShipping
+                  duplicateSkuCount
+                  countryCodeOfOrigin
+                  provinceCodeOfOrigin
+                  harmonizedSystemCode
+                  inventoryHistoryUrl
+                  locationsCount {
+                    count
+                    precision
+                  }
+                  createdAt
+                  updatedAt
+                }
+                pageInfo {
+                  endCursor
+                  hasNextPage
+                }
+              }
+            }
+        - path:
+            - variables
+            - first
+          from: literal
+          value: 100
+        - path: [variables, query]
+          from: arg
+          key: query
+    response:
+      rows_path: [data, inventoryItems, nodes]
+      row_strategy: direct
+    pagination:
+      mode: cursor_body
+      cursor_body_path: [variables, after]
+      response_cursor_path: [data, inventoryItems, pageInfo, endCursor]
+      page_size:
+        default: 100
+        max: 250
+        body_path: [variables, first]
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Globally unique Shopify inventory item ID.
+        expr:
+          kind: path
+          path: [id]
+      - name: sku
+        type: Utf8
+        nullable: true
+        description: Inventory item SKU.
+        expr:
+          kind: path
+          path: [sku]
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Inventory item creation timestamp from Shopify.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [createdAt]
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Inventory item last updated timestamp from Shopify.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [updatedAt]
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw inventory items search result.
+        expr:
+          kind: current_row
 tables:
   - name: shop
     description: Shopify shop metadata for the authenticated Admin API token.
@@ -975,7 +1890,7 @@ tables:
       - name: name
         type: Utf8
         nullable: true
-        description: Merchant-facing order name, such as #1001.
+        description: Merchant-facing order name, such as order 1001.
         expr:
           kind: path
           path: [name]

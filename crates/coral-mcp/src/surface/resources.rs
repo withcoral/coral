@@ -8,7 +8,7 @@ use serde_json::Value;
 
 use super::values::queryable_table_summary_values;
 
-static INITIAL_INSTRUCTIONS: &str = "You are connected to Coral, a read-only SQL database. Treat exposed data as database schemas, tables, and table functions. Use `list_catalog` and `search_catalog` as catalog helpers, use `describe_table` and `list_columns` for table-specific metadata, then answer with set-based SQL through `sql`. Prefer one SQL statement with joins, CROSS JOIN, CTEs, subqueries, and aggregates over row-by-row tool calls.";
+static INITIAL_INSTRUCTIONS: &str = "You are connected to Coral, a read-only SQL database. Treat exposed data as database schemas, tables, and table functions. Use `list_catalog` and `search_catalog` as catalog helpers, use `describe_table` and `list_columns` for table-specific metadata, use `sql` against `coral.tables`, `coral.columns`, `coral.filters`, `coral.table_functions`, and `coral.inputs` for deeper discovery, then answer with set-based SQL through `sql`. Prefer one SQL statement with joins, CROSS JOIN, CTEs, subqueries, and aggregates over row-by-row tool calls.";
 static GUIDE_TEMPLATE: &str = include_str!("../guide_template.md");
 
 pub(crate) fn initial_instructions() -> &'static str {
@@ -44,7 +44,7 @@ pub(crate) fn guide_resource_content(
 ) -> String {
     let mut sources_section = String::from("## Available Schemas\n\n");
     sources_section.push_str(
-        "- coral: System catalog schema. Query `coral.tables`, `coral.columns`, `coral.table_functions`, and `coral.inputs` like database catalog tables.\n",
+        "- coral: System catalog schema. Query `coral.tables`, `coral.columns`, `coral.filters`, `coral.table_functions`, and `coral.inputs` like database catalog tables to discover queryable tables, table functions, columns, and filter metadata.\n",
     );
     let mut schemas = tables
         .iter()
@@ -66,13 +66,13 @@ pub(crate) fn guide_resource_content(
 
     let columns_example = first_visible_table(tables).map_or_else(
         || {
-            "SELECT column_name, data_type, is_nullable, is_virtual, is_required_filter, description \
+            "SELECT column_name, data_type, is_nullable, is_virtual, is_required_filter, filter_mode, description \
 FROM coral.columns WHERE schema_name = '<schema>' AND table_name = '<table>' ORDER BY ordinal_position;"
                 .to_string()
         },
         |(schema_name, table_name)| {
             format!(
-                "SELECT column_name, data_type, is_nullable, is_virtual, is_required_filter, description \
+                "SELECT column_name, data_type, is_nullable, is_virtual, is_required_filter, filter_mode, description \
 FROM coral.columns WHERE schema_name = '{schema_name}' AND table_name = '{table_name}' ORDER BY ordinal_position;"
             )
         },

@@ -34,6 +34,287 @@ request_headers:
 test_queries:
   - SELECT name, version, server_name FROM splunk.server_info LIMIT 1
 
+functions:
+  - name: search_indexes
+    kind: search
+    description: Provider-native search for Splunk indexes using the search parameter.
+    fetch_limit_default: 10
+    search_limits:
+      default_top_k: 10
+      max_top_k: 100
+      max_calls_per_query: 1
+    args:
+      - name: search
+        required: true
+        bind:
+          arg: search
+    request:
+      method: GET
+      path: /services/data/indexes
+      query:
+        - name: output_mode
+          from: literal
+          value: json
+        - name: search
+          from: arg
+          key: search
+    response:
+      rows_path: [entry]
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 100
+        query_param: count
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Index name.
+        expr: {kind: path, path: [name]}
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Index title.
+        expr: {kind: path, path: [content, title]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw indexes search result.
+        expr:
+          kind: current_row
+  - name: search_saved_searches
+    kind: search
+    description: Provider-native search for Splunk saved searches using the search parameter.
+    fetch_limit_default: 10
+    search_limits:
+      default_top_k: 10
+      max_top_k: 100
+      max_calls_per_query: 1
+    args:
+      - name: search
+        required: true
+        bind:
+          arg: search
+    request:
+      method: GET
+      path: /servicesNS/-/-/saved/searches
+      query:
+        - name: output_mode
+          from: literal
+          value: json
+        - name: search
+          from: arg
+          key: search
+    response:
+      rows_path: [entry]
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 100
+        query_param: count
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Saved search name.
+        expr: {kind: path, path: [name]}
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Saved search title.
+        expr: {kind: path, path: [content, title]}
+      - name: author
+        type: Utf8
+        nullable: true
+        description: Saved search author.
+        expr: {kind: path, path: [author]}
+      - name: app
+        type: Utf8
+        nullable: true
+        description: Splunk app namespace.
+        expr: {kind: path, path: [acl, app]}
+      - name: owner
+        type: Utf8
+        nullable: true
+        description: Splunk owner namespace.
+        expr: {kind: path, path: [acl, owner]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw saved searches search result.
+        expr:
+          kind: current_row
+  - name: search_apps
+    kind: search
+    description: Provider-native search for Splunk apps using the search parameter.
+    fetch_limit_default: 10
+    search_limits:
+      default_top_k: 10
+      max_top_k: 100
+      max_calls_per_query: 1
+    args:
+      - name: search
+        required: true
+        bind:
+          arg: search
+    request:
+      method: GET
+      path: /services/apps/local
+      query:
+        - name: output_mode
+          from: literal
+          value: json
+        - name: search
+          from: arg
+          key: search
+    response:
+      rows_path: [entry]
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 100
+        query_param: count
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: App name.
+        expr: {kind: path, path: [name]}
+      - name: label
+        type: Utf8
+        nullable: true
+        description: App label.
+        expr: {kind: path, path: [content, label]}
+      - name: author
+        type: Utf8
+        nullable: true
+        description: App author.
+        expr: {kind: path, path: [author]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw apps search result.
+        expr:
+          kind: current_row
+  - name: search_users
+    kind: search
+    description: Provider-native search for Splunk users using the search parameter.
+    fetch_limit_default: 10
+    search_limits:
+      default_top_k: 10
+      max_top_k: 100
+      max_calls_per_query: 1
+    args:
+      - name: search
+        required: true
+        bind:
+          arg: search
+    request:
+      method: GET
+      path: /services/authentication/users
+      query:
+        - name: output_mode
+          from: literal
+          value: json
+        - name: search
+          from: arg
+          key: search
+    response:
+      rows_path: [entry]
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 100
+        query_param: count
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Username.
+        expr: {kind: path, path: [name]}
+      - name: email
+        type: Utf8
+        nullable: true
+        description: User email address.
+        expr: {kind: path, path: [content, email]}
+      - name: realname
+        type: Utf8
+        nullable: true
+        description: User real name.
+        expr: {kind: path, path: [content, realname]}
+      - name: type
+        type: Utf8
+        nullable: true
+        description: User type.
+        expr: {kind: path, path: [content, type]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw users search result.
+        expr:
+          kind: current_row
+  - name: search_search_jobs
+    kind: search
+    description: Provider-native search for Splunk search jobs using the search parameter.
+    fetch_limit_default: 10
+    search_limits:
+      default_top_k: 10
+      max_top_k: 100
+      max_calls_per_query: 1
+    args:
+      - name: search
+        required: true
+        bind:
+          arg: search
+    request:
+      method: GET
+      path: /services/search/jobs
+      query:
+        - name: output_mode
+          from: literal
+          value: json
+        - name: search
+          from: arg
+          key: search
+    response:
+      rows_path: [entry]
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 100
+        query_param: count
+    columns:
+      - name: sid
+        type: Utf8
+        nullable: false
+        description: Search job ID.
+        expr: {kind: path, path: [name]}
+      - name: label
+        type: Utf8
+        nullable: true
+        description: Search job label.
+        expr: {kind: path, path: [content, label]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw search jobs search result.
+        expr:
+          kind: current_row
 tables:
   - name: server_info
     description: Splunk server information.

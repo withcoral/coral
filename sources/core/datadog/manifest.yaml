@@ -597,6 +597,70 @@ functions:
           kind: path
           path:
             - value
+  - name: apm_dependencies
+    description: Datadog APM service dependencies for a target service.
+    args:
+      - name: service
+        required: true
+        bind:
+          arg: service
+      - name: env
+        bind:
+          arg: env
+      - name: start
+        bind:
+          arg: start
+      - name: end
+        bind:
+          arg: end
+      - name: primary_tag
+        bind:
+          arg: primary_tag
+    request:
+      method: GET
+      path: /api/v1/service_dependencies/{{arg.service}}
+      query:
+        - name: env
+          from: arg
+          key: env
+          default: "*"
+        - name: start
+          from: arg
+          key: start
+        - name: end
+          from: arg
+          key: end
+        - name: primary_tag
+          from: arg
+          key: primary_tag
+    response: {}
+    pagination:
+      mode: none
+    columns:
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Service name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: called_by
+        type: Utf8
+        nullable: true
+        description: Comma-separated upstream services
+        expr:
+          kind: join_array
+          path:
+            - called_by
+      - name: calls
+        type: Utf8
+        nullable: true
+        description: Comma-separated downstream services
+        expr:
+          kind: join_array
+          path:
+            - calls
 tables:
   - name: monitors
     description: Datadog monitors with status and alert configuration.
@@ -1079,170 +1143,6 @@ tables:
             - attributes
             - schema
             - team
-  - name: apm_dependencies
-    description: Datadog APM service dependencies for a focal service
-    guide: >
-      Use this table for upstream and downstream dependency edges around one service. The required service filter does the
-      main cut; add env for multi-environment services and a tighter time window only when needed. called_by and calls are
-      comma-separated lists, not one row per edge.
-
-    request:
-      method: GET
-      path: /api/v1/service_dependencies/{{filter.service}}
-      query:
-        - name: env
-          from: filter
-          key: env
-          default: "*"
-        - name: start
-          from: filter
-          key: start
-        - name: end
-          from: filter
-          key: end
-        - name: primary_tag
-          from: filter
-          key: primary_tag
-    response: {}
-    pagination:
-      mode: none
-    columns:
-      - name: service
-        type: Utf8
-        nullable: true
-        description: Focal service name
-        expr:
-          kind: from_filter
-          key: service
-      - name: env
-        type: Utf8
-        nullable: true
-        description: Environment
-        expr:
-          kind: coalesce
-          exprs:
-            - kind: path
-              path:
-                - env
-            - kind: path
-              path:
-                - data
-                - env
-            - kind: path
-              path:
-                - attributes
-                - env
-            - kind: path
-              path:
-                - data
-                - attributes
-                - env
-      - name: start
-        type: Int64
-        nullable: true
-        description: Start unix timestamp
-        expr:
-          kind: coalesce
-          exprs:
-            - kind: path
-              path:
-                - start
-            - kind: path
-              path:
-                - data
-                - start
-            - kind: path
-              path:
-                - attributes
-                - start
-            - kind: path
-              path:
-                - data
-                - attributes
-                - start
-      - name: end
-        type: Int64
-        nullable: true
-        description: End unix timestamp
-        expr:
-          kind: coalesce
-          exprs:
-            - kind: path
-              path:
-                - end
-            - kind: path
-              path:
-                - data
-                - end
-            - kind: path
-              path:
-                - attributes
-                - end
-            - kind: path
-              path:
-                - data
-                - attributes
-                - end
-      - name: called_by
-        type: Utf8
-        nullable: true
-        description: Comma-separated upstream services
-        expr:
-          kind: coalesce
-          exprs:
-            - kind: join_array
-              path:
-                - called_by
-            - kind: join_array
-              path:
-                - data
-                - called_by
-            - kind: join_array
-              path:
-                - attributes
-                - called_by
-            - kind: join_array
-              path:
-                - data
-                - attributes
-                - called_by
-      - name: calls
-        type: Utf8
-        nullable: true
-        description: Comma-separated downstream services
-        expr:
-          kind: coalesce
-          exprs:
-            - kind: join_array
-              path:
-                - calls
-            - kind: join_array
-              path:
-                - data
-                - calls
-            - kind: join_array
-              path:
-                - attributes
-                - calls
-            - kind: join_array
-              path:
-                - data
-                - attributes
-                - calls
-      - name: primary_tag
-        type: Utf8
-        nullable: true
-        description: Primary tag virtual filter
-        expr:
-          kind: "null"
-        virtual: true
-    filters:
-      - name: service
-        required: true
-      - name: env
-      - name: start
-      - name: end
-      - name: primary_tag
   - name: downtimes
     description: Datadog scheduled downtimes
     guide: >

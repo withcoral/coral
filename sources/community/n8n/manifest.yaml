@@ -1,0 +1,478 @@
+---
+name: n8n
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query n8n workflows, executions, tags, and variables through
+  Coral SQL using the n8n Public REST API.
+
+inputs:
+  N8N_BASE_URL:
+    kind: variable
+    required: true
+    hint: >-
+      Base URL for your n8n instance API. For n8n Cloud use
+      https://<account>.n8n.cloud/api/v1. For self-hosted use
+      http://localhost:5678/api/v1 (or your custom domain).
+  N8N_API_KEY:
+    kind: secret
+    required: true
+    hint: >-
+      n8n API key. Create one in your n8n instance under
+      Settings > API > Generate API Key. Requires read scopes for
+      workflows, executions, tags, and variables.
+
+base_url: "{{input.N8N_BASE_URL}}"
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: X-N8N-API-KEY
+      from: template
+      template: "{{input.N8N_API_KEY}}"
+
+test_queries:
+  - SELECT id, name, active FROM n8n.workflows LIMIT 5
+  - SELECT id, finished, workflow_id, started_at FROM n8n.executions LIMIT 5
+  - SELECT id, name FROM n8n.tags LIMIT 5
+  - SELECT id, status, workflow_id FROM n8n.executions WHERE status = 'error' LIMIT 5
+
+tables:
+  # ------------------------------------------------------------------
+  # n8n.workflows — list automation workflows
+  # GET /workflows
+  # ------------------------------------------------------------------
+  - name: workflows
+    description: |
+      List n8n automation workflows. Use `active` filter to scope by
+      published status. Use `name` for partial matching. Discover workflow
+      IDs to filter executions.
+    guide: |
+      Each row is one workflow. `id` is the stable identifier used to
+      join to `n8n.executions.workflow_id`. `tag_names` is a
+      comma-separated string built from the `tags` array — use substring
+      matching (e.g. `tag_names ILIKE '%prod%'`) rather than equality.
+      The `tags` filter sends a server-side request and is more efficient
+      than filtering on `tag_names`.
+    filters:
+      - name: active
+      - name: tags
+      - name: name
+      - name: project_id
+    request:
+      method: GET
+      path: /workflows
+      query:
+        - name: active
+          from: filter_bool
+          key: active
+        - name: tags
+          from: filter
+          key: tags
+        - name: name
+          from: filter
+          key: name
+        - name: projectId
+          from: filter
+          key: project_id
+    response:
+      rows_path:
+        - data
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      response_cursor_path:
+        - nextCursor
+      page_size:
+        default: 100
+        max: 250
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Workflow ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Workflow name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: active
+        type: Boolean
+        nullable: true
+        description: Whether the workflow is published/active.
+        expr:
+          kind: path
+          path:
+            - active
+      - name: version_id
+        type: Utf8
+        nullable: true
+        description: Current version ID of the workflow.
+        expr:
+          kind: path
+          path:
+            - versionId
+      - name: trigger_count
+        type: Int64
+        nullable: true
+        description: Number of active trigger nodes in the workflow.
+        expr:
+          kind: path
+          path:
+            - triggerCount
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Workflow description.
+        expr:
+          kind: path
+          path:
+            - description
+      - name: is_archived
+        type: Boolean
+        nullable: true
+        description: Whether the workflow is archived.
+        expr:
+          kind: path
+          path:
+            - isArchived
+      - name: tag_names
+        type: Utf8
+        nullable: true
+        description: Comma-separated tag names attached to the workflow.
+        expr:
+          kind: join_array_path
+          path:
+            - tags
+          item_path:
+            - name
+          separator: ","
+      - name: project_id
+        type: Utf8
+        nullable: true
+        description: ID of the project owning the workflow.
+        expr:
+          kind: path
+          path:
+            - homeProject
+            - id
+      - name: project_name
+        type: Utf8
+        nullable: true
+        description: Name of the project owning the workflow.
+        expr:
+          kind: path
+          path:
+            - homeProject
+            - name
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the workflow was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - createdAt
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the workflow was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updatedAt
+      - name: settings
+        type: Json
+        nullable: true
+        description: Workflow settings object (timezone, error workflow, etc.).
+        expr:
+          kind: path
+          path:
+            - settings
+
+  # ------------------------------------------------------------------
+  # n8n.executions — list workflow execution runs
+  # GET /executions
+  # ------------------------------------------------------------------
+  - name: executions
+    description: |
+      List n8n workflow execution runs. Filter by `status`, `workflow_id`,
+      or `project_id`. Valid status values: canceled, crashed, error, new,
+      running, success, unknown, waiting. Join `workflow_id` to `n8n.workflows.id`.
+    guide: |
+      Each row is one execution run. `status` is one of: canceled,
+      crashed, error, new, running, success, unknown, waiting. Use
+      `status = 'error'` to find failures — not `finished = false`,
+      which also matches running executions. `mode` describes how the
+      execution was triggered (e.g. trigger, webhook, manual).
+      `workflow_id` joins to `n8n.workflows.id`.
+    filters:
+      - name: status
+      - name: workflow_id
+      - name: project_id
+    request:
+      method: GET
+      path: /executions
+      query:
+        - name: status
+          from: filter
+          key: status
+        - name: workflowId
+          from: filter
+          key: workflow_id
+        - name: projectId
+          from: filter
+          key: project_id
+        - name: includeData
+          from: literal
+          value: "false"
+    response:
+      rows_path:
+        - data
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      response_cursor_path:
+        - nextCursor
+      page_size:
+        default: 100
+        max: 250
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Execution ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: finished
+        type: Boolean
+        nullable: true
+        description: Whether the execution finished.
+        expr:
+          kind: path
+          path:
+            - finished
+      - name: mode
+        type: Utf8
+        nullable: true
+        description: >-
+          Execution mode (cli, error, integrated, internal, manual, retry,
+          trigger, webhook, evaluation, chat).
+        expr:
+          kind: path
+          path:
+            - mode
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Execution status (canceled, crashed, error, new, running, success, unknown, waiting).
+        expr:
+          kind: path
+          path:
+            - status
+      - name: workflow_id
+        type: Utf8
+        nullable: true
+        description: ID of the executed workflow. Join to `n8n.workflows.id`.
+        expr:
+          kind: path
+          path:
+            - workflowId
+      - name: started_at
+        type: Timestamp
+        nullable: true
+        description: When the execution started.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - startedAt
+      - name: stopped_at
+        type: Timestamp
+        nullable: true
+        description: When the execution stopped (NULL if still running).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - stoppedAt
+      - name: wait_till
+        type: Timestamp
+        nullable: true
+        description: When a waiting execution should resume.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - waitTill
+      - name: retry_of
+        type: Utf8
+        nullable: true
+        description: ID of the original execution if this is a retry.
+        expr:
+          kind: path
+          path:
+            - retryOf
+      - name: retry_success_id
+        type: Utf8
+        nullable: true
+        description: ID of the successful retry execution.
+        expr:
+          kind: path
+          path:
+            - retrySuccessId
+
+  # ------------------------------------------------------------------
+  # n8n.tags — list workflow tags
+  # GET /tags
+  # ------------------------------------------------------------------
+  - name: tags
+    description: |
+      List n8n workflow tags. Use to categorize and filter workflows.
+      Match against `tag_names` using a substring filter (e.g. `tag_names ILIKE '%name%'`).
+    request:
+      method: GET
+      path: /tags
+    response:
+      rows_path:
+        - data
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      response_cursor_path:
+        - nextCursor
+      page_size:
+        default: 100
+        max: 250
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Tag ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Tag name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the tag was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - createdAt
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the tag was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updatedAt
+
+  # ------------------------------------------------------------------
+  # n8n.variables — list instance variables
+  # GET /variables
+  # ------------------------------------------------------------------
+  - name: variables
+    description: |
+      List n8n instance variables. Variables store reusable values across
+      workflows. Join `key` to workflow node configurations for dependency
+      tracking.
+    filters:
+      - name: project_id
+    request:
+      method: GET
+      path: /variables
+      query:
+        - name: projectId
+          from: filter
+          key: project_id
+    response:
+      rows_path:
+        - data
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      response_cursor_path:
+        - nextCursor
+      page_size:
+        default: 100
+        max: 250
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Variable ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: key
+        type: Utf8
+        nullable: true
+        description: Variable key/name.
+        expr:
+          kind: path
+          path:
+            - key
+      - name: value
+        type: Utf8
+        nullable: true
+        description: Variable value.
+        expr:
+          kind: path
+          path:
+            - value
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Variable data type (string, number, boolean).
+        expr:
+          kind: path
+          path:
+            - type

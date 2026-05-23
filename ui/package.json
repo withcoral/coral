@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "npm run proto:gen && vite",
-    "dev:server": "cargo run --manifest-path ../Cargo.toml -p coral-cli --features embedded-ui -- ui --no-open",
+    "dev:server": "cargo run --manifest-path ../Cargo.toml -p coral-cli -- ui --no-open",
     "dev:local": "concurrently --kill-others --names api,ui --prefix-colors blue,green \"npm:dev:server\" \"npm:dev\"",
     "proto:gen": "buf generate --template buf.gen.yaml",
     "build": "npm run proto:gen && tsc -b && vite build",
