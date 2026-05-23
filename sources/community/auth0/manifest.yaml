@@ -1360,4 +1360,3 @@ tables:
         description: Full raw tenant settings object.
         expr:
           kind: current_row
-          
