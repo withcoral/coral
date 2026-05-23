@@ -3,7 +3,7 @@
 **Version:** 0.1.0
 **Backend:** HTTP
 **Tables:** 5
-**Base URL:** `https://api.typeform.com`
+**Base URL:** configurable via `TYPEFORM_API_BASE` (default: `https://api.typeform.com`)
 
 Query forms, workspaces, themes, responses, and webhooks from Typeform.
 
@@ -11,6 +11,10 @@ Query forms, workspaces, themes, responses, and webhooks from Typeform.
 
 Requires a `TYPEFORM_PERSONAL_ACCESS_TOKEN`. Generate one in your Typeform
 account under **Settings → Personal Tokens**.
+
+The token must have the following read scopes:
+`forms:read`, `workspaces:read`, `themes:read`, `responses:read`, `webhooks:read`.
+See [Typeform scopes](https://www.typeform.com/developers/get-started/scopes/).
 
 ```bash
 TYPEFORM_PERSONAL_ACCESS_TOKEN=tfp_... coral source add --file sources/community/typeform/manifest.yaml
@@ -22,6 +26,13 @@ Or interactively:
 coral source add --file sources/community/typeform/manifest.yaml --interactive
 ```
 
+## Base URL
+
+The default base URL is `https://api.typeform.com`. If your Typeform account
+stores data in the EU data center, set `TYPEFORM_API_BASE` to
+`https://api.eu.typeform.com` or `https://api.typeform.eu`.
+See [Typeform base URL docs](https://www.typeform.com/developers/get-started/).
+
 ## Tables
 
 | Table | Description | Required filters | Optional filters |
@@ -29,16 +40,33 @@ coral source add --file sources/community/typeform/manifest.yaml --interactive
 | `forms` | Forms in the account | — | `workspace_id`, `search` |
 | `workspaces` | Workspaces in the account | — | `search` |
 | `themes` | Themes available in the account | — | — |
-| `responses` | Submitted responses for a form | `form_id` | `since`, `until`, `query` |
+| `responses` | Submitted responses for a form | `form_id` | `since`, `until`, `before`, `after`, `query` |
 | `webhooks` | Webhook subscriptions for a form | `form_id` | — |
 
 ### Responses pagination note
 
-The Typeform Responses API uses cursor-based pagination via response tokens,
-which cannot be expressed in the Coral source-spec DSL. This source fetches
-up to **1000 responses** per request (the Typeform API maximum). For forms
-with more than 1000 responses, use `since` / `until` time-window filters to
-paginate through results in date ranges.
+The Typeform Responses API uses token-based cursor pagination. This source
+fetches up to **1000 responses** per request (the Typeform API maximum). For
+forms with more than 1000 responses, use the `before` or `after` filter with
+the `token` value from the last returned row to page through the full result
+set. You can also narrow results with `since` / `until` time-window filters.
+
+```bash
+# First page
+coral sql "
+  SELECT response_id, token, submitted_at
+  FROM typeform.responses
+  WHERE form_id = 'xyz789'
+"
+
+# Next page — use the token from the last row above
+coral sql "
+  SELECT response_id, token, submitted_at
+  FROM typeform.responses
+  WHERE form_id = 'xyz789'
+    AND after = '<last_token>'
+"
+```
 
 ## Quick start
 

@@ -5,14 +5,24 @@ backend: http
 description: >-
   Query forms, workspaces, themes, responses, and webhooks from Typeform.
 inputs:
+  TYPEFORM_API_BASE:
+    kind: variable
+    default: https://api.typeform.com
+    hint: |
+      Base URL for the Typeform API. Keep the default for most accounts.
+      EU data-center accounts should use `https://api.eu.typeform.com`
+      or `https://api.typeform.eu`.
+      See [Typeform base URL docs](https://www.typeform.com/developers/get-started/).
   TYPEFORM_PERSONAL_ACCESS_TOKEN:
     kind: secret
     hint: |
       Your Typeform Personal Access Token. Generate one in your Typeform
       account under Settings > Personal Tokens. The token is sent as
-      `Authorization: Bearer <token>`.
-      See [Typeform API docs](https://developer.typeform.com/get-started/personal-access-token/).
-base_url: https://api.typeform.com
+      `Authorization: Bearer <token>`. This source requires the following
+      read scopes: `forms:read`, `workspaces:read`, `themes:read`,
+      `responses:read`, and `webhooks:read`.
+      See [Typeform scopes](https://www.typeform.com/developers/get-started/scopes/).
+base_url: "{{input.TYPEFORM_API_BASE}}"
 auth:
   type: HeaderAuth
   headers:
@@ -375,16 +385,21 @@ tables:
       by the field ID and type. Use `json_get_str`, `json_get_int`, or
       other JSON functions to extract individual answer values.
 
-      This table fetches up to 1000 responses per request, which is
-      the Typeform API maximum. For forms with more than 1000
-      responses, use `since` / `until` time-window filters to paginate
-      through results in date ranges.
+      This table fetches up to 1000 responses per request (the Typeform
+      API maximum). For forms with more than 1000 responses, use
+      `before` or `after` filters with the `token` value from the last
+      returned row to page through the full result set. You can also
+      narrow results with `since` / `until` time-window filters.
     filters:
       - name: form_id
         required: true
       - name: since
         required: false
       - name: until
+        required: false
+      - name: before
+        required: false
+      - name: after
         required: false
       - name: query
         required: false
@@ -401,6 +416,12 @@ tables:
         - name: until
           from: filter
           key: until
+        - name: before
+          from: filter
+          key: before
+        - name: after
+          from: filter
+          key: after
         - name: query
           from: filter
           key: query
