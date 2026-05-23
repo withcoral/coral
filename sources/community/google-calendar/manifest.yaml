@@ -1,0 +1,423 @@
+name: gcal
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query calendar metadata and events from Google Calendar API v3.
+  Supports listing calendars accessible to the authenticated user and
+  fetching events from any calendar by ID, with date-range filtering
+  and pagination.
+
+inputs:
+  GOOGLE_CALENDAR_TOKEN:
+    kind: secret
+    hint: |
+      Google OAuth 2.0 access token with the
+      https://www.googleapis.com/auth/calendar.readonly scope.
+
+      Quickest way to get one for local use:
+        gcloud auth print-access-token
+
+      For long-lived access, create OAuth 2.0 Desktop credentials in
+      Google Cloud Console, enable the Google Calendar API, and use
+      the refresh-token flow. See:
+      https://developers.google.com/calendar/api/guides/auth
+
+base_url: https://www.googleapis.com/calendar/v3
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.GOOGLE_CALENDAR_TOKEN}}
+
+test_queries:
+  - SELECT * FROM gcal.calendars LIMIT 1
+  - SELECT * FROM gcal.events WHERE calendar_id = 'primary' LIMIT 1
+
+tables:
+  # ── gcal.calendars ─────────────────────────────────────────
+  - name: calendars
+    description: >-
+      Calendars accessible to the authenticated Google account.
+      Includes owned, subscribed, and shared calendars.
+    guide: |
+      Lists all calendars the authenticated user can see.
+      Use the `id` column to query events from a specific calendar:
+        SELECT id, summary FROM gcal.calendars
+      Then pass that id into gcal.events:
+        SELECT * FROM gcal.events WHERE calendar_id = '<id>'
+      The `primary` column is true for the user's main calendar.
+    request:
+      method: GET
+      path: /users/me/calendarList
+    response:
+      rows_path:
+        - items
+      row_strategy: direct
+      allow_404_empty: false
+    pagination:
+      mode: cursor_query
+      cursor_param: pageToken
+      response_cursor_path:
+        - nextPageToken
+      page_size:
+        default: 100
+        max: 250
+        query_param: maxResults
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: >-
+          Unique calendar identifier. Use this value as the calendar_id
+          filter on gcal.events.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: summary
+        type: Utf8
+        nullable: true
+        description: Human-readable calendar title.
+        expr:
+          kind: path
+          path:
+            - summary
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Calendar description set by the owner.
+        expr:
+          kind: path
+          path:
+            - description
+      - name: time_zone
+        type: Utf8
+        nullable: true
+        description: IANA time zone of the calendar (e.g. America/New_York).
+        expr:
+          kind: path
+          path:
+            - timeZone
+      - name: access_role
+        type: Utf8
+        nullable: true
+        description: >-
+          Effective access role for the authenticated user.
+          One of: freeBusyReader, reader, writer, owner.
+        expr:
+          kind: path
+          path:
+            - accessRole
+      - name: primary
+        type: Boolean
+        nullable: true
+        description: True if this is the user's primary calendar.
+        expr:
+          kind: path
+          path:
+            - primary
+
+  # ── gcal.events ────────────────────────────────────────────
+  - name: events
+    description: >-
+      Events from a Google Calendar. Requires a calendar_id filter
+      (use 'primary' for the main calendar, or an id from
+      gcal.calendars).
+    guide: |
+      Always filter by calendar_id. Use 'primary' for the default:
+        SELECT * FROM gcal.events WHERE calendar_id = 'primary'
+
+      Push-down filters:
+        - calendar_id (required) — which calendar to query
+        - time_min               — RFC 3339 lower bound (inclusive)
+        - time_max               — RFC 3339 upper bound (exclusive)
+        - q                      — free-text search across fields
+
+      Example — events this week:
+        SELECT summary, start_date_time, end_date_time
+        FROM gcal.events
+        WHERE calendar_id = 'primary'
+          AND time_min = '2026-05-25T00:00:00Z'
+          AND time_max = '2026-06-01T00:00:00Z'
+    fetch_limit_default: 250
+    filters:
+      - name: calendar_id
+        required: true
+      - name: time_min
+      - name: time_max
+      - name: q
+    request:
+      method: GET
+      path: /calendars/{{filter.calendar_id}}/events
+      query:
+        - name: singleEvents
+          from: literal
+          value: "true"
+        - name: orderBy
+          from: literal
+          value: startTime
+        - name: timeMin
+          from: filter
+          key: time_min
+        - name: timeMax
+          from: filter
+          key: time_max
+        - name: q
+          from: filter
+          key: q
+    response:
+      rows_path:
+        - items
+      row_strategy: direct
+      allow_404_empty: false
+    pagination:
+      mode: cursor_query
+      cursor_param: pageToken
+      response_cursor_path:
+        - nextPageToken
+      page_size:
+        default: 250
+        max: 2500
+        query_param: maxResults
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Opaque event identifier.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: summary
+        type: Utf8
+        nullable: true
+        description: Event title.
+        expr:
+          kind: path
+          path:
+            - summary
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Event description / notes.
+        expr:
+          kind: path
+          path:
+            - description
+      - name: start_date_time
+        type: Utf8
+        nullable: true
+        description: >-
+          Event start as an ISO 8601 dateTime string with timezone offset
+          (e.g. 2026-05-25T10:00:00-04:00). Null for all-day events;
+          use start_date instead.
+        expr:
+          kind: path
+          path:
+            - start
+            - dateTime
+      - name: start_date
+        type: Utf8
+        nullable: true
+        description: >-
+          All-day event start date (YYYY-MM-DD). Null for timed events;
+          use start_date_time instead.
+        expr:
+          kind: path
+          path:
+            - start
+            - date
+      - name: end_date_time
+        type: Utf8
+        nullable: true
+        description: >-
+          Event end as an ISO 8601 dateTime string with timezone offset.
+          Null for all-day events; use end_date instead.
+        expr:
+          kind: path
+          path:
+            - end
+            - dateTime
+      - name: end_date
+        type: Utf8
+        nullable: true
+        description: >-
+          All-day event end date (YYYY-MM-DD, exclusive). Null for timed
+          events; use end_date_time instead.
+        expr:
+          kind: path
+          path:
+            - end
+            - date
+      - name: start_time_zone
+        type: Utf8
+        nullable: true
+        description: IANA time zone of the event start (e.g. America/New_York).
+        expr:
+          kind: path
+          path:
+            - start
+            - timeZone
+      - name: calendar_id
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          The calendar_id filter value that was used to fetch this event.
+          Virtual column for JOIN convenience with gcal.calendars.
+        expr:
+          kind: from_filter
+          key: calendar_id
+      - name: q
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Free-text search query value used to filter events.
+        expr:
+          kind: from_filter
+          key: q
+      - name: time_min
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          RFC 3339 lower bound (inclusive) used to filter events by start time.
+        expr:
+          kind: from_filter
+          key: time_min
+      - name: time_max
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          RFC 3339 upper bound (exclusive) used to filter events by start time.
+        expr:
+          kind: from_filter
+          key: time_max
+      - name: organizer_email
+        type: Utf8
+        nullable: true
+        description: Email of the event organizer.
+        expr:
+          kind: path
+          path:
+            - organizer
+            - email
+      - name: organizer_self
+        type: Boolean
+        nullable: true
+        description: True if the organizer is the authenticated user.
+        expr:
+          kind: path
+          path:
+            - organizer
+            - self
+      - name: status
+        type: Utf8
+        nullable: true
+        description: >-
+          Event status: confirmed, tentative, or cancelled.
+        expr:
+          kind: path
+          path:
+            - status
+      - name: html_link
+        type: Utf8
+        nullable: true
+        description: URL to open the event in Google Calendar web UI.
+        expr:
+          kind: path
+          path:
+            - htmlLink
+      - name: location
+        type: Utf8
+        nullable: true
+        description: Free-form location text or Google Meet link.
+        expr:
+          kind: path
+          path:
+            - location
+      - name: created
+        type: Utf8
+        nullable: true
+        description: When the event was created (RFC 3339).
+        expr:
+          kind: path
+          path:
+            - created
+      - name: updated
+        type: Utf8
+        nullable: true
+        description: When the event was last modified (RFC 3339).
+        expr:
+          kind: path
+          path:
+            - updated
+      - name: creator_email
+        type: Utf8
+        nullable: true
+        description: Email of the user who created the event.
+        expr:
+          kind: path
+          path:
+            - creator
+            - email
+      - name: event_type
+        type: Utf8
+        nullable: true
+        description: >-
+          Google Calendar event type: default, outOfOffice,
+          focusTime, workingLocation.
+        expr:
+          kind: path
+          path:
+            - eventType
+      - name: recurring_event_id
+        type: Utf8
+        nullable: true
+        description: >-
+          ID of the recurring event master this instance belongs to.
+          Null for non-recurring events.
+        expr:
+          kind: path
+          path:
+            - recurringEventId
+      - name: ical_uid
+        type: Utf8
+        nullable: true
+        description: RFC 5545 iCalendar UID for cross-system dedup.
+        expr:
+          kind: path
+          path:
+            - iCalUID
+      - name: hangout_link
+        type: Utf8
+        nullable: true
+        description: Google Meet link attached to the event.
+        expr:
+          kind: path
+          path:
+            - hangoutLink
+      - name: visibility
+        type: Utf8
+        nullable: true
+        description: >-
+          Event visibility: default, public, private, confidential.
+        expr:
+          kind: path
+          path:
+            - visibility
+      - name: transparency
+        type: Utf8
+        nullable: true
+        description: >-
+          Whether the event blocks time on the calendar.
+          opaque (busy) or transparent (free).
+        expr:
+          kind: path
+          path:
+            - transparency
