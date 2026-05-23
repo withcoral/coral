@@ -1,17 +1,21 @@
 # WooCommerce
 
-Query WooCommerce store status, products, orders, and customers from a
-self-hosted WordPress + WooCommerce store through the WooCommerce v3 REST
-API.
+Query WooCommerce store status, products, product variations, orders, and
+customers from a self-hosted WordPress + WooCommerce store through the
+WooCommerce v3 REST API.
 
 ## Setup
 
 ### Requirements
 
-- A WooCommerce store reachable over **HTTPS** (WooCommerce's REST API only
-  enables Basic auth over TLS — see *Notes* for a local-HTTP workaround).
-- A WooCommerce REST API key pair (consumer key + consumer secret) with
-  at least `Read` permission.
+- A WooCommerce store reachable over **HTTPS** (WooCommerce's REST API
+  only enables Basic auth over TLS — see *Troubleshooting* for a local-
+  HTTP workaround).
+- A WooCommerce REST API key pair (consumer key + consumer secret).
+  `Read` is the right key permission level, but the key inherits the
+  WordPress user's capabilities — generate it against an **Administrator
+  or Shop Manager** account so it can read orders and customers as well
+  as the catalog.
 
 ### Add the Source
 
@@ -32,98 +36,138 @@ Inputs:
 - `WOOCOMMERCE_CONSUMER_KEY` — REST API consumer key (starts with `ck_`).
 - `WOOCOMMERCE_CONSUMER_SECRET` — REST API consumer secret (starts with
   `cs_`). Create both together in *WooCommerce → Settings → Advanced →
-  REST API*.
+  REST API*, against an Administrator or Shop Manager user.
 
 ## Tables
 
 ### `system_status`
 Single-row store status from `/wp-json/wc/v3/system_status`.
 
-**Useful for:**
-- Connectivity and version reporting (WC / WP / PHP / MySQL)
-- Currency and HPOS configuration audit
+**Useful for:** version reporting (WC / WP / PHP / MySQL), currency, HPOS.
 
 ### `products`
 Catalog from `/wp-json/wc/v3/products`.
 
-**Useful for:**
-- Inventory and pricing review (`stock_status`, `stock_quantity`, `price`)
-- Best-seller analysis via `total_sales`
-- Sale and rating audits
+**Useful for:** catalog inventory, pricing audit, best-seller analysis.
+
+Predicates pushed to the API: `status`, `sku`, `stock_status`, `search`,
+`after`, `before`, `modified_after`.
+
+### `product_variations`
+Variations of a variable product from
+`/wp-json/wc/v3/products/<product_id>/variations`.
+
+**Requires:** `WHERE product_id = <id>` (the parent product ID).
+
+For variable products WooCommerce keeps variation-level SKU, price, stock
+state, and attributes here — `products.sku` / `products.stock_quantity`
+are empty for variable parents by design.
 
 ### `orders`
 Orders from `/wp-json/wc/v3/orders`.
 
-**Useful for:**
-- Recent order monitoring by `status`, `date_created`, `total`
-- Payment method and channel attribution (`payment_method`, `created_via`)
-- Per-customer order aggregation (join with `customers` on `customer_id`)
+**Useful for:** fulfilment monitoring, per-customer aggregation, channel
+attribution.
+
+Predicates pushed to the API: `status`, `customer_id`, `product`,
+`search`, `after`, `before`, `modified_after`.
 
 ### `customers`
 Registered customers from `/wp-json/wc/v3/customers`.
 
-**Useful for:**
-- Customer inventory and country breakdowns
-- Identifying paying vs non-paying accounts
+**Useful for:** customer inventory, country breakdowns, paying-vs-not.
 
-Guest checkouts do not create customer rows; query `orders` with
-`customer_id = 0` and `billing__email` to find guest order activity.
+Predicates pushed to the API: `email`, `role`, `search`. Guest checkouts
+do not create customer rows; query `orders` with `customer_id = 0` and
+`billing__email` for guest order activity.
 
 ## Authentication
 
-Uses the standard WooCommerce REST API key pair over HTTP Basic:
+Standard WooCommerce REST API key pair over HTTP Basic:
 
 ```text
 Authorization: Basic base64(WOOCOMMERCE_CONSUMER_KEY:WOOCOMMERCE_CONSUMER_SECRET)
 ```
 
-A `Read`-permission key is enough for every table.
+The key authenticates as the **WordPress user it was created for**, and
+the API permission check uses *both* the key permission level and that
+user's capabilities. A `Read` key on an Administrator/Shop Manager user
+can read every table here. A `Read` key on a low-privilege user (e.g.
+Subscriber) will silently miss orders and customers even though the key
+itself is valid — recreate it against a higher-privileged user.
 
-## Limits
+## Known limitations
 
-- This source is **read-only**. It exposes catalog/order/customer/status
-  endpoints only — no creating, updating, or deleting data, and no
-  refund/coupon/tax mutations.
-- Price and amount fields are decimal strings as WooCommerce returns them
-  (e.g. `"12.50"`). Use `CAST(price AS DOUBLE)` for arithmetic.
-- Timestamps use the `_gmt` (UTC) variants from the API and are parsed into
-  real `Timestamp` columns.
-- Nested arrays (`categories`, `tags`, `line_items`, `refunds`) are exposed
-  as `Json` columns; use JSON accessor functions.
-- `orders_count` and `total_spent` on `customers` were dropped in
-  WooCommerce 10. Derive them by aggregating `orders` by `customer_id`.
-- Pagination: each list table fetches up to **100 rows per page** and
-  follows pages until the API returns empty.
+- **Variable products and variations live in two tables.** A variable
+  product's parent row in `products` has no real SKU / price / stock —
+  those are on the variation rows in `product_variations`. To get the
+  full picture for variable stores, join: `products.id =
+  product_variations.product_id` (`product_variations` requires the
+  parent product ID as a filter).
+- `orders_count` and `total_spent` on `customers` were removed in
+  WooCommerce 10. Derive them by aggregating `orders` by `customer_id`
+  — see the *Top customers by spend* example below.
+- Price and amount fields (`price`, `total`, etc.) are decimal strings
+  from the API (e.g. `"12.50"`). `CAST(... AS DOUBLE)` for arithmetic.
+- Timestamps use the `_gmt` (UTC) variants and are parsed into real
+  `Timestamp` columns.
+- Each list table fetches up to **100 rows per page** and follows pages
+  until the API returns empty.
 
 ## Example Queries
 
 ### Store environment
 
 ```sql
-SELECT wc_version, wp_version, php_version, mysql_version, currency,
-       hpos_enabled
+SELECT wc_version, wp_version, php_version, mysql_version, currency, hpos_enabled
 FROM woocommerce.system_status
 ```
 
-### Low-stock products
-
-```sql
-SELECT name, sku, stock_quantity
-FROM woocommerce.products
-WHERE manage_stock = TRUE
-  AND stock_quantity IS NOT NULL
-  AND stock_quantity < 10
-ORDER BY stock_quantity ASC
-```
-
-### Orders awaiting fulfilment
+### Server-side filter pushdown — orders awaiting fulfilment
 
 ```sql
 SELECT id, number, status, total, customer_id, date_created
 FROM woocommerce.orders
-WHERE status = 'processing'
+WHERE status = 'processing'        -- pushed to ?status=
 ORDER BY date_created ASC
 ```
+
+### Search across products
+
+```sql
+SELECT id, name, sku, price, stock_status
+FROM woocommerce.products
+WHERE search = 'mug'               -- pushed to ?search=
+```
+
+### Recently modified orders
+
+```sql
+SELECT id, status, total, date_modified
+FROM woocommerce.orders
+WHERE modified_after = '2026-05-01T00:00:00'   -- pushed to ?modified_after=
+ORDER BY date_modified DESC
+```
+
+### Inventory for variable products (two-step)
+
+Required-filter tables need a constant `product_id`, so this is a
+two-step pattern. First list variable products:
+
+```sql
+SELECT id, name FROM woocommerce.products WHERE type = 'variable'
+```
+
+Then query variations for each ID:
+
+```sql
+SELECT sku, regular_price, stock_quantity, stock_status, attributes
+FROM woocommerce.product_variations
+WHERE product_id = 11
+```
+
+An agent typically loops over the variable-product IDs from the first
+query and issues one `product_variations` query per ID.
 
 ### Top customers by spend (derived)
 
@@ -138,16 +182,48 @@ ORDER BY total_spent DESC
 LIMIT 20
 ```
 
+## Troubleshooting
+
+### "Consumer key is missing" (HTTP 401)
+
+WooCommerce reads the `Authorization` header to authenticate REST calls.
+On Apache + mod_php and many fcgi setups, the header can be stripped
+before PHP sees it, and WooCommerce then reports *"Consumer key is
+missing"* even though the request sent one. Fix it at the host:
+
+**Apache (`.htaccess` at the WP root):**
+
+```apache
+RewriteEngine On
+RewriteCond %{HTTP:Authorization} ^(.+)$
+RewriteRule .* - [E=HTTP_AUTHORIZATION:%1]
+SetEnvIf Authorization "(.*)" HTTP_AUTHORIZATION=$1
+```
+
+**Nginx (in the WordPress server block):**
+
+```nginx
+fastcgi_pass_header Authorization;
+```
+
+Reload the web server after the change. Reference:
+<https://developer.woocommerce.com/docs/apis/rest-api/authentication/>
+
+### "Sorry, you cannot list resources." (HTTP 401)
+
+The credentials are valid but the underlying WordPress user lacks the
+capability for that resource — see *Authentication*. Recreate the API
+key against an Administrator or Shop Manager user.
+
+### Local-HTTP development
+
+WooCommerce gates Basic auth (and consumer-key query params) behind
+`is_ssl()`. The shipped source targets HTTPS stores. For local Docker
+testing over plain HTTP only, a one-line WordPress mu-plugin lifts the
+gate — see the PR description for the exact snippet.
+
 ## Notes
 
-- Verified against WooCommerce 10.7 on WordPress 6.9. The
-  `system_status`, `products`, `orders`, and `customers` endpoints are
-  stable across WooCommerce 7.x+.
-- WooCommerce gates Basic auth (and consumer-key query params) behind an
-  `is_ssl()` check, so this source targets HTTPS stores. For local Docker
-  testing over plain HTTP, drop a one-line mu-plugin into the WordPress
-  install that sets `$_SERVER["HTTPS"] = "on"` — see the PR description
-  for the exact command.
-- `orders_count` and `total_spent` columns are intentionally omitted from
-  `customers` because WooCommerce 10 removed them from the default
-  response. Aggregate `orders` instead.
+- Verified against WooCommerce 10.7 on WordPress 6.9. The `system_status`,
+  `products`, `product_variations`, `orders`, and `customers` endpoints
+  are stable across WooCommerce 7.x+.

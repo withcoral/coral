@@ -20,8 +20,11 @@ inputs:
     kind: secret
     hint: |
       WooCommerce REST API consumer key (starts with `ck_`). Create one
-      in WooCommerce admin under Settings > Advanced > REST API. A key
-      with `Read` permission is sufficient for every table in this source.
+      in WooCommerce admin under Settings > Advanced > REST API.
+      `Read` is the right key permission level for this source, but the
+      key also inherits the capabilities of the WordPress user it is
+      created for — generate it against an Administrator or Shop Manager
+      account so it can read orders and customers as well as the catalog.
   WOOCOMMERCE_CONSUMER_SECRET:
     kind: secret
     hint: |
@@ -199,11 +202,54 @@ tables:
       `sale_price`) are returned by WooCommerce as decimal strings and are
       typed as `Utf8`; `CAST` in SQL when you need arithmetic. `stock_quantity`
       is null when `manage_stock` is false. `categories` and `tags` are JSON
-      arrays of `{id, name, slug}` objects. Filter further with SQL `WHERE`
-      after fetching.
+      arrays of `{id, name, slug}` objects.
+
+      The following predicates are pushed down to the API so only matching
+      rows are fetched (everything else filters locally after the fetch):
+
+      - `WHERE status = '...'`              → `?status=`
+      - `WHERE sku = '...'`                 → `?sku=`
+      - `WHERE stock_status = '...'`        → `?stock_status=`
+      - `WHERE search = '...'`              → `?search=` (full-text)
+      - `WHERE after = '<ISO 8601>'`        → `?after=`
+      - `WHERE before = '<ISO 8601>'`       → `?before=`
+      - `WHERE modified_after = '<ISO 8601>'` → `?modified_after=`
+
+      Variable products only return the parent here. For variation-level
+      SKU/price/stock, query `product_variations` with `WHERE product_id = <id>`.
+    filters:
+      - name: status
+      - name: sku
+      - name: stock_status
+      - name: search
+      - name: after
+      - name: before
+      - name: modified_after
     request:
       method: GET
       path: /wp-json/wc/v3/products
+      query:
+        - name: status
+          from: filter
+          key: status
+        - name: sku
+          from: filter
+          key: sku
+        - name: stock_status
+          from: filter
+          key: stock_status
+        - name: search
+          from: filter
+          key: search
+        - name: after
+          from: filter
+          key: after
+        - name: before
+          from: filter
+          key: before
+        - name: modified_after
+          from: filter
+          key: modified_after
     response:
       row_strategy: direct
     pagination:
@@ -438,6 +484,34 @@ tables:
           kind: path
           path:
             - tags
+      - name: search
+        type: Utf8
+        nullable: true
+        description: Filter only; echoes the WHERE search='...' value pushed to ?search=
+        expr:
+          kind: from_filter
+          key: search
+      - name: after
+        type: Utf8
+        nullable: true
+        description: Filter only (ISO 8601); WHERE after='...' pushed to ?after=
+        expr:
+          kind: from_filter
+          key: after
+      - name: before
+        type: Utf8
+        nullable: true
+        description: Filter only (ISO 8601); WHERE before='...' pushed to ?before=
+        expr:
+          kind: from_filter
+          key: before
+      - name: modified_after
+        type: Utf8
+        nullable: true
+        description: Filter only (ISO 8601); WHERE modified_after='...' pushed to ?modified_after=
+        expr:
+          kind: from_filter
+          key: modified_after
 
   - name: orders
     description: Orders from /wp-json/wc/v3/orders
@@ -448,9 +522,49 @@ tables:
       `date_paid` and `date_completed` are null until the order reaches
       those states. `billing__email` flattens the billing email; the full
       `line_items` array is exposed as JSON.
+
+      The following predicates are pushed down to the API:
+
+      - `WHERE status = '...'`              → `?status=`
+      - `WHERE customer_id = <id>`          → `?customer=`
+      - `WHERE product = <product_id>`      → `?product=` (orders containing product)
+      - `WHERE search = '...'`              → `?search=`
+      - `WHERE after = '<ISO 8601>'`        → `?after=`
+      - `WHERE before = '<ISO 8601>'`       → `?before=`
+      - `WHERE modified_after = '<ISO 8601>'` → `?modified_after=`
+    filters:
+      - name: status
+      - name: customer_id
+      - name: product
+      - name: search
+      - name: after
+      - name: before
+      - name: modified_after
     request:
       method: GET
       path: /wp-json/wc/v3/orders
+      query:
+        - name: status
+          from: filter
+          key: status
+        - name: customer
+          from: filter
+          key: customer_id
+        - name: product
+          from: filter
+          key: product
+        - name: search
+          from: filter
+          key: search
+        - name: after
+          from: filter
+          key: after
+        - name: before
+          from: filter
+          key: before
+        - name: modified_after
+          from: filter
+          key: modified_after
     response:
       row_strategy: direct
     pagination:
@@ -684,6 +798,41 @@ tables:
           kind: path
           path:
             - refunds
+      - name: product
+        type: Int64
+        nullable: true
+        description: Filter only; WHERE product=<id> pushed to ?product= (orders containing product)
+        expr:
+          kind: from_filter
+          key: product
+      - name: search
+        type: Utf8
+        nullable: true
+        description: Filter only; WHERE search='...' pushed to ?search=
+        expr:
+          kind: from_filter
+          key: search
+      - name: after
+        type: Utf8
+        nullable: true
+        description: Filter only (ISO 8601); WHERE after='...' pushed to ?after=
+        expr:
+          kind: from_filter
+          key: after
+      - name: before
+        type: Utf8
+        nullable: true
+        description: Filter only (ISO 8601); WHERE before='...' pushed to ?before=
+        expr:
+          kind: from_filter
+          key: before
+      - name: modified_after
+        type: Utf8
+        nullable: true
+        description: Filter only (ISO 8601); WHERE modified_after='...' pushed to ?modified_after=
+        expr:
+          kind: from_filter
+          key: modified_after
 
   - name: customers
     description: Customers from /wp-json/wc/v3/customers
@@ -697,9 +846,29 @@ tables:
       WooCommerce 10 removed them from the default response, and they
       change per request shape. Use `orders` aggregated by `customer_id`
       to derive those figures reliably.
+
+      The following predicates are pushed down to the API:
+
+      - `WHERE email = '...'`   → `?email=`
+      - `WHERE role = '...'`    → `?role=`
+      - `WHERE search = '...'`  → `?search=`
+    filters:
+      - name: email
+      - name: role
+      - name: search
     request:
       method: GET
       path: /wp-json/wc/v3/customers
+      query:
+        - name: email
+          from: filter
+          key: email
+        - name: role
+          from: filter
+          key: role
+        - name: search
+          from: filter
+          key: search
     response:
       row_strategy: direct
     pagination:
@@ -822,6 +991,219 @@ tables:
         type: Timestamp
         nullable: true
         description: Customer last-modified time (UTC)
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: template
+            template: "{{expr.value}}Z"
+            values:
+              value:
+                kind: path
+                path:
+                  - date_modified_gmt
+      - name: search
+        type: Utf8
+        nullable: true
+        description: Filter only; WHERE search='...' pushed to ?search=
+        expr:
+          kind: from_filter
+          key: search
+
+  - name: product_variations
+    description: Variations of a variable product from /wp-json/wc/v3/products/{product_id}/variations
+    guide: |
+      Returns one row per variation of a variable product. For variable
+      products WooCommerce keeps variation-level SKU, price, stock state,
+      and attributes on these child rows — `products.sku` and
+      `products.stock_quantity` for a variable parent are empty by design.
+
+      Requires `WHERE product_id = <id>` (the parent product ID). Get
+      candidates with `SELECT id FROM woocommerce.products WHERE type = 'variable'`.
+
+      `attributes` is the JSON array of `{id, name, slug, option}` chosen
+      for that variation. `stock_quantity` is null when `manage_stock` is
+      false.
+    filters:
+      - name: product_id
+        required: true
+    request:
+      method: GET
+      path: /wp-json/wc/v3/products/{{filter.product_id}}/variations
+    response:
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      page_size:
+        default: 100
+        max: 100
+        query_param: per_page
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Variation ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: product_id
+        type: Int64
+        nullable: false
+        description: Parent product ID; echoes the required WHERE product_id filter
+        expr:
+          kind: from_filter
+          key: product_id
+      - name: parent_id
+        type: Int64
+        nullable: true
+        description: Parent product ID as returned by the API (matches product_id)
+        expr:
+          kind: path
+          path:
+            - parent_id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Variation display name (e.g. "Coral Tee - L")
+        expr:
+          kind: path
+          path:
+            - name
+      - name: sku
+        type: Utf8
+        nullable: true
+        description: Variation-level SKU
+        expr:
+          kind: path
+          path:
+            - sku
+      - name: status
+        type: Utf8
+        nullable: true
+        description: "Publish status: publish, private"
+        expr:
+          kind: path
+          path:
+            - status
+      - name: price
+        type: Utf8
+        nullable: true
+        description: Current price as a decimal string
+        expr:
+          kind: path
+          path:
+            - price
+      - name: regular_price
+        type: Utf8
+        nullable: true
+        description: Regular price as a decimal string
+        expr:
+          kind: path
+          path:
+            - regular_price
+      - name: sale_price
+        type: Utf8
+        nullable: true
+        description: Sale price as a decimal string; empty when not on sale
+        expr:
+          kind: path
+          path:
+            - sale_price
+      - name: on_sale
+        type: Boolean
+        nullable: true
+        description: Whether the variation is currently on sale
+        expr:
+          kind: path
+          path:
+            - on_sale
+      - name: purchasable
+        type: Boolean
+        nullable: true
+        description: Whether the variation can currently be purchased
+        expr:
+          kind: path
+          path:
+            - purchasable
+      - name: manage_stock
+        type: Boolean
+        nullable: true
+        description: Whether stock is tracked for this variation
+        expr:
+          kind: path
+          path:
+            - manage_stock
+      - name: stock_status
+        type: Utf8
+        nullable: true
+        description: "Stock status: instock, outofstock, onbackorder"
+        expr:
+          kind: path
+          path:
+            - stock_status
+      - name: stock_quantity
+        type: Int64
+        nullable: true
+        description: Variation stock quantity; null when manage_stock is false
+        expr:
+          kind: path
+          path:
+            - stock_quantity
+      - name: virtual
+        type: Boolean
+        nullable: true
+        description: Whether the variation is a virtual product
+        expr:
+          kind: path
+          path:
+            - virtual
+      - name: downloadable
+        type: Boolean
+        nullable: true
+        description: Whether the variation is downloadable
+        expr:
+          kind: path
+          path:
+            - downloadable
+      - name: permalink
+        type: Utf8
+        nullable: true
+        description: Public URL of the variation
+        expr:
+          kind: path
+          path:
+            - permalink
+      - name: attributes
+        type: Json
+        nullable: true
+        description: Chosen attribute options for the variation as a JSON array
+        expr:
+          kind: path
+          path:
+            - attributes
+      - name: date_created
+        type: Timestamp
+        nullable: true
+        description: Variation creation time (UTC)
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: template
+            template: "{{expr.value}}Z"
+            values:
+              value:
+                kind: path
+                path:
+                  - date_created_gmt
+      - name: date_modified
+        type: Timestamp
+        nullable: true
+        description: Variation last-modified time (UTC)
         expr:
           kind: format_timestamp
           input: iso8601
