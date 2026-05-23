@@ -1,0 +1,300 @@
+name: statuspage
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query active incidents and component health from your Statuspage.io
+  status page.
+
+inputs:
+  STATUSPAGE_API_KEY:
+    kind: secret
+    hint: |
+      Your Statuspage.io API key.
+      Find it at: manage.statuspage.io → click your avatar → API info.
+      It looks like: a long hex string (e.g. 89a229ce1a8dbcf9ff30430fbe...).
+  STATUSPAGE_PAGE_ID:
+    kind: variable
+    hint: |
+      Your Statuspage.io page ID (not subdomain — the short alphanumeric ID).
+      Find it at: manage.statuspage.io → API info page → "Page ID" field.
+      It looks like: gytm4qzbx9t6
+
+base_url: "https://api.statuspage.io/v1"
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "OAuth {{input.STATUSPAGE_API_KEY}}"
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT * FROM statuspage.incidents LIMIT 1
+  - SELECT * FROM statuspage.components LIMIT 1
+
+tables:
+  - name: incidents
+    description: Unresolved (active) incidents on your Statuspage.io status page
+    guide: |
+      Queries the /incidents/unresolved endpoint — only returns incidents with
+      status investigating, identified, or monitoring. Resolved incidents are
+      never included. Use this table to detect live infrastructure outages that
+      may explain service errors surfaced by Sentry or PagerDuty.
+      `incident_updates__body` joins all update message bodies in newest-first
+      order as returned by the API.
+    request:
+      method: GET
+      path: "/pages/{{input.STATUSPAGE_PAGE_ID}}/incidents/unresolved"
+    response:
+      rows_path: []
+      row_strategy: direct
+      allow_404_empty: true
+    pagination:
+      mode: page
+      page_size:
+        default: 100
+        max: 100
+        query_param: per_page
+      page_param: page
+      page_start: 1
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique incident identifier (e.g. "jklm456")
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Human-readable incident title
+        expr:
+          kind: path
+          path:
+            - name
+      - name: status
+        type: Utf8
+        nullable: true
+        description: >-
+          Current incident status.
+          One of: investigating, identified, monitoring.
+          The unresolved endpoint never returns resolved incidents.
+        expr:
+          kind: path
+          path:
+            - status
+      - name: impact
+        type: Utf8
+        nullable: true
+        description: >-
+          Assessed customer impact level.
+          One of: none, minor, major, critical.
+        expr:
+          kind: path
+          path:
+            - impact
+      - name: shortlink
+        type: Utf8
+        nullable: true
+        description: Public short URL to the incident on the status page
+        expr:
+          kind: path
+          path:
+            - shortlink
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the incident was created
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp of the most recent update
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at
+      - name: monitoring_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the incident entered monitoring status (nullable)
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - monitoring_at
+      - name: resolved_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when resolved — always null on the unresolved endpoint
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - resolved_at
+      - name: incident_updates__body
+        type: Utf8
+        nullable: true
+        description: All incident update message bodies joined by newline, newest-first
+        expr:
+          kind: join_array_path
+          path:
+            - incident_updates
+          item_path:
+            - body
+          separator: "\n"
+
+  - name: components
+    description: Infrastructure components and their current health status from Statuspage.io
+    guide: |
+      Each row is one component on the status page. `status` reflects the
+      current operational state — filter WHERE status != 'operational' to find
+      anything degraded. `group = true` marks a component group header row —
+      these have no `status` value and will appear as NULL. `only_show_if_degraded
+      = true` means the component is hidden from the public page when healthy.
+      `group_id` links to the parent component group's `id`. Use `position` for
+      display-order sorting matching the public status page.
+    request:
+      method: GET
+      path: "/pages/{{input.STATUSPAGE_PAGE_ID}}/components"
+    response:
+      rows_path: []
+      row_strategy: direct
+      allow_404_empty: true
+    pagination:
+      mode: page
+      page_size:
+        default: 100
+        max: 100
+        query_param: per_page
+      page_param: page
+      page_start: 1
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique component identifier
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Component display name (e.g. "API Gateway", "Checkout Service")
+        expr:
+          kind: path
+          path:
+            - name
+      - name: status
+        type: Utf8
+        nullable: true
+        description: >-
+          Component operational status.
+          One of: operational, degraded_performance, partial_outage,
+          major_outage, under_maintenance.
+        expr:
+          kind: path
+          path:
+            - status
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Optional description of what this component represents
+        expr:
+          kind: path
+          path:
+            - description
+      - name: group
+        type: Boolean
+        nullable: true
+        description: >-
+          If true, this row is a component group header, not an individual component.
+          Group header rows have no status value — status will be NULL.
+        expr:
+          kind: path
+          path:
+            - group
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the component was created
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp of the most recent status change
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at
+      - name: position
+        type: Int64
+        nullable: true
+        description: Display order position on the status page
+        expr:
+          kind: path
+          path:
+            - position
+      - name: showcase
+        type: Boolean
+        nullable: true
+        description: Whether this component is shown on the public status page
+        expr:
+          kind: path
+          path:
+            - showcase
+      - name: only_show_if_degraded
+        type: Boolean
+        nullable: true
+        description: If true, this component is hidden from the public page when operational
+        expr:
+          kind: path
+          path:
+            - only_show_if_degraded
+      - name: group_id
+        type: Utf8
+        nullable: true
+        description: ID of the component group this belongs to (nullable)
+        expr:
+          kind: path
+          path:
+            - group_id
+      - name: page_id
+        type: Utf8
+        nullable: true
+        description: ID of the Statuspage page this component belongs to
+        expr:
+          kind: path
+          path:
+            - page_id
