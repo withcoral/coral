@@ -39,7 +39,7 @@ for details.
 ### 2. Add the source
 
 ```bash
-coral source add supabase
+coral source add --file sources/community/supabase/manifest.yaml
 ```
 
 When prompted, provide your PAT as `SUPABASE_ACCESS_TOKEN`.
