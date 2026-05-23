@@ -183,19 +183,21 @@ mod tests {
         })
     }
 
+    fn filter(name: &str, required: bool, mode: FilterMode) -> FilterSpec {
+        FilterSpec {
+            name: name.into(),
+            data_type: "Utf8".into(),
+            required,
+            mode,
+            description: String::new(),
+        }
+    }
+
     #[test]
     fn extracts_required_filters_from_conjunctions() {
         let filters = vec![
-            FilterSpec {
-                name: "owner".into(),
-                required: true,
-                mode: FilterMode::default(),
-            },
-            FilterSpec {
-                name: "status".into(),
-                required: true,
-                mode: FilterMode::default(),
-            },
+            filter("owner", true, FilterMode::default()),
+            filter("status", true, FilterMode::default()),
         ];
 
         let expr = equality_expr("owner", "alice").and(equality_expr("status", "open"));
@@ -207,11 +209,7 @@ mod tests {
 
     #[test]
     fn extracts_single_item_in_list_as_constant_filter() {
-        let filters = vec![FilterSpec {
-            name: "repo".into(),
-            required: false,
-            mode: FilterMode::default(),
-        }];
+        let filters = vec![filter("repo", false, FilterMode::default())];
 
         let expr = col("repo").in_list(vec![lit("coral")], false);
         let values = extract_filter_values(&[expr], &filters);
@@ -220,12 +218,8 @@ mod tests {
     }
 
     #[test]
-    fn search_filter_also_accepts_equality() {
-        let filters = vec![FilterSpec {
-            name: "q".into(),
-            required: false,
-            mode: FilterMode::Search,
-        }];
+    fn contains_filter_also_accepts_equality() {
+        let filters = vec![filter("q", false, FilterMode::Contains)];
 
         let expr = equality_expr("q", "deploy");
         let values = extract_filter_values(&[expr], &filters);
@@ -234,11 +228,7 @@ mod tests {
 
     #[test]
     fn like_ignored_for_equality_mode_filter() {
-        let filters = vec![FilterSpec {
-            name: "q".into(),
-            required: false,
-            mode: FilterMode::Equality,
-        }];
+        let filters = vec![filter("q", false, FilterMode::Equality)];
 
         let expr = like_expr("q", "%deploy%");
         let values = extract_filter_values(&[expr], &filters);
@@ -247,11 +237,7 @@ mod tests {
 
     #[test]
     fn strips_wildcards_from_like_pattern() {
-        let filters = vec![FilterSpec {
-            name: "q".into(),
-            required: false,
-            mode: FilterMode::Search,
-        }];
+        let filters = vec![filter("q", false, FilterMode::Contains)];
 
         let values = extract_filter_values(&[like_expr("q", "%deploy")], &filters);
         assert_eq!(values.get("q").map(String::as_str), Some("deploy"));
@@ -267,12 +253,18 @@ mod tests {
     }
 
     #[test]
-    fn extracts_like_value_for_search_mode_filter() {
-        let filters = vec![FilterSpec {
-            name: "q".into(),
-            required: false,
-            mode: FilterMode::Search,
-        }];
+    fn extracts_like_value_for_contains_mode_filter() {
+        let filters = vec![filter("q", false, FilterMode::Contains)];
+
+        let expr = like_expr("q", "%deploy%");
+        let values = extract_filter_values(&[expr], &filters);
+
+        assert_eq!(values.get("q").map(String::as_str), Some("deploy"));
+    }
+
+    #[test]
+    fn extracts_like_value_for_legacy_search_mode_filter() {
+        let filters = vec![filter("q", false, FilterMode::Search)];
 
         let expr = like_expr("q", "%deploy%");
         let values = extract_filter_values(&[expr], &filters);
@@ -282,11 +274,7 @@ mod tests {
 
     #[test]
     fn extracts_boolean_true_from_bare_column_filter() {
-        let filters = vec![FilterSpec {
-            name: "descending".into(),
-            required: false,
-            mode: FilterMode::default(),
-        }];
+        let filters = vec![filter("descending", false, FilterMode::default())];
 
         let values = extract_filter_values(&[col("descending")], &filters);
 
@@ -295,11 +283,7 @@ mod tests {
 
     #[test]
     fn extracts_boolean_false_from_not_column_filter() {
-        let filters = vec![FilterSpec {
-            name: "descending".into(),
-            required: false,
-            mode: FilterMode::default(),
-        }];
+        let filters = vec![filter("descending", false, FilterMode::default())];
 
         let values = extract_filter_values(&[col("descending").not()], &filters);
 
@@ -308,11 +292,7 @@ mod tests {
 
     #[test]
     fn extracts_boolean_values_from_is_true_and_is_false_predicates() {
-        let filters = vec![FilterSpec {
-            name: "descending".into(),
-            required: false,
-            mode: FilterMode::default(),
-        }];
+        let filters = vec![filter("descending", false, FilterMode::default())];
 
         let cases = [
             (Expr::IsTrue(Box::new(col("descending"))), "true"),
@@ -327,11 +307,7 @@ mod tests {
 
     #[test]
     fn ignores_null_inclusive_boolean_is_predicates() {
-        let filters = vec![FilterSpec {
-            name: "descending".into(),
-            required: false,
-            mode: FilterMode::default(),
-        }];
+        let filters = vec![filter("descending", false, FilterMode::default())];
 
         for expr in [
             Expr::IsNotTrue(Box::new(col("descending"))),

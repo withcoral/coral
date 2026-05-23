@@ -5,7 +5,10 @@ mod error;
 mod query;
 mod query_error;
 
-pub use catalog::{ColumnInfo, TableInfo};
+pub use catalog::{
+    CatalogInfo, ColumnInfo, TableFunctionArgumentInfo, TableFunctionInfo,
+    TableFunctionResultColumnInfo, TableInfo,
+};
 pub use error::{CoreError, StatusCode, StructuredQueryError};
 pub use query::{
     QueryExecution, QueryPlan, QueryRuntimeConfig, QueryRuntimeContext, QuerySource,

@@ -1,0 +1,1010 @@
+name: huggingface
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query models, datasets, Spaces, daily papers, and trending repositories
+  from the Hugging Face Hub. Discover ML models by task, framework, and
+  popularity. Browse datasets, Spaces, and community-curated research papers.
+inputs:
+  HF_TOKEN:
+    kind: secret
+    hint: |
+      Hugging Face User Access Token with at least `read` scope.
+      Create one at https://huggingface.co/settings/tokens.
+      Required for authentication; a read-only token is sufficient
+      for all tables in this source. Private and gated repos also
+      require `read` scope.
+base_url: https://huggingface.co
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "Bearer {{input.HF_TOKEN}}"
+
+test_queries:
+  - SELECT id, pipeline_tag, likes, downloads FROM huggingface.models LIMIT 1
+  - SELECT id, likes, downloads FROM huggingface.datasets LIMIT 1
+  - SELECT paper_id, title FROM huggingface.daily_papers LIMIT 1
+  - SELECT repo_id, repo_type, likes FROM huggingface.trending LIMIT 1
+
+tables:
+  # ─────────────────────────────────────────────────────────────
+  # models – search, browse, and discover ML models on the Hub
+  # ─────────────────────────────────────────────────────────────
+  - name: models
+    description: >
+      Lists models published on the Hugging Face Hub. Each row includes the
+      model ID, author, task pipeline tag, framework, popularity metrics,
+      tags, and repository file listing. Use LIMIT to keep queries cheap.
+    guide: >
+      Start with `SELECT id, pipeline_tag, likes, downloads FROM
+      huggingface.models LIMIT 10`. Filter by `author` for a specific
+      organization or by `pipeline_tag` (e.g. text-generation,
+      image-classification) for a specific task. Use `search` for keyword
+      search across model names and metadata. Use the `filter` column for
+      tag-based filtering (e.g. `filter = 'transformers'` to restrict by
+      framework). The `siblings` column contains the repository file
+      listing as JSON. Results are sorted by trending score by default;
+      use the `sort` filter to change (e.g. likes, downloads, lastModified).
+    filters:
+      - name: search
+      - name: author
+      - name: filter
+      - name: sort
+      - name: direction
+      - name: pipeline_tag
+    request:
+      method: GET
+      path: /api/models
+      query:
+        - name: limit
+          from: literal
+          value: "100"
+        - name: full
+          from: literal
+          value: "true"
+        - name: search
+          from: filter
+          key: search
+        - name: author
+          from: filter
+          key: author
+        - name: filter
+          from: filter
+          key: filter
+        - name: sort
+          from: filter
+          key: sort
+        - name: direction
+          from: filter
+          key: direction
+        - name: pipeline_tag
+          from: filter
+          key: pipeline_tag
+    response:
+      rows_path: []
+    pagination:
+      mode: link_header
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Full model ID (namespace/repo, e.g. meta-llama/Llama-3.1-8B).
+        expr:
+          kind: path
+          path:
+            - id
+      - name: model_id
+        type: Utf8
+        nullable: false
+        description: Model ID (same as id, kept for API compatibility).
+        expr:
+          kind: path
+          path:
+            - modelId
+      - name: author
+        type: Utf8
+        nullable: true
+        description: Model author or organization (e.g. meta-llama, google).
+        expr:
+          kind: path
+          path:
+            - author
+      - name: sha
+        type: Utf8
+        nullable: true
+        description: Latest commit SHA on the default branch.
+        expr:
+          kind: path
+          path:
+            - sha
+      - name: private
+        type: Boolean
+        nullable: false
+        description: Whether the model repository is private.
+        expr:
+          kind: path
+          path:
+            - private
+      - name: gated
+        type: Utf8
+        nullable: true
+        description: >-
+          Gating status: false (open), "auto" (auto-approve), or "manual"
+          (manual approval required). Returned as a string.
+        expr:
+          kind: path
+          path:
+            - gated
+      - name: disabled
+        type: Boolean
+        nullable: true
+        description: Whether the model is disabled by moderation.
+        expr:
+          kind: path
+          path:
+            - disabled
+      - name: pipeline_tag
+        type: Utf8
+        nullable: true
+        description: >-
+          Pipeline task tag (e.g. text-generation, image-classification,
+          text-to-video, automatic-speech-recognition).
+        expr:
+          kind: path
+          path:
+            - pipeline_tag
+      - name: library_name
+        type: Utf8
+        nullable: true
+        description: >-
+          Primary framework library (e.g. transformers, diffusers, gguf,
+          sentence-transformers).
+        expr:
+          kind: path
+          path:
+            - library_name
+      - name: likes
+        type: Int64
+        nullable: false
+        description: Total number of likes (hearts) on the model.
+        expr:
+          kind: path
+          path:
+            - likes
+      - name: downloads
+        type: Int64
+        nullable: false
+        description: Total all-time download count.
+        expr:
+          kind: path
+          path:
+            - downloads
+      - name: trending_score
+        type: Float64
+        nullable: true
+        description: >-
+          Current trending score. Higher means more popular right now.
+          Default sort order.
+        expr:
+          kind: path
+          path:
+            - trendingScore
+      - name: tags
+        type: Utf8
+        nullable: true
+        description: >-
+          Comma-separated tags including frameworks, licenses, languages,
+          arxiv references, and custom labels. Use LIKE to filter.
+        expr:
+          kind: join_array
+          path:
+            - tags
+          separator: ", "
+      - name: siblings
+        type: Json
+        nullable: true
+        description: >-
+          Repository file listing as JSON array. Each entry has an
+          `rfilename` field with the relative file path.
+        expr:
+          kind: path
+          path:
+            - siblings
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Repository creation timestamp (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - createdAt
+      - name: last_modified
+        type: Utf8
+        nullable: true
+        description: Last modification timestamp (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - lastModified
+      - name: search
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Filter by keyword search across model names and metadata.
+        expr:
+          kind: from_filter
+          key: search
+      - name: filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Filter by tag (e.g. transformers, license:apache-2.0).
+        expr:
+          kind: from_filter
+          key: filter
+      - name: sort
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Sort field (trendingScore, likes, downloads, lastModified).
+        expr:
+          kind: from_filter
+          key: sort
+      - name: direction
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Sort direction (-1 for descending).
+        expr:
+          kind: from_filter
+          key: direction
+
+
+  # ─────────────────────────────────────────────────────────────
+  # datasets – search, browse, and discover datasets on the Hub
+  # ─────────────────────────────────────────────────────────────
+  - name: datasets
+    description: >
+      Lists datasets published on the Hugging Face Hub. Each row includes the
+      dataset ID, author, popularity metrics, description, card metadata,
+      tags, and repository file listing.
+    guide: >
+      Start with `SELECT id, author, likes, downloads FROM
+      huggingface.datasets LIMIT 10`. Filter by `author` for a specific
+      organization or use `search` for keyword search. The `card_data`
+      column contains the full dataset card metadata as JSON including
+      license, language, size categories, and task categories.
+    filters:
+      - name: search
+      - name: author
+      - name: filter
+      - name: sort
+      - name: direction
+    request:
+      method: GET
+      path: /api/datasets
+      query:
+        - name: limit
+          from: literal
+          value: "100"
+        - name: full
+          from: literal
+          value: "true"
+        - name: search
+          from: filter
+          key: search
+        - name: author
+          from: filter
+          key: author
+        - name: filter
+          from: filter
+          key: filter
+        - name: sort
+          from: filter
+          key: sort
+        - name: direction
+          from: filter
+          key: direction
+    response:
+      rows_path: []
+    pagination:
+      mode: link_header
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Full dataset ID (namespace/repo, e.g. squad, mozilla-foundation/common_voice_17_0).
+        expr:
+          kind: path
+          path:
+            - id
+      - name: author
+        type: Utf8
+        nullable: true
+        description: Dataset author or organization.
+        expr:
+          kind: path
+          path:
+            - author
+      - name: sha
+        type: Utf8
+        nullable: true
+        description: Latest commit SHA on the default branch.
+        expr:
+          kind: path
+          path:
+            - sha
+      - name: private
+        type: Boolean
+        nullable: false
+        description: Whether the dataset repository is private.
+        expr:
+          kind: path
+          path:
+            - private
+      - name: gated
+        type: Utf8
+        nullable: true
+        description: >-
+          Gating status: false (open), "auto" (auto-approve), or "manual"
+          (manual approval required).
+        expr:
+          kind: path
+          path:
+            - gated
+      - name: disabled
+        type: Boolean
+        nullable: true
+        description: Whether the dataset is disabled by moderation.
+        expr:
+          kind: path
+          path:
+            - disabled
+      - name: likes
+        type: Int64
+        nullable: false
+        description: Total number of likes (hearts) on the dataset.
+        expr:
+          kind: path
+          path:
+            - likes
+      - name: downloads
+        type: Int64
+        nullable: false
+        description: Total all-time download count.
+        expr:
+          kind: path
+          path:
+            - downloads
+      - name: trending_score
+        type: Float64
+        nullable: true
+        description: Current trending score.
+        expr:
+          kind: path
+          path:
+            - trendingScore
+      - name: description
+        type: Utf8
+        nullable: true
+        description: >-
+          Dataset description extracted from the dataset card. May be
+          truncated for large descriptions.
+        expr:
+          kind: path
+          path:
+            - description
+      - name: tags
+        type: Utf8
+        nullable: true
+        description: >-
+          Comma-separated tags including task categories, languages,
+          licenses, size categories, formats, modalities, and libraries.
+        expr:
+          kind: join_array
+          path:
+            - tags
+          separator: ", "
+      - name: card_data
+        type: Json
+        nullable: true
+        description: >-
+          Full dataset card YAML metadata as JSON. Includes license,
+          language, task_categories, size_categories, dataset_info
+          (features, splits, download_size), and configuration details.
+        expr:
+          kind: path
+          path:
+            - cardData
+      - name: siblings
+        type: Json
+        nullable: true
+        description: Repository file listing as JSON array.
+        expr:
+          kind: path
+          path:
+            - siblings
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Repository creation timestamp (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - createdAt
+      - name: last_modified
+        type: Utf8
+        nullable: true
+        description: Last modification timestamp (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - lastModified
+      - name: search
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Filter by keyword search across dataset names and metadata.
+        expr:
+          kind: from_filter
+          key: search
+      - name: filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Filter by tag (e.g. task_categories:question-answering).
+        expr:
+          kind: from_filter
+          key: filter
+      - name: sort
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Sort field (trendingScore, likes, downloads, lastModified).
+        expr:
+          kind: from_filter
+          key: sort
+      - name: direction
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Sort direction (-1 for descending).
+        expr:
+          kind: from_filter
+          key: direction
+
+  # ─────────────────────────────────────────────────────────────
+  # spaces – search, browse, and discover Spaces on the Hub
+  # ─────────────────────────────────────────────────────────────
+  - name: spaces
+    description: >
+      Lists Spaces (interactive ML apps and demos) on the Hugging Face Hub.
+      Each row includes the Space ID, author, SDK framework, popularity
+      metrics, card metadata, and repository file listing.
+    guide: >
+      Start with `SELECT id, sdk, likes FROM huggingface.spaces LIMIT 10`.
+      The `sdk` column shows the framework powering the Space: gradio,
+      streamlit, docker, or static. Use `search` for keyword search or
+      `author` to scope to a specific organization. The `card_data` column
+      contains the Space card metadata as JSON including title, emoji,
+      color scheme, and short description.
+    filters:
+      - name: search
+      - name: author
+      - name: filter
+      - name: sort
+      - name: direction
+    request:
+      method: GET
+      path: /api/spaces
+      query:
+        - name: limit
+          from: literal
+          value: "100"
+        - name: full
+          from: literal
+          value: "true"
+        - name: search
+          from: filter
+          key: search
+        - name: author
+          from: filter
+          key: author
+        - name: filter
+          from: filter
+          key: filter
+        - name: sort
+          from: filter
+          key: sort
+        - name: direction
+          from: filter
+          key: direction
+    response:
+      rows_path: []
+    pagination:
+      mode: link_header
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Full Space ID (namespace/repo, e.g. stabilityai/stable-diffusion).
+        expr:
+          kind: path
+          path:
+            - id
+      - name: author
+        type: Utf8
+        nullable: true
+        description: Space author or organization.
+        expr:
+          kind: path
+          path:
+            - author
+      - name: sha
+        type: Utf8
+        nullable: true
+        description: Latest commit SHA on the default branch.
+        expr:
+          kind: path
+          path:
+            - sha
+      - name: private
+        type: Boolean
+        nullable: false
+        description: Whether the Space is private.
+        expr:
+          kind: path
+          path:
+            - private
+      - name: sdk
+        type: Utf8
+        nullable: true
+        description: >-
+          SDK framework powering the Space: gradio, streamlit, docker,
+          or static.
+        expr:
+          kind: path
+          path:
+            - sdk
+      - name: subdomain
+        type: Utf8
+        nullable: true
+        description: >-
+          Subdomain slug for the Space URL
+          (e.g. user-spacename.hf.space).
+        expr:
+          kind: path
+          path:
+            - subdomain
+      - name: likes
+        type: Int64
+        nullable: false
+        description: Total number of likes (hearts) on the Space.
+        expr:
+          kind: path
+          path:
+            - likes
+      - name: trending_score
+        type: Float64
+        nullable: true
+        description: Current trending score.
+        expr:
+          kind: path
+          path:
+            - trendingScore
+      - name: tags
+        type: Utf8
+        nullable: true
+        description: >-
+          Comma-separated tags including SDK, MCP server capability,
+          region, and custom labels.
+        expr:
+          kind: join_array
+          path:
+            - tags
+          separator: ", "
+      - name: card_data
+        type: Json
+        nullable: true
+        description: >-
+          Space card YAML metadata as JSON. Includes title, emoji,
+          colorFrom, colorTo, sdk, sdk_version, app_file, pinned,
+          and short_description.
+        expr:
+          kind: path
+          path:
+            - cardData
+      - name: siblings
+        type: Json
+        nullable: true
+        description: Repository file listing as JSON array.
+        expr:
+          kind: path
+          path:
+            - siblings
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Repository creation timestamp (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - createdAt
+      - name: last_modified
+        type: Utf8
+        nullable: true
+        description: Last modification timestamp (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - lastModified
+      - name: search
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Filter by keyword search across Space names and metadata.
+        expr:
+          kind: from_filter
+          key: search
+      - name: filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Filter by tag (e.g. gradio, mcp-server).
+        expr:
+          kind: from_filter
+          key: filter
+      - name: sort
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Sort field (trendingScore, likes, lastModified).
+        expr:
+          kind: from_filter
+          key: sort
+      - name: direction
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Sort direction (-1 for descending).
+        expr:
+          kind: from_filter
+          key: direction
+
+  # ─────────────────────────────────────────────────────────────
+  # daily_papers – community-curated trending research papers
+  # ─────────────────────────────────────────────────────────────
+  - name: daily_papers
+    description: >
+      Lists community-curated daily research papers from the Hugging Face Hub.
+      Each row includes the paper's ArXiv ID, title, abstract, authors, GitHub
+      repository link, submission metadata, and AI-generated summary. Papers
+      are submitted and upvoted by the community.
+    guide: >
+      Browse recent papers with `SELECT title, paper_id, upvotes,
+      num_comments FROM huggingface.daily_papers LIMIT 10`. Returns up
+      to 100 recent papers per query (no pagination). The `summary`
+      column contains the full abstract. Use `ai_summary` for a shorter
+      AI-generated overview. The `github_repo` column links to the
+      paper's implementation when available. The `authors` column is a
+      JSON array of author objects.
+    request:
+      method: GET
+      path: /api/daily_papers
+      query:
+        - name: limit
+          from: literal
+          value: "100"
+    response:
+      rows_path: []
+    pagination:
+      mode: none
+    columns:
+      - name: paper_id
+        type: Utf8
+        nullable: false
+        description: ArXiv paper ID (e.g. 2605.13647).
+        expr:
+          kind: path
+          path:
+            - paper
+            - id
+      - name: title
+        type: Utf8
+        nullable: false
+        description: Paper title.
+        expr:
+          kind: path
+          path:
+            - title
+      - name: summary
+        type: Utf8
+        nullable: true
+        description: Full paper abstract / summary text.
+        expr:
+          kind: path
+          path:
+            - summary
+      - name: ai_summary
+        type: Utf8
+        nullable: true
+        description: >-
+          Short AI-generated summary of the paper, typically one sentence.
+        expr:
+          kind: path
+          path:
+            - paper
+            - ai_summary
+      - name: ai_keywords
+        type: Utf8
+        nullable: true
+        description: >-
+          Comma-separated AI-extracted keywords from the paper.
+        expr:
+          kind: join_array
+          path:
+            - paper
+            - ai_keywords
+          separator: ", "
+      - name: authors
+        type: Json
+        nullable: true
+        description: >-
+          JSON array of author objects, each with _id, name, and hidden fields.
+        expr:
+          kind: path
+          path:
+            - paper
+            - authors
+      - name: github_repo
+        type: Utf8
+        nullable: true
+        description: >-
+          GitHub repository URL linked to the paper implementation, if available.
+        expr:
+          kind: path
+          path:
+            - paper
+            - githubRepo
+      - name: upvotes
+        type: Int64
+        nullable: true
+        description: Number of community upvotes on the paper.
+        expr:
+          kind: path
+          path:
+            - paper
+            - upvotes
+      - name: num_comments
+        type: Int64
+        nullable: true
+        description: Number of discussion comments on the paper.
+        expr:
+          kind: path
+          path:
+            - numComments
+      - name: thumbnail
+        type: Utf8
+        nullable: true
+        description: URL of the paper's social media thumbnail image.
+        expr:
+          kind: path
+          path:
+            - thumbnail
+      - name: published_at
+        type: Utf8
+        nullable: true
+        description: Paper publication date (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - publishedAt
+      - name: submitted_at
+        type: Utf8
+        nullable: true
+        description: Date submitted to daily papers (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - paper
+            - submittedOnDailyAt
+      - name: submitted_by__user
+        type: Utf8
+        nullable: true
+        description: Username who submitted the paper to daily papers.
+        expr:
+          kind: path
+          path:
+            - submittedBy
+            - name
+      - name: submitted_by__fullname
+        type: Utf8
+        nullable: true
+        description: Full name of the user who submitted the paper.
+        expr:
+          kind: path
+          path:
+            - submittedBy
+            - fullname
+      - name: organization__name
+        type: Utf8
+        nullable: true
+        description: Organization namespace if the paper is linked to one.
+        expr:
+          kind: path
+          path:
+            - organization
+            - name
+      - name: organization__fullname
+        type: Utf8
+        nullable: true
+        description: Full organization name.
+        expr:
+          kind: path
+          path:
+            - organization
+            - fullname
+      - name: is_author_participating
+        type: Boolean
+        nullable: true
+        description: Whether the paper author is participating in the discussion.
+        expr:
+          kind: path
+          path:
+            - isAuthorParticipating
+
+  # ─────────────────────────────────────────────────────────────
+  # trending – currently trending repos across all Hub types
+  # ─────────────────────────────────────────────────────────────
+  - name: trending
+    description: >
+      Lists currently trending repositories across the Hugging Face Hub.
+      Includes models, datasets, and Spaces ranked by community engagement.
+      Each row contains repo metadata, author info, and popularity metrics.
+    guide: >
+      Query with `SELECT repo_id, repo_type, likes, downloads FROM
+      huggingface.trending`. Use the `type` filter to restrict to
+      model, dataset, or space. Without a filter, returns all types.
+      The `author__fullname` column shows the display name while
+      `author__name` shows the namespace.
+    filters:
+      - name: type
+    request:
+      method: GET
+      path: /api/trending
+      query:
+        - name: limit
+          from: literal
+          value: "20"
+        - name: type
+          from: filter
+          key: type
+    response:
+      rows_path:
+        - recentlyTrending
+    pagination:
+      mode: none
+    columns:
+      - name: repo_id
+        type: Utf8
+        nullable: false
+        description: Full repository ID (namespace/name).
+        expr:
+          kind: path
+          path:
+            - repoData
+            - id
+      - name: repo_type
+        type: Utf8
+        nullable: false
+        description: Repository type (model, dataset, space).
+        expr:
+          kind: path
+          path:
+            - repoType
+      - name: author__name
+        type: Utf8
+        nullable: true
+        description: Author or organization namespace.
+        expr:
+          kind: path
+          path:
+            - repoData
+            - author
+      - name: author__fullname
+        type: Utf8
+        nullable: true
+        description: Author or organization display name.
+        expr:
+          kind: path
+          path:
+            - repoData
+            - authorData
+            - fullname
+      - name: author__type
+        type: Utf8
+        nullable: true
+        description: Author type (user or org).
+        expr:
+          kind: path
+          path:
+            - repoData
+            - authorData
+            - type
+      - name: likes
+        type: Int64
+        nullable: true
+        description: Number of likes on the repo.
+        expr:
+          kind: path
+          path:
+            - repoData
+            - likes
+      - name: downloads
+        type: Int64
+        nullable: true
+        description: Total download count (models and datasets only).
+        expr:
+          kind: path
+          path:
+            - repoData
+            - downloads
+      - name: pipeline_tag
+        type: Utf8
+        nullable: true
+        description: Pipeline task tag (models only, e.g. text-generation).
+        expr:
+          kind: path
+          path:
+            - repoData
+            - pipeline_tag
+      - name: private
+        type: Boolean
+        nullable: true
+        description: Whether the repository is private.
+        expr:
+          kind: path
+          path:
+            - repoData
+            - private
+      - name: gated
+        type: Utf8
+        nullable: true
+        description: Gating status (false, auto, or manual).
+        expr:
+          kind: path
+          path:
+            - repoData
+            - gated
+      - name: last_modified
+        type: Utf8
+        nullable: true
+        description: Last modification timestamp (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - repoData
+            - lastModified
+      - name: type
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Filter by repo type (model, dataset, or space).
+        expr:
+          kind: from_filter
+          key: type

@@ -1,0 +1,734 @@
+name: clear_ml
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query ClearML projects, tasks, models, pipelines, workers, queues, artifact
+  metadata, and current user context.
+base_url: "{{input.CLEARML_API_HOST}}"
+inputs:
+  CLEARML_API_HOST:
+    kind: variable
+    required: true
+    default: https://api.clear.ml
+    hint: |
+      ClearML API server URL, usually the `api_server` value from clearml.conf.
+      Use https://api.clear.ml for ClearML Hosted Service or your self-hosted
+      API server such as https://clearml-api.example.com.
+  CLEARML_API_TOKEN:
+    kind: secret
+    hint: |
+      ClearML bearer token for the REST API. Generate one with `GET /auth.login`
+      using your ClearML access key and secret key, for example:
+      `curl -u "$CLEARML_API_ACCESS_KEY:$CLEARML_API_SECRET_KEY" "$CLEARML_API_HOST/auth.login"`.
+      The response token is sent as `Authorization: Bearer <CLEARML_API_TOKEN>`.
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.CLEARML_API_TOKEN}}
+request_headers:
+  - name: Content-Type
+    from: literal
+    value: application/json
+test_queries:
+  - SELECT * FROM clear_ml.projects LIMIT 1
+  - SELECT * FROM clear_ml.queues LIMIT 1
+tables:
+  - name: current_user
+    description: Current authenticated ClearML user context.
+    guide: |
+      Use this table to validate the bearer token and identify the current user
+      and company context. Some older or minimal self-hosted ClearML servers may
+      not expose the users service; `projects` is the portable smoke-test table.
+    fetch_limit_default: 1
+    request:
+      method: POST
+      path: /users.get_current_user
+      body:
+        format: text
+        content:
+          from: literal
+          value: "{}"
+    response:
+      rows_path: [data, user]
+      row_strategy: direct
+      allow_404_empty: true
+    pagination:
+      mode: none
+    columns:
+      - name: user_id
+        type: Utf8
+        nullable: true
+        description: ClearML user ID.
+        expr:
+          kind: path
+          path: [id]
+      - name: name
+        type: Utf8
+        nullable: true
+        description: User display name.
+        expr:
+          kind: path
+          path: [name]
+      - name: email
+        type: Utf8
+        nullable: true
+        description: User email address, when returned by the server.
+        expr:
+          kind: path
+          path: [email]
+      - name: company_id
+        type: Utf8
+        nullable: true
+        description: ClearML company/workspace ID.
+        expr:
+          kind: path
+          path: [company, id]
+      - name: company_name
+        type: Utf8
+        nullable: true
+        description: ClearML company/workspace name.
+        expr:
+          kind: path
+          path: [company, name]
+      - name: role
+        type: Utf8
+        nullable: true
+        description: User role, when returned by the server.
+        expr:
+          kind: path
+          path: [role]
+
+  - name: projects
+    description: ClearML project metadata.
+    guide: |
+      Projects organize ClearML tasks, models, and datasets. Use `project_id`
+      from this table when querying `tasks`, `models`, and `pipelines`.
+    fetch_limit_default: 100
+    request:
+      method: POST
+      path: /projects.get_all
+      body:
+        - path: [size]
+          from: literal
+          value: 100
+    response:
+      rows_path: [data, projects]
+    pagination:
+      mode: none
+    columns:
+      - name: project_id
+        type: Utf8
+        nullable: true
+        description: ClearML project ID.
+        expr:
+          kind: path
+          path: [id]
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Project name.
+        expr:
+          kind: path
+          path: [name]
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Project description.
+        expr:
+          kind: path
+          path: [description]
+      - name: created
+        type: Timestamp
+        nullable: true
+        description: Project creation timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [created]
+      - name: last_update
+        type: Timestamp
+        nullable: true
+        description: Last project metadata or task-status update timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [last_update]
+      - name: tags
+        type: Json
+        nullable: true
+        description: User-defined project tags.
+        expr:
+          kind: path
+          path: [tags]
+      - name: system_tags
+        type: Json
+        nullable: true
+        description: ClearML system tags.
+        expr:
+          kind: path
+          path: [system_tags]
+
+  - name: tasks
+    description: ClearML task and experiment metadata for one project.
+    guide: |
+      Requires `project_id` from `clear_ml.projects`. ClearML tasks represent
+      experiments, training runs, evaluations, inference jobs, pipeline
+      controllers, and other tracked execution records. This table exposes
+      metadata only; it does not execute or mutate tasks.
+    fetch_limit_default: 100
+    filters:
+      - name: project_id
+        required: true
+    request:
+      method: POST
+      path: /tasks.get_all
+      body:
+        format: text
+        content:
+          from: template
+          template: '{"project":["{{filter.project_id}}"],"size":100}'
+    response:
+      rows_path: [data, tasks]
+    pagination:
+      mode: none
+    columns:
+      - name: task_id
+        type: Utf8
+        nullable: true
+        description: ClearML task ID.
+        expr:
+          kind: path
+          path: [id]
+      - name: project_id
+        type: Utf8
+        nullable: false
+        description: Parent project ID from the required filter.
+        expr:
+          kind: from_filter
+          key: project_id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Task name.
+        expr:
+          kind: path
+          path: [name]
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Task type, such as training, testing, inference, or controller.
+        expr:
+          kind: path
+          path: [type]
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Current task status.
+        expr:
+          kind: path
+          path: [status]
+      - name: user
+        type: Utf8
+        nullable: true
+        description: User ID associated with the task.
+        expr:
+          kind: path
+          path: [user]
+      - name: started
+        type: Timestamp
+        nullable: true
+        description: Task start timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [started]
+      - name: completed
+        type: Timestamp
+        nullable: true
+        description: Task completion timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [completed]
+      - name: last_update
+        type: Timestamp
+        nullable: true
+        description: Last task update timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [last_update]
+      - name: hyperparams
+        type: Json
+        nullable: true
+        description: Task hyperparameter metadata.
+        expr:
+          kind: path
+          path: [hyperparams]
+      - name: configuration
+        type: Json
+        nullable: true
+        description: Task configuration metadata.
+        expr:
+          kind: path
+          path: [configuration]
+      - name: execution
+        type: Json
+        nullable: true
+        description: Task execution metadata.
+        expr:
+          kind: path
+          path: [execution]
+      - name: script
+        type: Json
+        nullable: true
+        description: Task script metadata.
+        expr:
+          kind: path
+          path: [script]
+      - name: runtime
+        type: Json
+        nullable: true
+        description: Task runtime metadata.
+        expr:
+          kind: path
+          path: [runtime]
+      - name: tags
+        type: Json
+        nullable: true
+        description: User-defined task tags.
+        expr:
+          kind: path
+          path: [tags]
+
+  - name: models
+    description: ClearML model registry metadata for one project.
+    guide: |
+      Requires `project_id` from `clear_ml.projects`. This table exposes model
+      registry metadata only; it does not upload, download, publish, archive, or
+      mutate models.
+    fetch_limit_default: 100
+    filters:
+      - name: project_id
+        required: true
+    request:
+      method: POST
+      path: /models.get_all
+      body:
+        format: text
+        content:
+          from: template
+          template: '{"project":["{{filter.project_id}}"],"size":100}'
+    response:
+      rows_path: [data, models]
+    pagination:
+      mode: none
+    columns:
+      - name: model_id
+        type: Utf8
+        nullable: true
+        description: ClearML model ID.
+        expr:
+          kind: path
+          path: [id]
+      - name: project_id
+        type: Utf8
+        nullable: false
+        description: Parent project ID from the required filter.
+        expr:
+          kind: from_filter
+          key: project_id
+      - name: task_id
+        type: Utf8
+        nullable: true
+        description: Task that created or owns the model.
+        expr:
+          kind: path
+          path: [task]
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Model name.
+        expr:
+          kind: path
+          path: [name]
+      - name: framework
+        type: Utf8
+        nullable: true
+        description: ML framework associated with the model.
+        expr:
+          kind: path
+          path: [framework]
+      - name: uri
+        type: Utf8
+        nullable: true
+        description: Model storage URI metadata.
+        expr:
+          kind: path
+          path: [uri]
+      - name: created
+        type: Timestamp
+        nullable: true
+        description: Model creation timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [created]
+      - name: published
+        type: Boolean
+        nullable: true
+        description: Whether the model is marked ready/final in ClearML.
+        expr:
+          kind: path
+          path: [ready]
+      - name: labels
+        type: Json
+        nullable: true
+        description: Model labels metadata.
+        expr:
+          kind: path
+          path: [labels]
+      - name: tags
+        type: Json
+        nullable: true
+        description: User-defined model tags.
+        expr:
+          kind: path
+          path: [tags]
+      - name: metadata
+        type: Json
+        nullable: true
+        description: Model metadata entries.
+        expr:
+          kind: path
+          path: [metadata]
+
+  - name: pipelines
+    description: ClearML pipeline controller task metadata for one project.
+    guide: |
+      Requires `project_id` from `clear_ml.projects`. ClearML pipelines are
+      represented as controller tasks. This table filters tasks to
+      `type = controller` and exposes orchestration metadata without running or
+      modifying pipelines.
+    fetch_limit_default: 100
+    filters:
+      - name: project_id
+        required: true
+    request:
+      method: POST
+      path: /tasks.get_all
+      body:
+        format: text
+        content:
+          from: template
+          template: '{"project":["{{filter.project_id}}"],"type":["controller"],"size":100}'
+    response:
+      rows_path: [data, tasks]
+    pagination:
+      mode: none
+    columns:
+      - name: pipeline_id
+        type: Utf8
+        nullable: true
+        description: ClearML pipeline controller task ID.
+        expr:
+          kind: path
+          path: [id]
+      - name: project_id
+        type: Utf8
+        nullable: false
+        description: Parent project ID from the required filter.
+        expr:
+          kind: from_filter
+          key: project_id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Pipeline task name.
+        expr:
+          kind: path
+          path: [name]
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Pipeline controller task status.
+        expr:
+          kind: path
+          path: [status]
+      - name: created
+        type: Timestamp
+        nullable: true
+        description: Pipeline task creation timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [created]
+      - name: last_update
+        type: Timestamp
+        nullable: true
+        description: Last pipeline task update timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [last_update]
+      - name: pipeline_steps
+        type: Json
+        nullable: true
+        description: Pipeline step metadata when present in task execution data.
+        expr:
+          kind: path
+          path: [execution]
+      - name: execution_graph
+        type: Json
+        nullable: true
+        description: Runtime or graph metadata associated with the controller task.
+        expr:
+          kind: path
+          path: [runtime]
+
+  - name: workers
+    description: ClearML worker and agent metadata.
+    guide: |
+      Workers are ClearML agents reporting status and execution metadata. This
+      table is read-only and does not register, unregister, or control workers.
+    fetch_limit_default: 100
+    request:
+      method: POST
+      path: /workers.get_all
+      body:
+        format: text
+        content:
+          from: literal
+          value: "{}"
+    response:
+      rows_path: [data, workers]
+    pagination:
+      mode: none
+    columns:
+      - name: worker_id
+        type: Utf8
+        nullable: true
+        description: ClearML worker ID.
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path: [id]
+            - kind: path
+              path: [worker]
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Worker display name.
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path: [name]
+            - kind: path
+              path: [worker]
+      - name: queue
+        type: Utf8
+        nullable: true
+        description: Current queue associated with the worker, when present.
+        expr:
+          kind: path
+          path: [queue]
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Worker status, when returned by the server.
+        expr:
+          kind: path
+          path: [status]
+      - name: last_seen
+        type: Timestamp
+        nullable: true
+        description: Last worker activity timestamp, when returned by the server.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [last_seen]
+      - name: tags
+        type: Json
+        nullable: true
+        description: Worker user-defined tags.
+        expr:
+          kind: path
+          path: [tags]
+      - name: system_tags
+        type: Json
+        nullable: true
+        description: Worker system tags.
+        expr:
+          kind: path
+          path: [system_tags]
+
+  - name: queues
+    description: ClearML execution queue metadata.
+    guide: |
+      Queues show where tasks wait for workers. This table exposes queue
+      metadata and queue entries as JSON; use `json_length(entries)` to estimate
+      pending task count for queues where entries were returned.
+    fetch_limit_default: 100
+    request:
+      method: POST
+      path: /queues.get_all
+      body:
+        - path: [size]
+          from: literal
+          value: 100
+        - path: [max_task_entries]
+          from: literal
+          value: 100
+    response:
+      rows_path: [data, queues]
+    pagination:
+      mode: none
+    columns:
+      - name: queue_id
+        type: Utf8
+        nullable: true
+        description: ClearML queue ID.
+        expr:
+          kind: path
+          path: [id]
+      - name: queue_name
+        type: Utf8
+        nullable: true
+        description: Queue name.
+        expr:
+          kind: path
+          path: [name]
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: Queue display name.
+        expr:
+          kind: path
+          path: [display_name]
+      - name: created
+        type: Timestamp
+        nullable: true
+        description: Queue creation timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [created]
+      - name: entries
+        type: Json
+        nullable: true
+        description: Returned queue entries, capped by max_task_entries.
+        expr:
+          kind: path
+          path: [entries]
+      - name: tags
+        type: Json
+        nullable: true
+        description: User-defined queue tags.
+        expr:
+          kind: path
+          path: [tags]
+      - name: metadata
+        type: Json
+        nullable: true
+        description: Queue metadata entries.
+        expr:
+          kind: path
+          path: [metadata]
+
+  - name: artifacts
+    description: ClearML task artifact metadata for one task.
+    guide: |
+      Requires `task_id` from `clear_ml.tasks`. This table flattens artifact
+      metadata from a single task response. It exposes URIs and metadata only;
+      it does not download artifact payloads.
+    fetch_limit_default: 100
+    filters:
+      - name: task_id
+        required: true
+    request:
+      method: POST
+      path: /tasks.get_by_id
+      body:
+        format: text
+        content:
+          from: template
+          template: '{"task":"{{filter.task_id}}"}'
+    response:
+      rows_path: [data, task, execution, artifacts]
+      row_strategy: dict_entries
+    pagination:
+      mode: none
+    columns:
+      - name: artifact_name
+        type: Utf8
+        nullable: true
+        description: Artifact name from the task artifact map.
+        expr:
+          kind: path
+          path: [_key]
+      - name: task_id
+        type: Utf8
+        nullable: false
+        description: Parent task ID from the required filter.
+        expr:
+          kind: from_filter
+          key: task_id
+      - name: artifact_type
+        type: Utf8
+        nullable: true
+        description: Artifact type metadata.
+        expr:
+          kind: path
+          path: [type]
+      - name: uri
+        type: Utf8
+        nullable: true
+        description: Artifact storage URI metadata.
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path: [uri]
+            - kind: path
+              path: [url]
+      - name: created
+        type: Timestamp
+        nullable: true
+        description: Artifact creation timestamp, when present.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [timestamp]
+      - name: artifact_metadata
+        type: Json
+        nullable: true
+        description: Full artifact metadata object.
+        expr:
+          kind: current_row

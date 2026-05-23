@@ -44,7 +44,7 @@ jobs:
         with:
           ref: ${{ fromJSON(steps.rp.outputs.pr || '{}').headBranchName }}
           token: ${{ steps.github-app-token.outputs.token }}
-          persist-credentials: true
+          persist-credentials: false
 
       - name: Install Rust toolchain
         if: steps.rp.outputs.pr
@@ -54,6 +54,7 @@ jobs:
         if: steps.rp.outputs.pr
         env:
           PR_BRANCH: ${{ fromJSON(steps.rp.outputs.pr || '{}').headBranchName }}
+          GH_APP_TOKEN: ${{ steps.github-app-token.outputs.token }}
         run: |
           set -euo pipefail
           cargo update --workspace
@@ -65,7 +66,7 @@ jobs:
           git config user.email "release-please[bot]@users.noreply.github.com"
           git add Cargo.lock
           git commit -m "chore: sync Cargo.lock"
-          git push origin "HEAD:${PR_BRANCH}"
+          git push "https://x-access-token:${GH_APP_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:${PR_BRANCH}"
 
       # release-please updates CHANGELOG.md on the release PR, so this
       # is the right place to regenerate the docs page that mirrors it.
@@ -75,6 +76,7 @@ jobs:
         if: steps.rp.outputs.pr
         env:
           PR_BRANCH: ${{ fromJSON(steps.rp.outputs.pr || '{}').headBranchName }}
+          GH_APP_TOKEN: ${{ steps.github-app-token.outputs.token }}
         run: |
           set -euo pipefail
           make docs-generate
@@ -86,4 +88,4 @@ jobs:
           git config user.email "release-please[bot]@users.noreply.github.com"
           git add docs/project/changelog.mdx docs/docs.json
           git commit -m "chore: regenerate changelog docs"
-          git push origin "HEAD:${PR_BRANCH}"
+          git push "https://x-access-token:${GH_APP_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:${PR_BRANCH}"

@@ -1,0 +1,331 @@
+name: qdrant_cloud
+version: 0.1.1
+dsl_version: 3
+backend: http
+description: >-
+  Query Qdrant Cloud accounts, clusters, and backups using the Qdrant
+  Cloud management API.
+inputs:
+  QDRANT_CLOUD_API_KEY:
+    kind: secret
+    hint: |
+      Your Qdrant Cloud management API key. Create one in the Qdrant
+      Cloud Console under Access Management > Cloud Management Keys.
+      This is different from the per-cluster database API key.
+      See [Qdrant Cloud API docs](https://qdrant.tech/documentation/cloud-api/).
+  QDRANT_ACCOUNT_ID:
+    kind: variable
+    default: ""
+    hint: |
+      Your Qdrant Cloud account ID. Required for cluster and backup
+      tables. Leave blank to install first, then discover your account
+      ID by querying qdrant_cloud.accounts, and re-add with the account ID set.
+base_url: https://api.cloud.qdrant.io
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: apikey {{input.QDRANT_CLOUD_API_KEY}}
+test_queries:
+  - SELECT * FROM qdrant_cloud.accounts LIMIT 1
+tables:
+  - name: accounts
+    description: Qdrant Cloud accounts accessible with the management API key
+    guide: |
+      Start here to confirm connectivity and discover your account ID.
+      Use `id` as `QDRANT_ACCOUNT_ID` when re-adding the source to
+      unlock the `clusters` and `backups` tables.
+    request:
+      method: GET
+      path: /api/account/v1/accounts
+    response:
+      rows_path:
+        - items
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: true
+        description: Account ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Account name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: owner_email
+        type: Utf8
+        nullable: true
+        description: Email address of the account owner
+        expr:
+          kind: path
+          path:
+            - ownerEmail
+      - name: company_name
+        type: Utf8
+        nullable: true
+        description: Company name associated with the account
+        expr:
+          kind: path
+          path:
+            - company
+            - name
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Time when the account was created
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - createdAt
+      - name: last_modified_at
+        type: Timestamp
+        nullable: true
+        description: Time when the account was last modified
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - lastModifiedAt
+  - name: clusters
+    description: Qdrant Cloud clusters in the account
+    guide: |
+      Each row is one Qdrant Cloud cluster. Use `id` to identify
+      clusters for backup queries. `state_phase` shows cluster health
+      (CLUSTER_PHASE_HEALTHY means fully operational). `endpoint_url`
+      is the REST URL to connect to the cluster database directly.
+      `cloud_provider_id` and `cloud_provider_region_id` show where the
+      cluster is deployed. Requires `QDRANT_ACCOUNT_ID` to be set.
+      Accounts with a large number of clusters will return all rows in
+      one response; consider filtering in SQL to keep result sets small.
+    request:
+      method: GET
+      path: /api/cluster/v1/accounts/{{input.QDRANT_ACCOUNT_ID}}/clusters
+    response:
+      rows_path:
+        - items
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: true
+        description: Cluster ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Cluster name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: account_id
+        type: Utf8
+        nullable: true
+        description: Account ID that owns this cluster
+        expr:
+          kind: path
+          path:
+            - accountId
+      - name: cloud_provider_id
+        type: Utf8
+        nullable: true
+        description: Cloud provider (e.g. aws, gcp, azure)
+        expr:
+          kind: path
+          path:
+            - cloudProviderId
+      - name: cloud_provider_region_id
+        type: Utf8
+        nullable: true
+        description: Cloud provider region (e.g. us-east-1)
+        expr:
+          kind: path
+          path:
+            - cloudProviderRegionId
+      - name: version
+        type: Utf8
+        nullable: true
+        description: Qdrant version running on the cluster
+        expr:
+          kind: path
+          path:
+            - configuration
+            - version
+      - name: number_of_nodes
+        type: Int64
+        nullable: true
+        description: Number of nodes in the cluster
+        expr:
+          kind: path
+          path:
+            - configuration
+            - numberOfNodes
+      - name: state_phase
+        type: Utf8
+        nullable: true
+        description: >-
+          Current cluster phase (e.g. CLUSTER_PHASE_HEALTHY,
+          CLUSTER_PHASE_PROVISIONING, CLUSTER_PHASE_ERROR)
+        expr:
+          kind: path
+          path:
+            - state
+            - phase
+      - name: state_nodes_up
+        type: Int64
+        nullable: true
+        description: Number of nodes currently up
+        expr:
+          kind: path
+          path:
+            - state
+            - nodesUp
+      - name: state_version
+        type: Utf8
+        nullable: true
+        description: Qdrant version currently running (from live state)
+        expr:
+          kind: path
+          path:
+            - state
+            - version
+      - name: endpoint_url
+        type: Utf8
+        nullable: true
+        description: REST endpoint URL for connecting to the cluster database
+        expr:
+          kind: path
+          path:
+            - state
+            - endpoint
+            - url
+      - name: endpoint_rest_port
+        type: Int64
+        nullable: true
+        description: REST port for the cluster database
+        expr:
+          kind: path
+          path:
+            - state
+            - endpoint
+            - restPort
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Time when the cluster was created
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - createdAt
+  - name: backups
+    description: Cluster backups in the account
+    guide: |
+      Each row is one backup snapshot. `cluster_id` joins to
+      `qdrant_cloud.clusters`. `status` shows whether the backup succeeded
+      (BACKUP_STATUS_SUCCEEDED) or failed. `backup_duration` is the
+      time taken to complete the backup. Requires `QDRANT_ACCOUNT_ID`
+      to be set.
+    request:
+      method: GET
+      path: /api/cluster/backup/v1/accounts/{{input.QDRANT_ACCOUNT_ID}}/backups
+    response:
+      rows_path:
+        - items
+      allow_404_empty: true
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: page_token
+      response_cursor_path:
+        - nextPageToken
+      page_size:
+        default: 50
+        max: 100
+        query_param: page_size
+    columns:
+      - name: id
+        type: Utf8
+        nullable: true
+        description: Backup ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Backup name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: cluster_id
+        type: Utf8
+        nullable: true
+        description: ID of the cluster this backup belongs to
+        expr:
+          kind: path
+          path:
+            - clusterId
+      - name: account_id
+        type: Utf8
+        nullable: true
+        description: Account ID that owns this backup
+        expr:
+          kind: path
+          path:
+            - accountId
+      - name: status
+        type: Utf8
+        nullable: true
+        description: >-
+          Backup status (e.g. BACKUP_STATUS_SUCCEEDED,
+          BACKUP_STATUS_FAILED, BACKUP_STATUS_IN_PROGRESS)
+        expr:
+          kind: path
+          path:
+            - status
+      - name: backup_duration
+        type: Utf8
+        nullable: true
+        description: Time taken to complete the backup (e.g. 30s)
+        expr:
+          kind: path
+          path:
+            - backupDuration
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Time when the backup was created
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - createdAt

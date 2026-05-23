@@ -6,6 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use serde::Deserialize;
 use walkdir::WalkDir;
 
 const SOURCE_DIR: &str = "plugins/coral/skills";
@@ -14,6 +15,19 @@ const SOURCE_DIR: &str = "plugins/coral/skills";
 struct SkillMetadata {
     name: String,
     description: String,
+    title: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+struct AgentMetadata {
+    interface: AgentInterface,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+struct AgentInterface {
+    display_name: String,
+    short_description: String,
+    default_prompt: String,
 }
 
 #[derive(Debug)]
@@ -103,6 +117,8 @@ fn discover_skills(source_dir: &Path) -> Result<Vec<Skill>> {
                 metadata.name
             );
         }
+        let agent_metadata = parse_agent_metadata(&dir.join("agents/openai.yaml"))?;
+        validate_skill_definition(&metadata, &agent_metadata)?;
         skills.push(Skill { dir, metadata });
     }
     skills.sort_by(|left, right| left.metadata.name.cmp(&right.metadata.name));
@@ -142,7 +158,117 @@ fn parse_skill_metadata_str(raw: &str) -> Result<SkillMetadata> {
     let description = description
         .filter(|value| !value.is_empty())
         .context("missing description")?;
-    Ok(SkillMetadata { name, description })
+    let title = raw
+        .lines()
+        .find_map(|line| line.strip_prefix("# "))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .context("missing top-level heading")?
+        .to_owned();
+    Ok(SkillMetadata {
+        name,
+        description,
+        title,
+    })
+}
+
+fn parse_agent_metadata(path: &Path) -> Result<AgentMetadata> {
+    let raw = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let metadata: AgentMetadata =
+        serde_yaml::from_str(&raw).with_context(|| format!("parsing {}", path.display()))?;
+    validate_agent_metadata(path, &metadata)?;
+    Ok(metadata)
+}
+
+fn validate_agent_metadata(path: &Path, metadata: &AgentMetadata) -> Result<()> {
+    if metadata.interface.display_name.trim().is_empty() {
+        bail!("{} has empty interface.display_name", path.display());
+    }
+    if metadata.interface.short_description.trim().is_empty() {
+        bail!("{} has empty interface.short_description", path.display());
+    }
+    if metadata.interface.default_prompt.trim().is_empty() {
+        bail!("{} has empty interface.default_prompt", path.display());
+    }
+    Ok(())
+}
+
+fn validate_skill_definition(
+    metadata: &SkillMetadata,
+    agent_metadata: &AgentMetadata,
+) -> Result<()> {
+    let expected_display_name = expected_display_name(&metadata.name)?;
+    if agent_metadata.interface.display_name != expected_display_name {
+        bail!(
+            "skill '{}' display_name must be '{}', got '{}'",
+            metadata.name,
+            expected_display_name,
+            agent_metadata.interface.display_name
+        );
+    }
+    if metadata.title != agent_metadata.interface.display_name {
+        bail!(
+            "skill '{}' heading must match display_name '{}', got '{}'",
+            metadata.name,
+            agent_metadata.interface.display_name,
+            metadata.title
+        );
+    }
+    let expected_prompt_token = format!("${}", metadata.name);
+    if !mentions_skill_token(
+        &agent_metadata.interface.default_prompt,
+        &expected_prompt_token,
+    ) {
+        bail!(
+            "skill '{}' default_prompt must mention '{}'",
+            metadata.name,
+            expected_prompt_token
+        );
+    }
+    Ok(())
+}
+
+fn mentions_skill_token(prompt: &str, token: &str) -> bool {
+    prompt.match_indices(token).any(|(start, _)| {
+        let before = prompt
+            .get(..start)
+            .and_then(|value| value.chars().next_back());
+        let after = prompt
+            .get(start + token.len()..)
+            .and_then(|value| value.chars().next());
+        before.is_none_or(|ch| !is_skill_token_char(ch) && ch != '$')
+            && after.is_none_or(|ch| !is_skill_token_char(ch))
+    })
+}
+
+fn is_skill_token_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || ch == '-' || ch == '_'
+}
+
+fn expected_display_name(name: &str) -> Result<String> {
+    let suffix = name
+        .strip_prefix("coral")
+        .context("Coral skill names must start with 'coral'")?;
+    if suffix.is_empty() {
+        return Ok("Coral".to_string());
+    }
+    let suffix = suffix
+        .strip_prefix('-')
+        .filter(|value| !value.is_empty())
+        .context("Coral skill names must be 'coral' or start with 'coral-'")?;
+    let mut display_name = String::from("Coral");
+    for part in suffix.split('-') {
+        if part.is_empty() {
+            bail!("Coral skill name '{name}' contains an empty segment");
+        }
+        display_name.push(' ');
+        let mut chars = part.chars();
+        if let Some(first) = chars.next() {
+            display_name.extend(first.to_uppercase());
+            display_name.push_str(chars.as_str());
+        }
+    }
+    Ok(display_name)
 }
 
 fn unquote(value: &str) -> &str {
@@ -236,7 +362,11 @@ fn render_readme(skills: &[Skill]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Skill, SkillMetadata, parse_skill_metadata_str, render_readme, unquote};
+    use super::{
+        AgentInterface, AgentMetadata, Skill, SkillMetadata, expected_display_name,
+        mentions_skill_token, parse_skill_metadata_str, render_readme, unquote,
+        validate_skill_definition,
+    };
 
     #[test]
     fn parses_quoted_frontmatter() {
@@ -252,8 +382,78 @@ description: "Query live sources through Coral MCP."
             SkillMetadata {
                 name: "coral".to_string(),
                 description: "Query live sources through Coral MCP.".to_string(),
+                title: "Coral".to_string(),
             }
         );
+    }
+
+    #[test]
+    fn derives_coral_display_names_from_skill_names() {
+        assert_eq!(expected_display_name("coral").unwrap(), "Coral");
+        assert_eq!(
+            expected_display_name("coral-create-source-spec").unwrap(),
+            "Coral Create Source Spec"
+        );
+        assert_eq!(
+            expected_display_name("coral-review-source-spec").unwrap(),
+            "Coral Review Source Spec"
+        );
+    }
+
+    #[test]
+    fn rejects_skill_heading_that_does_not_match_display_name() {
+        let metadata = SkillMetadata {
+            name: "coral-create-source-spec".to_string(),
+            description: "Create source specs.".to_string(),
+            title: "Create Source Spec".to_string(),
+        };
+        let agent_metadata = AgentMetadata {
+            interface: AgentInterface {
+                display_name: "Coral Create Source Spec".to_string(),
+                short_description: "Author source specs".to_string(),
+                default_prompt: "Use $coral-create-source-spec.".to_string(),
+            },
+        };
+        let error = validate_skill_definition(&metadata, &agent_metadata)
+            .expect_err("heading drift should be rejected")
+            .to_string();
+        assert!(error.contains("heading must match display_name"));
+    }
+
+    #[test]
+    fn matches_skill_prompt_token_as_standalone_token() {
+        assert!(mentions_skill_token("Use $coral to query data.", "$coral"));
+        assert!(mentions_skill_token("Use ($coral).", "$coral"));
+        assert!(mentions_skill_token(
+            "Use $coral-create-source-spec to create specs.",
+            "$coral-create-source-spec"
+        ));
+        assert!(!mentions_skill_token(
+            "Use $coral-create-source-spec to create specs.",
+            "$coral"
+        ));
+        assert!(!mentions_skill_token("Use $coral_review.", "$coral"));
+        assert!(!mentions_skill_token("Use $$coral.", "$coral"));
+    }
+
+    #[test]
+    fn rejects_prompt_that_only_mentions_longer_skill_token() {
+        let metadata = SkillMetadata {
+            name: "coral".to_string(),
+            description: "Query live sources.".to_string(),
+            title: "Coral".to_string(),
+        };
+        let agent_metadata = AgentMetadata {
+            interface: AgentInterface {
+                display_name: "Coral".to_string(),
+                short_description: "Query live sources".to_string(),
+                default_prompt: "Use $coral-create-source-spec to create specs.".to_string(),
+            },
+        };
+        let error = validate_skill_definition(&metadata, &agent_metadata)
+            .expect_err("longer token should not satisfy the base skill")
+            .to_string();
+        assert!(error.contains("default_prompt must mention '$coral'"));
     }
 
     #[test]
@@ -270,6 +470,7 @@ description: "Query live sources through Coral MCP."
             metadata: SkillMetadata {
                 name: "coral".to_string(),
                 description: "Query A | B".to_string(),
+                title: "Coral".to_string(),
             },
         }];
         let readme = render_readme(&skills);

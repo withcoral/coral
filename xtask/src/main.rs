@@ -3,7 +3,7 @@
 //! This binary exposes two subcommands that share workspace conventions but
 //! serve different workflows:
 //!   - `generate-docs` regenerates the generator-owned Mintlify pages and
-//!     nav from `sources/core/*/manifest.y{a,}ml` plus `CHANGELOG.md`.
+//!     nav from source manifests plus `CHANGELOG.md`.
 //!   - `detect-truncations` scans manifests for likely-truncated descriptions
 //!     (the regression gate for the SOURCE-465 manifest cleanup).
 //!   - `export-skills` exports installable agent skills from the canonical
@@ -47,14 +47,23 @@ enum Command {
 
 #[derive(Debug, clap::Args)]
 struct GenerateDocsArgs {
-    /// Directory containing one subdirectory per source, each holding a
+    /// Directory containing one subdirectory per bundled source, each holding a
     /// `manifest.yaml` or `manifest.yml` file.
     #[arg(long, default_value = "sources/core")]
     sources_dir: PathBuf,
 
-    /// Path to the index page to regenerate.
+    /// Path to the bundled source catalog page to regenerate.
     #[arg(long, default_value = "docs/reference/bundled-sources.mdx")]
     index: PathBuf,
+
+    /// Directory containing community source manifests to render into the
+    /// community source catalog.
+    #[arg(long, default_value = "sources/community")]
+    community_sources_dir: PathBuf,
+
+    /// Path to the community source catalog page to regenerate.
+    #[arg(long, default_value = "docs/reference/community-sources.mdx")]
+    community_index: PathBuf,
 
     /// Path to the Mintlify navigation file to update.
     #[arg(long, default_value = "docs/docs.json")]
@@ -133,6 +142,9 @@ fn generate_docs(args: &GenerateDocsArgs) -> Result<bool> {
     let manifests = load_manifests(&args.sources_dir)?;
     let index_body = render::index_page(&manifests);
 
+    let community_manifests = load_manifests(&args.community_sources_dir)?;
+    let community_index_body = render::community_sources_page(&community_manifests);
+
     let existing_json = fs::read_to_string(&args.docs_json)
         .with_context(|| format!("reading {}", args.docs_json.display()))?;
     let updated_json = nav::update_docs_json(&existing_json)?;
@@ -145,6 +157,10 @@ fn generate_docs(args: &GenerateDocsArgs) -> Result<bool> {
         GeneratedFile {
             path: args.index.clone(),
             body: index_body,
+        },
+        GeneratedFile {
+            path: args.community_index.clone(),
+            body: community_index_body,
         },
         GeneratedFile {
             path: args.docs_json.clone(),
@@ -211,7 +227,7 @@ fn load_manifests(sources_dir: &Path) -> Result<Vec<ValidatedSourceManifest>> {
         }
         let Some(manifest_path) = find_manifest_file(&entry.path()) else {
             bail!(
-                "missing manifest.y{{a,}}ml for bundled source '{}'",
+                "missing manifest.y{{a,}}ml for source '{}'",
                 entry.path().display()
             );
         };

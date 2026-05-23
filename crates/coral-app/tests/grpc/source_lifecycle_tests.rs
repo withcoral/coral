@@ -9,18 +9,19 @@ use std::fs;
 use coral_api::v1::{
     CreateBundledSourceRequest, DeleteSourceRequest, DiscoverSourcesRequest, ExecuteSqlRequest,
     ExplainSqlRequest, GetSourceInfoRequest, GetSourceRequest, ImportSourceRequest,
-    ListTablesRequest, PaginationRequest, QueryTestFailure, QueryTestSuccess, SourceOrigin,
-    SourceSecret, SourceVariable, ValidateSourceRequest, Workspace, query_test_result,
+    ListCatalogRequest, PaginationRequest, QueryTestFailure, QueryTestSuccess, SourceOrigin,
+    SourceSecret, SourceVariable, ValidateSourceRequest, Workspace, catalog_item,
+    import_source_response, query_test_result, source_input_spec::Input as ProtoSourceInput,
 };
 use coral_client::default_workspace;
 use tempfile::TempDir;
 use tonic::Request;
 
 use crate::harness::{
-    FailingHttpFixture, GrpcHarness, fixture_manifest_with_inputs_yaml,
-    fixture_manifest_with_multiple_tables_yaml, fixture_manifest_with_required_inputs_yaml,
-    fixture_manifest_with_test_queries_yaml, fixture_manifest_yaml, invalid_manifest_yaml,
-    source_dir,
+    FailingHttpFixture, GrpcHarness, fixture_function_only_manifest_yaml,
+    fixture_manifest_with_inputs_yaml, fixture_manifest_with_multiple_tables_yaml,
+    fixture_manifest_with_required_inputs_yaml, fixture_manifest_with_test_queries_yaml,
+    fixture_manifest_yaml, invalid_manifest_yaml, source_dir,
 };
 
 #[tokio::test]
@@ -41,6 +42,9 @@ async fn import_source_persists_and_lists() {
     let config_raw =
         fs::read_to_string(harness.config_dir().join("config.toml")).expect("read config");
     assert!(config_raw.contains("[workspaces.default.sources.local_messages]"));
+    assert!(config_raw.contains("secrets = []"));
+    assert!(!config_raw.contains("credential_set_id"));
+    assert!(!config_raw.contains("[workspaces.default.credentials"));
     assert!(!config_raw.contains("manifest_yaml = "));
     assert!(!config_raw.contains("manifest_file = "));
 
@@ -106,18 +110,26 @@ async fn import_duplicate_source_overwrites_existing_source() {
         .import_source(manifest_yaml.clone(), Vec::new(), Vec::new())
         .await;
 
-    let reimported = harness
+    let mut import_stream = harness
         .source_client()
         .import_source(Request::new(ImportSourceRequest {
             workspace: Some(default_workspace()),
             manifest_yaml: manifest_yaml.replace("0.1.0", "0.2.0"),
             variables: Vec::new(),
             secrets: Vec::new(),
+            oauth_credential_retrievals: Vec::new(),
         }))
         .await
         .expect("duplicate import should overwrite")
-        .into_inner()
-        .source
+        .into_inner();
+    let reimported = import_stream
+        .message()
+        .await
+        .expect("duplicate import stream")
+        .and_then(|response| match response.event {
+            Some(import_source_response::Event::Source(source)) => Some(source),
+            _ => None,
+        })
         .expect("import source response");
     assert_eq!(reimported.version, "0.2.0");
 
@@ -146,6 +158,7 @@ async fn import_invalid_manifest_returns_invalid_argument() {
             manifest_yaml: invalid_manifest_yaml(),
             variables: Vec::new(),
             secrets: Vec::new(),
+            oauth_credential_retrievals: Vec::new(),
         }))
         .await
         .expect_err("invalid manifest should fail");
@@ -221,7 +234,32 @@ async fn validate_source_returns_tables() {
 }
 
 #[tokio::test]
-async fn list_tables_supports_legacy_full_response_and_paginated_summaries() {
+async fn validate_source_returns_table_functions() {
+    let harness = GrpcHarness::new().await;
+    harness
+        .import_source(
+            fixture_function_only_manifest_yaml(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .await;
+
+    let validated = harness.validate_source("searchy").await;
+    assert!(validated.tables.is_empty());
+    assert_eq!(validated.table_functions.len(), 1);
+    let function = &validated.table_functions[0];
+    assert_eq!(function.schema_name, "searchy");
+    assert_eq!(function.name, "search_issues");
+    assert_eq!(function.arguments.len(), 1);
+    assert_eq!(function.arguments[0].name, "q");
+    assert!(function.arguments[0].required);
+    assert_eq!(function.result_columns.len(), 1);
+    assert_eq!(function.result_columns[0].name, "title");
+    assert!(validated.query_tests.is_empty());
+}
+
+#[tokio::test]
+async fn list_catalog_supports_table_kind_and_pagination() {
     let harness = GrpcHarness::new().await;
     harness
         .import_source(
@@ -231,42 +269,19 @@ async fn list_tables_supports_legacy_full_response_and_paginated_summaries() {
         )
         .await;
 
-    let legacy = harness
-        .query_client()
-        .list_tables(Request::new(ListTablesRequest {
-            workspace: Some(default_workspace()),
-            schema_name: String::new(),
-            table_name: String::new(),
-            pagination: None,
-            omit_columns: false,
-        }))
-        .await
-        .expect("legacy list tables")
-        .into_inner();
-    let legacy_pagination = legacy.pagination.as_ref().expect("legacy pagination");
-    assert_eq!(legacy_pagination.total_count, 3);
-    assert_eq!(legacy_pagination.limit, 0);
-    assert_eq!(legacy_pagination.offset, 0);
-    assert!(!legacy_pagination.has_more);
-    assert_eq!(legacy.tables.len(), 3);
-    assert!(legacy.table_summaries.is_empty());
-    assert_eq!(legacy.tables[0].name, "events");
-    assert!(!legacy.tables[0].columns.is_empty());
-
     let page = harness
-        .query_client()
-        .list_tables(Request::new(ListTablesRequest {
+        .catalog_client()
+        .list_catalog(Request::new(ListCatalogRequest {
             workspace: Some(default_workspace()),
             schema_name: "local_messages".to_string(),
-            table_name: String::new(),
+            kind: 1,
             pagination: Some(PaginationRequest {
                 limit: 2,
                 offset: 0,
             }),
-            omit_columns: true,
         }))
         .await
-        .expect("paginated list tables")
+        .expect("paginated list catalog")
         .into_inner();
     let page_pagination = page.pagination.as_ref().expect("page pagination");
     assert_eq!(page_pagination.total_count, 3);
@@ -275,66 +290,37 @@ async fn list_tables_supports_legacy_full_response_and_paginated_summaries() {
     assert!(page_pagination.has_more);
     assert_eq!(page_pagination.next_offset, 2);
     assert_eq!(
-        page.table_summaries
+        page.items
             .iter()
-            .map(|table| table.name.as_str())
+            .filter_map(|item| match item.item.as_ref().expect("catalog item") {
+                catalog_item::Item::Table(table) => Some(table.name.as_str()),
+                catalog_item::Item::TableFunction(_) => None,
+            })
             .collect::<Vec<_>>(),
         vec!["events", "messages"]
     );
-    assert!(page.tables.is_empty());
-
-    assert_exact_table_filter(&harness).await;
 
     let unknown_schema = harness
-        .query_client()
-        .list_tables(Request::new(ListTablesRequest {
+        .catalog_client()
+        .list_catalog(Request::new(ListCatalogRequest {
             workspace: Some(default_workspace()),
             schema_name: "missing".to_string(),
-            table_name: String::new(),
+            kind: 1,
             pagination: Some(PaginationRequest {
                 limit: 2,
                 offset: 0,
             }),
-            omit_columns: true,
         }))
         .await
-        .expect("unknown schema list tables")
+        .expect("unknown schema list catalog")
         .into_inner();
     let unknown_schema_pagination = unknown_schema
         .pagination
         .as_ref()
         .expect("unknown schema pagination");
     assert_eq!(unknown_schema_pagination.total_count, 0);
-    assert!(unknown_schema.tables.is_empty());
-    assert!(unknown_schema.table_summaries.is_empty());
+    assert!(unknown_schema.items.is_empty());
     assert!(!unknown_schema_pagination.has_more);
-}
-
-async fn assert_exact_table_filter(harness: &GrpcHarness) {
-    let exact_table = harness
-        .query_client()
-        .list_tables(Request::new(ListTablesRequest {
-            workspace: Some(default_workspace()),
-            schema_name: "local_messages".to_string(),
-            table_name: "messages".to_string(),
-            pagination: Some(PaginationRequest {
-                limit: 1,
-                offset: 0,
-            }),
-            omit_columns: false,
-        }))
-        .await
-        .expect("exact table list tables")
-        .into_inner();
-    let exact_pagination = exact_table
-        .pagination
-        .as_ref()
-        .expect("exact table pagination");
-    assert_eq!(exact_pagination.total_count, 1);
-    assert_eq!(exact_table.tables.len(), 1);
-    assert_eq!(exact_table.tables[0].schema_name, "local_messages");
-    assert_eq!(exact_table.tables[0].name, "messages");
-    assert!(!exact_table.tables[0].columns.is_empty());
 }
 
 #[tokio::test]
@@ -581,6 +567,7 @@ async fn import_source_missing_required_secret_returns_invalid_argument() {
                 value: "https://example.com".to_string(),
             }],
             secrets: Vec::new(),
+            oauth_credential_retrievals: Vec::new(),
         }))
         .await
         .expect_err("missing required secret should fail");
@@ -606,6 +593,7 @@ async fn import_source_missing_required_variable_returns_invalid_argument() {
                 key: "API_TOKEN".to_string(),
                 value: "secret-token".to_string(),
             }],
+            oauth_credential_retrievals: Vec::new(),
         }))
         .await
         .expect_err("missing required variable should fail");
@@ -634,6 +622,7 @@ async fn import_source_unknown_variable_returns_invalid_argument() {
                 key: "API_TOKEN".to_string(),
                 value: "secret-token".to_string(),
             }],
+            oauth_credential_retrievals: Vec::new(),
         }))
         .await
         .expect_err("unknown variable should fail");
@@ -664,6 +653,7 @@ async fn import_source_unknown_secret_returns_invalid_argument() {
                     value: "unused".to_string(),
                 },
             ],
+            oauth_credential_retrievals: Vec::new(),
         }))
         .await
         .expect_err("unknown secret should fail");
@@ -698,6 +688,7 @@ async fn import_source_repeated_variable_returns_invalid_argument() {
                 key: "API_TOKEN".to_string(),
                 value: "secret-token".to_string(),
             }],
+            oauth_credential_retrievals: Vec::new(),
         }))
         .await
         .expect_err("repeated variable should fail");
@@ -732,6 +723,7 @@ async fn import_source_repeated_secret_returns_invalid_argument() {
                     value: "shadow-token".to_string(),
                 },
             ],
+            oauth_credential_retrievals: Vec::new(),
         }))
         .await
         .expect_err("repeated secret should fail");
@@ -859,7 +851,12 @@ async fn get_source_info_uses_effective_installed_imported_manifest() {
     assert!(info.installed);
     assert_eq!(info.inputs.len(), 2);
     assert_eq!(info.inputs[0].key, "API_BASE");
-    assert_eq!(info.inputs[0].default_value, "https://example.com");
+    match info.inputs[0].input.as_ref().expect("input metadata") {
+        ProtoSourceInput::Variable(variable) => {
+            assert_eq!(variable.default_value, "https://example.com");
+        }
+        ProtoSourceInput::Secret(_) => panic!("expected variable input"),
+    }
     assert_eq!(info.inputs[1].key, "API_TOKEN");
 }
 
@@ -1081,7 +1078,7 @@ origin = "bundled"
     )
     .expect("write config");
 
-    // Write the secret file so the secret store can find it.
+    // Write the source secret file so validation can reach variable checks.
     let secret_dir = config_dir
         .join("workspaces")
         .join("default")
@@ -1279,6 +1276,7 @@ async fn import_rolls_back_on_config_write_failure() {
                 key: "API_TOKEN".to_string(),
                 value: "secret-token".to_string(),
             }],
+            oauth_credential_retrievals: Vec::new(),
         }))
         .await
         .expect_err("config write should fail");
@@ -1347,15 +1345,14 @@ async fn rejects_invalid_workspace_and_source_names() {
     let harness = GrpcHarness::new().await;
 
     let invalid_workspace = harness
-        .query_client()
-        .list_tables(Request::new(ListTablesRequest {
+        .catalog_client()
+        .list_catalog(Request::new(ListCatalogRequest {
             workspace: Some(Workspace {
                 name: r"bad\workspace".to_string(),
             }),
             schema_name: String::new(),
-            table_name: String::new(),
+            kind: 1,
             pagination: None,
-            omit_columns: false,
         }))
         .await
         .expect_err("workspace with backslash should fail");

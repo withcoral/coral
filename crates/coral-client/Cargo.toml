@@ -23,6 +23,7 @@ tracing-opentelemetry.workspace = true
 
 coral-api.workspace = true
 coral-app.workspace = true
+coral-spec.workspace = true
 
 [dev-dependencies]
 opentelemetry_sdk = { workspace = true, features = ["testing"] }

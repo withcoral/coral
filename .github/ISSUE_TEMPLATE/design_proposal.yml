@@ -1,0 +1,72 @@
+name: Design proposal
+description: Propose a larger change that warrants discussion before implementation.
+title: "design: <short description>"
+labels: ["design", "needs-discussion"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template for changes [CONTRIBUTING.md](https://github.com/withcoral/coral/blob/main/CONTRIBUTING.md#please-discuss-first) asks you to discuss first:
+
+        - new public CLI commands or flags
+        - new public config formats
+        - large architectural changes
+        - new maintained sources shipped with the repo
+        - major source-spec or source-authoring changes
+        - major scope expansions beyond the current product surface
+
+        It's fine to file a proposal that's still rough — the goal is to align on direction before code.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: One paragraph. What is this and what does it change for users?
+    validations:
+      required: true
+
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation
+      description: What problem does this solve? Who is asking for it? What does the world look like without it?
+    validations:
+      required: true
+
+  - type: textarea
+    id: design
+    attributes:
+      label: Proposed design
+      description: |
+        Concrete shape of the change. Where it makes sense, include:
+        - User-facing CLI / config / source-spec syntax
+        - Examples of before vs. after
+        - Affected crates or surfaces
+    validations:
+      required: true
+
+  - type: textarea
+    id: drawbacks
+    attributes:
+      label: Drawbacks and trade-offs
+      description: What does this complicate, lock us into, or rule out?
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other shapes you weighed and why this one wins.
+
+  - type: textarea
+    id: open_questions
+    attributes:
+      label: Open questions
+      description: Things you'd specifically like maintainer or community input on.
+
+  - type: checkboxes
+    id: scope_check
+    attributes:
+      label: Scope check
+      options:
+        - label: I've read the [What we welcome](https://github.com/withcoral/coral/blob/main/CONTRIBUTING.md#what-we-welcome-right-now) and [Please discuss first](https://github.com/withcoral/coral/blob/main/CONTRIBUTING.md#please-discuss-first) sections of CONTRIBUTING.md.
+          required: true
