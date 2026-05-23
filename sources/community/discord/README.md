@@ -94,7 +94,8 @@ Privileged gateway intents are distinct from bot permissions and must be enabled
 ## Validation
 
 The following output was captured from a live Discord bot at setup time to confirm that
-the source connects, authenticates, and returns real data from all six tables.
+the source connects, authenticates, and returns real data from all six tables. IDs,
+names, and message content are anonymized to placeholders.
 
 ```shell
 # Add the source
@@ -138,58 +139,58 @@ $ coral source test discord
 
 # Current user identity
 $ coral sql "SELECT * FROM discord.current_user LIMIT 1"
-+---------------------+------------+---------------+-------------+--------+------+-------------+----------+--------+-------+
-| id                  | username   | discriminator | global_name | avatar | bot  | mfa_enabled | verified | locale | email |
-+---------------------+------------+---------------+-------------+--------+------+-------------+----------+--------+-------+
-| 1507725747283038289 | coral-test | 6073          |             |        | true | false       | true     | en-US  |       |
-+---------------------+------------+---------------+-------------+--------+------+-------------+----------+--------+-------+
++--------------------+-----------+---------------+-------------+--------+-----+-------------+----------+--------+-------+
+| id                 | username  | discriminator | global_name | avatar | bot | mfa_enabled | verified | locale | email |
++--------------------+-----------+---------------+-------------+--------+-----+-------------+----------+--------+-------+
+| 123456789012345678 | bot_user  | 0000          |             |        | true | false       | true     | en-US  |       |
++--------------------+-----------+---------------+-------------+--------+-----+-------------+----------+--------+-------+
 
 # Guilds
 $ coral sql "SELECT id, name, approximate_member_count FROM discord.guilds WHERE with_counts = true LIMIT 5"
-+---------------------+----------------------+--------------------------+
-| id                  | name                 | approximate_member_count |
-+---------------------+----------------------+--------------------------+
-| 1299637899427581952 | Yunus.25jmi's server | 2                        |
-+---------------------+----------------------+--------------------------+
++--------------------+-------------+--------------------------+
+| id                 | name        | approximate_member_count |
++--------------------+-------------+--------------------------+
+| 123456789012345679 | Test Server | 2                        |
++--------------------+-------------+--------------------------+
 
 # Channels
-$ coral sql "SELECT id, name, type, position FROM discord.channels WHERE guild_id = '1299637899427581952' LIMIT 10"
-+---------------------+----------------+------+----------+
-| id                  | name           | type | position |
-+---------------------+----------------+------+----------+
-| 1299637899427581953 | Text Channels  | 4    | 0        |
-| 1299637899901276221 | Voice Channels | 4    | 0        |
-| 1299637899901276222 | general        | 0    | 0        |
-| 1299637899901276223 | General        | 2    | 0        |
-+---------------------+----------------+------+----------+
+$ coral sql "SELECT id, name, type, position FROM discord.channels WHERE guild_id = '123456789012345679' LIMIT 10"
++--------------------+----------------+------+----------+
+| id                 | name           | type | position |
++--------------------+----------------+------+----------+
+| 123456789012345680 | Text Channels  | 4    | 0        |
+| 123456789012345681 | Voice Channels | 4    | 0        |
+| 123456789012345682 | general        | 0    | 0        |
+| 123456789012345683 | General        | 2    | 0        |
++--------------------+----------------+------+----------+
 
 # Messages
-$ coral sql "SELECT id, author__username, content, timestamp, flags FROM discord.messages WHERE channel_id = '1299637899901276222' LIMIT 5"
-+---------------------+------------------+---------------------------------------------+--------------------------+-------+
-| id                  | author__username | content                                     | timestamp                | flags |
-+---------------------+------------------+---------------------------------------------+--------------------------+-------+
-| 1507729541039132753 | coral-test       |                                             | 2026-05-23T12:58:54.844Z | 0     |
-| 1475765097581510656 | yunus.25jmi      | https://discord.com/invite/cloudflaredev    | 2026-02-24T08:03:37.653Z | 0     |
-| 1406334871801954324 | yunus.25jmi      | https://discord.com/invite/ZZNkGzkD         | 2025-08-16T17:52:41.876Z | 0     |
-| 1391520906785984676 | yunus.25jmi      | Track 2: WEBSITE UPGRADE MODE** ...         | 2025-07-06T20:47:17.386Z | 0     |
-| 1391520442891767921 | yunus.25jmi      |                                             | 2025-07-06T20:45:26.785Z | 16384 |
-+---------------------+------------------+---------------------------------------------+--------------------------+-------+
+$ coral sql "SELECT id, author__username, content, timestamp, flags FROM discord.messages WHERE channel_id = '123456789012345682' LIMIT 5"
++--------------------+------------------+------------------------+--------------------------+-------+
+| id                 | author__username | content                | timestamp                | flags |
++--------------------+------------------+------------------------+--------------------------+-------+
+| 123456789012345684 | bot_user         |                        | 2026-05-23T12:58:54.844Z | 0     |
+| 123456789012345685 | server_member    | https://example.com/1  | 2026-02-24T08:03:37.653Z | 0     |
+| 123456789012345686 | server_member    | https://example.com/2  | 2025-08-16T17:52:41.876Z | 0     |
+| 123456789012345687 | server_member    | Announcement text      | 2025-07-06T20:47:17.386Z | 0     |
+| 123456789012345688 | server_member    |                        | 2025-07-06T20:45:26.785Z | 16384 |
++--------------------+------------------+------------------------+--------------------------+-------+
 
 # Members
-$ coral sql "SELECT user__username, nick, joined_at, premium_since FROM discord.members WHERE guild_id = '1299637899427581952' LIMIT 10"
+$ coral sql "SELECT user__username, nick, joined_at, premium_since FROM discord.members WHERE guild_id = '123456789012345679' LIMIT 10"
 +----------------+------+--------------------------+---------------+
 | user__username | nick | joined_at                | premium_since |
 +----------------+------+--------------------------+---------------+
-| yunus.25jmi    |      | 2024-10-26T07:37:01.352Z |               |
-| coral-test     |      | 2026-05-23T12:58:54.758Z |               |
+| server_member  |      | 2024-10-26T07:37:01.352Z |               |
+| bot_user       |      | 2026-05-23T12:58:54.758Z |               |
 +----------------+------+--------------------------+---------------+
 
 # Roles
-$ coral sql "SELECT id, name, color, position FROM discord.roles WHERE guild_id = '1299637899427581952' ORDER BY position DESC LIMIT 10"
-+---------------------+------------+-------+----------+
-| id                  | name       | color | position |
-+---------------------+------------+-------+----------+
-| 1507729540284289099 | coral-test | 0     | 1        |
-| 1299637899427581952 | @everyone  | 0     | 0        |
-+---------------------+------------+-------+----------+
+$ coral sql "SELECT id, name, color, position FROM discord.roles WHERE guild_id = '123456789012345679' ORDER BY position DESC LIMIT 10"
++--------------------+------------+-------+----------+
+| id                 | name       | color | position |
++--------------------+------------+-------+----------+
+| 123456789012345689 | bot_role   | 0     | 1        |
+| 123456789012345679 | @everyone  | 0     | 0        |
++--------------------+------------+-------+----------+
 ```
