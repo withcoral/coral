@@ -1,5 +1,5 @@
 name: razorpay
-version: 0.1.0
+version: 0.2.0
 dsl_version: 3
 backend: http
 
@@ -44,13 +44,24 @@ tables:
   # -----------------------------------------------------------------------
   # razorpay.payments
   # GET /v1/payments
-  # Fetch all payments for the account. Supports from/to epoch filters.
+  # Fix #1: required/optional moved to filters: block; query only maps them.
+  # Fix #4: fetch_limit_default: 25 so scans stay safe without a time range.
   # -----------------------------------------------------------------------
   - name: payments
     description: >
       All payments processed through your Razorpay account.
-      Use `from` and `to` filters (Unix epoch seconds) to scope the time range.
-      Each row is one payment attempt — authorized, captured, failed, or refunded.
+      Filter by `from` and `to` (Unix epoch seconds) to scope a time window.
+      Without filters Coral fetches in pages of 25 — add a time range for
+      large accounts.
+    filters:
+      - name: from
+        type: Utf8
+        required: false
+        description: Unix epoch start timestamp (inclusive)
+      - name: to
+        type: Utf8
+        required: false
+        description: Unix epoch end timestamp (inclusive)
     request:
       method: GET
       path: /payments
@@ -58,11 +69,9 @@ tables:
         - name: from
           from: filter
           key: from
-          required: false
         - name: to
           from: filter
           key: to
-          required: false
         - name: count
           from: literal
           value: 100
@@ -76,7 +85,7 @@ tables:
       offset_param: skip
       offset_start: 0
       page_size:
-        default: 100
+        default: 25
         max: 100
         query_param: count
     columns:
@@ -109,7 +118,7 @@ tables:
       - name: method
         type: Utf8
         description: >
-          Payment method: card, netbanking, wallet, emi, upi, oder
+          Payment method: card, netbanking, wallet, emi, upi, or other
       - name: amount_refunded
         type: Int64
         description: Amount already refunded in smallest currency unit
@@ -157,7 +166,7 @@ tables:
         description: Source of the error (customer, business, or gateway)
       - name: error_step
         type: Utf8
-        description: Step at which the payment failed (payment_initiation, etc.)
+        description: Step at which the payment failed
       - name: error_reason
         type: Utf8
         description: Machine-readable reason code for the failure
@@ -181,13 +190,35 @@ tables:
   # -----------------------------------------------------------------------
   # razorpay.orders
   # GET /v1/orders
-  # Fetch all orders. Orders are created before a payment is initiated.
+  # Fix #1: required/optional moved to filters: block.
+  # Fix #2: authorized is int 1/0 per Razorpay docs — use filter_int, not
+  #         filter_bool (which would send true/false instead of 1/0).
+  # Fix #4: fetch_limit_default: 25.
   # -----------------------------------------------------------------------
   - name: orders
     description: >
       All orders created in your Razorpay account. An order represents a
-      merchant-created payment session before the customer initiates payment.
-      Use `from` and `to` filters (Unix epoch seconds) to scope the time range.
+      merchant-created payment session. Filter by `from`/`to` (Unix epoch
+      seconds) or `authorized` (1 = authorized, 0 = not authorized).
+    filters:
+      - name: from
+        type: Utf8
+        required: false
+        description: Unix epoch start timestamp (inclusive)
+      - name: to
+        type: Utf8
+        required: false
+        description: Unix epoch end timestamp (inclusive)
+      - name: authorized
+        type: Utf8
+        required: false
+        description: >
+          Pass 1 to return only authorized orders, 0 for un-authorized orders.
+          Razorpay accepts integer values 1 or 0, not boolean true/false.
+      - name: receipt
+        type: Utf8
+        required: false
+        description: Filter by merchant-assigned receipt number
     request:
       method: GET
       path: /orders
@@ -195,19 +226,15 @@ tables:
         - name: from
           from: filter
           key: from
-          required: false
         - name: to
           from: filter
           key: to
-          required: false
         - name: authorized
-          from: filter_bool
+          from: filter_int
           key: authorized
-          required: false
         - name: receipt
           from: filter
           key: receipt
-          required: false
         - name: count
           from: literal
           value: 100
@@ -221,7 +248,7 @@ tables:
       offset_param: skip
       offset_start: 0
       page_size:
-        default: 100
+        default: 25
         max: 100
         query_param: count
     columns:
@@ -270,14 +297,23 @@ tables:
   # -----------------------------------------------------------------------
   # razorpay.refunds
   # GET /v1/refunds
-  # Fetch all refunds across all payments.
+  # Fix #1: required/optional moved to filters: block.
+  # Fix #4: fetch_limit_default: 25.
   # -----------------------------------------------------------------------
   - name: refunds
     description: >
-      All refunds issued on your Razorpay account, across all payments.
-      Use `from` and `to` filters (Unix epoch seconds) to scope the time range.
-      To see refunds for a specific payment, join with razorpay.payments
-      on payment_id = payments.id.
+      All refunds issued on your Razorpay account across all payments.
+      Filter by `from`/`to` (Unix epoch seconds) to scope a time window.
+      Join with razorpay.payments on payment_id = payments.id for enrichment.
+    filters:
+      - name: from
+        type: Utf8
+        required: false
+        description: Unix epoch start timestamp (inclusive)
+      - name: to
+        type: Utf8
+        required: false
+        description: Unix epoch end timestamp (inclusive)
     request:
       method: GET
       path: /refunds
@@ -285,11 +321,9 @@ tables:
         - name: from
           from: filter
           key: from
-          required: false
         - name: to
           from: filter
           key: to
-          required: false
         - name: count
           from: literal
           value: 100
@@ -303,7 +337,7 @@ tables:
       offset_param: skip
       offset_start: 0
       page_size:
-        default: 100
+        default: 25
         max: 100
         query_param: count
     columns:
@@ -337,8 +371,7 @@ tables:
         description: "Refund status: pending, processed, or failed"
       - name: speed_processed
         type: Utf8
-        description: >
-          Actual refund processing speed: normal or optimum (instant)
+        description: Actual refund speed used: normal or optimum (instant)
       - name: speed_requested
         type: Utf8
         description: Refund speed requested at the time of issue
@@ -356,13 +389,23 @@ tables:
   # -----------------------------------------------------------------------
   # razorpay.settlements
   # GET /v1/settlements
-  # Fetch all settlement records (money transferred to your bank account).
+  # Fix #1: required/optional moved to filters: block.
+  # Fix #4: fetch_limit_default: 25.
   # -----------------------------------------------------------------------
   - name: settlements
     description: >
       All settlements transferred from Razorpay to your linked bank account.
-      Each row represents one settlement batch. Use `from` and `to` filters
-      (Unix epoch seconds) to scope the time range.
+      Each row is one settlement batch. Filter by `from`/`to` (Unix epoch
+      seconds) to scope by date.
+    filters:
+      - name: from
+        type: Utf8
+        required: false
+        description: Unix epoch start timestamp (inclusive)
+      - name: to
+        type: Utf8
+        required: false
+        description: Unix epoch end timestamp (inclusive)
     request:
       method: GET
       path: /settlements
@@ -370,11 +413,9 @@ tables:
         - name: from
           from: filter
           key: from
-          required: false
         - name: to
           from: filter
           key: to
-          required: false
         - name: count
           from: literal
           value: 100
@@ -388,7 +429,7 @@ tables:
       offset_param: skip
       offset_start: 0
       page_size:
-        default: 100
+        default: 25
         max: 100
         query_param: count
     columns:
@@ -428,13 +469,13 @@ tables:
   # -----------------------------------------------------------------------
   # razorpay.plans
   # GET /v1/plans
-  # Fetch all subscription plans.
+  # No filters on this endpoint — list is account-scoped and small.
   # -----------------------------------------------------------------------
   - name: plans
     description: >
       All billing plans defined in your Razorpay account. Plans are the
-      templates for recurring subscriptions — they define the interval,
-      amount, and currency.
+      templates for recurring subscriptions — they define interval, amount,
+      and currency.
     request:
       method: GET
       path: /plans
@@ -470,8 +511,7 @@ tables:
           (e.g. 1 for monthly, 3 for quarterly)
       - name: period
         type: Utf8
-        description: >
-          Billing frequency unit: daily, weekly, monthly, or yearly
+        description: "Billing frequency unit: daily, weekly, monthly, or yearly"
       - name: item__id
         type: Utf8
         description: Item ID associated with this plan
@@ -507,14 +547,27 @@ tables:
   # -----------------------------------------------------------------------
   # razorpay.subscriptions
   # GET /v1/subscriptions
-  # Fetch all recurring subscriptions.
+  # Fix #1: required/optional moved to filters: block.
   # -----------------------------------------------------------------------
   - name: subscriptions
     description: >
-      All recurring subscriptions on your Razorpay account.
-      Each row represents one subscription to a billing plan.
+      All recurring subscriptions on your Razorpay account. Filter by
+      `plan_id` or by `from`/`to` (Unix epoch seconds).
       Join with razorpay.plans on plan_id = plans.id to enrich with
       pricing details.
+    filters:
+      - name: plan_id
+        type: Utf8
+        required: false
+        description: Filter to subscriptions belonging to a specific plan
+      - name: from
+        type: Utf8
+        required: false
+        description: Unix epoch start timestamp (inclusive)
+      - name: to
+        type: Utf8
+        required: false
+        description: Unix epoch end timestamp (inclusive)
     request:
       method: GET
       path: /subscriptions
@@ -522,15 +575,12 @@ tables:
         - name: plan_id
           from: filter
           key: plan_id
-          required: false
         - name: from
           from: filter
           key: from
-          required: false
         - name: to
           from: filter
           key: to
-          required: false
         - name: count
           from: literal
           value: 100
@@ -601,7 +651,7 @@ tables:
         description: Total number of billing cycles for this subscription
       - name: paid_count
         type: Int64
-        description: Number of billing cycles that have been successfully charged
+        description: Number of billing cycles successfully charged
       - name: remaining_count
         type: Int64
         description: Number of billing cycles remaining
@@ -643,50 +693,44 @@ tables:
 
   # -----------------------------------------------------------------------
   # razorpay.payment_links
-  # GET /v1/payment_links
-  # Fetch all payment links created in the account.
+  # GET /v1/payment_links/
+  # Fix #3: Razorpay's Payment Links list endpoint only accepts payment_id
+  #         and reference_id as filters — no from/to, no count/skip.
+  #         Response key is payment_links, not items.
+  #         pagination: mode: none to prevent duplicate-row risk.
   # -----------------------------------------------------------------------
   - name: payment_links
     description: >
-      All payment links created in your Razorpay account.
-      Payment links let you collect payments without a checkout page.
-      Use `from` and `to` filters (Unix epoch seconds) to scope the time range.
+      All payment links created in your Razorpay account. This endpoint does
+      not support time-range or offset pagination — filter by payment_id or
+      reference_id to narrow results. Joins with razorpay.payments are
+      possible via the payments[] array columns if you flatten them separately.
+    filters:
+      - name: payment_id
+        type: Utf8
+        required: false
+        description: Filter to a specific payment ID associated with a link
+      - name: reference_id
+        type: Utf8
+        required: false
+        description: Filter by merchant-assigned reference number
     request:
       method: GET
-      path: /payment_links
+      path: /payment_links/
       query:
         - name: payment_id
           from: filter
           key: payment_id
-          required: false
         - name: reference_id
           from: filter
           key: reference_id
-          required: false
-        - name: from
-          from: filter
-          key: from
-          required: false
-        - name: to
-          from: filter
-          key: to
-          required: false
-        - name: count
-          from: literal
-          value: 100
     response:
       rows_path:
         - payment_links
       row_strategy: direct
       allow_404_empty: true
     pagination:
-      mode: offset
-      offset_param: skip
-      offset_start: 0
-      page_size:
-        default: 100
-        max: 100
-        query_param: count
+      mode: none
     columns:
       - name: id
         type: Utf8
@@ -694,10 +738,10 @@ tables:
         description: Unique payment link ID (plink_XXXXXXXXXXXXXXXX)
       - name: amount
         type: Int64
-        description: Payment link amount in smallest currency unit (0 if amount is flexible)
+        description: Payment link amount in smallest currency unit (0 if flexible)
       - name: amount_paid
         type: Int64
-        description: Total amount collected through this payment link so far
+        description: Total amount collected through this link so far
       - name: currency
         type: Utf8
         description: ISO 4217 currency code
@@ -719,6 +763,15 @@ tables:
       - name: reference_id
         type: Utf8
         description: Merchant-assigned reference number for the payment link
+      - name: order_id
+        type: Utf8
+        description: Order ID associated with this payment link
+      - name: upi_link
+        type: Boolean
+        description: Whether this is a UPI-only payment link
+      - name: user_id
+        type: Utf8
+        description: User role ID through which the link was created
       - name: customer__name
         type: Utf8
         description: Customer name if pre-filled on the link
@@ -730,16 +783,26 @@ tables:
         description: Customer phone number if pre-filled on the link
       - name: notify__sms
         type: Boolean
-        description: Whether Razorpay sends an SMS notification to the customer
+        description: Whether Razorpay sends SMS notifications to the customer
       - name: notify__email
         type: Boolean
-        description: Whether Razorpay sends an email notification to the customer
+        description: Whether Razorpay sends email notifications to the customer
       - name: reminder_enable
         type: Boolean
         description: Whether automatic payment reminders are enabled
+      - name: cancelled_at
+        type: Timestamp
+        description: When the link was cancelled (0 if not cancelled)
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr:
+            kind: path
+            path:
+              - cancelled_at
       - name: expire_by
         type: Timestamp
-        description: Expiry time of the payment link
+        description: Expiry time set for the payment link (0 if no expiry)
         expr:
           kind: format_timestamp
           input: seconds
@@ -749,7 +812,7 @@ tables:
               - expire_by
       - name: expired_at
         type: Timestamp
-        description: When the link actually expired
+        description: When the link actually expired (0 if not expired)
         expr:
           kind: format_timestamp
           input: seconds
