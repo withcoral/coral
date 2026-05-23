@@ -1,0 +1,173 @@
+name: google_forms
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Google Forms form definitions and responses using the
+  Google Forms REST API v1.
+inputs:
+  GOOGLE_FORMS_ACCESS_TOKEN:
+    kind: secret
+    hint: >-
+      Google OAuth2 access token with Google Forms read-only scope.
+      Generate one at https://developers.google.com/oauthplayground
+      using the scopes https://www.googleapis.com/auth/forms.body.readonly
+      and https://www.googleapis.com/auth/forms.responses.readonly
+base_url: "https://forms.googleapis.com"
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "Bearer {{input.GOOGLE_FORMS_ACCESS_TOKEN}}"
+test_queries:
+  - SELECT form_id, title, description FROM google_forms.forms LIMIT 5
+  - SELECT response_id, respondent_email, last_submitted_time FROM google_forms.responses LIMIT 5
+tables:
+  - name: forms
+    description: >
+      Returns metadata and structure of a Google Form by its form ID.
+      Includes title, description, document title, and whether it
+      accepts responses.
+    guide: >
+      `SELECT form_id, title, description FROM google_forms.forms
+      WHERE form_id = 'YOUR_FORM_ID'`.
+      You must provide a form_id filter to retrieve a specific form.
+    filters:
+      - name: form_id
+        required: true
+    request:
+      method: GET
+      path: "/v1/forms/{{filter.form_id}}"
+    response:
+      row_strategy: single
+    pagination:
+      mode: none
+    columns:
+      - name: form_id
+        type: Utf8
+        nullable: false
+        description: Unique form ID.
+        expr:
+          kind: path
+          path:
+            - formId
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Title of the form shown to respondents.
+        expr:
+          kind: path
+          path:
+            - info
+            - title
+      - name: document_title
+        type: Utf8
+        nullable: true
+        description: Title of the form document in Google Drive.
+        expr:
+          kind: path
+          path:
+            - info
+            - documentTitle
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Description of the form shown to respondents.
+        expr:
+          kind: path
+          path:
+            - info
+            - description
+      - name: responder_uri
+        type: Utf8
+        nullable: true
+        description: Public URI to share with respondents.
+        expr:
+          kind: path
+          path:
+            - responderUri
+      - name: linked_sheet_id
+        type: Utf8
+        nullable: true
+        description: ID of the linked Google Sheet collecting responses.
+        expr:
+          kind: path
+          path:
+            - linkedSheetId
+
+  - name: responses
+    description: >
+      Lists all responses submitted to a Google Form. Returns respondent
+      email, submission time, and raw answers as JSON.
+    guide: >
+      `SELECT response_id, respondent_email, last_submitted_time
+      FROM google_forms.responses WHERE form_id = 'YOUR_FORM_ID' LIMIT 20`.
+      You must provide a form_id filter.
+    filters:
+      - name: form_id
+        required: true
+    request:
+      method: GET
+      path: "/v1/forms/{{filter.form_id}}/responses"
+    response:
+      rows_path:
+        - responses
+    pagination:
+      mode: cursor
+      cursor_path:
+        - nextPageToken
+      cursor_param: pageToken
+      page_size:
+        default: 100
+        max: 5000
+        query_param: pageSize
+    columns:
+      - name: form_id
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: The form ID filter used to retrieve responses.
+        expr:
+          kind: from_filter
+          key: form_id
+      - name: response_id
+        type: Utf8
+        nullable: false
+        description: Unique response ID.
+        expr:
+          kind: path
+          path:
+            - responseId
+      - name: respondent_email
+        type: Utf8
+        nullable: true
+        description: Email of the respondent if collected.
+        expr:
+          kind: path
+          path:
+            - respondentEmail
+      - name: create_time
+        type: Utf8
+        nullable: true
+        description: When the response was first created (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - createTime
+      - name: last_submitted_time
+        type: Utf8
+        nullable: true
+        description: When the response was last submitted (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - lastSubmittedTime
+      - name: answers
+        type: Json
+        nullable: true
+        description: Map of question IDs to answer values.
+        expr:
+          kind: path
+          path:
+            - answers
