@@ -1,11 +1,13 @@
+---
 name: auth0
-version: 0.1.0
+version: "0.1.0"
 dsl_version: 3
 backend: http
 description: >-
-  Query Auth0 tenant data — users, clients, connections, roles, organizations,
-  resource servers, client grants, actions, and logs — via the Auth0
-  Management API v2 with bearer-token authentication.
+  Query Auth0 tenant data — users, clients, connections, roles, role_users,
+  role_permissions, organizations, organization_members, resource servers,
+  client grants, actions, logs, grants, custom domains, and tenant settings
+  — via the Auth0 Management API v2 with bearer-token authentication.
 base_url: "{{input.AUTH0_DOMAIN}}/api/v2"
 
 inputs:
@@ -16,13 +18,15 @@ inputs:
       `https://dev-abc123.us.auth0.com`. Do not include a trailing slash.
   AUTH0_API_TOKEN:
     kind: secret
+    required: true
     hint: >-
       Auth0 Management API access token (JWT). Obtain one via the
       Auth0 Dashboard under Applications > APIs > Auth0 Management API >
       API Explorer or via a machine-to-machine client credentials grant.
       Required scopes depend on the tables you query (e.g. read:users,
       read:clients, read:connections, read:roles, read:organizations,
-      read:resource_servers, read:client_grants, read:actions, read:logs).
+      read:resource_servers, read:client_grants, read:actions, read:logs,
+      read:grants, read:custom_domains, read:tenant_settings).
 
 auth:
   type: HeaderAuth
@@ -122,6 +126,11 @@ tables:
         nullable: true
         description: URL of the user's profile picture.
         expr: {kind: path, path: [picture]}
+      - name: connection
+        type: Utf8
+        nullable: true
+        description: Identity provider connection the user belongs to.
+        expr: {kind: path, path: [identities, 0, connection]}
       - name: logins_count
         type: Int64
         nullable: true

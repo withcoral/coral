@@ -25,7 +25,7 @@ Required scopes depend on the tables you query:
 
 | Scope | Tables |
 | --- | --- |
-| `read:users` | `users`, `grants` |
+| `read:users` | `users` |
 | `read:clients` | `clients` |
 | `read:connections` | `connections` |
 | `read:roles` | `roles`, `role_users`, `role_permissions` |
@@ -154,7 +154,7 @@ ORDER BY last_login DESC
 LIMIT 20;
 
 -- Search for users by email
-SELECT user_id, email, name, connection
+SELECT user_id, email, name, identities
 FROM auth0.users
 WHERE q = 'email:"alice@example.com"'
 LIMIT 5;
