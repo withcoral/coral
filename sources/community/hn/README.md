@@ -145,13 +145,14 @@ coral sql "
   LIMIT 10
 "
 
-# Recent stories in the last 30 days
+# Recent stories since a date (compute the epoch cutoff for your window)
+# For example, 30 days ago: date -j -v-30d +%s  (macOS) or date -d '30 days ago' +%s (Linux)
 coral sql "
   SELECT title, author, points, created_at
   FROM hn.search_by_date
   WHERE query = 'postgres'
     AND tags = 'story'
-    AND numeric_filters = 'created_at_i>1745000000'
+    AND numeric_filters = 'created_at_i>$(date -d "30 days ago" +%s)'
   LIMIT 10
 "
 
@@ -163,12 +164,11 @@ coral sql "
   LIMIT 20
 "
 
-# All posts by a specific author
+# Stories by a specific author (comma = AND in Algolia tag syntax)
 coral sql "
   SELECT title, points, created_at, url
   FROM hn.search
-  WHERE tags = 'author_pg'
-    AND tags = 'story'
+  WHERE tags = 'story,author_pg'
   LIMIT 10
 "
 
