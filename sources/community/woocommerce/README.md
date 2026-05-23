@@ -93,8 +93,10 @@ The key authenticates as the **WordPress user it was created for**, and
 the API permission check uses *both* the key permission level and that
 user's capabilities. A `Read` key on an Administrator/Shop Manager user
 can read every table here. A `Read` key on a low-privilege user (e.g.
-Subscriber) will silently miss orders and customers even though the key
-itself is valid — recreate it against a higher-privileged user.
+Subscriber) will fail with HTTP 401 `woocommerce_rest_cannot_view`
+("Sorry, you cannot list resources.") on those tables even though the
+key itself is valid — recreate it against a higher-privileged user.
+See *Troubleshooting* below.
 
 ## Known limitations
 
