@@ -22,7 +22,6 @@ coral source add --file sources/community/remotive/manifest.yaml
 | Table | Description | Filters |
 |---|---|---|
 | `jobs` | Remote job listings from Remotive | None (Filtering is done locally in SQL) |
-| `categories` | Remote job categories available on Remotive | None |
 
 
 

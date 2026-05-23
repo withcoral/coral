@@ -9,45 +9,7 @@ base_url: "https://remotive.com/api"
 test_queries:
   - SELECT * FROM remotive.jobs LIMIT 1
   - SELECT title, company_name, category FROM remotive.jobs WHERE category = 'Software Development' LIMIT 5
-  - SELECT name, slug FROM remotive.categories LIMIT 5
 tables:
-  - name: categories
-    description: |
-      Remote job categories available on Remotive.
-    fetch_limit_default: 100
-    request:
-      method: GET
-      path: /remote-jobs/categories
-    response:
-      rows_path:
-        - jobs
-    pagination:
-      mode: none
-    columns:
-      - name: id
-        type: Int64
-        nullable: false
-        description: Unique category identifier.
-        expr:
-          kind: path
-          path:
-            - id
-      - name: name
-        type: Utf8
-        nullable: false
-        description: Display name of the category.
-        expr:
-          kind: path
-          path:
-            - name
-      - name: slug
-        type: Utf8
-        nullable: false
-        description: URL-friendly category slug.
-        expr:
-          kind: path
-          path:
-            - slug
 
   - name: jobs
     description: |
