@@ -313,14 +313,14 @@ fn classify_step_kind(name: &str) -> String {
         "filter".to_string()
     } else if lower.contains("projection") || lower.contains("project") {
         "projection".to_string()
-    } else if lower.contains("scan") || lower.contains("exec") {
-        "scan".to_string()
     } else if lower.contains("sort") || lower.contains("order") {
         "sort".to_string()
     } else if lower.contains("limit") {
         "limit".to_string()
     } else if lower.contains("aggregate") {
         "aggregate".to_string()
+    } else if lower.contains("scan") || lower.contains("exec") {
+        "scan".to_string()
     } else {
         "step".to_string()
     }
@@ -356,6 +356,18 @@ fn estimated_rows(plan: &dyn PhysicalExecutionPlan) -> Option<u64> {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::classify_step_kind;
+
+    #[test]
+    fn classifies_specific_exec_plan_names_before_generic_scan() {
+        assert_eq!(classify_step_kind("SortExec"), "sort");
+        assert_eq!(classify_step_kind("GlobalLimitExec"), "limit");
+        assert_eq!(classify_step_kind("AggregateExec"), "aggregate");
+        assert_eq!(classify_step_kind("ParquetExec"), "scan");
+    }
+}
 
 fn read_only_sql_options() -> SQLOptions {
     SQLOptions::new()

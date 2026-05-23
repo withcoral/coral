@@ -148,15 +148,15 @@ pub(crate) fn http_json_exec(request: HttpJsonExecRequest<'_>) -> Result<Arc<dyn
         JsonExecExplain {
             target: format!("{source_schema}.{}", target.name()),
             detail: format!("HTTP scan {source_schema}.{} via remote request", target.name()),
-            pushdowns: filter_values
-                .iter()
-                .map(|(key, value)| format!("{key}={value}"))
-                .collect(),
-            pushdown_detail: if limit.is_some() {
-                "filters and limit are pushed into the HTTP request".to_string()
-            } else {
-                "filters are pushed into the HTTP request".to_string()
+            pushdowns: {
+                let mut entries: Vec<String> = filter_values
+                    .iter()
+                    .map(|(key, value)| format!("{key}={value}"))
+                    .collect();
+                entries.sort();
+                entries
             },
+            pushdown_detail: pushdown_detail(&filter_values, limit),
             cache: vec![JsonExecCacheEntry {
                 strategy: "remote http".to_string(),
                 status: "fetched".to_string(),
@@ -291,9 +291,18 @@ fn classify_filter(
     TableProviderFilterPushDown::Unsupported
 }
 
+fn pushdown_detail(filter_values: &HashMap<String, String>, limit: Option<usize>) -> String {
+    match (filter_values.is_empty(), limit.is_some()) {
+        (true, true) => "limit is pushed into the HTTP request".to_string(),
+        (true, false) => "no filters were pushed into the HTTP request".to_string(),
+        (false, true) => "filters and limit are pushed into the HTTP request".to_string(),
+        (false, false) => "filters are pushed into the HTTP request".to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::classify_filter;
+    use super::{classify_filter, pushdown_detail};
     use coral_spec::FilterMode;
     use datafusion::common::Column;
     use datafusion::logical_expr::{
@@ -410,5 +419,17 @@ mod tests {
             let pushdown = classify_filter(&expr, &allowed(&["descending"]), &modes(&[]));
             assert_eq!(pushdown, TableProviderFilterPushDown::Unsupported);
         }
+    }
+
+    #[test]
+    fn pushdown_detail_reflects_absent_filters() {
+        let detail = pushdown_detail(&HashMap::new(), None);
+        assert_eq!(detail, "no filters were pushed into the HTTP request");
+    }
+
+    #[test]
+    fn pushdown_detail_reflects_limit_without_filters() {
+        let detail = pushdown_detail(&HashMap::new(), Some(25));
+        assert_eq!(detail, "limit is pushed into the HTTP request");
     }
 }

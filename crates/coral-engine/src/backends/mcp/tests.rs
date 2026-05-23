@@ -1008,6 +1008,29 @@ async fn limit_binding_omits_arg_when_no_limit_set() {
 }
 
 #[tokio::test]
+async fn explain_sql_omits_limit_pushdown_without_limit_binding() {
+    let source = crate::QuerySource::new(
+        mcp_table_manifest(),
+        BTreeMap::new(),
+        BTreeMap::new(),
+    );
+
+    let plan = crate::CoralQuery::explain_sql(
+        &[source],
+        crate::QueryRuntimeConfig::default(),
+        "SELECT id FROM test_mcp.issues LIMIT 2",
+    )
+    .await
+    .expect("query should explain");
+
+    let execution_plan = plan.execution_plan().expect("execution plan");
+    assert!(
+        execution_plan.pushdowns().is_empty(),
+        "expected no pushed request arguments in explain metadata"
+    );
+}
+
+#[tokio::test]
 async fn cursor_pagination_fetches_until_response_cursor_is_absent() {
     let ctx = SessionContext::new();
     let caller = Arc::new(FakePaginatedMcpTableCaller {

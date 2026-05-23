@@ -157,9 +157,14 @@ impl TableProvider for McpTableProvider {
             self.table.limit_binding.as_ref().and_then(|b| b.max),
         );
 
-        if let (Some(binding), Some(push)) = (self.table.limit_binding.as_ref(), limits.push) {
+        let pushed_limit = if let (Some(binding), Some(push)) =
+            (self.table.limit_binding.as_ref(), limits.push)
+        {
             arguments.insert(binding.tool_arg.clone(), Value::from(push));
-        }
+            Some(push)
+        } else {
+            None
+        };
 
         let fetcher = Arc::new(McpFetchPlan {
             backend: self.backend.clone(),
@@ -200,11 +205,10 @@ impl TableProvider for McpTableProvider {
                     self.table.name(),
                     self.table.tool
                 ),
-                pushdowns: limits
-                    .push
+                pushdowns: pushed_limit
                     .map(|push| vec![format!("limit={push}")])
                     .unwrap_or_default(),
-                pushdown_detail: if limits.push.is_some() {
+                pushdown_detail: if pushed_limit.is_some() {
                     "request arguments include the per-request limit".to_string()
                 } else {
                     "no request arguments were pushed down".to_string()
