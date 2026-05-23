@@ -22,43 +22,9 @@ coral source add --file sources/community/remotive/manifest.yaml
 | Table | Description | Filters |
 |---|---|---|
 | `jobs` | Remote job listings from Remotive | None (Filtering is done locally in SQL) |
+| `categories` | Remote job categories available on Remotive | None |
 
-### Supported Category Slugs
 
-Use the `category_slug` column in SQL `WHERE` clauses to filter by category slug. The display-only `category` column returns the user-friendly name.
-
-| Slug | Display name |
-|---|---|
-| `software-development` | Software Development |
-| `customer-service` | Customer Service |
-| `design` | Design |
-| `marketing` | Marketing |
-| `sales` | Sales |
-| `product` | Product Management |
-| `project-management` | Project Management |
-| `artificial-intelligence` | Artificial Intelligence |
-| `data` | Data and Analytics |
-| `devops` | Devops |
-| `finance` | Finance |
-| `human-resources` | Human Resources |
-| `qa` | Quality Assurance |
-| `writing` | Writing |
-| `legal` | Legal |
-| `medical` | Medical |
-| `education` | Teaching |
-| `account-management` | Account Management |
-| `business-development` | Business Development |
-| `communications` | Communications |
-| `compliance` | Compliance |
-| `engineering` | Engineering |
-| `information-technology` | Information Technology |
-| `knowledge-management` | Knowledge Management |
-| `operations` | Operations |
-| `research` | Research |
-| `strategy` | Strategy |
-| `supply-chain` | Supply Chain |
-| `travel-hospitality` | Travel and Hospitality |
-| `all-others` | All others |
 
 ## Quick start
 
@@ -70,7 +36,7 @@ coral sql "SELECT id, title, company_name, category FROM remotive.jobs LIMIT 1"
 coral sql "
   SELECT title, company_name, salary, candidate_required_location
   FROM remotive.jobs
-  WHERE category_slug = 'software-development'
+  WHERE category = 'Software Development'
   LIMIT 10
 "
 
@@ -128,6 +94,6 @@ Refer to [Remotive API Documentation](https://remotive.com/api-documentation) fo
 
 ## Notes
 
-- The API ignores query parameters, so all SQL filters (such as `category_slug` and `search`) are evaluated locally on the fetched payload.
+- The API ignores query parameters, so all SQL filters (such as `category` and `search`) are evaluated locally on the fetched payload.
 - The API returns all jobs in a single response (no pagination). Results are bounded locally by `fetch_limit_default`.
 - The HTML job `description` field is intentionally excluded to keep payloads compact for downstream agent workflows. Use the `url` column to link to the full listing.
