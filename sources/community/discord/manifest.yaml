@@ -452,11 +452,14 @@ tables:
   - name: messages
     description: Recent messages in a Discord channel
     guide: |
-      Requires channel_id from discord.channels. Messages are returned
+      Requires channel_id from discord.channels. The bot must have
+      VIEW_CHANNEL and READ_MESSAGE_HISTORY permissions on the channel;
+      voice channels additionally require CONNECT. Messages are returned
       newest-first. Use before, after, and around filters for cursor-based
       pagination (pass message IDs as Snowflake strings). These filters are
       mutually exclusive. Maximum 100 per request. Requires MESSAGE_CONTENT
-      privileged intent for content, embeds, and attachments.
+      privileged intent for content, embeds, and attachments (without it
+      those fields will be empty even with READ_MESSAGE_HISTORY).
       SELECT id, author__username, content, timestamp
       FROM discord.messages WHERE channel_id = '<id>' ORDER BY timestamp DESC
       LIMIT 20.
@@ -576,7 +579,7 @@ tables:
             - pinned
       - name: flags
         type: Int64
-        nullable: false
+        nullable: true
         description: Message flags bitset
         expr:
           kind: path
