@@ -53,14 +53,16 @@ Register one Coral source per server (for example `prometheus_dev`,
 | Table | Description |
 | --- | --- |
 | `query_up` | Scrape health via PromQL `up` (`limit=500` on the query API) |
-| `alerts` | Active alerts from `GET /api/v1/alerts` |
+| `alerts` | Active alerts from `GET /api/v1/alerts` (Coral fetch cap only; no API `limit`) |
 
 ## Load control
 
-Each instant-query table sends Prometheus’s native `limit` query parameter so the
-server does not return unbounded series before Coral applies `fetch_limit_default`
-or SQL `LIMIT`. Treat SQL `LIMIT` as a secondary cap, not a substitute for the
-API `limit`.
+`query_up` sends Prometheus’s native `limit=500` query parameter on `/api/v1/query`
+so the server does not return unbounded series before Coral applies
+`fetch_limit_default` or SQL `LIMIT`.
+
+`alerts` uses `GET /api/v1/alerts`, which does not accept a `limit` parameter.
+Coral caps rows at 200 via `fetch_limit_default`; use SQL `LIMIT` on large alert sets.
 
 ## Example queries
 

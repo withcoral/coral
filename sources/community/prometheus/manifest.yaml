@@ -115,8 +115,10 @@ tables:
     description: Active alerts from the Prometheus alerts API.
     guide: |
       Uses `GET /api/v1/alerts` (not the internal `ALERTS` metric). Filter on
-      `alert_state` (`firing`, `pending`, `inactive`). Sends `limit=200` on the API.
-      For custom PromQL, use a follow-on table or query Prometheus directly.
+      `alert_state` (`firing`, `pending`, `inactive`). The alerts API has no
+      `limit` parameter; Coral caps fetched rows at 200 via `fetch_limit_default`.
+      Use SQL `LIMIT` on large alert sets. For custom PromQL, use a follow-on table
+      or query Prometheus directly.
     fetch_limit_default: 200
     request:
       method: GET
