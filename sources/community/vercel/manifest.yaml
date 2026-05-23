@@ -1,0 +1,984 @@
+name: vercel
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Vercel platform data — projects, deployments, domains, environment variables,
+  and team members — via the Vercel REST API with bearer-token authentication.
+base_url: https://api.vercel.com
+
+inputs:
+  VERCEL_TOKEN:
+    kind: secret
+    hint: >-
+      Vercel API access token. Create one at https://vercel.com/account/tokens
+  VERCEL_TEAM_ID:
+    kind: variable
+    default: ""
+    hint: >-
+      Optional Vercel Team ID for accessing team-scoped resources. Leave empty
+      for personal account.
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "Bearer {{input.VERCEL_TOKEN}}"
+
+rate_limit:
+  remaining_header: X-RateLimit-Remaining
+  reset_header: X-RateLimit-Reset
+
+test_queries:
+  - SELECT id, name, framework FROM vercel.projects LIMIT 1
+  - SELECT uid, name, state, url FROM vercel.deployments LIMIT 1
+  - SELECT name, verified FROM vercel.domains LIMIT 1
+
+tables:
+  - name: projects
+    description: >
+      Lists all Vercel projects for the authenticated user or team. Each row
+      includes project configuration, linked Git repository, framework, build
+      settings, and latest deployment info. Use LIMIT to keep queries cheap.
+    guide: >
+      Start with `SELECT id, name, framework, created_at FROM vercel.projects
+      LIMIT 10`. The `link` column contains the connected Git repository as
+      JSON; use `json_get_str(link, 'repo')` to extract the repo name. The
+      `latest_deployments` and `alias` columns are also JSON arrays for deeper
+      inspection.
+    filters:
+      - name: search
+      - name: repo
+      - name: repo_id
+    request:
+      method: GET
+      path: /v10/projects
+      query:
+        - name: teamId
+          from: input
+          key: VERCEL_TEAM_ID
+        - name: search
+          from: filter
+          key: search
+        - name: repo
+          from: filter
+          key: repo
+        - name: repoId
+          from: filter
+          key: repo_id
+    response:
+      rows_path:
+        - projects
+    pagination:
+      mode: cursor_query
+      response_cursor_path:
+        - pagination
+        - next
+      cursor_param: from
+      page_size:
+        default: 20
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique project identifier.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Project name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: account_id
+        type: Utf8
+        nullable: true
+        description: Owner account ID.
+        expr:
+          kind: path
+          path:
+            - accountId
+      - name: framework
+        type: Utf8
+        nullable: true
+        description: Detected framework (e.g. nextjs, nuxtjs, svelte).
+        expr:
+          kind: path
+          path:
+            - framework
+      - name: node_version
+        type: Utf8
+        nullable: true
+        description: Node.js version used for builds.
+        expr:
+          kind: path
+          path:
+            - nodeVersion
+      - name: build_command
+        type: Utf8
+        nullable: true
+        description: Custom build command.
+        expr:
+          kind: path
+          path:
+            - buildCommand
+      - name: install_command
+        type: Utf8
+        nullable: true
+        description: Custom install command.
+        expr:
+          kind: path
+          path:
+            - installCommand
+      - name: dev_command
+        type: Utf8
+        nullable: true
+        description: Custom dev command.
+        expr:
+          kind: path
+          path:
+            - devCommand
+      - name: output_directory
+        type: Utf8
+        nullable: true
+        description: Custom output directory.
+        expr:
+          kind: path
+          path:
+            - outputDirectory
+      - name: root_directory
+        type: Utf8
+        nullable: true
+        description: Root directory within the repository.
+        expr:
+          kind: path
+          path:
+            - rootDirectory
+      - name: serverless_function_region
+        type: Utf8
+        nullable: true
+        description: Default serverless function region.
+        expr:
+          kind: path
+          path:
+            - serverlessFunctionRegion
+      - name: live
+        type: Boolean
+        nullable: true
+        description: Whether the project has active deployments.
+        expr:
+          kind: path
+          path:
+            - live
+      - name: paused
+        type: Boolean
+        nullable: true
+        description: Whether the project is paused.
+        expr:
+          kind: path
+          path:
+            - paused
+      - name: auto_expose_system_envs
+        type: Boolean
+        nullable: true
+        description: Whether system environment variables are auto-exposed.
+        expr:
+          kind: path
+          path:
+            - autoExposeSystemEnvs
+      - name: git_fork_protection
+        type: Boolean
+        nullable: true
+        description: Whether Git fork protection is enabled.
+        expr:
+          kind: path
+          path:
+            - gitForkProtection
+      - name: public_source
+        type: Boolean
+        nullable: true
+        description: Whether the source code is publicly visible.
+        expr:
+          kind: path
+          path:
+            - publicSource
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Project creation time.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path:
+              - createdAt
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Last update time.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path:
+              - updatedAt
+      - name: link
+        type: Json
+        nullable: true
+        description: >-
+          Connected Git repository info (org, repo, type, productionBranch).
+          Use json_get_str(link, 'repo') to extract the repo name.
+        expr:
+          kind: path
+          path:
+            - link
+      - name: latest_deployments
+        type: Json
+        nullable: true
+        description: Array of most recent deployment objects for this project.
+        expr:
+          kind: path
+          path:
+            - latestDeployments
+      - name: alias
+        type: Json
+        nullable: true
+        description: Alias and domain configuration for the project.
+        expr:
+          kind: path
+          path:
+            - alias
+      - name: resource_config
+        type: Json
+        nullable: true
+        description: Resource configuration (compute, build machine, etc.).
+        expr:
+          kind: path
+          path:
+            - resourceConfig
+      - name: search
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Filter projects by name prefix.
+        expr:
+          kind: from_filter
+          key: search
+      - name: repo
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Filter by linked repository name.
+        expr:
+          kind: from_filter
+          key: repo
+      - name: repo_id
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Filter by linked repository ID.
+        expr:
+          kind: from_filter
+          key: repo_id
+
+  - name: deployments
+    description: >
+      Lists deployments for the authenticated user or team. Supports filtering
+      by project, state, target environment, and Git branch. Each row includes
+      deployment status, URL, creator info, and build metadata.
+    guide: >
+      Start with `SELECT uid, name, state, url, target, created_at FROM
+      vercel.deployments LIMIT 10`. Filter by project_id or state for narrower
+      results. The `meta` and `project_settings` columns contain nested JSON.
+    filters:
+      - name: project_id
+      - name: state
+      - name: target
+    request:
+      method: GET
+      path: /v6/deployments
+      query:
+        - name: teamId
+          from: input
+          key: VERCEL_TEAM_ID
+        - name: projectId
+          from: filter
+          key: project_id
+        - name: state
+          from: filter
+          key: state
+        - name: target
+          from: filter
+          key: target
+    response:
+      rows_path:
+        - deployments
+    pagination:
+      mode: cursor_query
+      response_cursor_path:
+        - pagination
+        - next
+      cursor_param: until
+      page_size:
+        default: 20
+        max: 100
+        query_param: limit
+    columns:
+      - name: uid
+        type: Utf8
+        nullable: false
+        description: Unique deployment identifier (e.g. dpl_xxx).
+        expr:
+          kind: path
+          path:
+            - uid
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Deployment name (usually the project name).
+        expr:
+          kind: path
+          path:
+            - name
+      - name: project_id
+        type: Utf8
+        nullable: true
+        description: Project ID this deployment belongs to.
+        expr:
+          kind: path
+          path:
+            - projectId
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Deployment URL (e.g. my-app-abc123.vercel.app).
+        expr:
+          kind: path
+          path:
+            - url
+      - name: state
+        type: Utf8
+        nullable: true
+        description: >-
+          Current deployment state: BUILDING, ERROR, INITIALIZING, QUEUED,
+          READY, or CANCELED.
+        expr:
+          kind: path
+          path:
+            - state
+      - name: ready_state
+        type: Utf8
+        nullable: true
+        description: Ready state of the deployment.
+        expr:
+          kind: path
+          path:
+            - readyState
+      - name: ready_substate
+        type: Utf8
+        nullable: true
+        description: Ready substate (e.g. STAGED for rolling releases).
+        expr:
+          kind: path
+          path:
+            - readySubstate
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Deployment type (e.g. LAMBDAS).
+        expr:
+          kind: path
+          path:
+            - type
+      - name: source
+        type: Utf8
+        nullable: true
+        description: Trigger source (cli, git, api).
+        expr:
+          kind: path
+          path:
+            - source
+      - name: target
+        type: Utf8
+        nullable: true
+        description: Target environment (production or preview).
+        expr:
+          kind: path
+          path:
+            - target
+      - name: inspector_url
+        type: Utf8
+        nullable: true
+        description: URL to the deployment inspector in Vercel dashboard.
+        expr:
+          kind: path
+          path:
+            - inspectorUrl
+      - name: error_code
+        type: Utf8
+        nullable: true
+        description: Error code if the deployment failed (e.g. BUILD_FAILED).
+        expr:
+          kind: path
+          path:
+            - errorCode
+      - name: error_message
+        type: Utf8
+        nullable: true
+        description: Human-readable error message for failed deployments.
+        expr:
+          kind: path
+          path:
+            - errorMessage
+      - name: creator__uid
+        type: Utf8
+        nullable: true
+        description: UID of the user who triggered the deployment.
+        expr:
+          kind: path
+          path:
+            - creator
+            - uid
+      - name: creator__email
+        type: Utf8
+        nullable: true
+        description: Email of the user who triggered the deployment.
+        expr:
+          kind: path
+          path:
+            - creator
+            - email
+      - name: creator__username
+        type: Utf8
+        nullable: true
+        description: Username of the user who triggered the deployment.
+        expr:
+          kind: path
+          path:
+            - creator
+            - username
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Deployment creation time.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path:
+              - createdAt
+      - name: building_at
+        type: Timestamp
+        nullable: true
+        description: Time the build started.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path:
+              - buildingAt
+      - name: ready
+        type: Timestamp
+        nullable: true
+        description: Time the deployment became ready.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path:
+              - ready
+      - name: checks_state
+        type: Utf8
+        nullable: true
+        description: State of deployment checks (registered, running, completed).
+        expr:
+          kind: path
+          path:
+            - checksState
+      - name: checks_conclusion
+        type: Utf8
+        nullable: true
+        description: Conclusion of deployment checks (succeeded, failed, etc.).
+        expr:
+          kind: path
+          path:
+            - checksConclusion
+      - name: meta
+        type: Json
+        nullable: true
+        description: Git metadata (commit SHA, message, branch, etc.).
+        expr:
+          kind: path
+          path:
+            - meta
+      - name: project_settings
+        type: Json
+        nullable: true
+        description: Snapshot of project settings at deployment time.
+        expr:
+          kind: path
+          path:
+            - projectSettings
+      - name: project_id_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the project_id filter.
+        expr:
+          kind: from_filter
+          key: project_id
+      - name: state_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the state filter.
+        expr:
+          kind: from_filter
+          key: state
+      - name: target_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the target filter.
+        expr:
+          kind: from_filter
+          key: target
+
+  - name: domains
+    description: >
+      Lists all domains registered to the authenticated user or team. Includes
+      verification status, nameserver configuration, and expiry information.
+    guide: >
+      Query with `SELECT name, service_type, verified, expires_at FROM
+      vercel.domains LIMIT 10` to get a quick domain overview.
+    request:
+      method: GET
+      path: /v5/domains
+      query:
+        - name: teamId
+          from: input
+          key: VERCEL_TEAM_ID
+    response:
+      rows_path:
+        - domains
+    pagination:
+      mode: cursor_query
+      response_cursor_path:
+        - pagination
+        - next
+      cursor_param: since
+      page_size:
+        default: 20
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: true
+        description: Unique domain record identifier.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Domain name (e.g. example.com).
+        expr:
+          kind: path
+          path:
+            - name
+      - name: service_type
+        type: Utf8
+        nullable: true
+        description: Service type for the domain (e.g. zeit.world).
+        expr:
+          kind: path
+          path:
+            - serviceType
+      - name: verified
+        type: Boolean
+        nullable: true
+        description: Whether domain ownership has been verified.
+        expr:
+          kind: path
+          path:
+            - verified
+      - name: renew
+        type: Boolean
+        nullable: true
+        description: Whether automatic renewal is enabled.
+        expr:
+          kind: path
+          path:
+            - renew
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Domain creation time.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path:
+              - createdAt
+      - name: expires_at
+        type: Timestamp
+        nullable: true
+        description: Domain expiration time.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path:
+              - expiresAt
+      - name: bought_at
+        type: Timestamp
+        nullable: true
+        description: Time the domain was purchased via Vercel.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path:
+              - boughtAt
+      - name: transferred_at
+        type: Timestamp
+        nullable: true
+        description: Time the domain was transferred.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path:
+              - transferredAt
+      - name: transfer_started_at
+        type: Timestamp
+        nullable: true
+        description: Time the domain transfer was initiated.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path:
+              - transferStartedAt
+      - name: user_id
+        type: Utf8
+        nullable: true
+        description: Owner user ID.
+        expr:
+          kind: path
+          path:
+            - userId
+      - name: team_id
+        type: Utf8
+        nullable: true
+        description: Owner team ID.
+        expr:
+          kind: path
+          path:
+            - teamId
+      - name: creator__username
+        type: Utf8
+        nullable: true
+        description: Username of the user who added the domain.
+        expr:
+          kind: path
+          path:
+            - creator
+            - username
+      - name: creator__email
+        type: Utf8
+        nullable: true
+        description: Email of the user who added the domain.
+        expr:
+          kind: path
+          path:
+            - creator
+            - email
+      - name: nameservers
+        type: Json
+        nullable: true
+        description: Configured nameservers for the domain.
+        expr:
+          kind: path
+          path:
+            - nameservers
+      - name: intended_nameservers
+        type: Json
+        nullable: true
+        description: Expected nameservers for verification.
+        expr:
+          kind: path
+          path:
+            - intendedNameservers
+      - name: custom_nameservers
+        type: Json
+        nullable: true
+        description: Custom nameservers set by the user.
+        expr:
+          kind: path
+          path:
+            - customNameservers
+
+  - name: environment_variables
+    description: >
+      Lists environment variables for a specific project. Requires a
+      project_id filter. Values are returned only if the token has sufficient
+      permissions; encrypted values may appear as null.
+    guide: >
+      Always filter by project_id: `SELECT id, key, type, target FROM
+      vercel.environment_variables WHERE project_id = 'prj_xxx' LIMIT 20`.
+      The `target` column is a JSON array of environments (production, preview,
+      development).
+    filters:
+      - name: project_id
+        required: true
+    request:
+      method: GET
+      path: /v10/projects/{{filter.project_id}}/env
+      query:
+        - name: teamId
+          from: input
+          key: VERCEL_TEAM_ID
+    response:
+      rows_path:
+        - envs
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique environment variable identifier.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: key
+        type: Utf8
+        nullable: false
+        description: Environment variable name.
+        expr:
+          kind: path
+          path:
+            - key
+      - name: value
+        type: Utf8
+        nullable: true
+        description: >-
+          Environment variable value. May be null for encrypted or sensitive
+          variables depending on token permissions.
+        expr:
+          kind: path
+          path:
+            - value
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Variable type (system, encrypted, plain, secret, sensitive).
+        expr:
+          kind: path
+          path:
+            - type
+      - name: target
+        type: Json
+        nullable: true
+        description: >-
+          Target environments as a JSON array (e.g. ["production", "preview",
+          "development"]).
+        expr:
+          kind: path
+          path:
+            - target
+      - name: git_branch
+        type: Utf8
+        nullable: true
+        description: Git branch filter for this variable, if set.
+        expr:
+          kind: path
+          path:
+            - gitBranch
+      - name: comment
+        type: Utf8
+        nullable: true
+        description: User comment or note for this variable.
+        expr:
+          kind: path
+          path:
+            - comment
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Variable creation time.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path:
+              - createdAt
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Variable last update time.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path:
+              - updatedAt
+      - name: created_by
+        type: Utf8
+        nullable: true
+        description: User ID who created this variable.
+        expr:
+          kind: path
+          path:
+            - createdBy
+      - name: updated_by
+        type: Utf8
+        nullable: true
+        description: User ID who last updated this variable.
+        expr:
+          kind: path
+          path:
+            - updatedBy
+      - name: project_id
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the project_id filter.
+        expr:
+          kind: from_filter
+          key: project_id
+
+  - name: team_members
+    description: >
+      Lists members of the team identified by VERCEL_TEAM_ID. Requires
+      VERCEL_TEAM_ID to be set. Returns each member's role, email, and join
+      information.
+    guide: >
+      Requires VERCEL_TEAM_ID input to be set. Query with `SELECT uid, email,
+      username, role, created_at FROM vercel.team_members LIMIT 20`.
+    request:
+      method: GET
+      path: /v3/teams/{{input.VERCEL_TEAM_ID}}/members
+    response:
+      rows_path:
+        - members
+    pagination:
+      mode: cursor_query
+      response_cursor_path:
+        - pagination
+        - next
+      cursor_param: since
+      page_size:
+        default: 20
+        max: 100
+        query_param: limit
+    columns:
+      - name: uid
+        type: Utf8
+        nullable: false
+        description: Member's user ID.
+        expr:
+          kind: path
+          path:
+            - uid
+      - name: email
+        type: Utf8
+        nullable: true
+        description: Member's email address.
+        expr:
+          kind: path
+          path:
+            - email
+      - name: username
+        type: Utf8
+        nullable: true
+        description: Member's Vercel username.
+        expr:
+          kind: path
+          path:
+            - username
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Member's display name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: role
+        type: Utf8
+        nullable: true
+        description: Team role (OWNER, MEMBER, VIEWER, DEVELOPER, BILLING).
+        expr:
+          kind: path
+          path:
+            - role
+      - name: avatar
+        type: Utf8
+        nullable: true
+        description: Avatar image URL or hash.
+        expr:
+          kind: path
+          path:
+            - avatar
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Account creation time.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path:
+              - createdAt
+      - name: confirmed
+        type: Boolean
+        nullable: true
+        description: Whether the member has confirmed their invitation.
+        expr:
+          kind: path
+          path:
+            - confirmed
+      - name: access_requested_at
+        type: Timestamp
+        nullable: true
+        description: Time access was requested.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path:
+              - accessRequestedAt
+      - name: joined_from
+        type: Json
+        nullable: true
+        description: How the member joined (origin, commit SHA, repo, etc.).
+        expr:
+          kind: path
+          path:
+            - joinedFrom

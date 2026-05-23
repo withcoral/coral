@@ -1,5 +1,6 @@
 //! Internal credential-set identity and lifecycle helpers.
 
+pub(crate) mod oauth;
 mod store;
 
 use std::collections::BTreeMap;
@@ -14,6 +15,13 @@ pub(crate) use store::{CredentialStore, CredentialsError};
 /// Opaque credential material captured for best-effort rollback.
 #[derive(Clone)]
 pub(crate) struct CredentialMaterialSnapshot(Option<Vec<u8>>);
+
+pub(crate) const CORAL_INTERNAL_KEY_PREFIX: &str = "__coral";
+pub(crate) const OAUTH_INTERNAL_KEY_PREFIX: &str = "__coral_oauth.";
+
+pub(crate) fn is_internal_material_key(key: &str) -> bool {
+    key.starts_with(CORAL_INTERNAL_KEY_PREFIX)
+}
 
 /// App-owned identity for one durable credential set.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -63,7 +71,7 @@ impl CredentialManager {
     ) -> Result<Vec<String>, AppError> {
         self.store
             .replace_material(workspace_name, credential_set_id, secrets)?;
-        Ok(secrets.keys().cloned().collect())
+        Ok(visible_material_keys(secrets))
     }
 
     pub(crate) fn read_material(
@@ -101,4 +109,12 @@ impl CredentialManager {
         self.store
             .remove_material(workspace_name, credential_set_id)
     }
+}
+
+fn visible_material_keys(material: &BTreeMap<String, String>) -> Vec<String> {
+    material
+        .keys()
+        .filter(|key| !is_internal_material_key(key))
+        .cloned()
+        .collect()
 }

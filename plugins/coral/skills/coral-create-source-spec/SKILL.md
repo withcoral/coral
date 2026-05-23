@@ -55,6 +55,7 @@ Only switch to Coral repo layout when the user is explicitly editing the Coral r
    - auth
    - variables and secrets
    - tables
+   - table functions for source-scoped parameterized endpoints
    - filters
    - response extraction
    - pagination
@@ -67,7 +68,9 @@ Only switch to Coral repo layout when the user is explicitly editing the Coral r
    - repo sources or already-named sources: `coral source test <name>`
 6. Inspect the exposed shape:
    - inspect `coral.tables` for visible tables, descriptions, guides, and required filters; keep metadata queries bounded with `LIMIT`/`OFFSET`
+   - inspect `coral.table_functions` for source-scoped functions, arguments, result columns, kind, and search limits
    - inspect `coral.columns` for canonical column metadata, including `is_virtual` and `is_required_filter`; filter by one table or page large column sets
+   - inspect `coral.filters` for normalized table filter names, types, modes, required flags, and descriptions
    - inspect `coral.inputs` to verify variables, secrets, defaults, hints, and required flags
 7. Query representative tables with `coral sql`.
 8. If you are relying on `coral source test`, make sure `test_queries` gives you a basic smoke/connection check for the source.
@@ -81,6 +84,10 @@ Only switch to Coral repo layout when the user is explicitly editing the Coral r
 - Use source secrets for credentials.
 - Keep table names stable and SQL-friendly.
 - Mark filters as required only when the API truly requires them.
+- Use default table functions for parameterized non-retrieval operations, such as scoped child collections, time-range logs, metrics queries, or detail operations that do not map cleanly to a stable table.
+- Use `kind: search` table functions for provider endpoints that accept query text and return ranked candidates.
+- Do not model provider search as a table filter. Use `mode: contains` only for ordinary provider-side substring filters. Provider-ranked retrieval belongs in a `kind: search` function.
+- Include `search_limits` on every `kind: search` function and expose stable result identifiers for follow-up detail queries.
 - Prefer explicit pagination when the API shape is known.
 - Verify pagination with actual row fetches, not only `COUNT(*)`.
 - Add or update `test_queries` when you want `coral source test` to perform a basic smoke/connection check.
@@ -140,7 +147,9 @@ coral source lint ./my-source.yaml
 coral source add --file ./my-source.yaml
 coral source test my_source
 coral sql "SELECT schema_name, table_name, description, required_filters FROM coral.tables WHERE schema_name = 'my_source' ORDER BY schema_name, table_name LIMIT 50 OFFSET 0"
-coral sql "SELECT table_name, column_name, data_type, is_virtual, is_required_filter, description FROM coral.columns WHERE schema_name = 'my_source' ORDER BY table_name, ordinal_position LIMIT 100 OFFSET 0"
+coral sql "SELECT function_name, kind, arguments_json, result_columns_json, search_limits_json FROM coral.table_functions WHERE schema_name = 'my_source' ORDER BY function_name LIMIT 50 OFFSET 0"
+coral sql "SELECT table_name, filter_name, filter_mode, is_required, data_type, description FROM coral.filters WHERE schema_name = 'my_source' ORDER BY table_name, filter_name LIMIT 100 OFFSET 0"
+coral sql "SELECT table_name, column_name, data_type, is_virtual, is_required_filter, filter_mode, description FROM coral.columns WHERE schema_name = 'my_source' ORDER BY table_name, ordinal_position LIMIT 100 OFFSET 0"
 coral sql "SELECT key, kind, value, default_value, hint, required, is_set FROM coral.inputs WHERE schema_name = 'my_source' ORDER BY key"
 ```
 
@@ -160,6 +169,7 @@ For HTTP-backed sources:
 - define `base_url`
 - define auth headers
 - define request path, query, and body only where needed
+- define source-scoped table functions for provider-native operations that require invocation arguments
 - define response `rows_path`
 - define pagination explicitly when the provider pattern is known
 - define typed columns

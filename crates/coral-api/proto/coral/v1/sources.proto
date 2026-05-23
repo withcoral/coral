@@ -52,28 +52,162 @@ message Source {
   SourceOrigin origin = 6;
 }
 
-// Input kinds that Coral prompts for while installing or importing a source.
-enum SourceInputKind {
-  // Source input kind was not specified.
-  SOURCE_INPUT_KIND_UNSPECIFIED = 0;
-  // Source input is a visible non-secret variable.
-  SOURCE_INPUT_KIND_VARIABLE = 1;
-  // Source input is a secret value.
-  SOURCE_INPUT_KIND_SECRET = 2;
-}
-
 // One manifest-declared source input prompt.
 message SourceInputSpec {
   // Logical variable or secret key.
   string key = 1;
-  // How Coral should prompt for and persist the value.
-  SourceInputKind kind = 2;
   // Whether the input must be supplied explicitly.
-  bool required = 3;
-  // Optional manifest-declared default value.
-  string default_value = 4;
+  bool required = 2;
   // Optional authored hint shown to the user while collecting this input.
-  string hint = 5;
+  string hint = 3;
+  // Input-specific metadata.
+  oneof input {
+    // Visible non-secret variable input metadata.
+    SourceVariableInput variable = 4;
+    // Secret input metadata.
+    SourceSecretInput secret = 5;
+  }
+}
+
+// Manifest-declared visible non-secret variable input metadata.
+message SourceVariableInput {
+  // Optional manifest-declared default value.
+  string default_value = 1;
+}
+
+// Manifest-declared secret input metadata.
+message SourceSecretInput {
+  // Optional credential retrieval choices. If absent, clients collect the
+  // secret value as if a source_config method were declared.
+  SourceCredential credential = 1;
+}
+
+// Credential retrieval choices for one source secret input.
+message SourceCredential {
+  // Authored retrieval methods in display order.
+  repeated SourceCredentialMethod methods = 1;
+}
+
+// One credential retrieval method.
+message SourceCredentialMethod {
+  // Optional display label.
+  string label = 1;
+  // Optional display description.
+  string description = 2;
+  // Method-specific metadata.
+  oneof method {
+    // Secret value is supplied through the source configuration path.
+    SourceConfigCredentialMethod source_config = 3;
+    // Coral retrieves the secret through an OAuth authorization-code flow.
+    OAuthAuthorizationCodeCredentialMethod oauth_authorization_code = 4;
+  }
+}
+
+// Source-configuration credential retrieval method marker.
+message SourceConfigCredentialMethod {
+}
+
+// OAuth authorization-code credential retrieval configuration.
+message OAuthAuthorizationCodeCredentialMethod {
+  // Loopback callback URI Coral binds during the OAuth session.
+  string redirect_uri = 1;
+  // Provider OAuth endpoints.
+  OAuthCredentialEndpoints endpoints = 2;
+  // OAuth client configuration.
+  OAuthCredentialClient client = 3;
+  // Optional scope parameter configuration.
+  OAuthCredentialScopes scopes = 4;
+  // PKCE mode.
+  OauthCredentialPkceMode pkce = 5;
+  // Loopback callback port binding mode.
+  OauthCredentialRedirectUriPortMode redirect_uri_port_mode = 6;
+}
+
+// Supported OAuth PKCE modes.
+enum OauthCredentialPkceMode {
+  // PKCE mode is unspecified. This is invalid for OAuth credential methods;
+  // clients must reject it instead of inferring a PKCE policy.
+  OAUTH_CREDENTIAL_PKCE_MODE_UNSPECIFIED = 0;
+  // PKCE must be used for the OAuth flow.
+  OAUTH_CREDENTIAL_PKCE_MODE_REQUIRED = 1;
+  // PKCE is not used for the OAuth flow.
+  OAUTH_CREDENTIAL_PKCE_MODE_DISABLED = 2;
+}
+
+// Supported loopback redirect URI port binding modes.
+enum OauthCredentialRedirectUriPortMode {
+  // Port mode is unspecified.
+  OAUTH_CREDENTIAL_REDIRECT_URI_PORT_MODE_UNSPECIFIED = 0;
+  // Bind the exact port authored in redirect_uri.
+  OAUTH_CREDENTIAL_REDIRECT_URI_PORT_MODE_FIXED = 1;
+  // Bind a random free port and use it for authorization and token exchange.
+  OAUTH_CREDENTIAL_REDIRECT_URI_PORT_MODE_RANDOM = 2;
+}
+
+// OAuth provider endpoints.
+message OAuthCredentialEndpoints {
+  // Provider authorization endpoint URL.
+  string authorization_url = 1;
+  // Provider token endpoint URL.
+  string token_url = 2;
+}
+
+// OAuth client configuration.
+message OAuthCredentialClient {
+  // Client ID resolution configuration.
+  OAuthCredentialClientId id = 1;
+  // Optional confidential-client secret configuration.
+  OAuthCredentialClientSecret secret = 2;
+}
+
+// OAuth client ID resolution configuration.
+message OAuthCredentialClientId {
+  // Optional manifest-authored default client ID.
+  string default_value = 1;
+  // Optional credential-retrieval input key for a client ID override.
+  string input = 2;
+}
+
+// Supported client secret transport modes.
+enum OauthCredentialClientSecretTransport {
+  // Client secret transport is unspecified.
+  OAUTH_CREDENTIAL_CLIENT_SECRET_TRANSPORT_UNSPECIFIED = 0;
+  // Client secret is sent using HTTP Basic authentication.
+  OAUTH_CREDENTIAL_CLIENT_SECRET_TRANSPORT_BASIC_AUTH = 1;
+  // Client secret is sent in the token request body.
+  OAUTH_CREDENTIAL_CLIENT_SECRET_TRANSPORT_REQUEST_BODY = 2;
+}
+
+// OAuth client secret retrieval configuration.
+message OAuthCredentialClientSecret {
+  // Credential-retrieval input key for the client secret.
+  string input = 1;
+  // How Coral sends the secret to the token endpoint.
+  OauthCredentialClientSecretTransport transport = 2;
+}
+
+// Supported OAuth scope delimiters.
+enum OauthCredentialScopeDelimiter {
+  // Scope delimiter is unspecified.
+  OAUTH_CREDENTIAL_SCOPE_DELIMITER_UNSPECIFIED = 0;
+  // Scope values are joined with spaces.
+  OAUTH_CREDENTIAL_SCOPE_DELIMITER_SPACE = 1;
+  // Scope values are joined with commas.
+  OAUTH_CREDENTIAL_SCOPE_DELIMITER_COMMA = 2;
+}
+
+// OAuth scope parameter configuration.
+message OAuthCredentialScopes {
+  // The `scope` parameter value definition.
+  OAuthCredentialScope scope = 1;
+}
+
+// OAuth scope values and delimiter.
+message OAuthCredentialScope {
+  // Delimiter used to join scope values.
+  OauthCredentialScopeDelimiter delimiter = 1;
+  // Authored scope values.
+  repeated string values = 2;
 }
 
 // One bundled or imported source metadata record.
@@ -122,6 +256,33 @@ message CreateBundledSourceResponse {
   Source source = 1;
 }
 
+// Installs one bundled source with app-owned OAuth credential retrieval.
+message CreateBundledSourceWithOAuthRequest {
+  // Owning workspace resource.
+  Workspace workspace = 1;
+  // Canonical bundled source name.
+  string name = 2;
+  // Visible configured non-secret variables.
+  repeated SourceVariable variables = 3;
+  // Source-config secret bindings.
+  repeated SourceSecret secrets = 4;
+  // OAuth credential retrievals the app should run before validation and install.
+  repeated OAuthCredentialRetrieval oauth_credential_retrievals = 5;
+}
+
+// Streaming event emitted while installing a bundled source with OAuth.
+message CreateBundledSourceWithOAuthResponse {
+  // Installation progress or completion event.
+  oneof event {
+    // Bundled source installation completed.
+    Source source = 1;
+    // OAuth authorization URL is ready.
+    OAuthCredentialAuthorization oauth_authorization = 2;
+    // OAuth credential retrieval completed.
+    OAuthCredentialCompleted oauth_completed = 3;
+  }
+}
+
 // Imports one user-supplied source manifest into Coral ownership.
 message ImportSourceRequest {
   // Owning workspace resource.
@@ -132,12 +293,66 @@ message ImportSourceRequest {
   repeated SourceVariable variables = 3;
   // Source-owned secret values.
   repeated SourceSecret secrets = 4;
+  // OAuth credential retrievals the app should run before validation and import.
+  repeated OAuthCredentialRetrieval oauth_credential_retrievals = 5;
 }
 
-// Returns the imported source.
+// Streaming event emitted while importing a source.
 message ImportSourceResponse {
-  // The imported source resource.
-  Source source = 1;
+  // Import progress or completion event.
+  oneof event {
+    // Source import completed.
+    Source source = 1;
+    // OAuth authorization URL is ready.
+    OAuthCredentialAuthorization oauth_authorization = 2;
+    // OAuth credential retrieval completed.
+    OAuthCredentialCompleted oauth_completed = 3;
+  }
+}
+
+// Safe metadata returned after OAuth retrieval completes.
+message CredentialMetadata {
+  // Metadata key.
+  string key = 1;
+  // Metadata value.
+  string value = 2;
+}
+
+// Transient OAuth method input.
+message OAuthCredentialInput {
+  // Logical input key expected by the selected OAuth credential method.
+  string key = 1;
+  // Input value. This may contain sensitive material such as an OAuth client
+  // secret and must not be treated like source-visible configuration.
+  string value = 2;
+}
+
+// OAuth credential retrieval selected for one source secret input.
+message OAuthCredentialRetrieval {
+  // Secret input key being retrieved.
+  string input_key = 1;
+  // Zero-based selected credential method index.
+  optional uint32 method_index = 2;
+  // Method-specific retrieval input values, such as client ID or client secret.
+  repeated OAuthCredentialInput credential_inputs = 3;
+}
+
+// Authorization URL emitted while importing a source with OAuth credentials.
+message OAuthCredentialAuthorization {
+  // Secret input key being retrieved.
+  string input_key = 1;
+  // Provider authorization URL the user must visit.
+  string authorization_url = 2;
+  // Seconds until the OAuth retrieval expires.
+  uint64 expires_in_seconds = 3;
+}
+
+// Safe completion metadata emitted after OAuth credential retrieval.
+message OAuthCredentialCompleted {
+  // Secret input key populated by the completed OAuth retrieval.
+  string input_key = 1;
+  // Safe provider metadata, never token material.
+  repeated CredentialMetadata metadata = 2;
 }
 
 // Lists all registered sources in one workspace.
@@ -248,8 +463,12 @@ service SourceService {
   rpc GetSourceInfo(GetSourceInfoRequest) returns (GetSourceInfoResponse);
   // Installs one bundled source.
   rpc CreateBundledSource(CreateBundledSourceRequest) returns (CreateBundledSourceResponse);
-  // Imports one user-provided source manifest.
-  rpc ImportSource(ImportSourceRequest) returns (ImportSourceResponse);
+  // Installs one bundled source with app-owned OAuth credential retrieval.
+  rpc CreateBundledSourceWithOAuth(CreateBundledSourceWithOAuthRequest)
+      returns (stream CreateBundledSourceWithOAuthResponse);
+  // Imports one user-provided source manifest, streaming credential retrieval
+  // progress before the final source event when credentials are app-owned.
+  rpc ImportSource(ImportSourceRequest) returns (stream ImportSourceResponse);
   // Deletes a registered source.
   rpc DeleteSource(DeleteSourceRequest) returns (DeleteSourceResponse);
   // Validates that a registered source is queryable.

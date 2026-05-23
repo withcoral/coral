@@ -134,7 +134,7 @@ impl CompiledBackendSource for HttpCompiledSource {
 
 fn registered_table(table: &HttpTableSpec) -> RegisteredTable {
     let required_filters = required_filter_names(table.filters());
-    let columns = registered_columns_from_specs(table.columns(), &required_filters);
+    let columns = registered_columns_from_specs(table.columns(), table.filters());
     build_registered_table(&table.common, columns, required_filters)
 }
 
