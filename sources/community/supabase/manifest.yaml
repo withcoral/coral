@@ -4,7 +4,8 @@ dsl_version: 3
 backend: http
 description: >-
   Query Supabase project tables through the PostgREST data API (not the Supabase
-  Management API). Read-only v1 with fixed table paths and a connectivity check.
+  Management API). Read-only v1 tables: rest_openapi, profiles, profile_by_id.
+  Fixed paths only; no dynamic table URLs.
 inputs:
   SUPABASE_REST_URL:
     kind: variable
