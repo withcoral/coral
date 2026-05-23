@@ -41,10 +41,14 @@ tables:
   - name: posts
     description: >-
       All public posts from the Ghost site, ordered by publication date
-      (newest first, `published_at DESC`). Includes tags and authors
-      information by default. Provider-side Ghost NQL filtering is not
-      exposed — use SQL WHERE clauses to filter by tag, author, featured
-      status, etc. after fetch.
+      (newest first, `published_at DESC`) by default. Includes tags and
+      authors information. Use the optional `filter` parameter with Ghost
+      NQL syntax to narrow results server-side (e.g. `tag:news`,
+      `featured:true`, `author:jane`) and `order` to change sort order
+      (e.g. `published_at ASC`).
+    filters:
+      - name: filter
+      - name: order
     request:
       method: GET
       path: /posts/
@@ -55,6 +59,12 @@ tables:
         - name: include
           from: literal
           value: tags,authors
+        - name: filter
+          from: filter
+          key: filter
+        - name: order
+          from: filter
+          key: order
     response:
       rows_path:
         - posts
@@ -214,9 +224,13 @@ tables:
   - name: pages
     description: >-
       All public static pages from the Ghost site, ordered by title
-      (ascending, `title ASC`). Includes tags and authors information by
-      default. Provider-side Ghost NQL filtering is not exposed — use SQL
-      WHERE clauses to filter after fetch.
+      (ascending, `title ASC`) by default. Includes tags and authors
+      information. Use the optional `filter` parameter with Ghost NQL
+      syntax to narrow results server-side and `order` to change sort
+      order.
+    filters:
+      - name: filter
+      - name: order
     request:
       method: GET
       path: /pages/
@@ -227,6 +241,12 @@ tables:
         - name: include
           from: literal
           value: tags,authors
+        - name: filter
+          from: filter
+          key: filter
+        - name: order
+          from: filter
+          key: order
     response:
       rows_path:
         - pages
@@ -385,10 +405,10 @@ tables:
 
   - name: tags
     description: >-
-      Public tags defined on the Ghost site, with associated post counts.
-      Internal tags (names starting with `#`) are excluded via a
-      provider-side `visibility:public` filter. Tags with zero posts are
-      included; filter them with `WHERE post_count > 0` if needed.
+      Public tags associated with at least one published post on the Ghost
+      site, with post counts. Internal tags (names starting with `#`) are
+      excluded via a provider-side `visibility:public` filter. Ghost does
+      not return tags that have no associated posts.
     request:
       method: GET
       path: /tags/

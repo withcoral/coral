@@ -45,16 +45,14 @@ coral source add --file sources/community/ghost/manifest.yaml --interactive
 
 ## Tables
 
-| Table | Description | Default ordering | Relation data included |
-|---|---|---|---|
-| `posts` | Public posts from the Ghost site. | `published_at DESC` | `tags`, `authors` |
-| `pages` | Public pages from the Ghost site. | `title ASC` | `tags`, `authors` |
-| `tags` | Public tags (internal tags excluded via `visibility:public`). Includes post counts. | — | — |
-| `authors` | Authors who have published content on the site. Includes post counts. | — | — |
+| Table | Description | Filters | Default ordering | Relation data included |
+|---|---|---|---|---|
+| `posts` | Public posts from the Ghost site. | `filter`, `order` | `published_at DESC` | `tags`, `authors` |
+| `pages` | Public pages from the Ghost site. | `filter`, `order` | `title ASC` | `tags`, `authors` |
+| `tags` | Public tags with at least one published post. Internal tags excluded. | — | — | — |
+| `authors` | Authors who have published content on the site. | — | — | — |
 
-> Ghost NQL `filter` / `order` parameters are **not** passed through to the
-> provider. Use SQL `WHERE` and `ORDER BY` clauses to filter and sort results
-> after fetch (e.g. `WHERE featured = true`, `ORDER BY published_at ASC`).
+> **Filters:** `posts` and `pages` support optional `filter` and `order` parameters. These map directly to Ghost's NQL `filter` and `order` API parameters, allowing you to narrow results server-side (e.g., `filter = 'tag:news'`, `order = 'published_at ASC'`).
 
 ## Quick Start
 
@@ -66,7 +64,7 @@ coral sql "SELECT title, published_at, url FROM ghost.posts ORDER BY published_a
 coral sql "SELECT title, url FROM ghost.pages"
 
 -- Find the most popular tags by post count
-coral sql "SELECT name, post_count FROM ghost.tags WHERE post_count > 0 ORDER BY post_count DESC"
+coral sql "SELECT name, post_count FROM ghost.tags ORDER BY post_count DESC"
 
 -- List all authors and their public post count
 coral sql "SELECT name, location, post_count FROM ghost.authors ORDER BY post_count DESC"
