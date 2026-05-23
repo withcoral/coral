@@ -126,11 +126,6 @@ tables:
         nullable: true
         description: URL of the user's profile picture.
         expr: {kind: path, path: [picture]}
-      - name: connection
-        type: Utf8
-        nullable: true
-        description: Identity provider connection the user belongs to.
-        expr: {kind: path, path: [identities, 0, connection]}
       - name: logins_count
         type: Int64
         nullable: true
