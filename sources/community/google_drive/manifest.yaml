@@ -250,6 +250,10 @@ tables:
       one shared drive. Drive returns trashed files by default, so include
       `q = 'trashed = false'` unless you intentionally want deleted items. Use
       `order_by` for provider-side ordering before Coral fetches bounded pages.
+      For broad scans such as `corpora = 'allDrives'`, Google may report an
+      incomplete search when not all corpora were searched. Narrow to
+      `corpora = 'user'` or `corpora = 'drive'` with a `drive_id` when
+      completeness matters.
     fetch_limit_default: 100
     filters:
       - name: q
@@ -1225,6 +1229,9 @@ tables:
     guide: |
       Requires `file_id`, available from `google_drive.files`. Use this table
       to inspect revision IDs, editor metadata, publish state, and file hashes.
+      Google may omit older revisions for files with large revision histories;
+      use this table as provider-visible revision metadata, not a complete
+      immutable audit log.
     filters:
       - name: file_id
         required: true

@@ -122,6 +122,10 @@ ORDER BY modified_time DESC
 LIMIT 50;
 ```
 
+Google may omit older revisions for files with large revision histories, so use
+this as provider-visible revision metadata rather than a complete immutable
+audit log.
+
 ## Tables
 
 ### about
@@ -134,6 +138,10 @@ Authenticated user, Drive quota, and system capability metadata. Maps to
 Files and folders visible to the authenticated user. No filter required. Maps
 to `GET /files`. Optional filters: `q`, `corpora`, `drive_id`, `spaces`, and
 `order_by`. Paginates via `nextPageToken` with up to 100 items per page.
+For broad scans such as `corpora = 'allDrives'`, Google can return
+`incompleteSearch = true`, meaning some results may be missing. Narrow to
+`corpora = 'user'` or `corpora = 'drive'` with `drive_id` when completeness
+matters.
 
 ### file
 
@@ -159,7 +167,8 @@ Comments for a specific file. Requires `file_id`. Maps to
 ### revisions
 
 Revision history for a specific file. Requires `file_id`. Maps to
-`GET /files/{file_id}/revisions`.
+`GET /files/{file_id}/revisions`. Google may omit older revisions for files
+with large revision histories.
 
 ## Notes
 
@@ -169,8 +178,13 @@ Revision history for a specific file. Requires `file_id`. Maps to
   Google returns it, but automatic token refresh is not implemented yet.
 - Drive returns trashed files from `google_drive.files` unless the `q` filter
   excludes them, for example `q = 'trashed = false'`.
+- Broad file scans can be incomplete when Google returns `incompleteSearch =
+  true`; narrow broad scans to `corpora = 'user'` or a specific shared drive
+  with `corpora = 'drive'` and `drive_id`.
 - Use file IDs from `google_drive.files` with `permissions`, `comments`, and
   `revisions`.
+- Google may omit older revisions from `google_drive.revisions` for files with
+  large revision histories.
 - Google may reject `google_drive.permissions` for readable files whose sharing
   details the authenticated user cannot enumerate.
 - The comments endpoint requires a `fields` partial-response projection, which
