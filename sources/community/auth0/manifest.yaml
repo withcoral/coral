@@ -1,1 +1,614 @@
+name: auth0
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Auth0 users, roles, clients, connections, organizations, logs,
+  and actions via the Auth0 Management API v2.
+base_url: "https://{{input.AUTH0_DOMAIN}}"
 
+inputs:
+  AUTH0_DOMAIN:
+    kind: variable
+    hint: |
+      Your Auth0 tenant domain, for example `dev-abc123.us.auth0.com` or
+      `example.auth0.com`. Do not include `https://` or a trailing slash.
+      If you use a custom domain, use that instead.
+  AUTH0_MANAGEMENT_API_TOKEN:
+    kind: secret
+    hint: |
+      Auth0 Management API token. In the Auth0 Dashboard go to
+      Applications › APIs › Auth0 Management API › Test, then create or
+      copy a token. The token must include at minimum the scopes:
+      `read:users`, `read:roles`, `read:clients`, `read:connections`,
+      `read:organizations`, `read:logs`, and `read:actions`.
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "Bearer {{input.AUTH0_MANAGEMENT_API_TOKEN}}"
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT user_id, email, name FROM auth0.users LIMIT 1
+
+tables:
+  # ──────────────────────────────────────────────────────────────────────
+  # users — list tenant users
+  # ──────────────────────────────────────────────────────────────────────
+  - name: users
+    description: >
+      Auth0 users in the tenant (up to 100 per query). Use the `q` filter
+      with Lucene syntax to narrow results, e.g. `q = 'email:"alice@example.com"'`
+      or `q = 'logins_count:[5 TO *]'`. Set `search_engine = 'v3'` (default)
+      for full Lucene support.
+    filters:
+      - name: q
+        mode: search
+      - name: search_engine
+    request:
+      method: GET
+      path: /api/v2/users
+      query:
+        - name: per_page
+          from: literal
+          value: "100"
+        - name: include_totals
+          from: literal
+          value: "false"
+        - name: search_engine
+          from: filter
+          key: search_engine
+        - name: q
+          from: filter
+          key: q
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: user_id
+        type: Utf8
+        nullable: false
+        description: Auth0 unique user identifier (e.g. `auth0|abc123`).
+        expr: {kind: path, path: [user_id]}
+      - name: email
+        type: Utf8
+        nullable: true
+        description: User email address.
+        expr: {kind: path, path: [email]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: User display name.
+        expr: {kind: path, path: [name]}
+      - name: nickname
+        type: Utf8
+        nullable: true
+        description: User nickname.
+        expr: {kind: path, path: [nickname]}
+      - name: connection
+        type: Utf8
+        nullable: true
+        description: Identity provider connection name for the primary identity.
+        expr: {kind: path, path: [identities, 0, connection]}
+      - name: provider
+        type: Utf8
+        nullable: true
+        description: Identity provider name (e.g. auth0, google-oauth2, github).
+        expr: {kind: path, path: [identities, 0, provider]}
+      - name: email_verified
+        type: Boolean
+        nullable: true
+        description: Whether the user's email address has been verified.
+        expr: {kind: path, path: [email_verified]}
+      - name: blocked
+        type: Boolean
+        nullable: true
+        description: Whether the user is blocked from logging in.
+        expr: {kind: path, path: [blocked]}
+      - name: logins_count
+        type: Int64
+        nullable: true
+        description: Total number of successful logins for this user.
+        expr: {kind: path, path: [logins_count]}
+      - name: last_ip
+        type: Utf8
+        nullable: true
+        description: IP address used in the user's most recent login.
+        expr: {kind: path, path: [last_ip]}
+      - name: last_login
+        type: Timestamp
+        nullable: true
+        description: Timestamp of the user's most recent login.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [last_login]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the user record was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created_at]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the user profile was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [updated_at]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw user object.
+        expr: {kind: current_row}
+
+  # ──────────────────────────────────────────────────────────────────────
+  # roles — list roles
+  # ──────────────────────────────────────────────────────────────────────
+  - name: roles
+    description: Roles defined in the Auth0 tenant.
+    filters:
+      - name: name_filter
+    request:
+      method: GET
+      path: /api/v2/roles
+      query:
+        - name: per_page
+          from: literal
+          value: "100"
+        - name: name_filter
+          from: filter
+          key: name_filter
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Role ID.
+        expr: {kind: path, path: [id]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Role name.
+        expr: {kind: path, path: [name]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Role description.
+        expr: {kind: path, path: [description]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw role object.
+        expr: {kind: current_row}
+
+  # ──────────────────────────────────────────────────────────────────────
+  # clients — list applications
+  # ──────────────────────────────────────────────────────────────────────
+  - name: clients
+    description: >
+      Auth0 applications (clients) registered in the tenant.
+      Use the `app_type` filter to narrow results, e.g.
+      `app_type = 'spa'` or `app_type = 'non_interactive'`.
+    filters:
+      - name: app_type
+    request:
+      method: GET
+      path: /api/v2/clients
+      query:
+        - name: per_page
+          from: literal
+          value: "100"
+        - name: app_type
+          from: filter
+          key: app_type
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: client_id
+        type: Utf8
+        nullable: false
+        description: Auth0 client (application) ID.
+        expr: {kind: path, path: [client_id]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Client name.
+        expr: {kind: path, path: [name]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Client description.
+        expr: {kind: path, path: [description]}
+      - name: app_type
+        type: Utf8
+        nullable: true
+        description: >
+          Application type: `spa`, `native`, `regular_web`,
+          or `non_interactive`.
+        expr: {kind: path, path: [app_type]}
+      - name: tenant
+        type: Utf8
+        nullable: true
+        description: Tenant this client belongs to.
+        expr: {kind: path, path: [tenant]}
+      - name: global
+        type: Boolean
+        nullable: true
+        description: Whether this is the global (all-applications) client.
+        expr: {kind: path, path: [global]}
+      - name: callbacks
+        type: Json
+        nullable: true
+        description: List of allowed callback URLs.
+        expr: {kind: path, path: [callbacks]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw client object.
+        expr: {kind: current_row}
+
+  # ──────────────────────────────────────────────────────────────────────
+  # connections — list identity provider connections
+  # ──────────────────────────────────────────────────────────────────────
+  - name: connections
+    description: >
+      Identity provider connections configured in the tenant.
+      Use `strategy` to filter by provider type, e.g.
+      `strategy = 'google-oauth2'` or `strategy = 'auth0'`.
+    filters:
+      - name: strategy
+      - name: name
+    request:
+      method: GET
+      path: /api/v2/connections
+      query:
+        - name: per_page
+          from: literal
+          value: "100"
+        - name: strategy
+          from: filter
+          key: strategy
+        - name: name
+          from: filter
+          key: name
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Connection ID.
+        expr: {kind: path, path: [id]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Connection name.
+        expr: {kind: path, path: [name]}
+      - name: strategy
+        type: Utf8
+        nullable: true
+        description: >
+          Identity provider strategy (e.g. auth0, google-oauth2, github,
+          samlp, waad, adfs).
+        expr: {kind: path, path: [strategy]}
+      - name: enabled_clients
+        type: Json
+        nullable: true
+        description: List of client IDs that can use this connection.
+        expr: {kind: path, path: [enabled_clients]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw connection object.
+        expr: {kind: current_row}
+
+  # ──────────────────────────────────────────────────────────────────────
+  # organizations — list organizations
+  # ──────────────────────────────────────────────────────────────────────
+  - name: organizations
+    description: Organizations defined in the Auth0 tenant.
+    request:
+      method: GET
+      path: /api/v2/organizations
+      query:
+        - name: per_page
+          from: literal
+          value: "100"
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Organization ID.
+        expr: {kind: path, path: [id]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Organization URL-friendly identifier.
+        expr: {kind: path, path: [name]}
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: Human-readable organization name.
+        expr: {kind: path, path: [display_name]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw organization object.
+        expr: {kind: current_row}
+
+  # ──────────────────────────────────────────────────────────────────────
+  # logs — recent tenant log events
+  # ──────────────────────────────────────────────────────────────────────
+  - name: logs
+    description: >
+      Recent Auth0 tenant log events, sorted newest-first (up to 100).
+      Use `type` to filter by event code (e.g. `type = 's'` for successful
+      logins, `type = 'f'` for failures). Use `q` for Lucene-syntax queries
+      across all log fields.
+    filters:
+      - name: type
+        mode: search
+      - name: q
+        mode: search
+    request:
+      method: GET
+      path: /api/v2/logs
+      query:
+        - name: per_page
+          from: literal
+          value: "100"
+        - name: sort
+          from: literal
+          value: "date:-1"
+        - name: type
+          from: filter
+          key: type
+        - name: q
+          from: filter
+          key: q
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: log_id
+        type: Utf8
+        nullable: false
+        description: Unique log entry identifier.
+        expr: {kind: path, path: [_id]}
+      - name: type
+        type: Utf8
+        nullable: true
+        description: >
+          Log event type code. Common values: `s` (success), `f` (failure),
+          `slo` (successful logout), `sce` (success change email).
+        expr: {kind: path, path: [type]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Human-readable description of the event.
+        expr: {kind: path, path: [description]}
+      - name: client_id
+        type: Utf8
+        nullable: true
+        description: Client ID associated with the event.
+        expr: {kind: path, path: [client_id]}
+      - name: client_name
+        type: Utf8
+        nullable: true
+        description: Client name associated with the event.
+        expr: {kind: path, path: [client_name]}
+      - name: user_id
+        type: Utf8
+        nullable: true
+        description: User ID associated with the event.
+        expr: {kind: path, path: [user_id]}
+      - name: user_name
+        type: Utf8
+        nullable: true
+        description: Username or email associated with the event.
+        expr: {kind: path, path: [user_name]}
+      - name: connection
+        type: Utf8
+        nullable: true
+        description: Connection name associated with the event.
+        expr: {kind: path, path: [connection]}
+      - name: ip
+        type: Utf8
+        nullable: true
+        description: IP address of the incoming request.
+        expr: {kind: path, path: [ip]}
+      - name: date
+        type: Timestamp
+        nullable: true
+        description: Event timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [date]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw log event object.
+        expr: {kind: current_row}
+
+  # ──────────────────────────────────────────────────────────────────────
+  # actions — list Actions
+  # ──────────────────────────────────────────────────────────────────────
+  - name: actions
+    description: Auth0 Actions defined in the tenant.
+    filters:
+      - name: trigger_id
+    request:
+      method: GET
+      path: /api/v2/actions/actions
+      query:
+        - name: per_page
+          from: literal
+          value: "100"
+        - name: trigger_id
+          from: filter
+          key: trigger_id
+    response:
+      row_strategy: extract
+      path: [actions]
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Action ID.
+        expr: {kind: path, path: [id]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Action name.
+        expr: {kind: path, path: [name]}
+      - name: status
+        type: Utf8
+        nullable: true
+        description: >
+          Deployment status of the action: `built`, `building`, `failed`,
+          or `untested`.
+        expr: {kind: path, path: [status]}
+      - name: runtime
+        type: Utf8
+        nullable: true
+        description: Runtime environment (e.g. node18-actions, node16-actions).
+        expr: {kind: path, path: [runtime]}
+      - name: supported_triggers
+        type: Json
+        nullable: true
+        description: List of trigger definitions this action is attached to.
+        expr: {kind: path, path: [supported_triggers]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the action was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created_at]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the action was last modified.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [updated_at]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw action object.
+        expr: {kind: current_row}
+
+functions:
+  # ──────────────────────────────────────────────────────────────────────
+  # search_users — Lucene user search
+  # ──────────────────────────────────────────────────────────────────────
+  - name: search_users
+    kind: search
+    description: >-
+      Search Auth0 users using Lucene query syntax via the Management API
+      `q` parameter. Supports field queries such as
+      `email:"alice@example.com"`, `name:alice*`, or
+      `logins_count:[10 TO *]`. Uses search engine v3.
+    fetch_limit_default: 10
+    search_limits:
+      default_top_k: 10
+      max_top_k: 100
+      max_calls_per_query: 1
+    args:
+      - name: q
+        required: true
+        bind:
+          arg: q
+    request:
+      method: GET
+      path: /api/v2/users
+      query:
+        - name: q
+          from: arg
+          key: q
+        - name: search_engine
+          from: literal
+          value: v3
+        - name: per_page
+          from: literal
+          value: "50"
+        - name: include_totals
+          from: literal
+          value: "false"
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: user_id
+        type: Utf8
+        nullable: false
+        description: Auth0 user ID.
+        expr: {kind: path, path: [user_id]}
+      - name: email
+        type: Utf8
+        nullable: true
+        description: User email address.
+        expr: {kind: path, path: [email]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: User display name.
+        expr: {kind: path, path: [name]}
+      - name: connection
+        type: Utf8
+        nullable: true
+        description: Identity provider connection.
+        expr: {kind: path, path: [identities, 0, connection]}
+      - name: blocked
+        type: Boolean
+        nullable: true
+        description: Whether the user is blocked.
+        expr: {kind: path, path: [blocked]}
+      - name: logins_count
+        type: Int64
+        nullable: true
+        description: Total number of logins.
+        expr: {kind: path, path: [logins_count]}
+      - name: last_login
+        type: Timestamp
+        nullable: true
+        description: Last login timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [last_login]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw user object.
+        expr: {kind: current_row}
