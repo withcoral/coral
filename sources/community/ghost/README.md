@@ -5,6 +5,13 @@
 **Tables:** 4
 **Base URL:** `{{input.GHOST_SITE_URL}}/ghost/api/content` (default: `https://demo.ghost.io/ghost/api/content`)
 
+> **Note:** `GHOST_SITE_URL` should be the admin/API origin of your Ghost
+> instance — **not** necessarily the public domain. For Ghost(Pro) sites they
+> are usually the same (e.g. `https://demo.ghost.io`). For self-hosted
+> installs, use the origin visible in your Ghost Admin URL bar (e.g.
+> `https://admin.your-site.com`). Do **not** include `/ghost/api/content` or a
+> trailing slash.
+
 Query public posts, pages, tags, and authors from any Ghost CMS site via the Ghost Content API.
 
 ## Authentication
@@ -26,7 +33,7 @@ GHOST_CONTENT_API_KEY=22444f78447824223cefc48062 \
 Run the command from the repository root. Or set `GHOST_SITE_URL` for custom self-hosted sites:
 
 ```bash
-GHOST_SITE_URL=https://your-site.com GHOST_CONTENT_API_KEY=your_key_here \
+GHOST_SITE_URL=https://admin.your-site.com GHOST_CONTENT_API_KEY=your_key_here \
   coral source add --file sources/community/ghost/manifest.yaml
 ```
 
@@ -38,12 +45,16 @@ coral source add --file sources/community/ghost/manifest.yaml --interactive
 
 ## Tables
 
-| Table | Description | Relation data included |
-|---|---|---|
-| `posts` | Public posts from the Ghost site, ordered by publication date. | `tags`, `authors` |
-| `pages` | Public pages from the Ghost site, ordered by publication date. | `tags`, `authors` |
-| `tags` | Public tags defined on the Ghost site. Includes post counts. | — |
-| `authors` | Authors who have published content on the site. Includes post counts. | — |
+| Table | Description | Default ordering | Relation data included |
+|---|---|---|---|
+| `posts` | Public posts from the Ghost site. | `published_at DESC` | `tags`, `authors` |
+| `pages` | Public pages from the Ghost site. | `title ASC` | `tags`, `authors` |
+| `tags` | Public tags (internal tags excluded via `visibility:public`). Includes post counts. | — | — |
+| `authors` | Authors who have published content on the site. Includes post counts. | — | — |
+
+> Ghost NQL `filter` / `order` parameters are **not** passed through to the
+> provider. Use SQL `WHERE` and `ORDER BY` clauses to filter and sort results
+> after fetch (e.g. `WHERE featured = true`, `ORDER BY published_at ASC`).
 
 ## Quick Start
 

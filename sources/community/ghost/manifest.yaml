@@ -11,7 +11,13 @@ inputs:
     kind: variable
     default: https://demo.ghost.io
     hint: |
-      The full URL of your Ghost site (e.g. `https://demo.ghost.io` or `https://your-site.com`).
+      The admin/API origin of your Ghost instance, without `/ghost/api/content`
+      and without a trailing slash.
+
+      For Ghost(Pro) sites this is usually the same as your public URL
+      (e.g. `https://demo.ghost.io`). For self-hosted installs the API origin
+      may differ from the public domain — use the origin you see in the Ghost
+      Admin URL bar (e.g. `https://admin.your-site.com`).
   GHOST_CONTENT_API_KEY:
     kind: secret
     hint: |
@@ -34,8 +40,11 @@ test_queries:
 tables:
   - name: posts
     description: >-
-      All public posts from the Ghost site, ordered by publication date.
-      Includes tags and authors information by default.
+      All public posts from the Ghost site, ordered by publication date
+      (newest first, `published_at DESC`). Includes tags and authors
+      information by default. Provider-side Ghost NQL filtering is not
+      exposed — use SQL WHERE clauses to filter by tag, author, featured
+      status, etc. after fetch.
     request:
       method: GET
       path: /posts/
@@ -204,8 +213,10 @@ tables:
 
   - name: pages
     description: >-
-      All public static pages from the Ghost site.
-      Includes tags and authors information by default.
+      All public static pages from the Ghost site, ordered by title
+      (ascending, `title ASC`). Includes tags and authors information by
+      default. Provider-side Ghost NQL filtering is not exposed — use SQL
+      WHERE clauses to filter after fetch.
     request:
       method: GET
       path: /pages/
@@ -373,7 +384,11 @@ tables:
           kind: current_row
 
   - name: tags
-    description: All tags defined on the Ghost site, with associated post counts.
+    description: >-
+      Public tags defined on the Ghost site, with associated post counts.
+      Internal tags (names starting with `#`) are excluded via a
+      provider-side `visibility:public` filter. Tags with zero posts are
+      included; filter them with `WHERE post_count > 0` if needed.
     request:
       method: GET
       path: /tags/
@@ -384,6 +399,9 @@ tables:
         - name: include
           from: literal
           value: count.posts
+        - name: filter
+          from: literal
+          value: "visibility:public"
     response:
       rows_path:
         - tags
