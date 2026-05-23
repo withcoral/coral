@@ -1,24 +1,26 @@
 name: supabase
-version: 0.1.0
+version: 0.1.1
 dsl_version: 3
 backend: http
 description: >-
-  Query rows from Supabase (Cloud) via PostgREST. List any exposed table with
-  table_rows or fetch one row by id with row_by_id. Read-only v1.
+  Query Supabase project tables through the PostgREST data API (not the Supabase
+  Management API). Read-only v1 with fixed table paths and a connectivity check.
 inputs:
   SUPABASE_REST_URL:
     kind: variable
     hint: |
-      Supabase PostgREST base URL with no trailing slash, for example
-      `https://abcdefghijklmnop.supabase.co/rest/v1`. Find your project ref and URL
-      under Project Settings > API in the Supabase dashboard.
+      PostgREST base URL with no trailing slash, for example
+      `https://abcdefghijklmnop.supabase.co/rest/v1`. Find it under Project
+      Settings > API in the Supabase dashboard.
   SUPABASE_API_KEY:
     kind: secret
     required: true
     hint: |
-      Supabase anon or service_role API key (Project Settings > API). Prefer the
-      anon key when Row Level Security should apply. The service role bypasses RLS;
-      use only in trusted environments. Sent as `apikey` and Bearer authorization.
+      Legacy Supabase **anon** or **service_role** JWT from Project Settings > API.
+      v1 sends the same value as `apikey` and `Authorization: Bearer`. Prefer the
+      anon key when Row Level Security should apply. New publishable/secret keys are
+      not supported in this manifest. The service role bypasses RLS; use only in
+      trusted environments.
 base_url: "{{input.SUPABASE_REST_URL}}"
 auth:
   type: HeaderAuth
@@ -33,30 +35,41 @@ request_headers:
   - name: Accept
     from: literal
     value: application/json
-  - name: Prefer
-    from: literal
-    value: count=exact
 test_queries:
-  - SELECT table, id FROM supabase.table_rows WHERE table = 'profiles' LIMIT 1
+  - SELECT openapi FROM supabase.rest_openapi LIMIT 1
 tables:
-  - name: table_rows
-    description: Rows from a Supabase table exposed via PostgREST.
+  - name: rest_openapi
+    description: PostgREST OpenAPI document (connectivity and schema discovery).
     guide: |
-      Required filter: `table` (PostgREST resource name, for example `profiles` or
-      `orders`). Optional `select_columns` maps to PostgREST `select` (comma-separated
-      columns). For a single row by primary key, use `row_by_id` instead.
-      Expose tables to the API in Supabase (public schema + grants/RLS). Coral caps
-      fetched rows at 100; use SQL `LIMIT` and narrow `select_columns` on wide tables.
-      The `row` column contains the full JSON object when you need fields not listed
-      as top-level columns.
-    fetch_limit_default: 100
-    filters:
-      - name: table
-        required: true
-      - name: select_columns
+      Calls `GET /` on the configured PostgREST base URL. Use this table to verify
+      credentials and discover exposed resources before querying data tables.
+    fetch_limit_default: 1
     request:
       method: GET
-      path: /{{filter.table}}
+      path: /
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: openapi
+        type: Json
+        nullable: true
+        description: OpenAPI schema returned by PostgREST.
+        expr:
+          kind: path
+          path: []
+
+  - name: profiles
+    description: Rows from the `profiles` table when exposed to PostgREST.
+    guide: |
+      Fixed path `/profiles`. Duplicate this table pattern in a fork if your project
+      uses different table names. Sends PostgREST `limit` via pagination (default 100).
+      Requires `SELECT` grants and RLS policies for your API key.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /profiles
       query:
         - name: select
           from: filter
@@ -71,17 +84,12 @@ tables:
         default: 100
         max: 1000
         query_param: limit
+    filters:
+      - name: select_columns
     columns:
-      - name: table
-        type: Utf8
-        description: PostgREST table name from the required table filter.
-        expr:
-          kind: from_filter
-          key: table
       - name: id
         type: Utf8
         nullable: true
-        description: Primary key when present on the row (uuid or text).
         expr:
           kind: path
           path:
@@ -89,7 +97,6 @@ tables:
       - name: created_at
         type: Utf8
         nullable: true
-        description: Created timestamp when the column exists on the table.
         expr:
           kind: path
           path:
@@ -97,7 +104,6 @@ tables:
       - name: updated_at
         type: Utf8
         nullable: true
-        description: Updated timestamp when the column exists on the table.
         expr:
           kind: path
           path:
@@ -105,7 +111,6 @@ tables:
       - name: email
         type: Utf8
         nullable: true
-        description: Email column when present (common on profiles/users tables).
         expr:
           kind: path
           path:
@@ -113,7 +118,6 @@ tables:
       - name: user_id
         type: Utf8
         nullable: true
-        description: Foreign key to auth.users when present on the table.
         expr:
           kind: path
           path:
@@ -121,69 +125,44 @@ tables:
       - name: row
         type: Json
         nullable: true
-        description: Full PostgREST row object for columns not mapped above.
+        description: Full row JSON for columns not mapped above.
         expr:
           kind: path
           path: []
 
-  - name: row_by_id
-    description: Single row from a Supabase table by primary key `id`.
+  - name: profile_by_id
+    description: Single `profiles` row by primary key `id`.
     guide: |
-      Required filters: `table` and `row_id` (uuid or text primary key value).
-      Maps to PostgREST `id=eq.<row_id>`. Use `table_rows` for scans; use this
-      table for point lookups. Coral caps fetched rows at 1.
+      Fixed path `/profiles` with `id=eq.<profile_id>`. Requires `profile_id` filter.
     fetch_limit_default: 1
     filters:
-      - name: table
-        required: true
-      - name: row_id
+      - name: profile_id
         required: true
     request:
       method: GET
-      path: /{{filter.table}}
+      path: /profiles
       query:
         - name: id
           from: template
-          template: eq.{{filter.row_id}}
+          template: eq.{{filter.profile_id}}
     response:
       rows_path: []
     pagination:
       mode: none
     columns:
-      - name: table
+      - name: profile_id
         type: Utf8
-        description: PostgREST table name from the table filter.
+        description: Filter value used for the lookup.
         expr:
           kind: from_filter
-          key: table
-      - name: row_id
-        type: Utf8
-        description: Primary key value from the row_id filter.
-        expr:
-          kind: from_filter
-          key: row_id
+          key: profile_id
       - name: id
         type: Utf8
         nullable: true
-        description: Primary key on the returned row.
         expr:
           kind: path
           path:
             - id
-      - name: created_at
-        type: Utf8
-        nullable: true
-        expr:
-          kind: path
-          path:
-            - created_at
-      - name: updated_at
-        type: Utf8
-        nullable: true
-        expr:
-          kind: path
-          path:
-            - updated_at
       - name: email
         type: Utf8
         nullable: true
@@ -191,17 +170,9 @@ tables:
           kind: path
           path:
             - email
-      - name: user_id
-        type: Utf8
-        nullable: true
-        expr:
-          kind: path
-          path:
-            - user_id
       - name: row
         type: Json
         nullable: true
-        description: Full PostgREST row object.
         expr:
           kind: path
           path: []

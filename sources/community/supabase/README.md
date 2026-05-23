@@ -1,35 +1,27 @@
-# Supabase Connector (Community)
+# Supabase PostgREST Connector (Community)
 
-**Version:** 0.1.0
-**Backend:** HTTP (PostgREST)
-**Tables:** 2
+**Version:** 0.1.1
+**Backend:** HTTP (PostgREST data API)
+**Tables:** 3
 **Base URL:** `SUPABASE_REST_URL` (for example `https://<project-ref>.supabase.co/rest/v1`)
 
-Query rows from Supabase Postgres tables exposed through the PostgREST API (Supabase
-Cloud). Read-only v1 uses your project REST URL and API key. Join app data with
-HubSpot, GitHub, or other Coral sources on `email`, `user_id`, or fields in the
-`row` JSON column.
+Query rows from a Supabase project through the **PostgREST data API**. This source
+does **not** wrap the Supabase Management API (`api.supabase.com`); see open PR
+[#444](https://github.com/withcoral/coral/pull/444) for platform metadata coverage.
+
+Read-only v1 uses legacy anon/service_role JWT keys and **fixed table paths** (no
+dynamic `/{{table}}` segments) so requests cannot escape `/rest/v1` into other
+API surfaces.
 
 ## Install
-
-Community sources are not bundled with the Coral binary. Add the manifest from
-this directory:
 
 ```bash
 coral source add --file sources/community/supabase/manifest.yaml
 ```
 
-Or copy `manifest.yaml` into your workspace and pass that path to
-`coral source add --file`.
-
-Reference the linked GitHub issue in your PR so maintainers can connect the
-contribution to the prior discussion.
-
 ## Authentication and setup
 
-### API URL and key
-
-From the Supabase dashboard (**Project Settings → API**):
+From **Project Settings → API** in the Supabase dashboard:
 
 ```bash
 export SUPABASE_REST_URL=https://YOUR_PROJECT_REF.supabase.co/rest/v1
@@ -39,74 +31,57 @@ coral source add --file sources/community/supabase/manifest.yaml
 
 | Key | When to use |
 | --- | --- |
-| **anon** | Respects Row Level Security; recommended for read-only app tables exposed to clients |
-| **service_role** | Bypasses RLS; trusted environments only—never commit or expose publicly |
+| **anon (JWT)** | Respects Row Level Security; recommended |
+| **service_role (JWT)** | Bypasses RLS; trusted environments only |
 
-Tables must be exposed to the API (typically `public` schema with grants and RLS
-policies that allow `SELECT` for your key).
+v1 expects legacy JWT-style API keys sent as `apikey` and `Authorization: Bearer`.
+New Supabase publishable/secret keys are not supported in this manifest.
 
-### Multiple projects
-
-Register one Coral source per Supabase project (for example `supabase_prod`,
-`supabase_staging`), each with its own `SUPABASE_REST_URL` and `SUPABASE_API_KEY`.
+`coral source test` uses `rest_openapi` only, so it works even when you do not
+have a `profiles` table.
 
 ## Tables
 
 | Table | Description |
 | --- | --- |
-| `table_rows` | List rows from any PostgREST table (required `table` filter) |
-| `row_by_id` | Single row by `id` (required `table` and `row_id` filters) |
+| `rest_openapi` | `GET /` OpenAPI document (connectivity check) |
+| `profiles` | Example list table at `/profiles` (when exposed) |
+| `profile_by_id` | Example lookup at `/profiles` with `profile_id` filter |
 
-### Filters
-
-**`table_rows`**
-
-- `table` (required) — PostgREST resource name, for example `profiles`, `orders`
-- `select_columns` (optional) — PostgREST `select` list, for example `id,email,created_at`
-
-**`row_by_id`**
-
-- `table` (required)
-- `row_id` (required) — primary key value (uuid or text)
+Add more tables by copying the `profiles` / `profile_by_id` pattern with a fixed
+path for each PostgREST resource you need.
 
 ## Example queries
 
-### List profiles
+### Connectivity check
 
 ```sql
-SELECT table, id, email, created_at
-FROM supabase.table_rows
-WHERE table = 'profiles'
+SELECT openapi FROM supabase.rest_openapi LIMIT 1;
+```
+
+### List profiles (when the table exists)
+
+```sql
+SELECT id, email, created_at
+FROM supabase.profiles
 LIMIT 50;
 ```
 
-### Single row
+### Profile by id
 
 ```sql
-SELECT table, row_id, id, email, row
-FROM supabase.row_by_id
-WHERE table = 'profiles'
-  AND row_id = '550e8400-e29b-41d4-a716-446655440000'
+SELECT profile_id, id, email, row
+FROM supabase.profile_by_id
+WHERE profile_id = '550e8400-e29b-41d4-a716-446655440000'
 LIMIT 1;
-```
-
-### Narrow columns (PostgREST select)
-
-```sql
-SELECT table, id, email
-FROM supabase.table_rows
-WHERE table = 'profiles'
-  AND select_columns = 'id,email,created_at'
-LIMIT 20;
 ```
 
 ### Join with HubSpot (requires HubSpot source)
 
 ```sql
 SELECT p.email, c.firstname, c.lifecyclestage
-FROM supabase.table_rows p
+FROM supabase.profiles p
 JOIN hubspot.contacts c ON LOWER(p.email) = LOWER(c.email)
-WHERE p.table = 'profiles'
 LIMIT 20;
 ```
 
@@ -116,23 +91,18 @@ LIMIT 20;
 make lint-sources
 coral source lint sources/community/supabase/manifest.yaml
 export SUPABASE_REST_URL=https://YOUR_PROJECT_REF.supabase.co/rest/v1
-export SUPABASE_API_KEY=your-anon-or-service-role-key
+export SUPABASE_API_KEY=your-anon-or-service-role-jwt
 coral source add --file sources/community/supabase/manifest.yaml
 coral source test supabase
 ```
 
-Adjust the `table` name in `test_queries` in `manifest.yaml` if your project does
-not expose a `profiles` table.
-
 ## Limitations
 
-- Read-only v1 (`GET` only); no inserts, updates, or RPC
-- Table names and columns depend on your Supabase schema; use `row` JSON for extra fields
-- `auth.users` and other non-exposed schemas are out of scope unless exposed via PostgREST
-- Service role keys bypass RLS—treat them like production secrets
+- PostgREST data API only; not organizations/projects/storage config (Management API).
+- Fixed paths only; no dynamic table name in URLs.
+- Example `profiles` tables require that resource in your project schema.
+- Read-only v1 (`GET` only).
 
 ## Contributing
 
-Follow [CONTRIBUTING.md](../../../CONTRIBUTING.md): discuss on the issue first,
-sign the CLA if this is your first contribution, run `make lint-sources`, and
-open a focused PR titled `feat(sources/community/supabase): add supabase community source`.
+Follow [CONTRIBUTING.md](../../../CONTRIBUTING.md). Coordinate with [#444](https://github.com/withcoral/coral/pull/444) if adding overlapping Supabase coverage.
