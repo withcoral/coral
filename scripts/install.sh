@@ -67,10 +67,16 @@ main() {
     download "${base_url}/checksums.sha256" "${tmpdir}/checksums.sha256"
 
     cd "$tmpdir"
+    checksum_line="$(grep -F "$archive" checksums.sha256 || true)"
+    if [ -z "$checksum_line" ]; then
+        echo "Error: checksum entry for ${archive} not found." >&2
+        exit 1
+    fi
+
     if command -v sha256sum >/dev/null 2>&1; then
-        grep "  ${archive}$" checksums.sha256 | sha256sum -c -
+        printf '%s\n' "$checksum_line" | sha256sum -c -
     elif command -v shasum >/dev/null 2>&1; then
-        grep "  ${archive}$" checksums.sha256 | shasum -a 256 -c -
+        printf '%s\n' "$checksum_line" | shasum -a 256 -c -
     else
         echo "Error: sha256sum or shasum is required for checksum verification." >&2
         exit 1
