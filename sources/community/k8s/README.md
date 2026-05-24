@@ -199,23 +199,30 @@ LIMIT 50;
 
 ### Recent warning events (uses new timing/count columns)
 
+`/api/v1/events` mixes core/v1 events (which set `last_timestamp`) and
+`events.k8s.io/v1`-style events (which set `event_time` instead). The
+`COALESCE(last_timestamp, event_time)` ordering picks whichever timestamp the
+event actually populated, so newly-emitted events.k8s.io-style events are not
+buried by `NULLS LAST`.
+
 ```sql
 SELECT namespace, object_kind, object_name, reason, message,
-       last_timestamp, count
+       COALESCE(last_timestamp, event_time) AS event_at, count
 FROM k8s.events
 WHERE type = 'Warning'
-ORDER BY last_timestamp DESC NULLS LAST
+ORDER BY COALESCE(last_timestamp, event_time) DESC NULLS LAST
 LIMIT 20;
 ```
 
 ### Pod events
 
 ```sql
-SELECT namespace, reason, message, object_name, last_timestamp, count
+SELECT namespace, reason, message, object_name,
+       COALESCE(last_timestamp, event_time) AS event_at, count
 FROM k8s.events
 WHERE object_kind = 'Pod'
   AND object_name = 'api-service'
-ORDER BY last_timestamp DESC NULLS LAST
+ORDER BY COALESCE(last_timestamp, event_time) DESC NULLS LAST
 LIMIT 20;
 ```
 

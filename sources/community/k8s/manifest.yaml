@@ -22,9 +22,10 @@ test_queries:
   - SELECT namespace, name, status FROM k8s.pods LIMIT 20
   - SELECT namespace, name, replicas, available_replicas FROM k8s.deployments LIMIT 10
   - >-
-    SELECT namespace, object_name, reason, message, last_timestamp, count
+    SELECT namespace, object_name, reason, message,
+    COALESCE(last_timestamp, event_time) AS event_at, count
     FROM k8s.events WHERE object_kind = 'Pod'
-    ORDER BY last_timestamp DESC NULLS LAST LIMIT 20
+    ORDER BY COALESCE(last_timestamp, event_time) DESC NULLS LAST LIMIT 20
   - SELECT name, status FROM k8s.pods WHERE namespace = 'kube-system' LIMIT 10
 tables:
   - name: pods
