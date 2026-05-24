@@ -51,7 +51,8 @@ Catalog from `/wp-json/wc/v3/products`.
 **Useful for:** catalog inventory, pricing audit, best-seller analysis.
 
 Predicates pushed to the API: `type`, `status`, `sku`, `stock_status`,
-`search`, `after`, `before`, `modified_after`. Filtered queries return
+`search`, `after`, `before`, `modified_after`, `modified_before`.
+Filtered queries return
 **all** matching rows; bounding is the caller's choice via a narrowing
 predicate or an explicit `LIMIT N`.
 
@@ -72,7 +73,8 @@ Orders from `/wp-json/wc/v3/orders`.
 attribution.
 
 Predicates pushed to the API: `status`, `customer_id`, `product`,
-`search`, `after`, `before`, `modified_after`. Filtered queries return
+`search`, `after`, `before`, `modified_after`, `modified_before`.
+Filtered queries return
 **all** matching rows; use a narrowing predicate or explicit `LIMIT N`
 for performance on long order histories.
 

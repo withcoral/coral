@@ -214,7 +214,8 @@ tables:
       - `WHERE search = '...'`              → `?search=` (full-text)
       - `WHERE after = '<ISO 8601>'`        → `?after=`
       - `WHERE before = '<ISO 8601>'`       → `?before=`
-      - `WHERE modified_after = '<ISO 8601>'` → `?modified_after=`
+      - `WHERE modified_after = '<ISO 8601>'`  → `?modified_after=`
+      - `WHERE modified_before = '<ISO 8601>'` → `?modified_before=`
 
       Variable products only return the parent here. For variation-level
       SKU/price/stock, query `product_variations` with `WHERE product_id = <id>`.
@@ -233,6 +234,7 @@ tables:
       - name: after
       - name: before
       - name: modified_after
+      - name: modified_before
     request:
       method: GET
       path: /wp-json/wc/v3/products
@@ -261,6 +263,9 @@ tables:
         - name: modified_after
           from: filter
           key: modified_after
+        - name: modified_before
+          from: filter
+          key: modified_before
     response:
       row_strategy: direct
     pagination:
@@ -523,6 +528,13 @@ tables:
         expr:
           kind: from_filter
           key: modified_after
+      - name: modified_before
+        type: Utf8
+        nullable: true
+        description: Filter only (ISO 8601); WHERE modified_before='...' pushed to ?modified_before=
+        expr:
+          kind: from_filter
+          key: modified_before
 
   - name: orders
     description: Orders from /wp-json/wc/v3/orders
@@ -542,7 +554,8 @@ tables:
       - `WHERE search = '...'`              → `?search=`
       - `WHERE after = '<ISO 8601>'`        → `?after=`
       - `WHERE before = '<ISO 8601>'`       → `?before=`
-      - `WHERE modified_after = '<ISO 8601>'` → `?modified_after=`
+      - `WHERE modified_after = '<ISO 8601>'`  → `?modified_after=`
+      - `WHERE modified_before = '<ISO 8601>'` → `?modified_before=`
 
       The table fetches every matching row — Coral keeps paging until
       the API returns empty. On stores with long order histories, narrow
@@ -557,6 +570,7 @@ tables:
       - name: after
       - name: before
       - name: modified_after
+      - name: modified_before
     request:
       method: GET
       path: /wp-json/wc/v3/orders
@@ -582,6 +596,9 @@ tables:
         - name: modified_after
           from: filter
           key: modified_after
+        - name: modified_before
+          from: filter
+          key: modified_before
     response:
       row_strategy: direct
     pagination:
@@ -850,6 +867,13 @@ tables:
         expr:
           kind: from_filter
           key: modified_after
+      - name: modified_before
+        type: Utf8
+        nullable: true
+        description: Filter only (ISO 8601); WHERE modified_before='...' pushed to ?modified_before=
+        expr:
+          kind: from_filter
+          key: modified_before
 
   - name: customers
     description: Customers from /wp-json/wc/v3/customers
