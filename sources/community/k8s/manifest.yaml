@@ -1,5 +1,5 @@
 name: k8s
-version: 0.1.2
+version: 0.1.3
 dsl_version: 3
 backend: http
 description: >-
@@ -21,7 +21,8 @@ base_url: "{{input.K8S_BASE_URL}}"
 test_queries:
   - SELECT namespace, name, status FROM k8s.pods LIMIT 20
   - SELECT namespace, name, replicas, available_replicas FROM k8s.deployments LIMIT 10
-  - SELECT namespace, object_name, reason, message FROM k8s.events WHERE object_kind = 'Pod' LIMIT 20
+  - SELECT namespace, object_name, reason, message, last_timestamp, count FROM k8s.events WHERE object_kind = 'Pod' ORDER BY last_timestamp DESC NULLS LAST LIMIT 20
+  - SELECT name, status FROM k8s.pods WHERE namespace = 'kube-system' LIMIT 10
 tables:
   - name: pods
     description: Pods across all namespaces with phase, scheduling, and container status metadata.
@@ -32,6 +33,8 @@ tables:
     filters:
       - name: label_selector
       - name: field_selector
+      - name: namespace
+    fetch_limit_default: 500
     request:
       method: GET
       path: /api/v1/pods
@@ -44,6 +47,18 @@ tables:
           key: field_selector
     response:
       rows_path: [items]
+    requests:
+      - when_filters:
+          - namespace
+        method: GET
+        path: /api/v1/namespaces/{{filter.namespace}}/pods
+        query:
+          - name: labelSelector
+            from: filter
+            key: label_selector
+          - name: fieldSelector
+            from: filter
+            key: field_selector
     pagination:
       mode: cursor_query
       cursor_param: continue
@@ -85,9 +100,14 @@ tables:
           path: [status, hostIP]
       - name: start_time
         type: Timestamp
+        nullable: true
+        description: status.startTime (RFC3339); parsed via format_timestamp(iso8601).
         expr:
-          kind: path
-          path: [status, startTime]
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [status, startTime]
       - name: status
         type: Utf8
         expr:
@@ -151,6 +171,7 @@ tables:
     filters:
       - name: label_selector
       - name: field_selector
+    fetch_limit_default: 500
     request:
       method: GET
       path: /api/v1/nodes
@@ -207,6 +228,8 @@ tables:
     filters:
       - name: label_selector
       - name: field_selector
+      - name: namespace
+    fetch_limit_default: 500
     request:
       method: GET
       path: /api/v1/services
@@ -219,6 +242,18 @@ tables:
           key: field_selector
     response:
       rows_path: [items]
+    requests:
+      - when_filters:
+          - namespace
+        method: GET
+        path: /api/v1/namespaces/{{filter.namespace}}/services
+        query:
+          - name: labelSelector
+            from: filter
+            key: label_selector
+          - name: fieldSelector
+            from: filter
+            key: field_selector
     pagination:
       mode: cursor_query
       cursor_param: continue
@@ -269,6 +304,8 @@ tables:
     filters:
       - name: label_selector
       - name: field_selector
+      - name: namespace
+    fetch_limit_default: 500
     request:
       method: GET
       path: /apis/apps/v1/deployments
@@ -281,6 +318,18 @@ tables:
           key: field_selector
     response:
       rows_path: [items]
+    requests:
+      - when_filters:
+          - namespace
+        method: GET
+        path: /apis/apps/v1/namespaces/{{filter.namespace}}/deployments
+        query:
+          - name: labelSelector
+            from: filter
+            key: label_selector
+          - name: fieldSelector
+            from: filter
+            key: field_selector
     pagination:
       mode: cursor_query
       cursor_param: continue
@@ -326,6 +375,8 @@ tables:
     filters:
       - name: label_selector
       - name: field_selector
+      - name: namespace
+    fetch_limit_default: 500
     request:
       method: GET
       path: /apis/apps/v1/daemonsets
@@ -338,6 +389,18 @@ tables:
           key: field_selector
     response:
       rows_path: [items]
+    requests:
+      - when_filters:
+          - namespace
+        method: GET
+        path: /apis/apps/v1/namespaces/{{filter.namespace}}/daemonsets
+        query:
+          - name: labelSelector
+            from: filter
+            key: label_selector
+          - name: fieldSelector
+            from: filter
+            key: field_selector
     pagination:
       mode: cursor_query
       cursor_param: continue
@@ -383,6 +446,8 @@ tables:
     filters:
       - name: label_selector
       - name: field_selector
+      - name: namespace
+    fetch_limit_default: 500
     request:
       method: GET
       path: /apis/apps/v1/statefulsets
@@ -395,6 +460,18 @@ tables:
           key: field_selector
     response:
       rows_path: [items]
+    requests:
+      - when_filters:
+          - namespace
+        method: GET
+        path: /apis/apps/v1/namespaces/{{filter.namespace}}/statefulsets
+        query:
+          - name: labelSelector
+            from: filter
+            key: label_selector
+          - name: fieldSelector
+            from: filter
+            key: field_selector
     pagination:
       mode: cursor_query
       cursor_param: continue
@@ -440,6 +517,8 @@ tables:
     filters:
       - name: label_selector
       - name: field_selector
+      - name: namespace
+    fetch_limit_default: 500
     request:
       method: GET
       path: /apis/apps/v1/replicasets
@@ -452,6 +531,18 @@ tables:
           key: field_selector
     response:
       rows_path: [items]
+    requests:
+      - when_filters:
+          - namespace
+        method: GET
+        path: /apis/apps/v1/namespaces/{{filter.namespace}}/replicasets
+        query:
+          - name: labelSelector
+            from: filter
+            key: label_selector
+          - name: fieldSelector
+            from: filter
+            key: field_selector
     pagination:
       mode: cursor_query
       cursor_param: continue
@@ -497,6 +588,8 @@ tables:
     filters:
       - name: label_selector
       - name: field_selector
+      - name: namespace
+    fetch_limit_default: 500
     request:
       method: GET
       path: /apis/batch/v1/jobs
@@ -509,6 +602,18 @@ tables:
           key: field_selector
     response:
       rows_path: [items]
+    requests:
+      - when_filters:
+          - namespace
+        method: GET
+        path: /apis/batch/v1/namespaces/{{filter.namespace}}/jobs
+        query:
+          - name: labelSelector
+            from: filter
+            key: label_selector
+          - name: fieldSelector
+            from: filter
+            key: field_selector
     pagination:
       mode: cursor_query
       cursor_param: continue
@@ -554,6 +659,8 @@ tables:
     filters:
       - name: label_selector
       - name: field_selector
+      - name: namespace
+    fetch_limit_default: 500
     request:
       method: GET
       path: /apis/batch/v1/cronjobs
@@ -566,6 +673,18 @@ tables:
           key: field_selector
     response:
       rows_path: [items]
+    requests:
+      - when_filters:
+          - namespace
+        method: GET
+        path: /apis/batch/v1/namespaces/{{filter.namespace}}/cronjobs
+        query:
+          - name: labelSelector
+            from: filter
+            key: label_selector
+          - name: fieldSelector
+            from: filter
+            key: field_selector
     pagination:
       mode: cursor_query
       cursor_param: continue
@@ -611,6 +730,8 @@ tables:
     filters:
       - name: label_selector
       - name: field_selector
+      - name: namespace
+    fetch_limit_default: 500
     request:
       method: GET
       path: /apis/networking.k8s.io/v1/ingresses
@@ -623,6 +744,18 @@ tables:
           key: field_selector
     response:
       rows_path: [items]
+    requests:
+      - when_filters:
+          - namespace
+        method: GET
+        path: /apis/networking.k8s.io/v1/namespaces/{{filter.namespace}}/ingresses
+        query:
+          - name: labelSelector
+            from: filter
+            key: label_selector
+          - name: fieldSelector
+            from: filter
+            key: field_selector
     pagination:
       mode: cursor_query
       cursor_param: continue
@@ -663,6 +796,8 @@ tables:
     filters:
       - name: label_selector
       - name: field_selector
+      - name: namespace
+    fetch_limit_default: 500
     request:
       method: GET
       path: /api/v1/endpoints
@@ -675,6 +810,18 @@ tables:
           key: field_selector
     response:
       rows_path: [items]
+    requests:
+      - when_filters:
+          - namespace
+        method: GET
+        path: /api/v1/namespaces/{{filter.namespace}}/endpoints
+        query:
+          - name: labelSelector
+            from: filter
+            key: label_selector
+          - name: fieldSelector
+            from: filter
+            key: field_selector
     pagination:
       mode: cursor_query
       cursor_param: continue
@@ -715,6 +862,8 @@ tables:
     filters:
       - name: label_selector
       - name: field_selector
+      - name: namespace
+    fetch_limit_default: 500
     request:
       method: GET
       path: /apis/networking.k8s.io/v1/networkpolicies
@@ -727,6 +876,18 @@ tables:
           key: field_selector
     response:
       rows_path: [items]
+    requests:
+      - when_filters:
+          - namespace
+        method: GET
+        path: /apis/networking.k8s.io/v1/namespaces/{{filter.namespace}}/networkpolicies
+        query:
+          - name: labelSelector
+            from: filter
+            key: label_selector
+          - name: fieldSelector
+            from: filter
+            key: field_selector
     pagination:
       mode: cursor_query
       cursor_param: continue
@@ -776,6 +937,8 @@ tables:
     filters:
       - name: label_selector
       - name: field_selector
+      - name: namespace
+    fetch_limit_default: 500
     request:
       method: GET
       path: /api/v1/events
@@ -788,6 +951,18 @@ tables:
           key: field_selector
     response:
       rows_path: [items]
+    requests:
+      - when_filters:
+          - namespace
+        method: GET
+        path: /api/v1/namespaces/{{filter.namespace}}/events
+        query:
+          - name: labelSelector
+            from: filter
+            key: label_selector
+          - name: fieldSelector
+            from: filter
+            key: field_selector
     pagination:
       mode: cursor_query
       cursor_param: continue
@@ -827,6 +1002,48 @@ tables:
         expr:
           kind: path
           path: [message]
+      - name: event_time
+        type: Timestamp
+        nullable: true
+        description: events.k8s.io-style eventTime when present (single-occurrence events); RFC3339.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [eventTime]
+      - name: first_timestamp
+        type: Timestamp
+        nullable: true
+        description: core/v1 firstTimestamp; first observation of a repeated event (RFC3339).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [firstTimestamp]
+      - name: last_timestamp
+        type: Timestamp
+        nullable: true
+        description: core/v1 lastTimestamp; most recent observation of a repeated event (RFC3339).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [lastTimestamp]
+      - name: count
+        type: Int64
+        description: Number of times this event has been observed.
+        expr:
+          kind: path
+          path: [count]
+      - name: action
+        type: Utf8
+        description: events.k8s.io-style action when present.
+        expr:
+          kind: path
+          path: [action]
       - name: object_kind
         type: Utf8
         description: involvedObject.kind (Pod, Service, etc.) for joins.
@@ -862,6 +1079,8 @@ tables:
     filters:
       - name: label_selector
       - name: field_selector
+      - name: namespace
+    fetch_limit_default: 500
     request:
       method: GET
       path: /api/v1/persistentvolumeclaims
@@ -874,6 +1093,18 @@ tables:
           key: field_selector
     response:
       rows_path: [items]
+    requests:
+      - when_filters:
+          - namespace
+        method: GET
+        path: /api/v1/namespaces/{{filter.namespace}}/persistentvolumeclaims
+        query:
+          - name: labelSelector
+            from: filter
+            key: label_selector
+          - name: fieldSelector
+            from: filter
+            key: field_selector
     pagination:
       mode: cursor_query
       cursor_param: continue
@@ -934,6 +1165,8 @@ tables:
     filters:
       - name: label_selector
       - name: field_selector
+      - name: namespace
+    fetch_limit_default: 500
     request:
       method: GET
       path: /api/v1/configmaps
@@ -946,6 +1179,18 @@ tables:
           key: field_selector
     response:
       rows_path: [items]
+    requests:
+      - when_filters:
+          - namespace
+        method: GET
+        path: /api/v1/namespaces/{{filter.namespace}}/configmaps
+        query:
+          - name: labelSelector
+            from: filter
+            key: label_selector
+          - name: fieldSelector
+            from: filter
+            key: field_selector
     pagination:
       mode: cursor_query
       cursor_param: continue
@@ -993,6 +1238,8 @@ tables:
     filters:
       - name: label_selector
       - name: field_selector
+      - name: namespace
+    fetch_limit_default: 500
     request:
       method: GET
       path: /api/v1/serviceaccounts
@@ -1005,6 +1252,18 @@ tables:
           key: field_selector
     response:
       rows_path: [items]
+    requests:
+      - when_filters:
+          - namespace
+        method: GET
+        path: /api/v1/namespaces/{{filter.namespace}}/serviceaccounts
+        query:
+          - name: labelSelector
+            from: filter
+            key: label_selector
+          - name: fieldSelector
+            from: filter
+            key: field_selector
     pagination:
       mode: cursor_query
       cursor_param: continue

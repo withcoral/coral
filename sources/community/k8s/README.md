@@ -1,6 +1,6 @@
 # Kubernetes Connector (Community)
 
-**Version:** 0.1.2
+**Version:** 0.1.3
 **Backend:** HTTP (Kubernetes REST API)
 **Tables:** 16
 **Default base URL:** `http://127.0.0.1:8080` (override with `K8S_BASE_URL`)
@@ -58,6 +58,48 @@ release.
 Register one Coral source per cluster (for example `k8s_dev`, `k8s_prod`), each
 with its own `K8S_BASE_URL`.
 
+## RBAC requirements
+
+The 15 namespace-scoped tables in this source have two request paths:
+
+| Query shape | API path | RBAC required |
+|---|---|---|
+| `SELECT … FROM k8s.pods` (no `namespace` filter) | `GET /api/v1/pods` (list across all namespaces) | Cluster-wide `list` on the resource (e.g. a `ClusterRoleBinding` to a `ClusterRole` with `list pods`) |
+| `SELECT … FROM k8s.pods WHERE namespace = 'foo'` | `GET /api/v1/namespaces/foo/pods` (list in one namespace) | Namespace-scoped `list` is sufficient (a `RoleBinding` in `foo` is enough) |
+
+The manifest exposes a `namespace` filter on every namespace-scoped table; when
+the filter is present Coral rewrites the request to the namespaced URL. This
+gives users with namespace-scoped kubeconfigs a working first-success path —
+they only need permission inside their namespace, not cluster-wide.
+
+The `nodes` table is cluster-scoped; it requires cluster-wide `list nodes` and
+has no namespace filter.
+
+Minimal read-only `ClusterRole` for the cluster-wide path (drop the namespaced
+resources you don't need):
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: coral-k8s-source-readonly
+rules:
+  - apiGroups: [""]
+    resources: [pods, services, endpoints, events, configmaps, persistentvolumeclaims, serviceaccounts, nodes]
+    verbs: [get, list, watch]
+  - apiGroups: [apps]
+    resources: [deployments, daemonsets, statefulsets, replicasets]
+    verbs: [get, list, watch]
+  - apiGroups: [batch]
+    resources: [jobs, cronjobs]
+    verbs: [get, list, watch]
+  - apiGroups: [networking.k8s.io]
+    resources: [ingresses, networkpolicies]
+    verbs: [get, list, watch]
+```
+
+Reference: <https://kubernetes.io/docs/reference/access-authn-authz/rbac/>.
+
 ## Table categories
 
 ### Workloads
@@ -87,7 +129,7 @@ with its own `K8S_BASE_URL`.
 | Table | Description |
 |---|---|
 | `nodes` | Node kubelet version and labels |
-| `events` | Cluster events for triage |
+| `events` | Cluster events for triage (event_time / first_timestamp / last_timestamp / count / action / reason / type) |
 | `configmaps` | ConfigMap metadata (data may be omitted in list responses) |
 | `serviceaccounts` | ServiceAccount metadata |
 
@@ -95,20 +137,35 @@ with its own `K8S_BASE_URL`.
 
 Most list tables support Kubernetes server-side pushdown filters:
 
-- `label_selector` maps to `labelSelector`
-- `field_selector` maps to `fieldSelector`
+- `label_selector` maps to the Kubernetes `labelSelector` query parameter
+- `field_selector` maps to the Kubernetes `fieldSelector` query parameter
+- `namespace` rewrites the request to the namespaced list path
+  (`/api/v1/namespaces/<ns>/<resource>`), which is cheaper for the API server
+  and works for users without cluster-wide RBAC
 
 Example:
 
 ```sql
 SELECT namespace, name, status
 FROM k8s.pods
-WHERE label_selector = 'app=api'
+WHERE namespace = 'kube-system'
+  AND label_selector = 'k8s-app=kube-dns'
 LIMIT 50;
 ```
 
-Tables use Kubernetes `continue` token pagination (`cursor_query`) with a default
-page size of 200. Prefer `LIMIT` and filters on large clusters.
+### Total-row safety cap (`fetch_limit_default`) vs Kubernetes `limit`
+
+- The Kubernetes `limit` parameter is a **page size**, not a result cap. The API
+  server may return a `metadata.continue` token, and Coral paginates through
+  the chunks automatically. See
+  <https://kubernetes.io/docs/reference/using-api/api-concepts/#retrieving-large-results-sets-in-chunks>.
+- This manifest sets `fetch_limit_default: 500` on every table, which caps the
+  total rows Coral materializes per query unless the SQL itself sets `LIMIT`.
+  This prevents accidental full-cluster scans of high-cardinality tables
+  (`pods`, `events`, `configmaps`, etc.) when a user forgets `LIMIT`.
+- For very large clusters, set an explicit SQL `LIMIT` and add
+  `label_selector` / `field_selector` / `namespace` filters; do not rely on the
+  default cap alone, because it deterministically truncates results.
 
 ## Example relationships
 
@@ -121,12 +178,13 @@ page size of 200. Prefer `LIMIT` and filters on large clusters.
 
 ## Example queries
 
-### Failing pods
+### Failing pods (namespace-scoped, namespace-RBAC friendly)
 
 ```sql
 SELECT namespace, name, status, status_reason
 FROM k8s.pods
-WHERE status != 'Running'
+WHERE namespace = 'production'
+  AND status != 'Running'
 LIMIT 20;
 ```
 
@@ -139,13 +197,25 @@ WHERE replicas != available_replicas
 LIMIT 50;
 ```
 
+### Recent warning events (uses new timing/count columns)
+
+```sql
+SELECT namespace, object_kind, object_name, reason, message,
+       last_timestamp, count
+FROM k8s.events
+WHERE type = 'Warning'
+ORDER BY last_timestamp DESC NULLS LAST
+LIMIT 20;
+```
+
 ### Pod events
 
 ```sql
-SELECT namespace, reason, message, object_name
+SELECT namespace, reason, message, object_name, last_timestamp, count
 FROM k8s.events
 WHERE object_kind = 'Pod'
   AND object_name = 'api-service'
+ORDER BY last_timestamp DESC NULLS LAST
 LIMIT 20;
 ```
 
@@ -185,9 +255,37 @@ coral source test k8s
 - Read-only v1; no mutating Kubernetes API calls.
 - No bearer-token or client-cert auth in the manifest; use `kubectl proxy` or a
   pre-authenticated API base URL.
-- Large list responses can be heavy; use filters and `LIMIT`.
+- Large list responses can be heavy; `fetch_limit_default: 500` is a safety cap
+  per query — for large clusters, add SQL `LIMIT` and pushdown filters
+  (`namespace`, `label_selector`, `field_selector`).
 - Nested Kubernetes fields are exposed as `Json` columns for downstream parsing.
+- Event timing columns map to core/v1 `Event` fields
+  (`firstTimestamp` / `lastTimestamp` / `count`). Some controllers now emit
+  events via `events.k8s.io/v1` only; for those, `event_time` and `action` are
+  populated and the core/v1 timestamps may be `null`. The `/api/v1/events`
+  endpoint surfaces both styles on most clusters.
 - Community sources are maintained separately from bundled core sources.
+
+## References
+
+- Kubernetes API reference: <https://kubernetes.io/docs/reference/kubernetes-api/>
+- API resource URIs and listing semantics:
+  <https://kubernetes.io/docs/reference/using-api/api-concepts/#resource-uris>
+- Listing pods in one namespace vs all namespaces:
+  <https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/pod-v1/#get-list>,
+  <https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/pod-v1/#get-list-all-namespaces>
+- Chunked list pagination (`limit` / `continue`):
+  <https://kubernetes.io/docs/reference/using-api/api-concepts/#retrieving-large-results-sets-in-chunks>
+- Label selectors:
+  <https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/#label-selectors>
+- Field selectors:
+  <https://kubernetes.io/docs/concepts/overview/working-with-objects/field-selectors/>
+- Event resource (`event_time`, `first_timestamp`, `last_timestamp`, `count`, `action`):
+  <https://kubernetes.io/docs/reference/kubernetes-api/cluster-resources/event-v1/>
+- `kubectl proxy`:
+  <https://kubernetes.io/docs/reference/kubectl/generated/kubectl_proxy/>
+- RBAC:
+  <https://kubernetes.io/docs/reference/access-authn-authz/rbac/>
 
 ## Contributing
 
