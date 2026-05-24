@@ -36,6 +36,7 @@ Required scopes depend on the tables you query:
 | `read:client_grants` | `client_grants` |
 | `read:actions` | `actions` |
 | `read:logs` | `logs` |
+| `read:logs_users` | `logs` (user-related fields) |
 | `read:grants` | `grants` |
 | `read:custom_domains` | `custom_domains` |
 | `read:tenant_settings` | `tenant_settings` |
@@ -130,6 +131,9 @@ operations.
 
 **Optional filter:** `q` (Lucene syntax)
 
+> **Note:** User-related fields (e.g. `user_name`, `user_id`) require the
+> `read:logs_users` scope in addition to `read:logs`.
+
 ### `auth0.grants`
 
 Lists all user grants — authorizations users have given to
@@ -217,6 +221,27 @@ coral source test auth0
 coral sql "SELECT * FROM coral.tables WHERE schema_name = 'auth0'"
 coral sql "SELECT user_id, email, name FROM auth0.users LIMIT 5"
 ```
+
+## Provider Documentation
+
+- [Auth0 Management API v2 overview](https://auth0.com/docs/api/management/v2)
+- [Management API tokens](https://auth0.com/docs/secure/tokens/access-tokens/management-api-access-tokens)
+- [API scopes](https://auth0.com/docs/get-started/apis/scopes/management-api-scopes)
+- [Users – search](https://auth0.com/docs/api/management/v2/users/get-users)
+- [Clients](https://auth0.com/docs/api/management/v2/clients/get-clients)
+- [Connections](https://auth0.com/docs/api/management/v2/connections/get-connections)
+- [Roles](https://auth0.com/docs/api/management/v2/roles/get-roles)
+- [Role users](https://auth0.com/docs/api/management/v2/roles/get-role-user)
+- [Role permissions](https://auth0.com/docs/api/management/v2/roles/get-role-permission)
+- [Organizations](https://auth0.com/docs/api/management/v2/organizations/get-organizations)
+- [Organization members](https://auth0.com/docs/api/management/v2/organizations/get-organization-members)
+- [Resource servers](https://auth0.com/docs/api/management/v2/resource-servers/get-resource-servers)
+- [Client grants](https://auth0.com/docs/api/management/v2/client-grants/get-client-grants)
+- [Actions](https://auth0.com/docs/api/management/v2/actions/get-actions)
+- [Logs](https://auth0.com/docs/api/management/v2/logs/get-logs)
+- [Grants](https://auth0.com/docs/api/management/v2/grants/get-grants)
+- [Custom domains](https://auth0.com/docs/api/management/v2/custom-domains/get-custom-domains)
+- [Tenant settings](https://auth0.com/docs/api/management/v2/tenants/tenant-settings-route)
 
 ## Limitations
 
