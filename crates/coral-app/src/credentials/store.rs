@@ -304,9 +304,8 @@ fn keychain_route_unavailable(
 fn configured_keychain_unavailable(error: CredentialsError) -> CredentialsError {
     match error {
         CredentialsError::Unavailable(detail) => CredentialsError::Unavailable(format!(
-            "keychain credential storage is configured for new source secrets, \
-             but keychain is unavailable: {detail}. Set [credentials] storage = \"file\" \
-             to use plaintext file storage."
+            "keychain credential storage is configured, but keychain is unavailable: \
+             {detail}. Set [credentials] storage = \"file\" to use plaintext file storage."
         )),
         error => error,
     }
