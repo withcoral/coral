@@ -249,6 +249,12 @@ tables:
           path:
             - group
             - name
+      - name: raw
+        type: Json
+        nullable: false
+        description: Raw JSON for the monitor row
+        expr:
+          kind: current_row
     filters:
       - name: board_id
         required: true
@@ -481,6 +487,12 @@ tables:
           kind: path
           path:
             - updated_at
+      - name: raw
+        type: Json
+        nullable: false
+        description: Raw JSON for the incident row
+        expr:
+          kind: current_row
     filters:
       - name: board_id
         required: true
@@ -645,6 +657,12 @@ tables:
           kind: path
           path:
             - description
+      - name: raw
+        type: Json
+        nullable: false
+        description: Raw JSON for the service_search row
+        expr:
+          kind: current_row
     filters:
       - name: q
         required: true
