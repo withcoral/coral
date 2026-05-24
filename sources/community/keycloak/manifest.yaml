@@ -134,7 +134,9 @@ tables:
         expr: {kind: path, path: [publicClient]}
 
   - name: groups
-    description: Groups in a realm.
+    description: >-
+      Top-level groups in a realm (id and name only; Keycloak's list endpoint
+      does not return hierarchy fields in v1).
     filters:
       - name: realm
         required: true
@@ -178,16 +180,6 @@ tables:
         nullable: true
         description: Group name.
         expr: {kind: path, path: [name]}
-      - name: path
-        type: Utf8
-        nullable: true
-        description: Full group path in the hierarchy.
-        expr: {kind: path, path: [path]}
-      - name: parent_id
-        type: Utf8
-        nullable: true
-        description: Parent group ID, if any.
-        expr: {kind: path, path: [parentId]}
 
   - name: roles
     description: Realm-level roles in a realm.

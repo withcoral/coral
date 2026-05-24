@@ -191,7 +191,7 @@ fetch (or may not be supported).
 | --- | --- | --- |
 | `realm` | path `{realm}` | `clients`, `groups`, `roles`, `users`, `admin_events` |
 | `search` | `search` | `groups`, `roles`, `users` |
-| `q` | `q` | `groups`, `users` |
+| `q` | `q` (custom-attribute `key:value` syntax) | `groups`, `users` |
 | `username` | `username` | `users` |
 | `email` | `email` | `users` |
 | `enabled` | `enabled` (boolean) | `users` |
@@ -208,6 +208,13 @@ values directly to Keycloak's `dateFrom` / `dateTo` query parameters. Use
 **`yyyy-MM-dd`** (for example `2026-05-01`) or **epoch milliseconds** (for
 example `1746057600000`). Full ISO-8601 timestamps such as
 `2026-05-01T00:00:00Z` are **not** accepted and can return `400 Bad Request`.
+
+On `users`, use `email` or `search` for email/name lookups. The `q` filter maps
+to Keycloak's custom-attribute query syntax (`key:value`, for example
+`department:engineering` or `team:support status:active`).
+
+On `groups`, `search` matches group names. The `q` filter searches group custom
+attributes using the same `key:value` syntax.
 
 Always use `LIMIT` on large realms. Paginated tables use `max` (default 100,
 cap 100 per request); Coral follows pages with `first` until the SQL `LIMIT`
@@ -247,23 +254,25 @@ Users in a realm (minimal profile columns for inventory and joins).
 
 **Required filter:** `realm`
 
-**Optional filters:** `search`, `q`, `username`, `email`, `enabled`
+**Optional filters:** `search`, `username`, `email`, `enabled`, `q` (custom
+attributes as `key:value`)
 
 ### `keycloak.groups`
 
-Groups in a realm (top-level list; nested membership requires separate Admin API calls not in v1).
+Top-level groups in a realm. Keycloak's `GET /admin/realms/{realm}/groups`
+list endpoint returns **`id` and `name` only** for each row; hierarchy fields
+such as `path` and `parentId` are not part of this v1 table.
 
 | Column | Type | Description |
 | --- | --- | --- |
 | `realm` | Utf8 | Realm from the `realm` filter |
 | `id` | Utf8 | Group ID |
 | `name` | Utf8 | Group name |
-| `path` | Utf8 | Full path in the group hierarchy |
-| `parent_id` | Utf8 | Parent group ID, if any |
 
 **Required filter:** `realm`
 
-**Optional filters:** `search`, `q`
+**Optional filters:** `search` (group name), `q` (custom attributes as
+`key:value`)
 
 ### `keycloak.clients`
 
@@ -356,17 +365,26 @@ LIMIT 100;
 SELECT id, username, email
 FROM keycloak.users
 WHERE realm = 'my-app'
-  AND q = 'alice@example.com'
+  AND email = 'alice@example.com'
+LIMIT 10;
+```
+
+```sql
+SELECT id, username, email
+FROM keycloak.users
+WHERE realm = 'my-app'
+  AND q = 'department:engineering'
 LIMIT 10;
 ```
 
 ### Groups, clients, and roles
 
 ```sql
-SELECT name, path, parent_id
+SELECT id, name
 FROM keycloak.groups
 WHERE realm = 'my-app'
-ORDER BY path
+  AND search = 'ops'
+ORDER BY name
 LIMIT 50;
 ```
 
@@ -503,8 +521,8 @@ $ coral sql "SELECT table_name, required_filters FROM coral.tables WHERE schema_
 
 1. Start with `keycloak.realms` to list realm names.
 2. Pass `WHERE realm = '<name>'` on every realm-scoped table.
-3. Prefer API filters (`username`, `email`, `q`, `search`, date range on
-   `admin_events`) over fetching large pages and filtering in SQL.
+3. Prefer API filters (`username`, `email`, `search`, custom-attribute `q`, date
+   range on `admin_events`) over fetching large pages and filtering in SQL.
 4. Use `LIMIT` on every inventory query in production realms.
 5. Inspect `coral.columns` for exact column names:
    `SELECT column_name, data_type FROM coral.columns WHERE schema_name = 'keycloak' AND table_name = 'users'`.
@@ -514,8 +532,9 @@ $ coral sql "SELECT table_name, required_filters FROM coral.tables WHERE schema_
 - **Read-only.** No create, update, or delete via this source.
 - **Realm roles only.** `roles` lists realm roles; client roles and user/client
   role mappings are not exposed in v1.
-- **Groups list only.** Subgroups and membership require additional Admin API
-  endpoints not modeled here.
+- **Groups top-level only.** `groups` exposes top-level `id` and `name` from
+  the Admin REST list endpoint. Nested subgroups, membership, and hierarchy
+  fields (`path`, `parentId`) are not modeled in v1.
 - **Admin events require configuration.** The realm must record admin events;
   otherwise the table is legitimately empty.
 - **Token scope and TTL.** Access is limited to the bearer token’s roles and
