@@ -9,19 +9,46 @@ description: >-
   and pagination.
 
 inputs:
-  GOOGLE_CALENDAR_TOKEN:
+  GOOGLE_CALENDAR_ACCESS_TOKEN:
     kind: secret
     hint: |
-      Google OAuth 2.0 access token with the
-      https://www.googleapis.com/auth/calendar.readonly scope.
+      Google Calendar OAuth 2.0 access token with the Calendar readonly scope.
+      Paste the access token value itself, without a `Bearer ` prefix.
+      For interactive setup, choose "Connect Google Calendar" and provide a
+      Google OAuth Desktop app client ID and client secret with the Calendar API
+      enabled.
 
-      Quickest way to get one for local use:
-        gcloud auth print-access-token
-
-      For long-lived access, create OAuth 2.0 Desktop credentials in
-      Google Cloud Console, enable the Google Calendar API, and use
-      the refresh-token flow. See:
-      https://developers.google.com/calendar/api/guides/auth
+      The OAuth flow requests:
+      https://www.googleapis.com/auth/calendar.readonly
+      See https://developers.google.com/calendar/api/guides/auth.
+    credential:
+      methods:
+        - type: oauth
+          label: Connect Google Calendar
+          description: Use Google OAuth to retrieve a Calendar access token.
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: required
+            redirect_uri: http://127.0.0.1/oauth/callback
+            redirect_uri_port_mode: random
+            endpoints:
+              authorization_url: https://accounts.google.com/o/oauth2/v2/auth?access_type=offline&prompt=consent
+              token_url: https://oauth2.googleapis.com/token
+            client:
+              id:
+                input: GOOGLE_CALENDAR_OAUTH_CLIENT_ID
+              secret:
+                input: GOOGLE_CALENDAR_OAUTH_CLIENT_SECRET
+                transport: request_body
+            scopes:
+              scope:
+                delimiter: space
+                values:
+                  - https://www.googleapis.com/auth/calendar.readonly
+        - type: source_config
+          label: Paste access token
+          description: Paste an existing Google Calendar OAuth access token.
 
 base_url: https://www.googleapis.com/calendar/v3
 
@@ -30,7 +57,7 @@ auth:
   headers:
     - name: Authorization
       from: template
-      template: Bearer {{input.GOOGLE_CALENDAR_TOKEN}}
+      template: Bearer {{input.GOOGLE_CALENDAR_ACCESS_TOKEN}}
 
 test_queries:
   - SELECT * FROM google_calendar.calendars LIMIT 1
