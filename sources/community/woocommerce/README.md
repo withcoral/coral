@@ -50,8 +50,11 @@ Catalog from `/wp-json/wc/v3/products`.
 
 **Useful for:** catalog inventory, pricing audit, best-seller analysis.
 
-Predicates pushed to the API: `status`, `sku`, `stock_status`, `search`,
-`after`, `before`, `modified_after`.
+Predicates pushed to the API: `type`, `status`, `sku`, `stock_status`,
+`search`, `after`, `before`, `modified_after`.
+
+Default fetch cap: 200 rows when no `LIMIT` and no narrowing filter
+are supplied (see *Known limitations*).
 
 ### `product_variations`
 Variations of a variable product from
@@ -72,13 +75,16 @@ attribution.
 Predicates pushed to the API: `status`, `customer_id`, `product`,
 `search`, `after`, `before`, `modified_after`.
 
+Default fetch cap: 200 rows (see *Known limitations*).
+
 ### `customers`
 Registered customers from `/wp-json/wc/v3/customers`.
 
 **Useful for:** customer inventory, country breakdowns, paying-vs-not.
 
-Predicates pushed to the API: `email`, `role`, `search`. Guest checkouts
-do not create customer rows; query `orders` with `customer_id = 0` and
+Predicates pushed to the API: `email`, `role`, `search`. Default fetch
+cap: 200 rows (see *Known limitations*). Guest checkouts do not create
+customer rows; query `orders` with `customer_id = 0` and
 `billing__email` for guest order activity.
 
 ## Authentication
@@ -100,12 +106,24 @@ See *Troubleshooting* below.
 
 ## Known limitations
 
+- **`products`, `orders`, and `customers` default to fetching at most
+  200 rows** (two API pages) when no filter and no explicit `LIMIT > 200`
+  is supplied. Real stores have catalogs/order histories/customer tables
+  in the thousands or more — Coral would otherwise paginate them in full
+  on every query. Override deliberately:
+  - **Filter** with a pushdown predicate (`status`, `type`, `after`,
+    `customer_id`, etc.) — narrows server-side, no cap concern.
+  - **Or** ask for more with an explicit `LIMIT N` greater than 200 —
+    Coral pages up to that limit.
 - **Variable products and variations live in two tables.** A variable
   product's parent row in `products` has no real SKU / price / stock —
-  those are on the variation rows in `product_variations`. To get the
-  full picture for variable stores, join: `products.id =
-  product_variations.product_id` (`product_variations` requires the
-  parent product ID as a filter).
+  those are on the variation rows in `product_variations`, which
+  requires `WHERE product_id = <id>`. Use the new `type` pushdown to
+  list variable parents (`WHERE type = 'variable'`), then loop.
+- `manage_stock` on `product_variations` is `Utf8`, not `Boolean`: the
+  v3 API documents three values — `true`, `false`, and `parent`
+  (inherit from the parent product). A Boolean column would silently
+  drop the `parent` value.
 - `orders_count` and `total_spent` on `customers` were removed in
   WooCommerce 10. Derive them by aggregating `orders` by `customer_id`
   — see the *Top customers by spend* example below.
@@ -113,8 +131,9 @@ See *Troubleshooting* below.
   from the API (e.g. `"12.50"`). `CAST(... AS DOUBLE)` for arithmetic.
 - Timestamps use the `_gmt` (UTC) variants and are parsed into real
   `Timestamp` columns.
-- Each list table fetches up to **100 rows per page** and follows pages
-  until the API returns empty.
+- Each list table fetches up to **100 rows per page** from the API
+  (the WC maximum) when paging up to the fetch cap or an explicit
+  `LIMIT`.
 
 ## Example Queries
 
@@ -151,10 +170,12 @@ WHERE modified_after = '2026-05-01T00:00:00'   -- pushed to ?modified_after=
 ORDER BY date_modified DESC
 ```
 
-### Inventory for variable products (two-step)
+### Inventory for variable products (two-step, server-filtered)
 
-Required-filter tables need a constant `product_id`, so this is a
-two-step pattern. First list variable products:
+`product_variations` requires a constant `product_id`, so this is a
+two-step pattern. First list variable parents — `type = 'variable'` is
+pushed down to `/products?type=variable`, so the catalog isn't scanned
+locally:
 
 ```sql
 SELECT id, name FROM woocommerce.products WHERE type = 'variable'
@@ -163,7 +184,8 @@ SELECT id, name FROM woocommerce.products WHERE type = 'variable'
 Then query variations for each ID:
 
 ```sql
-SELECT sku, regular_price, stock_quantity, stock_status, attributes
+SELECT sku, regular_price, stock_quantity, stock_status, manage_stock,
+       attributes
 FROM woocommerce.product_variations
 WHERE product_id = 11
 ```
