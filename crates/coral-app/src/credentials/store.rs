@@ -506,11 +506,13 @@ impl KeychainCredentialBackend {
         }
     }
 
-    fn entry(&self, set: &CredentialSetRef<'_>) -> Result<keyring_core::Entry, CredentialsError> {
-        let service = format!("com.withcoral.coral/{}", set.workspace_name.as_str());
-        let account = set.credential_set_id.to_string();
+    fn entry_for(
+        &self,
+        service: &str,
+        account: &str,
+    ) -> Result<keyring_core::Entry, CredentialsError> {
         self.native_store()?
-            .build(&service, &account, None)
+            .build(service, account, None)
             .map_err(|error| keychain_error(&error))
     }
 
@@ -519,6 +521,23 @@ impl KeychainCredentialBackend {
         self.native_store()?
             .build("com.withcoral.coral/__probe__", &account, None)
             .map_err(|error| keychain_error(&error))
+    }
+
+    fn run_native<T, F>(&self, operation: F) -> Result<T, CredentialsError>
+    where
+        T: Send + 'static,
+        F: FnOnce(Self) -> Result<T, CredentialsError> + Send + 'static,
+    {
+        run_native_keychain(self.clone(), operation)
+    }
+
+    fn probe_native(&self) -> Result<(), CredentialsError> {
+        match self.probe.get_or_init(|| {
+            catch_native_keychain_panic(|| self.run_probe()).map_err(|error| error.to_string())
+        }) {
+            Ok(()) => Ok(()),
+            Err(error) => Err(CredentialsError::Unavailable(error.clone())),
+        }
     }
 
     fn run_probe(&self) -> Result<(), CredentialsError> {
@@ -550,25 +569,25 @@ impl CredentialMaterialBackend for KeychainCredentialBackend {
     }
 
     fn probe(&self) -> Result<(), CredentialsError> {
-        match self
-            .probe
-            .get_or_init(|| self.run_probe().map_err(|error| error.to_string()))
-        {
-            Ok(()) => Ok(()),
-            Err(error) => Err(CredentialsError::Unavailable(error.clone())),
-        }
+        self.run_native(|backend| backend.probe_native())
     }
 
     fn read(
         &self,
         set: &CredentialSetRef<'_>,
     ) -> Result<Option<EncodedCredentialMaterial>, CredentialsError> {
-        self.probe()?;
-        match self.entry(set)?.get_password() {
-            Ok(value) => Ok(Some(EncodedCredentialMaterial(value.into_bytes()))),
-            Err(keyring_core::Error::NoEntry) => Ok(None),
-            Err(error) => Err(keychain_error(&error)),
-        }
+        let entry = KeychainEntryAddress::from_set(set);
+        self.run_native(move |backend| {
+            backend.probe_native()?;
+            match backend
+                .entry_for(&entry.service, &entry.account)?
+                .get_password()
+            {
+                Ok(value) => Ok(Some(EncodedCredentialMaterial(value.into_bytes()))),
+                Err(keyring_core::Error::NoEntry) => Ok(None),
+                Err(error) => Err(keychain_error(&error)),
+            }
+        })
     }
 
     fn write(
@@ -576,41 +595,55 @@ impl CredentialMaterialBackend for KeychainCredentialBackend {
         set: &CredentialSetRef<'_>,
         material: Option<&EncodedCredentialMaterial>,
     ) -> Result<(), CredentialsError> {
-        self.probe()?;
-        let entry = self.entry(set)?;
-        match material {
-            Some(material) => {
-                let value = std::str::from_utf8(material.bytes()).map_err(|error| {
-                    CredentialsError::Parse(format!(
-                        "keychain material is not valid UTF-8: {error}"
-                    ))
-                })?;
-                entry
-                    .set_password(value)
-                    .map_err(|error| keychain_error(&error))
+        let entry = KeychainEntryAddress::from_set(set);
+        let value = material
+            .map(|material| {
+                std::str::from_utf8(material.bytes())
+                    .map(ToOwned::to_owned)
+                    .map_err(|error| {
+                        CredentialsError::Parse(format!(
+                            "keychain material is not valid UTF-8: {error}"
+                        ))
+                    })
+            })
+            .transpose()?;
+        self.run_native(move |backend| {
+            backend.probe_native()?;
+            let entry = backend.entry_for(&entry.service, &entry.account)?;
+            match value {
+                Some(value) => entry
+                    .set_password(&value)
+                    .map_err(|error| keychain_error(&error)),
+                None => match entry.delete_credential() {
+                    Ok(()) | Err(keyring_core::Error::NoEntry) => Ok(()),
+                    Err(error) => Err(keychain_error(&error)),
+                },
             }
-            None => match entry.delete_credential() {
-                Ok(()) | Err(keyring_core::Error::NoEntry) => Ok(()),
-                Err(error) => Err(keychain_error(&error)),
-            },
-        }
+        })
     }
 
     fn snapshot(
         &self,
         set: &CredentialSetRef<'_>,
     ) -> Result<CredentialMaterialSnapshot, CredentialsError> {
-        self.probe()?;
-        match self.entry(set)?.get_password() {
-            Ok(value) => Ok(CredentialMaterialSnapshot::new(
-                self.kind(),
-                Some(value.into_bytes()),
-            )),
-            Err(keyring_core::Error::NoEntry) => {
-                Ok(CredentialMaterialSnapshot::new(self.kind(), None))
+        let entry = KeychainEntryAddress::from_set(set);
+        self.run_native(move |backend| {
+            backend.probe_native()?;
+            match backend
+                .entry_for(&entry.service, &entry.account)?
+                .get_password()
+            {
+                Ok(value) => Ok(CredentialMaterialSnapshot::new(
+                    CredentialStorageKind::Keychain,
+                    Some(value.into_bytes()),
+                )),
+                Err(keyring_core::Error::NoEntry) => Ok(CredentialMaterialSnapshot::new(
+                    CredentialStorageKind::Keychain,
+                    None,
+                )),
+                Err(error) => Err(keychain_error(&error)),
             }
-            Err(error) => Err(keychain_error(&error)),
-        }
+        })
     }
 
     fn restore(
@@ -629,6 +662,73 @@ impl CredentialMaterialBackend for KeychainCredentialBackend {
             None => self.write(set, None),
         }
     }
+}
+
+#[derive(Clone)]
+struct KeychainEntryAddress {
+    service: String,
+    account: String,
+}
+
+impl KeychainEntryAddress {
+    fn from_set(set: &CredentialSetRef<'_>) -> Self {
+        Self {
+            service: format!("com.withcoral.coral/{}", set.workspace_name.as_str()),
+            account: set.credential_set_id.to_string(),
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn run_native_keychain<T, F>(
+    backend: KeychainCredentialBackend,
+    operation: F,
+) -> Result<T, CredentialsError>
+where
+    T: Send + 'static,
+    F: FnOnce(KeychainCredentialBackend) -> Result<T, CredentialsError> + Send + 'static,
+{
+    std::thread::Builder::new()
+        .name("coral-keychain".to_string())
+        .spawn(move || catch_native_keychain_panic(|| operation(backend)))
+        .map_err(|error| {
+            CredentialsError::Unavailable(format!(
+                "failed to start native keychain worker thread: {error}"
+            ))
+        })?
+        .join()
+        .unwrap_or_else(|payload| Err(native_keychain_panic_error(payload.as_ref())))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn run_native_keychain<T, F>(
+    backend: KeychainCredentialBackend,
+    operation: F,
+) -> Result<T, CredentialsError>
+where
+    T: Send + 'static,
+    F: FnOnce(KeychainCredentialBackend) -> Result<T, CredentialsError> + Send + 'static,
+{
+    catch_native_keychain_panic(|| operation(backend))
+}
+
+fn catch_native_keychain_panic<T, F>(operation: F) -> Result<T, CredentialsError>
+where
+    F: FnOnce() -> Result<T, CredentialsError>,
+{
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(operation))
+        .unwrap_or_else(|payload| Err(native_keychain_panic_error(payload.as_ref())))
+}
+
+fn native_keychain_panic_error(payload: &(dyn std::any::Any + Send)) -> CredentialsError {
+    let message = if let Some(message) = payload.downcast_ref::<&'static str>() {
+        (*message).to_string()
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "unknown panic".to_string()
+    };
+    CredentialsError::Unavailable(format!("native keychain operation panicked: {message}"))
 }
 
 #[cfg(target_os = "macos")]
