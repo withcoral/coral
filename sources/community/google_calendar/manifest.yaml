@@ -1,4 +1,4 @@
-name: gcal
+name: google_calendar
 version: 0.1.0
 dsl_version: 3
 backend: http
@@ -33,11 +33,11 @@ auth:
       template: Bearer {{input.GOOGLE_CALENDAR_TOKEN}}
 
 test_queries:
-  - SELECT * FROM gcal.calendars LIMIT 1
-  - SELECT * FROM gcal.events WHERE calendar_id = 'primary' LIMIT 1
+  - SELECT * FROM google_calendar.calendars LIMIT 1
+  - SELECT * FROM google_calendar.events WHERE calendar_id = 'primary' LIMIT 1
 
 tables:
-  # ── gcal.calendars ─────────────────────────────────────────
+  # ── google_calendar.calendars ─────────────────────────────────────────
   - name: calendars
     description: >-
       Calendars accessible to the authenticated Google account.
@@ -45,9 +45,9 @@ tables:
     guide: |
       Lists all calendars the authenticated user can see.
       Use the `id` column to query events from a specific calendar:
-        SELECT id, summary FROM gcal.calendars
-      Then pass that id into gcal.events:
-        SELECT * FROM gcal.events WHERE calendar_id = '<id>'
+        SELECT id, summary FROM google_calendar.calendars
+      Then pass that id into google_calendar.events:
+        SELECT * FROM google_calendar.events WHERE calendar_id = '<id>'
       The `primary` column is true for the user's main calendar.
     request:
       method: GET
@@ -72,7 +72,7 @@ tables:
         nullable: false
         description: >-
           Unique calendar identifier. Use this value as the calendar_id
-          filter on gcal.events.
+          filter on google_calendar.events.
         expr:
           kind: path
           path:
@@ -120,15 +120,15 @@ tables:
           path:
             - primary
 
-  # ── gcal.events ────────────────────────────────────────────
+  # ── google_calendar.events ────────────────────────────────────────────
   - name: events
     description: >-
       Events from a Google Calendar. Requires a calendar_id filter
       (use 'primary' for the main calendar, or an id from
-      gcal.calendars).
+      google_calendar.calendars).
     guide: |
       Always filter by calendar_id. Use 'primary' for the default:
-        SELECT * FROM gcal.events WHERE calendar_id = 'primary'
+        SELECT * FROM google_calendar.events WHERE calendar_id = 'primary'
 
       Push-down filters:
         - calendar_id (required) — which calendar to query
@@ -138,7 +138,7 @@ tables:
 
       Example — events this week:
         SELECT summary, start_date_time, end_date_time
-        FROM gcal.events
+        FROM google_calendar.events
         WHERE calendar_id = 'primary'
           AND time_min = '2026-05-25T00:00:00Z'
           AND time_max = '2026-06-01T00:00:00Z'
@@ -267,7 +267,7 @@ tables:
         virtual: true
         description: >-
           The calendar_id filter value that was used to fetch this event.
-          Virtual column for JOIN convenience with gcal.calendars.
+          Virtual column for JOIN convenience with google_calendar.calendars.
         expr:
           kind: from_filter
           key: calendar_id

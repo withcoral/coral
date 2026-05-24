@@ -20,7 +20,7 @@ For production use, you must configure a Google Cloud project with OAuth 2.0 cre
 ## Installation
 
 ```bash
-coral source add --file sources/google-calendar/manifest.yaml
+coral source add --file sources/community/google_calendar/manifest.yaml
 ```
 
 ## Tables
@@ -82,11 +82,11 @@ The `events` table supports pushing down filters directly to the Google Calendar
 ```sql
 -- List accessible calendars
 SELECT id, summary, access_role
-FROM gcal.calendars;
+FROM google_calendar.calendars;
 
 -- Upcoming events this week on the primary calendar
 SELECT summary, start_date_time, end_date_time
-FROM gcal.events
+FROM google_calendar.events
 WHERE calendar_id = 'primary'
   AND time_min = '2026-05-25T00:00:00Z'
   AND time_max = '2026-06-01T00:00:00Z'
@@ -94,13 +94,13 @@ ORDER BY start_date_time;
 
 -- Keyword search
 SELECT summary, start_date_time, location
-FROM gcal.events
+FROM google_calendar.events
 WHERE calendar_id = 'primary'
   AND q = 'standup';
 
 -- Identify all-day events
 SELECT summary, start_date, end_date
-FROM gcal.events
+FROM google_calendar.events
 WHERE calendar_id = 'primary'
   AND start_date IS NOT NULL;
 ```
