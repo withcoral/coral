@@ -1,0 +1,183 @@
+name: argocd
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Argo CD applications, projects, clusters, and repositories via the 
+  Argo CD REST API to audit GitOps states and cluster delivery topologies.
+base_url: "{{input.ARGOCD_BASE_URL}}/api/v1"
+
+inputs:
+  ARGOCD_BASE_URL:
+    kind: variable
+    hint: |
+      Argo CD server API root URL with NO trailing slash and no /api suffix,
+      for example `https://argocd.example.com` or `http://localhost:8080`.
+  ARGOCD_AUTH_TOKEN:
+    kind: secret
+    hint: |
+      Argo CD authentication token (JWT authentication token generated via 
+      Argo CD settings account tokens or via `argocd account generate-token`).
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.ARGOCD_AUTH_TOKEN}}
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT name, namespace FROM argocd.applications LIMIT 1
+
+tables:
+  - name: applications
+    description: Deployed GitOps applications managed by Argo CD.
+    filters:
+      - name: project
+        required: false
+    request:
+      method: GET
+      path: /applications
+      query:
+        - name: project
+          from: filter
+          key: project
+    response:
+      row_strategy: direct
+      root_key: items
+    pagination:
+      mode: none
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Name of the application.
+        expr: {kind: path, path: [metadata, name]}
+      - name: namespace
+        type: Utf8
+        nullable: true
+        description: Target cluster namespace where the application resources reside.
+        expr: {kind: path, path: [spec, destination, namespace]}
+      - name: destination_server
+        type: Utf8
+        nullable: true
+        description: Target cluster API server host location endpoint.
+        expr: {kind: path, path: [spec, destination, server]}
+      - name: repo_url
+        type: Utf8
+        nullable: true
+        description: Git repository URL containing the source configurations (returns null for multi-source applications).
+        expr: {kind: path, path: [spec, source, repoURL]}
+      - name: target_revision
+        type: Utf8
+        nullable: true
+        description: Tracked Git revision tag, branch, or commit pin (returns null for multi-source applications).
+        expr: {kind: path, path: [spec, source, targetRevision]}
+      - name: path
+        type: Utf8
+        nullable: true
+        description: Directory path within the source repository (returns null for multi-source applications).
+        expr: {kind: path, path: [spec, source, path]}
+      - name: sync_status
+        type: Utf8
+        nullable: true
+        description: Application sync status relative to Git state (Synced, OutOfSync).
+        expr: {kind: path, path: [status, sync, status]}
+      - name: health_status
+        type: Utf8
+        nullable: true
+        description: Live operational evaluation health state (Healthy, Degraded, Progressing).
+        expr: {kind: path, path: [status, health, status]}
+      - name: project
+        type: Utf8
+        nullable: true
+        description: Argo CD control group project assignment name.
+        expr: {kind: path, path: [spec, project]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp detailing when the application was registered.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [metadata, creationTimestamp]}
+
+  - name: projects
+    description: AppProjects organizing application operational scopes and permissions.
+    request:
+      method: GET
+      path: /projects
+    response:
+      row_strategy: direct
+      root_key: items
+    pagination:
+      mode: none
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Project structural identification name.
+        expr: {kind: path, path: [metadata, name]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Project contextual details text.
+        expr: {kind: path, path: [spec, description]}
+
+  - name: clusters
+    description: Target infrastructure Kubernetes clusters connected to Argo CD.
+    request:
+      method: GET
+      path: /clusters
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Cluster designation string name.
+        expr: {kind: path, path: [name]}
+      - name: server
+        type: Utf8
+        nullable: false
+        description: Host endpoint location URL of the cluster control plane API.
+        expr: {kind: path, path: [server]}
+      - name: connection_status
+        type: Utf8
+        nullable: true
+        description: Core cluster connectivity monitoring state.
+        expr: {kind: path, path: [connectionState, status]}
+
+  - name: repositories
+    description: Configured version control repository sync connection sources.
+    request:
+      method: GET
+      path: /repositories
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: repo_url
+        type: Utf8
+        nullable: false
+        description: Connected source URL.
+        expr: {kind: path, path: [repo]}
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Storage server version target driver flavor (git, helm).
+        expr: {kind: path, path: [type]}
+      - name: connection_status
+        type: Utf8
+        nullable: true
+        description: State index health monitoring check responses.
+        expr: {kind: path, path: [connectionState, status]}
+        
