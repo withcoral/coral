@@ -62,8 +62,10 @@ handles token refresh.
 ### 4. Verify
 
 ```sh
-cargo run -p coral-cli -- source test bitbucket
+cargo run -p coral-cli -- sql "SELECT slug, name, is_private FROM bitbucket.repositories WHERE workspace = 'your-workspace' LIMIT 5"
 ```
+
+Replace `your-workspace` with your Bitbucket workspace slug.
 
 ## Tables
 
@@ -203,14 +205,31 @@ Lint the manifest:
 cargo run -p coral-cli -- source lint sources/community/bitbucket/manifest.yaml
 ```
 
-Install and run the built-in test queries:
+Add the source:
 
 ```sh
 export BITBUCKET_CLIENT_ID="<your-consumer-key>"
 export BITBUCKET_CLIENT_SECRET="<your-consumer-secret>"
 cargo run -p coral-cli -- source add --file sources/community/bitbucket/manifest.yaml
-cargo run -p coral-cli -- source test bitbucket
 ```
+
+Validate each table with your real workspace and repo slug. Replace
+`your-workspace` and `your-repo` with values from your Bitbucket account:
+
+```sh
+# repositories — requires only workspace
+cargo run -p coral-cli -- sql "SELECT slug, name, is_private FROM bitbucket.repositories WHERE workspace = 'your-workspace' LIMIT 5"
+
+# pull_requests — requires workspace and repo_slug; optional state pushdown
+cargo run -p coral-cli -- sql "SELECT id, title, state, author_nickname, created_on FROM bitbucket.pull_requests WHERE workspace = 'your-workspace' AND repo_slug = 'your-repo' AND state = 'OPEN' LIMIT 5"
+
+# pipelines — requires workspace and repo_slug; optional status pushdown
+cargo run -p coral-cli -- sql "SELECT build_number, state_name, state_result_name, creator_nickname, created_on, completed_on FROM bitbucket.pipelines WHERE workspace = 'your-workspace' AND repo_slug = 'your-repo' LIMIT 5"
+```
+
+> **Note:** `pull_requests` and `pipelines` require real `workspace` and
+> `repo_slug` path parameters. The `repositories` table only needs `workspace`
+> and is the recommended first validation step.
 
 Inspect registered tables and columns:
 

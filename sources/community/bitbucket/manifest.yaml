@@ -73,11 +73,6 @@ auth:
       from: template
       template: Bearer {{input.BITBUCKET_TOKEN}}
 
-test_queries:
-  - SELECT slug, name, is_private FROM bitbucket.repositories WHERE workspace = 'my-workspace' LIMIT 5
-  - SELECT id, title, state FROM bitbucket.pull_requests WHERE workspace = 'my-workspace' AND repo_slug = 'my-repo' LIMIT 5
-  - SELECT build_number, state_name, state_result_name FROM bitbucket.pipelines WHERE workspace = 'my-workspace' AND repo_slug = 'my-repo' LIMIT 5
-
 tables:
   # ──────────────────────────────────────────────────────────────────────────
   # repositories — repos owned by a workspace
