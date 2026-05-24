@@ -1,5 +1,5 @@
 name: prometheus
-version: 0.1.1
+version: 0.1.2
 dsl_version: 3
 backend: http
 description: >-
@@ -115,8 +115,9 @@ tables:
   - name: alerts
     description: Active alerts from the Prometheus alerts API.
     guide: |
-      Uses `GET /api/v1/alerts` (not the internal `ALERTS` metric). Filter on
-      `alert_state` (`firing`, `pending`, `inactive`). The alerts API has no
+      Uses `GET /api/v1/alerts` (not the internal `ALERTS` metric). The endpoint
+      only returns active alerts, so `alert_state` is `firing` or `pending`
+      (inactive alerts are not exposed by this API). The alerts API has no
       `limit` parameter; Coral caps fetched rows at 200 via `fetch_limit_default`.
       Use SQL `LIMIT` on large alert sets. For custom PromQL, use a follow-on table
       or query Prometheus directly.
@@ -142,7 +143,7 @@ tables:
       - name: alert_state
         type: Utf8
         nullable: true
-        description: Alert state (`firing`, `pending`, or `inactive`).
+        description: Alert state from the active alerts endpoint (`firing` or `pending`).
         expr:
           kind: path
           path:

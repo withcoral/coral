@@ -1,6 +1,6 @@
 # Prometheus Connector (Community)
 
-**Version:** 0.1.1
+**Version:** 0.1.2
 **Backend:** HTTP (Prometheus query and alerts APIs)
 **Tables:** 2
 **Default base URL:** `http://127.0.0.1:9090` (override with `PROMETHEUS_BASE_URL`)
@@ -83,6 +83,14 @@ WHERE sample_value < 1
 LIMIT 20;
 ```
 
+> **Caveat:** `query_up` hard-codes Prometheus `limit=500` on `/api/v1/query`,
+> and the SQL `WHERE` filter is applied *after* Coral fetches the response.
+> Prometheus does not guarantee instant-vector ordering, so on a fleet with
+> more than 500 `up` series a down target can be truncated server-side before
+> Coral evaluates `sample_value < 1`. For fleets above ~500 targets, run
+> `up < 1` directly in Prometheus or treat this query as best-effort within
+> the provider-side cap.
+
 ### Firing alerts
 
 ```sql
@@ -91,6 +99,10 @@ FROM prometheus.alerts
 WHERE alert_state = 'firing'
 LIMIT 20;
 ```
+
+> The `/api/v1/alerts` endpoint only returns active alerts, so `alert_state`
+> values are `firing` or `pending`. Inactive alerts are not returned by this
+> API.
 
 ### Optional join to a Kubernetes source
 
@@ -115,6 +127,11 @@ export PROMETHEUS_BASE_URL=http://127.0.0.1:9090
 coral source add --file sources/community/prometheus/manifest.yaml
 coral source test prometheus
 ```
+
+Sanitized output from a real Prometheus instance (`coral source test
+prometheus` plus representative `query_up` and `alerts` queries) is included
+in the pull request description so reviewers can see end-to-end behavior
+without re-running the suite.
 
 ## Limitations
 
