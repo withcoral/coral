@@ -18,7 +18,7 @@ https://www.googleapis.com/auth/gmail.readonly
 ### 2. Add the Source
 
 ```bash
-coral source add gmail
+coral source add --interactive --file sources/community/gmail/manifest.yaml
 ```
 
 When prompted enter your access token.
@@ -60,6 +60,12 @@ FROM gmail.messages
 WHERE q = 'from:someone@gmail.com'
 LIMIT 10;
 
+-- Include spam and trash
+SELECT id, thread_id
+FROM gmail.messages
+WHERE label_ids = 'INBOX' AND include_spam_trash = true
+LIMIT 10;
+
 -- List threads
 SELECT id, snippet
 FROM gmail.threads
@@ -73,17 +79,42 @@ LIMIT 10;
 
 ## Auth Scopes
 
-This source uses `gmail.readonly` which grants read-only access to:
-- Email messages and settings
-- Labels and filters
+This source uses `gmail.readonly` which is a **restricted Gmail scope**.
+Google marks this scope as restricted because it grants read access to
+all message content and metadata.
 
-It does NOT allow sending, deleting, or modifying emails.
+**Why not `gmail.metadata`?**
+The narrower `gmail.metadata` scope is not sufficient for this source
+because the `messages` and `threads` tables support a `q` search filter.
+Gmail's API explicitly states that the `q` parameter cannot be used with
+`gmail.metadata` — it requires at least `gmail.readonly` to work correctly.
+
+Users publishing an app using this source publicly will need to go through
+Google's OAuth verification process. For personal or internal use,
+unverified access is fine.
+
+Scope reference: https://developers.google.com/workspace/gmail/api/auth/scopes
 
 ## Rate Limits
 
-Gmail API allows 250 quota units per second per user.
-List operations cost 5 units each. See full details at:
-https://developers.google.com/workspace/gmail/api/reference/quota
+Gmail API quota limits per minute:
+
+| Limit type | Quota units |
+|------------|-------------|
+| Per minute per project | 1,200,000 |
+| Per minute per user per project | 6,000 |
+
+Per-method costs for this source:
+
+| Method | Quota units |
+|--------|-------------|
+| `messages.list` | 5 |
+| `drafts.list` | 5 |
+| `threads.list` | 10 |
+| `labels.list` | 1 |
+| `getProfile` | 1 |
+
+Full details: https://developers.google.com/workspace/gmail/api/reference/quota
 
 ## Provider Docs
 
