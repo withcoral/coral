@@ -58,7 +58,7 @@ tables:
     response:
       rows_path: []
       row_strategy: direct
-      allow_404_empty: true
+      allow_404_empty: false
     pagination:
       mode: page
       page_size:
@@ -187,9 +187,10 @@ tables:
     response:
       rows_path: []
       row_strategy: direct
-      allow_404_empty: true
+      allow_404_empty: false
     pagination:
       mode: page
+      max_pages: 10
       page_size:
         default: 100
         max: 100
@@ -316,7 +317,7 @@ tables:
     response:
       rows_path: []
       row_strategy: direct
-      allow_404_empty: true
+      allow_404_empty: false
     pagination:
       mode: page
       page_size:
@@ -467,7 +468,7 @@ tables:
     response:
       rows_path: []
       row_strategy: direct
-      allow_404_empty: true
+      allow_404_empty: false
     pagination:
       mode: page
       page_size:

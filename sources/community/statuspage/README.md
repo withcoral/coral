@@ -301,4 +301,5 @@ All tables use page-based pagination with a page size of 100 (`per_page=100`). F
 - The `components` table includes group header rows (`group = true`) with `NULL` status. Add `WHERE group != true` or `WHERE status IS NOT NULL` to exclude them.
 - `incident_updates__body` joins all update message bodies in the order the API returns them (newest-first). Each update is separated by a newline character.
 - The Statuspage Management API is rate-limited to **1 request/second** per token.
-- All four tables treat HTTP 404 as an empty result (`allow_404_empty: true`) so a newly created page with no data doesn't cause query errors.
+- The `all_incidents` table caps automatic pagination at **10 pages (1,000 incidents)** to avoid unbounded fetches against long-running pages. Use an explicit SQL `LIMIT` to fetch fewer, or raise the cap by adjusting `max_pages` in the source spec for your use case.
+- HTTP 404 from any table is treated as a real error, not an empty result. A 404 means your `STATUSPAGE_PAGE_ID` is invalid or the API key does not have access to the page — check your inputs with `coral source test statuspage`.
