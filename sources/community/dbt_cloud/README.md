@@ -122,6 +122,7 @@ cargo run -p coral-cli -- sql "SELECT table_name, column_name FROM coral.columns
 - [List Runs endpoint](https://docs.getdbt.com/dbt-cloud/api-v2#/operations/List%20Runs)
 - [Service tokens](https://docs.getdbt.com/docs/dbt-apis/service-tokens)
 - [Access URLs by region](https://docs.getdbt.com/docs/platform/about-platform/access-regions-ip-addresses#api-access-urls)
+- [List Environments endpoint](https://docs.getdbt.com/dbt-cloud/api-v2#/operations/List%20Environments)
 
 ## Notes
 
