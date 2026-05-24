@@ -237,12 +237,17 @@ tables:
     guide: |
       Filter by `workspace_id` using an ID from `terraform_cloud.workspaces`.
       Optional filters map to HCP Terraform run status, operation, and source.
+      HCP Terraform rate-limits API requests, so keep run queries bounded.
+      Valid `operation` values include `plan_only`, `plan_and_apply`,
+      `save_plan`, `refresh_only`, `destroy`, `empty_apply`, and `action_only`.
+      If you want only plan-only runs, pass `operation=plan_only`.
     filters:
       - name: workspace_id
         required: true
       - name: status
       - name: operation
       - name: source
+    fetch_limit_default: 100
     request:
       method: GET
       path: /workspaces/{{filter.workspace_id}}/runs
@@ -303,7 +308,7 @@ tables:
       - name: operation
         type: Utf8
         nullable: true
-        description: Run operation, such as plan, apply, or destroy.
+        description: Run operation, such as plan_only, plan_and_apply, save_plan, refresh_only, destroy, empty_apply, or action_only.
         expr: {kind: path, path: [attributes, operation]}
       - name: is_destroy
         type: Boolean
@@ -359,14 +364,7 @@ tables:
       rows_path: [data]
       row_strategy: direct
     pagination:
-      mode: page
-      page_param: page[number]
-      page_start: 1
-      page_step: 1
-      page_size:
-        default: 20
-        max: 100
-        query_param: page[size]
+      mode: none
     columns:
       - name: workspace_id
         type: Utf8

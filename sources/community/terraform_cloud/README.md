@@ -55,7 +55,7 @@ coral source add --interactive --file sources/community/terraform_cloud/manifest
 |---|---|
 | `terraform_cloud.projects` | Projects in the configured organization. |
 | `terraform_cloud.workspaces` | Workspaces in the configured organization. |
-| `terraform_cloud.runs` | Runs for a specific workspace. Requires `workspace_id`. |
+| `terraform_cloud.runs` | Runs for a specific workspace. Requires `workspace_id` and is bounded by a default fetch limit. |
 | `terraform_cloud.variables` | Workspace variable metadata. Requires `workspace_id`; values are not exposed. |
 | `terraform_cloud.state_versions` | State version metadata for a workspace name. Requires `workspace_name` and exposes `workspace_id` for joins. |
 
@@ -112,12 +112,18 @@ WHERE workspace_name = 'production-network'
 
 - HCP Terraform uses JSON:API response shapes. Most list tables read from the
   top-level `data` array.
-- `terraform_cloud.runs` and `terraform_cloud.variables` require
-  `workspace_id`.
+- `terraform_cloud.runs` requires `workspace_id` and uses a bounded default
+  fetch limit so large workspaces do not overwhelm queries.
+- `terraform_cloud.variables` requires `workspace_id`.
 - `terraform_cloud.state_versions` requires `workspace_name` because the HCP
   Terraform list state versions endpoint filters by organization name and
   workspace name, and it exposes the related `workspace_id` when the API
   response includes the workspace relationship.
+- HCP Terraform rate-limits API requests, so repeated large queries can return
+  `429 Too many requests`.
+- `terraform_cloud.runs` accepts run operations such as `plan_only`,
+  `plan_and_apply`, `save_plan`, `refresh_only`, `destroy`, `empty_apply`, and
+  `action_only`.
 - Variable values are deliberately excluded from this source spec.
 - Raw state files are deliberately excluded from this source spec.
 
