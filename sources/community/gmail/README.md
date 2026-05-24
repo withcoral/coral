@@ -63,7 +63,7 @@ LIMIT 10;
 -- Include spam and trash
 SELECT id, thread_id
 FROM gmail.messages
-WHERE label_ids = 'INBOX' AND include_spam_trash = true
++WHERE include_spam_trash = true
 LIMIT 10;
 
 -- List threads
