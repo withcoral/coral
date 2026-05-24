@@ -219,11 +219,11 @@ tables:
       Variable products only return the parent here. For variation-level
       SKU/price/stock, query `product_variations` with `WHERE product_id = <id>`.
 
-      Without a filter, this table is capped at 200 rows by default
-      (two pages) to avoid full-catalog scans against large stores. To
-      page further, add an explicit `LIMIT N` greater than 200; Coral
-      keeps paging until it hits the limit or the API returns empty.
-    fetch_limit_default: 200
+      The table fetches every matching row — Coral keeps paging until
+      the API returns empty. On large catalogs, narrow the result set by
+      pushing a filter (`type`, `status`, `stock_status`, `after`, etc.)
+      or add an explicit `LIMIT N`; bounding is the caller's choice, not
+      a silent default.
     filters:
       - name: type
       - name: status
@@ -544,11 +544,11 @@ tables:
       - `WHERE before = '<ISO 8601>'`       → `?before=`
       - `WHERE modified_after = '<ISO 8601>'` → `?modified_after=`
 
-      Without a filter, this table is capped at 200 rows by default to
-      avoid full-history scans against stores with many orders. Add an
-      explicit `LIMIT N` greater than 200, or a date filter, to fetch
-      more.
-    fetch_limit_default: 200
+      The table fetches every matching row — Coral keeps paging until
+      the API returns empty. On stores with long order histories, narrow
+      the result set by pushing a filter (`status`, `customer_id`,
+      `after`, etc.) or add an explicit `LIMIT N`; bounding is the
+      caller's choice, not a silent default.
     filters:
       - name: status
       - name: customer_id
@@ -870,9 +870,11 @@ tables:
       - `WHERE role = '...'`    → `?role=`
       - `WHERE search = '...'`  → `?search=`
 
-      Without a filter, this table is capped at 200 rows by default. Add
-      an explicit `LIMIT N` greater than 200 to fetch more.
-    fetch_limit_default: 200
+      The table fetches every matching row — Coral keeps paging until
+      the API returns empty. On stores with many customers, narrow the
+      result set by pushing a filter (`email`, `role`, `search`) or add
+      an explicit `LIMIT N`; bounding is the caller's choice, not a
+      silent default.
     filters:
       - name: email
       - name: role

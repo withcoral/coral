@@ -51,10 +51,9 @@ Catalog from `/wp-json/wc/v3/products`.
 **Useful for:** catalog inventory, pricing audit, best-seller analysis.
 
 Predicates pushed to the API: `type`, `status`, `sku`, `stock_status`,
-`search`, `after`, `before`, `modified_after`.
-
-Default fetch cap: 200 rows when no `LIMIT` and no narrowing filter
-are supplied (see *Known limitations*).
+`search`, `after`, `before`, `modified_after`. Filtered queries return
+**all** matching rows; bounding is the caller's choice via a narrowing
+predicate or an explicit `LIMIT N`.
 
 ### `product_variations`
 Variations of a variable product from
@@ -73,19 +72,20 @@ Orders from `/wp-json/wc/v3/orders`.
 attribution.
 
 Predicates pushed to the API: `status`, `customer_id`, `product`,
-`search`, `after`, `before`, `modified_after`.
-
-Default fetch cap: 200 rows (see *Known limitations*).
+`search`, `after`, `before`, `modified_after`. Filtered queries return
+**all** matching rows; use a narrowing predicate or explicit `LIMIT N`
+for performance on long order histories.
 
 ### `customers`
 Registered customers from `/wp-json/wc/v3/customers`.
 
 **Useful for:** customer inventory, country breakdowns, paying-vs-not.
 
-Predicates pushed to the API: `email`, `role`, `search`. Default fetch
-cap: 200 rows (see *Known limitations*). Guest checkouts do not create
-customer rows; query `orders` with `customer_id = 0` and
-`billing__email` for guest order activity.
+Predicates pushed to the API: `email`, `role`, `search`. Filtered
+queries return **all** matching rows; use a narrowing predicate or
+explicit `LIMIT N` for performance on large customer tables. Guest
+checkouts do not create customer rows; query `orders` with
+`customer_id = 0` and `billing__email` for guest order activity.
 
 ## Authentication
 
@@ -106,15 +106,15 @@ See *Troubleshooting* below.
 
 ## Known limitations
 
-- **`products`, `orders`, and `customers` default to fetching at most
-  200 rows** (two API pages) when no filter and no explicit `LIMIT > 200`
-  is supplied. Real stores have catalogs/order histories/customer tables
-  in the thousands or more — Coral would otherwise paginate them in full
-  on every query. Override deliberately:
-  - **Filter** with a pushdown predicate (`status`, `type`, `after`,
-    `customer_id`, etc.) — narrows server-side, no cap concern.
-  - **Or** ask for more with an explicit `LIMIT N` greater than 200 —
-    Coral pages up to that limit.
+- **`products`, `orders`, and `customers` fetch every matching row** —
+  Coral keeps paging the API until it returns empty. Filtered queries
+  preserve completeness (no silent cap). On large stores, narrow the
+  result set deliberately:
+  - **Filter** with a pushdown predicate (`type`, `status`,
+    `customer_id`, `after`, etc.) — server-side, fast.
+  - **Or** add an explicit `LIMIT N` — Coral stops paging at `N`.
+  Unfiltered `SELECT *` on a list table on a busy store can iterate
+  many pages; that's a performance choice, not a correctness one.
 - **Variable products and variations live in two tables.** A variable
   product's parent row in `products` has no real SKU / price / stock —
   those are on the variation rows in `product_variations`, which
