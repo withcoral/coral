@@ -1,10 +1,10 @@
 name: statuspage
-version: 0.1.0
+version: 0.2.0
 dsl_version: 3
 backend: http
 description: >-
-  Query active incidents and component health from your Statuspage.io
-  status page.
+  Query incidents, scheduled maintenances, and component health from your
+  Statuspage.io status page.
 
 inputs:
   STATUSPAGE_API_KEY:
@@ -36,9 +36,12 @@ request_headers:
 
 test_queries:
   - SELECT * FROM statuspage.incidents LIMIT 1
+  - SELECT * FROM statuspage.all_incidents LIMIT 1
+  - SELECT * FROM statuspage.scheduled_maintenances LIMIT 1
   - SELECT * FROM statuspage.components LIMIT 1
 
 tables:
+  # ── Table 1: incidents ────────────────────────────────────────────────────────
   - name: incidents
     description: Unresolved (active) incidents on your Statuspage.io status page
     guide: |
@@ -46,6 +49,7 @@ tables:
       status investigating, identified, or monitoring. Resolved incidents are
       never included. Use this table to detect live infrastructure outages that
       may explain service errors surfaced by Sentry or PagerDuty.
+      For historical and resolved incidents use statuspage.all_incidents.
       `incident_updates__body` joins all update message bodies in newest-first
       order as returned by the API.
     request:
@@ -165,6 +169,288 @@ tables:
             - body
           separator: "\n"
 
+  # ── Table 2: all_incidents ────────────────────────────────────────────────────
+  - name: all_incidents
+    description: All incidents (resolved and unresolved) on your Statuspage.io status page
+    guide: |
+      Queries the /incidents endpoint — returns all incidents regardless of
+      status, including resolved and historical ones. Use this table for trend
+      analysis, incident history, MTTR calculations, and post-mortem queries.
+      For live outage detection use statuspage.incidents (unresolved only).
+      `resolved_at` is non-null for resolved incidents and can be used to
+      calculate incident duration: resolved_at - created_at.
+      `incident_updates__body` joins all update message bodies in newest-first
+      order as returned by the API.
+    request:
+      method: GET
+      path: "/pages/{{input.STATUSPAGE_PAGE_ID}}/incidents"
+    response:
+      rows_path: []
+      row_strategy: direct
+      allow_404_empty: true
+    pagination:
+      mode: page
+      page_size:
+        default: 100
+        max: 100
+        query_param: per_page
+      page_param: page
+      page_start: 1
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique incident identifier
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Human-readable incident title
+        expr:
+          kind: path
+          path:
+            - name
+      - name: status
+        type: Utf8
+        nullable: true
+        description: >-
+          Incident status. One of: investigating, identified, monitoring,
+          resolved, postmortem.
+        expr:
+          kind: path
+          path:
+            - status
+      - name: impact
+        type: Utf8
+        nullable: true
+        description: >-
+          Assessed customer impact level.
+          One of: none, minor, major, critical.
+        expr:
+          kind: path
+          path:
+            - impact
+      - name: shortlink
+        type: Utf8
+        nullable: true
+        description: Public short URL to the incident on the status page
+        expr:
+          kind: path
+          path:
+            - shortlink
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the incident was created
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp of the most recent update
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at
+      - name: monitoring_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the incident entered monitoring status (nullable)
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - monitoring_at
+      - name: resolved_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the incident was resolved (null if still active)
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - resolved_at
+      - name: incident_updates__body
+        type: Utf8
+        nullable: true
+        description: All incident update message bodies joined by newline, newest-first
+        expr:
+          kind: join_array_path
+          path:
+            - incident_updates
+          item_path:
+            - body
+          separator: "\n"
+
+  # ── Table 3: scheduled_maintenances ───────────────────────────────────────────
+  - name: scheduled_maintenances
+    description: Scheduled maintenance windows on your Statuspage.io status page
+    guide: |
+      Queries the /incidents/scheduled endpoint — returns all scheduled
+      maintenance windows regardless of state. Status values differ from
+      realtime incidents: scheduled, in_progress, verifying, completed.
+      `scheduled_for` is the planned start time; `scheduled_until` is the
+      planned end time. Both are Timestamps and suitable for time-window queries.
+      Use WHERE status = 'scheduled' to see upcoming maintenances, or
+      WHERE status = 'in_progress' to see active maintenance windows.
+      `incident_updates__body` joins all update message bodies in newest-first
+      order as returned by the API.
+    request:
+      method: GET
+      path: "/pages/{{input.STATUSPAGE_PAGE_ID}}/incidents/scheduled"
+    response:
+      rows_path: []
+      row_strategy: direct
+      allow_404_empty: true
+    pagination:
+      mode: page
+      page_size:
+        default: 100
+        max: 100
+        query_param: per_page
+      page_param: page
+      page_start: 1
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique maintenance window identifier
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Human-readable maintenance window title
+        expr:
+          kind: path
+          path:
+            - name
+      - name: status
+        type: Utf8
+        nullable: true
+        description: >-
+          Maintenance status. One of: scheduled, in_progress, verifying,
+          completed.
+        expr:
+          kind: path
+          path:
+            - status
+      - name: impact
+        type: Utf8
+        nullable: true
+        description: >-
+          Assessed customer impact level.
+          One of: none, minor, major, critical.
+        expr:
+          kind: path
+          path:
+            - impact
+      - name: shortlink
+        type: Utf8
+        nullable: true
+        description: Public short URL to the maintenance window on the status page
+        expr:
+          kind: path
+          path:
+            - shortlink
+      - name: scheduled_for
+        type: Timestamp
+        nullable: true
+        description: Planned start time of the maintenance window
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - scheduled_for
+      - name: scheduled_until
+        type: Timestamp
+        nullable: true
+        description: Planned end time of the maintenance window
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - scheduled_until
+      - name: scheduled_auto_in_progress
+        type: Boolean
+        nullable: true
+        description: Whether the window automatically transitions to in_progress at scheduled_for
+        expr:
+          kind: path
+          path:
+            - scheduled_auto_in_progress
+      - name: scheduled_auto_completed
+        type: Boolean
+        nullable: true
+        description: Whether the window automatically transitions to completed at scheduled_until
+        expr:
+          kind: path
+          path:
+            - scheduled_auto_completed
+      - name: scheduled_remind_prior
+        type: Boolean
+        nullable: true
+        description: Whether subscribers are reminded 60 minutes before the scheduled start
+        expr:
+          kind: path
+          path:
+            - scheduled_remind_prior
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the maintenance window was created
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp of the most recent update
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at
+      - name: incident_updates__body
+        type: Utf8
+        nullable: true
+        description: All maintenance update message bodies joined by newline, newest-first
+        expr:
+          kind: join_array_path
+          path:
+            - incident_updates
+          item_path:
+            - body
+          separator: "\n"
+
+  # ── Table 4: components ───────────────────────────────────────────────────────
   - name: components
     description: Infrastructure components and their current health status from Statuspage.io
     guide: |
