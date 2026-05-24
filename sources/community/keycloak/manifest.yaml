@@ -135,25 +135,15 @@ tables:
 
   - name: groups
     description: >-
-      Top-level groups in a realm (id and name only; Keycloak's list endpoint
-      does not return hierarchy fields in v1).
+      Top-level groups in a realm (id and name only). Coral emits the top-level
+      JSON array from GET /admin/realms/{realm}/groups; nested subGroups are not
+      flattened in v1.
     filters:
       - name: realm
         required: true
-      - name: search
-        mode: search
-      - name: q
-        mode: search
     request:
       method: GET
       path: /admin/realms/{{filter.realm}}/groups
-      query:
-        - name: search
-          from: filter
-          key: search
-        - name: q
-          from: filter
-          key: q
     response:
       row_strategy: direct
     pagination:

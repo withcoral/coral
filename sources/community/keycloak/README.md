@@ -190,8 +190,8 @@ fetch (or may not be supported).
 | SQL filter | Keycloak query param | Tables |
 | --- | --- | --- |
 | `realm` | path `{realm}` | `clients`, `groups`, `roles`, `users`, `admin_events` |
-| `search` | `search` | `groups`, `roles`, `users` |
-| `q` | `q` (custom-attribute `key:value` syntax) | `groups`, `users` |
+| `search` | `search` | `roles`, `users` |
+| `q` | `q` (custom-attribute `key:value` syntax) | `users` |
 | `username` | `username` | `users` |
 | `email` | `email` | `users` |
 | `enabled` | `enabled` (boolean) | `users` |
@@ -213,8 +213,9 @@ On `users`, use `email` or `search` for email/name lookups. The `q` filter maps
 to Keycloak's custom-attribute query syntax (`key:value`, for example
 `department:engineering` or `team:support status:active`).
 
-On `groups`, `search` matches group names. The `q` filter searches group custom
-attributes using the same `key:value` syntax.
+`keycloak.groups` does not expose `search` or `q` filters in v1. Keycloak can
+return nested matches under `subGroups` when those parameters are used, but this
+source only emits the top-level response array as flat rows.
 
 Always use `LIMIT` on large realms. Paginated tables use `max` (default 100,
 cap 100 per request); Coral follows pages with `first` until the SQL `LIMIT`
@@ -260,8 +261,9 @@ attributes as `key:value`)
 ### `keycloak.groups`
 
 Top-level groups in a realm. Keycloak's `GET /admin/realms/{realm}/groups`
-list endpoint returns **`id` and `name` only** for each row; hierarchy fields
-such as `path` and `parentId` are not part of this v1 table.
+returns a hierarchy; Coral emits **only the top-level array** as flat rows with
+**`id` and `name`**. Nested `subGroups` (including matches from Keycloak's
+`search` / `q` parameters) are not flattened in v1.
 
 | Column | Type | Description |
 | --- | --- | --- |
@@ -271,8 +273,7 @@ such as `path` and `parentId` are not part of this v1 table.
 
 **Required filter:** `realm`
 
-**Optional filters:** `search` (group name), `q` (custom attributes as
-`key:value`)
+**Optional filters:** none
 
 ### `keycloak.clients`
 
@@ -383,7 +384,6 @@ LIMIT 10;
 SELECT id, name
 FROM keycloak.groups
 WHERE realm = 'my-app'
-  AND search = 'ops'
 ORDER BY name
 LIMIT 50;
 ```
@@ -533,8 +533,9 @@ $ coral sql "SELECT table_name, required_filters FROM coral.tables WHERE schema_
 - **Realm roles only.** `roles` lists realm roles; client roles and user/client
   role mappings are not exposed in v1.
 - **Groups top-level only.** `groups` exposes top-level `id` and `name` from
-  the Admin REST list endpoint. Nested subgroups, membership, and hierarchy
-  fields (`path`, `parentId`) are not modeled in v1.
+  the Admin REST list endpoint. Nested `subGroups`, membership, hierarchy
+  fields (`path`, `parentId`), and server-side `search` / `q` group filters are
+  not modeled in v1.
 - **Admin events require configuration.** The realm must record admin events;
   otherwise the table is legitimately empty.
 - **Token scope and TTL.** Access is limited to the bearer token’s roles and
