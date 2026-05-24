@@ -1,0 +1,1373 @@
+name: google_drive
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query files, file metadata, shared drives, permissions, comments, revisions,
+  and account metadata from Google Drive.
+inputs:
+  GOOGLE_DRIVE_ACCESS_TOKEN:
+    kind: secret
+    hint: |
+      Google Drive OAuth 2.0 access token with the Drive readonly scope.
+      Paste the access token value itself, without a `Bearer ` prefix.
+      For interactive setup, choose "Connect Google Drive" and provide a
+      Google OAuth Desktop app client ID and client secret with the Drive API
+      enabled.
+
+      The OAuth flow requests:
+      https://www.googleapis.com/auth/drive.readonly
+      See https://developers.google.com/workspace/drive/api/guides/api-specific-auth.
+    credential:
+      methods:
+        - type: oauth
+          label: Connect Google Drive
+          description: Use Google OAuth to retrieve a Drive access token.
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: required
+            redirect_uri: http://127.0.0.1/oauth/callback
+            redirect_uri_port_mode: random
+            endpoints:
+              authorization_url: https://accounts.google.com/o/oauth2/v2/auth?access_type=offline&prompt=consent
+              token_url: https://oauth2.googleapis.com/token
+            client:
+              id:
+                input: GOOGLE_DRIVE_OAUTH_CLIENT_ID
+              secret:
+                input: GOOGLE_DRIVE_OAUTH_CLIENT_SECRET
+                transport: request_body
+            scopes:
+              scope:
+                delimiter: space
+                values:
+                  - https://www.googleapis.com/auth/drive.readonly
+        - type: source_config
+          label: Paste access token
+          description: Paste an existing Google Drive OAuth access token.
+base_url: https://www.googleapis.com/drive/v3
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.GOOGLE_DRIVE_ACCESS_TOKEN}}
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+test_queries:
+  - >-
+    SELECT id, name
+    FROM google_drive.files
+    WHERE q = 'trashed = false'
+      AND order_by = 'modifiedTime desc'
+    LIMIT 1
+  - SELECT user__email FROM google_drive.about LIMIT 1
+tables:
+  - name: about
+    description: Authenticated user, Drive quota, and system capability metadata
+    guide: |
+      Connection and capability metadata for the authenticated Drive account.
+      Use this table to confirm which Google user is connected and inspect
+      quota or import/export support before larger Drive workflows.
+    request:
+      method: GET
+      path: /about
+      query:
+        - name: fields
+          from: literal
+          value: >-
+            kind,user(displayName,emailAddress,permissionId,photoLink,me),
+            storageQuota(limit,usage,usageInDrive,usageInDriveTrash),
+            canCreateDrives,appInstalled,maxUploadSize,importFormats,
+            exportFormats,maxImportSizes,folderColorPalette,
+            driveThemes(id,backgroundImageLink,colorRgb)
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: user__display_name
+        type: Utf8
+        nullable: true
+        description: Display name for the authenticated Google Drive user.
+        expr:
+          kind: path
+          path:
+            - user
+            - displayName
+      - name: user__email
+        type: Utf8
+        nullable: true
+        description: Email address for the authenticated Google Drive user.
+        expr:
+          kind: path
+          path:
+            - user
+            - emailAddress
+      - name: user__permission_id
+        type: Utf8
+        nullable: true
+        description: Permission ID for the authenticated Google Drive user.
+        expr:
+          kind: path
+          path:
+            - user
+            - permissionId
+      - name: user__photo_link
+        type: Utf8
+        nullable: true
+        description: Profile photo link for the authenticated Google Drive user.
+        expr:
+          kind: path
+          path:
+            - user
+            - photoLink
+      - name: user__me
+        type: Boolean
+        nullable: true
+        description: Whether the returned user is the authenticated user.
+        expr:
+          kind: path
+          path:
+            - user
+            - me
+      - name: storage_quota_limit
+        type: Utf8
+        nullable: true
+        description: Storage quota limit in bytes when Google returns one.
+        expr:
+          kind: path
+          path:
+            - storageQuota
+            - limit
+      - name: storage_quota_usage
+        type: Utf8
+        nullable: true
+        description: Total storage usage in bytes across Google services.
+        expr:
+          kind: path
+          path:
+            - storageQuota
+            - usage
+      - name: storage_quota_usage_in_drive
+        type: Utf8
+        nullable: true
+        description: Storage usage in bytes for Google Drive files.
+        expr:
+          kind: path
+          path:
+            - storageQuota
+            - usageInDrive
+      - name: storage_quota_usage_in_drive_trash
+        type: Utf8
+        nullable: true
+        description: Storage usage in bytes for trashed Drive files.
+        expr:
+          kind: path
+          path:
+            - storageQuota
+            - usageInDriveTrash
+      - name: can_create_drives
+        type: Boolean
+        nullable: true
+        description: Whether the user can create shared drives.
+        expr:
+          kind: path
+          path:
+            - canCreateDrives
+      - name: app_installed
+        type: Boolean
+        nullable: true
+        description: Whether Google reports the requesting app as installed.
+        expr:
+          kind: path
+          path:
+            - appInstalled
+      - name: max_upload_size
+        type: Utf8
+        nullable: true
+        description: Maximum upload size in bytes.
+        expr:
+          kind: path
+          path:
+            - maxUploadSize
+      - name: import_formats
+        type: Json
+        nullable: true
+        description: Supported import targets keyed by source MIME type.
+        expr:
+          kind: path
+          path:
+            - importFormats
+      - name: export_formats
+        type: Json
+        nullable: true
+        description: Supported export targets keyed by Workspace MIME type.
+        expr:
+          kind: path
+          path:
+            - exportFormats
+      - name: max_import_sizes
+        type: Json
+        nullable: true
+        description: Maximum supported import sizes keyed by MIME type.
+        expr:
+          kind: path
+          path:
+            - maxImportSizes
+      - name: folder_color_palette
+        type: Json
+        nullable: true
+        description: Folder colors supported by Google Drive.
+        expr:
+          kind: path
+          path:
+            - folderColorPalette
+      - name: drive_themes
+        type: Json
+        nullable: true
+        description: Shared drive themes supported by Google Drive.
+        expr:
+          kind: path
+          path:
+            - driveThemes
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw Google Drive about object.
+        expr:
+          kind: current_row
+
+  - name: files
+    description: Files and folders visible to the authenticated Google Drive user
+    guide: |
+      Start here to discover file IDs for permissions, comments, and revisions.
+      The optional `q` filter accepts Google Drive file query syntax. Use the
+      optional `drive_id` filter with `corpora = 'drive'` when you want to scan
+      one shared drive. Drive returns trashed files by default, so include
+      `q = 'trashed = false'` unless you intentionally want deleted items. Use
+      `order_by` for provider-side ordering before Coral fetches bounded pages.
+      For broad scans such as `corpora = 'allDrives'`, Google may report an
+      incomplete search when not all corpora were searched. Narrow to
+      `corpora = 'user'` or `corpora = 'drive'` with a `drive_id` when
+      completeness matters.
+    fetch_limit_default: 100
+    filters:
+      - name: q
+        required: false
+      - name: corpora
+        required: false
+      - name: drive_id
+        required: false
+      - name: spaces
+        required: false
+      - name: order_by
+        required: false
+    request:
+      method: GET
+      path: /files
+      query:
+        - name: fields
+          from: literal
+          value: >-
+            nextPageToken,incompleteSearch,files(id,name,mimeType,description,
+            starred,trashed,explicitlyTrashed,createdTime,modifiedTime,
+            viewedByMeTime,webViewLink,webContentLink,iconLink,thumbnailLink,
+            size,md5Checksum,sha1Checksum,sha256Checksum,driveId,parents,
+            owners(displayName,emailAddress,me),lastModifyingUser(displayName,
+            emailAddress,me),capabilities,properties,appProperties)
+        - name: q
+          from: filter
+          key: q
+        - name: corpora
+          from: filter
+          key: corpora
+        - name: driveId
+          from: filter
+          key: drive_id
+        - name: spaces
+          from: filter
+          key: spaces
+        - name: orderBy
+          from: filter
+          key: order_by
+        - name: includeItemsFromAllDrives
+          from: literal
+          value: true
+        - name: supportsAllDrives
+          from: literal
+          value: true
+    response:
+      rows_path:
+        - files
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: pageToken
+      response_cursor_path:
+        - nextPageToken
+      page_size:
+        default: 100
+        max: 100
+        query_param: pageSize
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Google Drive file ID.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: File or folder name.
+      - name: mime_type
+        type: Utf8
+        nullable: true
+        description: Google Drive MIME type for the item.
+        expr:
+          kind: path
+          path:
+            - mimeType
+      - name: description
+        type: Utf8
+        nullable: true
+        description: File description when one is configured.
+      - name: starred
+        type: Boolean
+        nullable: true
+        description: Whether the user has starred the item.
+      - name: trashed
+        type: Boolean
+        nullable: true
+        description: Whether the item is in the trash.
+      - name: explicitly_trashed
+        type: Boolean
+        nullable: true
+        description: Whether the item was explicitly moved to trash.
+        expr:
+          kind: path
+          path:
+            - explicitlyTrashed
+      - name: created_time
+        type: Timestamp
+        nullable: true
+        description: File creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - createdTime
+      - name: modified_time
+        type: Timestamp
+        nullable: true
+        description: Last file modification time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - modifiedTime
+      - name: viewed_by_me_time
+        type: Timestamp
+        nullable: true
+        description: Last time the authenticated user viewed the item.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - viewedByMeTime
+      - name: web_view_link
+        type: Utf8
+        nullable: true
+        description: Browser link for opening the item in Google Drive.
+        expr:
+          kind: path
+          path:
+            - webViewLink
+      - name: web_content_link
+        type: Utf8
+        nullable: true
+        description: Browser link for downloading binary file content.
+        expr:
+          kind: path
+          path:
+            - webContentLink
+      - name: icon_link
+        type: Utf8
+        nullable: true
+        description: Icon URL for the item type.
+        expr:
+          kind: path
+          path:
+            - iconLink
+      - name: thumbnail_link
+        type: Utf8
+        nullable: true
+        description: Short-lived thumbnail URL when Google provides one.
+        expr:
+          kind: path
+          path:
+            - thumbnailLink
+      - name: size
+        type: Utf8
+        nullable: true
+        description: File size in bytes when Google returns it.
+      - name: md5_checksum
+        type: Utf8
+        nullable: true
+        description: MD5 checksum for file content when available.
+        expr:
+          kind: path
+          path:
+            - md5Checksum
+      - name: sha1_checksum
+        type: Utf8
+        nullable: true
+        description: SHA-1 checksum for file content when available.
+        expr:
+          kind: path
+          path:
+            - sha1Checksum
+      - name: sha256_checksum
+        type: Utf8
+        nullable: true
+        description: SHA-256 checksum for file content when available.
+        expr:
+          kind: path
+          path:
+            - sha256Checksum
+      - name: drive_id
+        type: Utf8
+        nullable: true
+        description: Shared drive ID when the item lives in a shared drive.
+        expr:
+          kind: path
+          path:
+            - driveId
+      - name: parent_ids
+        type: Json
+        nullable: true
+        description: Parent folder IDs returned by Google Drive.
+        expr:
+          kind: path
+          path:
+            - parents
+      - name: owner_emails
+        type: Utf8
+        nullable: true
+        description: Comma-separated owner email addresses when exposed.
+        expr:
+          kind: join_array_path
+          path:
+            - owners
+          item_path:
+            - emailAddress
+          separator: ","
+      - name: owner_display_names
+        type: Utf8
+        nullable: true
+        description: Comma-separated owner display names when exposed.
+        expr:
+          kind: join_array_path
+          path:
+            - owners
+          item_path:
+            - displayName
+          separator: ","
+      - name: last_modifying_user__email
+        type: Utf8
+        nullable: true
+        description: Email address for the last modifying user when exposed.
+        expr:
+          kind: path
+          path:
+            - lastModifyingUser
+            - emailAddress
+      - name: last_modifying_user__display_name
+        type: Utf8
+        nullable: true
+        description: Display name for the last modifying user.
+        expr:
+          kind: path
+          path:
+            - lastModifyingUser
+            - displayName
+      - name: capabilities
+        type: Json
+        nullable: true
+        description: Google Drive capability flags for the item.
+      - name: properties
+        type: Json
+        nullable: true
+        description: Public custom file properties.
+      - name: app_properties
+        type: Json
+        nullable: true
+        description: Private app-specific custom file properties.
+        expr:
+          kind: path
+          path:
+            - appProperties
+      - name: q
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Google Drive file query used for this scan.
+        expr:
+          kind: from_filter
+          key: q
+      - name: corpora
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Corpus selector used for this scan.
+        expr:
+          kind: from_filter
+          key: corpora
+      - name: spaces
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Google Drive spaces selector used for this scan.
+        expr:
+          kind: from_filter
+          key: spaces
+      - name: order_by
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Google Drive file ordering used for this scan.
+        expr:
+          kind: from_filter
+          key: order_by
+      - name: drive_id_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Shared drive ID used for this scan.
+        expr:
+          kind: from_filter
+          key: drive_id
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw Google Drive file object.
+        expr:
+          kind: current_row
+
+  - name: file
+    description: Metadata for one Google Drive file or folder
+    guide: |
+      Requires `file_id`, available from `google_drive.files` or an existing
+      Google Drive URL. Use this detail table when you already know a Drive
+      file ID and want metadata without scanning a file listing.
+    filters:
+      - name: file_id
+        required: true
+    request:
+      method: GET
+      path: /files/{{filter.file_id}}
+      query:
+        - name: fields
+          from: literal
+          value: >-
+            id,name,mimeType,description,version,starred,trashed,
+            explicitlyTrashed,shared,createdTime,modifiedTime,viewedByMeTime,
+            webViewLink,webContentLink,iconLink,thumbnailLink,size,
+            md5Checksum,sha1Checksum,sha256Checksum,driveId,parents,
+            owners(displayName,emailAddress,me),lastModifyingUser(displayName,
+            emailAddress,me),capabilities,contentRestrictions,contentHints,
+            properties,appProperties
+        - name: supportsAllDrives
+          from: literal
+          value: true
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: file_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Google Drive file ID used for this lookup.
+        expr:
+          kind: from_filter
+          key: file_id
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Google Drive file ID.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: File or folder name.
+      - name: mime_type
+        type: Utf8
+        nullable: true
+        description: Google Drive MIME type for the item.
+        expr:
+          kind: path
+          path:
+            - mimeType
+      - name: description
+        type: Utf8
+        nullable: true
+        description: File description when one is configured.
+      - name: version
+        type: Utf8
+        nullable: true
+        description: Monotonically increasing file version when Google returns one.
+      - name: starred
+        type: Boolean
+        nullable: true
+        description: Whether the user has starred the item.
+      - name: trashed
+        type: Boolean
+        nullable: true
+        description: Whether the item is in the trash.
+      - name: explicitly_trashed
+        type: Boolean
+        nullable: true
+        description: Whether the item was explicitly moved to trash.
+        expr:
+          kind: path
+          path:
+            - explicitlyTrashed
+      - name: shared
+        type: Boolean
+        nullable: true
+        description: Whether the item is shared with other users.
+      - name: created_time
+        type: Timestamp
+        nullable: true
+        description: File creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - createdTime
+      - name: modified_time
+        type: Timestamp
+        nullable: true
+        description: Last file modification time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - modifiedTime
+      - name: viewed_by_me_time
+        type: Timestamp
+        nullable: true
+        description: Last time the authenticated user viewed the item.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - viewedByMeTime
+      - name: web_view_link
+        type: Utf8
+        nullable: true
+        description: Browser link for opening the item in Google Drive.
+        expr:
+          kind: path
+          path:
+            - webViewLink
+      - name: web_content_link
+        type: Utf8
+        nullable: true
+        description: Browser link for downloading binary file content.
+        expr:
+          kind: path
+          path:
+            - webContentLink
+      - name: icon_link
+        type: Utf8
+        nullable: true
+        description: Icon URL for the item type.
+        expr:
+          kind: path
+          path:
+            - iconLink
+      - name: thumbnail_link
+        type: Utf8
+        nullable: true
+        description: Short-lived thumbnail URL when Google provides one.
+        expr:
+          kind: path
+          path:
+            - thumbnailLink
+      - name: size
+        type: Utf8
+        nullable: true
+        description: File size in bytes when Google returns it.
+      - name: md5_checksum
+        type: Utf8
+        nullable: true
+        description: MD5 checksum for file content when available.
+        expr:
+          kind: path
+          path:
+            - md5Checksum
+      - name: sha1_checksum
+        type: Utf8
+        nullable: true
+        description: SHA-1 checksum for file content when available.
+        expr:
+          kind: path
+          path:
+            - sha1Checksum
+      - name: sha256_checksum
+        type: Utf8
+        nullable: true
+        description: SHA-256 checksum for file content when available.
+        expr:
+          kind: path
+          path:
+            - sha256Checksum
+      - name: drive_id
+        type: Utf8
+        nullable: true
+        description: Shared drive ID when the item lives in a shared drive.
+        expr:
+          kind: path
+          path:
+            - driveId
+      - name: parent_ids
+        type: Json
+        nullable: true
+        description: Parent folder IDs returned by Google Drive.
+        expr:
+          kind: path
+          path:
+            - parents
+      - name: owner_emails
+        type: Utf8
+        nullable: true
+        description: Comma-separated owner email addresses when exposed.
+        expr:
+          kind: join_array_path
+          path:
+            - owners
+          item_path:
+            - emailAddress
+          separator: ","
+      - name: owner_display_names
+        type: Utf8
+        nullable: true
+        description: Comma-separated owner display names when exposed.
+        expr:
+          kind: join_array_path
+          path:
+            - owners
+          item_path:
+            - displayName
+          separator: ","
+      - name: last_modifying_user__email
+        type: Utf8
+        nullable: true
+        description: Email address for the last modifying user when exposed.
+        expr:
+          kind: path
+          path:
+            - lastModifyingUser
+            - emailAddress
+      - name: last_modifying_user__display_name
+        type: Utf8
+        nullable: true
+        description: Display name for the last modifying user.
+        expr:
+          kind: path
+          path:
+            - lastModifyingUser
+            - displayName
+      - name: capabilities
+        type: Json
+        nullable: true
+        description: Google Drive capability flags for the item.
+      - name: content_restrictions
+        type: Json
+        nullable: true
+        description: Content restriction objects for the item.
+        expr:
+          kind: path
+          path:
+            - contentRestrictions
+      - name: content_hints
+        type: Json
+        nullable: true
+        description: Provider content hints for the item.
+        expr:
+          kind: path
+          path:
+            - contentHints
+      - name: properties
+        type: Json
+        nullable: true
+        description: Public custom file properties.
+      - name: app_properties
+        type: Json
+        nullable: true
+        description: Private app-specific custom file properties.
+        expr:
+          kind: path
+          path:
+            - appProperties
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw Google Drive file object.
+        expr:
+          kind: current_row
+
+  - name: shared_drives
+    description: Shared drives visible to the authenticated Google Drive user
+    guide: |
+      Use this table to discover shared drive IDs before scanning
+      `google_drive.files` with `corpora = 'drive'` and `drive_id`.
+    fetch_limit_default: 100
+    filters:
+      - name: q
+        required: false
+    request:
+      method: GET
+      path: /drives
+      query:
+        - name: fields
+          from: literal
+          value: >-
+            nextPageToken,drives(id,name,colorRgb,createdTime,hidden,
+            orgUnitId,backgroundImageLink,themeId,capabilities,restrictions)
+        - name: q
+          from: filter
+          key: q
+    response:
+      rows_path:
+        - drives
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: pageToken
+      response_cursor_path:
+        - nextPageToken
+      page_size:
+        default: 100
+        max: 100
+        query_param: pageSize
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Shared drive ID.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Shared drive display name.
+      - name: color_rgb
+        type: Utf8
+        nullable: true
+        description: Shared drive theme color.
+        expr:
+          kind: path
+          path:
+            - colorRgb
+      - name: created_time
+        type: Timestamp
+        nullable: true
+        description: Shared drive creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - createdTime
+      - name: hidden
+        type: Boolean
+        nullable: true
+        description: Whether the shared drive is hidden from the user.
+      - name: org_unit_id
+        type: Utf8
+        nullable: true
+        description: Organization unit ID for the shared drive when exposed.
+        expr:
+          kind: path
+          path:
+            - orgUnitId
+      - name: background_image_link
+        type: Utf8
+        nullable: true
+        description: Shared drive background image URL.
+        expr:
+          kind: path
+          path:
+            - backgroundImageLink
+      - name: theme_id
+        type: Utf8
+        nullable: true
+        description: Google Drive theme ID for the shared drive.
+        expr:
+          kind: path
+          path:
+            - themeId
+      - name: capabilities
+        type: Json
+        nullable: true
+        description: Capability flags for the shared drive.
+      - name: restrictions
+        type: Json
+        nullable: true
+        description: Sharing and download restrictions on the shared drive.
+      - name: q
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Shared drive query used for this scan.
+        expr:
+          kind: from_filter
+          key: q
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw shared drive object.
+        expr:
+          kind: current_row
+
+  - name: permissions
+    description: Permissions for one Google Drive file or shared drive
+    guide: |
+      Requires `file_id`, available from `google_drive.files` or
+      `google_drive.shared_drives`. Use this table to audit who can access
+      one file, folder, or shared drive and which role Google assigned.
+      Google can reject permission scans for readable items whose sharing
+      details the authenticated user cannot enumerate.
+    filters:
+      - name: file_id
+        required: true
+    request:
+      method: GET
+      path: /files/{{filter.file_id}}/permissions
+      query:
+        - name: fields
+          from: literal
+          value: >-
+            nextPageToken,permissions(id,type,role,emailAddress,displayName,
+            domain,allowFileDiscovery,deleted,expirationTime,permissionDetails)
+        - name: supportsAllDrives
+          from: literal
+          value: true
+    response:
+      rows_path:
+        - permissions
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: pageToken
+      response_cursor_path:
+        - nextPageToken
+      page_size:
+        default: 100
+        max: 100
+        query_param: pageSize
+    columns:
+      - name: file_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: File or shared drive ID used for this permissions scan.
+        expr:
+          kind: from_filter
+          key: file_id
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Google Drive permission ID.
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Permission principal type.
+      - name: role
+        type: Utf8
+        nullable: true
+        description: Permission role granted to the principal.
+      - name: email_address
+        type: Utf8
+        nullable: true
+        description: Principal email address when Google exposes one.
+        expr:
+          kind: path
+          path:
+            - emailAddress
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: Principal display name when Google exposes one.
+        expr:
+          kind: path
+          path:
+            - displayName
+      - name: domain
+        type: Utf8
+        nullable: true
+        description: Domain principal when the permission is domain-scoped.
+      - name: allow_file_discovery
+        type: Boolean
+        nullable: true
+        description: Whether the permission allows discovery by search.
+        expr:
+          kind: path
+          path:
+            - allowFileDiscovery
+      - name: deleted
+        type: Boolean
+        nullable: true
+        description: Whether the permission principal was deleted.
+      - name: expiration_time
+        type: Timestamp
+        nullable: true
+        description: Time when this permission expires.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - expirationTime
+      - name: permission_details
+        type: Json
+        nullable: true
+        description: Provider permission detail objects for inheritance and roles.
+        expr:
+          kind: path
+          path:
+            - permissionDetails
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw Google Drive permission object.
+        expr:
+          kind: current_row
+
+  - name: comments
+    description: Comments on one Google Drive file
+    guide: |
+      Requires `file_id`, available from `google_drive.files`. Google Drive
+      comments use a required partial-response `fields` projection, which this
+      table configures for the comment body, author, quote, replies, and state.
+    filters:
+      - name: file_id
+        required: true
+      - name: include_deleted
+        required: false
+      - name: start_modified_time
+        required: false
+    request:
+      method: GET
+      path: /files/{{filter.file_id}}/comments
+      query:
+        - name: fields
+          from: literal
+          value: >-
+            nextPageToken,comments(id,content,htmlContent,anchor,resolved,
+            deleted,createdTime,modifiedTime,quotedFileContent,
+            author(displayName,emailAddress,me,photoLink),replies)
+        - name: includeDeleted
+          from: filter_bool
+          key: include_deleted
+        - name: startModifiedTime
+          from: filter
+          key: start_modified_time
+    response:
+      rows_path:
+        - comments
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: pageToken
+      response_cursor_path:
+        - nextPageToken
+      page_size:
+        default: 100
+        max: 100
+        query_param: pageSize
+    columns:
+      - name: file_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: File ID used for this comments scan.
+        expr:
+          kind: from_filter
+          key: file_id
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Google Drive comment ID.
+      - name: content
+        type: Utf8
+        nullable: true
+        description: Plain-text comment content.
+      - name: html_content
+        type: Utf8
+        nullable: true
+        description: HTML-rendered comment content.
+        expr:
+          kind: path
+          path:
+            - htmlContent
+      - name: anchor
+        type: Utf8
+        nullable: true
+        description: Region of the document anchored to the comment.
+      - name: resolved
+        type: Boolean
+        nullable: true
+        description: Whether the comment thread is resolved.
+      - name: deleted
+        type: Boolean
+        nullable: true
+        description: Whether Google marks the comment as deleted.
+      - name: created_time
+        type: Timestamp
+        nullable: true
+        description: Comment creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - createdTime
+      - name: modified_time
+        type: Timestamp
+        nullable: true
+        description: Comment last modified time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - modifiedTime
+      - name: quoted_file_content
+        type: Json
+        nullable: true
+        description: File content fragment quoted by the comment.
+        expr:
+          kind: path
+          path:
+            - quotedFileContent
+      - name: author__display_name
+        type: Utf8
+        nullable: true
+        description: Display name for the comment author.
+        expr:
+          kind: path
+          path:
+            - author
+            - displayName
+      - name: author__email
+        type: Utf8
+        nullable: true
+        description: Email address for the comment author when exposed.
+        expr:
+          kind: path
+          path:
+            - author
+            - emailAddress
+      - name: author__me
+        type: Boolean
+        nullable: true
+        description: Whether the authenticated user authored the comment.
+        expr:
+          kind: path
+          path:
+            - author
+            - me
+      - name: replies
+        type: Json
+        nullable: true
+        description: Reply objects included with the comment.
+      - name: include_deleted
+        type: Boolean
+        nullable: true
+        virtual: true
+        description: Whether deleted comments were requested.
+        expr:
+          kind: from_filter
+          key: include_deleted
+      - name: start_modified_time
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Comment modified-time lower bound used for this scan.
+        expr:
+          kind: from_filter
+          key: start_modified_time
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw Google Drive comment object.
+        expr:
+          kind: current_row
+
+  - name: revisions
+    description: Revisions for one Google Drive file
+    guide: |
+      Requires `file_id`, available from `google_drive.files`. Use this table
+      to inspect revision IDs, editor metadata, publish state, and file hashes.
+      Google may omit older revisions for files with large revision histories;
+      use this table as provider-visible revision metadata, not a complete
+      immutable audit log.
+    filters:
+      - name: file_id
+        required: true
+    request:
+      method: GET
+      path: /files/{{filter.file_id}}/revisions
+      query:
+        - name: fields
+          from: literal
+          value: >-
+            nextPageToken,revisions(id,mimeType,modifiedTime,keepForever,
+            published,publishAuto,publishedOutsideDomain,originalFilename,
+            md5Checksum,size,exportLinks,lastModifyingUser(displayName,
+            emailAddress,me))
+    response:
+      rows_path:
+        - revisions
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: pageToken
+      response_cursor_path:
+        - nextPageToken
+      page_size:
+        default: 100
+        max: 1000
+        query_param: pageSize
+    columns:
+      - name: file_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: File ID used for this revisions scan.
+        expr:
+          kind: from_filter
+          key: file_id
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Google Drive revision ID.
+      - name: mime_type
+        type: Utf8
+        nullable: true
+        description: MIME type for the revision content.
+        expr:
+          kind: path
+          path:
+            - mimeType
+      - name: modified_time
+        type: Timestamp
+        nullable: true
+        description: Revision last modified time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - modifiedTime
+      - name: keep_forever
+        type: Boolean
+        nullable: true
+        description: Whether the revision is preserved indefinitely.
+        expr:
+          kind: path
+          path:
+            - keepForever
+      - name: published
+        type: Boolean
+        nullable: true
+        description: Whether the revision is published.
+      - name: publish_auto
+        type: Boolean
+        nullable: true
+        description: Whether new revisions are auto-published.
+        expr:
+          kind: path
+          path:
+            - publishAuto
+      - name: published_outside_domain
+        type: Boolean
+        nullable: true
+        description: Whether the revision is published outside its domain.
+        expr:
+          kind: path
+          path:
+            - publishedOutsideDomain
+      - name: original_filename
+        type: Utf8
+        nullable: true
+        description: Original filename for binary file revisions.
+        expr:
+          kind: path
+          path:
+            - originalFilename
+      - name: md5_checksum
+        type: Utf8
+        nullable: true
+        description: MD5 checksum for revision content when available.
+        expr:
+          kind: path
+          path:
+            - md5Checksum
+      - name: size
+        type: Utf8
+        nullable: true
+        description: Revision size in bytes when Google returns it.
+      - name: export_links
+        type: Json
+        nullable: true
+        description: Export URLs for Google Workspace document revisions.
+        expr:
+          kind: path
+          path:
+            - exportLinks
+      - name: last_modifying_user__email
+        type: Utf8
+        nullable: true
+        description: Email address for the revision editor when exposed.
+        expr:
+          kind: path
+          path:
+            - lastModifyingUser
+            - emailAddress
+      - name: last_modifying_user__display_name
+        type: Utf8
+        nullable: true
+        description: Display name for the revision editor.
+        expr:
+          kind: path
+          path:
+            - lastModifyingUser
+            - displayName
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw Google Drive revision object.
+        expr:
+          kind: current_row
