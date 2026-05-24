@@ -34,7 +34,7 @@ tables:
       method: GET
       path: /gmail/v1/users/me/profile
     response:
-      row_strategy: single
+      row_strategy: direct
     pagination:
       mode: none
     columns:
@@ -130,14 +130,18 @@ tables:
   - name: messages
     description: >
       Lists messages in the authenticated user's mailbox. Returns message ID
-      and thread ID. Use label_ids filter to scope to INBOX, SENT, DRAFT, SPAM, or TRASH.
+      and thread ID. Use label_ids filter to scope to INBOX, SENT, DRAFT, SPAM,
+      or TRASH. Use include_spam_trash filter to include SPAM and TRASH results.
     guide: >
       `SELECT id, thread_id FROM gmail.messages LIMIT 20`.
-      Filter by label: `SELECT id, thread_id FROM gmail.messages WHERE label_ids = 'INBOX' LIMIT 20`.
+      Filter by label: `SELECT id, thread_id FROM gmail.messages
+      WHERE label_ids = 'INBOX' LIMIT 20`.
     filters:
       - name: label_ids
         required: false
       - name: q
+        required: false
+      - name: include_spam_trash
         required: false
     request:
       method: GET
@@ -149,14 +153,17 @@ tables:
         - name: q
           from: filter
           key: q
+        - name: includeSpamTrash
+          from: filter
+          key: include_spam_trash
     response:
       rows_path:
         - messages
     pagination:
-      mode: cursor
-      cursor_path:
-        - nextPageToken
+      mode: cursor_query
       cursor_param: pageToken
+      response_cursor_path:
+        - nextPageToken
       page_size:
         default: 100
         max: 500
@@ -166,7 +173,7 @@ tables:
         type: Utf8
         nullable: true
         virtual: true
-        description: Optional label filter (e.g. INBOX, SENT, DRAFT, SPAM, TRASH).
+        description: Optional label filter (e.g. INBOX, SENT, DRAFT).
         expr:
           kind: from_filter
           key: label_ids
@@ -174,10 +181,18 @@ tables:
         type: Utf8
         nullable: true
         virtual: true
-        description: Optional Gmail search query filter (e.g. from:someone@gmail.com).
+        description: Optional Gmail search query filter.
         expr:
           kind: from_filter
           key: q
+      - name: include_spam_trash
+        type: Boolean
+        nullable: true
+        virtual: true
+        description: Whether to include SPAM and TRASH in results.
+        expr:
+          kind: from_filter
+          key: include_spam_trash
       - name: id
         type: Utf8
         nullable: false
@@ -198,13 +213,15 @@ tables:
   - name: threads
     description: >
       Lists threads in the authenticated user's mailbox. Returns thread ID,
-      snippet, and history ID.
+      snippet, and history ID. Use include_spam_trash to include SPAM and TRASH.
     guide: >
       `SELECT id, snippet FROM gmail.threads LIMIT 20`.
     filters:
       - name: label_ids
         required: false
       - name: q
+        required: false
+      - name: include_spam_trash
         required: false
     request:
       method: GET
@@ -216,14 +233,17 @@ tables:
         - name: q
           from: filter
           key: q
+        - name: includeSpamTrash
+          from: filter
+          key: include_spam_trash
     response:
       rows_path:
         - threads
     pagination:
-      mode: cursor
-      cursor_path:
-        - nextPageToken
+      mode: cursor_query
       cursor_param: pageToken
+      response_cursor_path:
+        - nextPageToken
       page_size:
         default: 100
         max: 500
@@ -245,6 +265,14 @@ tables:
         expr:
           kind: from_filter
           key: q
+      - name: include_spam_trash
+        type: Boolean
+        nullable: true
+        virtual: true
+        description: Whether to include SPAM and TRASH in results.
+        expr:
+          kind: from_filter
+          key: include_spam_trash
       - name: id
         type: Utf8
         nullable: false
@@ -283,10 +311,10 @@ tables:
       rows_path:
         - drafts
     pagination:
-      mode: cursor
-      cursor_path:
-        - nextPageToken
+      mode: cursor_query
       cursor_param: pageToken
+      response_cursor_path:
+        - nextPageToken
       page_size:
         default: 100
         max: 500
