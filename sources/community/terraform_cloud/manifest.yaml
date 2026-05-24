@@ -359,7 +359,14 @@ tables:
       rows_path: [data]
       row_strategy: direct
     pagination:
-      mode: none
+      mode: page
+      page_param: page[number]
+      page_start: 1
+      page_step: 1
+      page_size:
+        default: 20
+        max: 100
+        query_param: page[size]
     columns:
       - name: workspace_id
         type: Utf8
@@ -413,7 +420,8 @@ tables:
     guide: |
       Filter by `workspace_name` because HCP Terraform lists state versions by
       organization and workspace name. This table exposes state metadata and
-      resource summaries, not raw state file contents.
+      resource summaries, not raw state file contents. Use `workspace_id` from
+      the workspace relationship for joins back to `terraform_cloud.workspaces`.
     filters:
       - name: workspace_name
         required: true

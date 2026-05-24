@@ -57,7 +57,7 @@ coral source add --interactive --file sources/community/terraform_cloud/manifest
 | `terraform_cloud.workspaces` | Workspaces in the configured organization. |
 | `terraform_cloud.runs` | Runs for a specific workspace. Requires `workspace_id`. |
 | `terraform_cloud.variables` | Workspace variable metadata. Requires `workspace_id`; values are not exposed. |
-| `terraform_cloud.state_versions` | State version metadata for a workspace name. Requires `workspace_name`. |
+| `terraform_cloud.state_versions` | State version metadata for a workspace name. Requires `workspace_name` and exposes `workspace_id` for joins. |
 
 ## Example Queries
 
@@ -102,7 +102,7 @@ ORDER BY category, sensitive;
 State versions with unprocessed resource metadata:
 
 ```sql
-SELECT workspace_name, id, status, serial, resources_processed, created_at
+SELECT workspace_name, workspace_id, id, status, serial, resources_processed, created_at
 FROM terraform_cloud.state_versions
 WHERE workspace_name = 'production-network'
   AND resources_processed = false;
@@ -116,7 +116,8 @@ WHERE workspace_name = 'production-network'
   `workspace_id`.
 - `terraform_cloud.state_versions` requires `workspace_name` because the HCP
   Terraform list state versions endpoint filters by organization name and
-  workspace name.
+  workspace name, and it exposes the related `workspace_id` when the API
+  response includes the workspace relationship.
 - Variable values are deliberately excluded from this source spec.
 - Raw state files are deliberately excluded from this source spec.
 
