@@ -76,7 +76,8 @@ The `nodes` table is cluster-scoped; it requires cluster-wide `list nodes` and
 has no namespace filter.
 
 Minimal read-only `ClusterRole` for the cluster-wide path (drop the namespaced
-resources you don't need):
+resources you don't need). The connector only performs paginated `GET` list
+requests, so `watch` is intentionally omitted:
 
 ```yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -86,16 +87,16 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: [pods, services, endpoints, events, configmaps, persistentvolumeclaims, serviceaccounts, nodes]
-    verbs: [get, list, watch]
+    verbs: [get, list]
   - apiGroups: [apps]
     resources: [deployments, daemonsets, statefulsets, replicasets]
-    verbs: [get, list, watch]
+    verbs: [get, list]
   - apiGroups: [batch]
     resources: [jobs, cronjobs]
-    verbs: [get, list, watch]
+    verbs: [get, list]
   - apiGroups: [networking.k8s.io]
     resources: [ingresses, networkpolicies]
-    verbs: [get, list, watch]
+    verbs: [get, list]
 ```
 
 Reference: <https://kubernetes.io/docs/reference/access-authn-authz/rbac/>.
