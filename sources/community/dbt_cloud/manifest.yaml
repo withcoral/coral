@@ -9,16 +9,25 @@ inputs:
   DBT_CLOUD_ACCOUNT_ID:
     kind: variable
     hint: |
-      Your dbt Cloud account ID. Found in the URL when logged in:
-      https://cloud.getdbt.com/#/accounts/<account_id>/
-      For EMEA use https://emea.dbt.com and for APAC use https://au.dbt.com
+      Your dbt Cloud account ID. Found in Account Settings under
+      Account information, or in the URL:
+      https://<prefix>.us1.dbt.com/#/accounts/<account_id>/
   DBT_CLOUD_API_TOKEN:
     kind: secret
     hint: |
       Create a service token in dbt Cloud under
       Account Settings -> Service Tokens with read access.
       See https://docs.getdbt.com/docs/dbt-apis/service-tokens
-base_url: https://cloud.getdbt.com
+  DBT_CLOUD_BASE_URL:
+    kind: variable
+    hint: |
+      Your dbt Cloud Admin API base URL. Found in Account Settings
+      under Account information -> Access URL. Examples:
+      US multi-tenant: https://cloud.getdbt.com
+      US cell-based: https://<account_prefix>.us1.dbt.com
+      Europe: https://emea.dbt.com
+      Australia: https://au.dbt.com
+base_url: "{{input.DBT_CLOUD_BASE_URL}}"
 auth:
   type: HeaderAuth
   headers:
@@ -33,24 +42,22 @@ tables:
     description: dbt Cloud jobs with schedules, execution state, and orchestration metadata.
     guide: >
       Use this table to discover job_id values before querying runs.
-      Returns up to 100 jobs per page for the authenticated account.
+      Returns all jobs for the authenticated account using offset pagination.
     fetch_limit_default: 100
     request:
       method: GET
       path: /api/v2/accounts/{{input.DBT_CLOUD_ACCOUNT_ID}}/jobs/
-      query:
-        - name: limit
-          from: literal
-          value: "100"
-        - name: offset
-          from: literal
-          value: "0"
     response:
       rows_path:
         - data
       row_strategy: direct
     pagination:
-      mode: none
+      mode: offset
+      offset_param: offset
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
     columns:
       - name: id
         type: Int64
@@ -114,7 +121,7 @@ tables:
     guide: >
       Use job_id, status, project_id, or environment_id filters to push
       filtering to the dbt Cloud API. Returns runs ordered by most recent
-      first.
+      first using offset pagination.
     fetch_limit_default: 100
     filters:
       - name: job_id
@@ -137,12 +144,6 @@ tables:
         - name: environment_id
           from: filter
           key: environment_id
-        - name: limit
-          from: literal
-          value: "100"
-        - name: offset
-          from: literal
-          value: "0"
         - name: order_by
           from: literal
           value: "-id"
@@ -151,7 +152,12 @@ tables:
         - data
       row_strategy: direct
     pagination:
-      mode: none
+      mode: offset
+      offset_param: offset
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
     columns:
       - name: id
         type: Int64
@@ -262,19 +268,17 @@ tables:
     request:
       method: GET
       path: /api/v2/accounts/{{input.DBT_CLOUD_ACCOUNT_ID}}/environments/
-      query:
-        - name: limit
-          from: literal
-          value: "100"
-        - name: offset
-          from: literal
-          value: "0"
     response:
       rows_path:
         - data
       row_strategy: direct
     pagination:
-      mode: none
+      mode: offset
+      offset_param: offset
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
     columns:
       - name: id
         type: Int64

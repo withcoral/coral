@@ -12,14 +12,23 @@ Create a service token in dbt Cloud:
 - Add **Member** permission for your account
 - Copy the generated token
 
-Find your account ID in the dbt Cloud URL:
-`https://cloud.getdbt.com/#/accounts/<account_id>/`
+Find your account ID in dbt Cloud under **Account Settings** >
+**Account information**.
+
+Find your base URL in dbt Cloud under **Account Settings** >
+**Account information** > **Access URL**. Examples:
+
+- US multi-tenant: `https://cloud.getdbt.com`
+- US cell-based: `https://<account_prefix>.us1.dbt.com`
+- Europe: `https://emea.dbt.com`
+- Australia: `https://au.dbt.com`
 
 Then install the source:
 
 ```sh
 export DBT_CLOUD_ACCOUNT_ID="<account_id>"
 export DBT_CLOUD_API_TOKEN="<token>"
+export DBT_CLOUD_BASE_URL="https://cloud.getdbt.com"
 cargo run -p coral-cli -- source add --file sources/community/dbt_cloud/manifest.yaml
 ```
 
@@ -94,6 +103,7 @@ Install and test with real credentials:
 ```sh
 export DBT_CLOUD_ACCOUNT_ID="<account_id>"
 export DBT_CLOUD_API_TOKEN="<token>"
+export DBT_CLOUD_BASE_URL="https://cloud.getdbt.com"
 cargo run -p coral-cli -- source add --file sources/community/dbt_cloud/manifest.yaml
 cargo run -p coral-cli -- source test dbt_cloud
 ```
@@ -105,11 +115,20 @@ cargo run -p coral-cli -- sql "SELECT table_name, description FROM coral.tables 
 cargo run -p coral-cli -- sql "SELECT table_name, column_name FROM coral.columns WHERE schema_name = 'dbt_cloud' ORDER BY table_name, ordinal_position"
 ```
 
+## API reference
+
+- [dbt Cloud API v2 overview](https://docs.getdbt.com/dbt-cloud/api-v2)
+- [List Jobs endpoint](https://docs.getdbt.com/dbt-cloud/api-v2#/operations/List%20Jobs)
+- [List Runs endpoint](https://docs.getdbt.com/dbt-cloud/api-v2#/operations/List%20Runs)
+- [Service tokens](https://docs.getdbt.com/docs/dbt-apis/service-tokens)
+- [Access URLs by region](https://docs.getdbt.com/docs/platform/about-platform/access-regions-ip-addresses#api-access-urls)
+
 ## Notes
 
-- Uses the dbt Cloud Administrative API v2.
-- The base URL defaults to `https://cloud.getdbt.com`. For EMEA use
-  `https://emea.dbt.com` and for APAC use `https://au.dbt.com`.
+- Uses the dbt Cloud Administrative API v2 with `limit`/`offset` pagination.
+  Maximum page size is 100 records per request.
+- Set `DBT_CLOUD_BASE_URL` to your account access URL from Account Settings.
+  See [Access URLs by region](https://docs.getdbt.com/docs/platform/about-platform/access-regions-ip-addresses#api-access-urls).
 - Run status codes: 1 = Queued, 2 = Starting, 3 = Running, 10 = Success,
   20 = Error, 30 = Cancelled.
 - Nested fields are preserved as JSON in the `raw` column for each table.
