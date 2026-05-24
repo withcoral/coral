@@ -25,8 +25,9 @@ inputs:
       API Explorer or via a machine-to-machine client credentials grant.
       Required scopes depend on the tables you query (e.g. read:users,
       read:clients, read:connections, read:roles, read:organizations,
-      read:resource_servers, read:client_grants, read:actions, read:logs,
-      read:grants, read:custom_domains, read:tenant_settings).
+      read:organization_members, read:resource_servers, read:client_grants,
+      read:actions, read:logs, read:grants, read:custom_domains,
+      read:tenant_settings).
 
 auth:
   type: HeaderAuth
@@ -54,11 +55,11 @@ tables:
     guide: >
       Start with `SELECT user_id, email, name, last_login
       FROM auth0.users LIMIT 10`. Use the q filter for provider-side
-      search: `WHERE q = 'email:"alice@example.com"'`.
+      search: `WHERE q = 'email:"alice@example.com"'`. To filter by
+      connection use `WHERE q = 'identities.connection:"Username-Password-Authentication"'`.
     filters:
       - name: q
         mode: search
-      - name: connection
       - name: sort
     request:
       method: GET
@@ -67,9 +68,6 @@ tables:
         - name: q
           from: filter
           key: q
-        - name: connection
-          from: filter
-          key: connection
         - name: sort
           from: filter
           key: sort
@@ -697,11 +695,6 @@ tables:
         nullable: true
         description: URL of the user's profile picture.
         expr: {kind: path, path: [picture]}
-      - name: roles
-        type: Json
-        nullable: true
-        description: Roles assigned to the member within this organization.
-        expr: {kind: path, path: [roles]}
       - name: raw
         type: Json
         nullable: false
@@ -988,7 +981,6 @@ tables:
     filters:
       - name: q
         mode: search
-      - name: from_log_id
     request:
       method: GET
       path: /logs
@@ -996,9 +988,6 @@ tables:
         - name: q
           from: filter
           key: q
-        - name: from
-          from: filter
-          key: from_log_id
     response:
       row_strategy: direct
     pagination:
@@ -1143,7 +1132,7 @@ tables:
         - name: user_id
           from: filter
           key: user_id
-        - name: clientID
+        - name: client_id
           from: filter
           key: client_id
         - name: audience

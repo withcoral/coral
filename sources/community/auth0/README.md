@@ -28,8 +28,10 @@ Required scopes depend on the tables you query:
 | `read:users` | `users` |
 | `read:clients` | `clients` |
 | `read:connections` | `connections` |
-| `read:roles` | `roles`, `role_users`, `role_permissions` |
-| `read:organizations` | `organizations`, `organization_members` |
+| `read:roles` | `roles`, `role_permissions` |
+| `read:roles` + `read:users` | `role_users` |
+| `read:organizations` | `organizations` |
+| `read:organization_members` | `organization_members` |
 | `read:resource_servers` | `resource_servers` |
 | `read:client_grants` | `client_grants` |
 | `read:actions` | `actions` |
@@ -63,7 +65,7 @@ domain and token are usable.
 
 Lists all users in the tenant with profile, identity, and login data.
 
-**Optional filters:** `q` (Lucene syntax), `connection`, `sort`
+**Optional filters:** `q` (Lucene syntax), `sort`
 
 ### `auth0.clients`
 
@@ -126,7 +128,7 @@ Lists all actions (serverless pipeline functions) in the tenant.
 Lists tenant log events including authentication, signup, and API
 operations.
 
-**Optional filters:** `q` (Lucene syntax), `from_log_id`
+**Optional filter:** `q` (Lucene syntax)
 
 ### `auth0.grants`
 
