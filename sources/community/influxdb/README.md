@@ -9,7 +9,10 @@ through the InfluxDB v2 REST API.
 ### Requirements
 
 - Network access to an InfluxDB v2 HTTP endpoint (default port `8086`).
-- An InfluxDB API token (read access is enough).
+- An InfluxDB API token with **read** permissions on **orgs**,
+  **buckets**, and **tasks** (the three resources this source queries
+  besides `/health`). See *Authentication* below for the exact CLI
+  command and UI walkthrough.
 
 ### Add the Source
 
@@ -39,7 +42,8 @@ Single-row server health and version from `/health`.
 - Version reporting
 
 ### `orgs`
-Organizations from `/api/v2/orgs`.
+Organizations from `/api/v2/orgs`. Paginated by `limit`/`offset`
+(default 20 per page, max 100); Coral follows pages until empty.
 
 **Useful for:**
 - Listing organizations the token can see
@@ -53,7 +57,12 @@ Buckets with retention from `/api/v2/buckets`.
 - Auditing retention (`retention_seconds`, `retention_rules`)
 
 Optional filter:
-- `org` — organization name; pushed down to the API.
+- `org` — organization name. **OSS only:** pushed down to
+  `/api/v2/buckets?org=` on self-hosted InfluxDB 2.x. On **InfluxDB
+  Cloud**, the bucket listing ignores `org`/`orgID` and always returns
+  the buckets of the token's organization — so the filter does *not*
+  narrow results there, and the echoed `org` column can be misleading.
+  See *Known limitations*.
 
 ### `tasks`
 Tasks from `/api/v2/tasks`.
@@ -75,7 +84,28 @@ InfluxDB v2 uses token authentication. This source sends:
 Authorization: Token <INFLUXDB_TOKEN>
 ```
 
-A read-scoped token is sufficient. Username/password is not used.
+The token needs read permissions for the three resources this source
+queries — **orgs**, **buckets**, and **tasks**. `/health` needs no
+scopes. Username/password is not used.
+
+### Create a least-privilege token (CLI)
+
+```bash
+influx auth create \
+  --org   <your-org> \
+  --read-orgs --read-buckets --read-tasks \
+  --description "coral"
+```
+
+For Cloud, run the same command after `influx config set` for your
+Cloud config, or use the UI: **Load Data → API Tokens → Custom API
+Token → Read** on Organizations, Buckets, and Tasks.
+
+An all-access token also works; the operator token created at
+installation time has all permissions and is fine for quick tests.
+
+Docs: [create-token](https://docs.influxdata.com/influxdb/v2/admin/tokens/create-token/),
+[influx auth create](https://docs.influxdata.com/influxdb/v2/reference/cli/influx/auth/create/).
 
 ## Known limitations
 
@@ -89,15 +119,24 @@ A read-scoped token is sufficient. Username/password is not used.
   accessor functions to inspect the rest.
 - The `buckets.org` column is a `from_filter` echo: it only populates
   when the query uses `WHERE org = '...'` (which pushes the predicate
-  down to the API). Without that filter the column is null — join
-  `buckets.org_id = orgs.id` to attach organization names.
+  down to the API on self-hosted InfluxDB). Without that filter the
+  column is null — join `buckets.org_id = orgs.id` to attach
+  organization names.
+- **OSS vs Cloud for `buckets.org`.** On **self-hosted InfluxDB 2.x**
+  the `org` predicate is honored: `/api/v2/buckets?org=foo` returns
+  only `foo`'s buckets. On **InfluxDB Cloud** the same endpoint ignores
+  `org`/`orgID` and always returns buckets belonging to the token's
+  organization. Sending `WHERE org = 'X'` on Cloud will *not* narrow
+  the result set, and the echoed `org` column will display `'X'` even
+  though the rows are actually the token's org. On Cloud, omit the
+  filter and treat the token as the source of truth for organization.
 
 ## Limits
 
 - This source is **read-only**. It exposes health and metadata endpoints
   only — no writing points and no running Flux/SQL queries.
-- `buckets` uses `limit`/`offset` pagination (default 20, max 100 per
-  page); Coral follows pages until empty.
+- `orgs` and `buckets` use `limit`/`offset` pagination (default 20,
+  max 100 per page); Coral follows pages until empty.
 - Timestamps (`created_at`, `updated_at`, `latest_completed`) are parsed
   from RFC 3339 / ISO 8601 strings into real `Timestamp` columns.
 - No server-side filtering beyond the declared filters; filter the rest

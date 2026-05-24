@@ -19,10 +19,17 @@ inputs:
   INFLUXDB_TOKEN:
     kind: secret
     hint: |
-      InfluxDB API token, sent as `Authorization: Token <token>`. Create
-      one in the InfluxDB UI under Load Data > API Tokens. A read token
-      with access to the orgs/buckets/tasks you want to inspect is enough;
-      an all-access token also works.
+      InfluxDB API token, sent as `Authorization: Token <token>`. The
+      token needs read permissions covering every table in this source:
+      orgs, buckets, and tasks. Concretely:
+
+        influx auth create --read-orgs --read-buckets --read-tasks \
+          --org <your-org> --description "coral"
+
+      In the UI: Load Data > API Tokens > Custom API Token, then tick
+      "Read" for Organizations, Buckets, and Tasks. An all-access token
+      also works. The operator token created during install has all
+      permissions and is fine for quick tests.
 auth:
   type: HeaderAuth
   headers:
@@ -99,7 +106,9 @@ tables:
     guide: |
       Returns one row per organization the token can see. Use `id` as the
       organization identifier; the `buckets` and `tasks` tables expose an
-      `org` filter that matches the organization `name`.
+      `org` filter that matches the organization `name`. The endpoint
+      defaults to 20 rows per page (max 100); Coral follows pages via
+      `limit`/`offset` until the API returns empty.
     request:
       method: GET
       path: /api/v2/orgs
@@ -108,7 +117,13 @@ tables:
         - orgs
       row_strategy: direct
     pagination:
-      mode: none
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 20
+        max: 100
+        query_param: limit
     columns:
       - name: id
         type: Utf8
@@ -165,10 +180,18 @@ tables:
       `retention_seconds` is the expiry of the first retention rule in
       seconds (`0` means infinite); `retention_rules` is the full rule list
       as JSON. Use the optional `org` filter (organization name) to scope
-      results to one org; it is pushed down to the API. The `org` column
-      only populates when the predicate is used (`WHERE org = '...'`);
-      without the filter it is null — join `buckets.org_id = orgs.id` to
-      attach the organization name in that case.
+      results to one org; it is pushed down to the API on **self-hosted
+      InfluxDB 2.x** (OSS). The `org` column only populates when the
+      predicate is used (`WHERE org = '...'`); without the filter it is
+      null — join `buckets.org_id = orgs.id` to attach the organization
+      name in that case.
+
+      **InfluxDB Cloud caveat:** the Cloud bucket listing ignores the
+      `org` / `orgID` parameters and always returns buckets for the
+      token's organization. Sending `WHERE org = 'X'` against Cloud will
+      *not* filter, and the echoed `org` column value will be `'X'` even
+      though the rows are actually the token's org. On Cloud, omit the
+      filter and use the token's own org as the source of truth.
     filters:
       - name: org
     request:
