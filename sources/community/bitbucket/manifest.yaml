@@ -5,7 +5,7 @@ backend: http
 description: >-
   Query repositories, pull requests, and pipelines from Bitbucket Cloud
   via the Bitbucket Cloud REST API v2.0. Authenticate with OAuth
-  authorization-code or a personal access token.
+  authorization-code.
 base_url: https://api.bitbucket.org/2.0
 
 inputs:
@@ -20,18 +20,15 @@ inputs:
       workspace: Settings → OAuth consumers → Add consumer.
       Set the Redirect URL to: http://127.0.0.1:53682/oauth/callback
       Grant the following permissions:
-        - Account: Read
         - Repositories: Read
         - Pull requests: Read
         - Pipelines: Read
       Copy the Key into BITBUCKET_CLIENT_ID and the Secret into
       BITBUCKET_CLIENT_SECRET before running source add.
 
-      To paste a token manually instead of using the browser flow, choose
-      "Paste personal access token" when prompted. Paste an OAuth access
-      token obtained via the Bitbucket OAuth flow. Note that Bitbucket App
-      passwords use HTTP Basic auth and are not compatible with this source's
-      Bearer token auth scheme.
+      Note: only OAuth Bearer tokens issued by the Bitbucket OAuth flow
+      are supported. Bitbucket App passwords and personal access tokens
+      use HTTP Basic auth and are not compatible with this source.
     credential:
       methods:
         - type: oauth
@@ -54,12 +51,9 @@ inputs:
               scope:
                 delimiter: space
                 values:
-                  - account
                   - repository
                   - pullrequest
                   - pipeline
-        - type: source_config
-          label: Paste personal access token
 
   BITBUCKET_CLIENT_ID:
     kind: variable
@@ -169,21 +163,27 @@ tables:
           path:
             - is_private
       - name: created_on
-        type: Utf8
+        type: Timestamp
         nullable: true
-        description: ISO 8601 timestamp when the repository was created.
+        description: Timestamp when the repository was created.
         expr:
-          kind: path
-          path:
-            - created_on
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_on
       - name: updated_on
-        type: Utf8
+        type: Timestamp
         nullable: true
-        description: ISO 8601 timestamp of the last push or settings change.
+        description: Timestamp of the last push or settings change.
         expr:
-          kind: path
-          path:
-            - updated_on
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_on
       - name: workspace
         type: Utf8
         nullable: false
@@ -199,22 +199,29 @@ tables:
   - name: pull_requests
     description: >-
       Pull requests in a Bitbucket repository. Each row is one pull
-      request. Filter state to narrow to OPEN, MERGED, DECLINED, or
-      SUPERSEDED pull requests.
+      request. Use the state filter to narrow to OPEN, MERGED, DECLINED,
+      or SUPERSEDED pull requests.
     guide: |
-      Requires `workspace` and `repo_slug`. Use `created_on` and
-      `updated_on` for PR cycle-time and flow-metric queries. Join
-      `bitbucket.repositories` on `workspace` and `repo_slug = slug`.
-      Join with `jira.issues` via branch name or PR title conventions
-      for cross-source sprint analytics.
+      Requires `workspace` and `repo_slug`. Optional `state` filter pushes
+      down to the API (`?state=OPEN`, `?state=MERGED`, etc.). Use
+      `created_on` and `updated_on` for PR cycle-time and flow-metric
+      queries. Join `bitbucket.repositories` on `workspace` and
+      `repo_slug = slug`. Join with `jira.issues` via branch name or PR
+      title conventions for cross-source sprint analytics.
     filters:
       - name: workspace
         required: true
       - name: repo_slug
         required: true
+      - name: state
+        required: false
     request:
       method: GET
       path: /repositories/{{filter.workspace}}/{{filter.repo_slug}}/pullrequests
+      query:
+        - name: state
+          from: filter
+          key: state
     response:
       rows_path:
         - values
@@ -244,14 +251,15 @@ tables:
           kind: path
           path:
             - title
-      - name: description
+      - name: summary
         type: Utf8
         nullable: true
-        description: Pull request body text.
+        description: Pull request description as raw markup text (summary.raw in the API response).
         expr:
           kind: path
           path:
-            - description
+            - summary
+            - raw
       - name: state
         type: Utf8
         nullable: true
@@ -290,21 +298,35 @@ tables:
             - branch
             - name
       - name: created_on
-        type: Utf8
+        type: Timestamp
         nullable: true
-        description: ISO 8601 timestamp when the pull request was opened.
+        description: Timestamp when the pull request was opened.
         expr:
-          kind: path
-          path:
-            - created_on
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_on
       - name: updated_on
+        type: Timestamp
+        nullable: true
+        description: Timestamp of the last update.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_on
+      - name: state_filter
         type: Utf8
         nullable: true
-        description: ISO 8601 timestamp of the last update.
+        virtual: true
+        description: State filter passed to the API; echoed onto every row.
         expr:
-          kind: path
-          path:
-            - updated_on
+          kind: from_filter
+          key: state
       - name: workspace
         type: Utf8
         nullable: false
@@ -331,20 +353,27 @@ tables:
       pipeline run. Use state_name and state_result_name to filter by
       run status.
     guide: |
-      Requires `workspace` and `repo_slug`. `state_name` holds the
-      top-level state (for example COMPLETED or IN_PROGRESS).
-      `state_result_name` holds the result within a completed run
-      (for example SUCCESSFUL or FAILED). Join with `bitbucket.pull_requests`
-      on `workspace` and `repo_slug` for deployment-alongside-PR analytics,
-      or with `jira.issues` for release-tracking dashboards.
+      Requires `workspace` and `repo_slug`. Optional `status` filter pushes
+      down to the API. `state_name` holds the top-level state (for example
+      COMPLETED or IN_PROGRESS). `state_result_name` holds the result within
+      a completed run (for example SUCCESSFUL or FAILED). Join with
+      `bitbucket.pull_requests` on `workspace` and `repo_slug` for
+      deployment-alongside-PR analytics, or with `jira.issues` for
+      release-tracking dashboards.
     filters:
       - name: workspace
         required: true
       - name: repo_slug
         required: true
+      - name: status
+        required: false
     request:
       method: GET
       path: /repositories/{{filter.workspace}}/{{filter.repo_slug}}/pipelines
+      query:
+        - name: status
+          from: filter
+          key: status
     response:
       rows_path:
         - values
@@ -403,21 +432,35 @@ tables:
             - creator
             - nickname
       - name: created_on
-        type: Utf8
+        type: Timestamp
         nullable: true
-        description: ISO 8601 timestamp when the pipeline run was created.
+        description: Timestamp when the pipeline run was created.
         expr:
-          kind: path
-          path:
-            - created_on
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_on
       - name: completed_on
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the pipeline run completed.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - completed_on
+      - name: status_filter
         type: Utf8
         nullable: true
-        description: ISO 8601 timestamp when the pipeline run completed.
+        virtual: true
+        description: Status filter passed to the API; echoed onto every row.
         expr:
-          kind: path
-          path:
-            - completed_on
+          kind: from_filter
+          key: status
       - name: workspace
         type: Utf8
         nullable: false

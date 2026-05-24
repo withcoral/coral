@@ -27,13 +27,15 @@ Grant the following permissions:
 
 | Permission | Scope |
 |---|---|
-| Account | Read |
 | Repositories | Read |
 | Pull requests | Read |
 | Pipelines | Read |
 
 Copy the **Key** (this is your `BITBUCKET_CLIENT_ID`) and the **Secret**
 (`BITBUCKET_CLIENT_SECRET`) from the consumer you just created.
+
+> **Note:** the `account` scope is not required. Only repository, pull
+> request, and pipeline read access is needed.
 
 ### 2. Set your credentials
 
@@ -49,14 +51,13 @@ cargo run -p coral-cli -- source add --file sources/community/bitbucket/manifest
 ```
 
 Coral will open your browser to the Bitbucket authorization page. After you
-approve the requested scopes, Coral stores the access token automatically.
+approve the requested scopes, Coral stores the access token automatically and
+handles token refresh.
 
-To paste a token manually instead of using the browser flow, run the source
-add command and choose **Paste personal access token** when prompted. Paste
-an OAuth access token obtained via the Bitbucket OAuth flow. Note that
-Bitbucket App passwords use HTTP Basic auth and are not compatible with this
-source's Bearer token auth scheme — pasting an App password here will result
-in 401 errors.
+> **Auth note:** this source uses `Authorization: Bearer <oauth_token>` and
+> supports only OAuth access tokens issued by the Bitbucket authorization
+> flow above. Bitbucket App passwords and repository access tokens use HTTP
+> Basic auth and are **not** compatible with this source.
 
 ### 4. Verify
 
@@ -66,11 +67,11 @@ cargo run -p coral-cli -- source test bitbucket
 
 ## Tables
 
-| Table | Description | Required filters |
-|---|---|---|
-| `bitbucket.repositories` | Repositories in a workspace | `workspace` |
-| `bitbucket.pull_requests` | Pull requests in a repository | `workspace`, `repo_slug` |
-| `bitbucket.pipelines` | CI/CD pipeline runs for a repository | `workspace`, `repo_slug` |
+| Table | Description | Required filters | Optional filters |
+|---|---|---|---|
+| `bitbucket.repositories` | Repositories in a workspace | `workspace` | — |
+| `bitbucket.pull_requests` | Pull requests in a repository | `workspace`, `repo_slug` | `state` |
+| `bitbucket.pipelines` | CI/CD pipeline runs for a repository | `workspace`, `repo_slug` | `status` |
 
 All tables are read-only. This source does not create, modify, or delete any
 Bitbucket data.
@@ -82,7 +83,8 @@ pass as `repo_slug` when querying `pull_requests` or `pipelines`.
 
 ### `pull_requests`
 
-Lists pull requests for one repository. Filter on `state` to narrow results:
+Lists pull requests for one repository. The optional `state` filter is pushed
+down to the Bitbucket API:
 
 | Value | Meaning |
 |---|---|
@@ -91,12 +93,15 @@ Lists pull requests for one repository. Filter on `state` to narrow results:
 | `DECLINED` | Pull request was declined |
 | `SUPERSEDED` | Pull request was superseded by another |
 
+The `summary` column contains the PR description as plain markup text
+(sourced from `summary.raw` in the API response).
+
 ### `pipelines`
 
-Lists CI/CD pipeline runs for one repository. `state_name` holds the
-top-level run state (for example `COMPLETED` or `IN_PROGRESS`).
-`state_result_name` holds the result within a completed run (for example
-`SUCCESSFUL` or `FAILED`).
+Lists CI/CD pipeline runs for one repository. The optional `status` filter is
+pushed down to the Bitbucket API. `state_name` holds the top-level run state
+(for example `COMPLETED` or `IN_PROGRESS`). `state_result_name` holds the
+result within a completed run (for example `SUCCESSFUL` or `FAILED`).
 
 ## Filters and pagination
 
@@ -104,12 +109,9 @@ All tables use page-based pagination (`page`, `pagelen`). The default page
 size is 50; the maximum is 100. Always use `LIMIT` when querying large
 workspaces or repositories.
 
-`repositories` requires `workspace`. `pull_requests` and `pipelines` require
-both `workspace` and `repo_slug`.
-
-Bitbucket Cloud does not expose a workspace-discovery endpoint without elevated
-admin scopes. Pass the workspace slug directly as a filter, matching the
-behaviour of the bundled Jira and Confluence sources.
+Bitbucket Cloud does not expose a workspace-discovery endpoint without
+elevated admin scopes. Pass the workspace slug directly as a required filter,
+matching the behaviour of the bundled Jira and Confluence sources.
 
 ## Example queries
 
@@ -123,7 +125,7 @@ ORDER BY updated_on DESC
 LIMIT 20;
 ```
 
-Open pull requests for a repository:
+Open pull requests for a repository (state pushed down to the API):
 
 ```sql
 SELECT id, title, author_nickname, source_branch, destination_branch, created_on
@@ -147,15 +149,14 @@ ORDER BY updated_on DESC
 LIMIT 50;
 ```
 
-Failed pipeline runs:
+Failed pipeline runs (status pushed down to the API):
 
 ```sql
 SELECT build_number, creator_nickname, created_on, completed_on
 FROM bitbucket.pipelines
 WHERE workspace = 'my-workspace'
   AND repo_slug = 'my-repo'
-  AND state_name = 'COMPLETED'
-  AND state_result_name = 'FAILED'
+  AND status = 'FAILED'
 ORDER BY created_on DESC
 LIMIT 20;
 ```
@@ -220,19 +221,24 @@ cargo run -p coral-cli -- sql "SELECT table_name, column_name, data_type FROM co
 
 ## Notes
 
-- **OAuth requires a confidential client**: Bitbucket Cloud requires
+- **OAuth only:** this source supports only OAuth Bearer tokens issued by
+  the Bitbucket authorization-code flow. Bitbucket App passwords and
+  repository access tokens use HTTP Basic auth and will not work here.
+- **OAuth requires a confidential client:** Bitbucket Cloud requires
   `client_secret` for the authorization-code flow; PKCE public-client
-  flows are not currently supported. If Bitbucket adds PKCE support in the
-  future this spec can be updated.
-- **Fixed redirect URI**: the OAuth consumer must be registered with the
+  flows are not currently supported.
+- **Token refresh:** Coral handles OAuth token refresh automatically using
+  the stored refresh token. OAuth access tokens expire after one hour;
+  no manual intervention is required for refresh.
+- **Fixed redirect URI:** the OAuth consumer must be registered with the
   exact redirect URI `http://127.0.0.1:53682/oauth/callback`.
-- **No workspace discovery**: Bitbucket Cloud does not expose a simple
+- **No workspace discovery:** Bitbucket Cloud does not expose a simple
   workspace list without admin scopes. Pass the workspace slug directly
-  as a required filter, matching the behaviour of the bundled Jira source.
-- **Page-based pagination**: all tables paginate by `page` and `pagelen`.
+  as a required filter.
+- **Page-based pagination:** all tables paginate by `page` and `pagelen`.
   Always use `LIMIT` on large workspaces or repositories.
-- **Rate limits**: the Bitbucket Cloud API enforces rate limits per OAuth
-  token. Reduce query frequency or add retries if you hit limits.
+- **`account` scope not required:** only `repository`, `pullrequest`, and
+  `pipeline` read scopes are needed.
 
 ## Out of scope for v1
 
