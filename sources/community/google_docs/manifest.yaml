@@ -177,7 +177,7 @@ tables:
       - name: raw
         type: Json
         nullable: false
-        description: Full raw Google Docs document object.
+        description: Partial Google Docs document object returned by this table's field mask.
         expr:
           kind: current_row
 
@@ -298,12 +298,15 @@ tables:
           kind: current_row
 
   - name: tabs
-    description: Top-level tabs and tab-scoped named range and list maps
+    description: Top-level tabs and one child-tab level of tab-scoped named range and list maps
     guide: |
       Requires `document_id`. This request enables `includeTabsContent`, so
-      each row exposes one top-level tab plus nested `child_tabs` JSON for
-      multi-tab documents. Tab-scoped named ranges and list definitions are
-      exposed as JSON because the provider nests them under each tab. Use
+      each row exposes one top-level tab plus one nested `child_tabs` JSON
+      level for multi-tab documents. Google models tabs as a recursive tree,
+      but Coral source-spec rows are extracted from a fixed `rows_path`, so
+      this table does not flatten grandchildren or deeper descendants into
+      separate rows. Tab-scoped named ranges and list definitions are exposed
+      as JSON because the provider nests them under each tab. Use
       `google_docs.body_content` for first-tab structural body content.
     filters:
       - name: document_id
@@ -412,7 +415,7 @@ tables:
       - name: child_tabs
         type: Json
         nullable: true
-        description: Nested child tabs for this top-level tab.
+        description: One nested child-tab level for this top-level tab.
         expr:
           kind: path
           path:

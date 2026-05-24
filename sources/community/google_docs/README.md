@@ -105,10 +105,11 @@ for joining bullet and numbered-list paragraphs to `google_docs.lists`.
 
 ### tabs
 
-Top-level document tabs with tab-scoped named ranges and lists, plus nested
-child tab JSON. Requires `document_id`. Optional filter:
-`suggestions_view_mode`. Use `body_content` for first-tab structural body
-content.
+Top-level document tabs with tab-scoped named ranges and lists, plus one
+nested `child_tabs` JSON level. Requires `document_id`. Optional filter:
+`suggestions_view_mode`. Google models tabs as a recursive tree, and this
+table does not flatten grandchildren or deeper descendants into separate rows.
+Use `body_content` for first-tab structural body content.
 
 ### named_ranges
 
@@ -117,6 +118,13 @@ First-tab named range groups for one document. Requires `document_id`.
 ### lists
 
 First-tab list definitions keyed by list ID. Requires `document_id`.
+
+## Rate limits
+
+Every table maps to `documents.get`. Google Docs publishes read quotas of
+3,000 requests per minute per project and 300 requests per minute per user per
+project. Repeated scans across many documents can receive `429 Too Many
+Requests`; wait and retry later with backoff if that happens.
 
 ## Notes
 
