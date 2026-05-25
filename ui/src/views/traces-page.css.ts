@@ -128,6 +128,9 @@ export const fullRow = style({
   width: '100%',
   selectors: {
     '&:hover': { backgroundColor: theme.surface.onMainContentSubtle },
+    '&[data-active]': { backgroundColor: theme.pill.blue.background },
+    '&:focus': { outline: 'none' },
+    '&:focus-visible': { outline: 'none' },
   },
 })
 export const statusDot = style({
@@ -313,6 +316,10 @@ export const tabTrigger = style({
   marginBlockEnd: -1,
   paddingBlock: 8,
   paddingInline: 12,
+  selectors: {
+    '&:focus': { outline: 'none' },
+    '&:focus-visible': { outline: 'none' },
+  },
 })
 export const tabTriggerActive = style({
   borderBlockEndColor: theme.pill.green.color,
@@ -345,25 +352,27 @@ export const waterfallTimelinePane = style({
   minHeight: 0,
   minWidth: 360,
   overflow: 'hidden',
-  rowGap: 10,
 })
-export const waterfallTickRow = style({
-  display: 'grid',
-  flexShrink: 0,
-  gridTemplateColumns: '320px minmax(0, 1fr)',
-})
+export const waterfallTickRow = style({ display: 'contents' })
 export const waterfallLabel = style({
+  backgroundColor: theme.surface.mainContent,
   height: 24,
+  insetBlockStart: 0,
   minWidth: 0,
   paddingBlockEnd: 4,
+  position: 'sticky',
+  zIndex: 2,
 })
 export const waterfallTimeline = style({
+  backgroundColor: theme.surface.mainContent,
   borderBlockEnd: `1px solid ${theme.stroke.primary}`,
   height: 24,
+  insetBlockStart: 0,
   minWidth: 0,
   overflow: 'hidden',
   paddingBlockEnd: 4,
-  position: 'relative',
+  position: 'sticky',
+  zIndex: 2,
 })
 export const waterfallTick = style({
   color: theme.content.tertiary,
@@ -407,13 +416,13 @@ export const waterfallRowsViewport = style({
   flex: 1,
   minHeight: 0,
   minWidth: 0,
-  overflow: 'auto',
 })
 export const waterfallRowsGrid = style({
   alignItems: 'start',
   display: 'grid',
-  gridTemplateColumns: '320px minmax(0, 1fr)',
+  gridTemplateColumns: 'minmax(0, max-content) minmax(0, 1fr)',
   minWidth: 0,
+  rowGap: 10,
 })
 export const waterfallLabelsColumn = style({
   display: 'flex',
@@ -453,6 +462,8 @@ export const waterfallRowButton = style({
   width: '100%',
   selectors: {
     '&[role="button"]': { cursor: 'pointer' },
+    '&:focus': { outline: 'none' },
+    '&:focus-visible': { outline: 'none' },
   },
 })
 export const waterfallRowHover = style({
@@ -579,7 +590,7 @@ export const waterfallBar = style({
   display: 'flex',
   height: 20,
   insetBlockStart: 2,
-  minWidth: 2,
+  minWidth: 6,
   overflow: 'hidden',
   paddingInline: 8,
   position: 'absolute',
@@ -625,7 +636,8 @@ export const waterfallBarLabelOutside = style({
   transform: 'translateY(-50%)',
   whiteSpace: 'nowrap',
   selectors: {
-    '&[data-align="end"]': { textAlign: 'right' },
+    '&[data-align="start"]': { marginInlineStart: 8 },
+    '&[data-align="end"]': { marginInlineEnd: 8, textAlign: 'right' },
   },
 })
 export const waterfallHttpDetail = style({
