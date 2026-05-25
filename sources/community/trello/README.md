@@ -1,11 +1,13 @@
 # Trello
+
 A community source that exposes Trello boards, lists, cards, and members to Coral SQL.
 
 ## Authentication
+
 Trello requires an **API Key** and a **User Token** to authenticate requests.
 
-1.  **Get your API Key:** Log in to Trello and go to the [Power-Up Admin page](https://trello.com/power-ups/admin). Create a new Power-Up if you don't have one, and copy the **API Key**.
-2.  **Get your API Token:** On the same page, next to the API Key, look for the option to generate a token manually. **Note:** Ensure you grant the token at least **read** access (this is usually the default) so it has permission to fetch your boards, lists, and cards. Click authorize and copy your **Token**.
+1. **Get your API Key:** Log in to Trello and go to the [Power-Up Admin page](https://trello.com/power-ups/admin). Create a new Power-Up if you don't have one, and copy the **API Key**.
+2. **Get your API Token:** On the same page, next to the API Key, look for the option to generate a token manually. To limit access to what this source needs, generate a **read-only token** by using the authorization URL with `scope=read` appended — for example: `https://trello.com/1/authorize?key=YOUR_KEY&name=coral-trello&scope=read&expiration=never&response_type=token`. Click authorize and copy your **Token**. See the [Trello authorization docs](https://developer.atlassian.com/cloud/trello/guides/rest-api/authorization/) for full details.
 
 Set the following environment variables before running Coral:
 
@@ -49,8 +51,8 @@ FROM trello.boards;
 SELECT id, name, due, due_complete, list_id
 FROM trello.cards
 WHERE board_id = 'your_board_id_here'
-LIMIT 50
-ORDER BY pos ASC;
+ORDER BY pos ASC
+LIMIT 50;
 ```
 
 ### Scope cards by date window on a large board
@@ -58,8 +60,8 @@ ORDER BY pos ASC;
 SELECT id, name, due, list_id
 FROM trello.cards
 WHERE board_id = 'your_board_id_here'
-  AND since = '2024-01-01'
-  AND before = '2024-03-31';
+AND since = '2024-01-01'
+AND before = '2024-03-31';
 ```
 
 ### Join cards with their corresponding list names
@@ -71,15 +73,16 @@ SELECT
 FROM trello.cards c
 JOIN trello.lists l ON c.list_id = l.id
 WHERE c.board_id = 'your_board_id_here'
-  AND l.board_id = 'your_board_id_here';
+AND l.board_id = 'your_board_id_here';
 ```
 
 ## Rate Limits
 
-Trello enforces two independent rate limits on the REST API:
+Trello enforces three independent rate limits on the REST API:
 
 - **300 requests per 10 seconds** per API key
 - **100 requests per 10 seconds** per token
+- **100 requests per 900 seconds** per token for `/1/members/` endpoints — this applies to the `trello.boards` table, which calls `/1/members/me/boards`
 
 When a limit is exceeded Trello returns HTTP **429**. Coral will surface this as a source error. To stay within limits, use the `limit`, `since`, and `before` filters on `trello.cards` to avoid broad board scans, and avoid running many board-scoped queries in rapid succession.
 
