@@ -5,6 +5,8 @@ use std::io;
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
+use sha2::{Digest as _, Sha256};
+
 use crate::bootstrap::AppError;
 use crate::state::AppStateLayout;
 use crate::storage::fs as storage_fs;
@@ -43,6 +45,31 @@ impl EncodedCredentialMaterial {
 struct CredentialSetRef<'a> {
     workspace_name: &'a WorkspaceName,
     credential_set_id: &'a CredentialSetId,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CredentialConfigNamespace(String);
+
+impl CredentialConfigNamespace {
+    fn from_layout(layout: &AppStateLayout) -> Self {
+        Self::from_config_dir(layout.config_dir())
+    }
+
+    fn from_config_dir(config_dir: &Path) -> Self {
+        let canonical = config_dir
+            .canonicalize()
+            .unwrap_or_else(|_| config_dir.to_path_buf())
+            .to_string_lossy()
+            .into_owned();
+        let digest = Sha256::digest(canonical.as_bytes());
+        let hex = format!("{digest:x}");
+        let short = hex.get(..16).unwrap_or(hex.as_str());
+        Self(format!("config-{short}"))
+    }
+
+    fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
 }
 
 trait CredentialMaterialBackend: Send + Sync {
@@ -92,10 +119,11 @@ impl CredentialStore {
         layout: AppStateLayout,
         preference: CredentialStoragePreference,
     ) -> Self {
+        let config_namespace = CredentialConfigNamespace::from_layout(&layout);
         Self {
             preference,
             file: Arc::new(FileCredentialBackend::new(layout)),
-            keychain: Arc::new(KeychainCredentialBackend::new()),
+            keychain: Arc::new(KeychainCredentialBackend::new(config_namespace)),
         }
     }
 
@@ -486,13 +514,15 @@ impl CredentialMaterialBackend for FileCredentialBackend {
 
 #[derive(Clone)]
 struct KeychainCredentialBackend {
+    config_namespace: CredentialConfigNamespace,
     native: Arc<OnceLock<Result<Arc<keyring_core::CredentialStore>, String>>>,
     probe: Arc<OnceLock<Result<(), String>>>,
 }
 
 impl KeychainCredentialBackend {
-    fn new() -> Self {
+    fn new(config_namespace: CredentialConfigNamespace) -> Self {
         Self {
+            config_namespace,
             native: Arc::new(OnceLock::new()),
             probe: Arc::new(OnceLock::new()),
         }
@@ -517,8 +547,12 @@ impl KeychainCredentialBackend {
 
     fn probe_entry(&self) -> Result<keyring_core::Entry, CredentialsError> {
         let account = format!("probe.{}.{}", std::process::id(), uuid::Uuid::new_v4());
+        let service = format!(
+            "com.withcoral.coral/{}/__probe__",
+            self.config_namespace.as_str()
+        );
         self.native_store()?
-            .build("com.withcoral.coral/__probe__", &account, None)
+            .build(&service, &account, None)
             .map_err(|error| keychain_error(&error))
     }
 
@@ -575,7 +609,7 @@ impl CredentialMaterialBackend for KeychainCredentialBackend {
         &self,
         set: &CredentialSetRef<'_>,
     ) -> Result<Option<EncodedCredentialMaterial>, CredentialsError> {
-        let entry = KeychainEntryAddress::from_set(set);
+        let entry = KeychainEntryAddress::from_set(&self.config_namespace, set);
         self.run_native(move |backend| {
             backend.probe_native()?;
             match backend
@@ -594,7 +628,7 @@ impl CredentialMaterialBackend for KeychainCredentialBackend {
         set: &CredentialSetRef<'_>,
         material: Option<&EncodedCredentialMaterial>,
     ) -> Result<(), CredentialsError> {
-        let entry = KeychainEntryAddress::from_set(set);
+        let entry = KeychainEntryAddress::from_set(&self.config_namespace, set);
         let value = material
             .map(|material| {
                 std::str::from_utf8(material.bytes())
@@ -625,7 +659,7 @@ impl CredentialMaterialBackend for KeychainCredentialBackend {
         &self,
         set: &CredentialSetRef<'_>,
     ) -> Result<CredentialMaterialSnapshot, CredentialsError> {
-        let entry = KeychainEntryAddress::from_set(set);
+        let entry = KeychainEntryAddress::from_set(&self.config_namespace, set);
         self.run_native(move |backend| {
             backend.probe_native()?;
             match backend
@@ -670,9 +704,13 @@ struct KeychainEntryAddress {
 }
 
 impl KeychainEntryAddress {
-    fn from_set(set: &CredentialSetRef<'_>) -> Self {
+    fn from_set(config_namespace: &CredentialConfigNamespace, set: &CredentialSetRef<'_>) -> Self {
         Self {
-            service: format!("com.withcoral.coral/{}", set.workspace_name.as_str()),
+            service: format!(
+                "com.withcoral.coral/{}/workspace/{}",
+                config_namespace.as_str(),
+                set.workspace_name.as_str()
+            ),
             account: set.credential_set_id.to_string(),
         }
     }
@@ -1080,6 +1118,63 @@ mod tests {
             *self.lock_material()? = snapshot.material().map(ToOwned::to_owned);
             Ok(())
         }
+    }
+
+    #[test]
+    fn keychain_address_namespaces_by_config_workspace_and_credential_set() {
+        let config_namespace = super::CredentialConfigNamespace("config-test".to_string());
+        let workspace_name = WorkspaceName::parse("default").expect("workspace");
+        let source_name = SourceName::parse("github").expect("source");
+        let credential_set_id = CredentialSetId::for_source(&source_name);
+        let set = CredentialSetRef {
+            workspace_name: &workspace_name,
+            credential_set_id: &credential_set_id,
+        };
+
+        let address = super::KeychainEntryAddress::from_set(&config_namespace, &set);
+
+        assert_eq!(
+            address.service,
+            "com.withcoral.coral/config-test/workspace/default"
+        );
+        assert_eq!(address.account, credential_set_id.to_string());
+    }
+
+    #[test]
+    fn config_namespace_separates_same_source_in_different_config_dirs() {
+        let temp = TempDir::new().expect("temp dir");
+        let first_dir = temp.path().join("first-config");
+        let second_dir = temp.path().join("second-config");
+        std::fs::create_dir_all(&first_dir).expect("first config dir");
+        std::fs::create_dir_all(&second_dir).expect("second config dir");
+        let first_namespace = super::CredentialConfigNamespace::from_config_dir(&first_dir);
+        let second_namespace = super::CredentialConfigNamespace::from_config_dir(&second_dir);
+        let workspace_name = WorkspaceName::parse("default").expect("workspace");
+        let source_name = SourceName::parse("github").expect("source");
+        let credential_set_id = CredentialSetId::for_source(&source_name);
+        let set = CredentialSetRef {
+            workspace_name: &workspace_name,
+            credential_set_id: &credential_set_id,
+        };
+
+        let first = super::KeychainEntryAddress::from_set(&first_namespace, &set);
+        let second = super::KeychainEntryAddress::from_set(&second_namespace, &set);
+
+        assert_ne!(first.service, second.service);
+        assert_eq!(first.account, second.account);
+    }
+
+    #[test]
+    fn config_namespace_uses_canonical_config_dir() {
+        let temp = TempDir::new().expect("temp dir");
+        let config_dir = temp.path().join("coral-config");
+        std::fs::create_dir_all(&config_dir).expect("config dir");
+        let equivalent = config_dir.join("..").join("coral-config");
+
+        assert_eq!(
+            super::CredentialConfigNamespace::from_config_dir(&config_dir),
+            super::CredentialConfigNamespace::from_config_dir(&equivalent)
+        );
     }
 
     #[test]
