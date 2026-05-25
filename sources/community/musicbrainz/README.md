@@ -84,6 +84,48 @@ coral sql "
 "
 ```
 
+## Live Testing Results
+
+### Testing `artists` query
+```console
+$ coral sql "SELECT name, type, country FROM musicbrainz.artists WHERE query = 'The Beatles' LIMIT 1;"
++-------------+-------+---------+
+| name        | type  | country |
++-------------+-------+---------+
+| The Beatles | Group | GB      |
++-------------+-------+---------+
+```
+
+### Testing `releases` query
+```console
+$ coral sql "SELECT title, status, date FROM musicbrainz.releases WHERE query = 'Abbey Road' LIMIT 1;"
++--------------+----------+------+
+| title        | status   | date |
++--------------+----------+------+
+| Abbey's Road | Official | 2016 |
++--------------+----------+------+
+```
+
+### Testing `recordings` query
+```console
+$ coral sql "SELECT title, length FROM musicbrainz.recordings WHERE query = 'Yesterday' LIMIT 1;"
++---------------------+--------+
+| title               | length |
++---------------------+--------+
+| Yesterday Yesterday | 169939 |
++---------------------+--------+
+```
+
+### Testing `labels` query
+```console
+$ coral sql "SELECT name, type FROM musicbrainz.labels WHERE query = 'Parlophone' LIMIT 1;"
++------------+---------------------+
+| name       | type                |
++------------+---------------------+
+| Parlophone | Original Production |
++------------+---------------------+
+```
+
 ## Column reference
 
 ### `artists`
