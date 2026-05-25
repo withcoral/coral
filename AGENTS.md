@@ -19,6 +19,7 @@
 ## Rules
 
 - Run `make rust-checks` before submitting PRs that include changes to Rust code.
+- UI changes must pass `npm run check --prefix ui` (oxfmt + oxlint) before submitting.
 - `make rust-checks` is the Rust-only local gate and should keep using
   `--all-features`; the embedded UI feature is a normal CLI build surface.
 - The built UI artifact is produced by repo/CI orchestration (`make ui-build`
@@ -40,6 +41,9 @@
   ambient process environment directly.
 - Changes to CLI or MCP surfaces must include corresponding documentation
   updates under `docs/` in the same change.
+- Changes to `scripts/install.sh` must keep the `Validate` workflow's
+  install-script matrix in sync with every OS/architecture target that the
+  installer supports.
 - Source-only changes under `sources/community/**` do not need to update the
   aggregate community source catalog page; keep docs freshness strict for
   generator changes, docs changes, and bundled sources under `sources/core/**`.

@@ -16,7 +16,12 @@
     "test:ui:debug": "playwright test --debug",
     "test:ui:screencast": "PW_UI_SCREENCAST=1 PW_UI_REVIEW_PAUSE_MS=1200 playwright test --headed --workers=1",
     "test:ui:screencast:headless": "PW_UI_SCREENCAST=1 PW_UI_REVIEW_PAUSE_MS=1200 playwright test --workers=1",
-    "test:ui:type-check": "npm run proto:gen && tsc -p tsconfig.tests.json"
+    "test:ui:type-check": "npm run proto:gen && tsc -p tsconfig.tests.json",
+    "lint": "oxlint",
+    "lint:fix": "oxlint --fix",
+    "format": "oxfmt",
+    "format:check": "oxfmt --check",
+    "check": "oxfmt --check && oxlint --deny-warnings"
   },
   "dependencies": {
     "@base-ui-components/react": "^1.0.0-rc.0",
@@ -41,6 +46,8 @@
     "@vitejs/plugin-react": "^5.1.1",
     "concurrently": "^9.2.1",
     "msw": "^2.14.6",
+    "oxfmt": "^0.51.0",
+    "oxlint": "^1.66.0",
     "typescript": "^5.6.2",
     "vite": "^5.4.10"
   }
