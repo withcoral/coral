@@ -128,6 +128,9 @@ export const fullRow = style({
   width: '100%',
   selectors: {
     '&:hover': { backgroundColor: theme.surface.onMainContentSubtle },
+    '&[data-active]': { backgroundColor: theme.pill.blue.background },
+    '&:focus': { outline: 'none' },
+    '&:focus-visible': { outline: 'none' },
   },
 })
 export const statusDot = style({
