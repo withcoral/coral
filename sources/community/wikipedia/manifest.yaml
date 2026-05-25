@@ -20,7 +20,7 @@ tables:
     description: |
       Search Wikipedia articles by keyword using the MediaWiki search API.
       Filter by `query` (required). Use SQL `LIMIT` to control result count.
-    args:
+    filters:
       - name: query
         required: true
         bind:
@@ -36,7 +36,7 @@ tables:
           from: literal
           value: search
         - name: srsearch
-          from: arg
+          from: filter
           key: query
         - name: format
           from: literal
@@ -114,14 +114,14 @@ tables:
         nullable: true
         description: Echoes the search query used.
         expr:
-          kind: from_arg
+          kind: from_filter
           key: query
 
   - name: page
     description: |
       Fetch a single article summary by exact title via the Wikipedia REST API.
       Filter by `title` (required). Returns one row per query.
-    args:
+    filters:
       - name: title
         required: true
         bind:
@@ -131,7 +131,6 @@ tables:
       path: /api/rest_v1/page/summary/{title}
     response:
       rows_path: []
-      single_row: true
     pagination:
       mode: none
     columns:
@@ -316,7 +315,6 @@ tables:
       path: /api/rest_v1/page/random/summary
     response:
       rows_path: []
-      single_row: true
     pagination:
       mode: none
     columns:

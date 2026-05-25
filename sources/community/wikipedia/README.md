@@ -47,13 +47,18 @@ SELECT title, description, extract
 FROM wikipedia.random
 "
 
-# Find articles and join with their full summaries
+# Step 1 — find the exact article title by searching
 coral sql "
-SELECT s.title, p.description, p.extract
-FROM wikipedia.search s
-JOIN wikipedia.page p ON s.title = p.title
-WHERE s.query = 'Machine learning'
-LIMIT 5
+SELECT title
+FROM wikipedia.search
+WHERE query = 'Machine learning'
+LIMIT 1
+"
+# Step 2 — use that exact title to fetch the full summary
+coral sql "
+SELECT titles_normalized, description, extract, content_url
+FROM wikipedia.page
+WHERE title = 'Machine learning'
 "
 
 # Search with a larger result set
