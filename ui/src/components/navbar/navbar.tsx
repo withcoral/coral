@@ -16,7 +16,15 @@ export function Navbar() {
       </div>
       <div className={styles.nav} aria-label="Primary navigation">
         {NAV_ITEMS.map((item) => (
-          <button aria-current={item.active ? 'page' : undefined} aria-label={item.label} className={styles.navButton} data-active={item.active ? 'true' : 'false'} disabled={item.active} key={item.label} type="button">
+          <button
+            aria-current={item.active ? 'page' : undefined}
+            aria-label={item.label}
+            className={styles.navButton}
+            data-active={item.active ? 'true' : 'false'}
+            disabled={item.active}
+            key={item.label}
+            type="button"
+          >
             <Icon name={item.icon} size="20" color="inherit" />
           </button>
         ))}

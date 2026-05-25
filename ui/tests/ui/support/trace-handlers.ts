@@ -16,13 +16,15 @@ const getTraceUrl = '*/coral.v1.TraceService/GetTrace'
 
 export const traceHandlers = {
   empty: [
-    http.post(listTracesUrl, () => grpcWebResponse(ListTracesResponseSchema, emptyTraceListResponse)),
+    http.post(listTracesUrl, () =>
+      grpcWebResponse(ListTracesResponseSchema, emptyTraceListResponse),
+    ),
   ],
-  unavailable: [
-    http.post(listTracesUrl, () => grpcWebError(12, 'Trace storage is not enabled')),
-  ],
+  unavailable: [http.post(listTracesUrl, () => grpcWebError(12, 'Trace storage is not enabled'))],
   tenTraceDetailFlow: [
     http.post(listTracesUrl, () => grpcWebResponse(ListTracesResponseSchema, traceListResponse)),
-    http.post(getTraceUrl, () => grpcWebResponse(GetTraceResponseSchema, selectedTraceDetailResponse)),
+    http.post(getTraceUrl, () =>
+      grpcWebResponse(GetTraceResponseSchema, selectedTraceDetailResponse),
+    ),
   ],
 }
