@@ -33,6 +33,15 @@ FROM wikipedia.search
 WHERE query = 'Rust programming language'
 LIMIT 5
 "
++------------------------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+-----------+
+| title                                    | snippet                                                                                                                                                                                                                                                  | wordcount |
++------------------------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+-----------+
+| Rust (programming language)              | <span class="searchmatch">Rust</span> is a general-purpose <span class="searchmatch">programming</span> <span class="searchmatch">language</span> which emphasizes performance, type safety, concurrency, and memory safety. <span class="searchmatch">Rust</span> supports multiple programming | 10559     |
+| Outline of the Rust programming language | topical guide to <span class="searchmatch">Rust</span>: <span class="searchmatch">Rust</span> is a multi-paradigm <span class="searchmatch">programming</span> <span class="searchmatch">language</span> emphasizing performance, memory safety, and concurrency. <span class="searchmatch">Rust</span> was initially developed | 991       |
+| List of programming languages by type    | Raku Red Ruby <span class="searchmatch">Rust</span> Scheme SequenceL Smalltalk Source TREE-META Wolfram Mathematica (Wolfram <span class="searchmatch">language</span>) Zig Modular <span class="searchmatch">programming</span> is a <span class="searchmatch">programming</span> paradigm of | 6802      |
+| Rust syntax                              | functional <span class="searchmatch">programming</span> <span class="searchmatch">languages</span> such as OCaml. Although <span class="searchmatch">Rust</span> syntax is heavily influenced by the syntaxes of C and C++, the syntax of <span class="searchmatch">Rust</span> is far more | 4777      |
+| Functional programming                   | functional <span class="searchmatch">programming</span> is a <span class="searchmatch">programming</span> paradigm where <span class="searchmatch">programs</span> are constructed by applying and composing functions. It is a declarative <span class="searchmatch">programming</span> paradigm | 8758      |
++------------------------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+-----------+
 
 # Look up a specific article by title
 coral sql "
@@ -40,12 +49,22 @@ SELECT title, description, extract, content_url
 FROM wikipedia.page
 WHERE title = 'Rust (programming language)'
 "
++-----------------------------+--------------------------------------+---------------------------------------------------------------------------------------------------------------------------+-----------------------------------------------------------+
+| title                       | description                          | extract                                                                                                                   | content_url                                               |
++-----------------------------+--------------------------------------+---------------------------------------------------------------------------------------------------------------------------+-----------------------------------------------------------+
+| Rust (programming language) | General-purpose programming language | Rust is a general-purpose programming language which emphasizes performance, type safety, concurrency, and memory safety. | https://en.wikipedia.org/wiki/Rust_(programming_language) |
++-----------------------------+--------------------------------------+---------------------------------------------------------------------------------------------------------------------------+-----------------------------------------------------------+
 
 # Get a random article
 coral sql "
 SELECT title, description, extract
 FROM wikipedia.random
 "
++---------------------------------------+------------------------------------+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| title                                 | description                        | extract                                                                                                                                                                                                                                                                                                                                                                            |
++---------------------------------------+------------------------------------+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Upper Madawaska River Provincial Park | Provincial park in Ontario, Canada | Upper Madawaska River Provincial Park is a waterway-class provincial park on the Madawaska River in the municipality of South Algonquin in Nipissing District, Ontario, Canada. The park consists of a strip of land along both shores of the Madawaska River from the communities of Whitney to Madawaska. It is upstream and north of the Lower Madawaska River Provincial Park. |
++---------------------------------------+------------------------------------+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
 
 # Step 1 — find the exact article title by searching
 coral sql "
@@ -54,12 +73,23 @@ FROM wikipedia.search
 WHERE query = 'Machine learning'
 LIMIT 1
 "
++------------------+
+| title            |
++------------------+
+| Machine learning |
++------------------+
+
 # Step 2 — use that exact title to fetch the full summary
 coral sql "
 SELECT titles_normalized, description, extract, content_url
 FROM wikipedia.page
 WHERE title = 'Machine learning'
 "
++-------------------+-----------------------------------+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+------------------------------------------------+
+| titles_normalized | description                       | extract                                                                                                                                                                                                                                                                                                                                                                                                                                  | content_url                                    |
++-------------------+-----------------------------------+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+------------------------------------------------+
+| Machine learning  | Subset of artificial intelligence | Machine learning (ML) is a field of study in artificial intelligence concerned with the development and study of statistical algorithms that can learn from data and generalize to unseen data, and thus perform tasks without being explicitly programmed. Advances in the field of deep learning have allowed neural networks, a class of statistical algorithms, to surpass many previous machine learning approaches in performance. | https://en.wikipedia.org/wiki/Machine_learning |
++-------------------+-----------------------------------+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+------------------------------------------------+
 
 # Search with a larger result set
 coral sql "
@@ -68,6 +98,30 @@ FROM wikipedia.search
 WHERE query = 'Artificial intelligence'
 LIMIT 20
 "
++------------------------------------------------------------+-----------+----------------------+
+| title                                                      | wordcount | timestamp            |
++------------------------------------------------------------+-----------+----------------------+
+| Artificial intelligence                                    | 26884     | 2026-05-21T22:32:25Z |
+| A.I. Artificial Intelligence                               | 6396      | 2026-05-23T14:21:39Z |
+| Artificial general intelligence                            | 13511     | 2026-05-23T17:54:54Z |
+| History of artificial intelligence                         | 19454     | 2026-05-03T14:26:13Z |
+| Hallucination (artificial intelligence)                    | 9732      | 2026-05-21T21:31:50Z |
+| Generative AI                                              | 11906     | 2026-05-25T03:39:54Z |
+| Applications of artificial intelligence                    | 17707     | 2026-05-25T15:03:25Z |
+| Glossary of artificial intelligence                        | 30748     | 2026-05-15T05:11:54Z |
+| Association for the Advancement of Artificial Intelligence | 881       | 2026-04-25T20:00:33Z |
+| Existential risk from artificial intelligence              | 12630     | 2026-05-24T01:01:09Z |
+| Artificial Intelligence Act                                | 5149      | 2026-03-23T06:52:57Z |
+| Artificial intelligence controversies                      | 4569      | 2026-05-19T19:37:45Z |
+| Progress in artificial intelligence                        | 5976      | 2026-05-19T00:52:18Z |
+| List of artificial intelligence companies                  | 224       | 2026-05-25T03:27:49Z |
+| Artificial intelligence in healthcare                      | 14967     | 2026-05-24T02:42:35Z |
+| Artificial intelligence in video games                     | 7819      | 2026-05-18T15:08:36Z |
+| 2025 in artificial intelligence                            | 785       | 2026-05-11T20:12:18Z |
+| Large language model                                       | 14094     | 2026-05-21T02:19:21Z |
+| Ethics of artificial intelligence                          | 16204     | 2026-05-21T22:00:35Z |
+| Artificial intelligence in music                           | 6910      | 2026-05-18T08:35:05Z |
++------------------------------------------------------------+-----------+----------------------+
 
 # Find the longest articles on a topic
 coral sql "

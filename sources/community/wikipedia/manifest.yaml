@@ -23,8 +23,6 @@ tables:
     filters:
       - name: query
         required: true
-        bind:
-          param: srsearch
     request:
       method: GET
       path: /w/api.php
@@ -124,11 +122,9 @@ tables:
     filters:
       - name: title
         required: true
-        bind:
-          path: title
     request:
       method: GET
-      path: /api/rest_v1/page/summary/{title}
+      path: /api/rest_v1/page/summary/{{filter.title}}
     response:
       rows_path: []
     pagination:
