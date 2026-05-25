@@ -10,7 +10,7 @@ Railway's [public GraphQL API](https://docs.railway.com/integrations/api).
 | `projects`       | Projects accessible by the token   | —                                            | —                                         |
 | `services`       | Services within a project          | `project_id`                                 | —                                         |
 | `environments`   | Environments within a project      | `project_id`                                 | —                                         |
-| `deployments`    | Deployments scoped to a project    | `project_id`                                 | `environment_id`, `service_id`, `status`  |
+| `deployments`    | Deployments scoped to a project    | `project_id`                                 | `environment_id`, `service_id`            |
 | `variables`      | Environment variables              | `project_id`, `environment_id`               | `service_id` (omit for shared variables)  |
 | `domains`        | Railway-generated service domains  | `project_id`, `service_id`, `environment_id` | —                                         |
 | `custom_domains` | Custom domains for a service       | `project_id`, `service_id`, `environment_id` | —                                         |
@@ -70,14 +70,15 @@ SELECT id, status, service_id, created_at
  LIMIT 10;
 ```
 
-### Failed deployments for a specific service
+### Deployments for a specific service
 
 ```sql
 SELECT id, status, environment_id, created_at
   FROM railway.deployments
  WHERE project_id = 'your-project-id'
    AND service_id = 'your-service-id'
-   AND status = 'FAILED';
+ ORDER BY created_at DESC
+ LIMIT 10;
 ```
 
 ### Environments for a project
@@ -154,6 +155,10 @@ Paginated tables: `projects`, `services`, `environments`, `deployments`,
 
 The `variables`, `domains`, and `custom_domains` tables do not use
 pagination because the API returns all items in a single response.
+
+## Rate limits
+
+Railway enforces API rate limits (see [Railway API Rate Limits](https://docs.railway.com/integrations/api#rate-limits)). Since this source uses pagination to fetch all items for a query, querying high-cardinality tables (like `deployments`) without filters can consume significant quota. Use `service_id`, `environment_id`, or `LIMIT` to narrow your queries and reduce the number of requests.
 
 ## Known limitations
 

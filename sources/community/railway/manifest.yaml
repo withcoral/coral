@@ -423,15 +423,12 @@ tables:
     description: Deployments for a Railway project
     guide: |
       Lists deployments scoped to a project. Optionally narrow results
-      with `environment_id`, `service_id`, or `status` filters.
-      Common status values: BUILDING, DEPLOYING, SUCCESS, FAILED,
-      CRASHED, REMOVED, SLEEPING, SKIPPED, WAITING, QUEUED.
+      with `environment_id` or `service_id` filters.
     filters:
       - name: project_id
         required: true
       - name: environment_id
       - name: service_id
-      - name: status
     request:
       method: POST
       path: /
@@ -441,9 +438,9 @@ tables:
             - query
           from: literal
           value: |
-            query Deployments($projectId: String!, $environmentId: String, $serviceId: String, $status: String, $first: Int!, $after: String) {
+            query Deployments($projectId: String!, $environmentId: String, $serviceId: String, $first: Int!, $after: String) {
               deployments(
-                input: {projectId: $projectId, environmentId: $environmentId, serviceId: $serviceId, status: $status}
+                input: {projectId: $projectId, environmentId: $environmentId, serviceId: $serviceId}
                 first: $first
                 after: $after
               ) {
@@ -481,11 +478,6 @@ tables:
             - serviceId
           from: filter
           key: service_id
-        - path:
-            - variables
-            - status
-          from: filter
-          key: status
         - path:
             - variables
             - first
