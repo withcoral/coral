@@ -201,11 +201,18 @@ tables:
   - name: dashboards
     description: Metabase dashboards visible to the configured API key.
     guide: |
-      Use this table to inventory BI surfaces, find archived dashboards,
-      and join dashboard ownership back to `metabase.users`.
+      Use this table to inventory BI surfaces and join dashboard ownership
+      back to `metabase.users`. Pass `f=archived` to return archived
+      dashboards.
+    filters:
+      - name: f
     request:
       method: GET
       path: /api/dashboard
+      query:
+        - name: f
+          from: filter
+          key: f
     response:
       rows_path: []
       row_strategy: direct
@@ -266,10 +273,21 @@ tables:
     guide: |
       In the Metabase API, cards are saved questions or models. Use this table
       to find duplicate, archived, or unowned questions and inspect the
-      database/table backing each card.
+      database/table backing each card. Pass `f=archived` to return archived
+      cards, or `model_id` to filter by Metabase model ID.
+    filters:
+      - name: f
+      - name: model_id
     request:
       method: GET
       path: /api/card
+      query:
+        - name: f
+          from: filter
+          key: f
+        - name: model_id
+          from: filter
+          key: model_id
     response:
       rows_path: []
       row_strategy: direct
@@ -345,9 +363,10 @@ tables:
   - name: databases
     description: Databases connected to Metabase.
     guide: |
-      This table exposes database inventory metadata, not database credentials.
-      Join `id` to `metabase.cards.database_id` to understand which questions
-      depend on each warehouse or operational database.
+      This table exposes database inventory metadata and intentionally omits
+      raw connection details. Join `id` to `metabase.cards.database_id` to
+      understand which questions depend on each warehouse or operational
+      database.
     request:
       method: GET
       path: /api/database
@@ -385,10 +404,6 @@ tables:
         type: Boolean
         nullable: true
         description: Whether on-demand sync behavior is enabled.
-      - name: details
-        type: Json
-        nullable: true
-        description: Database connection metadata returned by Metabase.
       - name: created_at
         type: Timestamp
         nullable: true
@@ -409,16 +424,33 @@ tables:
   - name: users
     description: Metabase users visible to the configured API key.
     guide: |
-      Use this table for ownership and access audits. Join `id` to dashboard
-      and card creator fields to identify orphaned or inactive-owned content.
+      Use this table for ownership and access audits. Metabase returns active
+      users by default; pass `status=deactivated`, `status=all`, or
+      `include_deactivated=true` when auditing inactive-owned content.
+    filters:
+      - name: status
+      - name: include_deactivated
     request:
       method: GET
       path: /api/user
+      query:
+        - name: status
+          from: filter
+          key: status
+        - name: include_deactivated
+          from: filter_bool
+          key: include_deactivated
     response:
       rows_path: [data]
       row_strategy: direct
     pagination:
-      mode: none
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 1000
+        query_param: limit
     columns:
       - name: id
         type: Int64

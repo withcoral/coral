@@ -7,7 +7,7 @@ as SQL tables in Coral. It is designed for analytics governance: collections,
 dashboards, saved questions, connected databases, users, and permission groups.
 
 It is read-only. It does not execute Metabase questions and does not expose
-database credentials.
+database connection details or credentials.
 
 ## Authentication
 
@@ -85,7 +85,17 @@ Dashboards owned by inactive users:
 SELECT d.id, d.name, u.email, u.is_active
 FROM metabase.dashboards d
 JOIN metabase.users u ON d.creator_id = u.id
-WHERE u.is_active = false;
+WHERE u.status = 'all'
+  AND u.is_active = false;
+```
+
+Archived dashboards:
+
+```sql
+SELECT id, name, archived, updated_at
+FROM metabase.dashboards
+WHERE f = 'archived'
+ORDER BY updated_at DESC;
 ```
 
 Permission groups by size:
@@ -99,6 +109,11 @@ ORDER BY member_count DESC;
 ## Limitations
 
 - Metabase's API is not versioned and can change between releases.
+- `metabase.users` returns active users by default; use `status = 'all'`,
+  `status = 'deactivated'`, or `include_deactivated = true` when auditing
+  inactive users.
+- `metabase.dashboards` and `metabase.cards` accept `f = 'archived'` when you
+  want archived content from the Metabase API.
 - Metabase can return a root collection with a null `id`; use
   `collection_id = 'root'` when querying root collection items.
 - `metabase.collection_items` requires `collection_id`; use `root` for the
@@ -106,8 +121,8 @@ ORDER BY member_count DESC;
 - `metabase.permission_groups` may require an admin-scoped API key.
 - Pagination is not configured for endpoints that Metabase commonly returns as
   bounded arrays or `data` payloads.
-- This source does not run saved questions, fetch query results, or expose
-  database credentials.
+- This source does not run saved questions, fetch query results, or expose raw
+  database connection details or credentials.
 
 ## Validation
 
