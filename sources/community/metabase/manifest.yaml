@@ -267,6 +267,14 @@ tables:
         type: Json
         nullable: true
         description: Dashboard filter parameter configuration.
+      - name: f
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional Metabase dashboard filter, such as archived.
+        expr:
+          kind: from_filter
+          key: f
 
   - name: cards
     description: Metabase questions, models, and SQL cards visible to the configured API key.
@@ -359,6 +367,22 @@ tables:
           kind: format_timestamp
           input: iso8601
           expr: {kind: path, path: [updated_at]}
+      - name: f
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional Metabase card filter, such as archived.
+        expr:
+          kind: from_filter
+          key: f
+      - name: model_id
+        type: Int64
+        nullable: true
+        virtual: true
+        description: Optional Metabase model ID filter.
+        expr:
+          kind: from_filter
+          key: model_id
 
   - name: databases
     description: Databases connected to Metabase.
@@ -496,6 +520,22 @@ tables:
           kind: format_timestamp
           input: iso8601
           expr: {kind: path, path: [last_login]}
+      - name: status
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional user status filter, such as all or deactivated.
+        expr:
+          kind: from_filter
+          key: status
+      - name: include_deactivated
+        type: Boolean
+        nullable: true
+        virtual: true
+        description: Optional filter to include deactivated users.
+        expr:
+          kind: from_filter
+          key: include_deactivated
 
   - name: permission_groups
     description: Metabase permission groups.
