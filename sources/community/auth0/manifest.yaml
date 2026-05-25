@@ -1117,7 +1117,7 @@ tables:
         type: Utf8
         nullable: true
         description: Application that received the grant.
-        expr: {kind: path, path: [clientID]}
+        expr: {kind: path, path: [client_id]}
       - name: audience
         type: Utf8
         nullable: true
