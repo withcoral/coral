@@ -10,6 +10,10 @@ No API key or authentication is needed. Add the source directly:
 coral source add --file sources/community/free-dictionary/manifest.yaml
 ```
 
+## Unknown Words
+
+If you query for a word that does not exist in the dictionary, the API returns a 404 response. Coral is configured to gracefully handle this and will return an empty result set rather than throwing an error.
+
 ## Tables
 
 ### `entries`

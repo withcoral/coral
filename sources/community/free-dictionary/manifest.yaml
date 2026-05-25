@@ -17,10 +17,14 @@ tables:
       path: /entries/en/{{filter.word}}
     response:
       row_strategy: direct
+      allow_404_empty: true
     pagination:
       mode: none
     columns:
       - name: word
+        type: Utf8
+        expr: {kind: path, path: [word]}
+      - name: query_word
         type: Utf8
         expr: {kind: from_filter, key: word}
       - name: phonetics
