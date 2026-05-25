@@ -10,6 +10,10 @@ No API key or authentication is needed. Add the source directly:
 coral source add --file sources/community/chucknorris/manifest.yaml
 ```
 
+## Rate Limits
+
+No API key or authentication is needed, and there is no officially documented public rate limit. However, please be polite and avoid heavy bulk harvesting.
+
 ## Tables
 
 ### `jokes`
@@ -39,4 +43,14 @@ List all available joke categories.
 ```sql
 SELECT category
 FROM chucknorris.categories;
+```
+
+### `search`
+Search for Chuck Norris jokes using a free-text query. Requires the `query` filter.
+
+**Example:**
+```sql
+SELECT id, value
+FROM chucknorris.search
+WHERE query = 'rust';
 ```

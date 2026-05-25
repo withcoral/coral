@@ -8,6 +8,7 @@ test_queries:
   - SELECT * FROM chucknorris.jokes LIMIT 1
   - SELECT * FROM chucknorris.categories LIMIT 1
   - SELECT * FROM chucknorris.jokes_by_category WHERE category = 'animal' LIMIT 1
+  - SELECT * FROM chucknorris.search WHERE query = 'rust' LIMIT 1
 tables:
   - name: jokes
     description: Fetch a random Chuck Norris joke.
@@ -96,3 +97,46 @@ tables:
       - name: category
         type: Utf8
         expr: {kind: current_row}
+
+  - name: search
+    description: Search for Chuck Norris jokes via free-text query.
+    filters:
+      - name: query
+        required: true
+    request:
+      method: GET
+      path: /jokes/search
+      query:
+        - name: query
+          from: filter
+          key: query
+    response:
+      rows_path:
+        - result
+    pagination:
+      mode: none
+    columns:
+      - name: query
+        type: Utf8
+        expr: {kind: from_filter, key: query}
+      - name: id
+        type: Utf8
+        expr: {kind: path, path: [id]}
+      - name: value
+        type: Utf8
+        expr: {kind: path, path: [value]}
+      - name: created_at
+        type: Utf8
+        expr: {kind: path, path: [created_at]}
+      - name: updated_at
+        type: Utf8
+        expr: {kind: path, path: [updated_at]}
+      - name: icon_url
+        type: Utf8
+        expr: {kind: path, path: [icon_url]}
+      - name: url
+        type: Utf8
+        expr: {kind: path, path: [url]}
+      - name: categories
+        type: Json
+        expr: {kind: path, path: [categories]}
