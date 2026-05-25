@@ -1,0 +1,778 @@
+name: statuspage
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query status, components, incidents, and scheduled maintenances from
+  Atlassian Statuspage. Works with any public Statuspage instance including
+  Stripe, GitHub, Atlassian, PagerDuty, Twilio, Cloudflare, and most major
+  SaaS vendors. No authentication required.
+base_url: "{{input.STATUSPAGE_BASE_URL}}"
+
+inputs:
+  STATUSPAGE_BASE_URL:
+    kind: variable
+    default: "https://www.githubstatus.com"
+    hint: >-
+      Base URL of the Atlassian Statuspage instance to monitor.
+      Examples: https://www.githubstatus.com, https://status.atlassian.com,
+      https://status.pagerduty.com, https://status.twilio.com.
+      Do not include a trailing slash. Any service running Atlassian
+      Statuspage works.
+
+tables:
+  # ──────────────────────────────────────────────────────────────────────────
+  # status
+  # Overall page-level health indicator.
+  # GET /api/v2/status.json
+  # Response: {"page": {...}, "status": {...}}
+  # ──────────────────────────────────────────────────────────────────────────
+  - name: status
+    description: >-
+      Overall health indicator for the monitored service.
+      Returns one row with a top-level indicator (none, minor, major,
+      critical, maintenance) and a human-readable description.
+      Use this as a fast yes/no check before drilling into components
+      or incidents.
+    guide: |
+      No filters required. Query: `SELECT indicator, description FROM {source}.status`.
+      `indicator` values: none (all operational), minor, major, critical, maintenance.
+    request:
+      method: GET
+      path: /api/v2/status.json
+    response:
+      rows_path:
+        - status
+      row_strategy: direct
+      allow_404_empty: false
+    columns:
+      - name: indicator
+        type: Utf8
+        nullable: false
+        description: >-
+          Rollup health signal. One of: none (all operational),
+          minor, major, critical, maintenance.
+        expr:
+          kind: path
+          path:
+            - indicator
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Human-readable status sentence shown on the status page.
+        expr:
+          kind: path
+          path:
+            - description
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # components
+  # Individual service components and their current health status.
+  # GET /api/v2/components.json
+  # Response: {"page": {...}, "components": [...]}
+  # ──────────────────────────────────────────────────────────────────────────
+  - name: components
+    description: >-
+      Health status of every individual service component on the status page.
+      Each row is one component (e.g. API, Webhooks, Dashboard).
+      Component status values: operational | degraded_performance |
+      partial_outage | major_outage | under_maintenance.
+      Filter WHERE status != 'operational' to surface degraded components.
+    guide: |
+      No filters required. Query: `SELECT id, name, status FROM {source}.components WHERE status != 'operational'`.
+      Join with `{source}.incidents` on `id` to find which components are affected by incidents.
+    request:
+      method: GET
+      path: /api/v2/components.json
+    response:
+      rows_path:
+        - components
+      row_strategy: direct
+      allow_404_empty: false
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique component ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: page_id
+        type: Utf8
+        nullable: false
+        description: ID of the status page this component belongs to.
+        expr:
+          kind: path
+          path:
+            - page_id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Human-readable component name, e.g. "API" or "Webhooks".
+        expr:
+          kind: path
+          path:
+            - name
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Optional longer description of what this component covers.
+        expr:
+          kind: path
+          path:
+            - description
+      - name: status
+        type: Utf8
+        nullable: false
+        description: >-
+          Current health. One of: operational, degraded_performance,
+          partial_outage, major_outage, under_maintenance.
+        expr:
+          kind: path
+          path:
+            - status
+      - name: group
+        type: Boolean
+        nullable: true
+        description: True if this component is a group container for sub-components.
+        expr:
+          kind: path
+          path:
+            - group
+      - name: group_id
+        type: Utf8
+        nullable: true
+        description: Parent group component ID, if this component is nested.
+        expr:
+          kind: path
+          path:
+            - group_id
+      - name: showcase
+        type: Boolean
+        nullable: true
+        description: >-
+          Whether this component is shown on the public status page
+          by default, or only when degraded.
+        expr:
+          kind: path
+          path:
+            - showcase
+      - name: only_show_if_degraded
+        type: Boolean
+        nullable: true
+        description: >-
+          If true, this component is hidden from the public page
+          unless its status is non-operational.
+        expr:
+          kind: path
+          path:
+            - only_show_if_degraded
+      - name: position
+        type: Int64
+        nullable: true
+        description: Display order position on the status page.
+        expr:
+          kind: path
+          path:
+            - position
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: ISO 8601 timestamp when this component was created.
+        expr:
+          kind: path
+          path:
+            - created_at
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: ISO 8601 timestamp of the last status change.
+        expr:
+          kind: path
+          path:
+            - updated_at
+      - name: start_date
+        type: Utf8
+        nullable: true
+        description: Optional date this component went live, in YYYY-MM-DD format.
+        expr:
+          kind: path
+          path:
+            - start_date
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # incidents
+  # All incidents — resolved and unresolved — in reverse chronological order.
+  # GET /api/v2/incidents.json
+  # Response: {"page": {...}, "incidents": [...]}
+  # ──────────────────────────────────────────────────────────────────────────
+  - name: incidents
+    description: >-
+      All incidents recorded on the status page, including resolved ones,
+      in reverse chronological order. Each row is one incident.
+      Incident status values: investigating | identified | monitoring | resolved.
+      Impact values: none | minor | major | critical.
+      Use active_incidents to query only currently open incidents.
+    guide: |
+      Query: `SELECT id, name, impact, status, created_at FROM {source}.incidents ORDER BY created_at DESC LIMIT 10`.
+      Filter active incidents: `WHERE resolved_at IS NULL`.
+    request:
+      method: GET
+      path: /api/v2/incidents.json
+    response:
+      rows_path:
+        - incidents
+      row_strategy: direct
+      allow_404_empty: false
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      page_size:
+        default: 25
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique incident ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: page_id
+        type: Utf8
+        nullable: false
+        description: ID of the status page this incident belongs to.
+        expr:
+          kind: path
+          path:
+            - page_id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Short title of the incident, e.g. "API latency degradation".
+        expr:
+          kind: path
+          path:
+            - name
+      - name: status
+        type: Utf8
+        nullable: false
+        description: >-
+          Current workflow status. One of: investigating, identified,
+          monitoring, resolved, postmortem.
+        expr:
+          kind: path
+          path:
+            - status
+      - name: impact
+        type: Utf8
+        nullable: false
+        description: >-
+          Assessed business impact. One of: none, minor, major, critical.
+          Use this to filter for high-severity third-party outages.
+        expr:
+          kind: path
+          path:
+            - impact
+      - name: shortlink
+        type: Utf8
+        nullable: true
+        description: >-
+          Shortened public URL to the incident detail page.
+          Include this in generated incident reports so engineers
+          can follow up with the vendor directly.
+        expr:
+          kind: path
+          path:
+            - shortlink
+      - name: created_at
+        type: Utf8
+        nullable: false
+        description: ISO 8601 timestamp when the incident was first reported.
+        expr:
+          kind: path
+          path:
+            - created_at
+      - name: updated_at
+        type: Utf8
+        nullable: false
+        description: ISO 8601 timestamp of the most recent incident update.
+        expr:
+          kind: path
+          path:
+            - updated_at
+      - name: monitoring_at
+        type: Utf8
+        nullable: true
+        description: >-
+          ISO 8601 timestamp when the incident moved to monitoring status.
+          NULL if not yet in monitoring state.
+        expr:
+          kind: path
+          path:
+            - monitoring_at
+      - name: resolved_at
+        type: Utf8
+        nullable: true
+        description: >-
+          ISO 8601 timestamp when the incident was resolved.
+          NULL for unresolved incidents — use this to filter active ones.
+        expr:
+          kind: path
+          path:
+            - resolved_at
+      - name: scheduled_for
+        type: Utf8
+        nullable: true
+        description: >-
+          For scheduled maintenance incidents, the planned start time
+          in ISO 8601 format. NULL for unplanned incidents.
+        expr:
+          kind: path
+          path:
+            - scheduled_for
+      - name: scheduled_until
+        type: Utf8
+        nullable: true
+        description: Planned end time for scheduled maintenance. NULL for unplanned incidents.
+        expr:
+          kind: path
+          path:
+            - scheduled_until
+      - name: started_at
+        type: Utf8
+        nullable: true
+        description: When the incident started (ISO 8601). May differ from created_at.
+        expr:
+          kind: path
+          path:
+            - started_at
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # active_incidents
+  # Only currently unresolved incidents.
+  # GET /api/v2/incidents/unresolved.json
+  # Response: {"page": {...}, "incidents": [...]}
+  # ──────────────────────────────────────────────────────────────────────────
+  - name: active_incidents
+    description: >-
+      Currently unresolved incidents only. This is the table to use in
+      real-time incident correlation. If this returns zero rows, the
+      third-party vendor is fully operational and your incident root cause
+      is internal. Each row is one open incident with its current status,
+      impact level, and a shortlink for follow-up with the vendor.
+    guide: |
+      Query: `SELECT id, name, impact, status, created_at, shortlink FROM {source}.active_incidents`.
+      If empty, the vendor has no active outages.
+    request:
+      method: GET
+      path: /api/v2/incidents/unresolved.json
+    response:
+      rows_path:
+        - incidents
+      row_strategy: direct
+      allow_404_empty: false
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique incident ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: page_id
+        type: Utf8
+        nullable: false
+        description: ID of the status page this incident belongs to.
+        expr:
+          kind: path
+          path:
+            - page_id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Short title of the active incident.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: status
+        type: Utf8
+        nullable: false
+        description: >-
+          Current workflow status. One of: investigating, identified,
+          monitoring. Will never be resolved in this table.
+        expr:
+          kind: path
+          path:
+            - status
+      - name: impact
+        type: Utf8
+        nullable: false
+        description: Assessed business impact — none, minor, major, or critical.
+        expr:
+          kind: path
+          path:
+            - impact
+      - name: shortlink
+        type: Utf8
+        nullable: true
+        description: Public URL to the vendor's incident detail page.
+        expr:
+          kind: path
+          path:
+            - shortlink
+      - name: created_at
+        type: Utf8
+        nullable: false
+        description: ISO 8601 timestamp when the incident was first reported.
+        expr:
+          kind: path
+          path:
+            - created_at
+      - name: updated_at
+        type: Utf8
+        nullable: false
+        description: ISO 8601 timestamp of the most recent update from the vendor.
+        expr:
+          kind: path
+          path:
+            - updated_at
+      - name: monitoring_at
+        type: Utf8
+        nullable: true
+        description: Timestamp when the incident moved to monitoring state, if applicable.
+        expr:
+          kind: path
+          path:
+            - monitoring_at
+      - name: resolved_at
+        type: Utf8
+        nullable: true
+        description: Always NULL in this table — rows are unresolved incidents only.
+        expr:
+          kind: path
+          path:
+            - resolved_at
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # scheduled_maintenances
+  # All scheduled maintenance windows — active and upcoming.
+  # GET /api/v2/scheduled-maintenances.json
+  # Response: {"page": {...}, "scheduled_maintenances": [...]}
+  # ──────────────────────────────────────────────────────────────────────────
+  - name: scheduled_maintenances
+    description: >-
+      All scheduled maintenance windows, both active (in_progress) and
+      upcoming. Use this to rule out planned downtime as a root cause
+      before escalating an incident. Status values: scheduled | in_progress
+      | verifying | completed.
+    guide: |
+      Query: `SELECT id, name, status, scheduled_for, scheduled_until FROM {source}.scheduled_maintenances`.
+      Filter active: `WHERE status = 'in_progress'`.
+    request:
+      method: GET
+      path: /api/v2/scheduled-maintenances.json
+    response:
+      rows_path:
+        - scheduled_maintenances
+      row_strategy: direct
+      allow_404_empty: false
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique maintenance window ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: page_id
+        type: Utf8
+        nullable: false
+        description: ID of the status page this maintenance belongs to.
+        expr:
+          kind: path
+          path:
+            - page_id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Title of the maintenance window.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: status
+        type: Utf8
+        nullable: false
+        description: >-
+          One of: scheduled, in_progress, verifying, completed.
+          Filter WHERE status = 'in_progress' to find currently active windows.
+        expr:
+          kind: path
+          path:
+            - status
+      - name: impact
+        type: Utf8
+        nullable: true
+        description: Expected impact level during the maintenance window.
+        expr:
+          kind: path
+          path:
+            - impact
+      - name: shortlink
+        type: Utf8
+        nullable: true
+        description: Public URL to the maintenance detail page.
+        expr:
+          kind: path
+          path:
+            - shortlink
+      - name: scheduled_for
+        type: Utf8
+        nullable: true
+        description: ISO 8601 planned start time for this maintenance window.
+        expr:
+          kind: path
+          path:
+            - scheduled_for
+      - name: scheduled_until
+        type: Utf8
+        nullable: true
+        description: ISO 8601 planned end time for this maintenance window.
+        expr:
+          kind: path
+          path:
+            - scheduled_until
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: ISO 8601 timestamp when this maintenance was scheduled.
+        expr:
+          kind: path
+          path:
+            - created_at
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: ISO 8601 timestamp of the most recent update.
+        expr:
+          kind: path
+          path:
+            - updated_at
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # active_maintenances
+  # Only maintenance windows that are currently in progress.
+  # GET /api/v2/scheduled-maintenances/active.json
+  # Response: {"page": {...}, "scheduled_maintenances": [...]}
+  # ──────────────────────────────────────────────────────────────────────────
+  - name: active_maintenances
+    description: >-
+      Maintenance windows that are currently in progress right now.
+      If this returns rows and your service is degraded, the root cause
+      may be a vendor maintenance window rather than a code regression.
+      Zero rows means no active maintenance — look elsewhere for root cause.
+    guide: |
+      Query: `SELECT id, name, impact, scheduled_for, scheduled_until FROM {source}.active_maintenances`.
+      Use to check if vendor maintenance is affecting your service.
+    request:
+      method: GET
+      path: /api/v2/scheduled-maintenances/active.json
+    response:
+      rows_path:
+        - scheduled_maintenances
+      row_strategy: direct
+      allow_404_empty: false
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique maintenance window ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: page_id
+        type: Utf8
+        nullable: false
+        description: ID of the status page this maintenance belongs to.
+        expr:
+          kind: path
+          path:
+            - page_id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Title of the active maintenance window.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: status
+        type: Utf8
+        nullable: false
+        description: Always in_progress in this table.
+        expr:
+          kind: path
+          path:
+            - status
+      - name: impact
+        type: Utf8
+        nullable: true
+        description: Expected impact level during this maintenance window.
+        expr:
+          kind: path
+          path:
+            - impact
+      - name: shortlink
+        type: Utf8
+        nullable: true
+        description: Public URL to the maintenance detail page.
+        expr:
+          kind: path
+          path:
+            - shortlink
+      - name: scheduled_for
+        type: Utf8
+        nullable: true
+        description: ISO 8601 planned start time.
+        expr:
+          kind: path
+          path:
+            - scheduled_for
+      - name: scheduled_until
+        type: Utf8
+        nullable: true
+        description: ISO 8601 planned end time.
+        expr:
+          kind: path
+          path:
+            - scheduled_until
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: ISO 8601 timestamp when this maintenance was scheduled.
+        expr:
+          kind: path
+          path:
+            - created_at
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: ISO 8601 timestamp of the most recent update.
+        expr:
+          kind: path
+          path:
+            - updated_at
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # upcoming_maintenances
+  # Maintenance windows scheduled in the future.
+  # GET /api/v2/scheduled-maintenances/upcoming.json
+  # Response: {"page": {...}, "scheduled_maintenances": [...]}
+  # ──────────────────────────────────────────────────────────────────────────
+  - name: upcoming_maintenances
+    description: >-
+      Maintenance windows that are scheduled but not yet started.
+      Use this to warn on-call engineers about planned downtime windows
+      that overlap with your incident timeline.
+    guide: |
+      Query: `SELECT id, name, scheduled_for, scheduled_until FROM {source}.upcoming_maintenances ORDER BY scheduled_for ASC`.
+      Use to plan around upcoming vendor maintenance.
+    request:
+      method: GET
+      path: /api/v2/scheduled-maintenances/upcoming.json
+    response:
+      rows_path:
+        - scheduled_maintenances
+      row_strategy: direct
+      allow_404_empty: false
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique maintenance window ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: page_id
+        type: Utf8
+        nullable: false
+        description: ID of the status page this maintenance belongs to.
+        expr:
+          kind: path
+          path:
+            - page_id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Title of the upcoming maintenance window.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: status
+        type: Utf8
+        nullable: false
+        description: Always scheduled in this table.
+        expr:
+          kind: path
+          path:
+            - status
+      - name: impact
+        type: Utf8
+        nullable: true
+        description: Expected impact level when this maintenance begins.
+        expr:
+          kind: path
+          path:
+            - impact
+      - name: shortlink
+        type: Utf8
+        nullable: true
+        description: Public URL to the maintenance detail page.
+        expr:
+          kind: path
+          path:
+            - shortlink
+      - name: scheduled_for
+        type: Utf8
+        nullable: true
+        description: ISO 8601 planned start time.
+        expr:
+          kind: path
+          path:
+            - scheduled_for
+      - name: scheduled_until
+        type: Utf8
+        nullable: true
+        description: ISO 8601 planned end time.
+        expr:
+          kind: path
+          path:
+            - scheduled_until
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: ISO 8601 timestamp when this maintenance was scheduled.
+        expr:
+          kind: path
+          path:
+            - created_at
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: ISO 8601 timestamp of the most recent update.
+        expr:
+          kind: path
+          path:
+            - updated_at
