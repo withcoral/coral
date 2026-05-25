@@ -77,4 +77,10 @@ tables:
         expr: {kind: path, path: [total_supply]}
       - name: last_updated
         type: Timestamp
-        expr: {kind: path, path: [last_updated]}
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - last_updated
