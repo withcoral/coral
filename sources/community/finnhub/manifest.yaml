@@ -1,0 +1,1444 @@
+name: finnhub
+version: 0.1.0
+dsl_version: 3
+backend: http
+
+inputs:
+  API_BASE:
+    kind: variable
+    default: https://finnhub.io/api/v1
+    hint: Base URL for the Finnhub API
+  API_TOKEN:
+    kind: secret
+    hint: Your Finnhub API Token
+
+base_url: "{{input.API_BASE}}"
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: X-Finnhub-Token
+      from: template
+      template: "{{input.API_TOKEN}}"
+
+tables:
+  - name: market_news
+    description: Fetch the latest market news headlines
+    request:
+      method: GET
+      path: /news
+      query:
+        - name: category
+          from: template
+          template: general
+    columns:
+      - name: id
+        type: Int64
+      - name: datetime
+        type: Int64
+      - name: headline
+        type: Utf8
+      - name: category
+        type: Utf8
+      - name: source
+        type: Utf8
+      - name: summary
+        type: Utf8
+      - name: url
+        type: Utf8
+      - name: related
+        type: Utf8
+
+  - name: company_news
+    description: Fetch news for a specific company symbol
+    filters:
+      - name: symbol
+        type: Utf8
+        required: true
+      - name: from
+        type: Utf8
+        required: true
+      - name: to
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /company-news
+      query:
+        - name: symbol
+          from: template
+          template: "{{filter.symbol}}"
+        - name: from
+          from: template
+          template: "{{filter.from}}"
+        - name: to
+          from: template
+          template: "{{filter.to}}"
+    columns:
+      - name: id
+        type: Int64
+      - name: headline
+        type: Utf8
+      - name: datetime
+        type: Int64
+      - name: source
+        type: Utf8
+      - name: url
+        type: Utf8
+      - name: summary
+        type: Utf8
+
+  - name: news_sentiment
+    description: Get the company's news sentiment and buzz
+    filters:
+      - name: symbol
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /news-sentiment
+      query:
+        - name: symbol
+          from: template
+          template: "{{filter.symbol}}"
+    columns:
+      - name: symbol
+        type: Utf8
+      - name: companyNewsScore
+        type: Float64
+      - name: sectorAverageBullishPercent
+        type: Float64
+      - name: buzz__buzz
+        type: Float64
+      - name: buzz__weeklyAverage
+        type: Float64
+      - name: sentiment__bullishPercent
+        type: Float64
+      - name: sentiment__bearishPercent
+        type: Float64
+
+  - name: economic_calendar
+    description: Fetch upcoming economic events and indicators
+    request:
+      method: GET
+      path: /calendar/economic
+    response:
+      rows_path:
+        - economicCalendar
+    columns:
+      - name: event
+        type: Utf8
+      - name: time
+        type: Utf8
+      - name: country
+        type: Utf8
+      - name: impact
+        type: Utf8
+      - name: actual
+        type: Float64
+      - name: estimate
+        type: Float64
+      - name: previous
+        type: Float64
+
+  - name: quote
+    description: Get real-time quote data for US stocks
+    filters:
+      - name: symbol
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /quote
+      query:
+        - name: symbol
+          from: template
+          template: "{{filter.symbol}}"
+    columns:
+      - name: c
+        type: Float64
+      - name: d
+        type: Float64
+      - name: dp
+        type: Float64
+      - name: h
+        type: Float64
+      - name: l
+        type: Float64
+      - name: o
+        type: Float64
+      - name: pc
+        type: Float64
+      - name: t
+        type: Int64
+
+  - name: forex_rates
+    description: Get latest forex rates against a base currency
+    filters:
+      - name: base
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /forex/rates
+      query:
+        - name: base
+          from: template
+          template: "{{filter.base}}"
+    columns:
+      - name: base
+        type: Utf8
+      - name: quote__EUR
+        type: Float64
+      - name: quote__GBP
+        type: Float64
+      - name: quote__JPY
+        type: Float64
+      - name: quote__CHF
+        type: Float64
+
+  - name: market_status
+    description: Get current market status for global exchanges
+    filters:
+      - name: exchange
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /stock/market-status
+      query:
+        - name: exchange
+          from: template
+          template: "{{filter.exchange}}"
+    columns:
+      - name: exchange
+        type: Utf8
+      - name: isOpen
+        type: Boolean
+      - name: session
+        type: Utf8
+      - name: timezone
+        type: Utf8
+      - name: t
+        type: Int64
+
+  - name: company_profile
+    description: Get general information of a company
+    filters:
+      - name: symbol
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /stock/profile2
+      query:
+        - name: symbol
+          from: template
+          template: "{{filter.symbol}}"
+    columns:
+      - name: country
+        type: Utf8
+      - name: currency
+        type: Utf8
+      - name: exchange
+        type: Utf8
+      - name: name
+        type: Utf8
+      - name: ticker
+        type: Utf8
+      - name: ipo
+        type: Utf8
+      - name: marketCapitalization
+        type: Float64
+      - name: shareOutstanding
+        type: Float64
+      - name: finnhubIndustry
+        type: Utf8
+
+  - name: basic_financials
+    description: Get basic financial metrics for a company
+    filters:
+      - name: symbol
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /stock/metric
+      query:
+        - name: symbol
+          from: template
+          template: "{{filter.symbol}}"
+        - name: metric
+          from: template
+          template: "all"
+    columns:
+      - name: symbol
+        type: Utf8
+      - name: metric__52WeekHigh
+        type: Float64
+      - name: metric__52WeekLow
+        type: Float64
+      - name: metric__beta
+        type: Float64
+
+  - name: insider_transactions
+    description: Get company insider transactions
+    filters:
+      - name: symbol
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /stock/insider-transactions
+      query:
+        - name: symbol
+          from: template
+          template: "{{filter.symbol}}"
+    response:
+      rows_path:
+        - data
+    columns:
+      - name: name
+        type: Utf8
+      - name: share
+        type: Int64
+      - name: change
+        type: Int64
+      - name: filingDate
+        type: Utf8
+      - name: transactionDate
+        type: Utf8
+      - name: transactionPrice
+        type: Float64
+      - name: transactionCode
+        type: Utf8
+
+  - name: recommendation_trends
+    description: Get latest analyst recommendation trends
+    filters:
+      - name: symbol
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /stock/recommendation
+      query:
+        - name: symbol
+          from: template
+          template: "{{filter.symbol}}"
+    columns:
+      - name: symbol
+        type: Utf8
+      - name: buy
+        type: Int64
+      - name: hold
+        type: Int64
+      - name: sell
+        type: Int64
+      - name: strongBuy
+        type: Int64
+      - name: strongSell
+        type: Int64
+      - name: period
+        type: Utf8
+
+  - name: earnings_calendar
+    description: Get historical and upcoming earnings calendar
+    filters:
+      - name: from
+        type: Utf8
+        required: true
+      - name: to
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /calendar/earnings
+      query:
+        - name: from
+          from: template
+          template: "{{filter.from}}"
+        - name: to
+          from: template
+          template: "{{filter.to}}"
+    response:
+      rows_path:
+        - earningsCalendar
+    columns:
+      - name: symbol
+        type: Utf8
+      - name: date
+        type: Utf8
+      - name: hour
+        type: Utf8
+      - name: epsActual
+        type: Float64
+      - name: epsEstimate
+        type: Float64
+      - name: revenueActual
+        type: Float64
+      - name: revenueEstimate
+        type: Float64
+
+  - name: market_holiday
+    description: Get list of market holidays for an exchange
+    filters:
+      - name: exchange
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /stock/market-holiday
+      query:
+        - name: exchange
+          from: template
+          template: "{{filter.exchange}}"
+    response:
+      rows_path:
+        - data
+    columns:
+      - name: eventName
+        type: Utf8
+      - name: atDate
+        type: Utf8
+      - name: tradingHour
+        type: Utf8
+
+  - name: ipo_calendar
+    description: Get recent and upcoming IPO calendar
+    filters:
+      - name: from
+        type: Utf8
+        required: true
+      - name: to
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /calendar/ipo
+      query:
+        - name: from
+          from: template
+          template: "{{filter.from}}"
+        - name: to
+          from: template
+          template: "{{filter.to}}"
+    response:
+      rows_path:
+        - ipoCalendar
+    columns:
+      - name: symbol
+        type: Utf8
+      - name: date
+        type: Utf8
+      - name: exchange
+        type: Utf8
+      - name: name
+        type: Utf8
+      - name: status
+        type: Utf8
+      - name: price
+        type: Utf8
+      - name: numberOfShares
+        type: Int64
+      - name: totalSharesValue
+        type: Int64
+
+  - name: forex_symbols
+    description: List of supported forex symbols for an exchange
+    filters:
+      - name: exchange
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /forex/symbol
+      query:
+        - name: exchange
+          from: template
+          template: "{{filter.exchange}}"
+    columns:
+      - name: description
+        type: Utf8
+      - name: displaySymbol
+        type: Utf8
+      - name: symbol
+        type: Utf8
+
+  - name: stock_price_target
+    description: Get latest price target consensus
+    filters:
+      - name: symbol
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /stock/price-target
+      query:
+        - name: symbol
+          from: template
+          template: "{{filter.symbol}}"
+    columns:
+      - name: symbol
+        type: Utf8
+      - name: targetHigh
+        type: Float64
+      - name: targetLow
+        type: Float64
+      - name: targetMean
+        type: Float64
+      - name: targetMedian
+        type: Float64
+      - name: lastUpdated
+        type: Utf8
+
+  - name: stock_upgrade_downgrade
+    description: Get latest stock upgrade/downgrade
+    filters:
+      - name: symbol
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /stock/upgrade-downgrade
+      query:
+        - name: symbol
+          from: template
+          template: "{{filter.symbol}}"
+    columns:
+      - name: symbol
+        type: Utf8
+      - name: gradeTime
+        type: Int64
+      - name: fromGrade
+        type: Utf8
+      - name: toGrade
+        type: Utf8
+      - name: company
+        type: Utf8
+      - name: action
+        type: Utf8
+
+  - name: stock_ownership
+    description: Get list of institutional shareholders
+    filters:
+      - name: symbol
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /stock/ownership
+      query:
+        - name: symbol
+          from: template
+          template: "{{filter.symbol}}"
+    response:
+      rows_path:
+        - data
+    columns:
+      - name: name
+        type: Utf8
+      - name: share
+        type: Int64
+      - name: change
+        type: Int64
+      - name: filingDate
+        type: Utf8
+
+  - name: stock_fund_ownership
+    description: Get list of fund shareholders
+    filters:
+      - name: symbol
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /stock/fund-ownership
+      query:
+        - name: symbol
+          from: template
+          template: "{{filter.symbol}}"
+    response:
+      rows_path:
+        - data
+    columns:
+      - name: name
+        type: Utf8
+      - name: share
+        type: Int64
+      - name: change
+        type: Int64
+      - name: filingDate
+        type: Utf8
+      - name: portfolioName
+        type: Utf8
+
+  - name: eps_estimates
+    description: Get company EPS estimates
+    filters:
+      - name: symbol
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /stock/eps-estimate
+      query:
+        - name: symbol
+          from: template
+          template: "{{filter.symbol}}"
+    response:
+      rows_path:
+        - data
+    columns:
+      - name: symbol
+        type: Utf8
+      - name: epsAvg
+        type: Float64
+      - name: epsHigh
+        type: Float64
+      - name: epsLow
+        type: Float64
+      - name: numberAnalysts
+        type: Int64
+      - name: period
+        type: Utf8
+
+  - name: stock_revenue_estimate
+    description: Get company revenue estimates
+    filters:
+      - name: symbol
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /stock/revenue-estimate
+      query:
+        - name: symbol
+          from: template
+          template: "{{filter.symbol}}"
+    response:
+      rows_path:
+        - data
+    columns:
+      - name: symbol
+        type: Utf8
+      - name: revenueAvg
+        type: Float64
+      - name: revenueHigh
+        type: Float64
+      - name: revenueLow
+        type: Float64
+      - name: numberAnalysts
+        type: Int64
+      - name: period
+        type: Utf8
+
+  - name: stock_ebitda_estimate
+    description: Get company EBITDA estimates
+    filters:
+      - name: symbol
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /stock/ebitda-estimate
+      query:
+        - name: symbol
+          from: template
+          template: "{{filter.symbol}}"
+    response:
+      rows_path:
+        - data
+    columns:
+      - name: symbol
+        type: Utf8
+      - name: ebitdaAvg
+        type: Float64
+      - name: ebitdaHigh
+        type: Float64
+      - name: ebitdaLow
+        type: Float64
+      - name: numberAnalysts
+        type: Int64
+      - name: period
+        type: Utf8
+
+  - name: stock_ebit_estimate
+    description: Get company EBIT estimates
+    filters:
+      - name: symbol
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /stock/ebit-estimate
+      query:
+        - name: symbol
+          from: template
+          template: "{{filter.symbol}}"
+    response:
+      rows_path:
+        - data
+    columns:
+      - name: symbol
+        type: Utf8
+      - name: ebitAvg
+        type: Float64
+      - name: ebitHigh
+        type: Float64
+      - name: ebitLow
+        type: Float64
+      - name: numberAnalysts
+        type: Int64
+      - name: period
+        type: Utf8
+
+  - name: stock_net_income_estimate
+    description: Get company Net Income estimates
+    filters:
+      - name: symbol
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /stock/net-income-estimate
+      query:
+        - name: symbol
+          from: template
+          template: "{{filter.symbol}}"
+    response:
+      rows_path:
+        - data
+    columns:
+      - name: symbol
+        type: Utf8
+      - name: netIncomeAvg
+        type: Float64
+      - name: netIncomeHigh
+        type: Float64
+      - name: netIncomeLow
+        type: Float64
+      - name: numberAnalysts
+        type: Int64
+      - name: period
+        type: Utf8
+
+  - name: stock_pretax_income_estimate
+    description: Get company Pretax Income estimates
+    filters:
+      - name: symbol
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /stock/pretax-income-estimate
+      query:
+        - name: symbol
+          from: template
+          template: "{{filter.symbol}}"
+    response:
+      rows_path:
+        - data
+    columns:
+      - name: symbol
+        type: Utf8
+      - name: pretaxIncomeAvg
+        type: Float64
+      - name: pretaxIncomeHigh
+        type: Float64
+      - name: pretaxIncomeLow
+        type: Float64
+      - name: numberAnalysts
+        type: Int64
+      - name: period
+        type: Utf8
+
+  - name: stock_dps_estimate
+    description: Get company Dividends Per Share estimates
+    filters:
+      - name: symbol
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /stock/dps-estimate
+      query:
+        - name: symbol
+          from: template
+          template: "{{filter.symbol}}"
+    response:
+      rows_path:
+        - data
+    columns:
+      - name: symbol
+        type: Utf8
+      - name: dpsAvg
+        type: Float64
+      - name: dpsHigh
+        type: Float64
+      - name: dpsLow
+        type: Float64
+      - name: numberAnalysts
+        type: Int64
+      - name: period
+        type: Utf8
+
+  - name: stock_dividend
+    description: Get company dividend history
+    filters:
+      - name: symbol
+        type: Utf8
+        required: true
+      - name: from
+        type: Utf8
+        required: true
+      - name: to
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /stock/dividend
+      query:
+        - name: symbol
+          from: template
+          template: "{{filter.symbol}}"
+        - name: from
+          from: template
+          template: "{{filter.from}}"
+        - name: to
+          from: template
+          template: "{{filter.to}}"
+    columns:
+      - name: symbol
+        type: Utf8
+      - name: date
+        type: Utf8
+      - name: amount
+        type: Float64
+      - name: declarationDate
+        type: Utf8
+      - name: recordDate
+        type: Utf8
+      - name: payDate
+        type: Utf8
+
+  - name: stock_split
+    description: Get company stock split history
+    filters:
+      - name: symbol
+        type: Utf8
+        required: true
+      - name: from
+        type: Utf8
+        required: true
+      - name: to
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /stock/split
+      query:
+        - name: symbol
+          from: template
+          template: "{{filter.symbol}}"
+        - name: from
+          from: template
+          template: "{{filter.from}}"
+        - name: to
+          from: template
+          template: "{{filter.to}}"
+    columns:
+      - name: symbol
+        type: Utf8
+      - name: date
+        type: Utf8
+      - name: fromFactor
+        type: Float64
+      - name: toFactor
+        type: Float64
+
+  - name: stock_executives
+    description: Get company executives
+    filters:
+      - name: symbol
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /stock/executive
+      query:
+        - name: symbol
+          from: template
+          template: "{{filter.symbol}}"
+    response:
+      rows_path:
+        - executive
+    columns:
+      - name: name
+        type: Utf8
+      - name: age
+        type: Int64
+      - name: title
+        type: Utf8
+      - name: since
+        type: Utf8
+      - name: sex
+        type: Utf8
+      - name: compensation
+        type: Int64
+      - name: currency
+        type: Utf8
+
+  - name: symbol_search
+    description: Search for best-matching symbols
+    filters:
+      - name: q
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /search
+      query:
+        - name: q
+          from: template
+          template: "{{filter.q}}"
+    response:
+      rows_path:
+        - result
+    columns:
+      - name: description
+        type: Utf8
+      - name: displaySymbol
+        type: Utf8
+      - name: symbol
+        type: Utf8
+      - name: type
+        type: Utf8
+
+  - name: etf_profile
+    description: Get ETF profile
+    filters:
+      - name: symbol
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /etf/profile
+      query:
+        - name: symbol
+          from: template
+          template: "{{filter.symbol}}"
+    columns:
+      - name: symbol
+        type: Utf8
+      - name: assetClass
+        type: Utf8
+      - name: aum
+        type: Float64
+      - name: nav
+        type: Float64
+      - name: expenseRatio
+        type: Float64
+      - name: trackingIndex
+        type: Utf8
+      - name: inceptionDate
+        type: Utf8
+
+  - name: etf_sector
+    description: Get ETF sector exposure
+    filters:
+      - name: symbol
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /etf/sector
+      query:
+        - name: symbol
+          from: template
+          template: "{{filter.symbol}}"
+    response:
+      rows_path:
+        - sectorExposure
+    columns:
+      - name: industry
+        type: Utf8
+      - name: exposure
+        type: Float64
+
+  - name: etf_country
+    description: Get ETF country exposure
+    filters:
+      - name: symbol
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /etf/country
+      query:
+        - name: symbol
+          from: template
+          template: "{{filter.symbol}}"
+    response:
+      rows_path:
+        - countryExposure
+    columns:
+      - name: country
+        type: Utf8
+      - name: exposure
+        type: Float64
+
+  - name: mutual_fund_profile
+    description: Get mutual fund profile
+    filters:
+      - name: symbol
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /mutual-fund/profile
+      query:
+        - name: symbol
+          from: template
+          template: "{{filter.symbol}}"
+    columns:
+      - name: symbol
+        type: Utf8
+      - name: assetClass
+        type: Utf8
+      - name: aum
+        type: Float64
+      - name: nav
+        type: Float64
+      - name: expenseRatio
+        type: Float64
+      - name: inceptionDate
+        type: Utf8
+
+  - name: crypto_profile
+    description: Get crypto profile
+    filters:
+      - name: symbol
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /crypto/profile
+      query:
+        - name: symbol
+          from: template
+          template: "{{filter.symbol}}"
+    columns:
+      - name: name
+        type: Utf8
+      - name: symbol
+        type: Utf8
+      - name: description
+        type: Utf8
+      - name: logo
+        type: Utf8
+
+  - name: stock_esg
+    description: Get company ESG scores
+    filters:
+      - name: symbol
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /stock/esg
+      query:
+        - name: symbol
+          from: template
+          template: "{{filter.symbol}}"
+    columns:
+      - name: symbol
+        type: Utf8
+      - name: totalESGScore
+        type: Float64
+      - name: environmentScore
+        type: Float64
+      - name: socialScore
+        type: Float64
+      - name: governanceScore
+        type: Float64
+
+  - name: stock_congressional_trading
+    description: Get congressional trading activities
+    filters:
+      - name: symbol
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /stock/congressional-trading
+      query:
+        - name: symbol
+          from: template
+          template: "{{filter.symbol}}"
+    response:
+      rows_path:
+        - data
+    columns:
+      - name: symbol
+        type: Utf8
+      - name: name
+        type: Utf8
+      - name: position
+        type: Utf8
+      - name: transactionDate
+        type: Utf8
+      - name: amount
+        type: Float64
+
+  - name: stock_visa_application
+    description: Get company H1-B visa applications
+    filters:
+      - name: symbol
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /stock/visa-application
+      query:
+        - name: symbol
+          from: template
+          template: "{{filter.symbol}}"
+    response:
+      rows_path:
+        - data
+    columns:
+      - name: symbol
+        type: Utf8
+      - name: year
+        type: Int64
+      - name: quarter
+        type: Int64
+      - name: jobTitle
+        type: Utf8
+      - name: wage
+        type: Float64
+
+  - name: stock_lobbying
+    description: Get company lobbying activities
+    filters:
+      - name: symbol
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /stock/lobbying
+      query:
+        - name: symbol
+          from: template
+          template: "{{filter.symbol}}"
+    response:
+      rows_path:
+        - data
+    columns:
+      - name: symbol
+        type: Utf8
+      - name: year
+        type: Int64
+      - name: clientName
+        type: Utf8
+      - name: amount
+        type: Float64
+      - name: issue
+        type: Utf8
+
+  - name: stock_usa_spending
+    description: Get company USA spending and government contracts
+    filters:
+      - name: symbol
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /stock/usa-spending
+      query:
+        - name: symbol
+          from: template
+          template: "{{filter.symbol}}"
+    response:
+      rows_path:
+        - data
+    columns:
+      - name: symbol
+        type: Utf8
+      - name: recipientName
+        type: Utf8
+      - name: awardDescription
+        type: Utf8
+      - name: actionDate
+        type: Utf8
+      - name: awardAmount
+        type: Float64
+
+  - name: stock_uspto_patent
+    description: Get company USPTO patents
+    filters:
+      - name: symbol
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /stock/uspto-patent
+      query:
+        - name: symbol
+          from: template
+          template: "{{filter.symbol}}"
+    response:
+      rows_path:
+        - data
+    columns:
+      - name: symbol
+        type: Utf8
+      - name: filingDate
+        type: Utf8
+      - name: patentType
+        type: Utf8
+      - name: publicationDate
+        type: Utf8
+
+  - name: stock_earnings_quality_score
+    description: Get company earnings quality score
+    filters:
+      - name: symbol
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /stock/earnings-quality-score
+      query:
+        - name: symbol
+          from: template
+          template: "{{filter.symbol}}"
+    response:
+      rows_path:
+        - data
+    columns:
+      - name: symbol
+        type: Utf8
+      - name: score
+        type: Float64
+      - name: period
+        type: Utf8
+
+  - name: stock_historical_market_cap
+    description: Get historical market cap
+    filters:
+      - name: symbol
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /stock/historical-market-cap
+      query:
+        - name: symbol
+          from: template
+          template: "{{filter.symbol}}"
+    response:
+      rows_path:
+        - data
+    columns:
+      - name: symbol
+        type: Utf8
+      - name: marketCapitalization
+        type: Float64
+      - name: date
+        type: Utf8
+
+  - name: stock_historical_employee_count
+    description: Get historical employee count
+    filters:
+      - name: symbol
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /stock/historical-employee-count
+      query:
+        - name: symbol
+          from: template
+          template: "{{filter.symbol}}"
+    response:
+      rows_path:
+        - data
+    columns:
+      - name: symbol
+        type: Utf8
+      - name: employeeTotal
+        type: Int64
+      - name: period
+        type: Utf8
+
+  - name: stock_price_metric
+    description: Get historical price metrics by date
+    filters:
+      - name: symbol
+        type: Utf8
+        required: true
+      - name: date
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /stock/price-metric
+      query:
+        - name: symbol
+          from: template
+          template: "{{filter.symbol}}"
+        - name: date
+          from: template
+          template: "{{filter.date}}"
+    columns:
+      - name: symbol
+        type: Utf8
+      - name: date
+        type: Utf8
+      - name: metric__beta
+        type: Float64
+      - name: metric__52WeekHigh
+        type: Float64
+      - name: metric__52WeekLow
+        type: Float64
+
+  - name: stock_symbols
+    description: List of supported stock symbols for an exchange
+    filters:
+      - name: exchange
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /stock/symbol
+      query:
+        - name: exchange
+          from: template
+          template: "{{filter.exchange}}"
+    columns:
+      - name: currency
+        type: Utf8
+      - name: description
+        type: Utf8
+      - name: displaySymbol
+        type: Utf8
+      - name: symbol
+        type: Utf8
+      - name: type
+        type: Utf8
+
+  - name: crypto_symbols
+    description: List of supported crypto symbols for an exchange
+    filters:
+      - name: exchange
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /crypto/symbol
+      query:
+        - name: exchange
+          from: template
+          template: "{{filter.exchange}}"
+    columns:
+      - name: description
+        type: Utf8
+      - name: displaySymbol
+        type: Utf8
+      - name: symbol
+        type: Utf8
+
+  - name: transcripts_list
+    description: Get a list of earnings call transcripts
+    filters:
+      - name: symbol
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /stock/transcripts/list
+      query:
+        - name: symbol
+          from: template
+          template: "{{filter.symbol}}"
+    response:
+      rows_path:
+        - transcripts
+    columns:
+      - name: id
+        type: Utf8
+      - name: title
+        type: Utf8
+      - name: time
+        type: Utf8
+      - name: year
+        type: Int64
+      - name: quarter
+        type: Int64
+
+  - name: bond_profile
+    description: Get general information about a bond
+    filters:
+      - name: isin
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /bond/profile
+      query:
+        - name: isin
+          from: template
+          template: "{{filter.isin}}"
+    columns:
+      - name: isin
+        type: Utf8
+      - name: cusip
+        type: Utf8
+      - name: figi
+        type: Utf8
+      - name: coupon
+        type: Float64
+      - name: maturityDate
+        type: Utf8
+      - name: offeringPrice
+        type: Float64
+      - name: issueEndDate
+        type: Utf8
+
+  - name: financials_reported
+    description: Get as-reported financial statements
+    filters:
+      - name: symbol
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /stock/financials-reported
+      query:
+        - name: symbol
+          from: template
+          template: "{{filter.symbol}}"
+    response:
+      rows_path:
+        - data
+    columns:
+      - name: symbol
+        type: Utf8
+      - name: cik
+        type: Utf8
+      - name: year
+        type: Int64
+      - name: quarter
+        type: Int64
+      - name: form
+        type: Utf8
+      - name: startDate
+        type: Utf8
+      - name: endDate
+        type: Utf8
+      - name: filedDate
+        type: Utf8
+      - name: acceptedDate
+        type: Utf8
