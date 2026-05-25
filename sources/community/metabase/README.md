@@ -99,6 +99,8 @@ ORDER BY member_count DESC;
 ## Limitations
 
 - Metabase's API is not versioned and can change between releases.
+- Metabase can return a root collection with a null `id`; use
+  `collection_id = 'root'` when querying root collection items.
 - `metabase.collection_items` requires `collection_id`; use `root` for the
   root collection.
 - `metabase.permission_groups` may require an admin-scoped API key.
@@ -116,7 +118,7 @@ YAML parse: passed for sources/community/metabase/manifest.yaml
 Coral manifest schema validation: passed for sources/community/metabase/manifest.yaml
 git diff --check: passed
 make lint-sources: passed
-Live API tests: not run; require real Metabase credentials
+Live API tests: passed against a local Metabase Docker instance with `coral source add` and `coral source test metabase`
 ```
 
-Testing note: live API tests require user-provided credentials and are intentionally not part of default CI. The manifest includes `test_queries`, and no credentials or customer data are committed.
+Testing note: the live API test used user-provided Metabase credentials. The manifest includes `test_queries`, and no credentials or customer data are committed.

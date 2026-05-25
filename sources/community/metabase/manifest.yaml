@@ -73,8 +73,8 @@ tables:
     columns:
       - name: id
         type: Int64
-        nullable: false
-        description: Collection ID.
+        nullable: true
+        description: Collection ID. Metabase can return null for the root collection.
       - name: name
         type: Utf8
         nullable: true
