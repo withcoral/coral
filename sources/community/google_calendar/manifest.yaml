@@ -10,9 +10,13 @@ backend: http
 inputs:
   GOOGLE_CALENDAR_ACCESS_TOKEN:
     kind: secret
-    hint: >
+     hint: >
       Google OAuth2 access token with the
       https://www.googleapis.com/auth/calendar.readonly scope.
+      Obtain a token via Google OAuth Playground:
+      https://developers.google.com/oauthplayground
+      Select the Calendar API v3 readonly scope, authorize,
+      and copy the access token.
 
 base_url: "https://www.googleapis.com/calendar/v3"
 
