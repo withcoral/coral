@@ -29,9 +29,9 @@ coral sql "SELECT mal_id, title, score FROM jikan.anime WHERE q = 'Cowboy Bebop'
 
 | Table | Description | Required filters | Optional filters |
 |---|---|---|---|
-| `jikan.anime` | Search and browse anime from MyAnimeList | — | `q`, `type`, `status`, `rating`, `order_by`, `sort` |
-| `jikan.manga` | Search and browse manga from MyAnimeList | — | `q`, `type`, `status`, `order_by`, `sort` |
-| `jikan.top_anime` | Fetch top-ranked anime from MyAnimeList | — | `type`, `filter` |
+| `jikan.anime` | Search and browse anime from MyAnimeList | — | `q`, `type`, `status`, `rating`, `sfw`, `order_by`, `sort` |
+| `jikan.manga` | Search and browse manga from MyAnimeList | — | `q`, `type`, `status`, `sfw`, `order_by`, `sort` |
+| `jikan.top_anime` | Fetch top-ranked anime from MyAnimeList | — | `type`, `filter`, `rating`, `sfw` |
 | `jikan.top_manga` | Fetch top-ranked manga from MyAnimeList | — | `type`, `filter` |
 
 All tables are read-only. This source does not create, modify, or delete any
@@ -47,7 +47,7 @@ Search and browse manga from MyAnimeList. Filter by keyword (`q`), type (e.g. `m
 
 ### `top_anime`
 
-Fetch top-ranked anime from MyAnimeList. Optionally filter by media type (`type`) or ranking category (`filter`).
+Fetch top-ranked anime from MyAnimeList. Optionally filter by media type (`type`), ranking category (`filter`), age rating (`rating`), or exclude adult content (`sfw`).
 
 ### `top_manga`
 
@@ -142,26 +142,24 @@ Filter anime by type and status:
 ```sql
 SELECT mal_id, title, type, status, score
 FROM jikan.anime
-WHERE type = 'tv' AND status = 'airing'
-ORDER BY score DESC
+WHERE type = 'tv' AND status = 'airing' AND order_by = 'score' AND sort = 'desc'
 LIMIT 10;
 ```
 
 ```text
-+--------+---------------------------+------+------------------+-------+
-| mal_id | title                     | type | status           | score |
-+--------+---------------------------+------+------------------+-------+
-| 53408  | I Love Me 2nd Season      | TV   | Currently Airing |       |
-| 38776  | Manul no Yuube            | TV   | Currently Airing |       |
-| 48442  | Shikaru Neko              | TV   | Currently Airing |       |
-| 41458  | Origami Ninja Koyankinte  | TV   | Currently Airing |       |
-| 22669  | Gohan Kaijuu Pap          | TV   | Currently Airing |       |
-| 18941  | Shimajirou no Wow!        | TV   | Currently Airing |       |
-| 35962  | Papan Ga Panda!           | TV   | Currently Airing |       |
-| 10506  | Shiawase Haitatsu Taneko  | TV   | Currently Airing |       |
-| 51553  | Tongari Boushi no Atelier | TV   | Currently Airing | 8.74  |
-| 21     | One Piece                 | TV   | Currently Airing | 8.73  |
-+--------+---------------------------+------+------------------+-------+
++--------+-------------------------------------------------+------+------------------+-------+
+| mal_id | title                                           | type | status           | score |
++--------+-------------------------------------------------+------+------------------+-------+
+| 61316  | Re:Zero kara Hajimeru Isekai Seikatsu 4th Season| TV   | Currently Airing | 8.9   |
+| 51553  | Tongari Boushi no Atelier                       | TV   | Currently Airing | 8.74  |
+| 21     | One Piece                                       | TV   | Currently Airing | 8.73  |
+| 50250  | Chiikawa                                        | TV   | Currently Airing | 8.63  |
+| 63375  | Nippon Sangoku                                  | TV   | Currently Airing | 8.48  |
+| 62568  | Dr. Stone: Science Future Part 3                | TV   | Currently Airing | 8.28  |
+| 59983  | Tsue to Tsurugi no Wistoria Season 2            | TV   | Currently Airing | 8.26  |
+| 235    | Meitantei Conan                                 | TV   | Currently Airing | 8.19  |
+| 60310  | Mairimashita! Iruma-kun 4th Season              | TV   | Currently Airing | 8.17  |
++--------+-------------------------------------------------+------+------------------+-------+
 ```
 
 ## Validation

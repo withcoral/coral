@@ -24,8 +24,9 @@ tables:
         type      – tv | movie | ova | ona | special | music (optional)
         status    – airing | complete | upcoming (optional)
         rating    – g | pg | pg13 | r17 | r | rx (optional)
+        sfw       – true | false (optional)
         order_by  – score | rank | popularity | members | favorites |
-                    title | episodes | status | start_date (optional)
+                    title | episodes | start_date (optional)
         sort      – asc | desc (optional)
     fetch_limit_default: 25
     filters:
@@ -33,6 +34,7 @@ tables:
       - name: type
       - name: status
       - name: rating
+      - name: sfw
       - name: order_by
       - name: sort
     request:
@@ -51,6 +53,9 @@ tables:
         - name: rating
           from: filter
           key: rating
+        - name: sfw
+          from: filter
+          key: sfw
         - name: order_by
           from: filter
           key: order_by
@@ -171,23 +176,29 @@ tables:
           path:
             - airing
       - name: aired_from
-        type: Utf8
+        type: Timestamp
         nullable: true
         description: ISO 8601 date the anime started airing.
         expr:
-          kind: path
-          path:
-            - aired
-            - from
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - aired
+              - from
       - name: aired_to
-        type: Utf8
+        type: Timestamp
         nullable: true
         description: ISO 8601 date the anime finished airing. Null if ongoing.
         expr:
-          kind: path
-          path:
-            - aired
-            - to
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - aired
+              - to
       - name: duration
         type: Utf8
         nullable: true
@@ -334,14 +345,16 @@ tables:
                     manhua (optional)
         status    – publishing | complete | hiatus | discontinued | upcoming
                     (optional)
+        sfw       – true | false (optional)
         order_by  – score | rank | popularity | members | favorites | title |
-                    chapters | volumes | status | start_date (optional)
+                    chapters | volumes | start_date (optional)
         sort      – asc | desc (optional)
     fetch_limit_default: 25
     filters:
       - name: q
       - name: type
       - name: status
+      - name: sfw
       - name: order_by
       - name: sort
     request:
@@ -357,6 +370,9 @@ tables:
         - name: status
           from: filter
           key: status
+        - name: sfw
+          from: filter
+          key: sfw
         - name: order_by
           from: filter
           key: order_by
@@ -477,23 +493,29 @@ tables:
           path:
             - publishing
       - name: published_from
-        type: Utf8
+        type: Timestamp
         nullable: true
         description: ISO 8601 date the manga began publishing.
         expr:
-          kind: path
-          path:
-            - published
-            - from
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - published
+              - from
       - name: published_to
-        type: Utf8
+        type: Timestamp
         nullable: true
         description: ISO 8601 date the manga finished publishing. Null if ongoing.
         expr:
-          kind: path
-          path:
-            - published
-            - to
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - published
+              - to
       - name: score
         type: Float64
         nullable: true
@@ -596,10 +618,14 @@ tables:
       Filters:
         type    – tv | movie | ova | ona | special | music (optional)
         filter  – airing | upcoming | bypopularity | favorite (optional)
+        rating  – g | pg | pg13 | r17 | r | rx (optional)
+        sfw     – true | false (optional)
     fetch_limit_default: 25
     filters:
       - name: type
       - name: filter
+      - name: rating
+      - name: sfw
     request:
       method: GET
       path: /top/anime
@@ -610,6 +636,12 @@ tables:
         - name: filter
           from: filter
           key: filter
+        - name: rating
+          from: filter
+          key: rating
+        - name: sfw
+          from: filter
+          key: sfw
     response:
       rows_path:
         - data
@@ -710,23 +742,29 @@ tables:
           path:
             - airing
       - name: aired_from
-        type: Utf8
+        type: Timestamp
         nullable: true
         description: ISO 8601 date the anime started airing.
         expr:
-          kind: path
-          path:
-            - aired
-            - from
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - aired
+              - from
       - name: aired_to
-        type: Utf8
+        type: Timestamp
         nullable: true
         description: ISO 8601 date the anime finished airing. Null if ongoing.
         expr:
-          kind: path
-          path:
-            - aired
-            - to
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - aired
+              - to
       - name: duration
         type: Utf8
         nullable: true
@@ -960,23 +998,29 @@ tables:
           path:
             - publishing
       - name: published_from
-        type: Utf8
+        type: Timestamp
         nullable: true
         description: ISO 8601 date the manga began publishing.
         expr:
-          kind: path
-          path:
-            - published
-            - from
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - published
+              - from
       - name: published_to
-        type: Utf8
+        type: Timestamp
         nullable: true
         description: ISO 8601 date the manga finished publishing. Null if ongoing.
         expr:
-          kind: path
-          path:
-            - published
-            - to
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - published
+              - to
       - name: score
         type: Float64
         nullable: true
