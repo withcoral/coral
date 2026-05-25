@@ -186,9 +186,8 @@ jobs:
       - name: Generate checksums
         run: |
           cd artifacts
-          find . -maxdepth 1 -type f \( -name 'coral-*.tar.gz' -o -name 'coral-*.zip' \) -print0 |
-            sort -z |
-            xargs -0 sha256sum > checksums.sha256
+          sha256sum coral-*.tar.gz > checksums.sha256
+          sha256sum coral-*.zip >> checksums.sha256
           test -s checksums.sha256
       - name: Upload checksums
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
