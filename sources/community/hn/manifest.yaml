@@ -1,5 +1,5 @@
 name: hn
-version: 0.1.1
+version: 0.2.0
 dsl_version: 3
 backend: http
 description: Hacker News search and item lookup via the public Algolia HN API (no auth).
@@ -544,7 +544,7 @@ tables:
       query:
         - name: tags
           from: literal
-          value: front_page
+          value: front_page,story
         - name: query
           from: filter
           key: query

@@ -1,8 +1,8 @@
 # Hacker News (hn)
 
-**Version:** 0.1.1
+**Version:** 0.2.0
 **Backend:** HTTP
-**Tables:** 4
+**Tables:** 8
 **Base URL:** `https://hn.algolia.com/api/v1`
 
 Query Hacker News stories, comments, users, and items via the public [Algolia HN API](https://hn.algolia.com/api). No authentication required.
