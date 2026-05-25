@@ -136,7 +136,7 @@ YAML parse: passed for sources/community/terraform_cloud/manifest.yaml
 Coral manifest schema validation: passed for sources/community/terraform_cloud/manifest.yaml
 git diff --check: passed
 make lint-sources: passed
-Live API tests: not run; require real Terraform Cloud credentials
+Live API tests: passed against HCP Terraform organization `akash-dev` with `coral source add` and `coral source test terraform_cloud`
 ```
 
-Testing note: live API tests require user-provided credentials and are intentionally not part of default CI. The manifest includes `test_queries`, and no credentials or customer data are committed.
+Testing note: the live API test used user-provided Terraform Cloud credentials. The manifest includes `test_queries`, and no credentials or customer data are committed.
