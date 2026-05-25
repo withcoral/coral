@@ -11,6 +11,13 @@ inputs:
 
 base_url: "{{input.API_BASE}}"
 
+auth:
+  type: HeaderAuth
+  headers:
+    - name: User-Agent
+      from: template
+      template: "CoralFoodFacts/1.0 (contact: info@withcoral.com)"
+
 tables:
   - name: product_search
     description: Search for food products globally based on tags
@@ -26,18 +33,27 @@ tables:
       path: /search
       query:
         - name: categories_tags
-          from: template
-          template: "{{filter.categories_tags}}"
+          from: filter
+          key: categories_tags
         - name: brands_tags
-          from: template
-          template: "{{filter.brands_tags}}"
+          from: filter
+          key: brands_tags
         - name: countries_tags
+          from: filter
+          key: countries_tags
+        - name: fields
           from: template
-          template: "{{filter.countries_tags}}"
+          template: "code,product_name,brands,nutriscore_grade,ecoscore_grade,nova-group,ingredients_text,quantity,categories_tags,brands_tags,countries_tags"
     response:
       rows_path:
         - products
     columns:
+      - name: categories_tags
+        type: Json
+      - name: brands_tags
+        type: Json
+      - name: countries_tags
+        type: Json
       - name: code
         type: Utf8
       - name: product_name
@@ -50,6 +66,10 @@ tables:
         type: Utf8
       - name: nova_group
         type: Int64
+        expr:
+          kind: path
+          path:
+            - nova-group
       - name: ingredients_text
         type: Utf8
       - name: quantity
@@ -66,8 +86,11 @@ tables:
       path: /search
       query:
         - name: code
+          from: filter
+          key: code
+        - name: fields
           from: template
-          template: "{{filter.code}}"
+          template: "code,product_name,brands,nutriscore_grade,ecoscore_grade,nova-group,ingredients_text,quantity"
     response:
       rows_path:
         - products
@@ -84,6 +107,10 @@ tables:
         type: Utf8
       - name: nova_group
         type: Int64
+        expr:
+          kind: path
+          path:
+            - nova-group
       - name: ingredients_text
         type: Utf8
       - name: quantity
@@ -100,8 +127,94 @@ tables:
       path: /search
       query:
         - name: categories_tags
+          from: filter
+          key: categories_tags
+        - name: fields
           from: template
-          template: "{{filter.categories_tags}}"
+          template: "code,product_name,nutriments,categories_tags"
+    response:
+      rows_path:
+        - products
+    columns:
+      - name: categories_tags
+        type: Json
+      - name: code
+        type: Utf8
+      - name: product_name
+        type: Utf8
+      - name: energy_kcal_100g
+        type: Float64
+        expr:
+          kind: path
+          path:
+            - nutriments
+            - energy-kcal_100g
+      - name: fat_100g
+        type: Float64
+        expr:
+          kind: path
+          path:
+            - nutriments
+            - fat_100g
+      - name: saturated_fat_100g
+        type: Float64
+        expr:
+          kind: path
+          path:
+            - nutriments
+            - saturated-fat_100g
+      - name: carbohydrates_100g
+        type: Float64
+        expr:
+          kind: path
+          path:
+            - nutriments
+            - carbohydrates_100g
+      - name: sugars_100g
+        type: Float64
+        expr:
+          kind: path
+          path:
+            - nutriments
+            - sugars_100g
+      - name: fiber_100g
+        type: Float64
+        expr:
+          kind: path
+          path:
+            - nutriments
+            - fiber_100g
+      - name: proteins_100g
+        type: Float64
+        expr:
+          kind: path
+          path:
+            - nutriments
+            - proteins_100g
+      - name: salt_100g
+        type: Float64
+        expr:
+          kind: path
+          path:
+            - nutriments
+            - salt_100g
+
+  - name: product_nutrition_by_barcode
+    description: Get detailed nutritional info for a product by its barcode
+    filters:
+      - name: code
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /search
+      query:
+        - name: code
+          from: filter
+          key: code
+        - name: fields
+          from: template
+          template: "code,product_name,nutriments"
     response:
       rows_path:
         - products
@@ -110,19 +223,569 @@ tables:
         type: Utf8
       - name: product_name
         type: Utf8
-      - name: nutriments__energy_kcal_100g
+      - name: energy_kcal_100g
         type: Float64
-      - name: nutriments__fat_100g
+        expr:
+          kind: path
+          path:
+            - nutriments
+            - energy-kcal_100g
+      - name: fat_100g
         type: Float64
-      - name: nutriments__saturated_fat_100g
+        expr:
+          kind: path
+          path:
+            - nutriments
+            - fat_100g
+      - name: saturated_fat_100g
         type: Float64
-      - name: nutriments__carbohydrates_100g
+        expr:
+          kind: path
+          path:
+            - nutriments
+            - saturated-fat_100g
+      - name: carbohydrates_100g
         type: Float64
-      - name: nutriments__sugars_100g
+        expr:
+          kind: path
+          path:
+            - nutriments
+            - carbohydrates_100g
+      - name: sugars_100g
         type: Float64
-      - name: nutriments__fiber_100g
+        expr:
+          kind: path
+          path:
+            - nutriments
+            - sugars_100g
+      - name: fiber_100g
         type: Float64
-      - name: nutriments__proteins_100g
+        expr:
+          kind: path
+          path:
+            - nutriments
+            - fiber_100g
+      - name: proteins_100g
         type: Float64
-      - name: nutriments__salt_100g
+        expr:
+          kind: path
+          path:
+            - nutriments
+            - proteins_100g
+      - name: salt_100g
         type: Float64
+        expr:
+          kind: path
+          path:
+            - nutriments
+            - salt_100g
+
+  - name: product_allergens
+    description: Search for product allergen and trace information by category
+    filters:
+      - name: categories_tags
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /search
+      query:
+        - name: categories_tags
+          from: filter
+          key: categories_tags
+        - name: fields
+          from: template
+          template: "code,product_name,allergens_tags,traces_tags,categories_tags"
+    response:
+      rows_path:
+        - products
+    columns:
+      - name: categories_tags
+        type: Json
+      - name: code
+        type: Utf8
+      - name: product_name
+        type: Utf8
+      - name: allergens_tags
+        type: Json
+      - name: traces_tags
+        type: Json
+
+  - name: product_allergens_by_barcode
+    description: Get allergen and trace information for a product by barcode
+    filters:
+      - name: code
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /search
+      query:
+        - name: code
+          from: filter
+          key: code
+        - name: fields
+          from: template
+          template: "code,product_name,allergens_tags,traces_tags"
+    response:
+      rows_path:
+        - products
+    columns:
+      - name: code
+        type: Utf8
+      - name: product_name
+        type: Utf8
+      - name: allergens_tags
+        type: Json
+      - name: traces_tags
+        type: Json
+
+  - name: product_ingredients
+    description: Search for ingredients list and additives by category
+    filters:
+      - name: categories_tags
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /search
+      query:
+        - name: categories_tags
+          from: filter
+          key: categories_tags
+        - name: fields
+          from: template
+          template: "code,product_name,ingredients_text,ingredients_analysis_tags,additives_n,categories_tags"
+    response:
+      rows_path:
+        - products
+    columns:
+      - name: categories_tags
+        type: Json
+      - name: code
+        type: Utf8
+      - name: product_name
+        type: Utf8
+      - name: ingredients_text
+        type: Utf8
+      - name: ingredients_analysis_tags
+        type: Json
+      - name: additives_count
+        type: Int64
+        expr:
+          kind: path
+          path:
+            - additives_n
+
+  - name: product_ingredients_by_barcode
+    description: Get ingredients list and additives for a product by barcode
+    filters:
+      - name: code
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /search
+      query:
+        - name: code
+          from: filter
+          key: code
+        - name: fields
+          from: template
+          template: "code,product_name,ingredients_text,ingredients_analysis_tags,additives_n"
+    response:
+      rows_path:
+        - products
+    columns:
+      - name: code
+        type: Utf8
+      - name: product_name
+        type: Utf8
+      - name: ingredients_text
+        type: Utf8
+      - name: ingredients_analysis_tags
+        type: Json
+      - name: additives_count
+        type: Int64
+        expr:
+          kind: path
+          path:
+            - additives_n
+
+  - name: product_packaging
+    description: Search for product packaging details by category
+    filters:
+      - name: categories_tags
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /search
+      query:
+        - name: categories_tags
+          from: filter
+          key: categories_tags
+        - name: fields
+          from: template
+          template: "code,product_name,packaging,packaging_tags,categories_tags"
+    response:
+      rows_path:
+        - products
+    columns:
+      - name: categories_tags
+        type: Json
+      - name: code
+        type: Utf8
+      - name: product_name
+        type: Utf8
+      - name: packaging
+        type: Utf8
+      - name: packaging_tags
+        type: Json
+
+  - name: product_packaging_by_barcode
+    description: Get packaging details for a product by barcode
+    filters:
+      - name: code
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /search
+      query:
+        - name: code
+          from: filter
+          key: code
+        - name: fields
+          from: template
+          template: "code,product_name,packaging,packaging_tags"
+    response:
+      rows_path:
+        - products
+    columns:
+      - name: code
+        type: Utf8
+      - name: product_name
+        type: Utf8
+      - name: packaging
+        type: Utf8
+      - name: packaging_tags
+        type: Json
+
+  - name: product_ecoscore
+    description: Search for product ecoscore and environmental grade by category
+    filters:
+      - name: categories_tags
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /search
+      query:
+        - name: categories_tags
+          from: filter
+          key: categories_tags
+        - name: fields
+          from: template
+          template: "code,product_name,ecoscore_grade,ecoscore_score,categories_tags"
+    response:
+      rows_path:
+        - products
+    columns:
+      - name: categories_tags
+        type: Json
+      - name: code
+        type: Utf8
+      - name: product_name
+        type: Utf8
+      - name: ecoscore_grade
+        type: Utf8
+      - name: ecoscore_score
+        type: Float64
+
+  - name: product_ecoscore_by_barcode
+    description: Get ecoscore and environmental grade for a product by barcode
+    filters:
+      - name: code
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /search
+      query:
+        - name: code
+          from: filter
+          key: code
+        - name: fields
+          from: template
+          template: "code,product_name,ecoscore_grade,ecoscore_score"
+    response:
+      rows_path:
+        - products
+    columns:
+      - name: code
+        type: Utf8
+      - name: product_name
+        type: Utf8
+      - name: ecoscore_grade
+        type: Utf8
+      - name: ecoscore_score
+        type: Float64
+
+  - name: product_images
+    description: Search for product image links by category
+    filters:
+      - name: categories_tags
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /search
+      query:
+        - name: categories_tags
+          from: filter
+          key: categories_tags
+        - name: fields
+          from: template
+          template: "code,product_name,image_url,image_small_url,image_front_url,image_ingredients_url,image_nutrition_url,categories_tags"
+    response:
+      rows_path:
+        - products
+    columns:
+      - name: categories_tags
+        type: Json
+      - name: code
+        type: Utf8
+      - name: product_name
+        type: Utf8
+      - name: image_url
+        type: Utf8
+      - name: image_small_url
+        type: Utf8
+      - name: image_front_url
+        type: Utf8
+      - name: image_ingredients_url
+        type: Utf8
+      - name: image_nutrition_url
+        type: Utf8
+
+  - name: product_images_by_barcode
+    description: Get product image links for a product by barcode
+    filters:
+      - name: code
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /search
+      query:
+        - name: code
+          from: filter
+          key: code
+        - name: fields
+          from: template
+          template: "code,product_name,image_url,image_small_url,image_front_url,image_ingredients_url,image_nutrition_url"
+    response:
+      rows_path:
+        - products
+    columns:
+      - name: code
+        type: Utf8
+      - name: product_name
+        type: Utf8
+      - name: image_url
+        type: Utf8
+      - name: image_small_url
+        type: Utf8
+      - name: image_front_url
+        type: Utf8
+      - name: image_ingredients_url
+        type: Utf8
+      - name: image_nutrition_url
+        type: Utf8
+
+  - name: product_categories
+    description: Search for products and get category details
+    filters:
+      - name: categories_tags
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /search
+      query:
+        - name: categories_tags
+          from: filter
+          key: categories_tags
+        - name: fields
+          from: template
+          template: "code,product_name,categories,categories_hierarchy,categories_tags"
+    response:
+      rows_path:
+        - products
+    columns:
+      - name: categories_tags
+        type: Json
+      - name: code
+        type: Utf8
+      - name: product_name
+        type: Utf8
+      - name: categories
+        type: Utf8
+      - name: categories_hierarchy
+        type: Json
+
+  - name: product_brands
+    description: Search for products and get brand information
+    filters:
+      - name: brands_tags
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /search
+      query:
+        - name: brands_tags
+          from: filter
+          key: brands_tags
+        - name: fields
+          from: template
+          template: "code,product_name,brands,brands_tags"
+    response:
+      rows_path:
+        - products
+    columns:
+      - name: brands_tags
+        type: Json
+      - name: code
+        type: Utf8
+      - name: product_name
+        type: Utf8
+      - name: brands
+        type: Utf8
+
+  - name: product_origins
+    description: Search for products and get origin information
+    filters:
+      - name: categories_tags
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /search
+      query:
+        - name: categories_tags
+          from: filter
+          key: categories_tags
+        - name: fields
+          from: template
+          template: "code,product_name,origins,origins_tags,categories_tags"
+    response:
+      rows_path:
+        - products
+    columns:
+      - name: categories_tags
+        type: Json
+      - name: code
+        type: Utf8
+      - name: product_name
+        type: Utf8
+      - name: origins
+        type: Utf8
+      - name: origins_tags
+        type: Json
+
+  - name: product_stores
+    description: Search for products and get store listings
+    filters:
+      - name: categories_tags
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /search
+      query:
+        - name: categories_tags
+          from: filter
+          key: categories_tags
+        - name: fields
+          from: template
+          template: "code,product_name,stores,stores_tags,categories_tags"
+    response:
+      rows_path:
+        - products
+    columns:
+      - name: categories_tags
+        type: Json
+      - name: code
+        type: Utf8
+      - name: product_name
+        type: Utf8
+      - name: stores
+        type: Utf8
+      - name: stores_tags
+        type: Json
+
+  - name: product_countries
+    description: Search for products and get list of countries where they are sold
+    filters:
+      - name: countries_tags
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /search
+      query:
+        - name: countries_tags
+          from: filter
+          key: countries_tags
+        - name: fields
+          from: template
+          template: "code,product_name,countries,countries_tags"
+    response:
+      rows_path:
+        - products
+    columns:
+      - name: countries_tags
+        type: Json
+      - name: code
+        type: Utf8
+      - name: product_name
+        type: Utf8
+      - name: countries
+        type: Utf8
+
+  - name: product_additives
+    description: Search for products and get list of food additives
+    filters:
+      - name: categories_tags
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /search
+      query:
+        - name: categories_tags
+          from: filter
+          key: categories_tags
+        - name: fields
+          from: template
+          template: "code,product_name,additives_tags,additives_n,categories_tags"
+    response:
+      rows_path:
+        - products
+    columns:
+      - name: categories_tags
+        type: Json
+      - name: code
+        type: Utf8
+      - name: product_name
+        type: Utf8
+      - name: additives_tags
+        type: Json
+      - name: additives_count
+        type: Int64
+        expr:
+          kind: path
+          path:
+            - additives_n
