@@ -32,7 +32,7 @@ inputs:
               type: authorization_code
               pkce: required
             redirect_uri: http://127.0.0.1
-            redirect_uri_port: random
+            redirect_uri_port_mode: random
             endpoints:
               authorization_url: https://accounts.google.com/o/oauth2/v2/auth
               token_url: https://oauth2.googleapis.com/token
@@ -262,12 +262,13 @@ tables:
   - name: events
     description: Events on a Google Calendar
     guide: |
-      Omit `calendar_id` to query the primary calendar, or pass a calendar
-      ID from `google_calendar.calendars`. Use `time_min` and `time_max`
-      as RFC3339 timestamps with timezone offsets. When using
+      Omit `calendar_id` to query the primary calendar, or pass
+      `events_calendar_id` from `google_calendar.calendars`. Use `time_min`
+      and `time_max` as RFC3339 timestamps with timezone offsets. When using
       `order_by = 'startTime'`, also set `single_events = true`.
     filters:
       - name: calendar_id
+        description: URL-safe calendar ID, such as calendars.events_calendar_id
         required: false
       - name: time_min
         required: false
@@ -345,7 +346,7 @@ tables:
       - name: calendar_id
         type: Utf8
         nullable: false
-        description: Calendar ID filter, or primary when omitted
+        description: Calendar ID path value, or primary when omitted
         expr:
           kind: coalesce
           exprs:
