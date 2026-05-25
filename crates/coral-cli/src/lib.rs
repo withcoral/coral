@@ -64,6 +64,8 @@ enum Command {
     Onboard,
     /// Start the MCP server over stdio
     McpStdio(McpStdioArgs),
+    /// Inspect and manage experimental runtime features
+    Features(FeaturesArgs),
     #[cfg(feature = "embedded-ui")]
     /// Start the local gRPC-Web server with the embedded Coral UI
     Ui(UiArgs),
@@ -113,6 +115,29 @@ struct McpStdioArgs {
     /// Expose the feedback submission tool.
     #[arg(long)]
     enable_feedback: bool,
+}
+
+#[derive(Debug, Args)]
+/// Inspect and manage experimental runtime features
+struct FeaturesArgs {
+    #[command(subcommand)]
+    command: FeaturesCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum FeaturesCommand {
+    /// List experimental runtime features and their current status
+    List,
+    /// Enable an experimental runtime feature
+    Enable {
+        /// Feature key to enable
+        feature: String,
+    },
+    /// Disable an experimental runtime feature
+    Disable {
+        /// Feature key to disable
+        feature: String,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -243,7 +268,7 @@ impl Command {
             Command::Sql(_) | Command::Source(_) | Command::Onboard | Command::McpStdio(_) => {
                 RequiredRuntime::AppClient
             }
-            Command::Completion(_) => RequiredRuntime::None,
+            Command::Features(_) | Command::Completion(_) => RequiredRuntime::None,
             #[cfg(feature = "embedded-ui")]
             Command::Ui(_) => RequiredRuntime::None,
         }
@@ -412,6 +437,7 @@ async fn run_no_runtime_command(command: Command) -> Result<(), CliError> {
             generate(args.shell, &mut cmd, bin_name, &mut std::io::stdout());
             Ok(())
         }
+        Command::Features(args) => run_features(args).map_err(Into::into),
         #[cfg(feature = "embedded-ui")]
         Command::Ui(args) => run_ui(args).await.map_err(Into::into),
         Command::Sql(_) | Command::Source(_) | Command::Onboard | Command::McpStdio(_) => {
@@ -452,10 +478,15 @@ async fn run_app_command(
             onboard::run(&app).await?;
         }
         Command::McpStdio(args) => {
+            let features = coral_app::features::FeatureStore::discover(None)
+                .and_then(|store| store.load())
+                .map_err(anyhow::Error::from)?;
+            let feedback_enabled =
+                args.enable_feedback || features.enabled(coral_app::features::Feature::Feedback);
             Box::pin(coral_mcp::run_stdio_with_client(
                 app,
                 coral_mcp::McpOptions {
-                    feedback_enabled: args.enable_feedback,
+                    feedback_enabled,
                     trace_parent: ctx.and_then(|ctx| ctx.trace_parent.clone()),
                 },
             ))
@@ -465,12 +496,41 @@ async fn run_app_command(
         Command::Completion(_) => {
             unreachable!("no-runtime commands are routed without an app client")
         }
+        Command::Features(_) => {
+            unreachable!("no-runtime commands are routed without an app client")
+        }
         #[cfg(feature = "embedded-ui")]
         Command::Ui(_) => {
             unreachable!("no-runtime commands are routed without an app client")
         }
     }
 
+    Ok(())
+}
+
+fn run_features(args: FeaturesArgs) -> Result<(), anyhow::Error> {
+    let store = coral_app::features::FeatureStore::discover(None)?;
+    match args.command {
+        FeaturesCommand::List => {
+            let rows = store.statuses()?.into_iter().map(|status| {
+                [
+                    status.key.to_string(),
+                    status.configured.as_str().to_string(),
+                    status.enabled.to_string(),
+                    status.description.to_string(),
+                ]
+            });
+            print_text_table(["Feature", "Configured", "Enabled", "Description"], rows);
+        }
+        FeaturesCommand::Enable { feature } => {
+            store.enable(&feature)?;
+            println!("Enabled feature `{feature}` in config.toml.");
+        }
+        FeaturesCommand::Disable { feature } => {
+            store.disable(&feature)?;
+            println!("Disabled feature `{feature}` in config.toml.");
+        }
+    }
     Ok(())
 }
 
@@ -720,6 +780,14 @@ mod tests {
     fn completion_requires_no_runtime() {
         let cli = Cli::try_parse_from(["coral", "completion", "bash"])
             .expect("completion args should parse");
+
+        assert_eq!(cli.command.required_runtime(), RequiredRuntime::None);
+    }
+
+    #[test]
+    fn features_command_requires_no_runtime() {
+        let cli =
+            Cli::try_parse_from(["coral", "features", "list"]).expect("features args should parse");
 
         assert_eq!(cli.command.required_runtime(), RequiredRuntime::None);
     }
