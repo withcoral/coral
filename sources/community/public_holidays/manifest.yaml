@@ -91,7 +91,7 @@ tables:
           from: filter
           key: subdivision_code
         - name: availableBridgeDays
-          from: filter
+          from: filter_int
           key: available_bridge_days
     response:
       row_strategy: direct
@@ -119,3 +119,11 @@ tables:
       - name: bridge_days
         type: Json
         expr: {kind: path, path: [bridgeDays]}
+
+      - name: subdivision_code
+        type: Utf8
+        expr: {kind: from_filter, key: subdivision_code}
+      - name: available_bridge_days
+        type: Int64
+        expr: {kind: from_filter, key: available_bridge_days}
+
