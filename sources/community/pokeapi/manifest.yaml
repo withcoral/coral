@@ -4,7 +4,7 @@ dsl_version: 3
 backend: http
 description: >
   Query Pokemon data from the free PokeAPI (https://pokeapi.co).
-  Note: PokeAPI enforces a rate limit of 100 requests per IP address per minute.
+  PokeAPI is an open-source API with no strict limits. Please be polite and cache data when possible.
 base_url: https://pokeapi.co/api/v2
 test_queries:
   - SELECT * FROM pokeapi.pokemon_list LIMIT 1
@@ -13,6 +13,10 @@ test_queries:
   - SELECT * FROM pokeapi.types WHERE name_or_id = 'fire' LIMIT 1
   - SELECT * FROM pokeapi.abilities WHERE name_or_id = 'overgrow' LIMIT 1
   - SELECT * FROM pokeapi.species WHERE name_or_id = 'bulbasaur' LIMIT 1
+  - SELECT * FROM pokeapi.moves_list LIMIT 1
+  - SELECT * FROM pokeapi.types_list LIMIT 1
+  - SELECT * FROM pokeapi.abilities_list LIMIT 1
+  - SELECT * FROM pokeapi.species_list LIMIT 1
 tables:
   - name: pokemon_list
     description: List Pokemon names and URLs.
@@ -230,3 +234,111 @@ tables:
         type: Json
         nullable: true
         expr: {kind: path, path: [flavor_text_entries]}
+
+  - name: moves_list
+    description: List Move names and URLs.
+    request:
+      method: GET
+      path: /move
+    response:
+      rows_path: [results]
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: name
+        type: Utf8
+        description: Name of the move.
+        nullable: true
+        expr: {kind: path, path: [name]}
+      - name: url
+        type: Utf8
+        description: Detail URL for the move.
+        nullable: true
+        expr: {kind: path, path: [url]}
+
+  - name: types_list
+    description: List Type names and URLs.
+    request:
+      method: GET
+      path: /type
+    response:
+      rows_path: [results]
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: name
+        type: Utf8
+        description: Name of the type.
+        nullable: true
+        expr: {kind: path, path: [name]}
+      - name: url
+        type: Utf8
+        description: Detail URL for the type.
+        nullable: true
+        expr: {kind: path, path: [url]}
+
+  - name: abilities_list
+    description: List Ability names and URLs.
+    request:
+      method: GET
+      path: /ability
+    response:
+      rows_path: [results]
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: name
+        type: Utf8
+        description: Name of the ability.
+        nullable: true
+        expr: {kind: path, path: [name]}
+      - name: url
+        type: Utf8
+        description: Detail URL for the ability.
+        nullable: true
+        expr: {kind: path, path: [url]}
+
+  - name: species_list
+    description: List Species names and URLs.
+    request:
+      method: GET
+      path: /pokemon-species
+    response:
+      rows_path: [results]
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: name
+        type: Utf8
+        description: Name of the species.
+        nullable: true
+        expr: {kind: path, path: [name]}
+      - name: url
+        type: Utf8
+        description: Detail URL for the species.
+        nullable: true
+        expr: {kind: path, path: [url]}
