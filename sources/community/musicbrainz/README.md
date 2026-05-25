@@ -19,10 +19,10 @@ coral source add --file sources/community/musicbrainz/manifest.yaml
 
 | Function | Description | Args |
 |---|---|---|
-| `search_artists` | Search for artists | `query` (required) |
-| `search_releases` | Search for releases (albums, singles, EPs) | `query` (required) |
-| `search_recordings` | Search for recordings (individual tracks) | `query` (required) |
-| `search_labels` | Search for labels (record companies, imprints) | `query` (required) |
+| `artists` | Search for artists | `query` (required) |
+| `releases` | Search for releases (albums, singles, EPs) | `query` (required) |
+| `recordings` | Search for recordings (individual tracks) | `query` (required) |
+| `labels` | Search for labels (record companies, imprints) | `query` (required) |
 
 ## Quick start
 
@@ -30,49 +30,56 @@ coral source add --file sources/community/musicbrainz/manifest.yaml
 # Search for an artist
 coral sql "
   SELECT name, type, country, disambiguation
-  FROM musicbrainz.search_artists(query => 'The Beatles')
+  FROM musicbrainz.artists
+  WHERE query = 'The Beatles'
   LIMIT 5
 "
 
 # Search for releases
 coral sql "
   SELECT title, status, date, country
-  FROM musicbrainz.search_releases(query => 'Abbey Road')
+  FROM musicbrainz.releases
+  WHERE query = 'Abbey Road'
   LIMIT 5
 "
 
 # Search for recordings (tracks)
 coral sql "
   SELECT title, length, artist_credit
-  FROM musicbrainz.search_recordings(query => 'Yesterday')
+  FROM musicbrainz.recordings
+  WHERE query = 'Yesterday'
   LIMIT 5
 "
 
 # Search for labels
 coral sql "
   SELECT name, type, country
-  FROM musicbrainz.search_labels(query => 'Parlophone')
+  FROM musicbrainz.labels
+  WHERE query = 'Parlophone'
   LIMIT 5
 "
 
 # Advanced Lucene query — British rock groups formed in the 1960s
 coral sql "
   SELECT name, country, begin_date
-  FROM musicbrainz.search_artists(query => 'type:group AND country:GB AND begin:[1960 TO 1969]')
+  FROM musicbrainz.artists
+  WHERE query = 'type:group AND country:GB AND begin:[1960 TO 1969]'
   LIMIT 10
 "
 
 # Find releases by a specific artist
 coral sql "
   SELECT title, date, status, barcode
-  FROM musicbrainz.search_releases(query => 'artist:Radiohead')
+  FROM musicbrainz.releases
+  WHERE query = 'artist:Radiohead'
   LIMIT 10
 "
 
 # Find recordings with a specific artist and title
 coral sql "
   SELECT title, length, artist_credit
-  FROM musicbrainz.search_recordings(query => 'recording:Bohemian Rhapsody AND artist:Queen')
+  FROM musicbrainz.recordings
+  WHERE query = 'recording:Bohemian Rhapsody AND artist:Queen'
   LIMIT 5
 "
 ```
@@ -81,7 +88,7 @@ coral sql "
 
 ### Testing `artists` query
 ```console
-$ coral sql "SELECT name, type, country FROM musicbrainz.search_artists(query => 'The Beatles') LIMIT 1;"
+$ coral sql "SELECT name, type, country FROM musicbrainz.artists WHERE query = 'The Beatles' LIMIT 1;"
 +-------------+-------+---------+
 | name        | type  | country |
 +-------------+-------+---------+
@@ -91,7 +98,7 @@ $ coral sql "SELECT name, type, country FROM musicbrainz.search_artists(query =>
 
 ### Testing `releases` query
 ```console
-$ coral sql "SELECT title, status, date FROM musicbrainz.search_releases(query => 'Abbey Road') LIMIT 1;"
+$ coral sql "SELECT title, status, date FROM musicbrainz.releases WHERE query = 'Abbey Road' LIMIT 1;"
 +--------------+----------+------+
 | title        | status   | date |
 +--------------+----------+------+
@@ -101,7 +108,7 @@ $ coral sql "SELECT title, status, date FROM musicbrainz.search_releases(query =
 
 ### Testing `recordings` query
 ```console
-$ coral sql "SELECT title, length FROM musicbrainz.search_recordings(query => 'Yesterday') LIMIT 1;"
+$ coral sql "SELECT title, length FROM musicbrainz.recordings WHERE query = 'Yesterday' LIMIT 1;"
 +---------------------+--------+
 | title               | length |
 +---------------------+--------+
@@ -111,7 +118,7 @@ $ coral sql "SELECT title, length FROM musicbrainz.search_recordings(query => 'Y
 
 ### Testing `labels` query
 ```console
-$ coral sql "SELECT name, type FROM musicbrainz.search_labels(query => 'Parlophone') LIMIT 1;"
+$ coral sql "SELECT name, type FROM musicbrainz.labels WHERE query = 'Parlophone' LIMIT 1;"
 +------------+---------------------+
 | name       | type                |
 +------------+---------------------+
