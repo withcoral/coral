@@ -9,7 +9,7 @@ base_url: "https://api.trello.com/1"
 
 inputs:
   TRELLO_API_KEY:
-    kind: variable
+    kind: secret
     required: true
     hint: >-
       Your Trello API Key. You can get this from the Trello Power-Up Admin
@@ -150,12 +150,23 @@ tables:
   # ──────────────────────────────────────────────────────────────────────
   - name: cards
     description: >
-      Lists all cards on a specific board.
-      Requires the `board_id` filter.
+      Lists cards on a specific board. Requires the `board_id` filter.
+      Use `limit` to cap results (default 50, max 1000), and `since`/`before`
+      to scope by date or card ID to avoid large fetches on active boards.
+    guide: >
+      Start with `SELECT id, name, list_id, due FROM trello.cards
+      WHERE board_id = 'your_board_id' LIMIT 50`. For large boards,
+      add `since` or `before` to narrow the window.
     filters:
       - name: board_id
         required: true
       - name: filter
+        required: false
+      - name: limit
+        required: false
+      - name: since
+        required: false
+      - name: before
         required: false
     request:
       method: GET
@@ -171,6 +182,16 @@ tables:
           from: filter
           key: filter
           default: all
+        - name: limit
+          from: filter
+          key: limit
+          default: "50"
+        - name: since
+          from: filter
+          key: since
+        - name: before
+          from: filter
+          key: before
     columns:
       - name: id
         type: Utf8
@@ -224,8 +245,28 @@ tables:
         type: Utf8
         nullable: true
         virtual: true
-        description: Filter cards by status (all, closed, none, open, visible).
+        description: Card status filter used (all, closed, none, open, visible).
         expr: {kind: from_filter, key: filter}
+      - name: limit
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Maximum number of cards fetched (default 50, max 1000).
+        expr: {kind: from_filter, key: limit}
+      - name: since
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Return cards created on or after this ISO 8601 date or card ID.
+        expr: {kind: from_filter, key: since}
+      - name: before
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Return cards created on or before this ISO 8601 date or card ID.
+        expr: {kind: from_filter, key: before}
       - name: url
         type: Utf8
         nullable: true
