@@ -1,0 +1,73 @@
+name: coingecko
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: Fetch live cryptocurrency prices, market caps, and volumes from CoinGecko.
+base_url: https://api.coingecko.com/api/v3
+test_queries:
+  - SELECT * FROM coingecko.markets WHERE vs_currency = 'usd' LIMIT 5
+tables:
+  - name: markets
+    description: Fetch live market data for cryptocurrencies.
+    filters:
+      - name: vs_currency
+        required: true
+      - name: ids
+        required: false
+    request:
+      method: GET
+      path: /coins/markets
+      query:
+        - name: vs_currency
+          from: filter
+          key: vs_currency
+        - name: ids
+          from: filter
+          key: ids
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: vs_currency
+        type: Utf8
+        expr: {kind: from_filter, key: vs_currency}
+      - name: id
+        type: Utf8
+        expr: {kind: path, path: [id]}
+      - name: symbol
+        type: Utf8
+        expr: {kind: path, path: [symbol]}
+      - name: name
+        type: Utf8
+        expr: {kind: path, path: [name]}
+      - name: current_price
+        type: Float64
+        expr: {kind: path, path: [current_price]}
+      - name: market_cap
+        type: Int64
+        expr: {kind: path, path: [market_cap]}
+      - name: market_cap_rank
+        type: Int64
+        expr: {kind: path, path: [market_cap_rank]}
+      - name: total_volume
+        type: Int64
+        expr: {kind: path, path: [total_volume]}
+      - name: high_24h
+        type: Float64
+        expr: {kind: path, path: [high_24h]}
+      - name: low_24h
+        type: Float64
+        expr: {kind: path, path: [low_24h]}
+      - name: price_change_percentage_24h
+        type: Float64
+        expr: {kind: path, path: [price_change_percentage_24h]}
+      - name: circulating_supply
+        type: Float64
+        expr: {kind: path, path: [circulating_supply]}
+      - name: total_supply
+        type: Float64
+        expr: {kind: path, path: [total_supply]}
+      - name: last_updated
+        type: Utf8
+        expr: {kind: path, path: [last_updated]}
