@@ -90,14 +90,6 @@ tables:
           kind: path
           path:
             - title
-      - name: type
-        type: Utf8
-        nullable: true
-        description: Type of the form (quiz, form, etc.)
-        expr:
-          kind: path
-          path:
-            - type
       - name: is_public
         type: Boolean
         nullable: true
@@ -116,16 +108,23 @@ tables:
           path:
             - _links
             - display
-      - name: workspace_href
+      - name: self_url
         type: Utf8
         nullable: true
-        description: >-
-          API URL of the workspace containing the form. Extract the
-          trailing segment as the workspace ID.
+        description: API URL for this form
         expr:
           kind: path
           path:
-            - workspace
+            - self
+            - href
+      - name: theme_url
+        type: Utf8
+        nullable: true
+        description: API URL of the theme applied to this form
+        expr:
+          kind: path
+          path:
+            - theme
             - href
       - name: last_updated_at
         type: Timestamp
@@ -153,8 +152,8 @@ tables:
     description: Workspaces in the Typeform account
     guide: |
       Each row is one workspace. Use `id` to filter `typeform.forms` by
-      `workspace_id`. `forms_count` shows how many forms exist in each
-      workspace without querying `typeform.forms`. Use `search` for
+      `workspace_id`. The `forms` column is a JSON array containing the
+      form count and API link for the workspace. Use `search` for
       substring matches on workspace names.
     filters:
       - name: search
@@ -207,14 +206,6 @@ tables:
           kind: path
           path:
             - account_id
-      - name: default
-        type: Boolean
-        nullable: true
-        description: Whether this is the default workspace
-        expr:
-          kind: path
-          path:
-            - default
       - name: shared
         type: Boolean
         nullable: true
@@ -223,15 +214,17 @@ tables:
           kind: path
           path:
             - shared
-      - name: forms_count
-        type: Int64
+      - name: forms
+        type: Json
         nullable: true
-        description: Number of forms in this workspace
+        description: >-
+          JSON array of form references for this workspace. Each object
+          contains a count (number of forms) and href (API link). Use
+          json_get_int to extract the count.
         expr:
           kind: path
           path:
             - forms
-            - count
   - name: themes
     description: Themes available in the Typeform account
     guide: |

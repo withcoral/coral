@@ -33,6 +33,14 @@ stores data in the EU data center, set `TYPEFORM_API_BASE` to
 `https://api.eu.typeform.com` or `https://api.typeform.eu`.
 See [Typeform base URL docs](https://www.typeform.com/developers/get-started/).
 
+## Rate limits
+
+Typeform enforces **2 requests per second per account** for the Create and
+Responses APIs. This source paginates the Create endpoints (forms, workspaces,
+themes) and queries the Responses endpoint. Keep this limit in mind when
+running concurrent queries or large scans.
+See [Typeform rate limits](https://www.typeform.com/developers/get-started/).
+
 ## Tables
 
 | Table | Description | Required filters | Optional filters |
@@ -72,10 +80,10 @@ coral sql "
 
 ```bash
 # Confirm connectivity — list forms
-coral sql "SELECT id, title, type, is_public, display_url FROM typeform.forms LIMIT 5"
+coral sql "SELECT id, title, is_public, display_url FROM typeform.forms LIMIT 5"
 
 # List all workspaces with form counts
-coral sql "SELECT id, name, forms_count, shared, default FROM typeform.workspaces"
+coral sql "SELECT id, name, forms, shared FROM typeform.workspaces"
 
 # Search for forms by title
 coral sql "
