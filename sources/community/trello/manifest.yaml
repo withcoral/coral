@@ -63,6 +63,11 @@ tables:
         nullable: true
         description: Whether the board is closed (archived).
         expr: {kind: path, path: [closed]}
+      - name: organization_id
+        type: Utf8
+        nullable: true
+        description: The ID of the organization this board belongs to.
+        expr: {kind: path, path: [idOrganization]}
       - name: url
         type: Utf8
         nullable: true
@@ -85,6 +90,8 @@ tables:
     filters:
       - name: board_id
         required: true
+      - name: filter
+        required: false
     request:
       method: GET
       path: /boards/{{filter.board_id}}/lists
@@ -96,8 +103,9 @@ tables:
           from: input
           key: TRELLO_API_TOKEN
         - name: filter
-          from: literal
-          value: all
+          from: filter
+          key: filter
+          default: all
     columns:
       - name: id
         type: Utf8
@@ -124,6 +132,12 @@ tables:
         nullable: false
         description: The ID of the board this list belongs to.
         expr: {kind: from_filter, key: board_id}
+      - name: filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Filter lists by status (all, closed, none, open).
+        expr: {kind: from_filter, key: filter}
       - name: raw
         type: Json
         nullable: false
@@ -141,6 +155,8 @@ tables:
     filters:
       - name: board_id
         required: true
+      - name: filter
+        required: false
     request:
       method: GET
       path: /boards/{{filter.board_id}}/cards
@@ -152,8 +168,9 @@ tables:
           from: input
           key: TRELLO_API_TOKEN
         - name: filter
-          from: literal
-          value: all
+          from: filter
+          key: filter
+          default: all
     columns:
       - name: id
         type: Utf8
@@ -203,6 +220,12 @@ tables:
         nullable: false
         description: The ID of the board the card belongs to.
         expr: {kind: from_filter, key: board_id}
+      - name: filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Filter cards by status (all, closed, none, open, visible).
+        expr: {kind: from_filter, key: filter}
       - name: url
         type: Utf8
         nullable: true
