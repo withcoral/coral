@@ -71,10 +71,9 @@ Supported values:
 | `keychain` | Require OS credential storage. If unavailable, source installation fails. |
 | `file` | Store source secrets in plaintext `secrets.env` files under Coral's config directory. |
 
-Each installed source records its own credential storage route. Changing the
-global preference does not rewrite routes that already exist. Existing plaintext
-sources remain file-backed; remove and re-add a source if you want it to use
-the current default backend.
+<Note>
+Changing the global preference does not rewrite existing credentials. To update those, remove and re-add the source you want to update.
+</Note>
 
 ## What you still need to trust
 
