@@ -8,27 +8,33 @@ description: >-
   required.
 base_url: https://musicbrainz.org/ws/2
 test_queries:
-  - SELECT name, type, country FROM musicbrainz.artists WHERE query = 'The Beatles' LIMIT 1
-  - SELECT title, status, date FROM musicbrainz.releases WHERE query = 'Abbey Road' LIMIT 1
-  - SELECT title, length FROM musicbrainz.recordings WHERE query = 'Yesterday' LIMIT 1
-  - SELECT name, type FROM musicbrainz.labels WHERE query = 'Parlophone' LIMIT 1
-tables:
-  - name: artists
+  - SELECT name, type, country FROM musicbrainz.search_artists(query => 'The Beatles') LIMIT 1
+  - SELECT title, status, date FROM musicbrainz.search_releases(query => 'Abbey Road') LIMIT 1
+  - SELECT title, length FROM musicbrainz.search_recordings(query => 'Yesterday') LIMIT 1
+  - SELECT name, type FROM musicbrainz.search_labels(query => 'Parlophone') LIMIT 1
+functions:
+  - name: search_artists
+    kind: search
     description: |
       Search for artists in the MusicBrainz database. Use `query` with a
       Lucene search expression (e.g. `The Beatles`, `artist:Radiohead AND
       country:GB`). Results include name, type, country, area, lifespan,
       and disambiguation.
-    fetch_limit_default: 25
-    filters:
+    search_limits:
+      default_top_k: 25
+      max_top_k: 100
+      max_calls_per_query: 5
+    args:
       - name: query
         required: true
+        bind:
+          arg: query
     request:
       method: GET
       path: /artist
       query:
         - name: query
-          from: filter
+          from: arg
           key: query
         - name: fmt
           from: literal
@@ -141,24 +147,30 @@ tables:
         nullable: true
         description: Echoes the search query filter.
         expr:
-          kind: from_filter
+          kind: from_arg
           key: query
 
-  - name: releases
+  - name: search_releases
+    kind: search
     description: |
       Search for releases (albums, singles, EPs, etc.) in the MusicBrainz
       database. Use `query` with a Lucene search expression (e.g.
       `Abbey Road`, `release:OK Computer AND artist:Radiohead`).
-    fetch_limit_default: 25
-    filters:
+    search_limits:
+      default_top_k: 25
+      max_top_k: 100
+      max_calls_per_query: 5
+    args:
       - name: query
         required: true
+        bind:
+          arg: query
     request:
       method: GET
       path: /release
       query:
         - name: query
-          from: filter
+          from: arg
           key: query
         - name: fmt
           from: literal
@@ -253,24 +265,30 @@ tables:
         nullable: true
         description: Echoes the search query filter.
         expr:
-          kind: from_filter
+          kind: from_arg
           key: query
 
-  - name: recordings
+  - name: search_recordings
+    kind: search
     description: |
       Search for recordings (individual tracks) in the MusicBrainz database.
       Use `query` with a Lucene search expression (e.g. `Yesterday`,
       `recording:Bohemian Rhapsody AND artist:Queen`).
-    fetch_limit_default: 25
-    filters:
+    search_limits:
+      default_top_k: 25
+      max_top_k: 100
+      max_calls_per_query: 5
+    args:
       - name: query
         required: true
+        bind:
+          arg: query
     request:
       method: GET
       path: /recording
       query:
         - name: query
-          from: filter
+          from: arg
           key: query
         - name: fmt
           from: literal
@@ -341,24 +359,30 @@ tables:
         nullable: true
         description: Echoes the search query filter.
         expr:
-          kind: from_filter
+          kind: from_arg
           key: query
 
-  - name: labels
+  - name: search_labels
+    kind: search
     description: |
       Search for labels (record companies, imprints, etc.) in the MusicBrainz
       database. Use `query` with a Lucene search expression (e.g.
       `Parlophone`, `label:Atlantic`).
-    fetch_limit_default: 25
-    filters:
+    search_limits:
+      default_top_k: 25
+      max_top_k: 100
+      max_calls_per_query: 5
+    args:
       - name: query
         required: true
+        bind:
+          arg: query
     request:
       method: GET
       path: /label
       query:
         - name: query
-          from: filter
+          from: arg
           key: query
         - name: fmt
           from: literal
@@ -463,5 +487,5 @@ tables:
         nullable: true
         description: Echoes the search query filter.
         expr:
-          kind: from_filter
+          kind: from_arg
           key: query
