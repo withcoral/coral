@@ -80,6 +80,9 @@ tables:
     description: >
       Lists all lists (columns) on a specific board.
       Requires the `board_id` filter.
+    filters:
+      - name: board_id
+        required: true
     request:
       method: GET
       path: /boards/{{filter.board_id}}/lists
@@ -123,6 +126,9 @@ tables:
     description: >
       Lists all cards on a specific board.
       Requires the `board_id` filter.
+    filters:
+      - name: board_id
+        required: true
     request:
       method: GET
       path: /boards/{{filter.board_id}}/cards
@@ -194,6 +200,9 @@ tables:
     description: >
       Lists all members on a specific board.
       Requires the `board_id` filter.
+    filters:
+      - name: board_id
+        required: true
     request:
       method: GET
       path: /boards/{{filter.board_id}}/members
