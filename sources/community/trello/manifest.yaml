@@ -95,6 +95,9 @@ tables:
         - name: token
           from: input
           key: TRELLO_API_TOKEN
+        - name: filter
+          from: literal
+          value: all
     columns:
       - name: id
         type: Utf8
@@ -148,6 +151,9 @@ tables:
         - name: token
           from: input
           key: TRELLO_API_TOKEN
+        - name: filter
+          from: literal
+          value: all
     columns:
       - name: id
         type: Utf8

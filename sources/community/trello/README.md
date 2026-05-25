@@ -7,7 +7,7 @@ A community source that exposes Trello boards, lists, cards, and members to Cora
 Trello requires an **API Key** and a **User Token** to authenticate requests.
 
 1.  **Get your API Key:** Log in to Trello and go to the [Power-Up Admin page](https://trello.com/power-ups/admin). Create a new Power-Up if you don't have one, and copy the **API Key**.
-2.  **Get your API Token:** On the same page, next to the API Key, look for the option to generate a token manually. Click it, authorize the app, and copy your **Token**.
+2.  **Get your API Token:** On the same page, next to the API Key, look for the option to generate a token manually. **Note:** Ensure you grant the token at least **read** access (this is usually the default) so it has permission to fetch your boards, lists, and cards. Click authorize and copy your **Token**.
 
 Set the following environment variables before running Coral:
 ```bash
