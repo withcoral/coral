@@ -22,7 +22,8 @@ Search for books by title, author, or keyword. Requires the `q` argument.
 **Example:**
 ```sql
 SELECT title, first_publish_year, author_name
-FROM openlibrary.search(q => 'lord of the rings');
+FROM openlibrary.search(q => 'lord of the rings')
+LIMIT 10;
 ```
 
 ## Tables
@@ -34,5 +35,6 @@ Fetch books belonging to a specific subject or genre. Requires the `subject` fil
 ```sql
 SELECT title, first_publish_year, authors
 FROM openlibrary.subjects
-WHERE subject = 'love';
+WHERE subject = 'love'
+LIMIT 10;
 ```

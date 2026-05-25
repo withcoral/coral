@@ -73,6 +73,7 @@ functions:
 tables:
   - name: subjects
     description: Fetch books belonging to a specific subject or genre.
+    fetch_limit_default: 100
     filters:
       - name: subject
         required: true
