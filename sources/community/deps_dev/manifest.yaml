@@ -350,7 +350,7 @@ tables:
           path:
             - relation
       - name: errors
-        type: Utf8
+        type: Json
         nullable: true
         description: Error messages during dependency resolution (JSON array of strings).
         expr:
