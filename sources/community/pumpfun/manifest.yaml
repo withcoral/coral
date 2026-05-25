@@ -2,6 +2,10 @@ name: pumpfun
 version: 0.1.1
 dsl_version: 3
 backend: http
+description: >-
+  Query real-time token launches, bonding curve progress, graduated tokens, market caps,
+  and the current SOL price from Pump.fun via the public frontend-api-v3 endpoints.
+  No API key required.
 
 inputs:
   API_BASE:
@@ -10,6 +14,10 @@ inputs:
     hint: Base URL for Pump.fun Frontend API v3
 
 base_url: "{{input.API_BASE}}"
+
+test_queries:
+  - SELECT name, symbol, creator, created_timestamp, market_cap, usd_market_cap FROM pumpfun.latest_coins LIMIT 5
+  - SELECT sol_price FROM pumpfun.sol_price
 
 auth:
   type: HeaderAuth
@@ -45,12 +53,6 @@ tables:
       method: GET
       path: /coins
       query:
-        - name: limit
-          from: template
-          template: "50"
-        - name: offset
-          from: template
-          template: "0"
         - name: searchTerm
           from: filter
           key: searchTerm
@@ -71,7 +73,50 @@ tables:
           key: order
     response:
       rows_path: []
+    pagination:
+      mode: offset
+      offset_param: offset
+      page_size:
+        default: 50
+        max: 50
+        query_param: limit
     columns:
+      - name: search_term
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: searchTerm
+      - name: creator_filter
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: creator
+      - name: complete_filter
+        type: Boolean
+        virtual: true
+        expr:
+          kind: from_filter
+          key: complete
+      - name: include_nsfw
+        type: Boolean
+        virtual: true
+        expr:
+          kind: from_filter
+          key: includeNsfw
+      - name: sort
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: sort
+      - name: order
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: order
       - name: mint
         type: Utf8
       - name: name
@@ -82,11 +127,11 @@ tables:
         type: Utf8
       - name: image_uri
         type: Utf8
-      - name: twitter
+      - name: metadata_uri
         type: Utf8
-      - name: telegram
+      - name: bonding_curve
         type: Utf8
-      - name: website
+      - name: associated_bonding_curve
         type: Utf8
       - name: creator
         type: Utf8
@@ -106,10 +151,28 @@ tables:
         type: Int64
       - name: real_sol_reserves
         type: Int64
+      - name: real_token_reserves
+        type: Int64
+      - name: total_supply
+        type: Int64
+      - name: reply_count
+        type: Int64
+      - name: is_currently_live
+        type: Boolean
       - name: nsfw
         type: Boolean
       - name: is_banned
         type: Boolean
+      - name: ath_market_cap
+        type: Float64
+      - name: ath_market_cap_timestamp
+        type: Int64
+      - name: twitter
+        type: Utf8
+      - name: telegram
+        type: Utf8
+      - name: website
+        type: Utf8
 
   - name: latest_coins
     description: Most recently launched tokens on Pump.fun
@@ -118,12 +181,6 @@ tables:
       method: GET
       path: /coins
       query:
-        - name: limit
-          from: template
-          template: "50"
-        - name: offset
-          from: template
-          template: "0"
         - name: sort
           from: template
           template: created_timestamp
@@ -138,6 +195,13 @@ tables:
           template: "false"
     response:
       rows_path: []
+    pagination:
+      mode: offset
+      offset_param: offset
+      page_size:
+        default: 50
+        max: 50
+        query_param: limit
     columns:
       - name: mint
         type: Utf8
@@ -145,9 +209,21 @@ tables:
         type: Utf8
       - name: symbol
         type: Utf8
+      - name: description
+        type: Utf8
+      - name: image_uri
+        type: Utf8
+      - name: metadata_uri
+        type: Utf8
+      - name: bonding_curve
+        type: Utf8
+      - name: associated_bonding_curve
+        type: Utf8
       - name: creator
         type: Utf8
       - name: created_timestamp
+        type: Int64
+      - name: last_trade_timestamp
         type: Int64
       - name: complete
         type: Boolean
@@ -155,6 +231,34 @@ tables:
         type: Float64
       - name: usd_market_cap
         type: Float64
+      - name: virtual_sol_reserves
+        type: Int64
+      - name: virtual_token_reserves
+        type: Int64
+      - name: real_sol_reserves
+        type: Int64
+      - name: real_token_reserves
+        type: Int64
+      - name: total_supply
+        type: Int64
+      - name: reply_count
+        type: Int64
+      - name: is_currently_live
+        type: Boolean
+      - name: nsfw
+        type: Boolean
+      - name: is_banned
+        type: Boolean
+      - name: ath_market_cap
+        type: Float64
+      - name: ath_market_cap_timestamp
+        type: Int64
+      - name: twitter
+        type: Utf8
+      - name: telegram
+        type: Utf8
+      - name: website
+        type: Utf8
 
   - name: graduated_coins
     description: Tokens that have graduated to Raydium
@@ -163,12 +267,6 @@ tables:
       method: GET
       path: /coins
       query:
-        - name: limit
-          from: template
-          template: "50"
-        - name: offset
-          from: template
-          template: "0"
         - name: sort
           from: template
           template: last_trade_timestamp
@@ -183,6 +281,13 @@ tables:
           template: "false"
     response:
       rows_path: []
+    pagination:
+      mode: offset
+      offset_param: offset
+      page_size:
+        default: 50
+        max: 50
+        query_param: limit
     columns:
       - name: mint
         type: Utf8
@@ -190,47 +295,15 @@ tables:
         type: Utf8
       - name: symbol
         type: Utf8
-      - name: creator
+      - name: description
         type: Utf8
-      - name: created_timestamp
-        type: Int64
-      - name: complete
-        type: Boolean
-      - name: market_cap
-        type: Float64
-      - name: usd_market_cap
-        type: Float64
-
-  - name: active_trading_coins
-    description: Tokens with the most recent trading activity
-    fetch_limit_default: 30
-    request:
-      method: GET
-      path: /coins
-      query:
-        - name: limit
-          from: template
-          template: "50"
-        - name: offset
-          from: template
-          template: "0"
-        - name: sort
-          from: template
-          template: last_trade_timestamp
-        - name: order
-          from: template
-          template: DESC
-        - name: includeNsfw
-          from: template
-          template: "false"
-    response:
-      rows_path: []
-    columns:
-      - name: mint
+      - name: image_uri
         type: Utf8
-      - name: name
+      - name: metadata_uri
         type: Utf8
-      - name: symbol
+      - name: bonding_curve
+        type: Utf8
+      - name: associated_bonding_curve
         type: Utf8
       - name: creator
         type: Utf8
@@ -244,6 +317,117 @@ tables:
         type: Float64
       - name: usd_market_cap
         type: Float64
+      - name: virtual_sol_reserves
+        type: Int64
+      - name: virtual_token_reserves
+        type: Int64
+      - name: real_sol_reserves
+        type: Int64
+      - name: real_token_reserves
+        type: Int64
+      - name: total_supply
+        type: Int64
+      - name: reply_count
+        type: Int64
+      - name: is_currently_live
+        type: Boolean
+      - name: nsfw
+        type: Boolean
+      - name: is_banned
+        type: Boolean
+      - name: ath_market_cap
+        type: Float64
+      - name: ath_market_cap_timestamp
+        type: Int64
+      - name: twitter
+        type: Utf8
+      - name: telegram
+        type: Utf8
+      - name: website
+        type: Utf8
+
+  - name: active_trading_coins
+    description: Tokens with the most recent trading activity
+    fetch_limit_default: 30
+    request:
+      method: GET
+      path: /coins
+      query:
+        - name: sort
+          from: template
+          template: last_trade_timestamp
+        - name: order
+          from: template
+          template: DESC
+        - name: includeNsfw
+          from: template
+          template: "false"
+    response:
+      rows_path: []
+    pagination:
+      mode: offset
+      offset_param: offset
+      page_size:
+        default: 50
+        max: 50
+        query_param: limit
+    columns:
+      - name: mint
+        type: Utf8
+      - name: name
+        type: Utf8
+      - name: symbol
+        type: Utf8
+      - name: description
+        type: Utf8
+      - name: image_uri
+        type: Utf8
+      - name: metadata_uri
+        type: Utf8
+      - name: bonding_curve
+        type: Utf8
+      - name: associated_bonding_curve
+        type: Utf8
+      - name: creator
+        type: Utf8
+      - name: created_timestamp
+        type: Int64
+      - name: last_trade_timestamp
+        type: Int64
+      - name: complete
+        type: Boolean
+      - name: market_cap
+        type: Float64
+      - name: usd_market_cap
+        type: Float64
+      - name: virtual_sol_reserves
+        type: Int64
+      - name: virtual_token_reserves
+        type: Int64
+      - name: real_sol_reserves
+        type: Int64
+      - name: real_token_reserves
+        type: Int64
+      - name: total_supply
+        type: Int64
+      - name: reply_count
+        type: Int64
+      - name: is_currently_live
+        type: Boolean
+      - name: nsfw
+        type: Boolean
+      - name: is_banned
+        type: Boolean
+      - name: ath_market_cap
+        type: Float64
+      - name: ath_market_cap_timestamp
+        type: Int64
+      - name: twitter
+        type: Utf8
+      - name: telegram
+        type: Utf8
+      - name: website
+        type: Utf8
 
   - name: king_of_the_hill
     description: Current King of the Hill (highest market cap bonding curve token)
@@ -275,14 +459,56 @@ tables:
         type: Utf8
       - name: symbol
         type: Utf8
+      - name: description
+        type: Utf8
+      - name: image_uri
+        type: Utf8
+      - name: metadata_uri
+        type: Utf8
+      - name: bonding_curve
+        type: Utf8
+      - name: associated_bonding_curve
+        type: Utf8
       - name: creator
         type: Utf8
+      - name: created_timestamp
+        type: Int64
+      - name: last_trade_timestamp
+        type: Int64
+      - name: complete
+        type: Boolean
       - name: market_cap
         type: Float64
       - name: usd_market_cap
         type: Float64
-      - name: complete
+      - name: virtual_sol_reserves
+        type: Int64
+      - name: virtual_token_reserves
+        type: Int64
+      - name: real_sol_reserves
+        type: Int64
+      - name: real_token_reserves
+        type: Int64
+      - name: total_supply
+        type: Int64
+      - name: reply_count
+        type: Int64
+      - name: is_currently_live
         type: Boolean
+      - name: nsfw
+        type: Boolean
+      - name: is_banned
+        type: Boolean
+      - name: ath_market_cap
+        type: Float64
+      - name: ath_market_cap_timestamp
+        type: Int64
+      - name: twitter
+        type: Utf8
+      - name: telegram
+        type: Utf8
+      - name: website
+        type: Utf8
 
   - name: coin_detail
     description: Get full details for a single token by mint address
@@ -310,15 +536,17 @@ tables:
         type: Utf8
       - name: image_uri
         type: Utf8
-      - name: twitter
+      - name: metadata_uri
         type: Utf8
-      - name: telegram
+      - name: bonding_curve
         type: Utf8
-      - name: website
+      - name: associated_bonding_curve
         type: Utf8
       - name: creator
         type: Utf8
       - name: created_timestamp
+        type: Int64
+      - name: last_trade_timestamp
         type: Int64
       - name: complete
         type: Boolean
@@ -328,8 +556,32 @@ tables:
         type: Float64
       - name: virtual_sol_reserves
         type: Int64
+      - name: virtual_token_reserves
+        type: Int64
       - name: real_sol_reserves
         type: Int64
+      - name: real_token_reserves
+        type: Int64
+      - name: total_supply
+        type: Int64
+      - name: reply_count
+        type: Int64
+      - name: is_currently_live
+        type: Boolean
+      - name: nsfw
+        type: Boolean
+      - name: is_banned
+        type: Boolean
+      - name: ath_market_cap
+        type: Float64
+      - name: ath_market_cap_timestamp
+        type: Int64
+      - name: twitter
+        type: Utf8
+      - name: telegram
+        type: Utf8
+      - name: website
+        type: Utf8
 
   - name: sol_price
     description: Current Solana price in USD
