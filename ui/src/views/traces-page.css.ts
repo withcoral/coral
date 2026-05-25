@@ -7,7 +7,12 @@ import { lightTheme } from '@/wax/theme/theme-light.css'
 import { theme } from '@/wax/theme/theme.css'
 
 const spin = keyframes({ to: { transform: 'rotate(360deg)' } })
-export const root = style({ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 })
+export const root = style({
+  display: 'flex',
+  flexDirection: 'column',
+  height: '100%',
+  minHeight: 0,
+})
 
 export const header = style({
   alignItems: 'center',
@@ -98,7 +103,13 @@ export const disconnectedBanner = style({
   textAlign: 'center',
 })
 
-export const queryScroll = style({ flex: 1, minHeight: 0, overflowX: 'hidden', overflowY: 'auto', paddingBlockEnd: 32 })
+export const queryScroll = style({
+  flex: 1,
+  minHeight: 0,
+  overflowX: 'hidden',
+  overflowY: 'auto',
+  paddingBlockEnd: 32,
+})
 export const traceList = style({ display: 'flex', flexDirection: 'column' })
 
 export const fullRow = style({
@@ -114,12 +125,24 @@ export const fullRow = style({
   width: '100%',
   selectors: { '&:hover': { backgroundColor: theme.surface.onMainContentSubtle } },
 })
-export const statusDot = style({ borderRadius: '50%', flexShrink: 0, height: 8, marginInline: 8, width: 8, selectors: {
-  '&[data-tone="ok"]': { backgroundColor: theme.pill.green.color },
-  '&[data-tone="error"]': { backgroundColor: theme.pill.red.color },
-  '&[data-tone="running"]': { backgroundColor: theme.pill.blue.color },
-}})
-export const cell = style({ flexShrink: 0, paddingBlock: 10, paddingInline: 8, whiteSpace: 'nowrap' })
+export const statusDot = style({
+  borderRadius: '50%',
+  flexShrink: 0,
+  height: 8,
+  marginInline: 8,
+  width: 8,
+  selectors: {
+    '&[data-tone="ok"]': { backgroundColor: theme.pill.green.color },
+    '&[data-tone="error"]': { backgroundColor: theme.pill.red.color },
+    '&[data-tone="running"]': { backgroundColor: theme.pill.blue.color },
+  },
+})
+export const cell = style({
+  flexShrink: 0,
+  paddingBlock: 10,
+  paddingInline: 8,
+  whiteSpace: 'nowrap',
+})
 export const cellTimestamp = style({ minWidth: 80 })
 export const sqlPreview = style({
   color: utils.opacify(theme.content.primary, 85),
@@ -161,11 +184,22 @@ export const statusBar = style({
 })
 export const statusLeft = style({ alignItems: 'center', display: 'flex', gap: 6 })
 export const statusRight = style({ alignItems: 'center', display: 'flex', gap: 6 })
-export const statusBarDot = style({ borderRadius: '50%', flexShrink: 0, height: 6, width: 6, selectors: {
-  '&[data-state="connected"]': { backgroundColor: theme.pill.green.color },
-  '&[data-state="disconnected"]': { backgroundColor: theme.pill.red.color },
-}})
-export const statusSep = style({ backgroundColor: theme.stroke.primary, flexShrink: 0, height: 10, width: 1 })
+export const statusBarDot = style({
+  borderRadius: '50%',
+  flexShrink: 0,
+  height: 6,
+  width: 6,
+  selectors: {
+    '&[data-state="connected"]': { backgroundColor: theme.pill.green.color },
+    '&[data-state="disconnected"]': { backgroundColor: theme.pill.red.color },
+  },
+})
+export const statusSep = style({
+  backgroundColor: theme.stroke.primary,
+  flexShrink: 0,
+  height: 10,
+  width: 1,
+})
 
 export const emptyState = style({
   alignItems: 'center',
@@ -178,22 +212,102 @@ export const emptyState = style({
   padding: 32,
   textAlign: 'center',
 })
-export const emptyStateText = style({ alignItems: 'center', display: 'flex', flexDirection: 'column', gap: 4, maxWidth: 440 })
-export const loadingState = style({ alignItems: 'center', display: 'flex', flex: 1, gap: 8, justifyContent: 'center' })
+export const emptyStateText = style({
+  alignItems: 'center',
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 4,
+  maxWidth: 440,
+})
+export const loadingState = style({
+  alignItems: 'center',
+  display: 'flex',
+  flex: 1,
+  gap: 8,
+  justifyContent: 'center',
+})
 export const spinner = style({ animation: `${spin} 1s linear infinite` })
 
-export const detailRoot = style({ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 })
-export const detailEmpty = style({ alignItems: 'center', display: 'flex', flex: 1, flexDirection: 'column', gap: 8, justifyContent: 'center', padding: 32, textAlign: 'center' })
-export const detailHeaderActions = style({ alignItems: 'center', display: 'flex', flexShrink: 0, gap: 4 })
+export const detailRoot = style({
+  display: 'flex',
+  flexDirection: 'column',
+  height: '100%',
+  minHeight: 0,
+})
+export const detailEmpty = style({
+  alignItems: 'center',
+  display: 'flex',
+  flex: 1,
+  flexDirection: 'column',
+  gap: 8,
+  justifyContent: 'center',
+  padding: 32,
+  textAlign: 'center',
+})
+export const detailHeaderActions = style({
+  alignItems: 'center',
+  display: 'flex',
+  flexShrink: 0,
+  gap: 4,
+})
 export const scrollBody = style({ display: 'flex', flex: 1, minHeight: 0, overflow: 'auto' })
-export const content = style({ display: 'flex', flex: 1, flexDirection: 'column', gap: 16, minHeight: '100%', padding: 16 })
-export const sqlBlock = style({ backgroundColor: theme.surface.main, border: `1px solid ${theme.stroke.primary}`, borderRadius: 8, overflow: 'hidden', position: 'relative' })
+export const content = style({
+  display: 'flex',
+  flex: 1,
+  flexDirection: 'column',
+  gap: 16,
+  minHeight: '100%',
+  padding: 16,
+})
+export const sqlBlock = style({
+  backgroundColor: theme.surface.main,
+  border: `1px solid ${theme.stroke.primary}`,
+  borderRadius: 8,
+  overflow: 'hidden',
+  position: 'relative',
+})
 export const statGrid = style({ display: 'flex', flexWrap: 'wrap', gap: 12 })
-export const statCard = style({ backgroundColor: theme.surface.onMainContent, border: `1px solid ${theme.stroke.secondary}`, borderRadius: 12, display: 'flex', flexDirection: 'column', flexShrink: 0, minWidth: 100, paddingBlock: 12, paddingInline: 16 })
-export const tabList = style({ borderBlockEnd: `1px solid ${theme.stroke.primary}`, display: 'flex', gap: 4 })
-export const tabTrigger = style({ background: 'none', border: 'none', borderBlockEnd: '2px solid transparent', color: theme.content.tertiary, cursor: 'pointer', fontSize: 14, fontWeight: 500, lineHeight: 1.65, marginBlockEnd: -1, paddingBlock: 8, paddingInline: 12 })
-export const tabTriggerActive = style({ borderBlockEndColor: theme.pill.green.color, color: theme.content.primary })
-export const tabContent = style({ display: 'flex', flex: '1 1 280px', flexDirection: 'column', minHeight: 280, overflow: 'hidden', paddingBlockStart: 16 })
+export const statCard = style({
+  backgroundColor: theme.surface.onMainContent,
+  border: `1px solid ${theme.stroke.secondary}`,
+  borderRadius: 12,
+  display: 'flex',
+  flexDirection: 'column',
+  flexShrink: 0,
+  minWidth: 100,
+  paddingBlock: 12,
+  paddingInline: 16,
+})
+export const tabList = style({
+  borderBlockEnd: `1px solid ${theme.stroke.primary}`,
+  display: 'flex',
+  gap: 4,
+})
+export const tabTrigger = style({
+  background: 'none',
+  border: 'none',
+  borderBlockEnd: '2px solid transparent',
+  color: theme.content.tertiary,
+  cursor: 'pointer',
+  fontSize: 14,
+  fontWeight: 500,
+  lineHeight: 1.65,
+  marginBlockEnd: -1,
+  paddingBlock: 8,
+  paddingInline: 12,
+})
+export const tabTriggerActive = style({
+  borderBlockEndColor: theme.pill.green.color,
+  color: theme.content.primary,
+})
+export const tabContent = style({
+  display: 'flex',
+  flex: '1 1 280px',
+  flexDirection: 'column',
+  minHeight: 280,
+  overflow: 'hidden',
+  paddingBlockStart: 16,
+})
 
 export const waterfallRoot = style({
   alignItems: 'stretch',
@@ -221,8 +335,22 @@ export const waterfallTickRow = style({
   gridTemplateColumns: '320px minmax(0, 1fr)',
 })
 export const waterfallLabel = style({ height: 24, minWidth: 0, paddingBlockEnd: 4 })
-export const waterfallTimeline = style({ borderBlockEnd: `1px solid ${theme.stroke.primary}`, height: 24, minWidth: 0, overflow: 'hidden', paddingBlockEnd: 4, position: 'relative' })
-export const waterfallTick = style({ color: theme.content.tertiary, fontFamily: fontFamily.dmMono, fontSize: 12, lineHeight: '16px', position: 'absolute', whiteSpace: 'nowrap' })
+export const waterfallTimeline = style({
+  borderBlockEnd: `1px solid ${theme.stroke.primary}`,
+  height: 24,
+  minWidth: 0,
+  overflow: 'hidden',
+  paddingBlockEnd: 4,
+  position: 'relative',
+})
+export const waterfallTick = style({
+  color: theme.content.tertiary,
+  fontFamily: fontFamily.dmMono,
+  fontSize: 12,
+  lineHeight: '16px',
+  position: 'absolute',
+  whiteSpace: 'nowrap',
+})
 export const waterfallResizeHandle = style({
   alignSelf: 'stretch',
   backgroundColor: theme.stroke.primary,
@@ -266,7 +394,12 @@ export const waterfallRowsGrid = style({
   gridTemplateColumns: '320px minmax(0, 1fr)',
   minWidth: 0,
 })
-export const waterfallLabelsColumn = style({ display: 'flex', flexDirection: 'column', gap: 10, minWidth: 0 })
+export const waterfallLabelsColumn = style({
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 10,
+  minWidth: 0,
+})
 export const waterfallTimelineBody = style({
   alignSelf: 'stretch',
   display: 'flex',
@@ -275,7 +408,14 @@ export const waterfallTimelineBody = style({
   minHeight: 0,
   minWidth: 0,
 })
-export const waterfallRowShell = style({ borderRadius: 8, borderBottomRightRadius: 0, borderTopRightRadius: 0, minWidth: 0, overflow: 'hidden', position: 'relative' })
+export const waterfallRowShell = style({
+  borderRadius: 8,
+  borderBottomRightRadius: 0,
+  borderTopRightRadius: 0,
+  minWidth: 0,
+  overflow: 'hidden',
+  position: 'relative',
+})
 export const waterfallRowButton = style({
   alignItems: 'center',
   background: 'none',
@@ -295,7 +435,10 @@ export const waterfallRowButton = style({
   },
 })
 export const waterfallRowHover = style({ backgroundColor: theme.surface.onMainContentSubtle })
-export const waterfallRowActive = style({ backgroundColor: theme.pill.blue.background, color: theme.content.primary })
+export const waterfallRowActive = style({
+  backgroundColor: theme.pill.blue.background,
+  color: theme.content.primary,
+})
 export const waterfallSpanLabel = style({
   alignItems: 'center',
   alignSelf: 'stretch',
@@ -309,7 +452,14 @@ export const waterfallSpanLabel = style({
 export const waterfallSpanLabelActive = style({
   color: theme.content.primary,
 })
-export const waterfallTreeGuide = style({ borderBlockEnd: `1px solid ${theme.stroke.primary}`, borderInlineStart: `1px solid ${theme.stroke.primary}`, flexShrink: 0, height: 18, marginInlineEnd: 6, width: 10 })
+export const waterfallTreeGuide = style({
+  borderBlockEnd: `1px solid ${theme.stroke.primary}`,
+  borderInlineStart: `1px solid ${theme.stroke.primary}`,
+  flexShrink: 0,
+  height: 18,
+  marginInlineEnd: 6,
+  width: 10,
+})
 export const waterfallTreeToggle = style({
   alignItems: 'center',
   background: 'none',
@@ -323,9 +473,15 @@ export const waterfallTreeToggle = style({
   marginInlineEnd: 3,
   padding: 0,
   paddingInlineEnd: 2,
-  selectors: { '&:hover': { backgroundColor: theme.button.bare.hover, color: theme.content.primary } },
+  selectors: {
+    '&:hover': { backgroundColor: theme.button.bare.hover, color: theme.content.primary },
+  },
 })
-export const waterfallTreeTogglePlaceholder = style({ flexShrink: 0, marginInlineEnd: 3, width: 38 })
+export const waterfallTreeTogglePlaceholder = style({
+  flexShrink: 0,
+  marginInlineEnd: 3,
+  width: 38,
+})
 export const waterfallChildCountChip = style({
   alignItems: 'center',
   backgroundColor: theme.pill.gray.background,
@@ -341,13 +497,27 @@ export const waterfallChildCountChip = style({
   minWidth: 16,
   paddingInline: 4,
 })
-export const waterfallPluginPill = style({ alignItems: 'center', display: 'inline-flex', gap: 6, maxWidth: '100%', minWidth: 0, overflow: 'hidden', whiteSpace: 'nowrap' })
-export const waterfallPluginDot = style({ borderRadius: '50%', flexShrink: 0, height: 8, width: 8, selectors: {
-  '&[data-tone="query"]': { backgroundColor: theme.pill.purple.color },
-  '&[data-tone="http"]': { backgroundColor: theme.pill.blue.color },
-  '&[data-tone="span"]': { backgroundColor: theme.pill.green.color },
-  '&[data-tone="error"]': { backgroundColor: theme.pill.red.color },
-}})
+export const waterfallPluginPill = style({
+  alignItems: 'center',
+  display: 'inline-flex',
+  gap: 6,
+  maxWidth: '100%',
+  minWidth: 0,
+  overflow: 'hidden',
+  whiteSpace: 'nowrap',
+})
+export const waterfallPluginDot = style({
+  borderRadius: '50%',
+  flexShrink: 0,
+  height: 8,
+  width: 8,
+  selectors: {
+    '&[data-tone="query"]': { backgroundColor: theme.pill.purple.color },
+    '&[data-tone="http"]': { backgroundColor: theme.pill.blue.color },
+    '&[data-tone="span"]': { backgroundColor: theme.pill.green.color },
+    '&[data-tone="error"]': { backgroundColor: theme.pill.red.color },
+  },
+})
 export const waterfallLabelText = style({ display: 'flex', flexDirection: 'column', minWidth: 0 })
 export const waterfallBarSlot = style({
   alignItems: 'center',
@@ -366,14 +536,52 @@ export const waterfallBarSlotActive = style({
   backgroundColor: theme.pill.blue.background,
   color: theme.content.primary,
 })
-export const waterfallBarArea = style({ height: 24, minWidth: 0, overflow: 'hidden', position: 'relative', width: '100%' })
-export const waterfallBar = style({ alignItems: 'center', borderRadius: 6, display: 'flex', height: 20, insetBlockStart: 2, minWidth: 2, overflow: 'hidden', paddingInline: 8, position: 'absolute', whiteSpace: 'nowrap', selectors: {
-  '&[data-tone="query"]': { backgroundColor: theme.pill.purple.background, border: `1px solid ${theme.pill.purple.stroke}`, color: theme.pill.purple.color },
-  '&[data-tone="http"]': { backgroundColor: theme.pill.blue.background, border: `1px solid ${theme.pill.blue.stroke}`, color: theme.pill.blue.color },
-  '&[data-tone="span"]': { backgroundColor: theme.pill.green.background, border: `1px solid ${theme.pill.green.stroke}`, color: theme.pill.green.color },
-  '&[data-tone="error"]': { backgroundColor: theme.pill.red.background, border: `1px solid ${theme.pill.red.stroke}`, color: theme.pill.red.color },
-}})
-export const waterfallBarLabel = style({ fontFamily: fontFamily.dmMono, fontSize: 12, lineHeight: '16px' })
+export const waterfallBarArea = style({
+  height: 24,
+  minWidth: 0,
+  overflow: 'hidden',
+  position: 'relative',
+  width: '100%',
+})
+export const waterfallBar = style({
+  alignItems: 'center',
+  borderRadius: 6,
+  display: 'flex',
+  height: 20,
+  insetBlockStart: 2,
+  minWidth: 2,
+  overflow: 'hidden',
+  paddingInline: 8,
+  position: 'absolute',
+  whiteSpace: 'nowrap',
+  selectors: {
+    '&[data-tone="query"]': {
+      backgroundColor: theme.pill.purple.background,
+      border: `1px solid ${theme.pill.purple.stroke}`,
+      color: theme.pill.purple.color,
+    },
+    '&[data-tone="http"]': {
+      backgroundColor: theme.pill.blue.background,
+      border: `1px solid ${theme.pill.blue.stroke}`,
+      color: theme.pill.blue.color,
+    },
+    '&[data-tone="span"]': {
+      backgroundColor: theme.pill.green.background,
+      border: `1px solid ${theme.pill.green.stroke}`,
+      color: theme.pill.green.color,
+    },
+    '&[data-tone="error"]': {
+      backgroundColor: theme.pill.red.background,
+      border: `1px solid ${theme.pill.red.stroke}`,
+      color: theme.pill.red.color,
+    },
+  },
+})
+export const waterfallBarLabel = style({
+  fontFamily: fontFamily.dmMono,
+  fontSize: 12,
+  lineHeight: '16px',
+})
 export const waterfallBarLabelOutside = style({
   color: theme.content.secondary,
   fontFamily: fontFamily.dmMono,
@@ -424,9 +632,28 @@ export const waterfallHttpDetailHeaderActions = style({
   flexShrink: 0,
   gap: 2,
 })
-export const waterfallHttpDetailScroll = style({ flex: 1, minHeight: 0, minWidth: 0, overflow: 'hidden' })
-export const waterfallHttpDetailContent = style({ display: 'flex', flexDirection: 'column', gap: 10, minHeight: 0, minWidth: 0, paddingBlockEnd: 10, paddingInline: 12 })
-export const waterfallHttpTabRow = style({ alignItems: 'center', display: 'flex', gap: 12, justifyContent: 'space-between', minWidth: 0 })
+export const waterfallHttpDetailScroll = style({
+  flex: 1,
+  minHeight: 0,
+  minWidth: 0,
+  overflow: 'hidden',
+})
+export const waterfallHttpDetailContent = style({
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 10,
+  minHeight: 0,
+  minWidth: 0,
+  paddingBlockEnd: 10,
+  paddingInline: 12,
+})
+export const waterfallHttpTabRow = style({
+  alignItems: 'center',
+  display: 'flex',
+  gap: 12,
+  justifyContent: 'space-between',
+  minWidth: 0,
+})
 export const httpMetaRow = style({ display: 'flex', flexWrap: 'wrap', gap: 6 })
 export const httpMetaChip = style({
   alignItems: 'center',
@@ -439,32 +666,125 @@ export const httpMetaChip = style({
   paddingBlock: 2,
   paddingInline: 8,
 })
-export const copyButtonGroup = style({ alignItems: 'center', display: 'flex', flexShrink: 0, gap: 6 })
-export const waterfallHttpDetailSection = style({ display: 'flex', flex: 1, flexDirection: 'column', gap: 4, minHeight: 0, minWidth: 0 })
-export const bodyViewer = style({ display: 'flex', flexDirection: 'column', gap: 8, minHeight: 0, minWidth: 0 })
+export const copyButtonGroup = style({
+  alignItems: 'center',
+  display: 'flex',
+  flexShrink: 0,
+  gap: 6,
+})
+export const waterfallHttpDetailSection = style({
+  display: 'flex',
+  flex: 1,
+  flexDirection: 'column',
+  gap: 4,
+  minHeight: 0,
+  minWidth: 0,
+})
+export const bodyViewer = style({
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 8,
+  minHeight: 0,
+  minWidth: 0,
+})
 export const bodyViewerHeader = style({ display: 'flex', flexDirection: 'column', gap: 6 })
 export const bodyMetaRow = style({ display: 'flex', flexWrap: 'wrap', gap: 6 })
-export const bodyViewerSection = style({ display: 'flex', flexDirection: 'column', gap: 4, minHeight: 0, minWidth: 0 })
+export const bodyViewerSection = style({
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 4,
+  minHeight: 0,
+  minWidth: 0,
+})
 export const bodyViewerSectionLabel = style({ color: theme.content.tertiary })
 export const bodyViewerRawDetails = style({ display: 'flex', flexDirection: 'column', gap: 4 })
 
-export const statusBadge = style({ borderRadius: 999, display: 'inline-flex', fontSize: 12, paddingBlock: 2, paddingInline: 8, selectors: {
-  '&[data-tone="ok"]': { backgroundColor: theme.pill.green.background, color: theme.pill.green.color },
-  '&[data-tone="error"]': { backgroundColor: theme.pill.red.background, color: theme.pill.red.color },
-  '&[data-tone="running"]': { backgroundColor: theme.pill.blue.background, color: theme.pill.blue.color },
-}})
-export const emptyPanel = style({ alignItems: 'center', border: `1px dashed ${theme.stroke.primary}`, borderRadius: 8, display: 'flex', justifyContent: 'center', minHeight: 140, padding: 24, textAlign: 'center' })
+export const statusBadge = style({
+  borderRadius: 999,
+  display: 'inline-flex',
+  fontSize: 12,
+  paddingBlock: 2,
+  paddingInline: 8,
+  selectors: {
+    '&[data-tone="ok"]': {
+      backgroundColor: theme.pill.green.background,
+      color: theme.pill.green.color,
+    },
+    '&[data-tone="error"]': {
+      backgroundColor: theme.pill.red.background,
+      color: theme.pill.red.color,
+    },
+    '&[data-tone="running"]': {
+      backgroundColor: theme.pill.blue.background,
+      color: theme.pill.blue.color,
+    },
+  },
+})
+export const emptyPanel = style({
+  alignItems: 'center',
+  border: `1px dashed ${theme.stroke.primary}`,
+  borderRadius: 8,
+  display: 'flex',
+  justifyContent: 'center',
+  minHeight: 140,
+  padding: 24,
+  textAlign: 'center',
+})
 export const externalCallsList = style({ display: 'flex', flexDirection: 'column', gap: 8 })
-export const apiCallsSummary = style({ color: theme.content.tertiary, fontSize: 14, lineHeight: 1.65, paddingBlock: 8, paddingInline: 4 })
-export const externalCallCard = style({ border: `1px solid ${theme.stroke.primary}`, borderRadius: 8, overflow: 'hidden' })
-export const externalCallButton = style({ alignItems: 'center', background: 'none', border: 'none', color: theme.content.primary, cursor: 'pointer', display: 'flex', gap: 8, lineHeight: 1.65, paddingBlock: 8, paddingInline: 12, textAlign: 'left', width: '100%', selectors: { '&:hover': { backgroundColor: theme.surface.onMainContentSubtle } } })
+export const apiCallsSummary = style({
+  color: theme.content.tertiary,
+  fontSize: 14,
+  lineHeight: 1.65,
+  paddingBlock: 8,
+  paddingInline: 4,
+})
+export const externalCallCard = style({
+  border: `1px solid ${theme.stroke.primary}`,
+  borderRadius: 8,
+  overflow: 'hidden',
+})
+export const externalCallButton = style({
+  alignItems: 'center',
+  background: 'none',
+  border: 'none',
+  color: theme.content.primary,
+  cursor: 'pointer',
+  display: 'flex',
+  gap: 8,
+  lineHeight: 1.65,
+  paddingBlock: 8,
+  paddingInline: 12,
+  textAlign: 'left',
+  width: '100%',
+  selectors: { '&:hover': { backgroundColor: theme.surface.onMainContentSubtle } },
+})
 export const externalCallTableName = style({ fontWeight: 500 })
-export const externalCallUrl = style({ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' })
+export const externalCallUrl = style({
+  flex: 1,
+  minWidth: 0,
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+})
 export const externalCallMeta = style({ flexShrink: 0 })
-export const externalCallExpanded = style({ backgroundColor: theme.surface.onMainContentSubtle, borderBlockStart: `1px solid ${theme.stroke.primary}`, display: 'flex', flexDirection: 'column', gap: 8, paddingBlock: 8, paddingInline: 12 })
+export const externalCallExpanded = style({
+  backgroundColor: theme.surface.onMainContentSubtle,
+  borderBlockStart: `1px solid ${theme.stroke.primary}`,
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 8,
+  paddingBlock: 8,
+  paddingInline: 12,
+})
 export const requestUrlRow = style({ alignItems: 'center', display: 'flex', gap: 8 })
 export const methodBadge = style({ flexShrink: 0 })
-export const requestUrl = style({ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' })
+export const requestUrl = style({
+  flex: 1,
+  minWidth: 0,
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+})
 export const detailsSummary = style({ color: theme.content.tertiary, cursor: 'pointer' })
 export const detailsPre = style({
   backgroundColor: theme.surface.main,
@@ -494,4 +814,14 @@ globalStyle('.sql-comment', { color: '#6A9955', fontStyle: 'italic' })
 globalStyle(`body.${lightTheme} .sql-comment`, { color: '#008000' })
 globalStyle('.sql-identifier', { color: '#9CDCFE' })
 globalStyle(`body.${lightTheme} .sql-identifier`, { color: '#001080' })
-globalStyle(`${sqlBlock} pre`, { color: theme.content.primary, fontFamily: fontFamily.dmMono, fontSize: 14, lineHeight: 1.65, margin: 0, overflowX: 'auto', padding: 12, whiteSpace: 'pre-wrap', wordBreak: 'break-all' })
+globalStyle(`${sqlBlock} pre`, {
+  color: theme.content.primary,
+  fontFamily: fontFamily.dmMono,
+  fontSize: 14,
+  lineHeight: 1.65,
+  margin: 0,
+  overflowX: 'auto',
+  padding: 12,
+  whiteSpace: 'pre-wrap',
+  wordBreak: 'break-all',
+})
