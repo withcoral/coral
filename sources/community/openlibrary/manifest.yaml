@@ -28,6 +28,9 @@ functions:
         - name: q
           from: arg
           key: q
+        - name: fields
+          from: literal
+          value: key,title,first_publish_year,author_name,author_key,language,isbn,publisher
     response:
       rows_path:
         - docs
