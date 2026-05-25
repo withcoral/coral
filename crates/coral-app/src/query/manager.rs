@@ -34,7 +34,7 @@ pub(crate) struct ValidatedSource {
     pub(crate) report: SourceValidationReport,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum CredentialLoadPolicy {
     StoredOnly,
     RefreshProvider,
@@ -193,6 +193,11 @@ impl QueryManager {
                     return Err(error);
                 }
                 Err(error) => {
+                    if credential_load_policy == CredentialLoadPolicy::RefreshProvider
+                        && matches!(error, AppError::CredentialRefresh(_))
+                    {
+                        return Err(error);
+                    }
                     tracing::warn!(
                         source = %source.name,
                         detail = %error,
@@ -377,6 +382,7 @@ fn app_error_type(error: &AppError) -> &'static str {
         AppError::SourceNotFound(_) => "SOURCE_NOT_FOUND",
         AppError::InvalidInput(_) => "INVALID_INPUT",
         AppError::FailedPrecondition(_) => "FAILED_PRECONDITION",
+        AppError::CredentialRefresh(_) => "CREDENTIAL_REFRESH",
         AppError::Io(_) => "IO",
         AppError::Yaml(_) => "YAML",
         AppError::TomlDecode(_) | AppError::TomlEditDecode(_) => "TOML_DECODE",

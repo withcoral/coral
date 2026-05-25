@@ -500,31 +500,15 @@ impl SourceManager {
             return Err(error);
         }
 
+        let ValidatedBindings {
+            variables,
+            secrets,
+            replaced_oauth_inputs,
+        } = request.bindings;
         let (visible_secret_keys, credential_storage) = if let Some(requested_storage) =
             request.credential_storage
         {
             let credential_set_id = CredentialSetId::for_source(&source_name);
-            let mut credential_material = match self.credential_manager.read_material(
-                workspace_name,
-                &credential_set_id,
-                requested_storage,
-            ) {
-                Ok(material) => material,
-                Err(AppError::Credentials(CredentialsError::Parse(_)))
-                    if requested_storage == CredentialStorageKind::File =>
-                {
-                    BTreeMap::new()
-                }
-                Err(error) => {
-                    self.restore_source_rollback_state(
-                        workspace_name,
-                        &source_name,
-                        previous,
-                        None,
-                    );
-                    return Err(error);
-                }
-            };
             let expected_secret_keys = request
                 .candidate
                 .inputs
@@ -532,17 +516,21 @@ impl SourceManager {
                 .filter(|input| input.kind == ManifestInputKind::Secret)
                 .map(|input| input.key.clone())
                 .collect::<BTreeSet<_>>();
-            credential_material
-                .retain(|key, _| material_key_belongs_to_source_secret(key, &expected_secret_keys));
-            for input_key in &request.bindings.replaced_oauth_inputs {
-                credential_material.retain(|key, _| !material_key_belongs_to_input(key, input_key));
-            }
-            credential_material.extend(request.bindings.secrets);
-            let credential_write = match self.credential_manager.replace_material(
+            let credential_write = match self.credential_manager.update_material_or_empty_on_parse(
                 workspace_name,
                 &credential_set_id,
                 requested_storage,
-                &credential_material,
+                |mut credential_material| {
+                    credential_material.retain(|key, _| {
+                        material_key_belongs_to_source_secret(key, &expected_secret_keys)
+                    });
+                    for input_key in &replaced_oauth_inputs {
+                        credential_material
+                            .retain(|key, _| !material_key_belongs_to_input(key, input_key));
+                    }
+                    credential_material.extend(secrets.clone());
+                    Ok(credential_material)
+                },
             ) {
                 Ok(outcome) => outcome,
                 Err(error) => {
@@ -572,7 +560,7 @@ impl SourceManager {
         let stored = InstalledSource {
             name: source_name.clone(),
             version: persisted_version,
-            variables: request.bindings.variables,
+            variables,
             secrets: visible_secret_keys,
             credential_storage,
             origin: request.origin,

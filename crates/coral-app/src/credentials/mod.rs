@@ -7,12 +7,12 @@ mod store;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::fmt;
-use std::sync::Arc;
 
 use coral_spec::{ManifestInputKind, ManifestInputSpec};
 
 use crate::bootstrap::AppError;
 use crate::sources::SourceName;
+use crate::storage::fs::FileLock;
 use crate::workspaces::WorkspaceName;
 
 use self::oauth::{OAuthCredentialService, RefreshOAuthCredentialRequest};
@@ -120,31 +120,17 @@ impl fmt::Display for CredentialSetId {
 pub(crate) struct CredentialManager {
     store: CredentialStore,
     oauth_credential_service: OAuthCredentialService,
-    // Per credential set locks guard the persisted-material read/refresh/write
-    // sequence. Concurrent loads of the same expired credential can otherwise
-    // spend the same rotating refresh token before either write is persisted.
-    provider_refresh_locks: ProviderRefreshLocks,
 }
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct CredentialRefreshLockKey {
-    workspace_name: WorkspaceName,
-    credential_set_id: CredentialSetId,
-}
-
-type ProviderRefreshLock = Arc<tokio::sync::Mutex<()>>;
-type ProviderRefreshLocks =
-    Arc<tokio::sync::Mutex<BTreeMap<CredentialRefreshLockKey, ProviderRefreshLock>>>;
 
 impl CredentialManager {
     pub(crate) fn new(store: CredentialStore) -> Self {
         Self {
             store,
             oauth_credential_service: OAuthCredentialService::new(),
-            provider_refresh_locks: Arc::new(tokio::sync::Mutex::new(BTreeMap::new())),
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn replace_material(
         &self,
         workspace_name: &WorkspaceName,
@@ -152,12 +138,61 @@ impl CredentialManager {
         storage: CredentialStorageKind,
         secrets: &BTreeMap<String, String>,
     ) -> Result<CredentialWriteOutcome, AppError> {
+        let _refresh_file_lock = self
+            .store
+            .credential_refresh_lock(workspace_name, credential_set_id)?;
         self.store
             .replace_material(workspace_name, credential_set_id, storage, secrets)?;
         Ok(CredentialWriteOutcome {
             visible_keys: visible_material_keys(secrets),
             storage,
         })
+    }
+
+    pub(crate) fn update_material_or_empty_on_parse<F>(
+        &self,
+        workspace_name: &WorkspaceName,
+        credential_set_id: &CredentialSetId,
+        storage: CredentialStorageKind,
+        update: F,
+    ) -> Result<CredentialWriteOutcome, AppError>
+    where
+        F: Fn(BTreeMap<String, String>) -> Result<BTreeMap<String, String>, AppError>,
+    {
+        let _refresh_file_lock = self
+            .store
+            .credential_refresh_lock(workspace_name, credential_set_id)?;
+        self.store
+            .update_material(workspace_name, credential_set_id, storage, |material| {
+                let updated = update(material)?;
+                let visible_keys = visible_material_keys(&updated);
+                Ok((
+                    updated,
+                    CredentialWriteOutcome {
+                        visible_keys,
+                        storage,
+                    },
+                ))
+            })
+            .or_else(|error| match error {
+                AppError::Credentials(CredentialsError::Parse(_))
+                    if storage == CredentialStorageKind::File =>
+                {
+                    let updated = update(BTreeMap::new())?;
+                    let visible_keys = visible_material_keys(&updated);
+                    self.store.replace_material(
+                        workspace_name,
+                        credential_set_id,
+                        storage,
+                        &updated,
+                    )?;
+                    Ok(CredentialWriteOutcome {
+                        visible_keys,
+                        storage,
+                    })
+                }
+                other => Err(other),
+            })
     }
 
     pub(crate) fn read_material(
@@ -183,10 +218,9 @@ impl CredentialManager {
             return self.read_material(workspace_name, credential_set_id, storage);
         }
 
-        let refresh_lock = self
-            .provider_refresh_lock(workspace_name, credential_set_id)
-            .await;
-        let _refresh_guard = refresh_lock.lock().await;
+        let _refresh_file_lock = self
+            .credential_refresh_lock(workspace_name, credential_set_id)
+            .await?;
         let mut material = self.read_material(workspace_name, credential_set_id, storage)?;
         self.refresh_and_persist_oauth_material(
             workspace_name,
@@ -195,7 +229,8 @@ impl CredentialManager {
             inputs,
             &mut material,
         )
-        .await?;
+        .await
+        .map_err(credential_refresh_error)?;
         Ok(material)
     }
 
@@ -215,6 +250,9 @@ impl CredentialManager {
         credential_set_id: &CredentialSetId,
         snapshot: &CredentialMaterialSnapshot,
     ) -> Result<(), AppError> {
+        let _refresh_file_lock = self
+            .store
+            .credential_refresh_lock(workspace_name, credential_set_id)?;
         self.store
             .restore_material(workspace_name, credential_set_id, snapshot)
     }
@@ -225,6 +263,9 @@ impl CredentialManager {
         credential_set_id: &CredentialSetId,
         storage: CredentialStorageKind,
     ) -> Result<(), AppError> {
+        let _refresh_file_lock = self
+            .store
+            .credential_refresh_lock(workspace_name, credential_set_id)?;
         self.store
             .remove_material(workspace_name, credential_set_id, storage)
     }
@@ -309,21 +350,21 @@ impl CredentialManager {
         )
     }
 
-    async fn provider_refresh_lock(
+    async fn credential_refresh_lock(
         &self,
         workspace_name: &WorkspaceName,
         credential_set_id: &CredentialSetId,
-    ) -> ProviderRefreshLock {
-        let key = CredentialRefreshLockKey {
-            workspace_name: workspace_name.clone(),
-            credential_set_id: credential_set_id.clone(),
-        };
-        let mut locks = self.provider_refresh_locks.lock().await;
-        Arc::clone(
-            locks
-                .entry(key)
-                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))),
-        )
+    ) -> Result<FileLock, AppError> {
+        let store = self.store.clone();
+        let workspace_name = workspace_name.clone();
+        let credential_set_id = credential_set_id.clone();
+        // Acquiring the file lock can block behind another refresh; keep that
+        // wait off the async runtime worker so the lock holder can keep making
+        // progress toward releasing it.
+        tokio::task::spawn_blocking(move || {
+            store.credential_refresh_lock(&workspace_name, &credential_set_id)
+        })
+        .await?
     }
 }
 
@@ -385,4 +426,11 @@ fn visible_material_keys(material: &BTreeMap<String, String>) -> Vec<String> {
         .filter(|key| !is_internal_material_key(key))
         .cloned()
         .collect()
+}
+
+fn credential_refresh_error(error: AppError) -> AppError {
+    match error {
+        AppError::FailedPrecondition(message) => AppError::CredentialRefresh(message),
+        other => AppError::CredentialRefresh(other.to_string()),
+    }
 }

@@ -5,16 +5,22 @@
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64_URL_SAFE_NO_PAD;
-use coral_api::v1::{ExecuteSqlRequest, SourceSecret, SourceVariable, ValidateSourceRequest};
+use coral_api::v1::{
+    ExecuteSqlRequest, ImportSourceRequest, SourceSecret, SourceVariable, ValidateSourceRequest,
+    import_source_response,
+};
 use coral_client::{batches_to_json_rows, decode_execute_sql_response, default_workspace};
 use serde_json::json;
+use tempfile::TempDir;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::sync::Notify;
-use tonic::Request;
+use tonic::{Code, Request};
 
 use crate::harness::{GrpcHarness, source_dir};
 
@@ -37,22 +43,11 @@ async fn query_refreshes_expired_oauth_access_token_before_runtime_registration(
         .await;
 
     let secret_path = source_dir(harness.config_dir(), "refreshed_messages").join("secrets.env");
-    fs::write(
+    seed_expired_api_token_material(
         &secret_path,
-        format!(
-            "\
-API_TOKEN=expired-token
-__coral_oauth.QVBJX1RPS0VO.method=oauth
-__coral_oauth.QVBJX1RPS0VO.access_token_expires_at={}
-__coral_oauth.QVBJX1RPS0VO.refresh_token=stored-refresh-token
-__coral_oauth.QVBJX1RPS0VO.client_id=stored-client
-__coral_oauth.QVBJX1RPS0VO.token_url={}
-",
-            (chrono::Utc::now() - chrono::Duration::minutes(5)).to_rfc3339(),
-            fixture.token_url,
-        ),
-    )
-    .expect("seed expired oauth material");
+        &fixture.token_url,
+        Some("stored-refresh-token"),
+    );
 
     let rows = harness
         .execute_sql_rows("SELECT id FROM refreshed_messages.messages")
@@ -106,22 +101,11 @@ async fn list_catalog_does_not_refresh_expired_oauth_access_token() {
         .await;
 
     let secret_path = source_dir(harness.config_dir(), "refreshed_messages").join("secrets.env");
-    fs::write(
+    seed_expired_api_token_material(
         &secret_path,
-        format!(
-            "\
-API_TOKEN=expired-token
-__coral_oauth.QVBJX1RPS0VO.method=oauth
-__coral_oauth.QVBJX1RPS0VO.access_token_expires_at={}
-__coral_oauth.QVBJX1RPS0VO.refresh_token=stored-refresh-token
-__coral_oauth.QVBJX1RPS0VO.client_id=stored-client
-__coral_oauth.QVBJX1RPS0VO.token_url={}
-",
-            (chrono::Utc::now() - chrono::Duration::minutes(5)).to_rfc3339(),
-            fixture.token_url,
-        ),
-    )
-    .expect("seed expired oauth material");
+        &fixture.token_url,
+        Some("stored-refresh-token"),
+    );
 
     let tables = harness.list_tables().await;
 
@@ -133,6 +117,90 @@ __coral_oauth.QVBJX1RPS0VO.token_url={}
     );
     let material = fs::read_to_string(secret_path).expect("read material");
     assert!(material.contains("API_TOKEN=expired-token"), "{material}");
+}
+
+#[tokio::test]
+async fn query_surfaces_oauth_refresh_failure_instead_of_skipping_source() {
+    let fixture = RefreshingHttpFixture::new().await;
+    let harness = GrpcHarness::new().await;
+    harness
+        .import_source(
+            oauth_refresh_manifest_yaml(&fixture.base_url, &fixture.token_url),
+            vec![SourceVariable {
+                key: "API_BASE".to_string(),
+                value: fixture.base_url.clone(),
+            }],
+            vec![SourceSecret {
+                key: "API_TOKEN".to_string(),
+                value: "expired-token".to_string(),
+            }],
+        )
+        .await;
+
+    let secret_path = source_dir(harness.config_dir(), "refreshed_messages").join("secrets.env");
+    seed_expired_api_token_material(
+        &secret_path,
+        &format!("{}/token-fail", fixture.base_url),
+        Some("stored-refresh-token"),
+    );
+
+    let status = harness
+        .query_client()
+        .execute_sql(Request::new(ExecuteSqlRequest {
+            workspace: Some(default_workspace()),
+            sql: "SELECT id FROM refreshed_messages.messages".to_string(),
+        }))
+        .await
+        .expect_err("query should surface refresh failure");
+
+    assert_eq!(status.code(), Code::FailedPrecondition);
+    assert!(
+        status
+            .message()
+            .contains("OAuth token refresh failed with HTTP 500"),
+        "{status:?}"
+    );
+}
+
+#[tokio::test]
+async fn expired_oauth_access_token_without_refresh_token_tells_user_to_reconnect() {
+    let fixture = RefreshingHttpFixture::new().await;
+    let harness = GrpcHarness::new().await;
+    harness
+        .import_source(
+            oauth_refresh_manifest_yaml(&fixture.base_url, &fixture.token_url),
+            vec![SourceVariable {
+                key: "API_BASE".to_string(),
+                value: fixture.base_url.clone(),
+            }],
+            vec![SourceSecret {
+                key: "API_TOKEN".to_string(),
+                value: "expired-token".to_string(),
+            }],
+        )
+        .await;
+
+    let secret_path = source_dir(harness.config_dir(), "refreshed_messages").join("secrets.env");
+    seed_expired_api_token_material(&secret_path, &fixture.token_url, None);
+
+    let status = harness
+        .query_client()
+        .execute_sql(Request::new(ExecuteSqlRequest {
+            workspace: Some(default_workspace()),
+            sql: "SELECT id FROM refreshed_messages.messages".to_string(),
+        }))
+        .await
+        .expect_err("query should ask the user to reconnect");
+
+    assert_eq!(status.code(), Code::FailedPrecondition);
+    assert!(
+        status.message().contains("reconnect the source"),
+        "{status:?}"
+    );
+    assert!(
+        fixture.token_forms().is_empty(),
+        "missing refresh token should fail before contacting token endpoint"
+    );
 }
 
 #[tokio::test]
@@ -154,22 +222,11 @@ async fn concurrent_queries_share_one_expired_oauth_refresh() {
         .await;
 
     let secret_path = source_dir(harness.config_dir(), "refreshed_messages").join("secrets.env");
-    fs::write(
+    seed_expired_api_token_material(
         &secret_path,
-        format!(
-            "\
-API_TOKEN=expired-token
-__coral_oauth.QVBJX1RPS0VO.method=oauth
-__coral_oauth.QVBJX1RPS0VO.access_token_expires_at={}
-__coral_oauth.QVBJX1RPS0VO.refresh_token=stored-refresh-token
-__coral_oauth.QVBJX1RPS0VO.client_id=stored-client
-__coral_oauth.QVBJX1RPS0VO.token_url={}
-",
-            (chrono::Utc::now() - chrono::Duration::minutes(5)).to_rfc3339(),
-            fixture.token_url,
-        ),
-    )
-    .expect("seed expired oauth material");
+        &fixture.token_url,
+        Some("stored-refresh-token"),
+    );
 
     let (first, second) = tokio::join!(
         harness.execute_sql_rows("SELECT id FROM refreshed_messages.messages"),
@@ -193,8 +250,58 @@ __coral_oauth.QVBJX1RPS0VO.token_url={}
     );
 }
 
-#[tokio::test]
-async fn refresh_does_not_overwrite_concurrent_manual_credential_replacement() {
+#[tokio::test(flavor = "multi_thread")]
+async fn concurrent_servers_share_one_expired_oauth_refresh() {
+    let fixture = RefreshingHttpFixture::new().await;
+    let config_root = TempDir::new().expect("config root");
+    let config_dir = config_root.path().join("coral-config");
+    let first_harness = GrpcHarness::start_with_config_dir(config_dir.clone()).await;
+    first_harness
+        .import_source(
+            oauth_refresh_manifest_yaml(&fixture.base_url, &fixture.token_url),
+            vec![SourceVariable {
+                key: "API_BASE".to_string(),
+                value: fixture.base_url.clone(),
+            }],
+            vec![SourceSecret {
+                key: "API_TOKEN".to_string(),
+                value: "expired-token".to_string(),
+            }],
+        )
+        .await;
+
+    let secret_path = source_dir(&config_dir, "refreshed_messages").join("secrets.env");
+    seed_expired_api_token_material(
+        &secret_path,
+        &fixture.token_url,
+        Some("stored-refresh-token"),
+    );
+
+    let second_harness = GrpcHarness::start_with_config_dir(config_dir).await;
+    let (first, second) = tokio::join!(
+        first_harness.execute_sql_rows("SELECT id FROM refreshed_messages.messages"),
+        second_harness.execute_sql_rows("SELECT id FROM refreshed_messages.messages"),
+    );
+
+    assert_eq!(first.len(), 1);
+    assert_eq!(second.len(), 1);
+    let forms = fixture.token_forms();
+    assert_eq!(
+        forms.len(),
+        1,
+        "only one server should spend the rotating refresh token: {forms:?}"
+    );
+    assert_eq!(
+        fixture.message_authorizations(),
+        vec![
+            "Bearer refreshed-token".to_string(),
+            "Bearer refreshed-token".to_string()
+        ]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn manual_credential_replacement_waits_for_in_flight_refresh() {
     let fixture = RefreshingHttpFixture::new_blocked_token_response().await;
     let harness = GrpcHarness::new().await;
     harness
@@ -212,22 +319,11 @@ async fn refresh_does_not_overwrite_concurrent_manual_credential_replacement() {
         .await;
 
     let secret_path = source_dir(harness.config_dir(), "refreshed_messages").join("secrets.env");
-    fs::write(
+    seed_expired_api_token_material(
         &secret_path,
-        format!(
-            "\
-API_TOKEN=expired-token
-__coral_oauth.QVBJX1RPS0VO.method=oauth
-__coral_oauth.QVBJX1RPS0VO.access_token_expires_at={}
-__coral_oauth.QVBJX1RPS0VO.refresh_token=stored-refresh-token
-__coral_oauth.QVBJX1RPS0VO.client_id=stored-client
-__coral_oauth.QVBJX1RPS0VO.token_url={}
-",
-            (chrono::Utc::now() - chrono::Duration::minutes(5)).to_rfc3339(),
-            fixture.token_url,
-        ),
-    )
-    .expect("seed expired oauth material");
+        &fixture.token_url,
+        Some("stored-refresh-token"),
+    );
 
     let mut query_client = harness.query_client();
     let query = tokio::spawn(async move {
@@ -244,28 +340,52 @@ __coral_oauth.QVBJX1RPS0VO.token_url={}
     });
 
     fixture.wait_for_token_request().await;
-    harness
-        .import_source(
-            oauth_refresh_manifest_yaml(&fixture.base_url, &fixture.token_url),
-            vec![SourceVariable {
-                key: "API_BASE".to_string(),
-                value: fixture.base_url.clone(),
-            }],
-            vec![SourceSecret {
-                key: "API_TOKEN".to_string(),
-                value: "manual-token".to_string(),
-            }],
-        )
-        .await;
+    let mut source_client = harness.source_client();
+    let import_manifest_yaml = oauth_refresh_manifest_yaml(&fixture.base_url, &fixture.token_url);
+    let import_base_url = fixture.base_url.clone();
+    let import = tokio::spawn(async move {
+        let mut stream = source_client
+            .import_source(Request::new(ImportSourceRequest {
+                workspace: Some(default_workspace()),
+                manifest_yaml: import_manifest_yaml,
+                variables: vec![SourceVariable {
+                    key: "API_BASE".to_string(),
+                    value: import_base_url,
+                }],
+                secrets: vec![SourceSecret {
+                    key: "API_TOKEN".to_string(),
+                    value: "manual-token".to_string(),
+                }],
+                oauth_credential_retrievals: Vec::new(),
+            }))
+            .await
+            .expect("import source")
+            .into_inner();
+        stream
+            .message()
+            .await
+            .expect("import source stream")
+            .and_then(|response| match response.event {
+                Some(import_source_response::Event::Source(source)) => Some(source),
+                _ => None,
+            })
+            .expect("import source response")
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        !import.is_finished(),
+        "manual credential replacement should wait for the in-flight refresh"
+    );
     fixture.allow_token_response();
 
     let rows = query.await.expect("query task");
+    import.await.expect("import task");
 
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["id"], "ok");
     assert_eq!(
         fixture.message_authorizations(),
-        vec!["Bearer manual-token".to_string()]
+        vec!["Bearer refreshed-token".to_string()]
     );
     let material = fs::read_to_string(secret_path).expect("read material");
     assert!(material.contains("API_TOKEN=manual-token"), "{material}");
@@ -359,6 +479,30 @@ SECOND_TOKEN=expired-secondary-token
         material.contains("SECOND_TOKEN=expired-secondary-token"),
         "failed second refresh should not overwrite its source secret: {material}"
     );
+}
+
+fn seed_expired_api_token_material(
+    secret_path: &Path,
+    token_url: &str,
+    refresh_token: Option<&str>,
+) {
+    let refresh_token_line = refresh_token
+        .map(|refresh_token| format!("__coral_oauth.QVBJX1RPS0VO.refresh_token={refresh_token}\n"))
+        .unwrap_or_default();
+    fs::write(
+        secret_path,
+        format!(
+            "\
+API_TOKEN=expired-token
+__coral_oauth.QVBJX1RPS0VO.method=oauth
+__coral_oauth.QVBJX1RPS0VO.access_token_expires_at={}
+{refresh_token_line}__coral_oauth.QVBJX1RPS0VO.client_id=stored-client
+__coral_oauth.QVBJX1RPS0VO.token_url={token_url}
+",
+            (chrono::Utc::now() - chrono::Duration::minutes(5)).to_rfc3339(),
+        ),
+    )
+    .expect("seed expired oauth material");
 }
 
 fn oauth_refresh_manifest_yaml(base_url: &str, token_url: &str) -> String {

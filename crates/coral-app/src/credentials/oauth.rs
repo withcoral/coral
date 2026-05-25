@@ -1292,11 +1292,9 @@ fn oauth_refresh_config(
         .filter(|value| !value.is_empty())
         .cloned()
     else {
-        tracing::debug!(
-            source_secret = access_token_material_key,
-            "OAuth access token is expired but no refresh token is stored"
-        );
-        return Ok(None);
+        return Err(AppError::FailedPrecondition(format!(
+            "OAuth access token for source secret '{access_token_material_key}' expired or is about to expire and cannot be refreshed because no refresh token is stored; reconnect the source"
+        )));
     };
     let client_id = material
         .get(&format!("{metadata_prefix}client_id"))
