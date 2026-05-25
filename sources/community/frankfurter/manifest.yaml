@@ -3,74 +3,101 @@ version: 0.1.0
 dsl_version: 3
 backend: http
 description: Fetch currency exchange rates from the free Frankfurter API.
-base_url: https://api.frankfurter.app
+base_url: https://api.frankfurter.dev/v2
 test_queries:
-  - SELECT * FROM frankfurter.latest LIMIT 1
-  - SELECT * FROM frankfurter.historical WHERE date = '2023-01-01' LIMIT 1
+  - SELECT * FROM frankfurter.rates LIMIT 1
   - SELECT * FROM frankfurter.currencies LIMIT 1
 tables:
-  - name: latest
-    description: Fetch the latest currency exchange rates.
-    request:
-      method: GET
-      path: /latest
-    response:
-      row_strategy: direct
-    pagination:
-      mode: none
-    columns:
-      - name: amount
-        type: Float64
-        expr: {kind: path, path: [amount]}
-      - name: base
-        type: Utf8
-        expr: {kind: path, path: [base]}
-      - name: date
-        type: Utf8
-        expr: {kind: path, path: [date]}
-      - name: rates
-        type: Json
-        expr: {kind: path, path: [rates]}
-
-  - name: historical
-    description: Fetch historical currency exchange rates for a specific date (YYYY-MM-DD).
+  - name: rates
+    description: Fetch current and historical currency exchange rates.
     filters:
       - name: date
-        required: true
+        required: false
+      - name: from
+        required: false
+      - name: to
+        required: false
+      - name: base
+        required: false
+      - name: quotes
+        required: false
+      - name: providers
+        required: false
+      - name: group
+        required: false
+      - name: expand
+        required: false
     request:
       method: GET
-      path: /{{filter.date}}
+      path: /rates
+      query:
+        - name: date
+          from: filter
+          key: date
+        - name: from
+          from: filter
+          key: from
+        - name: to
+          from: filter
+          key: to
+        - name: base
+          from: filter
+          key: base
+        - name: quotes
+          from: filter
+          key: quotes
+        - name: providers
+          from: filter
+          key: providers
+        - name: group
+          from: filter
+          key: group
+        - name: expand
+          from: filter
+          key: expand
     response:
       row_strategy: direct
     pagination:
       mode: none
     columns:
-      - name: amount
-        type: Float64
-        expr: {kind: path, path: [amount]}
-      - name: base
-        type: Utf8
-        expr: {kind: path, path: [base]}
       - name: date
         type: Utf8
         expr: {kind: path, path: [date]}
-      - name: rates
+      - name: base
+        type: Utf8
+        expr: {kind: path, path: [base]}
+      - name: quote
+        type: Utf8
+        expr: {kind: path, path: [quote]}
+      - name: rate
+        type: Float64
+        expr: {kind: path, path: [rate]}
+      - name: providers
         type: Json
-        expr: {kind: path, path: [rates]}
+        expr: {kind: path, path: [providers]}
 
   - name: currencies
-    description: List all supported currency codes and their names.
+    description: List all supported currencies and their names.
     request:
       method: GET
       path: /currencies
     response:
-      row_strategy: dict_entries
+      row_strategy: direct
     pagination:
       mode: none
     columns:
-      - name: code
+      - name: iso_code
         type: Utf8
-        expr: {kind: path, path: [_key]}
+        expr: {kind: path, path: [iso_code]}
       - name: name
         type: Utf8
-        expr: {kind: path, path: [_value]}
+        expr: {kind: path, path: [name]}
+      - name: symbol
+        type: Utf8
+        expr: {kind: path, path: [symbol]}
+      - name: start_date
+        type: Utf8
+        expr: {kind: path, path: [start_date]}
+      - name: end_date
+        type: Utf8
+        expr: {kind: path, path: [end_date]}
