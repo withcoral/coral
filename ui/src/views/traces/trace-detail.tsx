@@ -67,10 +67,18 @@ function useTraceDetail(traceId: string | null) {
     setLoading(true)
     setError(null)
     getTrace(traceId)
-      .then((response) => { if (!stale) setDetail(response) })
-      .catch((err) => { if (!stale) setError(formatTraceError(err instanceof Error ? err.message : String(err))) })
-      .finally(() => { if (!stale) setLoading(false) })
-    return () => { stale = true }
+      .then((response) => {
+        if (!stale) setDetail(response)
+      })
+      .catch((err) => {
+        if (!stale) setError(formatTraceError(err instanceof Error ? err.message : String(err)))
+      })
+      .finally(() => {
+        if (!stale) setLoading(false)
+      })
+    return () => {
+      stale = true
+    }
   }, [traceId])
 
   return { detail, error, loading }
@@ -102,21 +110,44 @@ function StatCard({ label, value }: { label: string; value: React.ReactNode }) {
   )
 }
 
-function WaterfallBar({ left, tone, width, label }: { left: number; tone: WaterfallTone; width: number; label: string }) {
+function WaterfallBar({
+  left,
+  tone,
+  width,
+  label,
+}: {
+  left: number
+  tone: WaterfallTone
+  width: number
+  label: string
+}) {
   const clampedLeft = Math.max(0, Math.min(100, left))
   const clampedWidth = Math.max(0.5, Math.min(100 - clampedLeft, width))
   const narrow = clampedWidth < 6
   const outsideLabelLeft = clampedLeft + clampedWidth + 0.5
-  const outsideLabelStyle = outsideLabelLeft > 86
-    ? { right: `${Math.max(0, 100 - clampedLeft)}%` }
-    : { left: `${outsideLabelLeft}%` }
+  const outsideLabelStyle =
+    outsideLabelLeft > 86
+      ? { right: `${Math.max(0, 100 - clampedLeft)}%` }
+      : { left: `${outsideLabelLeft}%` }
 
   return (
     <div className={s.waterfallBarArea}>
-      <div className={s.waterfallBar} data-tone={tone} style={{ left: `${clampedLeft}%`, width: `${clampedWidth}%` }}>
+      <div
+        className={s.waterfallBar}
+        data-tone={tone}
+        style={{ left: `${clampedLeft}%`, width: `${clampedWidth}%` }}
+      >
         {!narrow && <span className={s.waterfallBarLabel}>{label}</span>}
       </div>
-      {narrow && <span className={s.waterfallBarLabelOutside} data-align={outsideLabelLeft > 86 ? 'end' : 'start'} style={outsideLabelStyle}>{label}</span>}
+      {narrow && (
+        <span
+          className={s.waterfallBarLabelOutside}
+          data-align={outsideLabelLeft > 86 ? 'end' : 'start'}
+          style={outsideLabelStyle}
+        >
+          {label}
+        </span>
+      )}
     </div>
   )
 }
@@ -129,7 +160,15 @@ function spanTiming(span: TraceSpan, traceStart: bigint, durationMs: number) {
   }
 }
 
-function SpanTimingBar({ durationMs, span, traceStart }: { durationMs: number; span: TraceSpan; traceStart: bigint }) {
+function SpanTimingBar({
+  durationMs,
+  span,
+  traceStart,
+}: {
+  durationMs: number
+  span: TraceSpan
+  traceStart: bigint
+}) {
   const timing = spanTiming(span, traceStart, durationMs)
   return (
     <WaterfallBar
@@ -142,7 +181,10 @@ function SpanTimingBar({ durationMs, span, traceStart }: { durationMs: number; s
 }
 
 function WaterfallTickRow({ durationMs }: { durationMs: number }) {
-  const ticks = useMemo(() => Array.from({ length: 5 }, (_, index) => (index / 4) * durationMs), [durationMs])
+  const ticks = useMemo(
+    () => Array.from({ length: 5 }, (_, index) => (index / 4) * durationMs),
+    [durationMs],
+  )
 
   return (
     <div className={s.waterfallTickRow} role="presentation">
@@ -150,8 +192,17 @@ function WaterfallTickRow({ durationMs }: { durationMs: number }) {
       <div className={s.waterfallTimeline}>
         {ticks.map((tick, index) => {
           const pct = (tick / durationMs) * 100
-          const style = index === 0 ? { left: 0 } : index === ticks.length - 1 ? { right: 0 } : { left: `${pct}%`, transform: 'translateX(-50%)' }
-          return <span className={s.waterfallTick} key={`${tick}-${index}`} style={style}>{formatDuration(tick)}</span>
+          const style =
+            index === 0
+              ? { left: 0 }
+              : index === ticks.length - 1
+                ? { right: 0 }
+                : { left: `${pct}%`, transform: 'translateX(-50%)' }
+          return (
+            <span className={s.waterfallTick} key={`${tick}-${index}`} style={style}>
+              {formatDuration(tick)}
+            </span>
+          )
         })}
       </div>
     </div>
@@ -189,7 +240,10 @@ function WaterfallSpanLabel({
   tone: WaterfallTone
 }) {
   return (
-    <div className={classNames(s.waterfallSpanLabel, { [s.waterfallSpanLabelActive]: active })} style={{ paddingInlineStart: WATERFALL_LABEL_PADDING_INLINE_PX + depth * INDENT_PX }}>
+    <div
+      className={classNames(s.waterfallSpanLabel, { [s.waterfallSpanLabelActive]: active })}
+      style={{ paddingInlineStart: WATERFALL_LABEL_PADDING_INLINE_PX + depth * INDENT_PX }}
+    >
       {depth > 0 && <span className={s.waterfallTreeGuide} aria-hidden />}
       {childCount > 0 ? (
         <button
@@ -211,8 +265,14 @@ function WaterfallSpanLabel({
       <span className={s.waterfallPluginPill}>
         <span className={s.waterfallPluginDot} data-tone={tone} />
         <span className={s.waterfallLabelText}>
-          <Typography.BodySmallStrong as="span" truncate>{label}</Typography.BodySmallStrong>
-          {meta && <Typography.BodySmall as="span" variant="tertiary" truncate>{meta}</Typography.BodySmall>}
+          <Typography.BodySmallStrong as="span" truncate>
+            {label}
+          </Typography.BodySmallStrong>
+          {meta && (
+            <Typography.BodySmall as="span" variant="tertiary" truncate>
+              {meta}
+            </Typography.BodySmall>
+          )}
         </span>
       </span>
     </div>
@@ -241,7 +301,10 @@ function WaterfallBarSlot({
 
   return (
     <div
-      className={classNames(s.waterfallBarSlot, { [s.waterfallRowHover]: hovered, [s.waterfallBarSlotActive]: active })}
+      className={classNames(s.waterfallBarSlot, {
+        [s.waterfallRowHover]: hovered,
+        [s.waterfallBarSlotActive]: active,
+      })}
       onMouseEnter={() => onHover(span.spanId)}
       onMouseLeave={() => onHover(null)}
       onClick={() => canExpandHttp && onToggleExpanded(span.spanId)}
@@ -281,7 +344,10 @@ function WaterfallRow({
   const tone = spanTone(span)
   const label = spanDisplayLabel(span)
   const meta = spanDisplayMeta(span, label)
-  const isNoisyInternalSpan = tone === 'span' && span.kind === 'internal' && nanosToMs(span.durationNanos) <= NOISY_INTERNAL_SPAN_MAX_MS
+  const isNoisyInternalSpan =
+    tone === 'span' &&
+    span.kind === 'internal' &&
+    nanosToMs(span.durationNanos) <= NOISY_INTERNAL_SPAN_MAX_MS
   const canExpandHttp = isHttpSpan(span)
 
   return (
@@ -294,7 +360,10 @@ function WaterfallRow({
     >
       <div
         aria-expanded={canExpandHttp ? expanded : undefined}
-        className={classNames(s.waterfallRowButton, { [s.waterfallRowHover]: hovered, [s.waterfallRowActive]: expanded })}
+        className={classNames(s.waterfallRowButton, {
+          [s.waterfallRowHover]: hovered,
+          [s.waterfallRowActive]: expanded,
+        })}
         data-noisy={isNoisyInternalSpan || undefined}
         onMouseEnter={() => onHover(span.spanId)}
         onMouseLeave={() => onHover(null)}
@@ -324,22 +393,39 @@ function WaterfallRow({
   )
 }
 
-function TimelineWaterfall({ expandedHttpSpanId, onExpandedHttpSpanIdChange, onNavigableSpanIdsChange, spans, summary }: {
+function TimelineWaterfall({
+  expandedHttpSpanId,
+  onExpandedHttpSpanIdChange,
+  onNavigableSpanIdsChange,
+  spans,
+  summary,
+}: {
   expandedHttpSpanId: string | null
-  onExpandedHttpSpanIdChange: (spanId: string | null | ((current: string | null) => string | null)) => void
+  onExpandedHttpSpanIdChange: (
+    spanId: string | null | ((current: string | null) => string | null),
+  ) => void
   onNavigableSpanIdsChange: (spanIds: string[]) => void
   spans: TraceSpan[]
   summary?: GetTraceResponse['summary']
 }) {
   const proMode = useProMode()
-  const timelineSpans = useMemo(() => proMode ? spans : spans.filter(isHttpSpan), [proMode, spans])
-  const { collapsedSpanIds, rows, toggleSpan } = useTimelineTree(timelineSpans, summary?.rootSpanId, summary?.traceId)
+  const timelineSpans = useMemo(
+    () => (proMode ? spans : spans.filter(isHttpSpan)),
+    [proMode, spans],
+  )
+  const { collapsedSpanIds, rows, toggleSpan } = useTimelineTree(
+    timelineSpans,
+    summary?.rootSpanId,
+    summary?.traceId,
+  )
   const hasRenderedDetailPanel = useRef(false)
   const panelAnimationFrame = useRef<number | null>(null)
   const rootRef = useRef<HTMLDivElement>(null)
   const [hoveredSpanId, setHoveredSpanId] = useState<string | null>(null)
   const [detailPanelRatio, setDetailPanelRatio] = useState(DETAIL_PANEL_DEFAULT_RATIO)
-  const [animatedDetailPanelRatio, setAnimatedDetailPanelRatio] = useState(expandedHttpSpanId ? DETAIL_PANEL_DEFAULT_RATIO : 0)
+  const [animatedDetailPanelRatio, setAnimatedDetailPanelRatio] = useState(
+    expandedHttpSpanId ? DETAIL_PANEL_DEFAULT_RATIO : 0,
+  )
   const [isResizingDetailPanel, setIsResizingDetailPanel] = useState(false)
   const [renderedHttpSpanId, setRenderedHttpSpanId] = useState<string | null>(expandedHttpSpanId)
   const [detailPanelVisible, setDetailPanelVisible] = useState(Boolean(expandedHttpSpanId))
@@ -385,7 +471,8 @@ function TimelineWaterfall({ expandedHttpSpanId, onExpandedHttpSpanIdChange, onN
       setDetailPanelSettled(false)
       animatePanelRatio(0, detailPanelRatio, () => setDetailPanelSettled(true))
       return () => {
-        if (panelAnimationFrame.current !== null) window.cancelAnimationFrame(panelAnimationFrame.current)
+        if (panelAnimationFrame.current !== null)
+          window.cancelAnimationFrame(panelAnimationFrame.current)
       }
     }
 
@@ -394,32 +481,45 @@ function TimelineWaterfall({ expandedHttpSpanId, onExpandedHttpSpanIdChange, onN
     setDetailPanelSettled(false)
     animatePanelRatio(animatedDetailPanelRatio, 0, () => setRenderedHttpSpanId(null))
     return () => {
-      if (panelAnimationFrame.current !== null) window.cancelAnimationFrame(panelAnimationFrame.current)
+      if (panelAnimationFrame.current !== null)
+        window.cancelAnimationFrame(panelAnimationFrame.current)
     }
     // Keep the animation target stable during a single open/close transition.
     // Drag resizing updates both detailPanelRatio and animatedDetailPanelRatio directly.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, [expandedHttpSpanId])
   useEffect(() => {
-    onNavigableSpanIdsChange(rows.filter((row) => isHttpSpan(row.span)).map((row) => row.span.spanId))
+    onNavigableSpanIdsChange(
+      rows.filter((row) => isHttpSpan(row.span)).map((row) => row.span.spanId),
+    )
   }, [onNavigableSpanIdsChange, rows])
   const traceStart = BigInt(summary?.startTimeUnixNanos || rows[0]?.span.startTimeUnixNanos || 0)
   const durationMs = Math.max(nanosToMs(summary?.durationNanos || '0'), 1)
-  const navigableSpanIds = useMemo(() => rows.filter((row) => isHttpSpan(row.span)).map((row) => row.span.spanId), [rows])
-  const renderedHttpSpanIndex = renderedHttpSpanId ? navigableSpanIds.indexOf(renderedHttpSpanId) : -1
+  const navigableSpanIds = useMemo(
+    () => rows.filter((row) => isHttpSpan(row.span)).map((row) => row.span.spanId),
+    [rows],
+  )
+  const renderedHttpSpanIndex = renderedHttpSpanId
+    ? navigableSpanIds.indexOf(renderedHttpSpanId)
+    : -1
   const renderedHttpRow = rows.find((row) => row.span.spanId === renderedHttpSpanId)
   const renderedHttpSpan = renderedHttpRow?.span
 
-  const selectAdjacentSpan = useCallback((direction: -1 | 1) => {
-    if (renderedHttpSpanIndex < 0) return
-    const nextSpanId = navigableSpanIds[renderedHttpSpanIndex + direction]
-    if (!nextSpanId) return
-    onExpandedHttpSpanIdChange(nextSpanId)
-    window.requestAnimationFrame(() => {
-      const escapedSpanId = nextSpanId.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
-      document.querySelector(`[data-span-row-id="${escapedSpanId}"]`)?.scrollIntoView({ block: 'nearest' })
-    })
-  }, [renderedHttpSpanIndex, navigableSpanIds, onExpandedHttpSpanIdChange])
+  const selectAdjacentSpan = useCallback(
+    (direction: -1 | 1) => {
+      if (renderedHttpSpanIndex < 0) return
+      const nextSpanId = navigableSpanIds[renderedHttpSpanIndex + direction]
+      if (!nextSpanId) return
+      onExpandedHttpSpanIdChange(nextSpanId)
+      window.requestAnimationFrame(() => {
+        const escapedSpanId = nextSpanId.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+        document
+          .querySelector(`[data-span-row-id="${escapedSpanId}"]`)
+          ?.scrollIntoView({ block: 'nearest' })
+      })
+    },
+    [renderedHttpSpanIndex, navigableSpanIds, onExpandedHttpSpanIdChange],
+  )
 
   const resizeDetailPanel = useCallback((clientX: number) => {
     const root = rootRef.current
@@ -431,21 +531,27 @@ function TimelineWaterfall({ expandedHttpSpanId, onExpandedHttpSpanIdChange, onN
     setAnimatedDetailPanelRatio(nextRatio)
   }, [])
 
-  const handleResizePointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
-    event.preventDefault()
-    setIsResizingDetailPanel(true)
-    event.currentTarget.setPointerCapture(event.pointerId)
-    resizeDetailPanel(event.clientX)
-  }, [resizeDetailPanel])
+  const handleResizePointerDown = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      event.preventDefault()
+      setIsResizingDetailPanel(true)
+      event.currentTarget.setPointerCapture(event.pointerId)
+      resizeDetailPanel(event.clientX)
+    },
+    [resizeDetailPanel],
+  )
 
   const handleResizePointerEnd = useCallback(() => {
     setIsResizingDetailPanel(false)
   }, [])
 
-  const handleResizePointerMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
-    if (!event.currentTarget.hasPointerCapture(event.pointerId)) return
-    resizeDetailPanel(event.clientX)
-  }, [resizeDetailPanel])
+  const handleResizePointerMove = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      if (!event.currentTarget.hasPointerCapture(event.pointerId)) return
+      resizeDetailPanel(event.clientX)
+    },
+    [resizeDetailPanel],
+  )
 
   const handleResizeKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
     if (event.key === 'ArrowLeft') {
@@ -487,7 +593,9 @@ function TimelineWaterfall({ expandedHttpSpanId, onExpandedHttpSpanIdChange, onN
                   key={row.span.spanId}
                   onHover={setHoveredSpanId}
                   onToggle={toggleSpan}
-                  onToggleExpanded={(spanId) => onExpandedHttpSpanIdChange((current) => current === spanId ? null : spanId)}
+                  onToggleExpanded={(spanId) =>
+                    onExpandedHttpSpanIdChange((current) => (current === spanId ? null : spanId))
+                  }
                   reserveToggleSpace={proMode}
                   row={row}
                 />
@@ -501,7 +609,9 @@ function TimelineWaterfall({ expandedHttpSpanId, onExpandedHttpSpanIdChange, onN
                   hovered={hoveredSpanId === row.span.spanId}
                   key={row.span.spanId}
                   onHover={setHoveredSpanId}
-                  onToggleExpanded={(spanId) => onExpandedHttpSpanIdChange((current) => current === spanId ? null : spanId)}
+                  onToggleExpanded={(spanId) =>
+                    onExpandedHttpSpanIdChange((current) => (current === spanId ? null : spanId))
+                  }
                   row={row}
                   traceStart={traceStart}
                 />
@@ -554,18 +664,33 @@ function TimelineWaterfall({ expandedHttpSpanId, onExpandedHttpSpanIdChange, onN
   )
 }
 
-function DetailTabs({ activeTab, extraTabs, onTab }: { activeTab: string; extraTabs?: ExtraDetailTab[]; onTab: (tab: string) => void }) {
+function DetailTabs({
+  activeTab,
+  extraTabs,
+  onTab,
+}: {
+  activeTab: string
+  extraTabs?: ExtraDetailTab[]
+  onTab: (tab: string) => void
+}) {
   const tabs = [
     { id: 'timeline', label: 'Trace', show: true },
     ...(extraTabs ?? []).map((tab) => ({ id: tab.id, label: tab.label, show: tab.show ?? true })),
   ]
   return (
     <div className={s.tabList}>
-      {tabs.filter((tab) => tab.show).map((tab) => (
-        <button className={classNames(s.tabTrigger, { [s.tabTriggerActive]: activeTab === tab.id })} key={tab.id} onClick={() => onTab(tab.id)} type="button">
-          <Typography.BodySmallStrong as="span">{tab.label}</Typography.BodySmallStrong>
-        </button>
-      ))}
+      {tabs
+        .filter((tab) => tab.show)
+        .map((tab) => (
+          <button
+            className={classNames(s.tabTrigger, { [s.tabTriggerActive]: activeTab === tab.id })}
+            key={tab.id}
+            onClick={() => onTab(tab.id)}
+            type="button"
+          >
+            <Typography.BodySmallStrong as="span">{tab.label}</Typography.BodySmallStrong>
+          </button>
+        ))}
     </div>
   )
 }
@@ -591,47 +716,83 @@ export function TraceDetail({
   const [navigableSpanIds, setNavigableSpanIds] = useState<string[]>([])
   useEffect(() => setActiveTab('timeline'), [traceId])
 
-  const selectAdjacentSpan = useCallback((direction: -1 | 1) => {
-    if (!expandedHttpSpanId) return
-    const currentIndex = navigableSpanIds.indexOf(expandedHttpSpanId)
-    const nextSpanId = currentIndex >= 0 ? navigableSpanIds[currentIndex + direction] : null
-    if (!nextSpanId) return
-    setExpandedHttpSpanId(nextSpanId)
-    window.requestAnimationFrame(() => {
-      const escapedSpanId = nextSpanId.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
-      document.querySelector(`[data-span-row-id="${escapedSpanId}"]`)?.scrollIntoView({ block: 'nearest' })
-    })
-  }, [expandedHttpSpanId, navigableSpanIds])
+  const selectAdjacentSpan = useCallback(
+    (direction: -1 | 1) => {
+      if (!expandedHttpSpanId) return
+      const currentIndex = navigableSpanIds.indexOf(expandedHttpSpanId)
+      const nextSpanId = currentIndex >= 0 ? navigableSpanIds[currentIndex + direction] : null
+      if (!nextSpanId) return
+      setExpandedHttpSpanId(nextSpanId)
+      window.requestAnimationFrame(() => {
+        const escapedSpanId = nextSpanId.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+        document
+          .querySelector(`[data-span-row-id="${escapedSpanId}"]`)
+          ?.scrollIntoView({ block: 'nearest' })
+      })
+    },
+    [expandedHttpSpanId, navigableSpanIds],
+  )
 
-  const handleEscapeShortcut = useCallback((event: KeyboardEvent) => {
-    if (expandedHttpSpanId) {
+  const handleEscapeShortcut = useCallback(
+    (event: KeyboardEvent) => {
+      if (expandedHttpSpanId) {
+        event.preventDefault()
+        setExpandedHttpSpanId(null)
+        return
+      }
+      onClose()
+    },
+    [expandedHttpSpanId, onClose],
+  )
+
+  const handlePreviousSpanShortcut = useCallback(
+    (event: KeyboardEvent) => {
+      if (!expandedHttpSpanId) return
+      if (
+        event.target instanceof HTMLElement &&
+        event.target.closest('[data-span-inspector="true"]')
+      )
+        return
       event.preventDefault()
-      setExpandedHttpSpanId(null)
-      return
-    }
-    onClose()
-  }, [expandedHttpSpanId, onClose])
+      selectAdjacentSpan(-1)
+    },
+    [expandedHttpSpanId, selectAdjacentSpan],
+  )
 
-  const handlePreviousSpanShortcut = useCallback((event: KeyboardEvent) => {
-    if (!expandedHttpSpanId) return
-    if (event.target instanceof HTMLElement && event.target.closest('[data-span-inspector="true"]')) return
-    event.preventDefault()
-    selectAdjacentSpan(-1)
-  }, [expandedHttpSpanId, selectAdjacentSpan])
-
-  const handleNextSpanShortcut = useCallback((event: KeyboardEvent) => {
-    if (!expandedHttpSpanId) return
-    if (event.target instanceof HTMLElement && event.target.closest('[data-span-inspector="true"]')) return
-    event.preventDefault()
-    selectAdjacentSpan(1)
-  }, [expandedHttpSpanId, selectAdjacentSpan])
+  const handleNextSpanShortcut = useCallback(
+    (event: KeyboardEvent) => {
+      if (!expandedHttpSpanId) return
+      if (
+        event.target instanceof HTMLElement &&
+        event.target.closest('[data-span-inspector="true"]')
+      )
+        return
+      event.preventDefault()
+      selectAdjacentSpan(1)
+    },
+    [expandedHttpSpanId, selectAdjacentSpan],
+  )
   const summary = detail?.summary
   const httpSpans = useMemo(() => detail?.spans.filter(isHttpSpan) ?? [], [detail?.spans])
   const sources = useMemo(() => sourceNames(detail?.spans ?? []), [detail?.spans])
-  const resolvedExtraTabs = useMemo(() => (detail ? extraTabs?.(detail) ?? [] : []), [detail, extraTabs])
+  const resolvedExtraTabs = useMemo(
+    () => (detail ? (extraTabs?.(detail) ?? []) : []),
+    [detail, extraTabs],
+  )
 
-  if (loading && !detail) return <div className={s.detailEmpty}><Icon name="Loader" className={s.spinner} color="tertiary" /><Typography.Body>Loading trace…</Typography.Body></div>
-  if (error) return <div className={s.detailEmpty}><EmptyState error={error} /></div>
+  if (loading && !detail)
+    return (
+      <div className={s.detailEmpty}>
+        <Icon name="Loader" className={s.spinner} color="tertiary" />
+        <Typography.Body>Loading trace…</Typography.Body>
+      </div>
+    )
+  if (error)
+    return (
+      <div className={s.detailEmpty}>
+        <EmptyState error={error} />
+      </div>
+    )
   if (!detail || !summary) {
     return (
       <div className={s.detailEmpty}>
@@ -649,24 +810,66 @@ export function TraceDetail({
     <div className={s.detailRoot}>
       <KeyboardShortcut handler={handlePreviousSpanShortcut} shortcut="ArrowUp" />
       <KeyboardShortcut handler={handleNextSpanShortcut} shortcut="ArrowDown" />
-      <PageHeader title={<><Button.TextButton onClick={onClose} size="22" variant="linkSubtle"><Typography.BodyStrong as="span" variant="tertiary">Query stream</Typography.BodyStrong></Button.TextButton><Typography.BodyStrong as="span" variant="tertiary">/</Typography.BodyStrong><Typography.BodyStrong as="span" variant="secondary">Query details</Typography.BodyStrong></>}>
+      <PageHeader
+        title={
+          <>
+            <Button.TextButton onClick={onClose} size="22" variant="linkSubtle">
+              <Typography.BodyStrong as="span" variant="tertiary">
+                Query stream
+              </Typography.BodyStrong>
+            </Button.TextButton>
+            <Typography.BodyStrong as="span" variant="tertiary">
+              /
+            </Typography.BodyStrong>
+            <Typography.BodyStrong as="span" variant="secondary">
+              Query details
+            </Typography.BodyStrong>
+          </>
+        }
+      >
         <div className={s.detailHeaderActions}>
-          <span className={s.statusBadge} data-tone={statusTone(summary.status)}>{statusLabel(summary.status)}</span>
-          <Button.IconButton disabled={!newerTraceId} name="ArrowUp" onClick={() => newerTraceId && onSelectTrace?.(newerTraceId)} size="32" tooltipText="Newer query" variant="bare" />
-          <Button.IconButton disabled={!olderTraceId} name="ArrowDown" onClick={() => olderTraceId && onSelectTrace?.(olderTraceId)} size="32" tooltipText="Older query" variant="bare" />
+          <span className={s.statusBadge} data-tone={statusTone(summary.status)}>
+            {statusLabel(summary.status)}
+          </span>
+          <Button.IconButton
+            disabled={!newerTraceId}
+            name="ArrowUp"
+            onClick={() => newerTraceId && onSelectTrace?.(newerTraceId)}
+            size="32"
+            tooltipText="Newer query"
+            variant="bare"
+          />
+          <Button.IconButton
+            disabled={!olderTraceId}
+            name="ArrowDown"
+            onClick={() => olderTraceId && onSelectTrace?.(olderTraceId)}
+            size="32"
+            tooltipText="Older query"
+            variant="bare"
+          />
           <KeyboardShortcut
             handler={handleEscapeShortcut}
             shortcut="Escape"
             tooltipContent={expandedHttpSpanId ? 'Close span inspector' : 'Close query details'}
             tooltipSide="bottom"
           >
-            <Button.IconButton ariaLabel="Close query details" name="X" onClick={onClose} size="32" variant="bare" />
+            <Button.IconButton
+              ariaLabel="Close query details"
+              name="X"
+              onClick={onClose}
+              size="32"
+              variant="bare"
+            />
           </KeyboardShortcut>
         </div>
       </PageHeader>
       <div className={s.scrollBody}>
         <div className={s.content}>
-          <div className={s.sqlBlock}><pre><SqlCode sql={summary.query || 'No SQL recorded for this trace.'} /></pre></div>
+          <div className={s.sqlBlock}>
+            <pre>
+              <SqlCode sql={summary.query || 'No SQL recorded for this trace.'} />
+            </pre>
+          </div>
           <div className={s.statGrid}>
             <StatCard label="Duration" value={formatDurationFromNanos(summary.durationNanos)} />
             <StatCard label="Rows" value={formatRows(summary)} />

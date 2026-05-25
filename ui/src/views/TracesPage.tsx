@@ -35,7 +35,11 @@ function useTraceList(enabled: boolean) {
       const queryTraces: TraceSummary[] = []
       let pageToken = ''
 
-      for (let page = 0; page < MAX_TRACE_LIST_PAGES && queryTraces.length < MAX_QUERY_TRACES; page += 1) {
+      for (
+        let page = 0;
+        page < MAX_TRACE_LIST_PAGES && queryTraces.length < MAX_QUERY_TRACES;
+        page += 1
+      ) {
         const response = await listTraces(TRACE_LIST_PAGE_SIZE, pageToken)
         queryTraces.push(...response.traces.filter(isQueryTrace))
         pageToken = response.nextPageToken
@@ -62,7 +66,13 @@ function useTraceList(enabled: boolean) {
   return { error, loading, traces }
 }
 
-function HeaderActions({ searchOpen, searchText, searchVisible, setSearchOpen, setSearchText }: {
+function HeaderActions({
+  searchOpen,
+  searchText,
+  searchVisible,
+  setSearchOpen,
+  setSearchText,
+}: {
   searchOpen: boolean
   searchText: string
   searchVisible: boolean
@@ -87,14 +97,26 @@ function HeaderActions({ searchOpen, searchText, searchVisible, setSearchOpen, s
       />
       <div className={s.inlineSearch} data-searching={searchVisible ? 'true' : undefined}>
         <div className={s.searchTrigger}>
-          <Button.IconButton name="Search" onClick={() => setSearchOpen(true)} size="32" tooltipText="Search" variant="bare" />
+          <Button.IconButton
+            name="Search"
+            onClick={() => setSearchOpen(true)}
+            size="32"
+            tooltipText="Search"
+            variant="bare"
+          />
         </div>
         <div className={s.searchField}>
           <TextInput
             icon="Search"
             onBlur={() => setSearchOpen(false)}
             onChange={setSearchText}
-            onKeyDown={(e) => { if (e.key === 'Escape') { setSearchText(''); setSearchOpen(false); inputRef.current?.blur() } }}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') {
+                setSearchText('')
+                setSearchOpen(false)
+                inputRef.current?.blur()
+              }
+            }}
             placeholder="Search queries..."
             ref={inputRef}
             value={searchText}
@@ -106,7 +128,11 @@ function HeaderActions({ searchOpen, searchText, searchVisible, setSearchOpen, s
 }
 
 function DisconnectedBanner({ message }: { message: string }) {
-  return <div className={s.disconnectedBanner}><Typography.Body as="span">{message}</Typography.Body></div>
+  return (
+    <div className={s.disconnectedBanner}>
+      <Typography.Body as="span">{message}</Typography.Body>
+    </div>
+  )
 }
 
 export function TracesPage() {
@@ -125,7 +151,10 @@ export function TracesPage() {
   if (selectedTraceId) {
     const selectedIndex = filtered.findIndex((trace) => trace.traceId === selectedTraceId)
     const newerTraceId = selectedIndex > 0 ? filtered[selectedIndex - 1].traceId : null
-    const olderTraceId = selectedIndex >= 0 && selectedIndex < filtered.length - 1 ? filtered[selectedIndex + 1].traceId : null
+    const olderTraceId =
+      selectedIndex >= 0 && selectedIndex < filtered.length - 1
+        ? filtered[selectedIndex + 1].traceId
+        : null
 
     return (
       <TraceDetail
@@ -152,7 +181,10 @@ export function TracesPage() {
       </PageHeader>
       {error && <DisconnectedBanner message={error} />}
       {loading && traces.length === 0 ? (
-        <div className={s.loadingState}><Icon name="Loader" className={s.spinner} color="tertiary" /><Typography.Body>Loading traces…</Typography.Body></div>
+        <div className={s.loadingState}>
+          <Icon name="Loader" className={s.spinner} color="tertiary" />
+          <Typography.Body>Loading traces…</Typography.Body>
+        </div>
       ) : filtered.length === 0 ? (
         searchText.trim() ? (
           <EmptyState
@@ -163,7 +195,9 @@ export function TracesPage() {
           <EmptyState error={error && traces.length === 0 ? error : null} />
         )
       ) : (
-        <div className={s.queryScroll}><TraceList traces={filtered} onSelect={setSelectedTraceId} /></div>
+        <div className={s.queryScroll}>
+          <TraceList traces={filtered} onSelect={setSelectedTraceId} />
+        </div>
       )}
       <StatusBar connected={connected} count={filtered.length} totalCount={traces.length} />
     </section>

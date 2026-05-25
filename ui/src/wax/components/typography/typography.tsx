@@ -6,7 +6,10 @@ import type { ColorVariants } from './typography.css'
 import { typography } from './typography.css'
 import * as styles from './typography.css'
 
-type TypographyProps<T extends ElementType = 'span'> = Omit<React.ComponentPropsWithoutRef<T>, 'as'> & {
+type TypographyProps<T extends ElementType = 'span'> = Omit<
+  React.ComponentPropsWithoutRef<T>,
+  'as'
+> & {
   as?: T
   size?: CSSProperties['fontSize']
   truncate?: boolean
@@ -47,7 +50,7 @@ function createTypographyComponent({
         className={classNames(
           typography({ color: resolvedColor, variant: typographyVariant }),
           { [styles.truncate]: truncate },
-          className
+          className,
         )}
         style={inlineStyle}
         {...rest}
@@ -59,7 +62,10 @@ function createTypographyComponent({
 }
 
 export const Typography = {
-  Body: createTypographyComponent({ defaultVariant: 'secondary', typographyVariant: TypographyVariant.BODY }),
+  Body: createTypographyComponent({
+    defaultVariant: 'secondary',
+    typographyVariant: TypographyVariant.BODY,
+  }),
   BodyLarge: createTypographyComponent({
     defaultVariant: 'secondary',
     typographyVariant: TypographyVariant.BODY_LARGE,
@@ -84,13 +90,22 @@ export const Typography = {
     defaultVariant: 'primary',
     typographyVariant: TypographyVariant.BUTTON_STRONG,
   }),
-  Code: createTypographyComponent({ defaultVariant: 'code', typographyVariant: TypographyVariant.CODE }),
-  CodeInline: createTypographyComponent({ defaultVariant: 'code', typographyVariant: TypographyVariant.CODE_INLINE }),
+  Code: createTypographyComponent({
+    defaultVariant: 'code',
+    typographyVariant: TypographyVariant.CODE,
+  }),
+  CodeInline: createTypographyComponent({
+    defaultVariant: 'code',
+    typographyVariant: TypographyVariant.CODE_INLINE,
+  }),
   CodeInlineStrong: createTypographyComponent({
     defaultVariant: 'code',
     typographyVariant: TypographyVariant.CODE_INLINE_STRONG,
   }),
-  CodeLarge: createTypographyComponent({ defaultVariant: 'code', typographyVariant: TypographyVariant.CODE_LARGE }),
+  CodeLarge: createTypographyComponent({
+    defaultVariant: 'code',
+    typographyVariant: TypographyVariant.CODE_LARGE,
+  }),
   CodeSmallInline: createTypographyComponent({
     defaultVariant: 'code',
     typographyVariant: TypographyVariant.CODE_SMALL_INLINE,

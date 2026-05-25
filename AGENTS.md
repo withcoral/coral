@@ -19,6 +19,7 @@
 ## Rules
 
 - Run `make rust-checks` before submitting PRs that include changes to Rust code.
+- UI changes must pass `npm run check --prefix ui` (oxfmt + oxlint) before submitting.
 - `make rust-checks` is the Rust-only local gate and should keep using
   `--all-features`; the embedded UI feature is a normal CLI build surface.
 - The built UI artifact is produced by repo/CI orchestration (`make ui-build`
