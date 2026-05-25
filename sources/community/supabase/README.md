@@ -24,13 +24,18 @@ passwords: do not commit them to version control and rotate them periodically.
 For least-privilege access, Supabase supports fine-grained permissions on PATs.
 The minimum permissions required by this source are:
 
-| Permission scope             | Access level | Used by tables                                      |
-|------------------------------|--------------|-----------------------------------------------------|
-| Organizations — Read         | Read         | `organizations`, `organization_members`             |
-| Projects — Read              | Read         | `projects`, `storage_buckets`, `backups`, `branches`, `postgrest_config` |
-| Edge Functions — Read        | Read         | `edge_functions`                                    |
-| Edge Function Secrets — Read | Read         | `secrets`                                           |
-| Health — Read                | Read         | `service_health`                                    |
+| Permission scope                                                | Access level | Used by tables                                      |
+|-----------------------------------------------------------------|--------------|-----------------------------------------------------|
+| `organizations_read`                                            | Read         | `organizations`                                     |
+| `members_read`                                                  | Read         | `organization_members`                              |
+| `projects_read`                                                 | Read         | `projects`                                          |
+| `edge_functions_read`                                           | Read         | `edge_functions`                                    |
+| `edge_functions_secrets_read`                                   | Read         | `secrets`                                           |
+| `storage_read`                                                  | Read         | `storage_buckets`                                   |
+| `project_admin_read`                                            | Read         | `service_health`                                    |
+| `backups_read`                                                  | Read         | `backups`                                           |
+| `branching_production_read` or `branching_development_read`     | Read         | `branches`                                          |
+| `data_api_config_read`                                          | Read         | `postgrest_config`                                  |
 
 For third-party integrations, Supabase also supports OAuth2 with scoped tokens.
 See [Build a Supabase Integration](https://supabase.com/docs/guides/integrations/build-a-supabase-integration)
@@ -106,7 +111,7 @@ WHERE project_ref = 'abcdefghijklmnopqrst';
 SELECT name, healthy, status, info__version, error
 FROM supabase.service_health
 WHERE project_ref = 'abcdefghijklmnopqrst'
-  AND services = 'auth,realtime,storage,postgrest';
+  AND services = 'auth,realtime,storage,rest';
 
 -- Database backups
 SELECT id, status, is_physical_backup, inserted_at
@@ -175,7 +180,7 @@ includes `X-RateLimit-Remaining` and `X-RateLimit-Reset` headers.
 - **Branching**: the `branches` table requires a paid plan with branching
   enabled on the project
 - **Service health**: requires specifying which services to check via the
-  `services` filter (e.g. `auth,realtime,storage,postgrest`)
+  `services` filter (e.g. `auth,realtime,storage,rest`)
 - **Inactive projects**: for paused/inactive projects, querying
   `service_health` returns an API 400 and `postgrest_config` returns an
   API 404; Coral surfaces these upstream errors rather than crashing

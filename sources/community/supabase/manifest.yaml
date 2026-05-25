@@ -439,8 +439,8 @@ tables:
       Always filter by project_ref and services: `SELECT name, healthy,
       status, info__version, error FROM supabase.service_health WHERE
       project_ref = 'abcdefghijklmnopqrst' AND services =
-      'auth,realtime,storage,postgrest'`. Common service names are auth,
-      realtime, storage, and postgrest.
+      'auth,realtime,storage,rest'`. Common service names are auth,
+      realtime, storage, and rest.
     filters:
       - name: project_ref
         required: true
@@ -460,7 +460,7 @@ tables:
         type: Utf8
         nullable: false
         description: >-
-          Service name (e.g. auth, realtime, storage, postgrest).
+          Service name (e.g. auth, realtime, storage, rest).
         expr: {kind: path, path: [name]}
       - name: healthy
         type: Boolean
@@ -527,7 +527,7 @@ tables:
       Always filter by project_ref: `SELECT id, status, is_physical_backup,
       inserted_at FROM supabase.backups WHERE project_ref =
       'abcdefghijklmnopqrst'`. Check the status column for COMPLETED,
-      IN_PROGRESS, or FAILED.
+      PENDING, or FAILED.
     filters:
       - name: project_ref
         required: true
@@ -547,7 +547,7 @@ tables:
         type: Utf8
         nullable: true
         description: >-
-          Backup status (e.g. COMPLETED, IN_PROGRESS, FAILED).
+          Backup status (e.g. COMPLETED, PENDING, FAILED).
         expr: {kind: path, path: [status]}
       - name: is_physical_backup
         type: Boolean
@@ -640,8 +640,8 @@ tables:
         type: Utf8
         nullable: true
         description: >-
-          Branch lifecycle status (e.g. CREATING_PROJECT, RUNNING,
-          PAUSING, REMOVED).
+          Branch lifecycle status (e.g. CREATING_PROJECT, RUNNING_MIGRATIONS,
+          MIGRATIONS_PASSED, FUNCTIONS_DEPLOYED).
         expr: {kind: path, path: [status]}
       - name: with_data
         type: Boolean
