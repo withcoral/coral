@@ -119,11 +119,15 @@ WHERE workspace_name = 'production-network'
   Terraform list state versions endpoint filters by organization name and
   workspace name, and it exposes the related `workspace_id` when the API
   response includes the workspace relationship.
-- HCP Terraform rate-limits API requests, so repeated large queries can return
-  `429 Too many requests`.
+- HCP Terraform applies an adjusted rate limit of 30 requests per minute to
+  `GET /workspaces/:workspace_id/runs`, so repeated large run queries can
+  return `429 Too many requests`.
 - `terraform_cloud.runs` accepts run operations such as `plan_only`,
   `plan_and_apply`, `save_plan`, `refresh_only`, `destroy`, `empty_apply`, and
   `action_only`.
+- The HCP Terraform runs API excludes `plan_only` runs by default unless
+  `filter[operation]` is supplied; use `operation=plan_only` when querying
+  plan-only runs.
 - Variable values are deliberately excluded from this source spec.
 - Raw state files are deliberately excluded from this source spec.
 
