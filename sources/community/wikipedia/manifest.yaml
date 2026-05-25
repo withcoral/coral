@@ -7,8 +7,9 @@ description: >-
   articles by keyword, look up page summaries by title, and discover random
   articles. No authentication required.
 base_url: https://en.wikipedia.org
-headers:
+request_headers:
   - name: Api-User-Agent
+    from: literal
     value: "Coral Wikipedia source (https://github.com/withcoral/coral)"
 test_queries:
   - SELECT title, snippet FROM wikipedia.search WHERE query = 'Rust' LIMIT 1
@@ -17,13 +18,13 @@ test_queries:
 tables:
   - name: search
     description: |
-      Search Wikipedia articles by keyword. Returns matching pages with
-      metadata such as title, page ID, size, word count, and a snippet.
-      Use `query` for the search term and SQL `LIMIT` to control result count.
-    fetch_limit_default: 10
-    filters:
+      Search Wikipedia articles by keyword using the MediaWiki search API.
+      Filter by `query` (required). Use SQL `LIMIT` to control result count.
+    args:
       - name: query
         required: true
+        bind:
+          param: srsearch
     request:
       method: GET
       path: /w/api.php
@@ -35,7 +36,7 @@ tables:
           from: literal
           value: search
         - name: srsearch
-          from: filter
+          from: arg
           key: query
         - name: format
           from: literal
@@ -54,7 +55,7 @@ tables:
     columns:
       - name: ns
         type: Int64
-        nullable: false
+        nullable: true
         description: MediaWiki namespace ID (0 = articles).
         expr:
           kind: path
@@ -78,7 +79,7 @@ tables:
             - pageid
       - name: size
         type: Int64
-        nullable: false
+        nullable: true
         description: Page size in bytes.
         expr:
           kind: path
@@ -86,8 +87,8 @@ tables:
             - size
       - name: wordcount
         type: Int64
-        nullable: false
-        description: Approximate word count of the article.
+        nullable: true
+        description: Approximate word count.
         expr:
           kind: path
           path:
@@ -95,48 +96,49 @@ tables:
       - name: snippet
         type: Utf8
         nullable: true
-        description: HTML snippet of the article content matching the query.
+        description: HTML snippet matching the query.
         expr:
           kind: path
           path:
             - snippet
       - name: timestamp
-        type: Timestamp
+        type: Utf8
         nullable: true
-        description: Last edit timestamp of the page.
+        description: Last edit timestamp.
         expr:
-          kind: format_timestamp
-          input: iso8601
-          expr:
-            kind: path
-            path:
-              - timestamp
+          kind: path
+          path:
+            - timestamp
       - name: query
         type: Utf8
         nullable: true
-        description: Echoes the search query filter.
+        description: Echoes the search query used.
         expr:
-          kind: from_filter
+          kind: from_arg
           key: query
 
   - name: page
     description: |
-      Fetch a summary of a Wikipedia article by its exact title. Returns
-      metadata including description, extract, and content URLs.
-    filters:
+      Fetch a single article summary by exact title via the Wikipedia REST API.
+      Filter by `title` (required). Returns one row per query.
+    args:
       - name: title
         required: true
+        bind:
+          path: title
     request:
       method: GET
-      path: /api/rest_v1/page/summary/{{filter.title}}
-    response: {}
+      path: /api/rest_v1/page/summary/{title}
+    response:
+      rows_path: []
+      single_row: true
     pagination:
       mode: none
     columns:
       - name: type
         type: Utf8
         nullable: true
-        description: Page type (e.g. standard, disambiguation, no-extract).
+        description: Page type (standard, disambiguation, no-extract).
         expr:
           kind: path
           path:
@@ -144,46 +146,46 @@ tables:
       - name: title
         type: Utf8
         nullable: true
-        description: "Deprecated: top-level title field. Prefer title_canonical."
+        description: Article title (may be deprecated; prefer titles_normalized).
         expr:
           kind: path
           path:
             - title
-      - name: title_canonical
+      - name: displaytitle
         type: Utf8
         nullable: true
-        description: Canonical article title (from titles.canonical).
+        description: Formatted display title (may be deprecated; prefer titles_display).
+        expr:
+          kind: path
+          path:
+            - displaytitle
+      - name: titles_canonical
+        type: Utf8
+        nullable: true
+        description: Canonical title with underscores (e.g. Rust_(programming_language)).
         expr:
           kind: path
           path:
             - titles
             - canonical
-      - name: title_normalized
+      - name: titles_normalized
         type: Utf8
         nullable: true
-        description: Normalized article title with spaces (from titles.normalized).
+        description: Normalized title with spaces (e.g. Rust (programming language)).
         expr:
           kind: path
           path:
             - titles
             - normalized
-      - name: title_display
+      - name: titles_display
         type: Utf8
         nullable: true
-        description: Display title, may include HTML formatting (from titles.display).
+        description: Formatted display title, may include HTML (e.g. italics).
         expr:
           kind: path
           path:
             - titles
             - display
-      - name: displaytitle
-        type: Utf8
-        nullable: true
-        description: "Deprecated: top-level displaytitle field. Prefer title_display."
-        expr:
-          kind: path
-          path:
-            - displaytitle
       - name: pageid
         type: Int64
         nullable: true
@@ -195,7 +197,7 @@ tables:
       - name: lang
         type: Utf8
         nullable: true
-        description: Language code of the article (e.g. en).
+        description: Language code (e.g. en).
         expr:
           kind: path
           path:
@@ -217,20 +219,17 @@ tables:
           path:
             - revision
       - name: timestamp
-        type: Timestamp
+        type: Utf8
         nullable: true
         description: Last modified timestamp.
         expr:
-          kind: format_timestamp
-          input: iso8601
-          expr:
-            kind: path
-            path:
-              - timestamp
+          kind: path
+          path:
+            - timestamp
       - name: description
         type: Utf8
         nullable: true
-        description: Short description of the article topic.
+        description: Short topic description.
         expr:
           kind: path
           path:
@@ -238,7 +237,7 @@ tables:
       - name: extract
         type: Utf8
         nullable: true
-        description: Plain-text summary extract of the article.
+        description: Plain-text summary.
         expr:
           kind: path
           path:
@@ -246,7 +245,7 @@ tables:
       - name: extract_html
         type: Utf8
         nullable: true
-        description: HTML summary extract of the article.
+        description: HTML summary.
         expr:
           kind: path
           path:
@@ -254,7 +253,7 @@ tables:
       - name: thumbnail_source
         type: Utf8
         nullable: true
-        description: URL of the article thumbnail image.
+        description: Thumbnail image URL.
         expr:
           kind: path
           path:
@@ -263,7 +262,7 @@ tables:
       - name: thumbnail_width
         type: Int64
         nullable: true
-        description: Thumbnail image width in pixels.
+        description: Thumbnail width in pixels.
         expr:
           kind: path
           path:
@@ -272,7 +271,7 @@ tables:
       - name: thumbnail_height
         type: Int64
         nullable: true
-        description: Thumbnail image height in pixels.
+        description: Thumbnail height in pixels.
         expr:
           kind: path
           path:
@@ -281,7 +280,7 @@ tables:
       - name: content_url
         type: Utf8
         nullable: true
-        description: URL to the article HTML content.
+        description: Desktop article URL.
         expr:
           kind: path
           path:
@@ -291,7 +290,7 @@ tables:
       - name: mobile_url
         type: Utf8
         nullable: true
-        description: URL to the mobile article HTML content.
+        description: Mobile article URL.
         expr:
           kind: path
           path:
@@ -309,21 +308,22 @@ tables:
 
   - name: random
     description: |
-      Fetch a single random Wikipedia article summary per query. Returns
-      metadata including title, description, and extract. No filters required.
-      Each execution returns one random article; issue multiple queries to
-      retrieve multiple random articles.
+      Fetch a random article summary via the Wikipedia REST API.
+      Returns exactly one row per query — the endpoint does not support
+      fetching multiple random articles in a single request.
     request:
       method: GET
       path: /api/rest_v1/page/random/summary
-    response: {}
+    response:
+      rows_path: []
+      single_row: true
     pagination:
       mode: none
     columns:
       - name: type
         type: Utf8
         nullable: true
-        description: Page type (e.g. standard, disambiguation, no-extract).
+        description: Page type (standard, disambiguation, no-extract).
         expr:
           kind: path
           path:
@@ -331,46 +331,46 @@ tables:
       - name: title
         type: Utf8
         nullable: true
-        description: "Deprecated: top-level title field. Prefer title_canonical."
+        description: Article title (may be deprecated; prefer titles_normalized).
         expr:
           kind: path
           path:
             - title
-      - name: title_canonical
+      - name: displaytitle
         type: Utf8
         nullable: true
-        description: Canonical article title (from titles.canonical).
+        description: Formatted display title (may be deprecated; prefer titles_display).
+        expr:
+          kind: path
+          path:
+            - displaytitle
+      - name: titles_canonical
+        type: Utf8
+        nullable: true
+        description: Canonical title with underscores.
         expr:
           kind: path
           path:
             - titles
             - canonical
-      - name: title_normalized
+      - name: titles_normalized
         type: Utf8
         nullable: true
-        description: Normalized article title with spaces (from titles.normalized).
+        description: Normalized title with spaces.
         expr:
           kind: path
           path:
             - titles
             - normalized
-      - name: title_display
+      - name: titles_display
         type: Utf8
         nullable: true
-        description: Display title, may include HTML formatting (from titles.display).
+        description: Formatted display title, may include HTML.
         expr:
           kind: path
           path:
             - titles
             - display
-      - name: displaytitle
-        type: Utf8
-        nullable: true
-        description: "Deprecated: top-level displaytitle field. Prefer title_display."
-        expr:
-          kind: path
-          path:
-            - displaytitle
       - name: pageid
         type: Int64
         nullable: true
@@ -382,7 +382,7 @@ tables:
       - name: lang
         type: Utf8
         nullable: true
-        description: Language code of the article (e.g. en).
+        description: Language code (e.g. en).
         expr:
           kind: path
           path:
@@ -404,20 +404,17 @@ tables:
           path:
             - revision
       - name: timestamp
-        type: Timestamp
+        type: Utf8
         nullable: true
         description: Last modified timestamp.
         expr:
-          kind: format_timestamp
-          input: iso8601
-          expr:
-            kind: path
-            path:
-              - timestamp
+          kind: path
+          path:
+            - timestamp
       - name: description
         type: Utf8
         nullable: true
-        description: Short description of the article topic.
+        description: Short topic description.
         expr:
           kind: path
           path:
@@ -425,7 +422,7 @@ tables:
       - name: extract
         type: Utf8
         nullable: true
-        description: Plain-text summary extract of the article.
+        description: Plain-text summary.
         expr:
           kind: path
           path:
@@ -433,7 +430,7 @@ tables:
       - name: extract_html
         type: Utf8
         nullable: true
-        description: HTML summary extract of the article.
+        description: HTML summary.
         expr:
           kind: path
           path:
@@ -441,7 +438,7 @@ tables:
       - name: thumbnail_source
         type: Utf8
         nullable: true
-        description: URL of the article thumbnail image.
+        description: Thumbnail image URL.
         expr:
           kind: path
           path:
@@ -450,7 +447,7 @@ tables:
       - name: thumbnail_width
         type: Int64
         nullable: true
-        description: Thumbnail image width in pixels.
+        description: Thumbnail width in pixels.
         expr:
           kind: path
           path:
@@ -459,7 +456,7 @@ tables:
       - name: thumbnail_height
         type: Int64
         nullable: true
-        description: Thumbnail image height in pixels.
+        description: Thumbnail height in pixels.
         expr:
           kind: path
           path:
@@ -468,7 +465,7 @@ tables:
       - name: content_url
         type: Utf8
         nullable: true
-        description: URL to the article HTML content.
+        description: Desktop article URL.
         expr:
           kind: path
           path:
@@ -478,7 +475,7 @@ tables:
       - name: mobile_url
         type: Utf8
         nullable: true
-        description: URL to the mobile article HTML content.
+        description: Mobile article URL.
         expr:
           kind: path
           path:
