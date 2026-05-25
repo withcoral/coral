@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import classNames from 'classnames'
 
 import * as Button from '@/wax/components/button'
+import { KeyboardShortcut } from '@/wax/components/keyboard-shortcut'
 import * as ScrollArea from '@/wax/components/scroll-area'
 import { Typography } from '@/wax/components/typography'
 import type { TraceSpan } from '@/generated/coral/v1/traces_pb'
@@ -44,6 +45,8 @@ const BODY_DETAILS = {
     sizeAttr: RESPONSE_BODY_SIZE_ATTR,
   },
 } satisfies Record<BodyKind, { label: string; presentAttr: string; sizeAttr: string }>
+
+const TAB_IDS: HttpDetailTab[] = ['params', 'request', 'response']
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
@@ -427,11 +430,11 @@ export function HttpSpanDetail({
   const responseBodyTruncated = attrBool(attrs[RESPONSE_BODY_TRUNCATED_ATTR])
   const paramsValue = Object.keys(params).length ? params : undefined
   const preferredTab = preferredHttpDetailTab(responseBody, requestBody, paramsValue)
-  const tabs: Array<{ id: HttpDetailTab; label: string }> = [
-    { id: 'params', label: 'Params' },
-    { id: 'request', label: `Request body${requestBodyTruncated ? ' (truncated)' : ''}` },
-    { id: 'response', label: `Response body${responseBodyTruncated ? ' (truncated)' : ''}` },
-  ]
+  const tabLabel = (id: HttpDetailTab) => {
+    if (id === 'params') return 'Params'
+    if (id === 'request') return `Request body${requestBodyTruncated ? ' (truncated)' : ''}`
+    return `Response body${responseBodyTruncated ? ' (truncated)' : ''}`
+  }
   const activeBody = activeBodyState(
     activeTab,
     attrs,
@@ -470,6 +473,28 @@ export function HttpSpanDetail({
     return () => window.clearTimeout(timeout)
   }, [copyState])
 
+  const cycleTab = useCallback(
+    (direction: -1 | 1) => (event: KeyboardEvent) => {
+      const target = event.target
+      if (
+        target instanceof HTMLElement &&
+        (target.isContentEditable || target.matches('input, textarea, select, [role="textbox"]'))
+      )
+        return
+      const index = TAB_IDS.indexOf(activeTab)
+      if (index < 0) return
+      const nextTabId = TAB_IDS[(index + direction + TAB_IDS.length) % TAB_IDS.length]
+      event.preventDefault()
+      setActiveTab(nextTabId)
+      window.requestAnimationFrame(() => {
+        document
+          .getElementById(`http-detail-tab-${span.spanId}-${nextTabId}`)
+          ?.focus({ preventScroll: true })
+      })
+    },
+    [activeTab, span.spanId],
+  )
+
   async function copyValueToClipboard(value: string, kind: CopyKind) {
     if (!value) return
     try {
@@ -486,6 +511,8 @@ export function HttpSpanDetail({
       data-span-inspector="true"
       onClick={(event) => event.stopPropagation()}
     >
+      <KeyboardShortcut handler={cycleTab(-1)} shortcut="ArrowLeft" />
+      <KeyboardShortcut handler={cycleTab(1)} shortcut="ArrowRight" />
       <div className={s.waterfallHttpDetailHeader}>
         <div className={s.waterfallHttpDetailTitle}>
           {requestOperation || requestEndpoint ? (
@@ -556,20 +583,22 @@ export function HttpSpanDetail({
           </div>
           <div className={s.waterfallHttpTabRow}>
             <div className={s.tabList} role="tablist" aria-label="HTTP span details">
-              {tabs.map((tab) => (
+              {TAB_IDS.map((tabId) => (
                 <button
-                  aria-controls={`http-detail-${span.spanId}-${tab.id}`}
-                  aria-selected={activeTab === tab.id}
+                  aria-controls={`http-detail-${span.spanId}-${tabId}`}
+                  aria-selected={activeTab === tabId}
                   className={classNames(s.tabTrigger, {
-                    [s.tabTriggerActive]: activeTab === tab.id,
+                    [s.tabTriggerActive]: activeTab === tabId,
                   })}
-                  id={`http-detail-tab-${span.spanId}-${tab.id}`}
-                  key={tab.id}
-                  onClick={() => setActiveTab(tab.id)}
+                  id={`http-detail-tab-${span.spanId}-${tabId}`}
+                  key={tabId}
+                  onClick={() => setActiveTab(tabId)}
                   role="tab"
                   type="button"
                 >
-                  <Typography.BodySmallStrong as="span">{tab.label}</Typography.BodySmallStrong>
+                  <Typography.BodySmallStrong as="span">
+                    {tabLabel(tabId)}
+                  </Typography.BodySmallStrong>
                 </button>
               ))}
             </div>
