@@ -33,6 +33,8 @@ FROM wikipedia.search
 WHERE query = 'Rust programming language'
 LIMIT 5
 "
+```
+```text
 +------------------------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+-----------+
 | title                                    | snippet                                                                                                                                                                                                                                                  | wordcount |
 +------------------------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+-----------+
@@ -42,30 +44,40 @@ LIMIT 5
 | Rust syntax                              | functional <span class="searchmatch">programming</span> <span class="searchmatch">languages</span> such as OCaml. Although <span class="searchmatch">Rust</span> syntax is heavily influenced by the syntaxes of C and C++, the syntax of <span class="searchmatch">Rust</span> is far more | 4777      |
 | Functional programming                   | functional <span class="searchmatch">programming</span> is a <span class="searchmatch">programming</span> paradigm where <span class="searchmatch">programs</span> are constructed by applying and composing functions. It is a declarative <span class="searchmatch">programming</span> paradigm | 8758      |
 +------------------------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+-----------+
+```
 
+```bash
 # Look up a specific article by title
 coral sql "
 SELECT title, description, extract, content_url
 FROM wikipedia.page
 WHERE title = 'Rust (programming language)'
 "
+```
+```text
 +-----------------------------+--------------------------------------+---------------------------------------------------------------------------------------------------------------------------+-----------------------------------------------------------+
 | title                       | description                          | extract                                                                                                                   | content_url                                               |
 +-----------------------------+--------------------------------------+---------------------------------------------------------------------------------------------------------------------------+-----------------------------------------------------------+
 | Rust (programming language) | General-purpose programming language | Rust is a general-purpose programming language which emphasizes performance, type safety, concurrency, and memory safety. | https://en.wikipedia.org/wiki/Rust_(programming_language) |
 +-----------------------------+--------------------------------------+---------------------------------------------------------------------------------------------------------------------------+-----------------------------------------------------------+
+```
 
+```bash
 # Get a random article
 coral sql "
 SELECT title, description, extract
 FROM wikipedia.random
 "
+```
+```text
 +---------------------------------------+------------------------------------+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
 | title                                 | description                        | extract                                                                                                                                                                                                                                                                                                                                                                            |
 +---------------------------------------+------------------------------------+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
 | Upper Madawaska River Provincial Park | Provincial park in Ontario, Canada | Upper Madawaska River Provincial Park is a waterway-class provincial park on the Madawaska River in the municipality of South Algonquin in Nipissing District, Ontario, Canada. The park consists of a strip of land along both shores of the Madawaska River from the communities of Whitney to Madawaska. It is upstream and north of the Lower Madawaska River Provincial Park. |
 +---------------------------------------+------------------------------------+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+```
 
+```bash
 # Step 1 — find the exact article title by searching
 coral sql "
 SELECT title
@@ -73,24 +85,32 @@ FROM wikipedia.search
 WHERE query = 'Machine learning'
 LIMIT 1
 "
+```
+```text
 +------------------+
 | title            |
 +------------------+
 | Machine learning |
 +------------------+
+```
 
+```bash
 # Step 2 — use that exact title to fetch the full summary
 coral sql "
 SELECT titles_normalized, description, extract, content_url
 FROM wikipedia.page
 WHERE title = 'Machine learning'
 "
+```
+```text
 +-------------------+-----------------------------------+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+------------------------------------------------+
 | titles_normalized | description                       | extract                                                                                                                                                                                                                                                                                                                                                                                                                                  | content_url                                    |
 +-------------------+-----------------------------------+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+------------------------------------------------+
 | Machine learning  | Subset of artificial intelligence | Machine learning (ML) is a field of study in artificial intelligence concerned with the development and study of statistical algorithms that can learn from data and generalize to unseen data, and thus perform tasks without being explicitly programmed. Advances in the field of deep learning have allowed neural networks, a class of statistical algorithms, to surpass many previous machine learning approaches in performance. | https://en.wikipedia.org/wiki/Machine_learning |
 +-------------------+-----------------------------------+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+------------------------------------------------+
+```
 
+```bash
 # Search with a larger result set
 coral sql "
 SELECT title, wordcount, timestamp
@@ -98,6 +118,8 @@ FROM wikipedia.search
 WHERE query = 'Artificial intelligence'
 LIMIT 20
 "
+```
+```text
 +------------------------------------------------------------+-----------+----------------------+
 | title                                                      | wordcount | timestamp            |
 +------------------------------------------------------------+-----------+----------------------+
@@ -122,7 +144,9 @@ LIMIT 20
 | Ethics of artificial intelligence                          | 16204     | 2026-05-21T22:00:35Z |
 | Artificial intelligence in music                           | 6910      | 2026-05-18T08:35:05Z |
 +------------------------------------------------------------+-----------+----------------------+
+```
 
+```bash
 # Find the longest articles on a topic
 coral sql "
 SELECT title, wordcount, size
