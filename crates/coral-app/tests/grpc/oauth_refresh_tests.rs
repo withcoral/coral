@@ -9,10 +9,11 @@ use std::sync::{Arc, Mutex};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64_URL_SAFE_NO_PAD;
-use coral_api::v1::{SourceSecret, SourceVariable, ValidateSourceRequest};
-use coral_client::default_workspace;
+use coral_api::v1::{ExecuteSqlRequest, SourceSecret, SourceVariable, ValidateSourceRequest};
+use coral_client::{batches_to_json_rows, decode_execute_sql_response, default_workspace};
 use serde_json::json;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+use tokio::sync::Notify;
 use tonic::Request;
 
 use crate::harness::{GrpcHarness, source_dir};
@@ -87,6 +88,54 @@ __coral_oauth.QVBJX1RPS0VO.token_url={}
 }
 
 #[tokio::test]
+async fn list_catalog_does_not_refresh_expired_oauth_access_token() {
+    let fixture = RefreshingHttpFixture::new().await;
+    let harness = GrpcHarness::new().await;
+    harness
+        .import_source(
+            oauth_refresh_manifest_yaml(&fixture.base_url, &fixture.token_url),
+            vec![SourceVariable {
+                key: "API_BASE".to_string(),
+                value: fixture.base_url.clone(),
+            }],
+            vec![SourceSecret {
+                key: "API_TOKEN".to_string(),
+                value: "expired-token".to_string(),
+            }],
+        )
+        .await;
+
+    let secret_path = source_dir(harness.config_dir(), "refreshed_messages").join("secrets.env");
+    fs::write(
+        &secret_path,
+        format!(
+            "\
+API_TOKEN=expired-token
+__coral_oauth.QVBJX1RPS0VO.method=oauth
+__coral_oauth.QVBJX1RPS0VO.access_token_expires_at={}
+__coral_oauth.QVBJX1RPS0VO.refresh_token=stored-refresh-token
+__coral_oauth.QVBJX1RPS0VO.client_id=stored-client
+__coral_oauth.QVBJX1RPS0VO.token_url={}
+",
+            (chrono::Utc::now() - chrono::Duration::minutes(5)).to_rfc3339(),
+            fixture.token_url,
+        ),
+    )
+    .expect("seed expired oauth material");
+
+    let tables = harness.list_tables().await;
+
+    assert_eq!(tables.len(), 1);
+    assert_eq!(tables[0].name, "messages");
+    assert!(
+        fixture.token_forms().is_empty(),
+        "passive catalog discovery should not call the token endpoint"
+    );
+    let material = fs::read_to_string(secret_path).expect("read material");
+    assert!(material.contains("API_TOKEN=expired-token"), "{material}");
+}
+
+#[tokio::test]
 async fn concurrent_queries_share_one_expired_oauth_refresh() {
     let fixture = RefreshingHttpFixture::new().await;
     let harness = GrpcHarness::new().await;
@@ -141,6 +190,88 @@ __coral_oauth.QVBJX1RPS0VO.token_url={}
             "Bearer refreshed-token".to_string(),
             "Bearer refreshed-token".to_string()
         ]
+    );
+}
+
+#[tokio::test]
+async fn refresh_does_not_overwrite_concurrent_manual_credential_replacement() {
+    let fixture = RefreshingHttpFixture::new_blocked_token_response().await;
+    let harness = GrpcHarness::new().await;
+    harness
+        .import_source(
+            oauth_refresh_manifest_yaml(&fixture.base_url, &fixture.token_url),
+            vec![SourceVariable {
+                key: "API_BASE".to_string(),
+                value: fixture.base_url.clone(),
+            }],
+            vec![SourceSecret {
+                key: "API_TOKEN".to_string(),
+                value: "expired-token".to_string(),
+            }],
+        )
+        .await;
+
+    let secret_path = source_dir(harness.config_dir(), "refreshed_messages").join("secrets.env");
+    fs::write(
+        &secret_path,
+        format!(
+            "\
+API_TOKEN=expired-token
+__coral_oauth.QVBJX1RPS0VO.method=oauth
+__coral_oauth.QVBJX1RPS0VO.access_token_expires_at={}
+__coral_oauth.QVBJX1RPS0VO.refresh_token=stored-refresh-token
+__coral_oauth.QVBJX1RPS0VO.client_id=stored-client
+__coral_oauth.QVBJX1RPS0VO.token_url={}
+",
+            (chrono::Utc::now() - chrono::Duration::minutes(5)).to_rfc3339(),
+            fixture.token_url,
+        ),
+    )
+    .expect("seed expired oauth material");
+
+    let mut query_client = harness.query_client();
+    let query = tokio::spawn(async move {
+        let response = query_client
+            .execute_sql(Request::new(ExecuteSqlRequest {
+                workspace: Some(default_workspace()),
+                sql: "SELECT id FROM refreshed_messages.messages".to_string(),
+            }))
+            .await
+            .expect("execute sql")
+            .into_inner();
+        let result = decode_execute_sql_response(&response).expect("decode execute response");
+        batches_to_json_rows(result.batches()).expect("json rows")
+    });
+
+    fixture.wait_for_token_request().await;
+    harness
+        .import_source(
+            oauth_refresh_manifest_yaml(&fixture.base_url, &fixture.token_url),
+            vec![SourceVariable {
+                key: "API_BASE".to_string(),
+                value: fixture.base_url.clone(),
+            }],
+            vec![SourceSecret {
+                key: "API_TOKEN".to_string(),
+                value: "manual-token".to_string(),
+            }],
+        )
+        .await;
+    fixture.allow_token_response();
+
+    let rows = query.await.expect("query task");
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["id"], "ok");
+    assert_eq!(
+        fixture.message_authorizations(),
+        vec!["Bearer manual-token".to_string()]
+    );
+    let material = fs::read_to_string(secret_path).expect("read material");
+    assert!(material.contains("API_TOKEN=manual-token"), "{material}");
+    assert!(
+        !material.contains("API_TOKEN=refreshed-token"),
+        "stale refresh should not overwrite manual replacement: {material}"
     );
 }
 
@@ -365,19 +496,32 @@ struct RefreshingHttpFixture {
     token_url: String,
     token_forms: Arc<Mutex<Vec<BTreeMap<String, String>>>>,
     message_authorizations: Arc<Mutex<Vec<String>>>,
+    token_request_seen: Arc<Notify>,
+    token_response_gate: Option<Arc<Notify>>,
     task: tokio::task::JoinHandle<()>,
 }
 
 impl RefreshingHttpFixture {
     async fn new() -> Self {
+        Self::new_with_token_response_gate(None).await
+    }
+
+    async fn new_blocked_token_response() -> Self {
+        Self::new_with_token_response_gate(Some(Arc::new(Notify::new()))).await
+    }
+
+    async fn new_with_token_response_gate(token_response_gate: Option<Arc<Notify>>) -> Self {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind oauth refresh fixture");
         let addr = listener.local_addr().expect("fixture addr");
         let token_forms = Arc::new(Mutex::new(Vec::new()));
         let message_authorizations = Arc::new(Mutex::new(Vec::new()));
+        let token_request_seen = Arc::new(Notify::new());
         let task_token_forms = Arc::clone(&token_forms);
         let task_message_authorizations = Arc::clone(&message_authorizations);
+        let task_token_request_seen = Arc::clone(&token_request_seen);
+        let task_token_response_gate = token_response_gate.clone();
         let task = tokio::spawn(async move {
             loop {
                 let Ok((mut socket, _)) = listener.accept().await else {
@@ -385,6 +529,8 @@ impl RefreshingHttpFixture {
                 };
                 let token_forms = Arc::clone(&task_token_forms);
                 let message_authorizations = Arc::clone(&task_message_authorizations);
+                let token_request_seen = Arc::clone(&task_token_request_seen);
+                let token_response_gate = task_token_response_gate.clone();
                 tokio::spawn(async move {
                     let request = read_http_request(&mut socket).await;
                     match request.path.as_str() {
@@ -393,6 +539,10 @@ impl RefreshingHttpFixture {
                                 .lock()
                                 .expect("token forms")
                                 .push(request.form());
+                            token_request_seen.notify_one();
+                            if let Some(gate) = token_response_gate {
+                                gate.notified().await;
+                            }
                             write_json_response(
                                 &mut socket,
                                 "200 OK",
@@ -439,7 +589,19 @@ impl RefreshingHttpFixture {
             token_url: format!("http://{addr}/token"),
             token_forms,
             message_authorizations,
+            token_request_seen,
+            token_response_gate,
             task,
+        }
+    }
+
+    async fn wait_for_token_request(&self) {
+        self.token_request_seen.notified().await;
+    }
+
+    fn allow_token_response(&self) {
+        if let Some(gate) = &self.token_response_gate {
+            gate.notify_one();
         }
     }
 

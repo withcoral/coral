@@ -5,6 +5,7 @@ pub(crate) mod oauth;
 mod store;
 
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::fmt;
 use std::sync::Arc;
 
@@ -254,6 +255,7 @@ impl CredentialManager {
             else {
                 continue;
             };
+            let before_refresh = material.clone();
             if self
                 .oauth_credential_service
                 .refresh_if_needed(
@@ -262,12 +264,49 @@ impl CredentialManager {
                 )
                 .await?
             {
-                // Provider-specific refresh mutates the in-memory material; the
-                // credential manager owns persisting the updated credential set.
-                self.replace_material(workspace_name, credential_set_id, storage, material)?;
+                *material = self.persist_refreshed_oauth_material(
+                    workspace_name,
+                    credential_set_id,
+                    storage,
+                    &input.key,
+                    &before_refresh,
+                    material,
+                )?;
             }
         }
         Ok(())
+    }
+
+    fn persist_refreshed_oauth_material(
+        &self,
+        workspace_name: &WorkspaceName,
+        credential_set_id: &CredentialSetId,
+        storage: CredentialStorageKind,
+        input_key: &str,
+        before_refresh: &BTreeMap<String, String>,
+        refreshed_material: &BTreeMap<String, String>,
+    ) -> Result<BTreeMap<String, String>, AppError> {
+        self.store.update_material(
+            workspace_name,
+            credential_set_id,
+            storage,
+            |mut current_material| {
+                if provider_input_material_matches(&current_material, before_refresh, input_key) {
+                    replace_provider_input_material(
+                        &mut current_material,
+                        refreshed_material,
+                        input_key,
+                    );
+                } else {
+                    tracing::debug!(
+                        source_secret = input_key,
+                        "skipping OAuth refresh persistence because credential material changed"
+                    );
+                }
+                let next_material = current_material;
+                Ok((next_material.clone(), next_material))
+            },
+        )
     }
 
     async fn provider_refresh_lock(
@@ -298,6 +337,46 @@ fn has_oauth_credential_inputs(inputs: &[ManifestInputSpec]) -> bool {
                     .any(|method| method.oauth.is_some())
             })
     })
+}
+
+fn provider_input_material_matches(
+    current: &BTreeMap<String, String>,
+    expected: &BTreeMap<String, String>,
+    input_key: &str,
+) -> bool {
+    provider_input_material_keys(current, expected, input_key)
+        .into_iter()
+        .all(|key| current.get(&key) == expected.get(&key))
+}
+
+fn replace_provider_input_material(
+    current: &mut BTreeMap<String, String>,
+    refreshed: &BTreeMap<String, String>,
+    input_key: &str,
+) {
+    current.retain(|key, _| !provider_input_material_key(key, input_key));
+    current.extend(
+        refreshed
+            .iter()
+            .filter(|(key, _)| provider_input_material_key(key, input_key))
+            .map(|(key, value)| (key.clone(), value.clone())),
+    );
+}
+
+fn provider_input_material_keys(
+    left: &BTreeMap<String, String>,
+    right: &BTreeMap<String, String>,
+    input_key: &str,
+) -> BTreeSet<String> {
+    left.keys()
+        .chain(right.keys())
+        .filter(|key| provider_input_material_key(key, input_key))
+        .cloned()
+        .collect()
+}
+
+fn provider_input_material_key(key: &str, input_key: &str) -> bool {
+    key == input_key || self::oauth::material_key_belongs_to_input(key, input_key)
 }
 
 fn visible_material_keys(material: &BTreeMap<String, String>) -> Vec<String> {

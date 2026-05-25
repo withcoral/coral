@@ -34,6 +34,12 @@ pub(crate) struct ValidatedSource {
     pub(crate) report: SourceValidationReport,
 }
 
+#[derive(Clone, Copy)]
+enum CredentialLoadPolicy {
+    StoredOnly,
+    RefreshProvider,
+}
+
 #[derive(Clone)]
 pub(crate) struct QueryManager {
     config_store: ConfigStore,
@@ -67,7 +73,7 @@ impl QueryManager {
         table_filter: Option<&str>,
     ) -> Result<Vec<TableInfo>, QueryManagerError> {
         let sources = self
-            .load_query_sources(workspace_name)
+            .load_query_sources(workspace_name, CredentialLoadPolicy::StoredOnly)
             .await
             .map_err(QueryManagerError::App)?;
         let runtime = self.runtime_config(&sources);
@@ -82,7 +88,7 @@ impl QueryManager {
         schema_filter: Option<&str>,
     ) -> Result<CatalogInfo, QueryManagerError> {
         let sources = self
-            .load_query_sources(workspace_name)
+            .load_query_sources(workspace_name, CredentialLoadPolicy::StoredOnly)
             .await
             .map_err(QueryManagerError::App)?;
         let runtime = self.runtime_config(&sources);
@@ -102,7 +108,7 @@ impl QueryManager {
             sql,
             async {
                 let sources = self
-                    .load_query_sources(workspace_name)
+                    .load_query_sources(workspace_name, CredentialLoadPolicy::RefreshProvider)
                     .await
                     .map_err(QueryManagerError::App)?;
                 let runtime = self.runtime_config(&sources);
@@ -126,7 +132,7 @@ impl QueryManager {
             sql,
             async {
                 let sources = self
-                    .load_query_sources(workspace_name)
+                    .load_query_sources(workspace_name, CredentialLoadPolicy::RefreshProvider)
                     .await
                     .map_err(QueryManagerError::App)?;
                 let runtime = self.runtime_config(&sources);
@@ -149,7 +155,11 @@ impl QueryManager {
             .get_source(workspace_name, source_name)
             .map_err(QueryManagerError::App)?;
         let (query_source, version) = self
-            .load_query_source(workspace_name, &source)
+            .load_query_source(
+                workspace_name,
+                &source,
+                CredentialLoadPolicy::RefreshProvider,
+            )
             .await
             .map_err(QueryManagerError::App)?;
         let runtime = self.runtime_config(std::slice::from_ref(&query_source));
@@ -169,11 +179,15 @@ impl QueryManager {
     async fn load_query_sources(
         &self,
         workspace_name: &WorkspaceName,
+        credential_load_policy: CredentialLoadPolicy,
     ) -> Result<Vec<QuerySource>, AppError> {
         let catalog = self.config_store.load_catalog()?;
         let mut query_sources = Vec::new();
         for source in catalog.workspace_sources(workspace_name) {
-            match self.load_query_source(workspace_name, &source).await {
+            match self
+                .load_query_source(workspace_name, &source, credential_load_policy)
+                .await
+            {
                 Ok((query_source, _version)) => query_sources.push(query_source),
                 Err(error @ AppError::Credentials(CredentialsError::Unavailable(_))) => {
                     return Err(error);
@@ -194,6 +208,7 @@ impl QueryManager {
         &self,
         workspace_name: &WorkspaceName,
         source: &InstalledSource,
+        credential_load_policy: CredentialLoadPolicy,
     ) -> Result<(QuerySource, String), AppError> {
         let installed = resolve_installed_manifest(workspace_name, source, &self.layout)?;
         let source_spec = installed.source_spec;
@@ -201,14 +216,23 @@ impl QueryManager {
         let stored_secrets =
             if let Some(credential_storage) = source.credential_storage_for_material() {
                 let credential_set_id = CredentialSetId::for_source(&source.name);
-                self.credential_manager
-                    .read_material_for_inputs(
+                match credential_load_policy {
+                    CredentialLoadPolicy::StoredOnly => self.credential_manager.read_material(
                         workspace_name,
                         &credential_set_id,
                         credential_storage,
-                        source_spec.declared_inputs(),
-                    )
-                    .await?
+                    )?,
+                    CredentialLoadPolicy::RefreshProvider => {
+                        self.credential_manager
+                            .read_material_for_inputs(
+                                workspace_name,
+                                &credential_set_id,
+                                credential_storage,
+                                source_spec.declared_inputs(),
+                            )
+                            .await?
+                    }
+                }
             } else {
                 BTreeMap::new()
             };

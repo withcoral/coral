@@ -213,6 +213,23 @@ impl CredentialStore {
         Ok(())
     }
 
+    pub(crate) fn update_material<F, R>(
+        &self,
+        workspace_name: &WorkspaceName,
+        credential_set_id: &CredentialSetId,
+        storage: CredentialStorageKind,
+        update: F,
+    ) -> Result<R, AppError>
+    where
+        F: FnOnce(BTreeMap<String, String>) -> Result<(BTreeMap<String, String>, R), AppError>,
+    {
+        tracing::trace!(%credential_set_id, %storage, "updating credential material");
+        let current = self.read_material(workspace_name, credential_set_id, storage)?;
+        let (next, result) = update(current)?;
+        self.replace_material(workspace_name, credential_set_id, storage, &next)?;
+        Ok(result)
+    }
+
     pub(crate) fn read_material(
         &self,
         workspace_name: &WorkspaceName,
