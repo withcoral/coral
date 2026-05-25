@@ -220,11 +220,23 @@ tables:
       Variable products only return the parent here. For variation-level
       SKU/price/stock, query `product_variations` with `WHERE product_id = <id>`.
 
-      The table fetches every matching row — Coral keeps paging until
-      the API returns empty. On large catalogs, narrow the result set by
-      pushing a filter (`type`, `status`, `stock_status`, `after`, etc.)
-      or add an explicit `LIMIT N`; bounding is the caller's choice, not
-      a silent default.
+      **Default cap: 500 rows.** To prevent unbounded scans against
+      production stores, Coral stops paging at 500 rows by default.
+      `SELECT *` (or accidental aggregates) against a large catalog will
+      see the first 500 matching rows, not silently the entire table.
+      Override deliberately:
+
+      - **Narrow** with a pushdown filter (`type`, `status`,
+        `stock_status`, `after`, `modified_after`, etc.) — fast,
+        server-side.
+      - **Or** add an explicit `LIMIT N` greater than 500 — Coral pages
+        up to `N`.
+
+      Date filters (`after`, `before`, `modified_after`, `modified_before`)
+      are sent with `dates_are_gmt=true`, so the values you compare against
+      `date_created` / `date_modified` (which are UTC `_gmt` columns) are
+      interpreted as UTC server-side too — no store-timezone skew.
+    fetch_limit_default: 500
     filters:
       - name: type
       - name: status
@@ -239,6 +251,9 @@ tables:
       method: GET
       path: /wp-json/wc/v3/products
       query:
+        - name: dates_are_gmt
+          from: literal
+          value: "true"
         - name: type
           from: filter
           key: type
@@ -557,11 +572,20 @@ tables:
       - `WHERE modified_after = '<ISO 8601>'`  → `?modified_after=`
       - `WHERE modified_before = '<ISO 8601>'` → `?modified_before=`
 
-      The table fetches every matching row — Coral keeps paging until
-      the API returns empty. On stores with long order histories, narrow
-      the result set by pushing a filter (`status`, `customer_id`,
-      `after`, etc.) or add an explicit `LIMIT N`; bounding is the
-      caller's choice, not a silent default.
+      **Default cap: 500 rows.** Order histories on production stores
+      can run into the hundreds of thousands; Coral stops paging at 500
+      rows by default so `SELECT *` or accidental aggregates don't walk
+      the whole history. Override deliberately:
+
+      - **Narrow** with a pushdown filter (`status`, `customer_id`,
+        `after`, `modified_after`, etc.) — fast, server-side.
+      - **Or** add an explicit `LIMIT N` greater than 500.
+
+      Date filters (`after`, `before`, `modified_after`, `modified_before`)
+      are sent with `dates_are_gmt=true`, so the values you compare
+      against `date_created` / `date_modified` (UTC `_gmt` columns) are
+      interpreted as UTC server-side too — no store-timezone skew.
+    fetch_limit_default: 500
     filters:
       - name: status
       - name: customer_id
@@ -575,6 +599,9 @@ tables:
       method: GET
       path: /wp-json/wc/v3/orders
       query:
+        - name: dates_are_gmt
+          from: literal
+          value: "true"
         - name: status
           from: filter
           key: status
@@ -894,11 +921,13 @@ tables:
       - `WHERE role = '...'`    → `?role=`
       - `WHERE search = '...'`  → `?search=`
 
-      The table fetches every matching row — Coral keeps paging until
-      the API returns empty. On stores with many customers, narrow the
-      result set by pushing a filter (`email`, `role`, `search`) or add
-      an explicit `LIMIT N`; bounding is the caller's choice, not a
-      silent default.
+      **Default cap: 500 rows.** Customer tables on production stores
+      can be very large; Coral stops paging at 500 rows by default so
+      `SELECT *` does not walk the whole table. Override deliberately:
+
+      - **Narrow** with a pushdown filter (`email`, `role`, `search`).
+      - **Or** add an explicit `LIMIT N` greater than 500.
+    fetch_limit_default: 500
     filters:
       - name: email
       - name: role

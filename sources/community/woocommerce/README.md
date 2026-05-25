@@ -51,10 +51,12 @@ Catalog from `/wp-json/wc/v3/products`.
 **Useful for:** catalog inventory, pricing audit, best-seller analysis.
 
 Predicates pushed to the API: `type`, `status`, `sku`, `stock_status`,
-`search`, `after`, `before`, `modified_after`, `modified_before`.
-Filtered queries return
-**all** matching rows; bounding is the caller's choice via a narrowing
-predicate or an explicit `LIMIT N`.
+`search`, `after`, `before`, `modified_after`, `modified_before`. Date
+filter inputs are interpreted as **UTC** (`dates_are_gmt=true`),
+matching the UTC `_gmt`-derived timestamp columns.
+
+**Default cap: 500 rows.** Override with an explicit `LIMIT N > 500` or
+by narrowing with a pushdown filter (see *Known limitations*).
 
 ### `product_variations`
 Variations of a variable product from
@@ -73,19 +75,22 @@ Orders from `/wp-json/wc/v3/orders`.
 attribution.
 
 Predicates pushed to the API: `status`, `customer_id`, `product`,
-`search`, `after`, `before`, `modified_after`, `modified_before`.
-Filtered queries return
-**all** matching rows; use a narrowing predicate or explicit `LIMIT N`
-for performance on long order histories.
+`search`, `after`, `before`, `modified_after`, `modified_before`. Date
+filter inputs are interpreted as **UTC** (`dates_are_gmt=true`),
+matching the UTC `_gmt`-derived timestamp columns.
+
+**Default cap: 500 rows.** Override with an explicit `LIMIT N > 500` or
+by narrowing with a pushdown filter (see *Known limitations*).
 
 ### `customers`
 Registered customers from `/wp-json/wc/v3/customers`.
 
 **Useful for:** customer inventory, country breakdowns, paying-vs-not.
 
-Predicates pushed to the API: `email`, `role`, `search`. Filtered
-queries return **all** matching rows; use a narrowing predicate or
-explicit `LIMIT N` for performance on large customer tables. Guest
+Predicates pushed to the API: `email`, `role`, `search`.
+
+**Default cap: 500 rows.** Override with an explicit `LIMIT N > 500` or
+by narrowing with a pushdown filter (see *Known limitations*). Guest
 checkouts do not create customer rows; query `orders` with
 `customer_id = 0` and `billing__email` for guest order activity.
 
@@ -108,15 +113,24 @@ See *Troubleshooting* below.
 
 ## Known limitations
 
-- **`products`, `orders`, and `customers` fetch every matching row** —
-  Coral keeps paging the API until it returns empty. Filtered queries
-  preserve completeness (no silent cap). On large stores, narrow the
-  result set deliberately:
-  - **Filter** with a pushdown predicate (`type`, `status`,
-    `customer_id`, `after`, etc.) — server-side, fast.
-  - **Or** add an explicit `LIMIT N` — Coral stops paging at `N`.
-  Unfiltered `SELECT *` on a list table on a busy store can iterate
-  many pages; that's a performance choice, not a correctness one.
+- **`products`, `orders`, and `customers` cap at 500 rows by default**
+  (`fetch_limit_default: 500`). Production stores can have catalogs,
+  order histories, and customer tables in the hundreds of thousands;
+  this stops `SELECT *` and accidental aggregates from silently walking
+  the whole table. The cap applies to every query — filtered or not —
+  so document and override deliberately:
+  - **Narrow** with a pushdown filter (`type`, `status`, `customer_id`,
+    `after`, etc.) so server-side filtering keeps the result under 500.
+  - **Or** add an explicit `LIMIT N > 500` — Coral pages up to `N`.
+  This is the documented default, not a silent truncation; queries that
+  exceed 500 should declare `LIMIT N` explicitly so intent is visible.
+- **Date filters on `products` and `orders` are interpreted as UTC.**
+  Coral sends `dates_are_gmt=true` on those endpoints. The values you
+  pass to `WHERE after / before / modified_after / modified_before`
+  match the UTC `_gmt`-derived `date_created` / `date_modified` columns
+  this source exposes — no store-timezone skew. Without this flag, WC
+  would have interpreted the filter inputs in the store's local
+  timezone, which silently shifts the result window for non-UTC stores.
 - **Variable products and variations live in two tables.** A variable
   product's parent row in `products` has no real SKU / price / stock —
   those are on the variation rows in `product_variations`, which
