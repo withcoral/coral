@@ -19,7 +19,7 @@ coral source add --file sources/community/wikipedia/manifest.yaml
 
 | Table | Description | Filters |
 |---|---|---|
-| `search` | Search Wikipedia articles by keyword | `query` (required), `limit` |
+| `search` | Search Wikipedia articles by keyword | `query` (required) |
 | `page` | Fetch a single article summary by exact title | `title` (required) |
 | `random` | Fetch a random article summary | None |
 
@@ -36,33 +36,32 @@ coral sql "
 
 # Look up a specific article by title
 coral sql "
-  SELECT title, description, extract, content_url
+  SELECT title_canonical, description, extract, content_url
   FROM wikipedia.page
   WHERE title = 'Rust (programming language)'
 "
 
 # Get a random article
 coral sql "
-  SELECT title, description, extract
+  SELECT title_canonical, description, extract
   FROM wikipedia.random
-  LIMIT 1
 "
 
 # Find articles and join with their full summaries
 coral sql "
   SELECT s.title, p.description, p.extract
   FROM wikipedia.search s
-  JOIN wikipedia.page p ON s.title = p.title
+  JOIN wikipedia.page p ON s.title = p.title_canonical
   WHERE s.query = 'Machine learning'
   LIMIT 5
 "
 
-# Search with a larger result set
+# Search with a larger result set — use SQL LIMIT to control how many rows are returned
 coral sql "
   SELECT title, wordcount, timestamp
   FROM wikipedia.search
-  WHERE query = 'Artificial intelligence' AND limit = '20'
-  LIMIT 10
+  WHERE query = 'Artificial intelligence'
+  LIMIT 20
 "
 
 # Find the longest articles on a topic
@@ -90,13 +89,18 @@ coral sql "
 | `timestamp` | Timestamp | Last edit timestamp |
 | `query` | Utf8 | Echoes the search query used |
 
+Use SQL `LIMIT` to control how many results are returned. The pagination layer maps this automatically to the MediaWiki `srlimit` parameter (max 50 per page).
+
 ### `page`
 
 | Column | Type | Description |
 |---|---|---|
 | `type` | Utf8 | Page type (standard, disambiguation, no-extract) |
-| `title` | Utf8 | Article title |
-| `displaytitle` | Utf8 | Formatted display title |
+| `title_canonical` | Utf8 | Canonical article title (preferred) |
+| `title_normalized` | Utf8 | Normalized title with spaces (preferred) |
+| `title_display` | Utf8 | Display title, may include HTML formatting (preferred) |
+| `title` | Utf8 | **Deprecated** top-level title field; use `title_canonical` |
+| `displaytitle` | Utf8 | **Deprecated** top-level display title; use `title_display` |
 | `pageid` | Int64 | Wikipedia page ID |
 | `lang` | Utf8 | Language code (e.g. en) |
 | `dir` | Utf8 | Text direction (ltr or rtl) |
@@ -113,6 +117,8 @@ coral sql "
 | `wikibase_item` | Utf8 | Wikidata item ID (e.g. Q12345) |
 
 ### `random`
+
+The `random` table returns **one random article per query**. The Wikipedia REST API endpoint (`/api/rest_v1/page/random/summary`) selects a single article per request and does not support batching. To get multiple random articles, run multiple queries.
 
 Same columns as `page`.
 
@@ -214,8 +220,9 @@ Output:
 
 ## Notes
 
-- The `search` table uses the MediaWiki search API. Results are ranked by relevance. The `snippet` column contains HTML highlighting; use `extract` from the `page` table for clean text.
-- The `page` table requires an exact title match. Use the `search` table first to find the correct title if unsure.
-- The `random` table returns one random article per request. Use `LIMIT` to control how many random articles to fetch.
+- The `search` table uses the MediaWiki search API. Results are ranked by relevance. Use SQL `LIMIT` to control how many rows are returned; the source maps this automatically to `srlimit` (max 50 per page). The `snippet` column contains HTML highlighting; use `extract` from the `page` table for clean text.
+- The `page` table requires an exact title match. Use the `search` table first to find the correct title if unsure. Prefer the `title_canonical`, `title_normalized`, and `title_display` columns; the legacy `title` and `displaytitle` top-level fields are deprecated in the REST summary schema.
+- The `random` table returns **one random article per query**. The Wikipedia REST API returns a single article per request and does not support batching; `LIMIT` does not increase the count. Run multiple queries to collect multiple random articles.
 - All APIs are rate-limited by Wikipedia. Add explicit `LIMIT` clauses to keep requests reasonable.
+- All requests identify themselves to Wikimedia via the `Api-User-Agent` header, as required by the [Wikimedia User-Agent policy](https://foundation.wikimedia.org/wiki/Policy:Wikimedia_Foundation_User-Agent_Policy/en).
 - This source targets the English Wikipedia (`en.wikipedia.org`). To query other language editions, fork the source and change `base_url`.

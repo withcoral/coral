@@ -7,6 +7,9 @@ description: >-
   articles by keyword, look up page summaries by title, and discover random
   articles. No authentication required.
 base_url: https://en.wikipedia.org
+headers:
+  - name: Api-User-Agent
+    value: "Coral Wikipedia source (https://github.com/withcoral/coral)"
 test_queries:
   - SELECT title, snippet FROM wikipedia.search WHERE query = 'Rust' LIMIT 1
   - SELECT title, description, extract FROM wikipedia.page WHERE title = 'Rust' LIMIT 1
@@ -16,12 +19,11 @@ tables:
     description: |
       Search Wikipedia articles by keyword. Returns matching pages with
       metadata such as title, page ID, size, word count, and a snippet.
-      Use `query` for the search term and `limit` to control result count.
+      Use `query` for the search term and SQL `LIMIT` to control result count.
     fetch_limit_default: 10
     filters:
       - name: query
         required: true
-      - name: limit
     request:
       method: GET
       path: /w/api.php
@@ -38,9 +40,6 @@ tables:
         - name: format
           from: literal
           value: json
-        - name: srlimit
-          from: filter
-          key: limit
     response:
       rows_path:
         - query
@@ -144,16 +143,43 @@ tables:
             - type
       - name: title
         type: Utf8
-        nullable: false
-        description: Article title.
+        nullable: true
+        description: "Deprecated: top-level title field. Prefer title_canonical."
         expr:
           kind: path
           path:
             - title
+      - name: title_canonical
+        type: Utf8
+        nullable: true
+        description: Canonical article title (from titles.canonical).
+        expr:
+          kind: path
+          path:
+            - titles
+            - canonical
+      - name: title_normalized
+        type: Utf8
+        nullable: true
+        description: Normalized article title with spaces (from titles.normalized).
+        expr:
+          kind: path
+          path:
+            - titles
+            - normalized
+      - name: title_display
+        type: Utf8
+        nullable: true
+        description: Display title, may include HTML formatting (from titles.display).
+        expr:
+          kind: path
+          path:
+            - titles
+            - display
       - name: displaytitle
         type: Utf8
         nullable: true
-        description: Formatted display title (may include HTML).
+        description: "Deprecated: top-level displaytitle field. Prefer title_display."
         expr:
           kind: path
           path:
@@ -283,8 +309,10 @@ tables:
 
   - name: random
     description: |
-      Fetch a random Wikipedia article summary. Returns metadata including
-      title, description, and extract. No filters required.
+      Fetch a single random Wikipedia article summary per query. Returns
+      metadata including title, description, and extract. No filters required.
+      Each execution returns one random article; issue multiple queries to
+      retrieve multiple random articles.
     request:
       method: GET
       path: /api/rest_v1/page/random/summary
@@ -302,16 +330,43 @@ tables:
             - type
       - name: title
         type: Utf8
-        nullable: false
-        description: Article title.
+        nullable: true
+        description: "Deprecated: top-level title field. Prefer title_canonical."
         expr:
           kind: path
           path:
             - title
+      - name: title_canonical
+        type: Utf8
+        nullable: true
+        description: Canonical article title (from titles.canonical).
+        expr:
+          kind: path
+          path:
+            - titles
+            - canonical
+      - name: title_normalized
+        type: Utf8
+        nullable: true
+        description: Normalized article title with spaces (from titles.normalized).
+        expr:
+          kind: path
+          path:
+            - titles
+            - normalized
+      - name: title_display
+        type: Utf8
+        nullable: true
+        description: Display title, may include HTML formatting (from titles.display).
+        expr:
+          kind: path
+          path:
+            - titles
+            - display
       - name: displaytitle
         type: Utf8
         nullable: true
-        description: Formatted display title (may include HTML).
+        description: "Deprecated: top-level displaytitle field. Prefer title_display."
         expr:
           kind: path
           path:
