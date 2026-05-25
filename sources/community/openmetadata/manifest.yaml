@@ -177,7 +177,7 @@ tables:
       query:
         - name: fields
           from: literal
-          value: owners,tags,domains,charts,usageSummary
+          value: owners,tags,domains,charts
         - name: include
           from: filter
           key: include
@@ -251,11 +251,6 @@ tables:
         type: Json
         nullable: true
         description: Charts referenced by the dashboard.
-      - name: usage_summary
-        type: Json
-        nullable: true
-        description: Usage summary, when available.
-        expr: {kind: path, path: [usageSummary]}
       - name: updated_at
         type: Timestamp
         nullable: true
@@ -495,9 +490,10 @@ tables:
   - name: teams
     description: OpenMetadata teams.
     guide: |
-      Use this table to inspect team hierarchy, users, and ownership. OpenMetadata
-      returns non-deleted teams by default; use `include = 'all'` or
-      `include = 'deleted'` when auditing soft-deleted teams.
+      Use this table to inspect team hierarchy, users, owners, domains, and
+      policy metadata. OpenMetadata returns non-deleted teams by default; use
+      `include = 'all'` or `include = 'deleted'` when auditing soft-deleted
+      teams.
     filters:
       - name: include
     request:
@@ -506,7 +502,7 @@ tables:
       query:
         - name: fields
           from: literal
-          value: users,parents,owns
+          value: users,parents,owners,children,policies,domains
         - name: include
           from: filter
           key: include
@@ -566,10 +562,37 @@ tables:
           path: [parents]
           item_path: [name]
           separator: ","
-      - name: owns
+      - name: owners
+        type: Utf8
+        nullable: true
+        description: Comma-joined owner names.
+        expr:
+          kind: join_array_path
+          path: [owners]
+          item_path: [name]
+          separator: ","
+      - name: children
+        type: Utf8
+        nullable: true
+        description: Comma-joined child team names.
+        expr:
+          kind: join_array_path
+          path: [children]
+          item_path: [name]
+          separator: ","
+      - name: domains
+        type: Utf8
+        nullable: true
+        description: Comma-joined assigned domain names.
+        expr:
+          kind: join_array_path
+          path: [domains]
+          item_path: [name]
+          separator: ","
+      - name: policies
         type: Json
         nullable: true
-        description: Entities owned by this team, when requested and returned.
+        description: Policies associated with this team, when returned.
       - name: updated_at
         type: Timestamp
         nullable: true

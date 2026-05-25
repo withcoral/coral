@@ -44,7 +44,7 @@ coral source add --interactive --file sources/community/openmetadata/manifest.ya
 | `openmetadata.dashboards` | BI dashboard entities ingested into OpenMetadata. |
 | `openmetadata.pipelines` | Pipeline entities and orchestration metadata. |
 | `openmetadata.users` | OpenMetadata users with teams and roles. |
-| `openmetadata.teams` | OpenMetadata teams with parent teams and users. |
+| `openmetadata.teams` | OpenMetadata teams with parent teams, child teams, users, owners, domains, and policies. |
 | `openmetadata.glossary_terms` | Business glossary terms with owners, tags, children, and related terms. |
 
 ## Example Queries
