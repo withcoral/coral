@@ -1,0 +1,194 @@
+name: gmail
+version: 0.1.0
+dsl_version: 3
+backend: http
+
+inputs:
+  GMAIL_ACCESS_TOKEN:
+    kind: secret
+    hint: Google OAuth2 access token with gmail.readonly scope.
+
+base_url: "https://gmail.googleapis.com/gmail/v1"
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "Bearer {{input.GMAIL_ACCESS_TOKEN}}"
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT * FROM gmail.profile LIMIT 1
+  - SELECT * FROM gmail.labels LIMIT 5
+
+tables:
+  - name: profile
+    description: Gmail user profile.
+    request:
+      method: GET
+      path: /users/me/profile
+    response:
+      row_strategy: direct
+    columns:
+      - name: emailAddress
+        type: Utf8
+        nullable: false
+      - name: messagesTotal
+        type: Int64
+      - name: threadsTotal
+        type: Int64
+      - name: historyId
+        type: Utf8
+
+  - name: labels
+    description: Gmail labels including INBOX SENT SPAM and user labels.
+    request:
+      method: GET
+      path: /users/me/labels
+    response:
+      rows_path:
+        - labels
+      row_strategy: direct
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+      - name: name
+        type: Utf8
+        nullable: false
+      - name: type
+        type: Utf8
+      - name: messagesTotal
+        type: Int64
+      - name: messagesUnread
+        type: Int64
+      - name: threadsTotal
+        type: Int64
+      - name: threadsUnread
+        type: Int64
+
+  - name: messages
+    description: Gmail messages. Filter with q using Gmail search syntax.
+    request:
+      method: GET
+      path: /users/me/messages
+      query:
+        - name: q
+          from: filter
+          key: q
+        - name: labelIds
+          from: filter
+          key: label_ids
+        - name: maxResults
+          from: literal
+          value: 50
+    response:
+      rows_path:
+        - messages
+      row_strategy: direct
+      allow_404_empty: true
+    pagination:
+      mode: cursor_query
+      cursor_param: pageToken
+      response_cursor_path:
+        - nextPageToken
+      page_size:
+        default: 50
+        max: 500
+        query_param: maxResults
+    filters:
+      - name: q
+        type: Utf8
+        description: Gmail search query e.g. subject:internship is:unread
+      - name: label_ids
+        type: Utf8
+        description: Label ID e.g. INBOX SENT STARRED
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+      - name: threadId
+        type: Utf8
+        nullable: false
+
+  - name: threads
+    description: Gmail threads with snippet preview.
+    request:
+      method: GET
+      path: /users/me/threads
+      query:
+        - name: q
+          from: filter
+          key: q
+        - name: labelIds
+          from: filter
+          key: label_ids
+        - name: maxResults
+          from: literal
+          value: 50
+    response:
+      rows_path:
+        - threads
+      row_strategy: direct
+      allow_404_empty: true
+    pagination:
+      mode: cursor_query
+      cursor_param: pageToken
+      response_cursor_path:
+        - nextPageToken
+      page_size:
+        default: 50
+        max: 500
+        query_param: maxResults
+    filters:
+      - name: q
+        type: Utf8
+        description: Gmail search query e.g. subject:internship from:recruiter
+      - name: label_ids
+        type: Utf8
+        description: Label ID e.g. INBOX SENT STARRED
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+      - name: snippet
+        type: Utf8
+      - name: historyId
+        type: Utf8
+
+  - name: drafts
+    description: Gmail drafts.
+    request:
+      method: GET
+      path: /users/me/drafts
+      query:
+        - name: maxResults
+          from: literal
+          value: 50
+    response:
+      rows_path:
+        - drafts
+      row_strategy: direct
+      allow_404_empty: true
+    pagination:
+      mode: cursor_query
+      cursor_param: pageToken
+      response_cursor_path:
+        - nextPageToken
+      page_size:
+        default: 50
+        max: 100
+        query_param: maxResults
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+      - name: message__id
+        type: Utf8
+      - name: message__threadId
+        type: Utf8
