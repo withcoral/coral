@@ -766,32 +766,47 @@ export function TraceDetail({
     [expandedHttpSpanId, onClose],
   )
 
-  const handlePreviousSpanShortcut = useCallback(
-    (event: KeyboardEvent) => {
-      if (!expandedHttpSpanId) return
-      if (
-        event.target instanceof HTMLElement &&
-        event.target.closest('[data-span-inspector="true"]')
-      )
-        return
-      event.preventDefault()
-      selectAdjacentSpan(-1)
+  const focusFirstSpan = useCallback(
+    (direction: -1 | 1) => {
+      if (navigableSpanIds.length === 0) return false
+      const firstSpanId =
+        direction === 1 ? navigableSpanIds[0] : navigableSpanIds[navigableSpanIds.length - 1]
+      setExpandedHttpSpanId(firstSpanId)
+      window.requestAnimationFrame(() => focusSpanRow(firstSpanId))
+      return true
     },
-    [expandedHttpSpanId, selectAdjacentSpan],
+    [navigableSpanIds],
   )
 
-  const handleNextSpanShortcut = useCallback(
-    (event: KeyboardEvent) => {
-      if (!expandedHttpSpanId) return
-      if (
-        event.target instanceof HTMLElement &&
-        event.target.closest('[data-span-inspector="true"]')
-      )
+  const handleSpanArrowShortcut = useCallback(
+    (direction: -1 | 1) => (event: KeyboardEvent) => {
+      const target = event.target
+      if (target instanceof HTMLElement) {
+        if (target.closest('[data-span-inspector="true"]')) return
+        if (
+          target.isContentEditable ||
+          target.matches('input, textarea, select, [role="textbox"]')
+        )
+          return
+      }
+      if (!expandedHttpSpanId) {
+        if (!focusFirstSpan(direction)) return
+        event.preventDefault()
         return
+      }
       event.preventDefault()
-      selectAdjacentSpan(1)
+      selectAdjacentSpan(direction)
     },
-    [expandedHttpSpanId, selectAdjacentSpan],
+    [expandedHttpSpanId, focusFirstSpan, selectAdjacentSpan],
+  )
+
+  const handlePreviousSpanShortcut = useMemo(
+    () => handleSpanArrowShortcut(-1),
+    [handleSpanArrowShortcut],
+  )
+  const handleNextSpanShortcut = useMemo(
+    () => handleSpanArrowShortcut(1),
+    [handleSpanArrowShortcut],
   )
   const summary = detail?.summary
   const httpSpans = useMemo(() => detail?.spans.filter(isHttpSpan) ?? [], [detail?.spans])
