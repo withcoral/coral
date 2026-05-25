@@ -1,15 +1,15 @@
-name: rest-countries
+name: rest_countries
 version: 0.1.0
 dsl_version: 3
 backend: http
 description: Query country data from the REST Countries API (no auth).
 base_url: https://restcountries.com/v3.1
 test_queries:
-  - SELECT * FROM "rest-countries"."all" LIMIT 1
-  - SELECT * FROM "rest-countries".by_name WHERE name = 'france' LIMIT 1
-  - SELECT * FROM "rest-countries".by_code WHERE code = 'us' LIMIT 1
-  - SELECT * FROM "rest-countries".by_region WHERE region = 'europe' LIMIT 1
-  - SELECT * FROM "rest-countries".by_currency WHERE currency = 'eur' LIMIT 1
+  - SELECT * FROM rest_countries."all" LIMIT 1
+  - SELECT * FROM rest_countries.by_name WHERE name = 'france' LIMIT 1
+  - SELECT * FROM rest_countries.by_code WHERE code = 'us' LIMIT 1
+  - SELECT * FROM rest_countries.by_region WHERE region = 'europe' LIMIT 1
+  - SELECT * FROM rest_countries.by_currency WHERE currency = 'eur' LIMIT 1
 tables:
   - name: all
     description: Fetch all countries.
@@ -106,7 +106,8 @@ tables:
     request:
       method: GET
       path: /name/{{filter.name}}?fields=name,cca2,cca3,region,subregion,population,area,flags,currencies,languages
-    response: {}
+    response:
+      allow_404_empty: true
     pagination:
       mode: none
     columns:
@@ -202,7 +203,8 @@ tables:
     request:
       method: GET
       path: /alpha/{{filter.code}}?fields=name,cca2,cca3,region,subregion,population,area,flags,currencies,languages
-    response: {}
+    response:
+      allow_404_empty: true
     pagination:
       mode: none
     columns:
@@ -298,7 +300,8 @@ tables:
     request:
       method: GET
       path: /region/{{filter.region}}?fields=name,cca2,cca3,region,subregion,population,area,flags,currencies,languages
-    response: {}
+    response:
+      allow_404_empty: true
     pagination:
       mode: none
     columns:
@@ -387,7 +390,8 @@ tables:
     request:
       method: GET
       path: /currency/{{filter.currency}}?fields=name,cca2,cca3,region,subregion,population,area,flags,currencies,languages
-    response: {}
+    response:
+      allow_404_empty: true
     pagination:
       mode: none
     columns:
