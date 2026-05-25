@@ -10,6 +10,7 @@ base_url: "https://api.trello.com/1"
 inputs:
   TRELLO_API_KEY:
     kind: variable
+    required: true
     hint: >-
       Your Trello API Key. You can get this from the Trello Power-Up Admin
       page (https://trello.com/power-ups/admin).
