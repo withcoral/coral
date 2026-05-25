@@ -20,7 +20,7 @@ Frankfurter is an open-source public API. It does not enforce hard daily or mont
 Fetch current and historical currency exchange rates. Each row represents a single currency pair rate for a specific date.
 
 Optional filters:
-- `date`: A specific date (YYYY-MM-DD). If omitted without `from`/`to`, returns the latest available rate.
+- `date`: A specific date (YYYY-MM-DD). If omitted without `from`/`to`, returns the latest available rate. Note: Frankfurter may return a fallback date for non-trading days. Use the `requested_date` column to check your requested filter, while the `date` column shows the actual returned trading date.
 - `from` and `to`: A date range (YYYY-MM-DD).
 - `base`: The base currency (defaults to `EUR`).
 - `quotes`: Comma-separated list of quote currencies to include.
@@ -40,7 +40,7 @@ WHERE "from" = '2023-01-01' AND "to" = '2023-01-31' AND base = 'EUR';
 ```
 
 ### `currencies`
-List all supported currencies, their full names, and symbols.
+List all supported currencies (both active and legacy), their full names, and symbols.
 
 **Example:**
 ```sql

@@ -6,6 +6,8 @@ description: Fetch currency exchange rates from the free Frankfurter API.
 base_url: https://api.frankfurter.dev/v2
 test_queries:
   - SELECT * FROM frankfurter.rates LIMIT 1
+  - SELECT * FROM frankfurter.rates WHERE "from" = '2023-01-01' AND "to" = '2023-01-31' AND base = 'EUR' LIMIT 1
+  - SELECT * FROM frankfurter.rates WHERE base = 'USD' AND quotes = 'EUR' LIMIT 1
   - SELECT * FROM frankfurter.currencies LIMIT 1
 tables:
   - name: rates
@@ -75,12 +77,30 @@ tables:
       - name: providers
         type: Json
         expr: {kind: path, path: [providers]}
+      - name: requested_date
+        type: Utf8
+        expr: {kind: from_filter, key: date}
+      - name: from
+        type: Utf8
+        expr: {kind: from_filter, key: from}
+      - name: to
+        type: Utf8
+        expr: {kind: from_filter, key: to}
+      - name: quotes
+        type: Utf8
+        expr: {kind: from_filter, key: quotes}
+      - name: group
+        type: Utf8
+        expr: {kind: from_filter, key: group}
+      - name: expand
+        type: Utf8
+        expr: {kind: from_filter, key: expand}
 
   - name: currencies
     description: List all supported currencies and their names.
     request:
       method: GET
-      path: /currencies
+      path: /currencies?scope=all
     response:
       row_strategy: direct
     pagination:
