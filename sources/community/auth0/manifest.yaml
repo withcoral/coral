@@ -899,11 +899,37 @@ tables:
         nullable: true
         description: NPM dependencies used by the action.
         expr: {kind: path, path: [dependencies]}
-      - name: deployed_version
-        type: Json
+      - name: deployed_version_id
+        type: Utf8
         nullable: true
-        description: Currently deployed version metadata.
-        expr: {kind: path, path: [deployed_version]}
+        description: Identifier of the currently deployed version.
+        expr: {kind: path, path: [deployed_version, id]}
+      - name: deployed_version_number
+        type: Int64
+        nullable: true
+        description: Version number of the currently deployed version.
+        expr: {kind: path, path: [deployed_version, number]}
+      - name: deployed_version_status
+        type: Utf8
+        nullable: true
+        description: Build status of the currently deployed version.
+        expr: {kind: path, path: [deployed_version, status]}
+      - name: deployed_version_created_at
+        type: Timestamp
+        nullable: true
+        description: When the deployed version was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [deployed_version, created_at]}
+      - name: deployed_version_updated_at
+        type: Timestamp
+        nullable: true
+        description: When the deployed version was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [deployed_version, updated_at]}
       - name: created_at
         type: Timestamp
         nullable: true
@@ -1117,7 +1143,7 @@ tables:
         type: Utf8
         nullable: true
         description: Application that received the grant.
-        expr: {kind: path, path: [client_id]}
+        expr: {kind: path, path: [clientID]}
       - name: audience
         type: Utf8
         nullable: true
