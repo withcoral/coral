@@ -130,6 +130,34 @@ Run the guided source setup flow.
 coral onboard
 ```
 
+## `coral features`
+
+Inspect and manage experimental runtime features in [`config.toml`](/reference/configuration).
+
+### `coral features list`
+
+List all runtime features recognized by the current Coral binary, including their configured and effective status.
+
+```shellscript
+coral features list
+```
+
+### `coral features enable <FEATURE>`
+
+Persistently enable an experimental runtime feature.
+
+```shellscript
+coral features enable feedback
+```
+
+### `coral features disable <FEATURE>`
+
+Remove a persistent runtime feature opt-in from `config.toml`, returning the feature to its built-in default.
+
+```shellscript
+coral features disable feedback
+```
+
 ## `coral ui`
 
 Open the local Coral UI in your browser.
