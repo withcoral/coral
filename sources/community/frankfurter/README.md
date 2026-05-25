@@ -24,6 +24,9 @@ Optional filters:
 - `from` and `to`: A date range (YYYY-MM-DD).
 - `base`: The base currency (defaults to `EUR`).
 - `quotes`: Comma-separated list of quote currencies to include.
+- `providers`: Comma-separated list of specific data providers (e.g., `ecb`).
+- `group`: Grouping interval for historical rates (e.g., `monthly`, `yearly`).
+- `expand`: Boolean to expand the rate details instead of returning simple values.
 
 **Example: Fetch the latest exchange rate for USD to EUR**
 ```sql
