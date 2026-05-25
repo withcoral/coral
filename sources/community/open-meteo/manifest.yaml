@@ -120,7 +120,7 @@ tables:
         type: Float64
         description: Elevation in meters.
         expr: {kind: path, path: [elevation]}
-      - name: current_time
+      - name: current_observed_at
         type: Utf8
         description: Current weather observation timestamp.
         expr: {kind: path, path: [current, time]}

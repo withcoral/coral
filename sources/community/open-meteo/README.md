@@ -30,11 +30,11 @@ Open-Meteo is completely free for non-commercial use and requires **no authentic
 
 ## Attribution
 
-**Important:** Open-Meteo data is licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) and requires attribution. If you build an application or service using this source, you must visibly credit Open-Meteo.
+**Important:** Open-Meteo data is licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) and requires attribution. If you build an application or service using this source, you must visibly credit Open-Meteo with a link to their service and indicate if any changes were made. See the full [Open-Meteo Licence Terms](https://open-meteo.com/en/licence) for the required attribution link and modification notice.
 
 ## Rate Limits
 
-The free tier allows for roughly **10,000 requests per day**. If you encounter failing queries, ensure you have not exceeded this limit. See [Open-Meteo Pricing](https://open-meteo.com/en/pricing) for more details.
+The free tier allows for **10,000 requests per day**, **5,000 per hour**, and **600 per minute**. Be aware that large requests may count as multiple API calls. If you encounter failing queries, ensure you have not exceeded these limits. See [Open-Meteo Pricing](https://open-meteo.com/en/pricing) for more details.
 
 ## Examples
 
@@ -42,7 +42,7 @@ The free tier allows for roughly **10,000 requests per day**. If you encounter f
 
 ```sql
 SELECT
-  current_time,
+  current_observed_at,
   current_temperature_2m,
   current_weather_code
 FROM open_meteo.forecast
