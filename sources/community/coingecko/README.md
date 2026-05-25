@@ -28,3 +28,25 @@ FROM coingecko.markets
 WHERE vs_currency = 'usd'
 LIMIT 10;
 ```
+
+### `trending`
+Fetch the top trending cryptocurrencies as searched by users in the last 24 hours.
+
+**Example:**
+```sql
+SELECT id, name, symbol, market_cap_rank, price_btc
+FROM coingecko.trending
+ORDER BY score ASC
+LIMIT 7;
+```
+
+### `exchanges`
+Fetch a list of cryptocurrency exchanges with their trust scores and 24h trade volume.
+
+**Example:**
+```sql
+SELECT name, country, trust_score, trade_volume_24h_btc
+FROM coingecko.exchanges
+ORDER BY trust_score_rank ASC
+LIMIT 10;
+```
