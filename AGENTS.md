@@ -40,6 +40,9 @@
   ambient process environment directly.
 - Changes to CLI or MCP surfaces must include corresponding documentation
   updates under `docs/` in the same change.
+- Changes to `scripts/install.sh` must keep the `Validate` workflow's
+  install-script matrix in sync with every OS/architecture target that the
+  installer supports.
 - Source-only changes under `sources/community/**` do not need to update the
   aggregate community source catalog page; keep docs freshness strict for
   generator changes, docs changes, and bundled sources under `sources/core/**`.

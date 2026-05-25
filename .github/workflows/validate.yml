@@ -2,7 +2,7 @@ name: Validate
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
 
 permissions:
@@ -26,6 +26,7 @@ jobs:
       github_actions: ${{ steps.filter.outputs.github_actions }}
       rust_checks: ${{ steps.filter.outputs.rust_checks }}
       release_workflow: ${{ steps.filter.outputs.release_workflow }}
+      install-script: ${{ steps.filter.outputs.install-script }}
       ui-build: ${{ steps.filter.outputs.ui-build }}
       ui-tests: ${{ steps.filter.outputs.ui-tests }}
       proto-lint: ${{ steps.filter.outputs.proto-lint }}
@@ -56,6 +57,9 @@ jobs:
               - 'xtask/**'
             release_workflow:
               - '.github/workflows/release.yml'
+            install-script:
+              - '.github/workflows/validate.yml'
+              - 'scripts/install.sh'
             ui-build:
               - '.github/workflows/validate.yml'
               - 'crates/coral-api/proto/**'
@@ -151,6 +155,59 @@ jobs:
           .\target\debug\coral.exe --version
           .\target\debug\coral.exe source discover
           .\target\debug\coral.exe completion powershell > $null
+
+  install-script:
+    name: Install script (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    needs: changes
+    if: ${{ needs.changes.outputs.install-script == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-24.04
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+          - target: x86_64-apple-darwin
+            runner: macos-15-intel
+          - target: aarch64-apple-darwin
+            runner: macos-15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Verify runner target
+        env:
+          EXPECTED_TARGET: ${{ matrix.target }}
+        run: |
+          case "$(uname -s):$(uname -m)" in
+            Linux:x86_64) actual_target="x86_64-unknown-linux-gnu" ;;
+            Linux:aarch64) actual_target="aarch64-unknown-linux-gnu" ;;
+            Darwin:x86_64) actual_target="x86_64-apple-darwin" ;;
+            Darwin:arm64) actual_target="aarch64-apple-darwin" ;;
+            *)
+              echo "Unsupported validation runner: $(uname -s):$(uname -m)" >&2
+              exit 1
+              ;;
+          esac
+
+          if [ "$actual_target" != "$EXPECTED_TARGET" ]; then
+            echo "Expected $EXPECTED_TARGET, got $actual_target" >&2
+            exit 1
+          fi
+
+      - name: Run install script
+        env:
+          # Note: the install script generally runs fine without a GITHUB_TOKEN set, and we don't advise users to set
+          # one during installation, but in CI it often fails. See https://github.com/orgs/community/discussions/42748
+          # for the discussion.
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          install_dir="$RUNNER_TEMP/coral-bin"
+          CORAL_INSTALL_DIR="$install_dir" sh < scripts/install.sh
+          "$install_dir/coral" --version
 
   ui-build:
     name: UI build
@@ -342,7 +399,20 @@ jobs:
 
   validate:
     runs-on: ubuntu-latest
-    needs: [ changes, rust-checks, windows-rust-smoke, ui-build, ui-tests, proto-lint, gha-security-audit, source-lint, docs-freshness, license-check ]
+    needs:
+      [
+        changes,
+        rust-checks,
+        windows-rust-smoke,
+        install-script,
+        ui-build,
+        ui-tests,
+        proto-lint,
+        gha-security-audit,
+        source-lint,
+        docs-freshness,
+        license-check,
+      ]
     # Run even when upstream jobs fail or are conditionally skipped so this
     # job can act as the single required status check for the workflow.
     if: ${{ always() }}
@@ -352,6 +422,7 @@ jobs:
           CHANGES_RESULT: ${{ needs.changes.result }}
           RUST_CHECKS_RESULT: ${{ needs.rust-checks.result }}
           WINDOWS_RUST_SMOKE_RESULT: ${{ needs.windows-rust-smoke.result }}
+          INSTALL_SCRIPT_RESULT: ${{ needs.install-script.result }}
           UI_BUILD_RESULT: ${{ needs.ui-build.result }}
           UI_TESTS_RESULT: ${{ needs.ui-tests.result }}
           PROTO_LINT_RESULT: ${{ needs.proto-lint.result }}
@@ -364,6 +435,7 @@ jobs:
             "changes:$CHANGES_RESULT"
             "rust-checks:$RUST_CHECKS_RESULT"
             "windows-rust-smoke:$WINDOWS_RUST_SMOKE_RESULT"
+            "install-script:$INSTALL_SCRIPT_RESULT"
             "ui-build:$UI_BUILD_RESULT"
             "ui-tests:$UI_TESTS_RESULT"
             "proto-lint:$PROTO_LINT_RESULT"
