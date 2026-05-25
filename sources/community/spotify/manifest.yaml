@@ -1,0 +1,2650 @@
+name: spotify
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Spotify profile, playlists, saved library items, catalog details,
+  search results, devices, queue, top items, and recent listening history.
+base_url: https://api.spotify.com
+
+inputs:
+  SPOTIFY_ACCESS_TOKEN:
+    kind: secret
+    hint: |
+      Spotify OAuth 2.0 access token, without a `Bearer ` prefix. For
+      interactive setup, choose "Connect with Spotify" and provide a Spotify
+      app Client ID that has this redirect URI configured:
+      http://127.0.0.1:53682/oauth/callback
+
+      Create or edit an app at https://developer.spotify.com/dashboard.
+      Minimum scopes requested by this source are read-only: user-read-private,
+      user-read-email, playlist-read-private, playlist-read-collaborative,
+      user-library-read, user-top-read, user-read-recently-played, and
+      user-read-playback-state.
+      See https://developer.spotify.com/documentation/web-api/concepts/scopes.
+    credential:
+      methods:
+        - type: oauth
+          label: Connect with Spotify
+          description: Authorize Spotify with OAuth PKCE and store an access token.
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: required
+            redirect_uri: http://127.0.0.1:53682/oauth/callback
+            redirect_uri_port_mode: fixed
+            endpoints:
+              authorization_url: https://accounts.spotify.com/authorize
+              token_url: https://accounts.spotify.com/api/token
+            client:
+              id:
+                input: SPOTIFY_CLIENT_ID
+            scopes:
+              scope:
+                delimiter: space
+                values:
+                  - user-read-private
+                  - user-read-email
+                  - playlist-read-private
+                  - playlist-read-collaborative
+                  - user-library-read
+                  - user-top-read
+                  - user-read-recently-played
+                  - user-read-playback-state
+        - type: source_config
+          label: Paste Spotify access token
+          description: Paste an existing Spotify OAuth access token with the required read scopes.
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.SPOTIFY_ACCESS_TOKEN}}
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT id, display_name, email FROM spotify.profile LIMIT 1
+  - SELECT id, name, owner__id FROM spotify.playlists LIMIT 1
+
+functions:
+  - name: search_tracks
+    kind: search
+    description: Provider-ranked Spotify search results for tracks.
+    fetch_limit_default: 10
+    search_limits:
+      default_top_k: 10
+      max_top_k: 10
+      max_calls_per_query: 1
+    args:
+      - name: query
+        required: true
+        bind:
+          arg: query
+      - name: market
+        bind:
+          arg: market
+    request:
+      method: GET
+      path: /v1/search
+      query:
+        - name: q
+          from: arg
+          key: query
+        - name: type
+          from: literal
+          value: track
+        - name: market
+          from: arg
+          key: market
+    response:
+      rows_path: [tracks, items]
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 10
+        max: 10
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: true
+        description: Spotify result ID when Spotify returns one.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Result name.
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Spotify object type.
+      - name: uri
+        type: Utf8
+        nullable: true
+        description: Spotify URI.
+      - name: external_url
+        type: Utf8
+        nullable: true
+        description: Spotify web URL.
+        expr:
+          kind: path
+          path: [external_urls, spotify]
+
+  - name: search_albums
+    kind: search
+    description: Provider-ranked Spotify search results for albums.
+    fetch_limit_default: 10
+    search_limits:
+      default_top_k: 10
+      max_top_k: 10
+      max_calls_per_query: 1
+    args:
+      - name: query
+        required: true
+        bind:
+          arg: query
+      - name: market
+        bind:
+          arg: market
+    request:
+      method: GET
+      path: /v1/search
+      query:
+        - name: q
+          from: arg
+          key: query
+        - name: type
+          from: literal
+          value: album
+        - name: market
+          from: arg
+          key: market
+    response:
+      rows_path: [albums, items]
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 10
+        max: 10
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: true
+        description: Spotify result ID when Spotify returns one.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Result name.
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Spotify object type.
+      - name: uri
+        type: Utf8
+        nullable: true
+        description: Spotify URI.
+      - name: external_url
+        type: Utf8
+        nullable: true
+        description: Spotify web URL.
+        expr:
+          kind: path
+          path: [external_urls, spotify]
+
+  - name: search_artists
+    kind: search
+    description: Provider-ranked Spotify search results for artists.
+    fetch_limit_default: 10
+    search_limits:
+      default_top_k: 10
+      max_top_k: 10
+      max_calls_per_query: 1
+    args:
+      - name: query
+        required: true
+        bind:
+          arg: query
+      - name: market
+        bind:
+          arg: market
+    request:
+      method: GET
+      path: /v1/search
+      query:
+        - name: q
+          from: arg
+          key: query
+        - name: type
+          from: literal
+          value: artist
+        - name: market
+          from: arg
+          key: market
+    response:
+      rows_path: [artists, items]
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 10
+        max: 10
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: true
+        description: Spotify result ID when Spotify returns one.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Result name.
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Spotify object type.
+      - name: uri
+        type: Utf8
+        nullable: true
+        description: Spotify URI.
+      - name: external_url
+        type: Utf8
+        nullable: true
+        description: Spotify web URL.
+        expr:
+          kind: path
+          path: [external_urls, spotify]
+
+  - name: search_playlists
+    kind: search
+    description: Provider-ranked Spotify search results for playlists.
+    fetch_limit_default: 10
+    search_limits:
+      default_top_k: 10
+      max_top_k: 10
+      max_calls_per_query: 1
+    args:
+      - name: query
+        required: true
+        bind:
+          arg: query
+      - name: market
+        bind:
+          arg: market
+    request:
+      method: GET
+      path: /v1/search
+      query:
+        - name: q
+          from: arg
+          key: query
+        - name: type
+          from: literal
+          value: playlist
+        - name: market
+          from: arg
+          key: market
+    response:
+      rows_path: [playlists, items]
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 10
+        max: 10
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: true
+        description: Spotify result ID when Spotify returns one.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Result name.
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Spotify object type.
+      - name: uri
+        type: Utf8
+        nullable: true
+        description: Spotify URI.
+      - name: external_url
+        type: Utf8
+        nullable: true
+        description: Spotify web URL.
+        expr:
+          kind: path
+          path: [external_urls, spotify]
+
+  - name: search_shows
+    kind: search
+    description: Provider-ranked Spotify search results for shows.
+    fetch_limit_default: 10
+    search_limits:
+      default_top_k: 10
+      max_top_k: 10
+      max_calls_per_query: 1
+    args:
+      - name: query
+        required: true
+        bind:
+          arg: query
+      - name: market
+        bind:
+          arg: market
+    request:
+      method: GET
+      path: /v1/search
+      query:
+        - name: q
+          from: arg
+          key: query
+        - name: type
+          from: literal
+          value: show
+        - name: market
+          from: arg
+          key: market
+    response:
+      rows_path: [shows, items]
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 10
+        max: 10
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: true
+        description: Spotify result ID when Spotify returns one.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Result name.
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Spotify object type.
+      - name: uri
+        type: Utf8
+        nullable: true
+        description: Spotify URI.
+      - name: external_url
+        type: Utf8
+        nullable: true
+        description: Spotify web URL.
+        expr:
+          kind: path
+          path: [external_urls, spotify]
+
+  - name: search_episodes
+    kind: search
+    description: Provider-ranked Spotify search results for episodes.
+    fetch_limit_default: 10
+    search_limits:
+      default_top_k: 10
+      max_top_k: 10
+      max_calls_per_query: 1
+    args:
+      - name: query
+        required: true
+        bind:
+          arg: query
+      - name: market
+        bind:
+          arg: market
+    request:
+      method: GET
+      path: /v1/search
+      query:
+        - name: q
+          from: arg
+          key: query
+        - name: type
+          from: literal
+          value: episode
+        - name: market
+          from: arg
+          key: market
+    response:
+      rows_path: [episodes, items]
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 10
+        max: 10
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: true
+        description: Spotify result ID when Spotify returns one.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Result name.
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Spotify object type.
+      - name: uri
+        type: Utf8
+        nullable: true
+        description: Spotify URI.
+      - name: external_url
+        type: Utf8
+        nullable: true
+        description: Spotify web URL.
+        expr:
+          kind: path
+          path: [external_urls, spotify]
+
+  - name: search_audiobooks
+    kind: search
+    description: Provider-ranked Spotify search results for audiobooks.
+    fetch_limit_default: 10
+    search_limits:
+      default_top_k: 10
+      max_top_k: 10
+      max_calls_per_query: 1
+    args:
+      - name: query
+        required: true
+        bind:
+          arg: query
+      - name: market
+        bind:
+          arg: market
+    request:
+      method: GET
+      path: /v1/search
+      query:
+        - name: q
+          from: arg
+          key: query
+        - name: type
+          from: literal
+          value: audiobook
+        - name: market
+          from: arg
+          key: market
+    response:
+      rows_path: [audiobooks, items]
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 10
+        max: 10
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: true
+        description: Spotify result ID when Spotify returns one.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Result name.
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Spotify object type.
+      - name: uri
+        type: Utf8
+        nullable: true
+        description: Spotify URI.
+      - name: external_url
+        type: Utf8
+        nullable: true
+        description: Spotify web URL.
+        expr:
+          kind: path
+          path: [external_urls, spotify]
+
+tables:
+  - name: profile
+    description: Authenticated Spotify user profile and account metadata.
+    guide: |
+      Use this table to confirm which Spotify user is connected before querying
+      library, playlist, or listening-history tables.
+    request:
+      method: GET
+      path: /v1/me
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Spotify user ID.
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: User display name.
+      - name: email
+        type: Utf8
+        nullable: true
+        description: User email address when the token has user-read-email.
+      - name: country
+        type: Utf8
+        nullable: true
+        description: User country code.
+      - name: product
+        type: Utf8
+        nullable: true
+        description: Spotify subscription product, such as free or premium.
+      - name: followers_total
+        type: Int64
+        nullable: true
+        description: Total Spotify followers for the user.
+        expr:
+          kind: path
+          path: [followers, total]
+      - name: href
+        type: Utf8
+        nullable: true
+        description: Web API URL for the user.
+      - name: uri
+        type: Utf8
+        nullable: true
+        description: Spotify URI for the user.
+      - name: external_url
+        type: Utf8
+        nullable: true
+        description: Spotify web URL for the user.
+        expr:
+          kind: path
+          path: [external_urls, spotify]
+      - name: image_url
+        type: Utf8
+        nullable: true
+        description: First profile image URL when available.
+        expr:
+          kind: first_array_item_path
+          path: [images]
+          item_path: [url]
+
+  - name: playlists
+    description: Playlists owned or followed by the authenticated Spotify user.
+    guide: |
+      Start here to discover playlist IDs, then pass `id` as the playlist_id
+      filter to `spotify.playlist_items`.
+    request:
+      method: GET
+      path: /v1/me/playlists
+    response:
+      rows_path: [items]
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 50
+        max: 50
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Spotify playlist ID.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Playlist name.
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Playlist description.
+      - name: public
+        type: Boolean
+        nullable: true
+        description: Whether the playlist is public on the user's profile.
+      - name: collaborative
+        type: Boolean
+        nullable: true
+        description: Whether the playlist is collaborative.
+      - name: snapshot_id
+        type: Utf8
+        nullable: true
+        description: Current playlist snapshot identifier.
+      - name: owner__id
+        type: Utf8
+        nullable: true
+        description: Spotify user ID of the playlist owner.
+        expr:
+          kind: path
+          path: [owner, id]
+      - name: owner__display_name
+        type: Utf8
+        nullable: true
+        description: Display name of the playlist owner.
+        expr:
+          kind: path
+          path: [owner, display_name]
+      - name: tracks_total
+        type: Int64
+        nullable: true
+        description: Number of tracks in the playlist.
+        expr:
+          kind: path
+          path: [items, total]
+      - name: href
+        type: Utf8
+        nullable: true
+        description: Web API URL for the playlist.
+      - name: uri
+        type: Utf8
+        nullable: true
+        description: Spotify URI for the playlist.
+      - name: external_url
+        type: Utf8
+        nullable: true
+        description: Spotify web URL for the playlist.
+        expr:
+          kind: path
+          path: [external_urls, spotify]
+      - name: image_url
+        type: Utf8
+        nullable: true
+        description: First playlist image URL when available.
+        expr:
+          kind: first_array_item_path
+          path: [images]
+          item_path: [url]
+
+  - name: playlist_items
+    description: Tracks and episodes in a Spotify playlist.
+    guide: |
+      Requires `playlist_id`. Get playlist IDs from `spotify.playlists`.
+      Spotify only exposes playlist items that the authenticated user can access.
+      Requests `additional_types=episode` so episode items are included along
+      with Spotify's default track items.
+    filters:
+      - name: playlist_id
+        required: true
+      - name: market
+        description: Optional ISO 3166-1 alpha-2 country code for relinking and availability.
+    request:
+      method: GET
+      path: /v1/playlists/{{filter.playlist_id}}/items
+      query:
+        - name: market
+          from: filter
+          key: market
+        - name: additional_types
+          from: literal
+          value: episode
+    response:
+      rows_path: [items]
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 50
+        max: 50
+        query_param: limit
+    columns:
+      - name: playlist_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Playlist ID from the required filter.
+        expr:
+          kind: from_filter
+          key: playlist_id
+      - name: market
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Market filter value used for relinking and availability.
+        expr:
+          kind: from_filter
+          key: market
+      - name: added_at
+        type: Timestamp
+        nullable: true
+        description: Time when the item was added to the playlist.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [added_at]
+      - name: added_by__id
+        type: Utf8
+        nullable: true
+        description: Spotify user ID that added the item.
+        expr:
+          kind: path
+          path: [added_by, id]
+      - name: is_local
+        type: Boolean
+        nullable: true
+        description: Whether this is a local item.
+      - name: track__id
+        type: Utf8
+        nullable: true
+        description: Spotify track or episode ID.
+        expr:
+          kind: path
+          path: [item, id]
+      - name: track__name
+        type: Utf8
+        nullable: true
+        description: Track or episode name.
+        expr:
+          kind: path
+          path: [item, name]
+      - name: track__type
+        type: Utf8
+        nullable: true
+        description: Spotify item type, such as track or episode.
+        expr:
+          kind: path
+          path: [item, type]
+      - name: track__uri
+        type: Utf8
+        nullable: true
+        description: Spotify URI for the item.
+        expr:
+          kind: path
+          path: [item, uri]
+      - name: track__duration_ms
+        type: Int64
+        nullable: true
+        description: Track duration in milliseconds.
+        expr:
+          kind: path
+          path: [item, duration_ms]
+      - name: track__explicit
+        type: Boolean
+        nullable: true
+        description: Whether Spotify marks the track explicit.
+        expr:
+          kind: path
+          path: [item, explicit]
+      - name: album__id
+        type: Utf8
+        nullable: true
+        description: Spotify album ID for tracks.
+        expr:
+          kind: path
+          path: [item, album, id]
+      - name: album__name
+        type: Utf8
+        nullable: true
+        description: Album name for tracks.
+        expr:
+          kind: path
+          path: [item, album, name]
+      - name: artist_names
+        type: Utf8
+        nullable: true
+        description: Comma-joined artist names for tracks.
+        expr:
+          kind: join_array_path
+          path: [item, artists]
+          item_path: [name]
+      - name: external_url
+        type: Utf8
+        nullable: true
+        description: Spotify web URL for the item.
+        expr:
+          kind: path
+          path: [item, external_urls, spotify]
+      - name: raw_track
+        type: Json
+        nullable: true
+        description: Raw Spotify track or episode object.
+        expr:
+          kind: path
+          path: [item]
+
+  - name: saved_tracks
+    description: Tracks saved in the authenticated user's Spotify library.
+    guide: |
+      Uses the user's saved tracks collection. Requires the user-library-read scope.
+    filters:
+      - name: market
+        description: Optional ISO 3166-1 alpha-2 country code for relinking and availability.
+    request:
+      method: GET
+      path: /v1/me/tracks
+      query:
+        - name: market
+          from: filter
+          key: market
+    response:
+      rows_path: [items]
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 50
+        max: 50
+        query_param: limit
+    columns:
+      - name: market
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Market filter value used for relinking and availability.
+        expr:
+          kind: from_filter
+          key: market
+      - name: added_at
+        type: Timestamp
+        nullable: true
+        description: Time when the track was saved.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [added_at]
+      - name: track__id
+        type: Utf8
+        nullable: false
+        description: Spotify track ID.
+        expr:
+          kind: path
+          path: [track, id]
+      - name: track__name
+        type: Utf8
+        nullable: true
+        description: Track name.
+        expr:
+          kind: path
+          path: [track, name]
+      - name: track__uri
+        type: Utf8
+        nullable: true
+        description: Spotify URI for the track.
+        expr:
+          kind: path
+          path: [track, uri]
+      - name: track__duration_ms
+        type: Int64
+        nullable: true
+        description: Track duration in milliseconds.
+        expr:
+          kind: path
+          path: [track, duration_ms]
+      - name: track__explicit
+        type: Boolean
+        nullable: true
+        description: Whether Spotify marks the track explicit.
+        expr:
+          kind: path
+          path: [track, explicit]
+      - name: album__id
+        type: Utf8
+        nullable: true
+        description: Album ID.
+        expr:
+          kind: path
+          path: [track, album, id]
+      - name: album__name
+        type: Utf8
+        nullable: true
+        description: Album name.
+        expr:
+          kind: path
+          path: [track, album, name]
+      - name: album__release_date
+        type: Utf8
+        nullable: true
+        description: Album release date as returned by Spotify.
+        expr:
+          kind: path
+          path: [track, album, release_date]
+      - name: artist_names
+        type: Utf8
+        nullable: true
+        description: Comma-joined track artist names.
+        expr:
+          kind: join_array_path
+          path: [track, artists]
+          item_path: [name]
+      - name: external_url
+        type: Utf8
+        nullable: true
+        description: Spotify web URL for the track.
+        expr:
+          kind: path
+          path: [track, external_urls, spotify]
+      - name: raw_track
+        type: Json
+        nullable: true
+        description: Raw Spotify track object.
+        expr:
+          kind: path
+          path: [track]
+
+  - name: saved_albums
+    description: Albums saved in the authenticated user's Spotify library.
+    guide: |
+      Uses the user's saved albums collection. Requires the user-library-read scope.
+    filters:
+      - name: market
+        description: Optional ISO 3166-1 alpha-2 country code for relinking and availability.
+    request:
+      method: GET
+      path: /v1/me/albums
+      query:
+        - name: market
+          from: filter
+          key: market
+    response:
+      rows_path: [items]
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 50
+        max: 50
+        query_param: limit
+    columns:
+      - name: market
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Market filter value used for relinking and availability.
+        expr:
+          kind: from_filter
+          key: market
+      - name: added_at
+        type: Timestamp
+        nullable: true
+        description: Time when the album was saved.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [added_at]
+      - name: album__id
+        type: Utf8
+        nullable: false
+        description: Spotify album ID.
+        expr:
+          kind: path
+          path: [album, id]
+      - name: album__name
+        type: Utf8
+        nullable: true
+        description: Album name.
+        expr:
+          kind: path
+          path: [album, name]
+      - name: album__album_type
+        type: Utf8
+        nullable: true
+        description: Album type, such as album, single, or compilation.
+        expr:
+          kind: path
+          path: [album, album_type]
+      - name: album__release_date
+        type: Utf8
+        nullable: true
+        description: Album release date as returned by Spotify.
+        expr:
+          kind: path
+          path: [album, release_date]
+      - name: album__total_tracks
+        type: Int64
+        nullable: true
+        description: Total tracks on the album.
+        expr:
+          kind: path
+          path: [album, total_tracks]
+      - name: artist_names
+        type: Utf8
+        nullable: true
+        description: Comma-joined album artist names.
+        expr:
+          kind: join_array_path
+          path: [album, artists]
+          item_path: [name]
+      - name: external_url
+        type: Utf8
+        nullable: true
+        description: Spotify web URL for the album.
+        expr:
+          kind: path
+          path: [album, external_urls, spotify]
+      - name: image_url
+        type: Utf8
+        nullable: true
+        description: First album image URL when available.
+        expr:
+          kind: first_array_item_path
+          path: [album, images]
+          item_path: [url]
+      - name: raw_album
+        type: Json
+        nullable: true
+        description: Raw Spotify album object.
+        expr:
+          kind: path
+          path: [album]
+
+  - name: top_tracks
+    description: Spotify tracks with the highest affinity for the authenticated user.
+    guide: |
+      Optional `time_range` filter accepts short_term, medium_term, or long_term.
+      Requires the user-top-read scope.
+    filters:
+      - name: time_range
+        description: >-
+          Optional affinity period: short_term, medium_term, or long_term.
+    request:
+      method: GET
+      path: /v1/me/top/tracks
+      query:
+        - name: time_range
+          from: filter
+          key: time_range
+    response:
+      rows_path: [items]
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 50
+        max: 50
+        query_param: limit
+    columns:
+      - name: time_range
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Affinity period filter value: short_term, medium_term, or long_term.
+        expr:
+          kind: from_filter
+          key: time_range
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Spotify track ID.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Track name.
+      - name: uri
+        type: Utf8
+        nullable: true
+        description: Spotify URI for the track.
+      - name: duration_ms
+        type: Int64
+        nullable: true
+        description: Track duration in milliseconds.
+      - name: explicit
+        type: Boolean
+        nullable: true
+        description: Whether Spotify marks the track explicit.
+      - name: album__id
+        type: Utf8
+        nullable: true
+        description: Album ID.
+        expr:
+          kind: path
+          path: [album, id]
+      - name: album__name
+        type: Utf8
+        nullable: true
+        description: Album name.
+        expr:
+          kind: path
+          path: [album, name]
+      - name: artist_names
+        type: Utf8
+        nullable: true
+        description: Comma-joined artist names.
+        expr:
+          kind: join_array_path
+          path: [artists]
+          item_path: [name]
+      - name: external_url
+        type: Utf8
+        nullable: true
+        description: Spotify web URL for the track.
+        expr:
+          kind: path
+          path: [external_urls, spotify]
+      - name: image_url
+        type: Utf8
+        nullable: true
+        description: First album image URL when available.
+        expr:
+          kind: first_array_item_path
+          path: [album, images]
+          item_path: [url]
+
+  - name: top_artists
+    description: Spotify artists with the highest affinity for the authenticated user.
+    guide: |
+      Optional `time_range` filter accepts short_term, medium_term, or long_term.
+      Requires the user-top-read scope.
+    filters:
+      - name: time_range
+        description: >-
+          Optional affinity period: short_term, medium_term, or long_term.
+    request:
+      method: GET
+      path: /v1/me/top/artists
+      query:
+        - name: time_range
+          from: filter
+          key: time_range
+    response:
+      rows_path: [items]
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 50
+        max: 50
+        query_param: limit
+    columns:
+      - name: time_range
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Affinity period filter value: short_term, medium_term, or long_term.
+        expr:
+          kind: from_filter
+          key: time_range
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Spotify artist ID.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Artist name.
+      - name: uri
+        type: Utf8
+        nullable: true
+        description: Spotify URI for the artist.
+      - name: external_url
+        type: Utf8
+        nullable: true
+        description: Spotify web URL for the artist.
+        expr:
+          kind: path
+          path: [external_urls, spotify]
+      - name: image_url
+        type: Utf8
+        nullable: true
+        description: First artist image URL when available.
+        expr:
+          kind: first_array_item_path
+          path: [images]
+          item_path: [url]
+
+  - name: queue
+    description: Current Spotify queue for the authenticated user.
+    guide: |
+      Returns queued tracks and episodes in playback order. The first row is
+      the next item Spotify reports after the currently playing item. Requires
+      the user-read-playback-state scope. Spotify may return an empty queue
+      when playback is inactive or the active device has no queue.
+    request:
+      method: GET
+      path: /v1/me/player/queue
+    response:
+      rows_path: [queue]
+      allow_404_empty: true
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: true
+        description: Spotify ID of the queued track or episode.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Name of the queued track or episode.
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Spotify item type, such as track or episode.
+      - name: uri
+        type: Utf8
+        nullable: true
+        description: Spotify URI of the queued item.
+      - name: duration_ms
+        type: Int64
+        nullable: true
+        description: Duration of the queued item in milliseconds.
+      - name: explicit
+        type: Boolean
+        nullable: true
+        description: Whether Spotify marks the queued item explicit.
+      - name: album__id
+        type: Utf8
+        nullable: true
+        description: Album ID for queued tracks.
+        expr:
+          kind: path
+          path: [album, id]
+      - name: album__name
+        type: Utf8
+        nullable: true
+        description: Album name for queued tracks.
+        expr:
+          kind: path
+          path: [album, name]
+      - name: artist_names
+        type: Utf8
+        nullable: true
+        description: Comma-joined artist names for queued tracks.
+        expr:
+          kind: join_array_path
+          path: [artists]
+          item_path: [name]
+      - name: external_url
+        type: Utf8
+        nullable: true
+        description: Spotify web URL for the queued item.
+        expr:
+          kind: path
+          path: [external_urls, spotify]
+      - name: image_url
+        type: Utf8
+        nullable: true
+        description: First album image URL when available.
+        expr:
+          kind: first_array_item_path
+          path: [album, images]
+          item_path: [url]
+
+  - name: devices
+    description: Spotify Connect devices available to the authenticated user.
+    guide: |
+      Lists devices visible to Spotify Connect for the account. Requires the
+      user-read-playback-state scope. Use `is_active` to find the current device.
+    request:
+      method: GET
+      path: /v1/me/player/devices
+    response:
+      rows_path: [devices]
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: true
+        description: Spotify device ID, when Spotify exposes one.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Device name.
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Device type, such as Computer, Smartphone, or Speaker.
+      - name: is_active
+        type: Boolean
+        nullable: true
+        description: Whether this is the active playback device.
+      - name: is_private_session
+        type: Boolean
+        nullable: true
+        description: Whether the device is in a private session.
+      - name: is_restricted
+        type: Boolean
+        nullable: true
+        description: Whether Spotify restricts Web API control for this device.
+      - name: volume_percent
+        type: Int64
+        nullable: true
+        description: Current device volume percent when available.
+
+  - name: saved_shows
+    description: Shows saved in the authenticated user Spotify library.
+    guide: |
+      Requires user-library-read. Empty results are valid when no matching items
+      are saved in the account.
+    filters:
+      - name: market
+        description: Optional ISO 3166-1 alpha-2 country code for availability.
+    request:
+      method: GET
+      path: /v1/me/shows
+      query:
+        - name: market
+          from: filter
+          key: market
+    response:
+      rows_path: [items]
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 50
+        max: 50
+        query_param: limit
+    columns:
+      - name: market
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Market filter value used for availability.
+        expr:
+          kind: from_filter
+          key: market
+      - name: added_at
+        type: Timestamp
+        nullable: true
+        description: Time when the item was saved.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [added_at]
+      - name: show__id
+        type: Utf8
+        nullable: false
+        description: Spotify show ID.
+        expr:
+          kind: path
+          path: [show, id]
+      - name: show__name
+        type: Utf8
+        nullable: true
+        description: Show name.
+        expr:
+          kind: path
+          path: [show, name]
+      - name: show__description
+        type: Utf8
+        nullable: true
+        description: Show description.
+        expr:
+          kind: path
+          path: [show, description]
+      - name: show__explicit
+        type: Boolean
+        nullable: true
+        description: Whether Spotify marks the item explicit.
+        expr:
+          kind: path
+          path: [show, explicit]
+      - name: show__total_episodes
+        type: Int64
+        nullable: true
+        description: Total episodes for shows.
+        expr:
+          kind: path
+          path: [show, total_episodes]
+      - name: external_url
+        type: Utf8
+        nullable: true
+        description: Spotify web URL.
+        expr:
+          kind: path
+          path: [show, external_urls, spotify]
+      - name: image_url
+        type: Utf8
+        nullable: true
+        description: First image URL when available.
+        expr:
+          kind: first_array_item_path
+          path: [show, images]
+          item_path: [url]
+
+  - name: saved_episodes
+    description: Episodes saved in the authenticated user Spotify library.
+    guide: |
+      Requires user-library-read. Empty results are valid when no matching items
+      are saved in the account.
+    filters:
+      - name: market
+        description: Optional ISO 3166-1 alpha-2 country code for availability.
+    request:
+      method: GET
+      path: /v1/me/episodes
+      query:
+        - name: market
+          from: filter
+          key: market
+    response:
+      rows_path: [items]
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 50
+        max: 50
+        query_param: limit
+    columns:
+      - name: market
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Market filter value used for availability.
+        expr:
+          kind: from_filter
+          key: market
+      - name: added_at
+        type: Timestamp
+        nullable: true
+        description: Time when the item was saved.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [added_at]
+      - name: episode__id
+        type: Utf8
+        nullable: false
+        description: Spotify episode ID.
+        expr:
+          kind: path
+          path: [episode, id]
+      - name: episode__name
+        type: Utf8
+        nullable: true
+        description: Episode name.
+        expr:
+          kind: path
+          path: [episode, name]
+      - name: episode__description
+        type: Utf8
+        nullable: true
+        description: Episode description.
+        expr:
+          kind: path
+          path: [episode, description]
+      - name: episode__duration_ms
+        type: Int64
+        nullable: true
+        description: Episode duration in milliseconds.
+        expr:
+          kind: path
+          path: [episode, duration_ms]
+      - name: episode__explicit
+        type: Boolean
+        nullable: true
+        description: Whether Spotify marks the item explicit.
+        expr:
+          kind: path
+          path: [episode, explicit]
+      - name: show__id
+        type: Utf8
+        nullable: true
+        description: Parent show ID.
+        expr:
+          kind: path
+          path: [episode, show, id]
+      - name: show__name
+        type: Utf8
+        nullable: true
+        description: Parent show name.
+        expr:
+          kind: path
+          path: [episode, show, name]
+      - name: show__total_episodes
+        type: Int64
+        nullable: true
+        description: Total episodes for the parent show.
+        expr:
+          kind: path
+          path: [episode, show, total_episodes]
+      - name: external_url
+        type: Utf8
+        nullable: true
+        description: Spotify web URL.
+        expr:
+          kind: path
+          path: [episode, external_urls, spotify]
+      - name: image_url
+        type: Utf8
+        nullable: true
+        description: First image URL when available.
+        expr:
+          kind: first_array_item_path
+          path: [episode, images]
+          item_path: [url]
+
+  - name: saved_audiobooks
+    description: Audiobooks saved in the authenticated user Spotify library.
+    guide: |
+      Requires user-library-read. Spotify audiobook availability is market-limited.
+    request:
+      method: GET
+      path: /v1/me/audiobooks
+    response:
+      rows_path: [items]
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 50
+        max: 50
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Spotify audiobook ID.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Audiobook name.
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Audiobook description.
+      - name: publisher
+        type: Utf8
+        nullable: true
+        description: Publisher name.
+      - name: media_type
+        type: Utf8
+        nullable: true
+        description: Media type.
+      - name: total_chapters
+        type: Int64
+        nullable: true
+        description: Total chapter count.
+      - name: explicit
+        type: Boolean
+        nullable: true
+        description: Whether Spotify marks the audiobook explicit.
+      - name: authors
+        type: Utf8
+        nullable: true
+        description: Comma-joined author names.
+        expr:
+          kind: join_array_path
+          path: [authors]
+          item_path: [name]
+      - name: narrators
+        type: Utf8
+        nullable: true
+        description: Comma-joined narrator names.
+        expr:
+          kind: join_array_path
+          path: [narrators]
+          item_path: [name]
+      - name: external_url
+        type: Utf8
+        nullable: true
+        description: Spotify web URL.
+        expr:
+          kind: path
+          path: [external_urls, spotify]
+      - name: image_url
+        type: Utf8
+        nullable: true
+        description: First image URL when available.
+        expr:
+          kind: first_array_item_path
+          path: [images]
+          item_path: [url]
+
+  - name: tracks
+    description: Spotify track detail by ID.
+    filters:
+      - name: id
+        required: true
+        description: Spotify track ID.
+      - name: market
+        description: Optional ISO 3166-1 alpha-2 country code for availability.
+    request:
+      method: GET
+      path: /v1/tracks/{{filter.id}}
+      query:
+        - name: market
+          from: filter
+          key: market
+    response:
+      row_strategy: direct
+      allow_404_empty: true
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Spotify track ID.
+        expr:
+          kind: from_filter
+          key: id
+      - name: market
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Market filter value used for availability.
+        expr:
+          kind: from_filter
+          key: market
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Track name.
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Spotify object type.
+      - name: uri
+        type: Utf8
+        nullable: true
+        description: Spotify URI.
+      - name: duration_ms
+        type: Int64
+        nullable: true
+        description: Track duration in milliseconds.
+      - name: explicit
+        type: Boolean
+        nullable: true
+        description: Whether Spotify marks the track explicit.
+      - name: album__id
+        type: Utf8
+        nullable: true
+        description: Album ID for the track.
+        expr:
+          kind: path
+          path: [album, id]
+      - name: album__name
+        type: Utf8
+        nullable: true
+        description: Album name for the track.
+        expr:
+          kind: path
+          path: [album, name]
+      - name: artist_names
+        type: Utf8
+        nullable: true
+        description: Comma-joined track artist names.
+        expr:
+          kind: join_array_path
+          path: [artists]
+          item_path: [name]
+      - name: external_url
+        type: Utf8
+        nullable: true
+        description: Spotify web URL.
+        expr:
+          kind: path
+          path: [external_urls, spotify]
+      - name: image_url
+        type: Utf8
+        nullable: true
+        description: First album artwork URL when available.
+        expr:
+          kind: first_array_item_path
+          path: [album, images]
+          item_path: [url]
+
+  - name: albums
+    description: Spotify album detail by ID.
+    filters:
+      - name: id
+        required: true
+        description: Spotify album ID.
+      - name: market
+        description: Optional ISO 3166-1 alpha-2 country code for availability.
+    request:
+      method: GET
+      path: /v1/albums/{{filter.id}}
+      query:
+        - name: market
+          from: filter
+          key: market
+    response:
+      row_strategy: direct
+      allow_404_empty: true
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Spotify album ID.
+        expr:
+          kind: from_filter
+          key: id
+      - name: market
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Market filter value used for availability.
+        expr:
+          kind: from_filter
+          key: market
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Album name.
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Spotify object type.
+      - name: uri
+        type: Utf8
+        nullable: true
+        description: Spotify URI.
+      - name: album_type
+        type: Utf8
+        nullable: true
+        description: Album type.
+      - name: total_tracks
+        type: Int64
+        nullable: true
+        description: Total track count.
+      - name: artist_names
+        type: Utf8
+        nullable: true
+        description: Comma-joined album artist names.
+        expr:
+          kind: join_array_path
+          path: [artists]
+          item_path: [name]
+      - name: release_date
+        type: Utf8
+        nullable: true
+        description: Album release date.
+      - name: genres
+        type: Utf8
+        nullable: true
+        description: Comma-joined album genres when Spotify returns them.
+        expr:
+          kind: join_array
+          path: [genres]
+      - name: external_url
+        type: Utf8
+        nullable: true
+        description: Spotify web URL.
+        expr:
+          kind: path
+          path: [external_urls, spotify]
+      - name: image_url
+        type: Utf8
+        nullable: true
+        description: First album artwork URL when available.
+        expr:
+          kind: first_array_item_path
+          path: [images]
+          item_path: [url]
+
+  - name: artists
+    description: Spotify artist detail by ID.
+    filters:
+      - name: id
+        required: true
+        description: Spotify artist ID.
+    request:
+      method: GET
+      path: /v1/artists/{{filter.id}}
+    response:
+      row_strategy: direct
+      allow_404_empty: true
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Spotify artist ID.
+        expr:
+          kind: from_filter
+          key: id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Artist name.
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Spotify object type.
+      - name: uri
+        type: Utf8
+        nullable: true
+        description: Spotify URI.
+      - name: genres
+        type: Utf8
+        nullable: true
+        description: Comma-joined artist genres.
+        expr:
+          kind: join_array
+          path: [genres]
+      - name: popularity
+        type: Int64
+        nullable: true
+        description: Spotify artist popularity score.
+      - name: followers_total
+        type: Int64
+        nullable: true
+        description: Total Spotify followers.
+        expr:
+          kind: path
+          path: [followers, total]
+      - name: external_url
+        type: Utf8
+        nullable: true
+        description: Spotify web URL.
+        expr:
+          kind: path
+          path: [external_urls, spotify]
+      - name: image_url
+        type: Utf8
+        nullable: true
+        description: First artist image URL when available.
+        expr:
+          kind: first_array_item_path
+          path: [images]
+          item_path: [url]
+
+  - name: shows
+    description: Spotify show detail by ID.
+    filters:
+      - name: id
+        required: true
+        description: Spotify show ID.
+      - name: market
+        description: Optional ISO 3166-1 alpha-2 country code for availability.
+    request:
+      method: GET
+      path: /v1/shows/{{filter.id}}
+      query:
+        - name: market
+          from: filter
+          key: market
+    response:
+      row_strategy: direct
+      allow_404_empty: true
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Spotify show ID.
+        expr:
+          kind: from_filter
+          key: id
+      - name: market
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Market filter value used for availability.
+        expr:
+          kind: from_filter
+          key: market
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Show name.
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Spotify object type.
+      - name: uri
+        type: Utf8
+        nullable: true
+        description: Spotify URI.
+      - name: explicit
+        type: Boolean
+        nullable: true
+        description: Whether Spotify marks the item explicit.
+      - name: total_episodes
+        type: Int64
+        nullable: true
+        description: Total episode count.
+      - name: external_url
+        type: Utf8
+        nullable: true
+        description: Spotify web URL.
+        expr:
+          kind: path
+          path: [external_urls, spotify]
+      - name: image_url
+        type: Utf8
+        nullable: true
+        description: First image URL when available.
+        expr:
+          kind: first_array_item_path
+          path: [images]
+          item_path: [url]
+
+  - name: episodes
+    description: Spotify episode detail by ID.
+    filters:
+      - name: id
+        required: true
+        description: Spotify episode ID.
+      - name: market
+        description: Optional ISO 3166-1 alpha-2 country code for availability.
+    request:
+      method: GET
+      path: /v1/episodes/{{filter.id}}
+      query:
+        - name: market
+          from: filter
+          key: market
+    response:
+      row_strategy: direct
+      allow_404_empty: true
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Spotify episode ID.
+        expr:
+          kind: from_filter
+          key: id
+      - name: market
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Market filter value used for availability.
+        expr:
+          kind: from_filter
+          key: market
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Episode name.
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Spotify object type.
+      - name: uri
+        type: Utf8
+        nullable: true
+        description: Spotify URI.
+      - name: duration_ms
+        type: Int64
+        nullable: true
+        description: Duration in milliseconds when present.
+      - name: explicit
+        type: Boolean
+        nullable: true
+        description: Whether Spotify marks the item explicit.
+      - name: show__id
+        type: Utf8
+        nullable: true
+        description: Parent show ID.
+        expr:
+          kind: path
+          path: [show, id]
+      - name: show__name
+        type: Utf8
+        nullable: true
+        description: Parent show name.
+        expr:
+          kind: path
+          path: [show, name]
+      - name: show__total_episodes
+        type: Int64
+        nullable: true
+        description: Total episodes for the parent show.
+        expr:
+          kind: path
+          path: [show, total_episodes]
+      - name: external_url
+        type: Utf8
+        nullable: true
+        description: Spotify web URL.
+        expr:
+          kind: path
+          path: [external_urls, spotify]
+      - name: image_url
+        type: Utf8
+        nullable: true
+        description: First image URL when available.
+        expr:
+          kind: first_array_item_path
+          path: [images]
+          item_path: [url]
+
+  - name: audiobooks
+    description: Spotify audiobook detail by ID.
+    filters:
+      - name: id
+        required: true
+        description: Spotify audiobook ID.
+      - name: market
+        description: Optional ISO 3166-1 alpha-2 country code for availability.
+    request:
+      method: GET
+      path: /v1/audiobooks/{{filter.id}}
+      query:
+        - name: market
+          from: filter
+          key: market
+    response:
+      row_strategy: direct
+      allow_404_empty: true
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Spotify audiobook ID.
+        expr:
+          kind: from_filter
+          key: id
+      - name: market
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Market filter value used for availability.
+        expr:
+          kind: from_filter
+          key: market
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Audiobook name.
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Spotify object type.
+      - name: uri
+        type: Utf8
+        nullable: true
+        description: Spotify URI.
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Audiobook description.
+      - name: media_type
+        type: Utf8
+        nullable: true
+        description: Audiobook media type.
+      - name: explicit
+        type: Boolean
+        nullable: true
+        description: Whether Spotify marks the audiobook explicit.
+      - name: authors
+        type: Utf8
+        nullable: true
+        description: Comma-joined audiobook author names.
+        expr:
+          kind: join_array_path
+          path: [authors]
+          item_path: [name]
+      - name: narrators
+        type: Utf8
+        nullable: true
+        description: Comma-joined audiobook narrator names.
+        expr:
+          kind: join_array_path
+          path: [narrators]
+          item_path: [name]
+      - name: publisher
+        type: Utf8
+        nullable: true
+        description: Publisher name.
+      - name: total_chapters
+        type: Int64
+        nullable: true
+        description: Total chapter count.
+      - name: external_url
+        type: Utf8
+        nullable: true
+        description: Spotify web URL.
+        expr:
+          kind: path
+          path: [external_urls, spotify]
+      - name: image_url
+        type: Utf8
+        nullable: true
+        description: First audiobook image URL when available.
+        expr:
+          kind: first_array_item_path
+          path: [images]
+          item_path: [url]
+
+  - name: album_tracks
+    description: Tracks on a Spotify album.
+    filters:
+      - name: album_id
+        required: true
+        description: Parent Spotify ID.
+      - name: market
+        description: Optional Spotify API filter.
+    request:
+      method: GET
+      path: /v1/albums/{{filter.album_id}}/tracks
+      query:
+        - name: market
+          from: filter
+          key: market
+    response:
+      rows_path: [items]
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 50
+        max: 50
+        query_param: limit
+    columns:
+      - name: album_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Parent filter value.
+        expr:
+          kind: from_filter
+          key: album_id
+      - name: market
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Filter value used for this request.
+        expr:
+          kind: from_filter
+          key: market
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Spotify item ID.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Item name.
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Spotify object type.
+      - name: uri
+        type: Utf8
+        nullable: true
+        description: Spotify URI.
+      - name: duration_ms
+        type: Int64
+        nullable: true
+        description: Duration in milliseconds when present.
+      - name: explicit
+        type: Boolean
+        nullable: true
+        description: Whether Spotify marks the item explicit.
+      - name: artist_names
+        type: Utf8
+        nullable: true
+        description: Comma-joined artist names.
+        expr:
+          kind: join_array_path
+          path: [artists]
+          item_path: [name]
+      - name: disc_number
+        type: Int64
+        nullable: true
+        description: Disc number for the album track.
+      - name: track_number
+        type: Int64
+        nullable: true
+        description: Track number on the album.
+      - name: is_local
+        type: Boolean
+        nullable: true
+        description: Whether this is a local track.
+      - name: external_url
+        type: Utf8
+        nullable: true
+        description: Spotify web URL.
+        expr:
+          kind: path
+          path: [external_urls, spotify]
+
+  - name: artist_albums
+    description: Albums for a Spotify artist.
+    filters:
+      - name: artist_id
+        required: true
+        description: Parent Spotify ID.
+      - name: include_groups
+        description: Optional Spotify API filter.
+      - name: market
+        description: Optional Spotify API filter.
+    request:
+      method: GET
+      path: /v1/artists/{{filter.artist_id}}/albums
+      query:
+        - name: include_groups
+          from: filter
+          key: include_groups
+        - name: market
+          from: filter
+          key: market
+    response:
+      rows_path: [items]
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 10
+        max: 10
+        query_param: limit
+    columns:
+      - name: artist_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Parent filter value.
+        expr:
+          kind: from_filter
+          key: artist_id
+      - name: include_groups
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Filter value used for this request.
+        expr:
+          kind: from_filter
+          key: include_groups
+      - name: market
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Filter value used for this request.
+        expr:
+          kind: from_filter
+          key: market
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Spotify item ID.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Item name.
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Spotify object type.
+      - name: uri
+        type: Utf8
+        nullable: true
+        description: Spotify URI.
+      - name: album_type
+        type: Utf8
+        nullable: true
+        description: Album type.
+      - name: total_tracks
+        type: Int64
+        nullable: true
+        description: Total tracks on the album.
+      - name: artist_names
+        type: Utf8
+        nullable: true
+        description: Comma-joined artist names.
+        expr:
+          kind: join_array_path
+          path: [artists]
+          item_path: [name]
+      - name: release_date
+        type: Utf8
+        nullable: true
+        description: Release date when present.
+      - name: external_url
+        type: Utf8
+        nullable: true
+        description: Spotify web URL.
+        expr:
+          kind: path
+          path: [external_urls, spotify]
+      - name: image_url
+        type: Utf8
+        nullable: true
+        description: First image URL when available.
+        expr:
+          kind: first_array_item_path
+          path: [images]
+          item_path: [url]
+
+  - name: show_episodes
+    description: Episodes for a Spotify show.
+    filters:
+      - name: show_id
+        required: true
+        description: Parent Spotify ID.
+      - name: market
+        description: Optional Spotify API filter.
+    request:
+      method: GET
+      path: /v1/shows/{{filter.show_id}}/episodes
+      query:
+        - name: market
+          from: filter
+          key: market
+    response:
+      rows_path: [items]
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 50
+        max: 50
+        query_param: limit
+    columns:
+      - name: show_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Parent filter value.
+        expr:
+          kind: from_filter
+          key: show_id
+      - name: market
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Filter value used for this request.
+        expr:
+          kind: from_filter
+          key: market
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Spotify item ID.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Item name.
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Spotify object type.
+      - name: uri
+        type: Utf8
+        nullable: true
+        description: Spotify URI.
+      - name: duration_ms
+        type: Int64
+        nullable: true
+        description: Duration in milliseconds when present.
+      - name: explicit
+        type: Boolean
+        nullable: true
+        description: Whether Spotify marks the item explicit.
+      - name: release_date
+        type: Utf8
+        nullable: true
+        description: Release date when present.
+      - name: external_url
+        type: Utf8
+        nullable: true
+        description: Spotify web URL.
+        expr:
+          kind: path
+          path: [external_urls, spotify]
+      - name: image_url
+        type: Utf8
+        nullable: true
+        description: First image URL when available.
+        expr:
+          kind: first_array_item_path
+          path: [images]
+          item_path: [url]
+
+  - name: audiobook_chapters
+    description: Chapters for a Spotify audiobook.
+    filters:
+      - name: audiobook_id
+        required: true
+        description: Parent Spotify ID.
+      - name: market
+        description: Optional Spotify API filter.
+    request:
+      method: GET
+      path: /v1/audiobooks/{{filter.audiobook_id}}/chapters
+      query:
+        - name: market
+          from: filter
+          key: market
+    response:
+      rows_path: [items]
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 50
+        max: 50
+        query_param: limit
+    columns:
+      - name: audiobook_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Parent filter value.
+        expr:
+          kind: from_filter
+          key: audiobook_id
+      - name: market
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Filter value used for this request.
+        expr:
+          kind: from_filter
+          key: market
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Spotify item ID.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Item name.
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Spotify object type.
+      - name: uri
+        type: Utf8
+        nullable: true
+        description: Spotify URI.
+      - name: chapter_number
+        type: Int64
+        nullable: true
+        description: Chapter number in the audiobook.
+      - name: duration_ms
+        type: Int64
+        nullable: true
+        description: Duration in milliseconds when present.
+      - name: explicit
+        type: Boolean
+        nullable: true
+        description: Whether Spotify marks the item explicit.
+      - name: release_date
+        type: Utf8
+        nullable: true
+        description: Release date when present.
+      - name: external_url
+        type: Utf8
+        nullable: true
+        description: Spotify web URL.
+        expr:
+          kind: path
+          path: [external_urls, spotify]
+      - name: image_url
+        type: Utf8
+        nullable: true
+        description: First image URL when available.
+        expr:
+          kind: first_array_item_path
+          path: [images]
+          item_path: [url]
+
+  - name: recently_played
+    description: Recently played Spotify tracks for the authenticated user.
+    guide: |
+      Returns the most recent play-history items visible to Spotify's Web API.
+      Optional `after` and `before` filters are Unix timestamps in milliseconds
+      and are mutually exclusive in Spotify's API; use at most one per query.
+      Requires the user-read-recently-played scope.
+    filters:
+      - name: after
+        description: Return items after this Unix timestamp in milliseconds; mutually exclusive with `before`.
+      - name: before
+        description: Return items before this Unix timestamp in milliseconds; mutually exclusive with `after`.
+    request:
+      method: GET
+      path: /v1/me/player/recently-played
+      query:
+        - name: limit
+          from: literal
+          value: 50
+        - name: after
+          from: filter
+          key: after
+        - name: before
+          from: filter
+          key: before
+    response:
+      rows_path: [items]
+    pagination:
+      mode: none
+    columns:
+      - name: after
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: After filter value as a Unix timestamp in milliseconds.
+        expr:
+          kind: from_filter
+          key: after
+      - name: before
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Before filter value as a Unix timestamp in milliseconds.
+        expr:
+          kind: from_filter
+          key: before
+      - name: played_at
+        type: Timestamp
+        nullable: false
+        description: Time when the track was played.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [played_at]
+      - name: track__id
+        type: Utf8
+        nullable: true
+        description: Spotify track ID.
+        expr:
+          kind: path
+          path: [track, id]
+      - name: track__name
+        type: Utf8
+        nullable: true
+        description: Track name.
+        expr:
+          kind: path
+          path: [track, name]
+      - name: track__uri
+        type: Utf8
+        nullable: true
+        description: Spotify URI for the track.
+        expr:
+          kind: path
+          path: [track, uri]
+      - name: track__duration_ms
+        type: Int64
+        nullable: true
+        description: Track duration in milliseconds.
+        expr:
+          kind: path
+          path: [track, duration_ms]
+      - name: album__id
+        type: Utf8
+        nullable: true
+        description: Album ID.
+        expr:
+          kind: path
+          path: [track, album, id]
+      - name: album__name
+        type: Utf8
+        nullable: true
+        description: Album name.
+        expr:
+          kind: path
+          path: [track, album, name]
+      - name: artist_names
+        type: Utf8
+        nullable: true
+        description: Comma-joined track artist names.
+        expr:
+          kind: join_array_path
+          path: [track, artists]
+          item_path: [name]
+      - name: context__type
+        type: Utf8
+        nullable: true
+        description: Playback context type when Spotify returns one.
+        expr:
+          kind: path
+          path: [context, type]
+      - name: context__uri
+        type: Utf8
+        nullable: true
+        description: Playback context Spotify URI when Spotify returns one.
+        expr:
+          kind: path
+          path: [context, uri]
+      - name: external_url
+        type: Utf8
+        nullable: true
+        description: Spotify web URL for the track.
+        expr:
+          kind: path
+          path: [track, external_urls, spotify]
