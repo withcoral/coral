@@ -9,6 +9,7 @@ test_queries:
 tables:
   - name: markets
     description: Fetch live market data for cryptocurrencies.
+    fetch_limit_default: 250
     filters:
       - name: vs_currency
         required: true
@@ -29,8 +30,11 @@ tables:
     pagination:
       mode: page
       page_param: page
-      page_size_param: per_page
-      max_page_size: 250
+      page_start: 1
+      page_size:
+        default: 250
+        max: 250
+        query_param: per_page
     columns:
       - name: vs_currency
         type: Utf8
