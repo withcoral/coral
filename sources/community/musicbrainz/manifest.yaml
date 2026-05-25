@@ -7,6 +7,10 @@ description: >-
   recordings, and labels via the public web service API. No authentication
   required.
 base_url: https://musicbrainz.org/ws/2
+request_headers:
+  - name: User-Agent
+    from: literal
+    value: "Coral/0.1.0 ( https://github.com/withcoral/coral )"
 test_queries:
   - SELECT name, type, country FROM musicbrainz.search_artists(query => 'The Beatles') LIMIT 1
   - SELECT title, status, date FROM musicbrainz.search_releases(query => 'Abbey Road') LIMIT 1
@@ -23,7 +27,7 @@ functions:
     search_limits:
       default_top_k: 25
       max_top_k: 100
-      max_calls_per_query: 5
+      max_calls_per_query: 1
     args:
       - name: query
         required: true
@@ -159,7 +163,7 @@ functions:
     search_limits:
       default_top_k: 25
       max_top_k: 100
-      max_calls_per_query: 5
+      max_calls_per_query: 1
     args:
       - name: query
         required: true
@@ -277,7 +281,7 @@ functions:
     search_limits:
       default_top_k: 25
       max_top_k: 100
-      max_calls_per_query: 5
+      max_calls_per_query: 1
     args:
       - name: query
         required: true
@@ -371,7 +375,7 @@ functions:
     search_limits:
       default_top_k: 25
       max_top_k: 100
-      max_calls_per_query: 5
+      max_calls_per_query: 1
     args:
       - name: query
         required: true

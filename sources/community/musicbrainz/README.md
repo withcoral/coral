@@ -58,7 +58,7 @@ coral sql "
 # Advanced Lucene query — British rock groups formed in the 1960s
 coral sql "
   SELECT name, country, begin_date
-  FROM musicbrainz.search_artists(query => 'type:group AND country:GB AND begin:1960')
+  FROM musicbrainz.search_artists(query => 'type:group AND country:GB AND begin:[1960 TO 1969]')
   LIMIT 10
 "
 
@@ -200,7 +200,7 @@ Common field names by entity type:
 
 ## Rate limiting
 
-MusicBrainz enforces a rate limit of **1 request per second** per client application. Coral handles this with automatic pagination, but large result sets may take longer to fetch because of this constraint. Add explicit `LIMIT` clauses to keep queries fast.
+MusicBrainz enforces a rate limit of **1 request per second** per client application. Because of this constraint, Coral limits each query to a single request (page). Add explicit `LIMIT` and `OFFSET` clauses to paginate through large result sets manually while spacing out your requests.
 
 ## Pagination
 
