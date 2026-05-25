@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::bootstrap::AppError;
 use crate::credentials::oauth::{
-    OAuthCredentialManager, OAuthCredentialMaterial, StartOAuthCredentialRequest,
+    OAuthCredentialMaterial, OAuthCredentialService, StartOAuthCredentialRequest,
     material_key_belongs_to_input,
 };
 use crate::credentials::{
@@ -27,7 +27,7 @@ use tracing::warn;
 pub(crate) struct SourceManager {
     config_store: ConfigStore,
     credential_manager: CredentialManager,
-    oauth_manager: OAuthCredentialManager,
+    oauth_credential_service: OAuthCredentialService,
     layout: AppStateLayout,
 }
 
@@ -153,7 +153,7 @@ impl SourceManager {
         Self {
             config_store,
             credential_manager,
-            oauth_manager: OAuthCredentialManager::new(),
+            oauth_credential_service: OAuthCredentialService::new(),
             layout,
         }
     }
@@ -721,7 +721,7 @@ impl SourceManager {
                 .iter()
                 .map(|input| (input.key.clone(), input.value.clone()))
                 .collect();
-            OAuthCredentialManager::validate_credential_inputs(config.oauth, credential_inputs)?;
+            OAuthCredentialService::validate_credential_inputs(config.oauth, credential_inputs)?;
             validation_material.insert(config.input_key.to_string(), String::new());
         }
 
@@ -762,7 +762,7 @@ impl SourceManager {
             let authorization_input_key = input_key.clone();
             let authorization_events = events.clone();
             let material = self
-                .oauth_manager
+                .oauth_credential_service
                 .authorize(
                     StartOAuthCredentialRequest {
                         input_key: &input_key,

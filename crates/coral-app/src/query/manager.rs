@@ -68,6 +68,7 @@ impl QueryManager {
     ) -> Result<Vec<TableInfo>, QueryManagerError> {
         let sources = self
             .load_query_sources(workspace_name)
+            .await
             .map_err(QueryManagerError::App)?;
         let runtime = self.runtime_config(&sources);
         CoralQuery::list_tables(&sources, runtime, schema_filter, table_filter)
@@ -82,6 +83,7 @@ impl QueryManager {
     ) -> Result<CatalogInfo, QueryManagerError> {
         let sources = self
             .load_query_sources(workspace_name)
+            .await
             .map_err(QueryManagerError::App)?;
         let runtime = self.runtime_config(&sources);
         CoralQuery::list_catalog(&sources, runtime, schema_filter)
@@ -101,6 +103,7 @@ impl QueryManager {
             async {
                 let sources = self
                     .load_query_sources(workspace_name)
+                    .await
                     .map_err(QueryManagerError::App)?;
                 let runtime = self.runtime_config(&sources);
                 CoralQuery::execute_sql(&sources, runtime, sql)
@@ -124,6 +127,7 @@ impl QueryManager {
             async {
                 let sources = self
                     .load_query_sources(workspace_name)
+                    .await
                     .map_err(QueryManagerError::App)?;
                 let runtime = self.runtime_config(&sources);
                 CoralQuery::explain_sql(&sources, runtime, sql)
@@ -146,6 +150,7 @@ impl QueryManager {
             .map_err(QueryManagerError::App)?;
         let (query_source, version) = self
             .load_query_source(workspace_name, &source)
+            .await
             .map_err(QueryManagerError::App)?;
         let runtime = self.runtime_config(std::slice::from_ref(&query_source));
         let report = CoralQuery::validate_source(
@@ -161,14 +166,14 @@ impl QueryManager {
         Ok(ValidatedSource { source, report })
     }
 
-    fn load_query_sources(
+    async fn load_query_sources(
         &self,
         workspace_name: &WorkspaceName,
     ) -> Result<Vec<QuerySource>, AppError> {
         let catalog = self.config_store.load_catalog()?;
         let mut query_sources = Vec::new();
         for source in catalog.workspace_sources(workspace_name) {
-            match self.load_query_source(workspace_name, &source) {
+            match self.load_query_source(workspace_name, &source).await {
                 Ok((query_source, _version)) => query_sources.push(query_source),
                 Err(error @ AppError::Credentials(CredentialsError::Unavailable(_))) => {
                     return Err(error);
@@ -185,7 +190,7 @@ impl QueryManager {
         Ok(query_sources)
     }
 
-    fn load_query_source(
+    async fn load_query_source(
         &self,
         workspace_name: &WorkspaceName,
         source: &InstalledSource,
@@ -196,11 +201,14 @@ impl QueryManager {
         let stored_secrets =
             if let Some(credential_storage) = source.credential_storage_for_material() {
                 let credential_set_id = CredentialSetId::for_source(&source.name);
-                self.credential_manager.read_material(
-                    workspace_name,
-                    &credential_set_id,
-                    credential_storage,
-                )?
+                self.credential_manager
+                    .read_material_for_inputs(
+                        workspace_name,
+                        &credential_set_id,
+                        credential_storage,
+                        source_spec.declared_inputs(),
+                    )
+                    .await?
             } else {
                 BTreeMap::new()
             };

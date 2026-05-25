@@ -6,10 +6,15 @@ mod store;
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::Arc;
+
+use coral_spec::{ManifestInputKind, ManifestInputSpec};
 
 use crate::bootstrap::AppError;
 use crate::sources::SourceName;
 use crate::workspaces::WorkspaceName;
+
+use self::oauth::{OAuthCredentialService, RefreshOAuthCredentialRequest};
 
 pub(crate) use store::{CredentialStore, CredentialsError};
 
@@ -113,11 +118,30 @@ impl fmt::Display for CredentialSetId {
 #[derive(Clone)]
 pub(crate) struct CredentialManager {
     store: CredentialStore,
+    oauth_credential_service: OAuthCredentialService,
+    // Per credential set locks guard the persisted-material read/refresh/write
+    // sequence. Concurrent loads of the same expired credential can otherwise
+    // spend the same rotating refresh token before either write is persisted.
+    provider_refresh_locks: ProviderRefreshLocks,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct CredentialRefreshLockKey {
+    workspace_name: WorkspaceName,
+    credential_set_id: CredentialSetId,
+}
+
+type ProviderRefreshLock = Arc<tokio::sync::Mutex<()>>;
+type ProviderRefreshLocks =
+    Arc<tokio::sync::Mutex<BTreeMap<CredentialRefreshLockKey, ProviderRefreshLock>>>;
 
 impl CredentialManager {
     pub(crate) fn new(store: CredentialStore) -> Self {
-        Self { store }
+        Self {
+            store,
+            oauth_credential_service: OAuthCredentialService::new(),
+            provider_refresh_locks: Arc::new(tokio::sync::Mutex::new(BTreeMap::new())),
+        }
     }
 
     pub(crate) fn replace_material(
@@ -143,6 +167,35 @@ impl CredentialManager {
     ) -> Result<BTreeMap<String, String>, AppError> {
         self.store
             .read_material(workspace_name, credential_set_id, storage)
+    }
+
+    /// Read persisted credential material for the declared inputs, refreshing
+    /// provider-managed credentials before returning when needed.
+    pub(crate) async fn read_material_for_inputs(
+        &self,
+        workspace_name: &WorkspaceName,
+        credential_set_id: &CredentialSetId,
+        storage: CredentialStorageKind,
+        inputs: &[ManifestInputSpec],
+    ) -> Result<BTreeMap<String, String>, AppError> {
+        if !has_oauth_credential_inputs(inputs) {
+            return self.read_material(workspace_name, credential_set_id, storage);
+        }
+
+        let refresh_lock = self
+            .provider_refresh_lock(workspace_name, credential_set_id)
+            .await;
+        let _refresh_guard = refresh_lock.lock().await;
+        let mut material = self.read_material(workspace_name, credential_set_id, storage)?;
+        self.refresh_and_persist_oauth_material(
+            workspace_name,
+            credential_set_id,
+            storage,
+            inputs,
+            &mut material,
+        )
+        .await?;
+        Ok(material)
     }
 
     pub(crate) fn snapshot_material(
@@ -178,6 +231,73 @@ impl CredentialManager {
     pub(crate) fn default_write_storage(&self) -> Result<CredentialStorageKind, AppError> {
         self.store.default_write_storage().map_err(Into::into)
     }
+
+    async fn refresh_and_persist_oauth_material(
+        &self,
+        workspace_name: &WorkspaceName,
+        credential_set_id: &CredentialSetId,
+        storage: CredentialStorageKind,
+        inputs: &[ManifestInputSpec],
+        material: &mut BTreeMap<String, String>,
+    ) -> Result<(), AppError> {
+        for input in inputs {
+            if input.kind != ManifestInputKind::Secret {
+                continue;
+            }
+            let Some(credential) = input.credential.as_ref() else {
+                continue;
+            };
+            let Some(oauth) = credential
+                .methods
+                .iter()
+                .find_map(|method| method.oauth.as_ref())
+            else {
+                continue;
+            };
+            if self
+                .oauth_credential_service
+                .refresh_if_needed(
+                    RefreshOAuthCredentialRequest::for_source_input(&input.key, oauth),
+                    material,
+                )
+                .await?
+            {
+                // Provider-specific refresh mutates the in-memory material; the
+                // credential manager owns persisting the updated credential set.
+                self.replace_material(workspace_name, credential_set_id, storage, material)?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn provider_refresh_lock(
+        &self,
+        workspace_name: &WorkspaceName,
+        credential_set_id: &CredentialSetId,
+    ) -> ProviderRefreshLock {
+        let key = CredentialRefreshLockKey {
+            workspace_name: workspace_name.clone(),
+            credential_set_id: credential_set_id.clone(),
+        };
+        let mut locks = self.provider_refresh_locks.lock().await;
+        Arc::clone(
+            locks
+                .entry(key)
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))),
+        )
+    }
+}
+
+fn has_oauth_credential_inputs(inputs: &[ManifestInputSpec]) -> bool {
+    inputs.iter().any(|input| {
+        input.kind == ManifestInputKind::Secret
+            && input.credential.as_ref().is_some_and(|credential| {
+                credential
+                    .methods
+                    .iter()
+                    .any(|method| method.oauth.is_some())
+            })
+    })
 }
 
 fn visible_material_keys(material: &BTreeMap<String, String>) -> Vec<String> {
