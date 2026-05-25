@@ -313,6 +313,10 @@ export const tabTrigger = style({
   marginBlockEnd: -1,
   paddingBlock: 8,
   paddingInline: 12,
+  selectors: {
+    '&:focus': { outline: 'none' },
+    '&:focus-visible': { outline: 'none' },
+  },
 })
 export const tabTriggerActive = style({
   borderBlockEndColor: theme.pill.green.color,
