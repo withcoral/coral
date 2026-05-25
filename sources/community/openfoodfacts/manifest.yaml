@@ -17,6 +17,7 @@ auth:
 tables:
 - name: product_search
   description: General search across products
+  fetch_limit_default: 100
   filters:
   - name: categories_tags
     type: Utf8
@@ -120,6 +121,7 @@ tables:
   - *id005
 - name: product_nutrition
   description: Search nutritional info
+  fetch_limit_default: 100
   filters:
   - name: categories_tags
     type: Utf8
@@ -271,6 +273,7 @@ tables:
   - *id013
 - name: product_allergens
   description: Search allergens
+  fetch_limit_default: 100
   filters:
   - name: categories_tags
     type: Utf8
@@ -358,6 +361,7 @@ tables:
   - *id015
 - name: product_ingredients
   description: Search ingredients
+  fetch_limit_default: 100
   filters:
   - name: categories_tags
     type: Utf8
@@ -453,6 +457,7 @@ tables:
   - *id018
 - name: product_packaging
   description: Search packaging
+  fetch_limit_default: 100
   filters:
   - name: categories_tags
     type: Utf8
@@ -540,6 +545,7 @@ tables:
   - *id020
 - name: product_ecoscore
   description: Search ecoscore
+  fetch_limit_default: 100
   filters:
   - name: categories_tags
     type: Utf8
@@ -627,6 +633,7 @@ tables:
   - *id022
 - name: product_images
   description: Search images
+  fetch_limit_default: 100
   filters:
   - name: categories_tags
     type: Utf8
@@ -726,6 +733,7 @@ tables:
   - *id027
 - name: product_categories
   description: Search categories
+  fetch_limit_default: 100
   filters:
   - name: categories_tags
     type: Utf8
@@ -813,6 +821,7 @@ tables:
   - *id029
 - name: product_brands
   description: Search brands
+  fetch_limit_default: 100
   filters:
   - name: categories_tags
     type: Utf8
@@ -896,6 +905,7 @@ tables:
   - *id030
 - name: product_origins
   description: Search origins
+  fetch_limit_default: 100
   filters:
   - name: categories_tags
     type: Utf8
@@ -983,6 +993,7 @@ tables:
   - *id032
 - name: product_stores
   description: Search stores
+  fetch_limit_default: 100
   filters:
   - name: categories_tags
     type: Utf8
@@ -1070,6 +1081,7 @@ tables:
   - *id034
 - name: product_countries
   description: Search countries
+  fetch_limit_default: 100
   filters:
   - name: categories_tags
     type: Utf8
@@ -1153,6 +1165,7 @@ tables:
   - *id035
 - name: product_additives
   description: Search additives
+  fetch_limit_default: 100
   filters:
   - name: categories_tags
     type: Utf8
@@ -1236,6 +1249,7 @@ tables:
   - *id036
 - name: product_labels
   description: Search product labels
+  fetch_limit_default: 100
   filters:
   - name: categories_tags
     type: Utf8
@@ -1323,6 +1337,7 @@ tables:
   - *id038
 - name: product_traces
   description: Search product traces
+  fetch_limit_default: 100
   filters:
   - name: categories_tags
     type: Utf8
@@ -1410,6 +1425,7 @@ tables:
   - *id040
 - name: product_vitamins
   description: Search vitamins
+  fetch_limit_default: 100
   filters:
   - name: categories_tags
     type: Utf8
@@ -1543,6 +1559,7 @@ tables:
   - *id046
 - name: product_minerals
   description: Search minerals
+  fetch_limit_default: 100
   filters:
   - name: categories_tags
     type: Utf8
@@ -1676,6 +1693,7 @@ tables:
   - *id052
 - name: product_nova
   description: Search NOVA groups
+  fetch_limit_default: 100
   filters:
   - name: categories_tags
     type: Utf8
@@ -1763,6 +1781,7 @@ tables:
   - *id054
 - name: product_states
   description: Search product states
+  fetch_limit_default: 100
   filters:
   - name: categories_tags
     type: Utf8
@@ -1850,6 +1869,7 @@ tables:
   - *id056
 - name: product_languages
   description: Search languages
+  fetch_limit_default: 100
   filters:
   - name: categories_tags
     type: Utf8
@@ -1941,6 +1961,7 @@ tables:
   - *id059
 - name: product_nutrient_levels
   description: Search nutrient levels
+  fetch_limit_default: 100
   filters:
   - name: categories_tags
     type: Utf8
@@ -2028,6 +2049,7 @@ tables:
   - *id061
 - name: product_manufacturing
   description: Search manufacturing places
+  fetch_limit_default: 100
   filters:
   - name: categories_tags
     type: Utf8
@@ -2115,6 +2137,7 @@ tables:
   - *id063
 - name: product_purchase
   description: Search purchase places
+  fetch_limit_default: 100
   filters:
   - name: categories_tags
     type: Utf8
@@ -2202,6 +2225,7 @@ tables:
   - *id065
 - name: product_emb_codes
   description: Search EMB codes
+  fetch_limit_default: 100
   filters:
   - name: categories_tags
     type: Utf8
@@ -2289,6 +2313,7 @@ tables:
   - *id067
 - name: product_misc
   description: Search misc fields
+  fetch_limit_default: 100
   filters:
   - name: categories_tags
     type: Utf8
