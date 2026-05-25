@@ -20,12 +20,6 @@ inputs:
       Your Trello User API Token. Keep this secret. You can generate a token
       by visiting the authorization URL after getting your API Key.
 
-auth:
-  type: HeaderAuth
-  headers:
-    - name: Authorization
-      from: template
-      template: "OAuth oauth_consumer_key=\"{{input.TRELLO_API_KEY}}\", oauth_token=\"{{input.TRELLO_API_TOKEN}}\""
 
 test_queries:
   - SELECT id, name FROM trello.boards LIMIT 1
@@ -39,7 +33,7 @@ tables:
       Lists all boards the authenticated user belongs to.
     request:
       method: GET
-      path: /members/me/boards
+      path: /members/me/boards?key={{input.TRELLO_API_KEY}}&token={{input.TRELLO_API_TOKEN}}
     columns:
       - name: id
         type: Utf8
@@ -85,7 +79,7 @@ tables:
         required: true
     request:
       method: GET
-      path: /boards/{{filter.board_id}}/lists
+      path: /boards/{{filter.board_id}}/lists?key={{input.TRELLO_API_KEY}}&token={{input.TRELLO_API_TOKEN}}
     columns:
       - name: id
         type: Utf8
@@ -131,7 +125,7 @@ tables:
         required: true
     request:
       method: GET
-      path: /boards/{{filter.board_id}}/cards
+      path: /boards/{{filter.board_id}}/cards?key={{input.TRELLO_API_KEY}}&token={{input.TRELLO_API_TOKEN}}
     columns:
       - name: id
         type: Utf8
@@ -205,7 +199,7 @@ tables:
         required: true
     request:
       method: GET
-      path: /boards/{{filter.board_id}}/members
+      path: /boards/{{filter.board_id}}/members?key={{input.TRELLO_API_KEY}}&token={{input.TRELLO_API_TOKEN}}
     columns:
       - name: id
         type: Utf8
