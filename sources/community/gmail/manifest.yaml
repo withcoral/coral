@@ -132,10 +132,12 @@ tables:
       Lists messages in the authenticated user's mailbox. Returns message ID
       and thread ID. Use label_ids filter to scope to INBOX, SENT, DRAFT, SPAM,
       or TRASH. Use include_spam_trash filter to include SPAM and TRASH results.
+      Always use a LIMIT clause to avoid scanning a large mailbox.
     guide: >
-      `SELECT id, thread_id FROM gmail.messages LIMIT 20`.
+      `SELECT id, thread_id FROM gmail.messages LIMIT 100`.
       Filter by label: `SELECT id, thread_id FROM gmail.messages
-      WHERE label_ids = 'INBOX' LIMIT 20`.
+      WHERE label_ids = 'INBOX' LIMIT 100`.
+      Always supply a LIMIT; this table can walk a large mailbox without one.
     filters:
       - name: label_ids
         required: false
@@ -214,8 +216,10 @@ tables:
     description: >
       Lists threads in the authenticated user's mailbox. Returns thread ID,
       snippet, and history ID. Use include_spam_trash to include SPAM and TRASH.
+      Always use a LIMIT clause to avoid scanning a large mailbox.
     guide: >
-      `SELECT id, snippet FROM gmail.threads LIMIT 20`.
+      `SELECT id, snippet FROM gmail.threads LIMIT 100`.
+      Always supply a LIMIT; this table can walk a large mailbox without one.
     filters:
       - name: label_ids
         required: false
@@ -302,8 +306,10 @@ tables:
     description: >
       Lists all drafts in the authenticated user's mailbox. Returns draft ID
       and the associated message ID and thread ID.
+      Always use a LIMIT clause to avoid scanning a large mailbox.
     guide: >
-      `SELECT id, message_id, message_thread_id FROM gmail.drafts LIMIT 20`.
+      `SELECT id, message_id, message_thread_id FROM gmail.drafts LIMIT 100`.
+      Always supply a LIMIT; this table can walk a large mailbox without one.
     request:
       method: GET
       path: /gmail/v1/users/me/drafts
