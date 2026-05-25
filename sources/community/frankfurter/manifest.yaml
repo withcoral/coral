@@ -1,0 +1,76 @@
+name: frankfurter
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: Fetch currency exchange rates from the free Frankfurter API.
+base_url: https://api.frankfurter.app
+test_queries:
+  - SELECT * FROM frankfurter.latest LIMIT 1
+  - SELECT * FROM frankfurter.historical WHERE date = '2023-01-01' LIMIT 1
+  - SELECT * FROM frankfurter.currencies LIMIT 1
+tables:
+  - name: latest
+    description: Fetch the latest currency exchange rates.
+    request:
+      method: GET
+      path: /latest
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: amount
+        type: Float64
+        expr: {kind: path, path: [amount]}
+      - name: base
+        type: Utf8
+        expr: {kind: path, path: [base]}
+      - name: date
+        type: Utf8
+        expr: {kind: path, path: [date]}
+      - name: rates
+        type: Json
+        expr: {kind: path, path: [rates]}
+
+  - name: historical
+    description: Fetch historical currency exchange rates for a specific date (YYYY-MM-DD).
+    filters:
+      - name: date
+        required: true
+    request:
+      method: GET
+      path: /{{filter.date}}
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: amount
+        type: Float64
+        expr: {kind: path, path: [amount]}
+      - name: base
+        type: Utf8
+        expr: {kind: path, path: [base]}
+      - name: date
+        type: Utf8
+        expr: {kind: path, path: [date]}
+      - name: rates
+        type: Json
+        expr: {kind: path, path: [rates]}
+
+  - name: currencies
+    description: List all supported currency codes and their names.
+    request:
+      method: GET
+      path: /currencies
+    response:
+      row_strategy: dict_entries
+    pagination:
+      mode: none
+    columns:
+      - name: code
+        type: Utf8
+        expr: {kind: path, path: [_key]}
+      - name: name
+        type: Utf8
+        expr: {kind: path, path: [_value]}
