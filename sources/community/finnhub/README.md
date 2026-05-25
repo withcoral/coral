@@ -2,6 +2,12 @@
 
 The `finnhub` community source exposes an incredibly comprehensive suite of 50 tables covering real-time market news, stock quotes, forex rates, earnings calendars, institutional ownership, ETFs, ESG scores, and alternative data like Congressional trading from the Finnhub API through Coral SQL.
 
+## API Reference & Limits
+
+*   **Official Documentation**: [Finnhub API Docs](https://finnhub.io/docs/api)
+*   **Rate Limits**: The free tier allows 30 API calls per second, returning HTTP 429 if exceeded.
+*   **Premium Data**: Many historical and alternative data endpoints (e.g., Ownership, Lobbying, USA Spending, Visa Applications, Historical Market Cap) require a paid Finnhub API plan. Free-tier users will receive a 403 Forbidden error on premium endpoints.
+
 ## Setup
 
 Create or copy a Finnhub API token:

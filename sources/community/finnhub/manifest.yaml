@@ -3,20 +3,20 @@ version: 0.1.0
 dsl_version: 3
 backend: http
 inputs:
-  API_BASE:
+  FINNHUB_API_TOKEN:
+    kind: secret
+    hint: Your Finnhub API Token
+  FINNHUB_API_BASE:
     kind: variable
     default: https://finnhub.io/api/v1
     hint: Base URL for the Finnhub API
-  API_TOKEN:
-    kind: secret
-    hint: Your Finnhub API Token
-base_url: '{{input.API_BASE}}'
+base_url: '{{input.FINNHUB_API_BASE}}'
 auth:
   type: HeaderAuth
   headers:
   - name: X-Finnhub-Token
     from: template
-    template: '{{input.API_TOKEN}}'
+    template: '{{input.FINNHUB_API_TOKEN}}'
 tables:
 - name: market_news
   description: Fetch the latest market news headlines
@@ -576,6 +576,8 @@ tables:
   - name: symbol
     type: Utf8
     required: true
+  - name: limit
+    type: Int64
   request:
     method: GET
     path: /stock/ownership
@@ -583,9 +585,12 @@ tables:
     - name: symbol
       from: template
       template: '{{filter.symbol}}'
+    - name: limit
+      from: template
+      template: '{{filter.limit}}'
   response:
     rows_path:
-    - data
+    - ownership
   columns:
   - name: name
     type: Utf8
@@ -601,12 +606,20 @@ tables:
     expr:
       kind: from_filter
       key: symbol
+  - name: limit
+    type: Int64
+    virtual: true
+    expr:
+      kind: from_filter
+      key: limit
 - name: stock_fund_ownership
   description: Get list of fund shareholders
   filters:
   - name: symbol
     type: Utf8
     required: true
+  - name: limit
+    type: Int64
   request:
     method: GET
     path: /stock/fund-ownership
@@ -614,9 +627,12 @@ tables:
     - name: symbol
       from: template
       template: '{{filter.symbol}}'
+    - name: limit
+      from: template
+      template: '{{filter.limit}}'
   response:
     rows_path:
-    - data
+    - ownership
   columns:
   - name: name
     type: Utf8
@@ -634,6 +650,12 @@ tables:
     expr:
       kind: from_filter
       key: symbol
+  - name: limit
+    type: Int64
+    virtual: true
+    expr:
+      kind: from_filter
+      key: limit
 - name: eps_estimates
   description: Get company EPS estimates
   filters:
@@ -1006,7 +1028,8 @@ tables:
   filters:
   - name: symbol
     type: Utf8
-    required: true
+  - name: isin
+    type: Utf8
   request:
     method: GET
     path: /etf/profile
@@ -1014,21 +1037,60 @@ tables:
     - name: symbol
       from: template
       template: '{{filter.symbol}}'
+    - name: isin
+      from: template
+      template: '{{filter.isin}}'
   columns:
   - name: symbol
     type: Utf8
   - name: assetClass
     type: Utf8
+    expr:
+      kind: path
+      path:
+      - profile
+      - assetClass
   - name: aum
     type: Float64
+    expr:
+      kind: path
+      path:
+      - profile
+      - aum
   - name: nav
     type: Float64
+    expr:
+      kind: path
+      path:
+      - profile
+      - nav
   - name: expenseRatio
     type: Float64
+    expr:
+      kind: path
+      path:
+      - profile
+      - expenseRatio
   - name: trackingIndex
     type: Utf8
+    expr:
+      kind: path
+      path:
+      - profile
+      - trackingIndex
   - name: inceptionDate
     type: Utf8
+    expr:
+      kind: path
+      path:
+      - profile
+      - inceptionDate
+  - name: isin
+    type: Utf8
+    virtual: true
+    expr:
+      kind: from_filter
+      key: isin
 - name: etf_sector
   description: Get ETF sector exposure
   filters:
@@ -1088,7 +1150,8 @@ tables:
   filters:
   - name: symbol
     type: Utf8
-    required: true
+  - name: isin
+    type: Utf8
   request:
     method: GET
     path: /mutual-fund/profile
@@ -1096,19 +1159,53 @@ tables:
     - name: symbol
       from: template
       template: '{{filter.symbol}}'
+    - name: isin
+      from: template
+      template: '{{filter.isin}}'
   columns:
   - name: symbol
     type: Utf8
   - name: assetClass
     type: Utf8
+    expr:
+      kind: path
+      path:
+      - profile
+      - assetClass
   - name: aum
     type: Float64
+    expr:
+      kind: path
+      path:
+      - profile
+      - aum
   - name: nav
     type: Float64
+    expr:
+      kind: path
+      path:
+      - profile
+      - nav
   - name: expenseRatio
     type: Float64
+    expr:
+      kind: path
+      path:
+      - profile
+      - expenseRatio
   - name: inceptionDate
     type: Utf8
+    expr:
+      kind: path
+      path:
+      - profile
+      - inceptionDate
+  - name: isin
+    type: Utf8
+    virtual: true
+    expr:
+      kind: from_filter
+      key: isin
 - name: crypto_profile
   description: Get crypto profile
   filters:
@@ -1161,6 +1258,12 @@ tables:
   - name: symbol
     type: Utf8
     required: true
+  - name: from
+    type: Utf8
+    required: true
+  - name: to
+    type: Utf8
+    required: true
   request:
     method: GET
     path: /stock/congressional-trading
@@ -1168,6 +1271,12 @@ tables:
     - name: symbol
       from: template
       template: '{{filter.symbol}}'
+    - name: from
+      from: template
+      template: '{{filter.from}}'
+    - name: to
+      from: template
+      template: '{{filter.to}}'
   response:
     rows_path:
     - data
@@ -1182,10 +1291,28 @@ tables:
     type: Utf8
   - name: amount
     type: Float64
+  - name: from
+    type: Utf8
+    virtual: true
+    expr:
+      kind: from_filter
+      key: from
+  - name: to
+    type: Utf8
+    virtual: true
+    expr:
+      kind: from_filter
+      key: to
 - name: stock_visa_application
   description: Get company H1-B visa applications
   filters:
   - name: symbol
+    type: Utf8
+    required: true
+  - name: from
+    type: Utf8
+    required: true
+  - name: to
     type: Utf8
     required: true
   request:
@@ -1195,6 +1322,12 @@ tables:
     - name: symbol
       from: template
       template: '{{filter.symbol}}'
+    - name: from
+      from: template
+      template: '{{filter.from}}'
+    - name: to
+      from: template
+      template: '{{filter.to}}'
   response:
     rows_path:
     - data
@@ -1207,12 +1340,34 @@ tables:
     type: Int64
   - name: jobTitle
     type: Utf8
-  - name: wage
+  - name: wageRangeFrom
     type: Float64
+  - name: wageRangeTo
+    type: Float64
+  - name: wageUnitOfPay
+    type: Utf8
+  - name: from
+    type: Utf8
+    virtual: true
+    expr:
+      kind: from_filter
+      key: from
+  - name: to
+    type: Utf8
+    virtual: true
+    expr:
+      kind: from_filter
+      key: to
 - name: stock_lobbying
   description: Get company lobbying activities
   filters:
   - name: symbol
+    type: Utf8
+    required: true
+  - name: from
+    type: Utf8
+    required: true
+  - name: to
     type: Utf8
     required: true
   request:
@@ -1222,6 +1377,12 @@ tables:
     - name: symbol
       from: template
       template: '{{filter.symbol}}'
+    - name: from
+      from: template
+      template: '{{filter.from}}'
+    - name: to
+      from: template
+      template: '{{filter.to}}'
   response:
     rows_path:
     - data
@@ -1230,16 +1391,36 @@ tables:
     type: Utf8
   - name: year
     type: Int64
-  - name: clientName
+  - name: name
     type: Utf8
-  - name: amount
+  - name: expenses
     type: Float64
-  - name: issue
+  - name: income
+    type: Float64
+  - name: description
     type: Utf8
+  - name: from
+    type: Utf8
+    virtual: true
+    expr:
+      kind: from_filter
+      key: from
+  - name: to
+    type: Utf8
+    virtual: true
+    expr:
+      kind: from_filter
+      key: to
 - name: stock_usa_spending
   description: Get company USA spending and government contracts
   filters:
   - name: symbol
+    type: Utf8
+    required: true
+  - name: from
+    type: Utf8
+    required: true
+  - name: to
     type: Utf8
     required: true
   request:
@@ -1249,6 +1430,12 @@ tables:
     - name: symbol
       from: template
       template: '{{filter.symbol}}'
+    - name: from
+      from: template
+      template: '{{filter.from}}'
+    - name: to
+      from: template
+      template: '{{filter.to}}'
   response:
     rows_path:
     - data
@@ -1261,12 +1448,30 @@ tables:
     type: Utf8
   - name: actionDate
     type: Utf8
-  - name: awardAmount
+  - name: totalValue
     type: Float64
+  - name: from
+    type: Utf8
+    virtual: true
+    expr:
+      kind: from_filter
+      key: from
+  - name: to
+    type: Utf8
+    virtual: true
+    expr:
+      kind: from_filter
+      key: to
 - name: stock_uspto_patent
   description: Get company USPTO patents
   filters:
   - name: symbol
+    type: Utf8
+    required: true
+  - name: from
+    type: Utf8
+    required: true
+  - name: to
     type: Utf8
     required: true
   request:
@@ -1276,6 +1481,12 @@ tables:
     - name: symbol
       from: template
       template: '{{filter.symbol}}'
+    - name: from
+      from: template
+      template: '{{filter.from}}'
+    - name: to
+      from: template
+      template: '{{filter.to}}'
   response:
     rows_path:
     - data
@@ -1288,10 +1499,25 @@ tables:
     type: Utf8
   - name: publicationDate
     type: Utf8
+  - name: from
+    type: Utf8
+    virtual: true
+    expr:
+      kind: from_filter
+      key: from
+  - name: to
+    type: Utf8
+    virtual: true
+    expr:
+      kind: from_filter
+      key: to
 - name: stock_earnings_quality_score
   description: Get company earnings quality score
   filters:
   - name: symbol
+    type: Utf8
+    required: true
+  - name: freq
     type: Utf8
     required: true
   request:
@@ -1301,6 +1527,9 @@ tables:
     - name: symbol
       from: template
       template: '{{filter.symbol}}'
+    - name: freq
+      from: template
+      template: '{{filter.freq}}'
   response:
     rows_path:
     - data
@@ -1311,10 +1540,22 @@ tables:
     type: Float64
   - name: period
     type: Utf8
+  - name: freq
+    type: Utf8
+    virtual: true
+    expr:
+      kind: from_filter
+      key: freq
 - name: stock_historical_market_cap
   description: Get historical market cap
   filters:
   - name: symbol
+    type: Utf8
+    required: true
+  - name: from
+    type: Utf8
+    required: true
+  - name: to
     type: Utf8
     required: true
   request:
@@ -1324,6 +1565,12 @@ tables:
     - name: symbol
       from: template
       template: '{{filter.symbol}}'
+    - name: from
+      from: template
+      template: '{{filter.from}}'
+    - name: to
+      from: template
+      template: '{{filter.to}}'
   response:
     rows_path:
     - data
@@ -1332,12 +1579,30 @@ tables:
     type: Utf8
   - name: marketCapitalization
     type: Float64
-  - name: date
+  - name: atDate
     type: Utf8
+  - name: from
+    type: Utf8
+    virtual: true
+    expr:
+      kind: from_filter
+      key: from
+  - name: to
+    type: Utf8
+    virtual: true
+    expr:
+      kind: from_filter
+      key: to
 - name: stock_historical_employee_count
   description: Get historical employee count
   filters:
   - name: symbol
+    type: Utf8
+    required: true
+  - name: from
+    type: Utf8
+    required: true
+  - name: to
     type: Utf8
     required: true
   request:
@@ -1347,16 +1612,34 @@ tables:
     - name: symbol
       from: template
       template: '{{filter.symbol}}'
+    - name: from
+      from: template
+      template: '{{filter.from}}'
+    - name: to
+      from: template
+      template: '{{filter.to}}'
   response:
     rows_path:
     - data
   columns:
   - name: symbol
     type: Utf8
-  - name: employeeTotal
+  - name: employee
     type: Int64
-  - name: period
+  - name: atDate
     type: Utf8
+  - name: from
+    type: Utf8
+    virtual: true
+    expr:
+      kind: from_filter
+      key: from
+  - name: to
+    type: Utf8
+    virtual: true
+    expr:
+      kind: from_filter
+      key: to
 - name: stock_price_metric
   description: Get historical price metrics by date
   filters:
