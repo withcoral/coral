@@ -67,12 +67,19 @@ test('lists 10 traces, searches one, opens its details, and opens a span inspect
     'Open a span inspector',
     'Expand one HTTP span and inspect the captured response body',
   )
-  await page.getByRole('button', { name: /GET github\.pull_requests/ }).click()
+  await page.getByRole('button', { name: /^GET github\.pull_requests\b/ }).click()
 
-  await expect(page.getByText('Span details')).toBeVisible()
-  await expect(page.getByText('GET github.pull_requests')).toBeVisible()
-  await expect(page.getByText('Response body')).toBeVisible()
+  const spanInspector = page.locator('[data-span-inspector="true"]')
+  await expect(spanInspector.getByText('GET github.pull_requests')).toBeVisible()
+  await expect(
+    spanInspector.locator('[data-request-endpoint="true"]', {
+      hasText: '/repos/oxide/coral/pulls?state=open&per_page=25',
+    }),
+  ).toBeVisible()
   await expect(page.getByText('"title": "Add MSW Playwright trace fixtures"')).toBeVisible()
+  await expect(page.getByText('Raw body')).toBeVisible()
+  await expect(page.getByText('Span attributes')).toBeVisible()
+  await page.screenshot({ path: 'test-results/AOL-6-review.png', fullPage: true })
   await review.pause()
 })
 
@@ -92,7 +99,6 @@ test('renders trace request and response bodies with JSON, GraphQL, and fallback
   await page
     .getByText(/linear\.issues WHERE team_key = 'CORAL' AND title ILIKE '%playwright%'/)
     .click()
-  await review.pause()
 
   await expect(page.getByRole('treeitem')).toHaveCount(14)
 
@@ -100,28 +106,26 @@ test('renders trace request and response bodies with JSON, GraphQL, and fallback
     'Inspect pretty JSON',
     'Open a structured response body and confirm it is pretty printed',
   )
-  await page.getByRole('button', { name: /GET slack\.conversations/ }).click()
+  await page.getByRole('button', { name: /^GET slack\.conversations\b/ }).click()
 
   await expect(page.getByText('Response body')).toBeVisible()
   await expect(page.getByText('"channels": [')).toBeVisible()
   await expect(page.getByText('"name": "eng-coral"')).toBeVisible()
-  await review.pause()
 
   await review.chapter(
     'Inspect malformed JSON fallback',
     'Verify raw text stays readable when parsing fails',
   )
-  await page.getByRole('button', { name: /GET github\.issue_previews/ }).click()
+  await page.getByRole('button', { name: /^GET github\.issue_previews\b/ }).click()
 
   await expect(page.getByText('Response body')).toBeVisible()
   await expect(page.getByText('{"oops":')).toBeVisible()
-  await review.pause()
 
   await review.chapter(
     'Inspect GraphQL bodies',
     'Check request metadata, variables, and response data for GraphQL traffic',
   )
-  await page.getByRole('button', { name: /POST linear\.issues\b/ }).click()
+  await page.getByRole('button', { name: /^POST linear\.issues\b/ }).click()
   await page.getByRole('tab', { name: 'Request body' }).click()
   const requestPanel = page.getByRole('tabpanel', { name: 'Request body' })
   const responsePanel = page.getByRole('tabpanel', { name: 'Response body' })
@@ -143,12 +147,32 @@ test('renders trace request and response bodies with JSON, GraphQL, and fallback
     responsePanel.getByText('"title": "Add Playwright coverage for trace stream"'),
   ).toBeVisible()
   await review.pause()
+})
+
+test('renders GraphQL detection without /graphql and body absence states', async ({
+  network,
+  page,
+  review,
+}) => {
+  network.use(...traceHandlers.tenTraceDetailFlow)
+
+  await review.chapter(
+    'Open the trace with span details',
+    'Load the selected trace so the remaining body viewer states can be inspected',
+  )
+  await page.goto('/')
+  await page.getByPlaceholder('Search queries...').fill('playwright')
+  await page
+    .getByText(/linear\.issues WHERE team_key = 'CORAL' AND title ILIKE '%playwright%'/)
+    .click()
+
+  await expect(page.getByRole('treeitem')).toHaveCount(14)
 
   await review.chapter(
     'Inspect GraphQL detection without /graphql',
     'Open a GraphQL-shaped body on a non-GraphQL path and confirm the richer rendering still appears',
   )
-  await page.getByRole('button', { name: /POST github\.repository_search/ }).click()
+  await page.getByRole('button', { name: /^POST github\.repository_search\b/ }).click()
   await page.getByRole('tab', { name: 'Request body' }).click()
   const githubRequestPanel = page.getByRole('tabpanel', { name: 'Request body' })
   const githubResponsePanel = page.getByRole('tabpanel', { name: 'Response body' })
@@ -163,19 +187,18 @@ test('renders trace request and response bodies with JSON, GraphQL, and fallback
   await expect(
     githubResponsePanel.getByText('"message": "GraphQL warnings should still be visible"'),
   ).toBeVisible()
-  await review.pause()
 
   await review.chapter(
     'Inspect missing and truncated bodies',
     'Confirm the viewer still explains empty and truncated body states',
   )
-  await page.getByRole('button', { name: /POST linear\.issue_request_preview/ }).click()
+  await page.getByRole('button', { name: /^POST linear\.issue_request_preview\b/ }).click()
   await page.getByRole('tab', { name: 'Request body' }).click()
 
   await expect(
     page.getByText('Request body was present (2.0 KB), but content was not captured.'),
   ).toBeVisible()
-  await page.getByRole('button', { name: /GET github\.pull_request_archive/ }).click()
+  await page.getByRole('button', { name: /^GET github\.pull_request_archive\b/ }).click()
   await page.getByRole('tab', { name: 'Response body (truncated)' }).click()
 
   await expect(
