@@ -40,8 +40,6 @@ tables:
     request:
       method: GET
       path: /members/me/boards
-    response:
-      row_strategy: array
     columns:
       - name: id
         type: Utf8
@@ -85,8 +83,6 @@ tables:
     request:
       method: GET
       path: /boards/{{filter.board_id}}/lists
-    response:
-      row_strategy: array
     columns:
       - name: id
         type: Utf8
@@ -130,8 +126,6 @@ tables:
     request:
       method: GET
       path: /boards/{{filter.board_id}}/cards
-    response:
-      row_strategy: array
     columns:
       - name: id
         type: Utf8
@@ -157,7 +151,10 @@ tables:
         type: Timestamp
         nullable: true
         description: The due date of the card.
-        expr: {kind: format_timestamp, input: iso8601, path: [due]}
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [due]}
       - name: due_complete
         type: Boolean
         nullable: true
@@ -200,8 +197,6 @@ tables:
     request:
       method: GET
       path: /boards/{{filter.board_id}}/members
-    response:
-      row_strategy: array
     columns:
       - name: id
         type: Utf8
