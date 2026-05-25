@@ -14,39 +14,44 @@ coral source add openfoodfacts
 
 ## Tables
 
-The `openfoodfacts` source includes 20 tables tailored to different product attributes and search patterns:
+The `openfoodfacts` source includes 50 tables tailored to different product attributes and search patterns:
 
 ### General Search
-*   `product_search`: General search across all products based on tags like categories, brands, and countries.
-*   `product_by_barcode`: Retrieve comprehensive data for a specific product by its barcode.
+*   `product_search`, `product_by_barcode`: General product attributes like name, brand, nutriscore, and nova group.
+*   `product_misc`, `product_misc_by_barcode`: Miscellaneous fields like PNNS groups and creator.
 
-### Nutrition
-*   `product_nutrition`: Search for products and retrieve key nutritional values (energy, fat, carbs, sugars, proteins, salt) per 100g.
-*   `product_nutrition_by_barcode`: Get detailed nutritional values for a single product by barcode.
+### Nutrition & Diet
+*   `product_nutrition`, `product_nutrition_by_barcode`: Core nutritional values (energy, fat, carbs, sugars, proteins, salt) per 100g.
+*   `product_vitamins`, `product_vitamins_by_barcode`: Vitamin content per 100g.
+*   `product_minerals`, `product_minerals_by_barcode`: Mineral content per 100g.
+*   `product_nutrient_levels`, `product_nutrient_levels_by_barcode`: Nutrient levels categorization.
 
 ### Ingredients & Allergens
-*   `product_ingredients`: Search products to view ingredients text, analysis tags, and the total count of food additives.
-*   `product_ingredients_by_barcode`: Get ingredient details and additive counts for a single product by barcode.
-*   `product_allergens`: Find products and their listed allergen and trace tags.
-*   `product_allergens_by_barcode`: Get allergen and trace tags for a single product by barcode.
-*   `product_additives`: Search products and get their list of food additives.
+*   `product_ingredients`, `product_ingredients_by_barcode`: Ingredients text, analysis, and additive counts.
+*   `product_allergens`, `product_allergens_by_barcode`: Listed allergens and trace tags.
+*   `product_traces`, `product_traces_by_barcode`: Specific trace hierarchies.
+*   `product_additives`, `product_additives_by_barcode`: List of food additives.
 
 ### Environment & Packaging
-*   `product_ecoscore`: Search products to retrieve their environmental Eco-Score and grade.
-*   `product_ecoscore_by_barcode`: Get the Eco-Score for a single product by barcode.
-*   `product_packaging`: Search products and retrieve packaging information and recycling tags.
-*   `product_packaging_by_barcode`: Get packaging details for a single product by barcode.
+*   `product_ecoscore`, `product_ecoscore_by_barcode`: Environmental Eco-Score and grade.
+*   `product_packaging`, `product_packaging_by_barcode`: Packaging information and recycling tags.
+*   `product_emb_codes`, `product_emb_codes_by_barcode`: Traceability and packer codes.
 
 ### Classification & Marketing
-*   `product_brands`: Search products and get brand information.
-*   `product_categories`: Search products and get category details and hierarchy.
-*   `product_origins`: Search products and get ingredient origin information.
-*   `product_countries`: Search products and get a list of countries where they are sold.
-*   `product_stores`: Search products and get store listings.
+*   `product_brands`, `product_brands_by_barcode`: Brand information.
+*   `product_categories`, `product_categories_by_barcode`: Category details and hierarchy.
+*   `product_origins`, `product_origins_by_barcode`: Ingredient origin information.
+*   `product_countries`, `product_countries_by_barcode`: Countries where the product is sold.
+*   `product_stores`, `product_stores_by_barcode`: Store listings.
+*   `product_labels`, `product_labels_by_barcode`: Marketing and quality labels (e.g. Organic, Vegan).
+*   `product_manufacturing`, `product_manufacturing_by_barcode`: Manufacturing places.
+*   `product_purchase`, `product_purchase_by_barcode`: Places where the product was purchased.
 
-### Media
-*   `product_images`: Search products to retrieve URLs for front, nutrition, and ingredient images.
-*   `product_images_by_barcode`: Get image URLs for a single product by barcode.
+### Metadata & Media
+*   `product_images`, `product_images_by_barcode`: URLs for front, nutrition, and ingredient images.
+*   `product_states`, `product_states_by_barcode`: Product completion states.
+*   `product_languages`, `product_languages_by_barcode`: Languages used on the packaging.
+*   `product_nova`, `product_nova_by_barcode`: NOVA food processing classifications.
 
 ## Example Queries
 
@@ -99,9 +104,3 @@ FROM openfoodfacts.product_ecoscore
 WHERE categories_tags = 'pizza'
 LIMIT 10;
 ```
-
-## Usage Notes
-
-*   **Rate Limits**: The Open Food Facts API enforces rate limits (typically 15 requests/minute for reads). Coral sets a custom `User-Agent` to help identify the application, but high-volume queries may still hit these limits.
-*   **Tags**: When querying by `categories_tags`, `brands_tags`, or `countries_tags`, use the language prefix if applicable (e.g., `en:pizza` or just `pizza` if the standard tag matches).
-*   **Missing Data**: Because Open Food Facts is crowd-sourced, some products may have incomplete or missing data (e.g., `NULL` for `ecoscore_score` or an empty list for `allergens_tags`).
