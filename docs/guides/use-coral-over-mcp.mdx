@@ -225,6 +225,27 @@ Coral uses stdio transport. If a client supports a command-based install flow, p
   Claude Desktop uses user-scoped config for this setup.
 </Tab>
 
+  <Tab title="Windsurf">
+  **Manual config**
+
+  Add to `~/.codeium/windsurf/mcp_config.json` for a global server:
+
+  ```json
+  {
+    "mcpServers": {
+      "coral": {
+        "command": "coral",
+        "args": ["mcp-stdio"]
+      }
+    }
+  }
+  ```
+
+  If `coral` is not on Windsurf's `PATH`, replace `"coral"` with the full
+  path from `which coral` on macOS or Linux, or
+  `(Get-Command coral).Source` in PowerShell.
+</Tab>
+
   <Tab title="Other">
     Any MCP client that supports stdio transport can use Coral. Point it at:
 
@@ -251,3 +272,8 @@ The agent should call `list_catalog`, `search_catalog`, or query `coral.tables` 
 
 - **`coral` not found:** Make sure `coral` is on your `PATH`, or use the full path from `which coral` on macOS or Linux or `(Get-Command coral).Source` in PowerShell.
 - **No tables visible:** Run `coral source list` in your terminal to confirm you have sources installed. If empty, add one with `coral source add`.
+- **Source installed but `coral source test` fails:** The source is configured but credentials are invalid or expired. Re-run `coral source add <name>` to update the stored secret, then rerun `coral source test <name>`.
+- **Agent makes many tool calls instead of one query:** The agent is browsing the catalog one table at a time. Prompt it to use the `sql` tool with `JOIN` across sources rather than fetching rows with separate tool calls and combining them.
+- **Query fails with a filter error:** Some tables require a filter before they return rows. Run `SELECT * FROM coral.filters WHERE required = true` to see which filters must be set in your `WHERE` clause before querying a table.
+- **Rate limit errors mid-query:** The source provider is throttling requests. Add a `LIMIT` clause to your query — large scans on paginated HTTP sources can exhaust provider rate limits quickly. Check the source `README` for documented request-per-minute limits.
+- **`coral mcp-stdio` exits immediately on start:** Run `coral --version` to confirm the binary is intact, then `coral bootstrap` to repair a missing or corrupted workspace configuration.
