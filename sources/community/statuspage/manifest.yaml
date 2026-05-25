@@ -80,7 +80,10 @@ tables:
       Filter WHERE status != 'operational' to surface degraded components.
     guide: |
       No filters required. Query: `SELECT id, name, status FROM {source}.components WHERE status != 'operational'`.
-      Join with `{source}.incidents` on `id` to find which components are affected by incidents.
+      Statuspage public incident rows do not expose affected component IDs in this source,
+      so do not join components to incidents on `id`. Use components to find degraded
+      service areas, then inspect `{source}.active_incidents` or `{source}.incidents`
+      for vendor-provided incident context.
     request:
       method: GET
       path: /api/v2/components.json
@@ -484,6 +487,15 @@ tables:
         - scheduled_maintenances
       row_strategy: direct
       allow_404_empty: false
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      page_size:
+        default: 50
+        max: 50
+        query_param: limit
     columns:
       - name: id
         type: Utf8
