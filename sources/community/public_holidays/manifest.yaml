@@ -79,9 +79,20 @@ tables:
         required: true
       - name: country_code
         required: true
+      - name: subdivision_code
+        required: false
+      - name: available_bridge_days
+        required: false
     request:
       method: GET
       path: /LongWeekend/{{filter.year}}/{{filter.country_code}}
+      query:
+        - name: subdivisionCode
+          from: filter
+          key: subdivision_code
+        - name: availableBridgeDays
+          from: filter
+          key: available_bridge_days
     response:
       row_strategy: direct
     pagination:

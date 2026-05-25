@@ -7,8 +7,12 @@ Query global public holidays, available countries, and long weekends using the f
 No API key or authentication is needed. Add the source directly:
 
 ```bash
-coral source add --file sources/community/public-holidays/manifest.yaml
+coral source add --file sources/community/public_holidays/manifest.yaml
 ```
+
+## Rate Limits
+
+According to the official Nager.Date API documentation, there are currently **no rate limits** for this API. However, caching and polite usage is always recommended.
 
 ## Tables
 
@@ -22,7 +26,7 @@ FROM public_holidays.available_countries;
 ```
 
 ### `holidays`
-Fetch all public holidays for a specific country and year. Requires `year` and `country_code` filters.
+Fetch all public holidays for a specific country and year. Requires `year` and `country_code` filters. Note: the `fixed` and `launch_year` columns are officially deprecated in the upstream API.
 
 **Example:**
 ```sql
@@ -32,7 +36,7 @@ WHERE year = '2023' AND country_code = 'US';
 ```
 
 ### `long_weekend`
-Fetch all long weekends for a specific country and year. Requires `year` and `country_code` filters.
+Fetch all long weekends for a specific country and year. Requires `year` and `country_code` filters. Optional filters: `subdivision_code` and `available_bridge_days`.
 
 **Example:**
 ```sql
