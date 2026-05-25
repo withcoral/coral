@@ -2,6 +2,7 @@ name: openfoodfacts
 version: 0.1.0
 dsl_version: 3
 backend: http
+description: Query product details, nutritional information, allergens, ingredients, and packaging data from the Open Food Facts API.
 inputs:
   API_BASE:
     kind: variable
