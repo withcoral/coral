@@ -1,0 +1,128 @@
+name: openfoodfacts
+version: 0.1.0
+dsl_version: 3
+backend: http
+
+inputs:
+  API_BASE:
+    kind: variable
+    default: https://world.openfoodfacts.org/api/v2
+    hint: Base URL for the Open Food Facts API
+
+base_url: "{{input.API_BASE}}"
+
+tables:
+  - name: product_search
+    description: Search for food products globally based on tags
+    filters:
+      - name: categories_tags
+        type: Utf8
+      - name: brands_tags
+        type: Utf8
+      - name: countries_tags
+        type: Utf8
+    request:
+      method: GET
+      path: /search
+      query:
+        - name: categories_tags
+          from: template
+          template: "{{filter.categories_tags}}"
+        - name: brands_tags
+          from: template
+          template: "{{filter.brands_tags}}"
+        - name: countries_tags
+          from: template
+          template: "{{filter.countries_tags}}"
+    response:
+      rows_path:
+        - products
+    columns:
+      - name: code
+        type: Utf8
+      - name: product_name
+        type: Utf8
+      - name: brands
+        type: Utf8
+      - name: nutriscore_grade
+        type: Utf8
+      - name: ecoscore_grade
+        type: Utf8
+      - name: nova_group
+        type: Int64
+      - name: ingredients_text
+        type: Utf8
+      - name: quantity
+        type: Utf8
+
+  - name: product_by_barcode
+    description: Get a specific food product by its barcode
+    filters:
+      - name: code
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /search
+      query:
+        - name: code
+          from: template
+          template: "{{filter.code}}"
+    response:
+      rows_path:
+        - products
+    columns:
+      - name: code
+        type: Utf8
+      - name: product_name
+        type: Utf8
+      - name: brands
+        type: Utf8
+      - name: nutriscore_grade
+        type: Utf8
+      - name: ecoscore_grade
+        type: Utf8
+      - name: nova_group
+        type: Int64
+      - name: ingredients_text
+        type: Utf8
+      - name: quantity
+        type: Utf8
+
+  - name: product_nutrition
+    description: Search for products and get detailed nutritional info
+    filters:
+      - name: categories_tags
+        type: Utf8
+        required: true
+    request:
+      method: GET
+      path: /search
+      query:
+        - name: categories_tags
+          from: template
+          template: "{{filter.categories_tags}}"
+    response:
+      rows_path:
+        - products
+    columns:
+      - name: code
+        type: Utf8
+      - name: product_name
+        type: Utf8
+      - name: nutriments__energy_kcal_100g
+        type: Float64
+      - name: nutriments__fat_100g
+        type: Float64
+      - name: nutriments__saturated_fat_100g
+        type: Float64
+      - name: nutriments__carbohydrates_100g
+        type: Float64
+      - name: nutriments__sugars_100g
+        type: Float64
+      - name: nutriments__fiber_100g
+        type: Float64
+      - name: nutriments__proteins_100g
+        type: Float64
+      - name: nutriments__salt_100g
+        type: Float64
