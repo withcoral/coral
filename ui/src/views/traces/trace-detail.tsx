@@ -737,6 +737,24 @@ export function TraceDetail({
     [expandedHttpSpanId, navigableSpanIds],
   )
 
+  const handleNewerTraceShortcut = useCallback(
+    (event: KeyboardEvent) => {
+      if (!newerTraceId) return
+      event.preventDefault()
+      onSelectTrace?.(newerTraceId)
+    },
+    [newerTraceId, onSelectTrace],
+  )
+
+  const handleOlderTraceShortcut = useCallback(
+    (event: KeyboardEvent) => {
+      if (!olderTraceId) return
+      event.preventDefault()
+      onSelectTrace?.(olderTraceId)
+    },
+    [olderTraceId, onSelectTrace],
+  )
+
   const handleEscapeShortcut = useCallback(
     (event: KeyboardEvent) => {
       if (expandedHttpSpanId) {
@@ -835,22 +853,36 @@ export function TraceDetail({
           <span className={s.statusBadge} data-tone={statusTone(summary.status)}>
             {statusLabel(summary.status)}
           </span>
-          <Button.IconButton
-            disabled={!newerTraceId}
-            name="ArrowUp"
-            onClick={() => newerTraceId && onSelectTrace?.(newerTraceId)}
-            size="32"
-            tooltipText="Newer query"
-            variant="bare"
-          />
-          <Button.IconButton
-            disabled={!olderTraceId}
-            name="ArrowDown"
-            onClick={() => olderTraceId && onSelectTrace?.(olderTraceId)}
-            size="32"
-            tooltipText="Older query"
-            variant="bare"
-          />
+          <KeyboardShortcut
+            handler={handleNewerTraceShortcut}
+            shortcut="$mod+ArrowUp"
+            tooltipContent="Newer query"
+            tooltipSide="bottom"
+          >
+            <Button.IconButton
+              ariaLabel="Newer query"
+              disabled={!newerTraceId}
+              name="ArrowUp"
+              onClick={() => newerTraceId && onSelectTrace?.(newerTraceId)}
+              size="32"
+              variant="bare"
+            />
+          </KeyboardShortcut>
+          <KeyboardShortcut
+            handler={handleOlderTraceShortcut}
+            shortcut="$mod+ArrowDown"
+            tooltipContent="Older query"
+            tooltipSide="bottom"
+          >
+            <Button.IconButton
+              ariaLabel="Older query"
+              disabled={!olderTraceId}
+              name="ArrowDown"
+              onClick={() => olderTraceId && onSelectTrace?.(olderTraceId)}
+              size="32"
+              variant="bare"
+            />
+          </KeyboardShortcut>
           <KeyboardShortcut
             handler={handleEscapeShortcut}
             shortcut="Escape"
