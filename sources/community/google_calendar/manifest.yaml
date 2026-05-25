@@ -1,0 +1,233 @@
+name: google_calendar
+version: 0.1.0
+dsl_version: 3
+description: >
+  Query Google Calendar events, calendars, and settings using SQL.
+  Supports listing calendars, fetching events with time filters,
+  and reading account-level settings such as timezone.
+backend: http
+
+inputs:
+  GOOGLE_CALENDAR_ACCESS_TOKEN:
+    kind: secret
+    hint: >
+      Google OAuth2 access token with the
+      https://www.googleapis.com/auth/calendar.readonly scope.
+      Get one via: https://developers.google.com/oauthplayground
+
+base_url: "https://www.googleapis.com/calendar/v3"
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      template: "Bearer {{input.GOOGLE_CALENDAR_ACCESS_TOKEN}}"
+
+tables:
+
+  - name: calendar_list
+    request:
+      method: GET
+      path: /users/me/calendarList
+    response:
+      rows_path:
+        - items
+    pagination:
+      mode: cursor_query
+      cursor_path:
+        - nextPageToken
+      cursor_param: pageToken
+      max_pages: 50
+    filters:
+      - name: minAccessRole
+        param: minAccessRole
+        description: >
+          Filter by minimum access role.
+          One of: freeBusyReader, reader, writer, owner.
+    columns:
+      - name: id
+        type: Utf8
+        description: The calendar unique ID. Use as calendarId in the events table.
+      - name: summary
+        type: Utf8
+        description: Title of the calendar.
+      - name: description
+        type: Utf8
+        description: Optional description of the calendar.
+      - name: timeZone
+        type: Utf8
+        description: Timezone the calendar uses, e.g. Asia/Kolkata.
+      - name: accessRole
+        type: Utf8
+        description: Your access level - freeBusyReader, reader, writer, or owner.
+      - name: primary
+        type: Boolean
+        description: True if this is your primary calendar.
+      - name: selected
+        type: Boolean
+        description: True if this calendar is shown in the Google Calendar UI.
+      - name: backgroundColor
+        type: Utf8
+        description: Hex color code for this calendar.
+      - name: foregroundColor
+        type: Utf8
+        description: Hex color code for text on this calendar.
+      - name: colorId
+        type: Utf8
+        description: Google color ID string for this calendar.
+
+  - name: events
+    request:
+      method: GET
+      path: /calendars/{{filter.calendarId}}/events
+    response:
+      rows_path:
+        - items
+    pagination:
+      mode: cursor_query
+      cursor_path:
+        - nextPageToken
+      cursor_param: pageToken
+      max_pages: 100
+    filters:
+      - name: calendarId
+        param: calendarId
+        default: "primary"
+        description: >
+          The calendar to fetch events from.
+          Use primary for your main calendar, or a full
+          calendar ID from the calendar_list table.
+      - name: timeMin
+        param: timeMin
+        description: >
+          Lower bound for event start times.
+          RFC3339 format: 2026-05-01T00:00:00Z
+      - name: timeMax
+        param: timeMax
+        description: >
+          Upper bound for event start times.
+          RFC3339 format: 2026-05-31T23:59:59Z
+      - name: q
+        param: q
+        description: >
+          Free-text search across event summary, description,
+          location, attendees, and organizer.
+      - name: singleEvents
+        param: singleEvents
+        default: "true"
+        description: >
+          Whether to expand recurring events into individual instances.
+          true means each occurrence is its own row.
+      - name: orderBy
+        param: orderBy
+        default: "startTime"
+        description: Sort order - startTime or updated.
+      - name: maxResults
+        param: maxResults
+        default: "250"
+        description: Maximum events returned per page, between 1 and 2500.
+    columns:
+      - name: id
+        type: Utf8
+        description: Unique event ID.
+      - name: summary
+        type: Utf8
+        description: Event title.
+      - name: description
+        type: Utf8
+        description: Event description or notes.
+      - name: location
+        type: Utf8
+        description: Location string, address or meet link.
+      - name: status
+        type: Utf8
+        description: confirmed, tentative, or cancelled.
+      - name: htmlLink
+        type: Utf8
+        description: Direct URL to open this event in Google Calendar.
+      - name: created
+        type: Utf8
+        description: RFC3339 timestamp when the event was created.
+      - name: updated
+        type: Utf8
+        description: RFC3339 timestamp when the event was last modified.
+      - name: start__dateTime
+        type: Utf8
+        description: RFC3339 start timestamp for timed events. Null for all-day events.
+      - name: start__date
+        type: Utf8
+        description: Date-only start for all-day events. Null for timed events.
+      - name: start__timeZone
+        type: Utf8
+        description: Timezone for the start time.
+      - name: end__dateTime
+        type: Utf8
+        description: RFC3339 end timestamp for timed events.
+      - name: end__date
+        type: Utf8
+        description: Date-only end for all-day events.
+      - name: end__timeZone
+        type: Utf8
+        description: Timezone for the end time.
+      - name: organizer__email
+        type: Utf8
+        description: Email of whoever organized the event.
+      - name: organizer__displayName
+        type: Utf8
+        description: Display name of the organizer.
+      - name: organizer__self
+        type: Boolean
+        description: True if you are the organizer.
+      - name: creator__email
+        type: Utf8
+        description: Email of the person who created the event entry.
+      - name: creator__displayName
+        type: Utf8
+        description: Display name of the creator.
+      - name: colorId
+        type: Utf8
+        description: Color assigned to this event.
+      - name: transparency
+        type: Utf8
+        description: opaque blocks time, transparent does not.
+      - name: visibility
+        type: Utf8
+        description: default, public, private, or confidential.
+      - name: iCalUID
+        type: Utf8
+        description: Globally unique iCalendar UID. Stable across calendar moves.
+      - name: sequence
+        type: Int64
+        description: Version counter, increments on each modification.
+      - name: recurringEventId
+        type: Utf8
+        description: ID of the parent recurring event if this is an instance.
+      - name: etag
+        type: Utf8
+        description: ETag for cache validation.
+
+  - name: settings
+    request:
+      method: GET
+      path: /users/me/settings
+    response:
+      rows_path:
+        - items
+    pagination:
+      mode: cursor_query
+      cursor_path:
+        - nextPageToken
+      cursor_param: pageToken
+      max_pages: 10
+    columns:
+      - name: id
+        type: Utf8
+        description: >
+          Setting name. Key ones are timezone, dateFieldOrder,
+          timeMode, weekStart, locale, country.
+      - name: value
+        type: Utf8
+        description: The current value of this setting.
+      - name: kind
+        type: Utf8
+        description: Always calendar#setting.
