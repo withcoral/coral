@@ -2,6 +2,7 @@ name: finnhub
 version: 0.1.0
 dsl_version: 3
 backend: http
+description: Query real-time and historical market data, stock financials, crypto prices, and financial news from the Finnhub API.
 inputs:
   FINNHUB_API_TOKEN:
     kind: secret
