@@ -26,9 +26,9 @@ inputs:
       Copy the Key into BITBUCKET_CLIENT_ID and the Secret into
       BITBUCKET_CLIENT_SECRET before running source add.
 
-      Note: only OAuth Bearer tokens issued by the Bitbucket OAuth flow
-      are supported. Bitbucket App passwords and personal access tokens
-      use HTTP Basic auth and are not compatible with this source.
+      Note: this source sends Authorization: Bearer and works with OAuth
+      access tokens and Bitbucket repository access tokens (both Bearer).
+      Bitbucket App passwords use HTTP Basic auth and are not compatible.
     credential:
       methods:
         - type: oauth
@@ -346,29 +346,23 @@ tables:
     description: >-
       CI/CD pipeline runs for a Bitbucket repository. Each row is one
       pipeline run. Use state_name and state_result_name to filter by
-      run status.
+      run status locally.
     guide: |
-      Requires `workspace` and `repo_slug`. Optional `status` filter pushes
-      down to the API. `state_name` holds the top-level state (for example
-      COMPLETED or IN_PROGRESS). `state_result_name` holds the result within
-      a completed run (for example SUCCESSFUL or FAILED). Join with
-      `bitbucket.pull_requests` on `workspace` and `repo_slug` for
-      deployment-alongside-PR analytics, or with `jira.issues` for
+      Requires `workspace` and `repo_slug`. `state_name` holds the
+      top-level state (for example COMPLETED or IN_PROGRESS).
+      `state_result_name` holds the result within a completed run
+      (for example SUCCESSFUL or FAILED). Filter on these columns locally.
+      Join with `bitbucket.pull_requests` on `workspace` and `repo_slug`
+      for deployment-alongside-PR analytics, or with `jira.issues` for
       release-tracking dashboards.
     filters:
       - name: workspace
         required: true
       - name: repo_slug
         required: true
-      - name: status
-        required: false
     request:
       method: GET
       path: /repositories/{{filter.workspace}}/{{filter.repo_slug}}/pipelines
-      query:
-        - name: status
-          from: filter
-          key: status
     response:
       rows_path:
         - values
@@ -448,14 +442,6 @@ tables:
             kind: path
             path:
               - completed_on
-      - name: status_filter
-        type: Utf8
-        nullable: true
-        virtual: true
-        description: Status filter passed to the API; echoed onto every row.
-        expr:
-          kind: from_filter
-          key: status
       - name: workspace
         type: Utf8
         nullable: false

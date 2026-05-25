@@ -54,10 +54,11 @@ Coral will open your browser to the Bitbucket authorization page. After you
 approve the requested scopes, Coral stores the access token automatically and
 handles token refresh.
 
-> **Auth note:** this source uses `Authorization: Bearer <oauth_token>` and
-> supports only OAuth access tokens issued by the Bitbucket authorization
-> flow above. Bitbucket App passwords and repository access tokens use HTTP
-> Basic auth and are **not** compatible with this source.
+> **Auth note:** this source uses `Authorization: Bearer <token>` and supports
+> any Bitbucket Bearer token — OAuth access tokens from the flow above, or
+> Bitbucket repository access tokens (which also use Bearer auth). Bitbucket
+> App passwords are the Basic auth variant and are **not** compatible with
+> this source.
 
 ### 4. Verify
 
@@ -73,7 +74,7 @@ Replace `your-workspace` with your Bitbucket workspace slug.
 |---|---|---|---|
 | `bitbucket.repositories` | Repositories in a workspace | `workspace` | — |
 | `bitbucket.pull_requests` | Pull requests in a repository | `workspace`, `repo_slug` | `state` |
-| `bitbucket.pipelines` | CI/CD pipeline runs for a repository | `workspace`, `repo_slug` | `status` |
+| `bitbucket.pipelines` | CI/CD pipeline runs for a repository | `workspace`, `repo_slug` | — |
 
 All tables are read-only. This source does not create, modify, or delete any
 Bitbucket data.
@@ -100,10 +101,10 @@ The `summary` column contains the PR description as plain markup text
 
 ### `pipelines`
 
-Lists CI/CD pipeline runs for one repository. The optional `status` filter is
-pushed down to the Bitbucket API. `state_name` holds the top-level run state
-(for example `COMPLETED` or `IN_PROGRESS`). `state_result_name` holds the
-result within a completed run (for example `SUCCESSFUL` or `FAILED`).
+Lists CI/CD pipeline runs for one repository. `state_name` holds the
+top-level run state (for example `COMPLETED` or `IN_PROGRESS`).
+`state_result_name` holds the result within a completed run (for example
+`SUCCESSFUL` or `FAILED`). Filter by these columns locally after fetching.
 
 ## Filters and pagination
 
@@ -151,14 +152,26 @@ ORDER BY updated_on DESC
 LIMIT 50;
 ```
 
-Failed pipeline runs (status pushed down to the API):
+Failed pipeline runs (filtered locally on `state_result_name`):
 
 ```sql
 SELECT build_number, creator_nickname, created_on, completed_on
 FROM bitbucket.pipelines
 WHERE workspace = 'my-workspace'
   AND repo_slug = 'my-repo'
-  AND status = 'FAILED'
+  AND state_result_name = 'FAILED'
+ORDER BY created_on DESC
+LIMIT 20;
+```
+
+Successful pipeline runs:
+
+```sql
+SELECT build_number, state_name, state_result_name, created_on, completed_on
+FROM bitbucket.pipelines
+WHERE workspace = 'my-workspace'
+  AND repo_slug = 'my-repo'
+  AND state_result_name = 'SUCCESSFUL'
 ORDER BY created_on DESC
 LIMIT 20;
 ```
@@ -223,7 +236,7 @@ cargo run -p coral-cli -- sql "SELECT slug, name, is_private FROM bitbucket.repo
 # pull_requests — requires workspace and repo_slug; optional state pushdown
 cargo run -p coral-cli -- sql "SELECT id, title, state, author_nickname, created_on FROM bitbucket.pull_requests WHERE workspace = 'your-workspace' AND repo_slug = 'your-repo' AND state = 'OPEN' LIMIT 5"
 
-# pipelines — requires workspace and repo_slug; optional status pushdown
+# pipelines — requires workspace and repo_slug
 cargo run -p coral-cli -- sql "SELECT build_number, state_name, state_result_name, creator_nickname, created_on, completed_on FROM bitbucket.pipelines WHERE workspace = 'your-workspace' AND repo_slug = 'your-repo' LIMIT 5"
 ```
 
@@ -240,9 +253,10 @@ cargo run -p coral-cli -- sql "SELECT table_name, column_name, data_type FROM co
 
 ## Notes
 
-- **OAuth only:** this source supports only OAuth Bearer tokens issued by
-  the Bitbucket authorization-code flow. Bitbucket App passwords and
-  repository access tokens use HTTP Basic auth and will not work here.
+- **Supported Bearer tokens:** this source accepts any Bitbucket Bearer token
+  — OAuth access tokens issued by the authorization-code flow, or Bitbucket
+  repository access tokens (also Bearer). Bitbucket App passwords use HTTP
+  Basic auth and will not work here.
 - **OAuth requires a confidential client:** Bitbucket Cloud requires
   `client_secret` for the authorization-code flow; PKCE public-client
   flows are not currently supported.
