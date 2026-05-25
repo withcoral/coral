@@ -1,0 +1,436 @@
+name: pumpfun
+version: 0.1.0
+dsl_version: 3
+backend: http
+inputs:
+  API_BASE:
+    kind: variable
+    default: https://frontend-api-v3.pump.fun
+    hint: Base URL for the Pump.fun API
+base_url: '{{input.API_BASE}}'
+auth:
+  type: HeaderAuth
+  headers:
+  - name: Origin
+    from: template
+    template: https://pump.fun
+  - name: Accept
+    from: template
+    template: application/json
+  - name: User-Agent
+    from: template
+    template: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+
+tables:
+- name: coins
+  description: List and search across Pump.fun Solana tokens
+  fetch_limit_default: 50
+  filters:
+  - name: searchTerm
+    type: Utf8
+  - name: creator
+    type: Utf8
+  - name: complete
+    type: Boolean
+  - name: includeNsfw
+    type: Boolean
+  - name: sort
+    type: Utf8
+  - name: order
+    type: Utf8
+  request:
+    method: GET
+    path: /coins
+    query:
+    - name: limit
+      from: template
+      template: '50'
+    - name: offset
+      from: template
+      template: '0'
+    - name: searchTerm
+      from: filter
+      key: searchTerm
+    - name: creator
+      from: filter
+      key: creator
+    - name: complete
+      from: filter
+      key: complete
+    - name: includeNsfw
+      from: filter
+      key: includeNsfw
+    - name: sort
+      from: filter
+      key: sort
+    - name: order
+      from: filter
+      key: order
+  response:
+    rows_path: []
+  columns:
+  - name: searchTerm
+    type: Utf8
+    virtual: true
+    expr:
+      kind: from_filter
+      key: searchTerm
+  - name: creator_filter
+    type: Utf8
+    virtual: true
+    expr:
+      kind: from_filter
+      key: creator
+  - name: complete_filter
+    type: Boolean
+    virtual: true
+    expr:
+      kind: from_filter
+      key: complete
+  - name: mint
+    type: Utf8
+  - name: name
+    type: Utf8
+  - name: symbol
+    type: Utf8
+  - name: description
+    type: Utf8
+  - name: image_uri
+    type: Utf8
+  - name: metadata_uri
+    type: Utf8
+  - name: twitter
+    type: Utf8
+  - name: telegram
+    type: Utf8
+  - name: website
+    type: Utf8
+  - name: bonding_curve
+    type: Utf8
+  - name: associated_bonding_curve
+    type: Utf8
+  - name: creator
+    type: Utf8
+  - name: created_timestamp
+    type: Int64
+  - name: complete
+    type: Boolean
+  - name: virtual_sol_reserves
+    type: Int64
+  - name: virtual_token_reserves
+    type: Int64
+  - name: total_supply
+    type: Int64
+  - name: market_cap
+    type: Float64
+  - name: usd_market_cap
+    type: Float64
+  - name: nsfw
+    type: Boolean
+  - name: is_banned
+    type: Boolean
+  - name: real_sol_reserves
+    type: Int64
+  - name: real_token_reserves
+    type: Int64
+
+- name: latest_coins
+  description: Fetch the most recently launched tokens on Pump.fun
+  fetch_limit_default: 20
+  request:
+    method: GET
+    path: /coins
+    query:
+    - name: limit
+      from: template
+      template: '50'
+    - name: offset
+      from: template
+      template: '0'
+    - name: sort
+      from: template
+      template: created_timestamp
+    - name: order
+      from: template
+      template: DESC
+    - name: includeNsfw
+      from: template
+      template: 'false'
+    - name: complete
+      from: template
+      template: 'false'
+  response:
+    rows_path: []
+  columns:
+  - name: mint
+    type: Utf8
+  - name: name
+    type: Utf8
+  - name: symbol
+    type: Utf8
+  - name: description
+    type: Utf8
+  - name: image_uri
+    type: Utf8
+  - name: metadata_uri
+    type: Utf8
+  - name: twitter
+    type: Utf8
+  - name: telegram
+    type: Utf8
+  - name: website
+    type: Utf8
+  - name: creator
+    type: Utf8
+  - name: created_timestamp
+    type: Int64
+  - name: complete
+    type: Boolean
+  - name: virtual_sol_reserves
+    type: Int64
+  - name: virtual_token_reserves
+    type: Int64
+  - name: total_supply
+    type: Int64
+  - name: market_cap
+    type: Float64
+  - name: usd_market_cap
+    type: Float64
+
+- name: graduated_coins
+  description: Fetch tokens that have completed their bonding curve and successfully graduated to Raydium
+  fetch_limit_default: 20
+  request:
+    method: GET
+    path: /coins
+    query:
+    - name: limit
+      from: template
+      template: '50'
+    - name: offset
+      from: template
+      template: '0'
+    - name: sort
+      from: template
+      template: last_trade_timestamp
+    - name: order
+      from: template
+      template: DESC
+    - name: complete
+      from: template
+      template: 'true'
+    - name: includeNsfw
+      from: template
+      template: 'false'
+  response:
+    rows_path: []
+  columns:
+  - name: mint
+    type: Utf8
+  - name: name
+    type: Utf8
+  - name: symbol
+    type: Utf8
+  - name: description
+    type: Utf8
+  - name: image_uri
+    type: Utf8
+  - name: metadata_uri
+    type: Utf8
+  - name: twitter
+    type: Utf8
+  - name: telegram
+    type: Utf8
+  - name: website
+    type: Utf8
+  - name: creator
+    type: Utf8
+  - name: created_timestamp
+    type: Int64
+  - name: complete
+    type: Boolean
+  - name: virtual_sol_reserves
+    type: Int64
+  - name: virtual_token_reserves
+    type: Int64
+  - name: total_supply
+    type: Int64
+  - name: market_cap
+    type: Float64
+  - name: usd_market_cap
+    type: Float64
+
+- name: active_trading_coins
+  description: Fetch tokens with the most recent trading activity on Pump.fun
+  fetch_limit_default: 20
+  request:
+    method: GET
+    path: /coins
+    query:
+    - name: limit
+      from: template
+      template: '50'
+    - name: offset
+      from: template
+      template: '0'
+    - name: sort
+      from: template
+      template: last_trade_timestamp
+    - name: order
+      from: template
+      template: DESC
+    - name: includeNsfw
+      from: template
+      template: 'false'
+  response:
+    rows_path: []
+  columns:
+  - name: mint
+    type: Utf8
+  - name: name
+    type: Utf8
+  - name: symbol
+    type: Utf8
+  - name: description
+    type: Utf8
+  - name: image_uri
+    type: Utf8
+  - name: creator
+    type: Utf8
+  - name: created_timestamp
+    type: Int64
+  - name: complete
+    type: Boolean
+  - name: virtual_sol_reserves
+    type: Int64
+  - name: virtual_token_reserves
+    type: Int64
+  - name: market_cap
+    type: Float64
+  - name: usd_market_cap
+    type: Float64
+
+- name: king_of_the_hill
+  description: Fetch the current top coin closest to completing its bonding curve
+  request:
+    method: GET
+    path: /coins
+    query:
+    - name: limit
+      from: template
+      template: '1'
+    - name: sort
+      from: template
+      template: market_cap
+    - name: order
+      from: template
+      template: DESC
+    - name: complete
+      from: template
+      template: 'false'
+    - name: includeNsfw
+      from: template
+      template: 'false'
+  response:
+    rows_path: []
+  columns:
+  - name: mint
+    type: Utf8
+  - name: name
+    type: Utf8
+  - name: symbol
+    type: Utf8
+  - name: description
+    type: Utf8
+  - name: image_uri
+    type: Utf8
+  - name: creator
+    type: Utf8
+  - name: created_timestamp
+    type: Int64
+  - name: market_cap
+    type: Float64
+  - name: usd_market_cap
+    type: Float64
+  - name: complete
+    type: Boolean
+
+- name: coin_detail
+  description: Fetch detailed stats and metadata for a single Pump.fun token by its mint address
+  filters:
+  - name: mint
+    type: Utf8
+    required: true
+  request:
+    method: GET
+    path: /coins/{{filter.mint}}
+  response:
+    rows_path: []
+  columns:
+  - name: mint
+    type: Utf8
+    virtual: true
+    expr:
+      kind: from_filter
+      key: mint
+  - name: initialized
+    type: Boolean
+  - name: name
+    type: Utf8
+  - name: symbol
+    type: Utf8
+  - name: description
+    type: Utf8
+  - name: image_uri
+    type: Utf8
+  - name: metadata_uri
+    type: Utf8
+  - name: twitter
+    type: Utf8
+  - name: telegram
+    type: Utf8
+  - name: website
+    type: Utf8
+  - name: bonding_curve
+    type: Utf8
+  - name: associated_bonding_curve
+    type: Utf8
+  - name: creator
+    type: Utf8
+  - name: created_timestamp
+    type: Int64
+  - name: complete
+    type: Boolean
+  - name: virtual_sol_reserves
+    type: Int64
+  - name: virtual_token_reserves
+    type: Int64
+  - name: total_supply
+    type: Int64
+  - name: market_cap
+    type: Float64
+  - name: usd_market_cap
+    type: Float64
+  - name: nsfw
+    type: Boolean
+  - name: is_banned
+    type: Boolean
+  - name: real_sol_reserves
+    type: Int64
+  - name: real_token_reserves
+    type: Int64
+
+- name: sol_price
+  description: Fetch the current price of Solana (SOL) in USD
+  request:
+    method: GET
+    path: /sol-price
+  response:
+    rows_path: []
+  columns:
+  - name: sol_price
+    type: Float64
+    expr:
+      kind: path
+      path:
+      - solPrice
